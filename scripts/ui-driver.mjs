@@ -2,7 +2,16 @@
 // Usage (as a module): const { page, close } = await launch({ exe, args, port, profile });
 import { execFileSync, spawn } from "node:child_process";
 import net from "node:net";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { chromium } from "playwright-core";
+
+export function createProfile(prefix = "revqora-webview-") {
+  const base = process.platform === "win32" && process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Temp") : os.tmpdir();
+  fs.mkdirSync(base, { recursive: true });
+  return fs.mkdtempSync(path.join(base, prefix));
+}
 
 export async function launch({ exe, args = [], port = 9333, profile }) {
   if (port === 0) {
@@ -12,7 +21,13 @@ export async function launch({ exe, args = [], port = 9333, profile }) {
     await new Promise((resolve) => reservation.close(resolve));
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid CDP port");
-  const env = { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-address=127.0.0.1 --remote-debugging-port=${port}`, REVQORA_MULTI_INSTANCE: "1" };
+  const inheritedArguments = process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? "";
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "WEBVIEW2_USER_DATA_FOLDER", "REVQORA_MULTI_INSTANCE"].includes(key.toUpperCase())) delete env[key];
+  }
+  env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `${inheritedArguments} --remote-debugging-address=127.0.0.1 --remote-debugging-port=${port}`.trim();
+  env.REVQORA_MULTI_INSTANCE = "1";
   if (profile) env.WEBVIEW2_USER_DATA_FOLDER = profile;
   const child = spawn(exe, args, { env, stdio: ["ignore", "ignore", "pipe"] });
   let startupError;
@@ -36,7 +51,7 @@ export async function launch({ exe, args = [], port = 9333, profile }) {
     let windowState = "";
     if (process.platform === "win32" && child.pid && child.exitCode === null) {
       try {
-        const command = `$p = Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue; $listeners = @(Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object LocalAddress,State,OwningProcess); [pscustomobject]@{SessionId=$p.SessionId;WindowTitle=$p.MainWindowTitle;Responding=$p.Responding;Listeners=$listeners} | ConvertTo-Json -Compress`;
+        const command = `$p = Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue; $listeners = @(Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object LocalAddress,State,OwningProcess); $children = @(Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${child.pid}' | ForEach-Object { [pscustomobject]@{Name=$_.Name;ExpectedDebugPort=($_.CommandLine -like '*--remote-debugging-port=${port}*');HasUserDataDir=($_.CommandLine -like '*--user-data-dir=*')} }); $policy = Get-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge' -ErrorAction SilentlyContinue; [pscustomobject]@{SessionId=$p.SessionId;WindowTitle=$p.MainWindowTitle;Responding=$p.Responding;Listeners=$listeners;Children=$children;RemoteDebuggingAllowed=$policy.RemoteDebuggingAllowed;DeveloperToolsAvailability=$policy.DeveloperToolsAvailability} | ConvertTo-Json -Compress -Depth 4`;
         windowState = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { encoding: "utf8", timeout: 5000, windowsHide: true }).trim();
       } catch { windowState = "Window diagnostics unavailable"; }
     }

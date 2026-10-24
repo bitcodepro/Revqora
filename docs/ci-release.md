@@ -17,6 +17,8 @@ has `contents: write`. No additional repository secrets are required.
   bootstrapper on the disposable runner, and passes the runtime path to the test.
   A debug-app startup probe checks native CDP connectivity before release compilation.
   The test uses disposable repositories and a separate WebView2 profile.
+  On Windows the profile is created in the native per-user Temp folder, separate
+  from the runner's workspace drive; inherited browser options are preserved.
 - Release tooling tests exercise version selection, archive and checksum
   validation, wrong architectures, traversal, links, unexpected files, source
   mismatches, publication guards, immutable tags and interrupted draft uploads.

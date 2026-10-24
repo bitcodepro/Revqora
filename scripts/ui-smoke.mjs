@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { launch } from "./ui-driver.mjs";
+import { createProfile, launch } from "./ui-driver.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
@@ -28,7 +28,7 @@ const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8"
 
 let step = 0;
 const results = [];
-const { page, close } = await launch({ exe, args: [repo], profile: path.join(work, "profile"), port: 0 });
+const { page, close } = await launch({ exe, args: [repo], profile: createProfile("revqora-smoke-profile-"), port: 0 });
 page.setDefaultTimeout(10000);
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));
