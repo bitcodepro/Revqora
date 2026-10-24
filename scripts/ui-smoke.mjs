@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { launch } from "./ui-driver.mjs";
+import { createProfile, launch } from "./ui-driver.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
@@ -24,11 +24,11 @@ fs.mkdirSync(out, { recursive: true });
 const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
 execFileSync(bash, [path.join(here, "make-demo-repo.sh").replace(/\\/g, "/"), path.join(work, "env").replace(/\\/g, "/")], { stdio: "ignore" });
 const repo = path.join(work, "env", "demo");
-const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8" }).trim();
+const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
 
 let step = 0;
 const results = [];
-const { page, close } = await launch({ exe, args: [repo], profile: path.join(work, "profile"), port: 9400 + Math.floor(Math.random() * 400) });
+const { page, close } = await launch({ exe, args: [repo], profile: createProfile("revqora-smoke-profile-"), port: 0 });
 page.setDefaultTimeout(10000);
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));
@@ -195,7 +195,12 @@ try {
     const before = git("rev-parse", "HEAD");
     await page.locator(".view-tab:has-text('History')").click();
     await page.click("button[title='Refresh (F5)']");
-    await page.locator(".sb-item", { hasText: "temp-conflict" }).first().click({ button: "right" });
+    await until(async () => {
+      const currentMain = await page.locator(".sidebar .sb-item.current", { has: page.locator(".label", { hasText: /^main$/ }) }).count();
+      const head = await page.locator(".grow:has(.head-ring) .g-hash").innerText().catch(() => "");
+      return currentMain === 1 && head === before.slice(0, 7);
+    }, "UI did not refresh to main after CLI branch changes");
+    await page.locator(".sidebar .sb-item:not(.current)", { has: page.locator(".label", { hasText: /^temp-conflict$/ }) }).click({ button: "right" });
     await page.locator(".ctx-item", { hasText: "Merge temp-conflict into main" }).click();
     await page.click(".modal button:has-text('Start merge')");
     await page.waitForSelector(".op-banner");
