@@ -5,4 +5,8 @@ src-tauri/gen/
 *.log
 .vite/
 src-tauri/vendor/
-release/
+/release/
+__pycache__/
+.env
+.env.*
+!.env.example
