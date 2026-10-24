@@ -119,6 +119,15 @@ jobs:
       - run: npm run verify
         env:
           REVQORA_VERIFY_UI_AUTOMATION: '1'
+          REVQORA_SMOKE_OUT: ${{ runner.temp }}/smoke-shots
+      - name: Upload UI smoke screenshots
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui-smoke-screenshots
+          path: ${{ runner.temp }}/smoke-shots
+          if-no-files-found: ignore
+          retention-days: 7
 
   version:
     name: Select release or preview version
