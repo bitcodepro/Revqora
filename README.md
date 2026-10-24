@@ -4,9 +4,11 @@ A fast, good-looking desktop Git client. Rust + Tauri 2 backend, React + TypeScr
 
 ![History, dark theme](docs/screenshots/history-dark.png)
 
-| Merge editor | Stage layers |
-| --- | --- |
-| ![Merge editor](docs/screenshots/merge-editor.png) | ![Stage layers](docs/screenshots/stage-layers.png) |
+| History, light theme | Merge editor | Stage layers |
+| --- | --- | --- |
+| ![History, light theme](docs/screenshots/history-light.png) | ![Merge editor](docs/screenshots/merge-editor.png) | ![Stage layers](docs/screenshots/stage-layers.png) |
+
+Screenshots use a generated demo repository (`scripts/make-demo-repo.sh`); all names in it are fictional.
 
 ## Features
 
