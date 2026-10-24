@@ -24,7 +24,7 @@ fs.mkdirSync(out, { recursive: true });
 const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
 execFileSync(bash, [path.join(here, "make-demo-repo.sh").replace(/\\/g, "/"), path.join(work, "env").replace(/\\/g, "/")], { stdio: "ignore" });
 const repo = path.join(work, "env", "demo");
-const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8" }).trim();
+const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
 
 let step = 0;
 const results = [];
