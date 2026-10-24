@@ -53,3 +53,14 @@ class WorkflowTests(unittest.TestCase):
                         if step["uses"].startswith("actions/checkout@"):
                             self.assertEqual(step["with"]["persist-credentials"], "false")
                             self.assertEqual(step["with"]["ref"], "${{ github.sha }}")
+
+    def test_gui_automation_feature_is_not_enabled_for_production_packages(self):
+        smoke = self.ci["jobs"]["windows-smoke"]["steps"]
+        verify = next(step for step in smoke if step.get("run") == "npm run verify")
+        self.assertEqual(verify["env"]["REVQORA_VERIFY_UI_AUTOMATION"], "1")
+        for workflow in (self.ci, self.package):
+            self.assertNotIn("REVQORA_VERIFY_UI_AUTOMATION", workflow.get("env", {}))
+            for name, job in workflow["jobs"].items():
+                if name != "windows-smoke":
+                    self.assertNotIn("ui-automation", str(job))
+                    self.assertNotIn("REVQORA_VERIFY_UI_AUTOMATION", str(job))

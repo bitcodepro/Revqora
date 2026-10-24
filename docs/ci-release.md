@@ -16,6 +16,11 @@ has `contents: write`. No additional repository secrets are required.
   It locates the WebView2 Runtime or installs Microsoft's Evergreen Runtime
   bootstrapper on the disposable runner, and passes the runtime path to the test.
   A debug-app startup probe checks native CDP connectivity before release compilation.
+  Hosted GUI tests enable the optional `ui-automation` Cargo feature. It passes a
+  validated loopback-only CDP port through Tauri's `additionalBrowserArgs`, since
+  the hosted Runtime did not apply the environment-only debugging switch.
+  Production package builds do not enable this feature. Local verification uses
+  production defaults unless `REVQORA_VERIFY_UI_AUTOMATION=1` is explicitly set.
   The test uses disposable repositories and a separate WebView2 profile.
   On Windows the profile is created in the native per-user Temp folder, separate
   from the runner's workspace drive; inherited browser options are preserved.

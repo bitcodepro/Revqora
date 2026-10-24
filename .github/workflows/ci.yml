@@ -107,14 +107,18 @@ jobs:
           if (-not $runtime) { throw 'WebView2 Runtime executable was not found' }
           "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER=$runtime" >> $env:GITHUB_ENV
       - name: Verify native UI startup before release compilation
+        env:
+          REVQORA_VERIFY_UI_AUTOMATION: '1'
         shell: pwsh
         run: |
           Write-Output "Interactive=$([Environment]::UserInteractive); Session=$((Get-Process -Id $PID).SessionId)"
-          cargo build --manifest-path src-tauri/Cargo.toml
+          cargo build --manifest-path src-tauri/Cargo.toml --features ui-automation
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/ui-startup.mjs --exe src-tauri/target/debug/revqora.exe
           exit $LASTEXITCODE
       - run: npm run verify
+        env:
+          REVQORA_VERIFY_UI_AUTOMATION: '1'
 
   version:
     name: Select release or preview version

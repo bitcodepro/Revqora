@@ -908,6 +908,22 @@ fn startup_paths() -> Vec<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    #[cfg(all(windows, feature = "ui-automation"))]
+    let context = {
+        let mut context = context;
+        if std::env::var("REVQORA_MULTI_INSTANCE").as_deref() == Ok("1") {
+            if let Some(port) = std::env::var("REVQORA_CDP_PORT").ok().and_then(|value| value.parse::<u16>().ok()).filter(|port| *port > 0) {
+                for window in &mut context.config_mut().app.windows {
+                    if window.label == "main" {
+                        let existing = window.additional_browser_args.take().unwrap_or_default();
+                        window.additional_browser_args = Some(format!("{existing} --remote-debugging-address=127.0.0.1 --remote-debugging-port={port}"));
+                    }
+                }
+            }
+        }
+        context
+    };
     let mut builder = tauri::Builder::default();
     // A second launch (e.g. "Open in Revqora" from Explorer) opens its folders as tabs in the
     // running window. Tests set REVQORA_MULTI_INSTANCE to run isolated copies side by side.
@@ -1066,6 +1082,6 @@ pub fn run() {
             open_terminal,
             startup_paths,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Revqora");
 }

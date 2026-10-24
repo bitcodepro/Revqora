@@ -8,19 +8,20 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const quick = process.argv.includes("--quick");
+const features = process.env.REVQORA_VERIFY_UI_AUTOMATION === "1" ? ["--features", "ui-automation"] : [];
 const cargoBin = path.join(os.homedir(), ".cargo", "bin");
 const env = { ...process.env, PATH: `${cargoBin}${path.delimiter}${process.env.PATH}` };
 const tauriDir = path.join(root, "src-tauri");
 
 const steps = [
   ["Rust format", "cargo", ["fmt", "--check"], tauriDir],
-  ["Rust lint (clippy, warnings are errors)", "cargo", ["clippy", "--all-targets", "--", "-D", "warnings"], tauriDir],
-  ["Rust unit + git workflow tests", "cargo", ["test"], tauriDir],
+  ["Rust lint (clippy, warnings are errors)", "cargo", ["clippy", "--all-targets", ...features, "--", "-D", "warnings"], tauriDir],
+  ["Rust unit + git workflow tests", "cargo", ["test", ...features], tauriDir],
   ["TypeScript typecheck", "npx", ["tsc", "--noEmit", "-p", "."], root],
   ["Frontend unit tests", "npx", ["vitest", "run"], root],
 ];
 if (!quick) {
-  steps.push(["Release build", "npx", ["tauri", "build"], root]);
+  steps.push(["Release build", "npx", ["tauri", "build", ...features], root]);
   steps.push(["Portable zip", "node", ["scripts/package.mjs"], root]);
   steps.push(["UI smoke test (real app via WebView2 CDP)", "node", ["scripts/ui-smoke.mjs", "--exe", path.join(root, "release", "Revqora", process.platform === "win32" ? "revqora.exe" : "revqora")], root]);
 }

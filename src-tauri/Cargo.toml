@@ -11,6 +11,9 @@ rust-version = "1.80"
 name = "revqora_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+ui-automation = ["tauri/devtools"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

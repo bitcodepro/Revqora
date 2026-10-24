@@ -24,10 +24,15 @@ export async function launch({ exe, args = [], port = 9333, profile }) {
   const inheritedArguments = process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? "";
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "WEBVIEW2_USER_DATA_FOLDER", "REVQORA_MULTI_INSTANCE"].includes(key.toUpperCase())) delete env[key];
+    if (["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "WEBVIEW2_USER_DATA_FOLDER", "REVQORA_MULTI_INSTANCE", "REVQORA_CDP_PORT"].includes(key.toUpperCase())) delete env[key];
   }
-  env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `${inheritedArguments} --remote-debugging-address=127.0.0.1 --remote-debugging-port=${port}`.trim();
+  if (process.env.REVQORA_VERIFY_UI_AUTOMATION === "1") {
+    if (inheritedArguments) env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = inheritedArguments;
+  } else {
+    env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `${inheritedArguments} --remote-debugging-address=127.0.0.1 --remote-debugging-port=${port}`.trim();
+  }
   env.REVQORA_MULTI_INSTANCE = "1";
+  env.REVQORA_CDP_PORT = String(port);
   if (profile) env.WEBVIEW2_USER_DATA_FOLDER = profile;
   const child = spawn(exe, args, { env, stdio: ["ignore", "ignore", "pipe"] });
   let startupError;
