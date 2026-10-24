@@ -988,7 +988,7 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             git::locate::configure();
-            if let Some(root) = std::env::current_exe().ok().and_then(|e| update::install_root(&e)) {
+            if let Some(root) = update::launch().map(|l| l.root.clone()) {
                 std::thread::spawn(move || update::cleanup(&root));
             }
             let handle = app.handle().clone();

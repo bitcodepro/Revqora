@@ -9,6 +9,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -114,6 +115,34 @@ pub fn install_root(exe: &Path) -> Option<PathBuf> {
     Some(dir.to_path_buf())
 }
 
+/// Where this process was started from: the install root and the executable relative to it.
+/// Captured once at startup, because after an update swaps the files `current_exe()` can point
+/// at the moved-away old binary (Linux resolves it through `/proc/self/exe`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launch {
+    pub root: PathBuf,
+    pub exe: PathBuf,
+}
+
+impl Launch {
+    pub fn from_exe(exe: &Path) -> Option<Launch> {
+        let root = install_root(exe)?;
+        let rel = exe.strip_prefix(&root).ok()?.to_path_buf();
+        Some(Launch { root, exe: rel })
+    }
+    /// The executable at the stable install location (the new one after an update).
+    pub fn installed_exe(&self) -> PathBuf {
+        self.root.join(&self.exe)
+    }
+}
+
+static LAUNCH: OnceLock<Option<Launch>> = OnceLock::new();
+
+/// Records the launch location; call first thing in `main`, before any update can run.
+pub fn launch() -> Option<&'static Launch> {
+    LAUNCH.get_or_init(|| std::env::current_exe().ok().and_then(|e| Launch::from_exe(&e))).as_ref()
+}
+
 /// Whether this copy may replace itself; `Err` carries the reason shown to the user.
 pub fn installable(root: &Path) -> Result<(), String> {
     if !root.join("build-info.json").is_file() {
@@ -194,7 +223,7 @@ pub fn check(current: &str) -> GitResult<UpdateInfo> {
         .into_json()
         .map_err(|e| GitError::new(format!("Bad release data: {e}")))?;
     let mut info = parse_release(&json, current, rid())?;
-    let state = match (&info.asset, std::env::current_exe().ok().and_then(|e| install_root(&e))) {
+    let state = match (&info.asset, launch().map(|l| l.root.clone())) {
         (None, _) => Err("No package for this platform in the release.".to_string()),
         (Some(a), _) if a.checksum_url.is_none() => Err("The release has no checksum for this package.".to_string()),
         (_, None) => Err("Could not find the app folder.".to_string()),
@@ -213,7 +242,7 @@ pub fn install(info: &UpdateInfo, mut progress: impl FnMut(Progress)) -> GitResu
     if !trusted_url(&asset.url) || !trusted_url(checksum_url) {
         return Err(GitError::new("Unexpected download location."));
     }
-    let root = std::env::current_exe().ok().and_then(|e| install_root(&e)).ok_or_else(|| GitError::new("Could not find the app folder."))?;
+    let root = launch().map(|l| l.root.clone()).ok_or_else(|| GitError::new("Could not find the app folder."))?;
     installable(&root).map_err(|r| GitError::new(r).kind("update-readonly"))?;
 
     let staging = root.join(STAGING);
@@ -422,7 +451,10 @@ fn process_alive(pid: u32) -> bool {
 
 /// Starts the freshly installed executable; the caller exits right after.
 pub fn relaunch() -> GitResult<()> {
-    let exe = std::env::current_exe()?;
+    let exe = launch().map(Launch::installed_exe).ok_or_else(|| GitError::new("Could not find the app folder."))?;
+    if !exe.is_file() {
+        return Err(GitError::new(format!("The updated app is missing: {}", exe.display())));
+    }
     let mut c = std::process::Command::new(&exe);
     c.args(std::env::args_os().skip(1)).env("REVQORA_RESTART_AFTER", std::process::id().to_string());
     c.spawn()?;
@@ -525,6 +557,55 @@ mod tests {
         assert!(apply_archive(root, &archive, "0.2.0", "win-x64").is_err());
         assert!(!tmp.path().parent().unwrap().join("evil.txt").exists());
         assert_eq!(fs::read_to_string(root.join("revqora.exe")).unwrap(), "old exe");
+    }
+
+    #[test]
+    fn relaunch_targets_the_installed_exe_not_the_moved_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("revqora.exe"), "old exe").unwrap();
+        fs::write(root.join("build-info.json"), r#"{"version":"0.1.0","rid":"win-x64"}"#).unwrap();
+        let launch = Launch::from_exe(&root.join("revqora.exe")).unwrap();
+        let archive = tmp.path().join("pkg.zip");
+        zip_package(&archive, &[("revqora.exe", "new exe"), ("build-info.json", r#"{"version":"0.2.0","rid":"win-x64"}"#)]);
+        apply_archive(root, &archive, "0.2.0", "win-x64").unwrap();
+        assert_eq!(launch.root, root);
+        assert_eq!(fs::read_to_string(launch.installed_exe()).unwrap(), "new exe");
+    }
+
+    /// A real running Linux process whose binary is swapped: `/proc/<pid>/exe` follows the old
+    /// inode into the staging folder, while the relaunch target runs the new version.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_relaunch_runs_the_new_binary_after_the_swap() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Revqora");
+        fs::create_dir_all(&root).unwrap();
+        fs::copy("/bin/sleep", root.join("revqora")).unwrap();
+        fs::write(root.join("build-info.json"), r#"{"version":"0.1.0","rid":"linux-x64"}"#).unwrap();
+        let launch = Launch::from_exe(&root.join("revqora")).unwrap();
+        let mut old = std::process::Command::new(root.join("revqora")).arg("30").spawn().unwrap();
+
+        let staging = tmp.path().join("pkg");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("revqora"), "#!/bin/sh\necho 0.2.0\n").unwrap();
+        fs::set_permissions(staging.join("revqora"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(staging.join("build-info.json"), r#"{"version":"0.2.0","rid":"linux-x64"}"#).unwrap();
+        let archive = tmp.path().join("pkg.tar.gz");
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(fs::File::create(&archive).unwrap(), flate2::Compression::fast()));
+        tar.append_path_with_name(staging.join("revqora"), "revqora").unwrap();
+        tar.append_path_with_name(staging.join("build-info.json"), "build-info.json").unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+
+        apply_archive(&root, &archive, "0.2.0", "linux-x64").unwrap();
+        let running = fs::read_link(format!("/proc/{}/exe", old.id())).unwrap();
+        assert!(running.starts_with(root.join(STAGING)), "running binary now resolves to {}", running.display());
+        assert_eq!(Launch::from_exe(&root.join("revqora")).unwrap(), launch);
+        let out = std::process::Command::new(launch.installed_exe()).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0.2.0");
+        let _ = old.kill();
+        let _ = old.wait();
     }
 
     #[test]
