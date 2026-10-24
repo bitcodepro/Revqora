@@ -15,6 +15,7 @@ has `contents: write`. No additional repository secrets are required.
   build, the existing portable zip script and the real WebView2 UI smoke test.
   It locates the WebView2 Runtime or installs Microsoft's Evergreen Runtime
   bootstrapper on the disposable runner, and passes the runtime path to the test.
+  A debug-app startup probe checks native CDP connectivity before release compilation.
   The test uses disposable repositories and a separate WebView2 profile.
 - Release tooling tests exercise version selection, archive and checksum
   validation, wrong architectures, traversal, links, unexpected files, source

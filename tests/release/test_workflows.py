@@ -35,8 +35,10 @@ class WorkflowTests(unittest.TestCase):
     def test_windows_smoke_requires_webview_runtime_before_verification(self):
         steps = self.ci["jobs"]["windows-smoke"]["steps"]
         runtime = next(i for i, step in enumerate(steps) if step.get("name") == "Ensure WebView2 Runtime")
+        startup = next(i for i, step in enumerate(steps) if step.get("name") == "Verify native UI startup before release compilation")
         verify = next(i for i, step in enumerate(steps) if step.get("run") == "npm run verify")
-        self.assertLess(runtime, verify)
+        self.assertLess(runtime, startup)
+        self.assertLess(startup, verify)
         self.assertIn("https://go.microsoft.com/fwlink/p/?LinkId=2124703", steps[runtime]["run"])
         self.assertIn("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", steps[runtime]["run"])
 

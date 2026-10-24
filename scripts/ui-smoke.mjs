@@ -28,7 +28,7 @@ const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8"
 
 let step = 0;
 const results = [];
-const { page, close } = await launch({ exe, args: [repo], profile: path.join(work, "profile"), port: 9400 + Math.floor(Math.random() * 400) });
+const { page, close } = await launch({ exe, args: [repo], profile: path.join(work, "profile"), port: 0 });
 page.setDefaultTimeout(10000);
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));
