@@ -107,11 +107,11 @@ export function Onboarding() {
         <>
           <div className="field">
             <label>Name</label>
-            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ada Lovelace" />
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Alex Rivera" />
           </div>
           <div className="field">
             <label>Email</label>
-            <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ada@example.com" />
+            <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="alex@example.com" />
             <div className="help">Saved in your global git config — used for all repositories.</div>
           </div>
         </>

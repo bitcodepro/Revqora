@@ -17,7 +17,7 @@ random.seed(7)
 target.mkdir(parents=True, exist_ok=True)
 subprocess.run(["git", "init", "-q", "-b", "main", str(target)], check=True)
 
-authors = ["Ada Lovelace <ada@example.com>", "Grace Hopper <grace@example.com>", "Linus Torvalds <linus@example.com>", "Margaret Hamilton <margaret@example.com>", "Ken Thompson <ken@example.com>"]
+authors = ["Alex Rivera <alex@example.com>", "Sam Chen <sam@example.com>", "Jordan Blake <jordan@example.com>", "Taylor Morgan <taylor@example.com>", "Casey Brooks <casey@example.com>"]
 words = "fix add refactor update remove improve parser graph cache index merge layout theme button docs tests api client server".split()
 
 out = []

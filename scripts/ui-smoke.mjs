@@ -18,7 +18,7 @@ const arg = (name, def) => {
 };
 const exe = arg("--exe", path.join(projectRoot, "src-tauri/target/release/revqora.exe"));
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "revqora-smoke-"));
-const out = arg("--out", path.join(work, "shots"));
+const out = arg("--out", process.env.REVQORA_SMOKE_OUT || path.join(work, "shots"));
 fs.mkdirSync(out, { recursive: true });
 
 const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
@@ -91,9 +91,19 @@ try {
 
   await check("stage a single line from the diff", async () => {
     await page.click(".view-tab:has-text('Changes')");
-    await page.locator(".changes .file-row", { hasText: "app.ts" }).first().click();
-    await page.waitForSelector(".diff-head .path:has-text('app.ts')");
-    await page.waitForSelector(".changes .diff .dl.add");
+    // A status refresh right after switching views can rebuild the list and drop the
+    // selection, so click again until the diff for app.ts is actually shown.
+    await until(
+      async () => {
+        await page.locator(".changes .file-row", { hasText: "app.ts" }).first().click({ timeout: 3000 }).catch(() => {});
+        return page
+          .waitForSelector(".diff-head .path:has-text('app.ts')", { timeout: 2000 })
+          .then(() => page.waitForSelector(".changes .diff .dl.add", { timeout: 2000 }))
+          .then(() => true, () => false);
+      },
+      "diff for app.ts did not open",
+      20000,
+    );
     await page.waitForTimeout(400);
     await page.locator(".changes .diff .dl.add .ln").nth(1).click(); // first added line
     await page.waitForSelector(".sel-bar", { timeout: 4000 }).catch(() => {
@@ -382,6 +392,8 @@ try {
     await page.evaluate(() => (document.documentElement.dataset.theme = "dark"));
     await page.click(".view-tab:has-text('History')");
     await page.locator(".grow", { hasText: "Merge branch 'hotfix/greeting'" }).first().click();
+    await page.waitForSelector(".details .file-row");
+    await page.waitForSelector(".diff .dl.add");
     await page.waitForTimeout(600);
     await shot("07-history-dark");
     await page.click(".view-tab:has-text('Changes')");
