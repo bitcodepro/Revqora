@@ -85,6 +85,27 @@ jobs:
         shell: bash
         run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
       - run: npm ci
+      - name: Ensure WebView2 Runtime
+        shell: pwsh
+        run: |
+          function Find-WebView2 {
+            $roots = @("${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application", "$env:ProgramFiles\Microsoft\EdgeWebView\Application", "$env:LOCALAPPDATA\Microsoft\EdgeWebView\Application")
+            foreach ($root in $roots) {
+              Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'msedgewebview2.exe') } |
+                Select-Object -ExpandProperty FullName
+            }
+          }
+          $runtime = Find-WebView2 | Select-Object -First 1
+          if (-not $runtime) {
+            $installer = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $installer -MaximumRetryCount 3 -RetryIntervalSec 3
+            $installed = Start-Process -FilePath $installer -ArgumentList '/silent', '/install' -WindowStyle Hidden -Wait -PassThru
+            if ($installed.ExitCode -notin @(0, 3010)) { throw "WebView2 installer failed: $($installed.ExitCode)" }
+            $runtime = Find-WebView2 | Select-Object -First 1
+          }
+          if (-not $runtime) { throw 'WebView2 Runtime executable was not found' }
+          "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER=$runtime" >> $env:GITHUB_ENV
       - run: npm run verify
 
   version:

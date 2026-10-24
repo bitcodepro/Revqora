@@ -195,7 +195,12 @@ try {
     const before = git("rev-parse", "HEAD");
     await page.locator(".view-tab:has-text('History')").click();
     await page.click("button[title='Refresh (F5)']");
-    await page.locator(".sb-item", { hasText: "temp-conflict" }).first().click({ button: "right" });
+    await until(async () => {
+      const currentMain = await page.locator(".sidebar .sb-item.current", { has: page.locator(".label", { hasText: /^main$/ }) }).count();
+      const head = await page.locator(".grow:has(.head-ring) .g-hash").innerText().catch(() => "");
+      return currentMain === 1 && head === before.slice(0, 7);
+    }, "UI did not refresh to main after CLI branch changes");
+    await page.locator(".sidebar .sb-item:not(.current)", { has: page.locator(".label", { hasText: /^temp-conflict$/ }) }).click({ button: "right" });
     await page.locator(".ctx-item", { hasText: "Merge temp-conflict into main" }).click();
     await page.click(".modal button:has-text('Start merge')");
     await page.waitForSelector(".op-banner");

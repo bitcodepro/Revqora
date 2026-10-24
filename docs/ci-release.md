@@ -13,6 +13,8 @@ has `contents: write`. No additional repository secrets are required.
   TypeScript typecheck and frontend unit tests.
 - A separate Windows job runs the complete `npm run verify`, including a release
   build, the existing portable zip script and the real WebView2 UI smoke test.
+  It locates the WebView2 Runtime or installs Microsoft's Evergreen Runtime
+  bootstrapper on the disposable runner, and passes the runtime path to the test.
   The test uses disposable repositories and a separate WebView2 profile.
 - Release tooling tests exercise version selection, archive and checksum
   validation, wrong architectures, traversal, links, unexpected files, source
