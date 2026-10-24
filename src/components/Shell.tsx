@@ -43,6 +43,7 @@ import { jumpToCommit } from "./GraphView";
 import { api } from "../lib/api";
 import { basename, plural, shortOid } from "../lib/format";
 import { AheadBehind } from "./bits";
+import { UpdateChip } from "./UpdateChip";
 import { reflogDialog, settingsDialog } from "./dialogs";
 import { applyPatchFile, repoToolsDialog } from "./RepoTools";
 
@@ -359,6 +360,7 @@ export function StatusBar() {
           {tab.error.slice(0, 80)}
         </span>
       )}
+      <UpdateChip />
       <span className="item">{git}</span>
     </div>
   );

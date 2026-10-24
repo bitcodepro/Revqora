@@ -83,6 +83,7 @@ A fast, good-looking desktop Git client. Rust + Tauri 2 backend, React + TypeScr
 - Dark and light themes (or follow the system), selectable UI / code fonts and sizes.
 - Command palette (Ctrl+K), rebindable keyboard shortcuts, first-run guide, optional author pictures (Gravatar / GitHub, off by default), auto-refresh through a file watcher.
 - Portable: unpack the zip anywhere and run `revqora.exe`; a second launch opens folders as tabs in the running window.
+- Updates itself: checks GitHub Releases at startup (and every few hours); when a new version is out, an **Update** chip appears in the status bar. One click downloads the package for your platform, verifies its SHA-256 checksum and replaces the files in place, then "Restart to update" finishes it. Skip a version or turn checks off in Settings.
 
 ## Requirements
 

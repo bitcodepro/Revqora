@@ -28,6 +28,7 @@ import { CompareView } from "./components/CompareView";
 import { RebaseView } from "./components/RebaseView";
 import { StashView } from "./components/StashView";
 import { TreeBrowser } from "./components/TreeBrowser";
+import { startUpdateChecks } from "./lib/update";
 
 function useAppearance() {
   const s = useSettings();
@@ -130,6 +131,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
 
 export default function App() {
   useAppearance();
+  useEffect(startUpdateChecks, []);
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   const busy = useUi((s) => s.busy.length > 0);
   const [dropping, setDropping] = useState(false);

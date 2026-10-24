@@ -36,6 +36,8 @@ export interface Settings {
   onboarded: boolean;
   syncScroll: boolean;
   diffFullFile: boolean;
+  checkUpdates: boolean;
+  skippedUpdate: string | null;
   set: (patch: Partial<Settings>) => void;
   addRecent: (path: string) => void;
   removeRecent: (path: string) => void;
@@ -77,6 +79,8 @@ export const useSettings = create<Settings>()(
       onboarded: false,
       syncScroll: true,
       diffFullFile: false,
+      checkUpdates: true,
+      skippedUpdate: null,
       set: (patch) => set(patch),
       addRecent: (path) => set({ recent: [path, ...get().recent.filter((p) => p.toLowerCase() !== path.toLowerCase())].slice(0, 15) }),
       removeRecent: (path) => set({ recent: get().recent.filter((p) => p !== path) }),

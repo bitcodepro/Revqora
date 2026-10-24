@@ -338,6 +338,18 @@ export interface GitSelection {
   minVersion: string;
 }
 
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  available: boolean;
+  notes: string;
+  publishedAt: string | null;
+  htmlUrl: string;
+  asset: { name: string; url: string; size: number; checksumUrl: string | null } | null;
+  canInstall: boolean;
+  reason: string | null;
+}
+
 export interface AskpassRequest {
   id: number;
   prompt: string;

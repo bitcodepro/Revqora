@@ -2,6 +2,7 @@
 
 pub mod askpass;
 pub mod git;
+pub mod update;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -900,6 +901,37 @@ fn open_terminal(path: String) -> GitResult<()> {
     Ok(())
 }
 
+/// Latest release on GitHub compared with this build.
+#[tauri::command]
+async fn update_check(app: AppHandle) -> GitResult<update::UpdateInfo> {
+    let current = app.package_info().version.to_string();
+    blocking(move || update::check(&current)).await
+}
+
+/// Downloads and installs the update; progress goes out as `update-progress` events.
+#[tauri::command]
+async fn update_install(app: AppHandle) -> GitResult<()> {
+    let current = app.package_info().version.to_string();
+    blocking(move || {
+        let info = update::check(&current)?;
+        if !info.available {
+            return Err(GitError::new("Revqora is already up to date."));
+        }
+        update::install(&info, |p| {
+            let _ = app.emit("update-progress", p);
+        })
+    })
+    .await
+}
+
+/// Starts the updated executable and closes this one.
+#[tauri::command]
+fn update_restart(app: AppHandle) -> GitResult<()> {
+    update::relaunch()?;
+    app.exit(0);
+    Ok(())
+}
+
 /// Folders passed on the command line (`revqora <path>`), opened at startup.
 #[tauri::command]
 fn startup_paths() -> Vec<String> {
@@ -942,6 +974,9 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             git::locate::configure();
+            if let Some(root) = std::env::current_exe().ok().and_then(|e| update::install_root(&e)) {
+                std::thread::spawn(move || update::cleanup(&root));
+            }
             let handle = app.handle().clone();
             let exe = std::env::current_exe()?;
             if let Err(e) = askpass::start(
@@ -956,6 +991,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             git_version,
+            update_check,
+            update_install,
+            update_restart,
             git_selection,
             git_configure,
             askpass_respond,

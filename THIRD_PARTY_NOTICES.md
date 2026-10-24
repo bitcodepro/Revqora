@@ -20,7 +20,7 @@ tree and at https://openfontlicense.org.
 
 - JavaScript (React, CodeMirror, Lezer, zustand, lucide-react, Tauri API and their
   dependencies): MIT or ISC.
-- Rust (Tauri, serde, notify, ureq, parking_lot and their dependencies): mostly MIT and/or
+- Rust (Tauri, serde, notify, ureq, parking_lot, sha2, zip, tar, flate2 and their dependencies): mostly MIT and/or
   Apache-2.0; some BSD-3-Clause, Zlib, ISC, Unlicense, CC0-1.0. Notable others:
   - MPL-2.0 (used unmodified): cssparser, cssparser-macros, selectors, dtoa-short, option-ext
   - Unicode-3.0: ICU4X data crates (icu_*, zerovec, yoke, tinystr, litemap, writeable, …)
