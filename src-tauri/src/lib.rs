@@ -956,6 +956,20 @@ pub fn run() {
         }
         context
     };
+    // UI tests run the window off-screen, without a taskbar button and without taking focus,
+    // unless they are asked to show it (`--visible`).
+    let mut context = context;
+    if std::env::var("REVQORA_MULTI_INSTANCE").as_deref() == Ok("1") && std::env::var("REVQORA_TEST_HIDDEN").as_deref() == Ok("1") {
+        for window in &mut context.config_mut().app.windows {
+            if window.label == "main" {
+                window.center = false;
+                window.x = Some(-32000.0);
+                window.y = Some(-32000.0);
+                window.skip_taskbar = true;
+                window.focus = false;
+            }
+        }
+    }
     let mut builder = tauri::Builder::default();
     // A second launch (e.g. "Open in Revqora" from Explorer) opens its folders as tabs in the
     // running window. Tests set REVQORA_MULTI_INSTANCE to run isolated copies side by side.

@@ -1,5 +1,5 @@
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
-//   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep]
+//   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
 // verifies the resulting git state with the git CLI. Screenshots go to --out.
 import { execFileSync } from "node:child_process";
