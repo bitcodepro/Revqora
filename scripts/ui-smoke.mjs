@@ -416,6 +416,8 @@ try {
     await page.evaluate(() => (document.documentElement.dataset.theme = "dark"));
     await page.click(".view-tab:has-text('History')");
     await page.locator(".grow", { hasText: "Merge branch 'hotfix/greeting'" }).first().click();
+    await page.waitForSelector(".details .file-row");
+    await page.waitForSelector(".diff .dl.add");
     await page.waitForTimeout(600);
     await shot("07-history-dark");
     await page.click(".view-tab:has-text('Changes')");

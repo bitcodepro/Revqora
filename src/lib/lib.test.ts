@@ -70,7 +70,7 @@ describe("word diff", () => {
 
 describe("format", () => {
   it("initials and relative time", () => {
-    expect(initials("Ada Lovelace")).toBe("AL");
+    expect(initials("Alex Rivera")).toBe("AR");
     expect(initials("linus")).toBe("LI");
     expect(relativeTime(1000, 1010)).toBe("just now");
     expect(relativeTime(1000, 1000 + 3 * 3600)).toBe("3 hours ago");

@@ -8,8 +8,8 @@ rm -rf "$TARGET"
 mkdir -p "$TARGET"
 cd "$TARGET"
 
-export GIT_AUTHOR_NAME="Ada Lovelace" GIT_AUTHOR_EMAIL="ada@example.com"
-export GIT_COMMITTER_NAME="Ada Lovelace" GIT_COMMITTER_EMAIL="ada@example.com"
+export GIT_AUTHOR_NAME="Alex Rivera" GIT_AUTHOR_EMAIL="alex@example.com"
+export GIT_COMMITTER_NAME="Alex Rivera" GIT_COMMITTER_EMAIL="alex@example.com"
 t=1767225600 # 2026-01-01
 tick() { t=$((t + 3600 * ${1:-5})); export GIT_AUTHOR_DATE="$t +0300" GIT_COMMITTER_DATE="$t +0300"; }
 as() { export GIT_AUTHOR_NAME="$1" GIT_AUTHOR_EMAIL="$2"; }
@@ -48,7 +48,7 @@ cat > src/config.json <<'EOF'
 EOF
 tick; git add -A; git commit -q -m "Initial project structure"
 
-tick; as "Grace Hopper" "grace@example.com"
+tick; as "Sam Chen" "sam@example.com"
 cat >> src/app.ts <<'EOF'
 
 export function average(values: number[]): number {
@@ -60,7 +60,7 @@ git tag -a v0.1.0 -m "First preview"
 
 # feature/auth branch
 git switch -q -c feature/auth
-tick; as "Linus Torvalds" "linus@example.com"
+tick; as "Jordan Blake" "jordan@example.com"
 cat > src/auth.ts <<'EOF'
 export function login(name: string, password: string): boolean {
   return name.length > 0 && password.length >= 8;
@@ -74,7 +74,7 @@ git commit -qam "Require longer passwords"
 # feature/ui branch from main
 git switch -q main
 git switch -q -c feature/ui
-tick; as "Margaret Hamilton" "margaret@example.com"
+tick; as "Taylor Morgan" "taylor@example.com"
 cat > src/ui.ts <<'EOF'
 export const theme = { primary: "#7c5cff", radius: 8 };
 EOF
@@ -85,12 +85,12 @@ git commit -qam "Spacing scale"
 
 # main continues
 git switch -q main
-tick; as "Ada Lovelace" "ada@example.com"
+tick; as "Alex Rivera" "alex@example.com"
 sed -i 's/"debug": false/"debug": true/' src/config.json
 git commit -qam "Enable debug mode by default"
 tick
 git merge -q --no-ff -m "Merge branch 'feature/auth'" feature/auth
-tick; as "Grace Hopper" "grace@example.com"
+tick; as "Sam Chen" "sam@example.com"
 cat >> README.md <<'EOF'
 
 ## Usage
@@ -102,11 +102,11 @@ git tag v0.2.0
 
 # hotfix branch that will conflict with main
 git switch -q -c hotfix/greeting
-tick; as "Linus Torvalds" "linus@example.com"
+tick; as "Jordan Blake" "jordan@example.com"
 sed -i 's/Hello, ${user.name}!/Hi ${user.name}, welcome back!/' src/app.ts
 git commit -qam "Friendlier greeting"
 git switch -q main
-tick; as "Ada Lovelace" "ada@example.com"
+tick; as "Alex Rivera" "alex@example.com"
 sed -i 's/Hello, ${user.name}!/Good day, ${user.name}./' src/app.ts
 git commit -qam "Formal greeting for the enterprise edition"
 
@@ -126,7 +126,7 @@ tick; echo "- teammate note" >> README.md; git commit -qam "Teammate: README not
 cd ../demo
 git fetch -q origin
 # local commit not pushed yet
-tick; as "Ada Lovelace" "ada@example.com"
+tick; as "Alex Rivera" "alex@example.com"
 echo 'export const VERSION = "0.3.0";' > src/version.ts
 git add -A; git commit -qm "Bump version to 0.3.0"
 
