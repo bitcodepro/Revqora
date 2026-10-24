@@ -217,7 +217,7 @@ pub fn parse_bisect_message(text: &str) -> (Option<u32>, Option<u32>, Option<Str
                 steps = rest[i + 9..].split_whitespace().next().and_then(|n| n.parse().ok());
             }
         }
-        if let Some(sha) = l.strip_suffix(" is the first bad commit") {
+        if let Some(sha) = l.strip_suffix(" is the first bad commit").or_else(|| l.strip_suffix(" is the first 'bad' commit")) {
             first_bad = Some(sha.trim().to_string());
         }
     }
@@ -440,6 +440,8 @@ mod tests {
         let (r, st, fb) = parse_bisect_message("Bisecting: 6 revisions left to test after this (roughly 3 steps)\n[abc] msg");
         assert_eq!((r, st, fb), (Some(6), Some(3), None));
         let (_, _, fb) = parse_bisect_message("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef is the first bad commit\ncommit …");
+        assert_eq!(fb.as_deref(), Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
+        let (_, _, fb) = parse_bisect_message("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef is the first 'bad' commit\n");
         assert_eq!(fb.as_deref(), Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
     }
 }

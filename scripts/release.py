@@ -186,7 +186,7 @@ def verify_archive(archive, version, rid, commit):
             raise ValueError("Unix executable permission is missing")
         if rid.startswith("osx-"):
             info = plistlib.loads(read("Revqora.app/Contents/Info.plist"))
-            if info.get("CFBundleShortVersionString") != version.split("-")[0] or info.get("CFBundleExecutable") != "revqora":
+            if info.get("CFBundleShortVersionString") != version or info.get("CFBundleExecutable") != "revqora":
                 raise ValueError("Invalid macOS bundle version/executable")
     print(f"PASS {expected}: SHA-256, contents, source, version and architecture")
 
@@ -214,7 +214,6 @@ def package(directory, version, rid):
     expected_host = "win32" if rid.startswith("win-") else "darwin" if rid.startswith("osx-") else "linux"
     if sys.platform != expected_host:
         raise ValueError("Release packages require a native package host")
-    directory.mkdir(parents=True, exist_ok=True)
     archive = directory / name
     if archive.exists() or archive.with_name(name + ".sha256").exists():
         raise FileExistsError("Use an empty output directory; packages are not silently replaced")
@@ -227,6 +226,8 @@ def package(directory, version, rid):
     build = [node, str(ROOT / "node_modules/@tauri-apps/cli/tauri.js"), "build", "--config", config]
     build += ["--bundles", "app"] if rid.startswith("osx-") else ["--no-bundle"]
     run(build)
+    # Vite cleans frontend dist/ during beforeBuildCommand, including package directories.
+    directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f".package-{rid}-", dir=directory.parent) as temporary:
         staging = Path(temporary)
         release = ROOT / "src-tauri/target/release"

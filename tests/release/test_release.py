@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import patch
 import zipfile
 import plistlib
+import shutil
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import release
@@ -33,14 +35,14 @@ def executable(rid):
     return bytes(header)
 
 
-def make_archive(directory, rid, change=None, link=False):
-    files = {"README.md": b"Revqora", "LICENSE": b"MIT License\nCopyright (c) 2026 Revqora contributors", release.NOTICES: b"Tauri React SIL Open Font License", "build-info.json": json.dumps({"version": VERSION, "rid": rid, "commit": COMMIT}).encode(), release.executable_path(rid): executable(rid)}
+def make_archive(directory, rid, change=None, link=False, version=VERSION):
+    files = {"README.md": b"Revqora", "LICENSE": b"MIT License\nCopyright (c) 2026 Revqora contributors", release.NOTICES: b"Tauri React SIL Open Font License", "build-info.json": json.dumps({"version": version, "rid": rid, "commit": COMMIT}).encode(), release.executable_path(rid): executable(rid)}
     files.update({"licenses/" + name: b"SIL OPEN FONT LICENSE Version 1.1" for name in release.FONT_LICENSES})
     if rid.startswith("osx-"):
-        files["Revqora.app/Contents/Info.plist"] = plistlib.dumps({"CFBundleShortVersionString": VERSION, "CFBundleExecutable": "revqora"})
+        files["Revqora.app/Contents/Info.plist"] = plistlib.dumps({"CFBundleShortVersionString": version, "CFBundleExecutable": "revqora"})
     if change:
         change(files)
-    archive = directory / release.archive_name(VERSION, rid)
+    archive = directory / release.archive_name(version, rid)
     if release.extension(rid) == "zip":
         with zipfile.ZipFile(archive, "w") as bundle:
             for name, data in files.items():
@@ -102,6 +104,41 @@ class PackageTests(unittest.TestCase):
         for rid in release.RIDS:
             make_archive(self.directory, rid)
         self.assertEqual(len(release.verify_packages(self.directory, VERSION, COMMIT)), 10)
+
+    def test_mac_preview_preserves_tauri_semver(self):
+        version = "0.0.0-pr.1"
+        archive = make_archive(self.directory, "osx-arm64", version=version)
+        release.verify_archive(archive, version, "osx-arm64", COMMIT)
+        archive = make_archive(self.directory, "osx-x64", version=version, change=lambda files: files.update({"Revqora.app/Contents/Info.plist": plistlib.dumps({"CFBundleShortVersionString": "0.0.0", "CFBundleExecutable": "revqora"})}))
+        with self.assertRaisesRegex(ValueError, "macOS bundle version"):
+            release.verify_archive(archive, version, "osx-x64", COMMIT)
+
+    def test_package_recreates_output_after_frontend_cleanup(self):
+        root = self.directory / "checkout"
+        directory = root / "dist/packages"
+        directory.mkdir(parents=True)
+        native = root / "src-tauri/target/release/revqora.exe"
+        native.parent.mkdir(parents=True)
+        native.write_bytes(executable("win-x64"))
+        for name, text in {"README.md": "Revqora", "LICENSE": "MIT License\nCopyright (c) 2026 Revqora contributors", release.NOTICES: "Tauri React SIL Open Font License"}.items():
+            (root / name).write_text(text, encoding="utf-8")
+        for font in ("inter", "jetbrains-mono"):
+            license = root / f"node_modules/@fontsource-variable/{font}/LICENSE"
+            license.parent.mkdir(parents=True)
+            license.write_text("SIL OPEN FONT LICENSE Version 1.1", encoding="utf-8")
+
+        def build(args, **kwargs):
+            if args[0] == "git":
+                return SimpleNamespace(stdout=COMMIT)
+            self.assertTrue(args[1].endswith("tauri.js"))
+            self.assertEqual(directory.parent.resolve(), (root / "dist").resolve())
+            shutil.rmtree(root / "dist")
+            (root / "dist").mkdir()
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(release, "ROOT", root), patch.object(release.sys, "platform", "win32"), patch.object(release.shutil, "which", return_value="node"), patch.object(release, "run", side_effect=build):
+            release.package(directory, VERSION, "win-x64")
+        self.assertEqual(len(release.verify_packages(directory, VERSION, COMMIT, ("win-x64",))), 2)
 
     def test_rejects_modified_archive(self):
         archive = make_archive(self.directory, "win-x64")

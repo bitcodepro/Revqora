@@ -18,7 +18,8 @@ fn repo(dir: &Path, name: &str) -> PathBuf {
     ] {
         runner::run(&r, &args).unwrap();
     }
-    r
+    // Match application discovery: Git resolves macOS symlinks and Windows short paths.
+    revqora_lib::git::repo::discover(&r).unwrap()
 }
 
 fn commit(r: &Path, file: &str, content: &str, msg: &str) -> String {
