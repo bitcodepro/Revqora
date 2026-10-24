@@ -1,0 +1,247 @@
+// Repository tabs and their cached state.
+import { create } from "zustand";
+import { api, errorMessage } from "./api";
+import { useSettings } from "./settings";
+import type { GraphSummary, LayersState, RefsSnapshot, RepoExtras, RepoInfo, StatusSummary } from "./types";
+import { WORKTREE } from "./types";
+
+export type View = "history" | "changes" | "pulls";
+
+export type ChangeSel =
+  | { kind: "unstaged"; path: string; untracked: boolean }
+  | { kind: "staged"; path: string }
+  | { kind: "conflict"; path: string }
+  | { kind: "layer"; layer: number; path: string };
+
+export interface RepoTab {
+  root: string;
+  info: RepoInfo | null;
+  status: StatusSummary | null;
+  refs: RefsSnapshot | null;
+  extras: RepoExtras | null;
+  layers: LayersState | null;
+  graph: GraphSummary | null;
+  graphVersion: number;
+  graphLoading: boolean;
+  graphHasWorktree: boolean;
+  branchFilter: string | null;
+  graphLimit: number;
+  view: View;
+  selected: string | null;
+  multi: string[];
+  changeSel: ChangeSel | null;
+  conflictPath: string | null;
+  error: string | null;
+  loaded: boolean;
+}
+
+export interface Parts {
+  info?: boolean;
+  status?: boolean;
+  refs?: boolean;
+  layers?: boolean;
+  graph?: boolean;
+}
+
+export const ALL: Parts = { info: true, status: true, refs: true, layers: true, graph: true };
+
+interface RepoStore {
+  tabs: Record<string, RepoTab>;
+  order: string[];
+  active: string | null;
+  open: (path: string, activate?: boolean) => Promise<string | null>;
+  close: (root: string) => void;
+  activate: (root: string | null) => void;
+  patch: (root: string, p: Partial<RepoTab>) => void;
+  refresh: (root: string, parts?: Parts) => Promise<void>;
+}
+
+function emptyTab(root: string): RepoTab {
+  return {
+    root,
+    info: null,
+    status: null,
+    refs: null,
+    extras: null,
+    layers: null,
+    graph: null,
+    graphVersion: 0,
+    graphLoading: false,
+    graphHasWorktree: false,
+    branchFilter: null,
+    graphLimit: 150_000,
+    view: "history",
+    selected: null,
+    multi: [],
+    changeSel: null,
+    conflictPath: null,
+    error: null,
+    loaded: false,
+  };
+}
+
+const inflight = new Map<string, Promise<void>>();
+const pending = new Map<string, Parts>();
+
+function merge(a: Parts | undefined, b: Parts): Parts {
+  return {
+    info: a?.info || b.info,
+    status: a?.status || b.status,
+    refs: a?.refs || b.refs,
+    layers: a?.layers || b.layers,
+    graph: a?.graph || b.graph,
+  };
+}
+
+function persistTabs() {
+  const { order, active } = useRepos.getState();
+  useSettings.getState().set({ openTabs: order, activeTab: active });
+}
+
+export const useRepos = create<RepoStore>()((set, get) => ({
+  tabs: {},
+  order: [],
+  active: null,
+
+  open: async (path, activate = true) => {
+    let info: RepoInfo;
+    try {
+      info = await api.repoOpen(path);
+    } catch (e) {
+      throw e;
+    }
+    const root = info.root;
+    const s = get();
+    if (!s.tabs[root]) {
+      const tab = emptyTab(root);
+      tab.info = info;
+      set({ tabs: { ...s.tabs, [root]: tab }, order: [...s.order, root] });
+    }
+    if (activate) set({ active: root });
+    useSettings.getState().addRecent(root);
+    persistTabs();
+    api.watchRepo(root).catch(() => {});
+    // Load in the background so restoring several tabs does not wait for every history.
+    void get().refresh(root, ALL);
+    return root;
+  },
+
+  close: (root) => {
+    const s = get();
+    const order = s.order.filter((r) => r !== root);
+    const tabs = { ...s.tabs };
+    delete tabs[root];
+    let active = s.active;
+    if (active === root) {
+      const i = s.order.indexOf(root);
+      active = order[Math.min(i, order.length - 1)] ?? null;
+    }
+    set({ tabs, order, active });
+    api.unwatchRepo(root).catch(() => {});
+    persistTabs();
+  },
+
+  activate: (root) => {
+    set({ active: root });
+    persistTabs();
+  },
+
+  patch: (root, p) => {
+    const t = get().tabs[root];
+    if (!t) return;
+    set({ tabs: { ...get().tabs, [root]: { ...t, ...p } } });
+  },
+
+  refresh: async (root, parts = ALL) => {
+    if (inflight.has(root)) {
+      pending.set(root, merge(pending.get(root), parts));
+      return inflight.get(root);
+    }
+    const job = (async () => {
+      let todo: Parts | undefined = parts;
+      while (todo) {
+        await refreshOnce(root, todo);
+        todo = pending.get(root);
+        pending.delete(root);
+      }
+    })();
+    inflight.set(root, job);
+    try {
+      await job;
+    } finally {
+      inflight.delete(root);
+    }
+  },
+}));
+
+async function refreshOnce(root: string, parts: Parts) {
+  const store = useRepos.getState();
+  if (!store.tabs[root]) return;
+  const patch: Partial<RepoTab> = {};
+  // Everything starts at once; the history only waits for the (fast) status, which decides
+  // whether the "Uncommitted changes" row is part of the graph.
+  const infoP = parts.info || parts.status ? api.repoInfo(root) : Promise.resolve(null);
+  const statusP = parts.status ? api.status(root) : Promise.resolve(null);
+  const refsP = parts.refs ? api.refs(root) : Promise.resolve(null);
+  const extrasP = parts.refs || parts.info ? api.repoExtras(root).catch(() => null) : Promise.resolve(null);
+  const layersP = parts.layers || parts.status ? api.layersState(root).catch(() => null) : Promise.resolve(null);
+  for (const p of [infoP, refsP]) p.catch(() => {}); // rejections are handled below
+  let graphP: Promise<void> | null = null;
+  try {
+    const status = await statusP;
+    const tab = useRepos.getState().tabs[root];
+    if (!tab) return;
+    const st = status ?? tab.status;
+    const dirty = !!st && st.files.length > 0;
+    if (status) useRepos.getState().patch(root, { status });
+    if (parts.graph || dirty !== tab.graphHasWorktree || !tab.graph) graphP = loadGraph(root, dirty);
+    const [info, refs, layers, extras] = await Promise.all([infoP, refsP, layersP, extrasP]);
+    if (info) patch.info = info;
+    if (refs) patch.refs = refs;
+    if (extras) patch.extras = extras;
+    if (layers) patch.layers = layers;
+    patch.error = null;
+  } catch (e) {
+    patch.error = errorMessage(e);
+  }
+  if (!useRepos.getState().tabs[root]) return;
+  useRepos.getState().patch(root, { ...patch, loaded: true });
+  // Wait for history only when it was explicitly requested; a dirty/clean toggle reloads it in the background.
+  if (graphP && parts.graph) await graphP;
+}
+
+export async function loadGraph(root: string, includeWorktree?: boolean) {
+  const store = useRepos.getState();
+  const tab = store.tabs[root];
+  if (!tab) return;
+  const dirty = includeWorktree ?? (!!tab.status && tab.status.files.length > 0);
+  store.patch(root, { graphLoading: true });
+  try {
+    // First paint: the newest commits without the full ordered walk, then the whole history.
+    if (!tab.graph) {
+      const quick = await api.graphLoad(root, tab.branchFilter, dirty, 2000, true).catch(() => null);
+      const t0 = useRepos.getState().tabs[root];
+      if (quick && t0 && !t0.graph) useRepos.getState().patch(root, { graph: quick, graphVersion: t0.graphVersion + 1, graphHasWorktree: dirty });
+    }
+    const summary = await api.graphLoad(root, tab.branchFilter, dirty, useRepos.getState().tabs[root]?.graphLimit ?? tab.graphLimit);
+    const t = useRepos.getState().tabs[root];
+    if (!t) return;
+    let selected = t.selected;
+    if (selected === WORKTREE && !dirty) selected = null;
+    useRepos.getState().patch(root, { graph: summary, graphVersion: t.graphVersion + 1, graphLoading: false, graphHasWorktree: dirty, selected });
+  } catch (e) {
+    useRepos.getState().patch(root, { graphLoading: false, error: errorMessage(e) });
+  }
+}
+
+export function useActiveTab(): RepoTab | null {
+  return useRepos((s) => (s.active ? s.tabs[s.active] ?? null : null));
+}
+
+export function activeRoot(): string | null {
+  return useRepos.getState().active;
+}
+
+export function getTab(root: string): RepoTab | undefined {
+  return useRepos.getState().tabs[root];
+}
