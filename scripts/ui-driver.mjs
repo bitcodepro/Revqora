@@ -13,7 +13,9 @@ export function createProfile(prefix = "revqora-webview-") {
   return fs.mkdtempSync(path.join(base, prefix));
 }
 
-export async function launch({ exe, args = [], port = 9333, profile }) {
+// The window stays off-screen unless the caller passes visible, the command line has
+// --visible, or REVQORA_SMOKE_VISIBLE=1 is set.
+export async function launch({ exe, args = [], port = 9333, profile, visible = process.argv.includes("--visible") || process.env.REVQORA_SMOKE_VISIBLE === "1" }) {
   if (port === 0) {
     const reservation = net.createServer();
     await new Promise((resolve, reject) => { reservation.once("error", reject); reservation.listen(0, "127.0.0.1", resolve); });
@@ -24,7 +26,7 @@ export async function launch({ exe, args = [], port = 9333, profile }) {
   const inheritedArguments = process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? "";
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "WEBVIEW2_USER_DATA_FOLDER", "REVQORA_MULTI_INSTANCE", "REVQORA_CDP_PORT"].includes(key.toUpperCase())) delete env[key];
+    if (["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "WEBVIEW2_USER_DATA_FOLDER", "REVQORA_MULTI_INSTANCE", "REVQORA_CDP_PORT", "REVQORA_TEST_HIDDEN"].includes(key.toUpperCase())) delete env[key];
   }
   if (process.env.REVQORA_VERIFY_UI_AUTOMATION === "1") {
     if (inheritedArguments) env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = inheritedArguments;
@@ -32,6 +34,7 @@ export async function launch({ exe, args = [], port = 9333, profile }) {
     env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `${inheritedArguments} --remote-debugging-address=127.0.0.1 --remote-debugging-port=${port}`.trim();
   }
   env.REVQORA_MULTI_INSTANCE = "1";
+  if (!visible) env.REVQORA_TEST_HIDDEN = "1";
   env.REVQORA_CDP_PORT = String(port);
   if (profile) env.WEBVIEW2_USER_DATA_FOLDER = profile;
   const child = spawn(exe, args, { env, stdio: ["ignore", "ignore", "pipe"] });

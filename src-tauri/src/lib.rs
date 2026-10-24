@@ -2,6 +2,7 @@
 
 pub mod askpass;
 pub mod git;
+pub mod update;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -900,6 +901,37 @@ fn open_terminal(path: String) -> GitResult<()> {
     Ok(())
 }
 
+/// Latest release on GitHub compared with this build.
+#[tauri::command]
+async fn update_check(app: AppHandle) -> GitResult<update::UpdateInfo> {
+    let current = app.package_info().version.to_string();
+    blocking(move || update::check(&current)).await
+}
+
+/// Downloads and installs the update; progress goes out as `update-progress` events.
+#[tauri::command]
+async fn update_install(app: AppHandle) -> GitResult<()> {
+    let current = app.package_info().version.to_string();
+    blocking(move || {
+        let info = update::check(&current)?;
+        if !info.available {
+            return Err(GitError::new("Revqora is already up to date."));
+        }
+        update::install(&info, |p| {
+            let _ = app.emit("update-progress", p);
+        })
+    })
+    .await
+}
+
+/// Starts the updated executable and closes this one.
+#[tauri::command]
+fn update_restart(app: AppHandle) -> GitResult<()> {
+    update::relaunch()?;
+    app.exit(0);
+    Ok(())
+}
+
 /// Folders passed on the command line (`revqora <path>`), opened at startup.
 #[tauri::command]
 fn startup_paths() -> Vec<String> {
@@ -924,6 +956,20 @@ pub fn run() {
         }
         context
     };
+    // UI tests run the window off-screen, without a taskbar button and without taking focus,
+    // unless they are asked to show it (`--visible`).
+    let mut context = context;
+    if std::env::var("REVQORA_MULTI_INSTANCE").as_deref() == Ok("1") && std::env::var("REVQORA_TEST_HIDDEN").as_deref() == Ok("1") {
+        for window in &mut context.config_mut().app.windows {
+            if window.label == "main" {
+                window.center = false;
+                window.x = Some(-32000.0);
+                window.y = Some(-32000.0);
+                window.skip_taskbar = true;
+                window.focus = false;
+            }
+        }
+    }
     let mut builder = tauri::Builder::default();
     // A second launch (e.g. "Open in Revqora" from Explorer) opens its folders as tabs in the
     // running window. Tests set REVQORA_MULTI_INSTANCE to run isolated copies side by side.
@@ -942,6 +988,9 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             git::locate::configure();
+            if let Some(root) = update::launch().map(|l| l.root.clone()) {
+                std::thread::spawn(move || update::cleanup(&root));
+            }
             let handle = app.handle().clone();
             let exe = std::env::current_exe()?;
             if let Err(e) = askpass::start(
@@ -956,6 +1005,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             git_version,
+            update_check,
+            update_install,
+            update_restart,
             git_selection,
             git_configure,
             askpass_respond,

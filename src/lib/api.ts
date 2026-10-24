@@ -28,6 +28,7 @@ import type {
   FileDiff,
   FileHistoryEntry,
   GitError,
+  UpdateInfo,
   GitSelection,
   GitVersionInfo,
   GraphRow,
@@ -66,6 +67,9 @@ export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 export const api = {
   gitVersion: () => call<GitVersionInfo>("git_version"),
   gitSelection: () => call<GitSelection | null>("git_selection"),
+  updateCheck: () => call<UpdateInfo>("update_check"),
+  updateInstall: () => call<void>("update_install"),
+  updateRestart: () => call<void>("update_restart"),
   gitConfigure: () => call<GitSelection>("git_configure"),
   askpassRespond: (id: number, value: string | null) => call<boolean>("askpass_respond", { id, value }),
   repoOpen: (path: string) => call<RepoInfo>("repo_open", { path }),

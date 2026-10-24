@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { useUpdate } from "../lib/update";
 import { SHORTCUTS, bindingFor, comboFromEvent, prettyCombo } from "../lib/shortcuts";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -619,6 +620,45 @@ export function settingsDialog(root: string | null): Promise<void> {
   return showDialog<void>((close) => <SettingsBody root={root} close={close} />);
 }
 
+function UpdateSettings() {
+  const checkUpdates = useSettings((s) => s.checkUpdates);
+  const set = useSettings((s) => s.set);
+  const { info, phase, error, check } = useUpdate();
+  let status = "";
+  if (phase === "checking") status = "Checking…";
+  else if (phase === "error" && error) status = error;
+  else if (info) status = info.available ? `Revqora ${info.latest} is available — see the status bar.` : `You have the latest version (${info.current}).`;
+  return (
+    <>
+      <div className="section-title">Updates</div>
+      <div className="settings-grid">
+        <label>Updates</label>
+        <div className="vstack" style={{ gap: 6 }}>
+          <label className="check">
+            <input type="checkbox" checked={checkUpdates} onChange={(e) => set({ checkUpdates: e.target.checked, skippedUpdate: null })} /> Check for new versions at startup
+          </label>
+          <span className="hstack" style={{ gap: 8 }}>
+            <button
+              type="button"
+              className="btn sm ghost"
+              disabled={phase === "checking"}
+              onClick={() => {
+                set({ skippedUpdate: null });
+                check(true);
+              }}
+            >
+              Check now
+            </button>
+            <span className="faint" style={phase === "error" ? { color: "var(--red)" } : undefined}>
+              {status}
+            </span>
+          </span>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function SettingsBody({ root, close }: { root: string | null; close: () => void }) {
   const s = useSettings();
   const [sel, setSel] = useState<GitSelection | null>(null);
@@ -773,6 +813,7 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
       </div>
       {root && <SigningSettings root={root} />}
       <ShortcutSettings />
+      <UpdateSettings />
       <div className="section-title">Git</div>
       <div className="settings-grid">
         <label>Git</label>

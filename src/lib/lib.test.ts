@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { applyResolution, findLines, parseConflicts, resolveAll } from "./conflicts";
 import { wordDiff } from "./worddiff";
 import { initials, relativeTime } from "./format";
+import { visibleUpdate } from "./update";
+import type { UpdateInfo } from "./types";
 
 const SAMPLE = `top
 <<<<<<< ours
@@ -86,5 +88,26 @@ describe("syntax highlighting", () => {
     out.forEach((toks, i) => expect(toks.map((t) => t.text).join("")).toBe(lines[i]));
     expect(out[0].some((t) => t.cls.includes("keyword"))).toBe(true);
     expect(out[1].some((t) => t.cls.includes("comment"))).toBe(true);
+  });
+});
+
+describe("visibleUpdate", () => {
+  const info = (latest: string, available: boolean): UpdateInfo => ({
+    current: "0.1.0",
+    latest,
+    available,
+    notes: "",
+    publishedAt: null,
+    htmlUrl: "",
+    asset: null,
+    canInstall: false,
+    reason: null,
+  });
+  it("shows newer versions unless skipped", () => {
+    expect(visibleUpdate(info("0.2.0", true), null)?.latest).toBe("0.2.0");
+    expect(visibleUpdate(info("0.2.0", true), "0.2.0")).toBeNull();
+    expect(visibleUpdate(info("0.3.0", true), "0.2.0")?.latest).toBe("0.3.0");
+    expect(visibleUpdate(info("0.1.0", false), null)).toBeNull();
+    expect(visibleUpdate(null, null)).toBeNull();
   });
 });

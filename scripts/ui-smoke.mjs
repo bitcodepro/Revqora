@@ -1,5 +1,5 @@
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
-//   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep]
+//   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
 // verifies the resulting git state with the git CLI. Screenshots go to --out.
 import { execFileSync } from "node:child_process";
@@ -25,6 +25,14 @@ const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" 
 execFileSync(bash, [path.join(here, "make-demo-repo.sh").replace(/\\/g, "/"), path.join(work, "env").replace(/\\/g, "/")], { stdio: "ignore" });
 const repo = path.join(work, "env", "demo");
 const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
+
+// A fake release feed with a much newer version, so the update chip can be exercised offline.
+const feed = http.createServer((req, res) => {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ tag_name: "v99.0.0", body: ["## Highlights", "- Faster graph", "- **New** update chip"].join("\n"), html_url: "https://github.com/bitcodepro/Revqora/releases/tag/v99.0.0", published_at: new Date().toISOString(), assets: [] }));
+});
+await new Promise((r) => feed.listen(0, "127.0.0.1", r));
+process.env.REVQORA_UPDATE_FEED = `http://127.0.0.1:${feed.address().port}/`;
 
 let step = 0;
 const results = [];
@@ -61,6 +69,22 @@ try {
     await page.waitForSelector(".modal:has-text('Welcome to Revqora')", { timeout: 20000 });
     await page.click(".modal button:has-text('Skip')");
     await page.waitForSelector(".modal", { state: "detached" });
+  });
+
+  await check("a newer release shows the update chip, which can be skipped", async () => {
+    const chip = page.locator(".update-chip");
+    await chip.waitFor({ timeout: 20000 });
+    if (!/Update 99\.0\.0/.test(await chip.innerText())) throw new Error(`chip shows: ${await chip.innerText()}`);
+    await chip.click();
+    const card = page.locator(".update-card");
+    await card.waitFor();
+    const text = await card.innerText();
+    if (!text.includes("Revqora 99.0.0 is available") || !text.includes("Faster graph")) throw new Error(`card shows: ${text}`);
+    // Development builds are not release packages: only the download link is offered.
+    await card.locator("button:has-text('Download')").waitFor();
+    await shot("17-update");
+    await card.locator("button:has-text('Skip this version')").click();
+    await chip.waitFor({ state: "detached" });
   });
 
   await check("history graph renders all commits", async () => {
@@ -407,6 +431,7 @@ try {
   if (!results.some((r) => r.startsWith("FAIL"))) results.push("FAIL " + e.message);
 } finally {
   await close();
+  feed.close();
   console.log(results.join("\n"));
   console.log(`screenshots: ${out}`);
   if (errors.length) console.log("console errors:\n" + errors.join("\n"));

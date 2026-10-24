@@ -6,5 +6,7 @@ fn main() {
     if let Some(code) = revqora_lib::askpass::run_helper_if_requested() {
         std::process::exit(code);
     }
+    revqora_lib::update::launch();
+    revqora_lib::update::wait_for_previous_instance();
     revqora_lib::run()
 }
