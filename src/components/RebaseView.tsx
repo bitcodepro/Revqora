@@ -142,7 +142,7 @@ export function RebaseView({ root, oldest }: { root: string; oldest: string }) {
       {err && <div className="empty">{err}</div>}
       {!err && !rows && (
         <div className="loading-center">
-          <Loader2 className="spin" />
+          <span className="loader" />
         </div>
       )}
       {rows && (

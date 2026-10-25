@@ -108,8 +108,8 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
             key={b.fullName}
             className={`sb-item ${isCur ? "current" : ""}`}
             style={{ paddingLeft: pad + 16 }}
-            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}${b.upstream ? `\ntracks ${b.upstream}` : ""}`}
-            onClick={() => jumpToCommit(root, b.oid)}
+            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}${b.upstream ? `\ntracks ${b.upstream}` : ""}${isCur ? "" : "\nCtrl+click or double-click to check out"}`}
+            onClick={(e) => ((e.ctrlKey || e.metaKey) && !isCur ? void A.checkout(root, b.name, kind) : jumpToCommit(root, b.oid))}
             draggable
             onDragStart={(e) => {
               e.dataTransfer.setData("revqora/branch", b.name);
@@ -153,7 +153,17 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
             {kind === "local" ? <GitBranch size={13} style={{ flex: "none", color: isCur ? "var(--accent)" : undefined }} /> : <Cloud size={13} style={{ flex: "none" }} />}
             <span className="label">{n.name}</span>
             <span className="meta">
-              {b.gone && <span className="pill red">gone</span>}
+              {kind === "local" && tab.squashMerged.includes(b.name) ? (
+                <span className="pill green" title={`Its changes are already in ${current ?? "the current branch"} — safe to delete`}>
+                  merged
+                </span>
+              ) : (
+                b.gone && (
+                  <span className="pill amber" title="The branch it tracked was deleted on the remote (usually after its pull request was merged). The local branch is untouched.">
+                    remote deleted
+                  </span>
+                )
+              )}
               <AheadBehind ahead={b.ahead} behind={b.behind} />
             </span>
           </div>,

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Loader2, ScanSearch, X } from "lucide-react";
+import { ArrowLeft, ScanSearch, X } from "lucide-react";
 import type { LanguageSupport } from "@codemirror/language";
 import { api, errorMessage } from "../lib/api";
 import { useRepos } from "../lib/store";
@@ -154,7 +154,7 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
       {err && <div className="empty">{err}</div>}
       {!err && !blame && (
         <div className="loading-center">
-          <Loader2 className="spin" />
+          <span className="loader" />
         </div>
       )}
       {blame && (

@@ -96,7 +96,11 @@ function BranchCardBody({ root, name, close }: { root: string; name: string; clo
           {d.merged && (
             <div className="callout">
               <Info size={15} />
-              <div>Every commit of {name} is already contained in {d.base}. It is safe to delete this branch.</div>
+              <div>
+                {d.base.endsWith(`/${name}`)
+                  ? `Every commit of ${name} is already pushed to ${d.base}.`
+                  : `Every commit of ${name} is already contained in ${d.base}. It is safe to delete this branch.`}
+              </div>
             </div>
           )}
         </>

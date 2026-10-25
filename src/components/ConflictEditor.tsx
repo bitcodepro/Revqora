@@ -459,7 +459,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
       {err && <div className="empty">{err}</div>}
       {!err && !info && (
         <div className="loading-center">
-          <Loader2 className="spin" />
+          <span className="loader" />
         </div>
       )}
       {info && !textual && (

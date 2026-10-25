@@ -2,6 +2,7 @@
 
 pub mod askpass;
 pub mod git;
+pub mod portable;
 pub mod update;
 
 use std::collections::HashMap;
@@ -309,6 +310,12 @@ async fn reflog(repo: String) -> GitResult<Vec<ReflogEntry>> {
 #[tauri::command]
 async fn refs_snapshot(repo: String) -> GitResult<RefsSnapshot> {
     blocking(move || refs::snapshot(&p(&repo))).await
+}
+
+/// Branches already squash- or rebase-merged into HEAD.
+#[tauri::command]
+async fn squash_merged(repo: String) -> GitResult<Vec<String>> {
+    blocking(move || refs::squash_merged(&p(&repo))).await
 }
 
 #[tauri::command]
@@ -959,6 +966,13 @@ pub fn run() {
     // UI tests run the window off-screen, without a taskbar button and without taking focus,
     // unless they are asked to show it (`--visible`).
     let mut context = context;
+    // The main window is created in `setup` with its web view profile in `data/` next to the exe;
+    // created from the config, Tauri would make an (empty) folder under %LOCALAPPDATA% first.
+    for window in &mut context.config_mut().app.windows {
+        if window.label == "main" {
+            window.create = false;
+        }
+    }
     if std::env::var("REVQORA_MULTI_INSTANCE").as_deref() == Ok("1") && std::env::var("REVQORA_TEST_HIDDEN").as_deref() == Ok("1") {
         for window in &mut context.config_mut().app.windows {
             if window.label == "main" {
@@ -983,11 +997,32 @@ pub fn run() {
             }
         }));
     }
+    // Settings and window geometry live in `data/` next to the exe. The window opens maximized
+    // the first time, then as it was closed. UI tests keep their own off-screen geometry.
+    let remember_window = std::env::var_os("REVQORA_MULTI_INSTANCE").is_none();
+    if remember_window {
+        builder = builder.on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) && window.label() == "main" {
+                portable::remember_window(window);
+            }
+        });
+    }
     builder
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .setup(|app| {
+        .setup(move |app| {
             git::locate::configure();
+            if let Some(cfg) = app.config().app.windows.iter().find(|w| w.label == "main").cloned() {
+                // No Edge form autofill (its dropdown arrow showed up inside text fields).
+                let mut wb = tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.general_autofill_enabled(false);
+                if let Some(dir) = portable::webview_dir() {
+                    wb = wb.data_directory(dir);
+                }
+                let w = wb.build()?;
+                if remember_window {
+                    portable::restore_window(&w);
+                }
+            }
             if let Some(root) = update::launch().map(|l| l.root.clone()) {
                 std::thread::spawn(move || update::cleanup(&root));
             }
@@ -1040,6 +1075,7 @@ pub fn run() {
             compare,
             blob,
             refs_snapshot,
+            squash_merged,
             branch_details,
             checkout,
             branch_create,

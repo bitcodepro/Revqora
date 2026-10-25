@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSettings } from "../lib/settings";
-import { Bug, ChevronDown, ChevronRight, Cloud, Folder, GitBranch, Tag, CircleDot } from "lucide-react";
+import { Bug, Check, ChevronDown, ChevronRight, Cloud, Folder, GitBranch, Tag, CircleDot } from "lucide-react";
 import type { RefLabel } from "../lib/types";
 import { avatarHue, basename, dirname, initials } from "../lib/format";
 
@@ -59,24 +59,29 @@ export function Avatar({ name, email, large }: { name: string; email?: string; l
   );
 }
 
-export function RefBadge({ r, color, onClick, onContextMenu }: { r: RefLabel; color?: number; onClick?: () => void; onContextMenu?: (e: React.MouseEvent) => void }) {
+export function RefBadge({ r, color, merged, onClick, onContextMenu }: { r: RefLabel; color?: number; merged?: string; onClick?: (e: React.MouseEvent) => void; onContextMenu?: (e: React.MouseEvent) => void }) {
   const style = color !== undefined ? ({ "--lane-c": `var(--lane-${color % 12})` } as React.CSSProperties) : undefined;
   const icon =
-    r.kind === "tag" ? <Tag size={10} /> : r.kind === "remote" ? <Cloud size={10} /> : r.kind === "detached" ? <CircleDot size={10} /> : r.kind === "bisect" ? <Bug size={10} /> : <GitBranch size={10} />;
+    r.kind === "tag" ? <Tag size={12} /> : r.kind === "remote" ? <Cloud size={12} /> : r.kind === "detached" ? <CircleDot size={12} /> : r.kind === "bisect" ? <Bug size={12} /> : <GitBranch size={12} />;
   return (
     <span
-      className={`ref ${r.kind} ${r.kind === "bisect" ? (r.name.endsWith("bad") ? "bad" : "good") : ""}`}
+      className={`ref ${r.kind} ${r.kind === "bisect" ? (r.name.endsWith("bad") ? "bad" : "good") : ""}${merged ? " squashed" : ""}`}
       style={style}
-      title={r.syncedRemote ? `${r.name} — in sync with ${r.syncedRemote}` : r.name}
+      title={
+        merged
+          ? `${r.name} — its changes are already in ${merged} (squash or rebase merge), so no merge line connects it`
+          : `${r.syncedRemote ? `${r.name} — in sync with ${r.syncedRemote}` : r.name}${r.kind === "local" || r.kind === "remote" ? "\nCtrl+click to check out" : ""}`
+      }
       onClick={(e) => {
         e.stopPropagation();
-        onClick?.();
+        onClick?.(e);
       }}
       onContextMenu={onContextMenu}
     >
       {icon}
       <span className="rn">{r.name}</span>
-      {r.syncedRemote && <Cloud size={10} style={{ opacity: 0.8 }} />}
+      {r.syncedRemote && <Cloud size={12} style={{ opacity: 0.8 }} />}
+      {merged && <Check size={12} strokeWidth={3} />}
     </span>
   );
 }

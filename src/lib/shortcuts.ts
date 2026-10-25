@@ -14,6 +14,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "history", label: "Show history", default: "Ctrl+1" },
   { id: "changes", label: "Show changes", default: "Ctrl+2" },
   { id: "pulls", label: "Show pull requests", default: "Ctrl+3" },
+  { id: "reviewMode", label: "Switch history between Graph and Review", default: "Ctrl+Shift+R" },
   { id: "fetch", label: "Fetch", default: "Ctrl+Shift+F" },
   { id: "pull", label: "Pull", default: "Ctrl+Shift+ArrowDown" },
   { id: "push", label: "Push", default: "Ctrl+Shift+ArrowUp" },

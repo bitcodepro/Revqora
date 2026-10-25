@@ -195,6 +195,35 @@ pub fn remotes(repo: &Path) -> GitResult<Vec<RemoteInfo>> {
 }
 
 /// Ref decorations keyed by the commit they point to.
+/// Branches (local and remote) whose changes are already in HEAD although they are not its
+/// ancestors — typically squash- or rebase-merged. Git keeps no link for those, so the graph
+/// draws them as unmerged; the UI marks their badges instead. Needs `merge-tree --write-tree`.
+pub fn squash_merged(repo: &Path) -> GitResult<Vec<String>> {
+    if super::locate::version() < (2, 38, 0) {
+        return Ok(Vec::new());
+    }
+    let Ok(head_tree) = runner::run(repo, ["rev-parse", "HEAD^{tree}"]) else { return Ok(Vec::new()) };
+    let head_tree = head_tree.trim().to_string();
+    let head_ref = runner::run(repo, ["symbolic-ref", "-q", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_default();
+    let raw = runner::run(repo, ["for-each-ref", "--format=%(refname:short)%1f%(refname)%1f%(symref)", "refs/heads", "refs/remotes"])?;
+    let mut out = Vec::new();
+    for line in raw.lines().take(80) {
+        let f: Vec<&str> = line.split('').collect();
+        if f.len() < 3 || !f[2].is_empty() || f[1] == head_ref {
+            continue;
+        }
+        // Ancestors are ordinary merges; the graph already shows those.
+        if runner::exec(repo, ["merge-base", "--is-ancestor", f[1], "HEAD"])?.code == 0 {
+            continue;
+        }
+        let merged = runner::exec(repo, ["merge-tree", "--write-tree", "HEAD", f[1]])?;
+        if merged.code == 0 && merged.text().lines().next().map(str::trim) == Some(head_tree.as_str()) {
+            out.push(f[0].to_string());
+        }
+    }
+    Ok(out)
+}
+
 pub fn labels_by_oid(repo: &Path) -> GitResult<HashMap<String, Vec<RefLabel>>> {
     let raw = runner::run(
         repo,

@@ -516,6 +516,23 @@ mod tests {
     }
 
     #[test]
+    fn main_merged_into_branch_then_branch_merged_back() {
+        // f1 branches from a; s merges main (m1) into the branch; M merges the branch into main.
+        let rows = [c("M", &["m2", "s"]), c("s", &["f1", "m1"]), c("m2", &["m1"]), c("f1", &["a"]), c("m1", &["a"]), c("a", &[])];
+        let (l, _) = layout(&rows);
+        let (main, feature) = (l[0].col, l[1].col);
+        assert_ne!(main, feature);
+        assert_eq!((l[2].col, l[3].col, l[4].col, l[5].col), (main, feature, main, main));
+        // M draws a merge line into the branch lane.
+        assert!(l[0].segs.iter().any(|g| g.t == 2 && g.a == main && g.b == feature), "{:?}", l[0].segs);
+        // s pulls main in through its own lane, which ends at m1 on the main lane.
+        let pulled = l[1].segs.iter().find(|g| g.t == 2 && g.a == feature && g.b != feature).map(|g| g.b).expect("s has no merge line");
+        assert!(l[4].segs.iter().any(|g| g.t == 1 && g.a == pulled && g.b == main), "{:?}", l[4].segs);
+        // The branch ends at its fork point a.
+        assert!(l[5].segs.iter().any(|g| g.t == 1 && g.a == feature && g.b == main), "{:?}", l[5].segs);
+    }
+
+    #[test]
     fn independent_tips_get_separate_lanes() {
         let (l, _) = layout(&[c("x", &["a"]), c("y", &["a"]), c("a", &[])]);
         assert_eq!(l[0].col, 0);

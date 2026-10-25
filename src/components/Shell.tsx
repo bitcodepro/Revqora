@@ -15,7 +15,6 @@ import {
   GitMerge,
   GitPullRequestArrow,
   History,
-  Loader2,
   Moon,
   Plus,
   RefreshCw,
@@ -307,6 +306,30 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
 
 // ───────────── status bar ─────────────
 
+/** Current operation: its name, the git phase ("Receiving objects") and a smooth bar for its percent. */
+function BusyItem({ label, line }: { label: string; line: string }) {
+  const m = line.match(/^\s*(?:remote:\s*)?([A-Za-z][A-Za-z ]+?):\s+(\d{1,3})%/);
+  const phase = m?.[1];
+  const pct = m ? Math.min(100, Number(m[2])) : null;
+  return (
+    <span className="item busy-item" title={line || label}>
+      <span className="busy-dot" />
+      <b>{label}</b>
+      {pct !== null ? (
+        <>
+          <span className="faint">{phase}</span>
+          <span className="busy-meter">
+            <span style={{ width: `${pct}%` }} />
+          </span>
+          <span className="faint busy-pct">{pct}%</span>
+        </>
+      ) : (
+        line && <span className="busy-line faint">{line}</span>
+      )}
+    </span>
+  );
+}
+
 export function StatusBar() {
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   const busy = useUi((s) => s.busy);
@@ -349,11 +372,7 @@ export function StatusBar() {
           {plural(tab.layers.layers.length, "stage layer")}
         </span>
       )}
-      {b && (
-        <span className="item">
-          <Loader2 size={12} className="spin" /> <b>{b.label}</b> <span className="busy-line">{b.line}</span>
-        </span>
-      )}
+      {b && <BusyItem label={b.label} line={b.line} />}
       <div className="spacer" />
       {tab?.error && (
         <span className="item" style={{ color: "var(--red)" }} title={tab.error}>

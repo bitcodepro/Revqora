@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { FilePlus2, GitCommitHorizontal, GitPullRequest, RefreshCw } from "lucide-react";
+import { Columns3, FilePlus2, GitCommitHorizontal, GitGraph, GitPullRequest, RefreshCw } from "lucide-react";
 import { PullRequestsView } from "./components/PullRequests";
 import { useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
@@ -17,6 +17,7 @@ import { api } from "./lib/api";
 import { WORKTREE } from "./lib/types";
 import { CommandPalette, OpBanner, StatusBar, TopBar, Welcome } from "./components/Shell";
 import { ContextMenuHost, DialogHost, Splitter, ToastHost } from "./components/Overlays";
+import { bindingFor, prettyCombo } from "./lib/shortcuts";
 import { Sidebar } from "./components/Sidebar";
 import { GraphView } from "./components/GraphView";
 import { CommitDetails } from "./components/CommitDetails";
@@ -63,6 +64,9 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
   const setS = useSettings((s) => s.set);
   const [sw, setSw] = useState(sidebarW);
   const [dh, setDh] = useState(detailsH);
+  const historyMode = useSettings((s) => s.historyMode);
+  const reviewW = useSettings((s) => s.reviewListWidth);
+  const [rw, setRw] = useState(reviewW);
   const changesCount = tab.status?.files.length ?? 0;
   const [forgeKind, setForgeKind] = useState<string | null>(null);
   const remotesKey = tab.refs?.remotes.map((r) => r.fetchUrl).join("|") ?? "";
@@ -96,19 +100,45 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
             </button>
           )}
           <div className="spacer" />
+          {tab.view === "history" && (
+            <div className="seg history-mode" title={`Graph or Review layout (${prettyCombo(bindingFor("reviewMode"))})`}>
+              {(["graph", "review"] as const).map((m) => (
+                <button key={m} type="button" className={historyMode === m ? "on" : ""} onClick={() => setS({ historyMode: m })}>
+                  {m === "graph" ? <GitGraph size={13} /> : <Columns3 size={13} />} {m === "graph" ? "Graph" : "Review"}
+                </button>
+              ))}
+            </div>
+          )}
           <button className="icon-btn" title="Refresh (F5)" onClick={() => useRepos.getState().refresh(root)}>
             <RefreshCw size={15} />
           </button>
         </div>
         <OpBanner tab={tab} onResolve={openConflict} />
-        {tab.view === "history" ? (
+        {tab.view === "history" && historyMode === "review" ? (
+          <div className="review" style={{ gridTemplateColumns: `${rw}px minmax(0, 1fr)` }}>
+            <div className="review-list">
+              <GraphView tab={tab} compact onEnterChanges={() => patch(root, { view: "changes" })} />
+            </div>
+            <Splitter dir="v" style={{ left: rw }} onDrag={(d) => setRw((w) => Math.max(240, Math.min(640, w + d)))} onEnd={() => setS({ reviewListWidth: rw })} />
+            <div className="details review-details">
+              {commitSelected ? (
+                <CommitDetails root={root} oid={commitSelected} />
+              ) : (
+                <div className="empty">
+                  <h3>Select a commit</h3>
+                  <div>↑ / ↓ move between commits, Alt+↑ / Alt+↓ between files, F7 to the next change.</div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : tab.view === "history" ? (
           <div className="history">
             <GraphView tab={tab} onEnterChanges={() => patch(root, { view: "changes" })} />
             {commitSelected && (
               <>
                 <Splitter dir="h" onDrag={(d) => setDh((h) => Math.max(160, Math.min(window.innerHeight - 260, h - d)))} onEnd={() => setS({ detailsHeight: dh })} />
                 <div className="details" style={{ height: dh }}>
-                  <CommitDetails root={root} oid={commitSelected} />
+                  <CommitDetails root={root} oid={commitSelected} onClose={() => patch(root, { selected: null, multi: [] })} />
                 </div>
               </>
             )}
@@ -129,9 +159,22 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
   );
 }
 
+/** Fetches the open repositories in the background every few minutes (Settings → Auto fetch). */
+function useAutoFetch() {
+  const minutes = useSettings((s) => s.autoFetchMinutes);
+  useEffect(() => {
+    if (!minutes) return;
+    const id = setInterval(() => {
+      for (const root of Object.keys(useRepos.getState().tabs)) void A.quietFetch(root);
+    }, minutes * 60_000);
+    return () => clearInterval(id);
+  }, [minutes]);
+}
+
 export default function App() {
   useAppearance();
   useEffect(startUpdateChecks, []);
+  useAutoFetch();
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   const busy = useUi((s) => s.busy.length > 0);
   const [dropping, setDropping] = useState(false);
@@ -224,6 +267,11 @@ export default function App() {
         history: () => a && st.patch(a, { view: "history" }),
         changes: () => a && st.patch(a, { view: "changes" }),
         pulls: () => a && st.patch(a, { view: "pulls" }),
+        reviewMode: () => {
+          const s = useSettings.getState();
+          s.set({ historyMode: s.historyMode === "review" ? "graph" : "review" });
+          if (a) st.patch(a, { view: "history" });
+        },
         fetch: () => a && A.fetchAll(a),
         pull: () => a && A.pull(a),
         push: () => a && A.push(a),

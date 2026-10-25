@@ -549,7 +549,7 @@ export interface CommitHelpers {
 }
 
 export interface ForgeInfo {
-  kind: "github" | "gitlab";
+  kind: "github" | "gitlab" | "bitbucket" | "bitbucket-server";
   host: string;
   project: string;
   remote: string;

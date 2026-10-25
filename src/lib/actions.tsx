@@ -83,6 +83,19 @@ async function remote<T>(root: string, label: string, fn: (opId: string) => Prom
   }
 }
 
+const quietFetchOff = new Set<string>();
+
+/** Background fetch: no toasts or busy bar; stops for a repo after an auth failure. */
+export async function quietFetch(root: string) {
+  if (quietFetchOff.has(root) || useUi.getState().busy.length) return;
+  try {
+    await api.fetch(root, null, true, newOpId());
+    await useRepos.getState().refresh(root, { info: true, status: true, refs: true, graph: true });
+  } catch (e) {
+    if (isGitError(e) && e.kind === "auth") quietFetchOff.add(root);
+  }
+}
+
 /** Presents the result of merge / cherry-pick / rebase style operations. */
 export function handleOutcome(root: string, out: OpOutcome | undefined, what: string) {
   if (!out) return;
