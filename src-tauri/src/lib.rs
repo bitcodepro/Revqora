@@ -375,6 +375,12 @@ async fn fetch(app: AppHandle, repo: String, remote: Option<String>, prune: bool
     blocking(move || ops::fetch(&p(&repo), remote.as_deref(), prune, progress(&app, &op_id))).await
 }
 
+/// Periodic fetch in the background: never asks for credentials.
+#[tauri::command]
+async fn fetch_background(repo: String) -> GitResult<String> {
+    blocking(move || ops::fetch_background(&p(&repo))).await
+}
+
 #[tauri::command]
 async fn pull(app: AppHandle, repo: String, mode: String, op_id: String) -> GitResult<OpOutcome> {
     blocking(move || ops::pull(&p(&repo), &mode, progress(&app, &op_id))).await
@@ -1002,8 +1008,13 @@ pub fn run() {
     let remember_window = std::env::var_os("REVQORA_MULTI_INSTANCE").is_none();
     if remember_window {
         builder = builder.on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) && window.label() == "main" {
-                portable::remember_window(window);
+            if window.label() != "main" {
+                return;
+            }
+            match event {
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => portable::track_window(window),
+                tauri::WindowEvent::CloseRequested { .. } => portable::remember_window(window),
+                _ => {}
             }
         });
     }
@@ -1075,6 +1086,7 @@ pub fn run() {
             compare,
             blob,
             refs_snapshot,
+            fetch_background,
             squash_merged,
             branch_details,
             checkout,

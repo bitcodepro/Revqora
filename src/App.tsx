@@ -30,6 +30,7 @@ import { RebaseView } from "./components/RebaseView";
 import { StashView } from "./components/StashView";
 import { TreeBrowser } from "./components/TreeBrowser";
 import { startUpdateChecks } from "./lib/update";
+import { createAutoFetch, defaultFetch } from "./lib/autofetch";
 
 function useAppearance() {
   const s = useSettings();
@@ -159,13 +160,19 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
   );
 }
 
+const quietFetch = createAutoFetch({
+  fetch: defaultFetch,
+  refresh: (root) => useRepos.getState().refresh(root, { info: true, status: true, refs: true, graph: true }),
+  busy: () => useUi.getState().busy.length > 0,
+});
+
 /** Fetches the open repositories in the background every few minutes (Settings → Auto fetch). */
 function useAutoFetch() {
   const minutes = useSettings((s) => s.autoFetchMinutes);
   useEffect(() => {
     if (!minutes) return;
     const id = setInterval(() => {
-      for (const root of Object.keys(useRepos.getState().tabs)) void A.quietFetch(root);
+      for (const root of Object.keys(useRepos.getState().tabs)) void quietFetch(root);
     }, minutes * 60_000);
     return () => clearInterval(id);
   }, [minutes]);

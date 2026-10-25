@@ -697,6 +697,9 @@ export function GraphView({
   }, [root, tab.view]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // Alt+arrows belong to the file list of the commit details (and Alt+Left/Right to the
+    // web view); only plain arrows move between commits.
+    if (e.altKey && e.key.startsWith("Arrow")) return;
     const cur =
       selectedIndex >= 0 ? selectedIndex : tab.selected === WORKTREE ? 0 : -1;
     const pageRows = Math.max(1, Math.floor(viewH / rowH) - 1);

@@ -297,6 +297,39 @@ pub fn fetch(repo: &Path, remote: Option<&str>, prune: bool, on_line: impl FnMut
     runner::run_streaming(repo, &args, &[], on_line)
 }
 
+/// Environment for fetches nobody is watching: no askpass helpers (git's or Revqora's), no
+/// terminal prompts, no interactive credential manager, ssh in batch mode, and stalled HTTP
+/// transfers give up. Missing or expired credentials then fail fast instead of asking.
+pub fn background_env(ssh_configured: bool) -> Vec<(&'static str, &'static str)> {
+    let mut env = vec![
+        ("GIT_ASKPASS", ""),
+        ("SSH_ASKPASS", ""),
+        ("SSH_ASKPASS_REQUIRE", "never"),
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("GCM_INTERACTIVE", "never"),
+        ("GIT_CONFIG_COUNT", "2"),
+        ("GIT_CONFIG_KEY_0", "credential.interactive"),
+        ("GIT_CONFIG_VALUE_0", "never"),
+        ("GIT_CONFIG_KEY_1", "core.askPass"),
+        ("GIT_CONFIG_VALUE_1", ""),
+        ("GIT_HTTP_LOW_SPEED_LIMIT", "1000"),
+        ("GIT_HTTP_LOW_SPEED_TIME", "30"),
+    ];
+    // Keep a user's own ssh command; without one, force batch mode (no passphrase prompts).
+    if !ssh_configured {
+        env.push(("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=20"));
+    }
+    env
+}
+
+/// Quiet periodic fetch of all remotes; never shows a credential prompt.
+pub fn fetch_background(repo: &Path) -> GitResult<String> {
+    let ssh_configured = std::env::var_os("GIT_SSH_COMMAND").is_some()
+        || std::env::var_os("GIT_SSH").is_some()
+        || runner::run(repo, ["config", "--get", "core.sshCommand"]).map(|s| !s.trim().is_empty()).unwrap_or(false);
+    runner::run_env(repo, ["fetch", "--all", "--prune", "--tags", "--quiet"], &background_env(ssh_configured), None)
+}
+
 pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<OpOutcome> {
     let mut args = vec!["pull".to_string(), "--progress".into()];
     match mode {

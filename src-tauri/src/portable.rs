@@ -75,27 +75,59 @@ pub fn restore_window(window: &tauri::WebviewWindow) {
     }
 }
 
-/// Saves the geometry; while maximized the last normal size and position are kept.
+/// The last normal (not maximized, not minimized) placement seen while the app runs.
+static NORMAL: parking_lot::Mutex<Option<WindowState>> = parking_lot::Mutex::new(None);
+
+/// Records the current placement whenever the window is moved or resized in normal state, so a
+/// window that is maximized and then closed still reopens (unmaximized) where it last was.
+pub fn track_window(window: &tauri::Window) {
+    if window.is_maximized().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
+        return;
+    }
+    if let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) {
+        *NORMAL.lock() = Some(WindowState { x: pos.x, y: pos.y, width: size.width, height: size.height, maximized: false });
+    }
+}
+
+/// What to save on close: the latest normal placement plus whether the window is maximized.
+/// Falls back to the current placement (normal state) or the saved one (nothing tracked yet).
+pub fn closing_state(tracked: Option<WindowState>, saved: Option<WindowState>, current: Option<WindowState>, maximized: bool) -> Option<WindowState> {
+    let normal = if maximized { tracked.or(saved) } else { current.or(tracked) };
+    normal.map(|n| WindowState { maximized, ..n })
+}
+
+/// Saves the geometry on close.
 pub fn remember_window(window: &tauri::Window) {
     let Some(dir) = data_dir() else { return };
+    if window.is_minimized().unwrap_or(false) {
+        return;
+    }
     let maximized = window.is_maximized().unwrap_or(false);
-    let previous = load_window_state(dir);
-    let state = match (maximized, previous) {
-        (true, Some(p)) => WindowState { maximized: true, ..p },
-        _ => {
-            let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) else { return };
-            if window.is_minimized().unwrap_or(false) {
-                return;
-            }
-            WindowState { x: pos.x, y: pos.y, width: size.width, height: size.height, maximized }
-        }
+    let current = match (window.outer_position(), window.inner_size()) {
+        (Ok(p), Ok(z)) if !maximized => Some(WindowState { x: p.x, y: p.y, width: z.width, height: z.height, maximized: false }),
+        _ => None,
     };
-    save_window_state(dir, &state);
+    if let Some(state) = closing_state(*NORMAL.lock(), load_window_state(dir), current, maximized) {
+        save_window_state(dir, &state);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maximized_close_keeps_the_latest_normal_placement() {
+        let opened = WindowState { x: 50, y: 40, width: 1200, height: 800, maximized: false };
+        let resized = WindowState { x: 80, y: 60, width: 1400, height: 900, maximized: false };
+        // Reopened at 1200x800, moved/resized to 1400x900 (tracked), maximized, closed.
+        let state = closing_state(Some(resized), Some(opened), None, true).unwrap();
+        assert_eq!(state, WindowState { maximized: true, ..resized });
+        // Closed in normal state: the current placement wins.
+        assert_eq!(closing_state(Some(opened), None, Some(resized), false), Some(resized));
+        // Maximized before anything was tracked: the saved placement is kept.
+        assert_eq!(closing_state(None, Some(opened), None, true), Some(WindowState { maximized: true, ..opened }));
+    }
 
     #[test]
     fn window_state_round_trips() {

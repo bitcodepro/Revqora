@@ -114,6 +114,7 @@ export const api = {
   blob: (repo: string, spec: BlobSpec) => call<BlobData | null>("blob", { repo, spec }),
 
   refs: (repo: string) => call<RefsSnapshot>("refs_snapshot", { repo }),
+  fetchBackground: (repo: string) => call<string>("fetch_background", { repo }),
   squashMerged: (repo: string) => call<string[]>("squash_merged", { repo }),
   branchDetails: (repo: string, name: string, base: string) => call<BranchDetails>("branch_details", { repo, name, base }),
   checkout: (repo: string, target: string, kind: "local" | "remote" | "commit") => call<string>("checkout", { repo, target, kind }),

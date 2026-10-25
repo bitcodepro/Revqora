@@ -416,21 +416,46 @@ pub fn checks(repo: &Path, sha: &str) -> GitResult<Vec<Check>> {
             out.push(Check { name: s(&st, "context"), state: norm_state(&s(&st, "state")), url: Some(s(&st, "target_url")).filter(|u| !u.is_empty()) });
         }
     } else if is_bitbucket(&f) {
-        let path = if f.kind == "bitbucket" {
-            format!("/repositories/{}/commit/{sha}/statuses?pagelen=100", f.project)
-        } else {
-            format!("/rest/build-status/1.0/commits/{sha}")
-        };
-        let v = request(repo, &f, "GET", &path, None)?;
-        for st in v.get("values").and_then(|a| a.as_array()).cloned().unwrap_or_default() {
-            let name = Some(s(&st, "name")).filter(|n| !n.is_empty()).unwrap_or_else(|| s(&st, "key"));
-            out.push(Check { name, state: norm_state(&s(&st, "state").to_lowercase()), url: Some(s(&st, "url")).filter(|u| !u.is_empty()) });
-        }
+        out = bitbucket_statuses(&f, sha, |path| request(repo, &f, "GET", path, None))?;
     } else {
         let v = request(repo, &f, "GET", &format!("/projects/{}/repository/commits/{sha}/statuses", enc(&f.project)), None)?;
         for st in v.as_array().cloned().unwrap_or_default() {
             out.push(Check { name: s(&st, "name"), state: norm_state(&s(&st, "status")), url: Some(s(&st, "target_url")).filter(|u| !u.is_empty()) });
         }
+    }
+    Ok(out)
+}
+
+/// Every page of a commit's Bitbucket build statuses. Both APIs paginate (Cloud: `next` URL,
+/// Server: `isLastPage` / `nextPageStart`); a failure on a later page must not be missed.
+pub fn bitbucket_statuses(f: &ForgeInfo, sha: &str, mut get: impl FnMut(&str) -> GitResult<Value>) -> GitResult<Vec<Check>> {
+    let cloud = f.kind == "bitbucket";
+    let first = if cloud {
+        format!("/repositories/{}/commit/{sha}/statuses?pagelen=100", f.project)
+    } else {
+        format!("/rest/build-status/1.0/commits/{sha}?limit=100")
+    };
+    let mut out = Vec::new();
+    let mut path = Some(first);
+    for _ in 0..50 {
+        let Some(current) = path.take() else { break };
+        let v = get(&current)?;
+        for st in v.get("values").and_then(|a| a.as_array()).cloned().unwrap_or_default() {
+            let name = Some(s(&st, "name")).filter(|n| !n.is_empty()).unwrap_or_else(|| s(&st, "key"));
+            out.push(Check { name, state: norm_state(&s(&st, "state").to_lowercase()), url: Some(s(&st, "url")).filter(|u| !u.is_empty()) });
+        }
+        path = if cloud {
+            // `next` is an absolute URL on the same API; anything else is ignored.
+            v.get("next").and_then(|n| n.as_str()).and_then(|n| n.strip_prefix(f.api.as_str())).map(String::from)
+        } else if v.get("isLastPage").and_then(|b| b.as_bool()) == Some(false) {
+            v.get("nextPageStart").and_then(|n| n.as_u64()).map(|start| format!("/rest/build-status/1.0/commits/{sha}?limit=100&start={start}"))
+        } else {
+            None
+        };
+    }
+    if path.is_some() {
+        // More than 50 pages: report it rather than a possibly incomplete green.
+        out.push(Check { name: "More statuses than Revqora loads".into(), state: "pending".into(), url: None });
     }
     Ok(out)
 }
@@ -476,6 +501,37 @@ mod tests {
         assert_eq!((pr.number, pr.author.as_str(), pr.head.as_str(), pr.base.as_str()), (12, "jblake", "bugfix/x", "develop"));
         assert_eq!(pr.created, "2026-01-01T00:00:00Z");
         assert!(pr.url.ends_with("/pull-requests/12"));
+    }
+
+    #[test]
+    fn bitbucket_statuses_follow_every_page() {
+        let cloud = forge_for("git@bitbucket.org:team/app.git", "origin").unwrap();
+        let mut seen = Vec::new();
+        let checks = bitbucket_statuses(&cloud, "abc", |path| {
+            seen.push(path.to_string());
+            Ok(if seen.len() == 1 {
+                serde_json::json!({ "values": [{ "key": "build", "state": "SUCCESSFUL" }], "next": "https://api.bitbucket.org/2.0/repositories/team/app/commit/abc/statuses?page=2" })
+            } else {
+                serde_json::json!({ "values": [{ "key": "lint", "state": "FAILED" }] })
+            })
+        })
+        .unwrap();
+        assert_eq!(seen[1], "/repositories/team/app/commit/abc/statuses?page=2");
+        assert_eq!(checks.iter().map(|c| c.state.as_str()).collect::<Vec<_>>(), ["success", "failure"]);
+
+        let server = forge_for("https://bitbucket.corp.example/scm/PROJ/service.git", "origin").unwrap();
+        let mut seen = Vec::new();
+        let checks = bitbucket_statuses(&server, "abc", |path| {
+            seen.push(path.to_string());
+            Ok(if seen.len() == 1 {
+                serde_json::json!({ "values": [{ "key": "build", "state": "SUCCESSFUL" }], "isLastPage": false, "nextPageStart": 100 })
+            } else {
+                serde_json::json!({ "values": [{ "key": "deploy", "state": "FAILED" }], "isLastPage": true })
+            })
+        })
+        .unwrap();
+        assert_eq!(seen[1], "/rest/build-status/1.0/commits/abc?limit=100&start=100");
+        assert!(checks.iter().any(|c| c.state == "failure"), "the only failure is on page two");
     }
 
     #[test]

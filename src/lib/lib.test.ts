@@ -3,6 +3,7 @@ import { applyResolution, findLines, parseConflicts, resolveAll } from "./confli
 import { wordDiff } from "./worddiff";
 import { initials, relativeTime } from "./format";
 import { visibleUpdate } from "./update";
+import { createAutoFetch } from "./autofetch";
 import type { UpdateInfo } from "./types";
 
 const SAMPLE = `top
@@ -109,5 +110,37 @@ describe("visibleUpdate", () => {
     expect(visibleUpdate(info("0.3.0", true), "0.2.0")?.latest).toBe("0.3.0");
     expect(visibleUpdate(info("0.1.0", false), null)).toBeNull();
     expect(visibleUpdate(null, null)).toBeNull();
+  });
+});
+
+describe("background fetch", () => {
+  it("never runs twice at once for a repository and stops after an auth failure", async () => {
+    let release: () => void = () => {};
+    let calls = 0;
+    const quietFetch = createAutoFetch({
+      fetch: () => {
+        calls++;
+        return new Promise<void>((r) => (release = r));
+      },
+      refresh: async () => {},
+      busy: () => false,
+    });
+    const first = quietFetch("/repo");
+    await quietFetch("/repo"); // a slow request is still outstanding: skipped
+    expect(calls).toBe(1);
+    release();
+    await first;
+    const failing = createAutoFetch({
+      fetch: async () => {
+        calls++;
+        throw { message: "Authentication failed", kind: "auth", stderr: "", code: 128, details: [] };
+      },
+      refresh: async () => {},
+      busy: () => false,
+    });
+    calls = 0;
+    await failing("/repo");
+    await failing("/repo"); // missing or expired credentials: no more attempts
+    expect(calls).toBe(1);
   });
 });

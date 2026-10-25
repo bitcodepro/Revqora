@@ -140,6 +140,20 @@ try {
     await page.locator(".review .graph-scroll").press("ArrowDown");
     await until(async () => (await page.locator(".review .grow.compact.selected").innerText()).includes("Enable debug mode"), "ArrowDown did not select the next commit");
     await page.waitForSelector(".review-details .diff .dl");
+    // Alt+arrows step through files with the commit list focused, without changing the commit.
+    await page.locator(".review .grow.compact", { hasText: "Initial project structure" }).click();
+    // Wait for this commit's details (three files), not the previous commit's file list.
+    await page.waitForSelector(".review-details .details-meta h2:has-text('Initial project structure')");
+    await until(async () => (await page.locator(".review-details .file-row").count()) === 3, "commit files did not load");
+    await page.waitForSelector(".review-details .file-row.selected");
+    const firstFile = await page.locator(".review-details .file-row.selected").innerText();
+    // The selected file carries over between commits; step towards the side that has a neighbour.
+    const atEnd = await page.locator(".review-details .file-row").last().evaluate((el) => el.classList.contains("selected"));
+    const key = atEnd ? "Alt+ArrowUp" : "Alt+ArrowDown";
+    await page.locator(".review .graph-scroll").press(key);
+    await until(async () => (await page.locator(".review-details .file-row.selected").innerText()) !== firstFile, `${key} did not move to another file`);
+    const selected = await page.locator(".review .grow.compact.selected").innerText();
+    if (!selected.includes("Initial project structure")) throw new Error(`${key} changed the commit to: ${selected}`);
     await shot("18-review");
     await page.click(".history-mode button:has-text('Graph')");
     await page.waitForSelector(".graph-cols");
