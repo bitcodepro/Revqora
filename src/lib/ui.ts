@@ -118,7 +118,13 @@ export function startBusy(id: string, label: string) {
   useUi.setState({ busy: [...useUi.getState().busy, { id, label, line: "", started: Date.now() }] });
 }
 
+const lastBusyUpdate = new Map<string, number>();
+
+/** Git prints progress many times a second; apply at most a few updates per second. */
 export function updateBusy(id: string, line: string) {
+  const now = Date.now();
+  if (now - (lastBusyUpdate.get(id) ?? 0) < 250 && !/100%|done/.test(line)) return;
+  lastBusyUpdate.set(id, now);
   const busy = useUi.getState().busy;
   if (!busy.some((b) => b.id === id)) return;
   useUi.setState({ busy: busy.map((b) => (b.id === id ? { ...b, line } : b)) });

@@ -8,6 +8,8 @@ import type { Check, ForgeInfo, PullRequest } from "../lib/types";
 import { relativeTime } from "../lib/format";
 import { Modal } from "./Modal";
 
+const FORGE_NAMES: Record<string, string> = { github: "GitHub", gitlab: "GitLab", bitbucket: "Bitbucket", "bitbucket-server": "Bitbucket Server" };
+
 export function CheckIcon({ state, size = 14 }: { state: Check["state"]; size?: number }) {
   switch (state) {
     case "success":
@@ -94,7 +96,7 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
         <div className="hstack" style={{ padding: "10px 12px", gap: 8, borderBottom: "1px solid var(--border-soft)" }}>
           <GitPullRequest size={16} style={{ color: "var(--accent)" }} />
           <b className="ellipsis">{forge ? `${forge.project}` : "Pull requests"}</b>
-          {forge && <span className="pill">{forge.kind === "github" ? "GitHub" : "GitLab"}</span>}
+          {forge && <span className="pill">{FORGE_NAMES[forge.kind] ?? forge.kind}</span>}
           <div className="spacer" />
           <button className="icon-btn" title="Refresh" onClick={load}>
             {loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
@@ -118,7 +120,7 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
           )}
           {!items && !err && (
             <div className="loading-center" style={{ minHeight: 120 }}>
-              <Loader2 className="spin" />
+              <span className="loader" />
             </div>
           )}
           {items?.length === 0 && !err && <div className="cg-empty">No open {forge?.kind === "gitlab" ? "merge requests" : "pull requests"}.</div>}

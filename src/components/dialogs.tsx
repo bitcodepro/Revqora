@@ -788,6 +788,14 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
             </button>
           ))}
         </div>
+        <label>Auto fetch</label>
+        <div className="seg">
+          {[0, 1, 5, 15, 30].map((m) => (
+            <button type="button" key={m} className={s.autoFetchMinutes === m ? "on" : ""} onClick={() => s.set({ autoFetchMinutes: m })}>
+              {m === 0 ? "Off" : `${m} min`}
+            </button>
+          ))}
+        </div>
         <label>Large files</label>
         <div className="hstack">
           <span className="faint">Warn when a staged file is bigger than</span>

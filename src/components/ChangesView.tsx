@@ -899,15 +899,9 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
           </label>
         </div>
       )}
-      <datalist id={`recent-${root.length}`}>
-        {(helpers?.recent ?? []).slice(0, 50).map((r) => (
-          <option key={r} value={r} />
-        ))}
-      </datalist>
       <div className="summary-wrap">
         <input
           className="input"
-          list={`recent-${root.length}`}
           autoComplete="off"
           placeholder={merging ? "Merge commit message" : conventional ? "short description" : "Summary (required)"}
           value={summary}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Archive, ArchiveRestore, Loader2, RotateCcw, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, RotateCcw, Trash2, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { getTab, useRepos } from "../lib/store";
 import { closeOverlay, toast } from "../lib/ui";
@@ -89,7 +89,7 @@ export function StashView({ root, index }: { root: string; index: number }) {
       {err && <div className="empty">{err}</div>}
       {!err && !c && (
         <div className="loading-center">
-          <Loader2 className="spin" />
+          <span className="loader" />
         </div>
       )}
       {c && (

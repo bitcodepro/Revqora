@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { List, FolderTree, Copy, CornerDownLeft, ExternalLink, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch } from "lucide-react";
+import { List, FolderTree, Copy, CornerDownLeft, ExternalLink, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
 import * as A from "../lib/actions";
 import { api, errorMessage } from "../lib/api";
 import type { Check, CommitDetails as Details, FileDiff, Signature } from "../lib/types";
@@ -13,7 +13,7 @@ import { DiffView, useDiffOpts } from "./DiffView";
 import { jumpToCommit } from "./GraphView";
 import { fileHistoryDialog } from "./FileHistory";
 
-export function CommitDetails({ root, oid }: { root: string; oid: string }) {
+export function CommitDetails({ root, oid, onClose }: { root: string; oid: string; onClose?: () => void }) {
   const [d, setD] = useState<Details | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [file, setFile] = useState<string | null>(null);
@@ -83,11 +83,27 @@ export function CommitDetails({ root, oid }: { root: string; oid: string }) {
     };
   }, [root, d, file, oid, diffOpts]);
 
+  // Alt+↑ / Alt+↓ step through the commit's files (handy in Review mode, works in Graph too).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || (e.key !== "ArrowDown" && e.key !== "ArrowUp") || !d?.files.length) return;
+      if (document.querySelector(".modal-backdrop")) return;
+      e.preventDefault();
+      setFile((cur) => {
+        const i = d.files.findIndex((f) => f.path === cur);
+        const next = Math.max(0, Math.min(d.files.length - 1, (i < 0 ? -1 : i) + (e.key === "ArrowDown" ? 1 : -1)));
+        return d.files[next].path;
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [d]);
+
   if (err) return <div className="empty">{err}</div>;
   if (!d || d.oid.slice(0, oid.length) !== oid.slice(0, d.oid.length))
     return (
       <div className="loading-center">
-        <Loader2 className="spin" />
+        <span className="loader" />
       </div>
     );
 
@@ -98,6 +114,11 @@ export function CommitDetails({ root, oid }: { root: string; oid: string }) {
     <>
       <div className="details-left">
         <div className="details-meta">
+          {onClose && (
+            <button className="details-hide" title="Hide commit details (Esc, or click the commit again)" onClick={onClose}>
+              <X size={13} /> Close
+            </button>
+          )}
           <h2>{d.subject}</h2>
           {d.body && <pre className="body">{d.body}</pre>}
           <div className="hstack" style={{ gap: 10 }}>

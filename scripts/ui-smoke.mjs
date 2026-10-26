@@ -56,11 +56,19 @@ async function check(name, fn) {
 const shot = (n) => page.screenshot({ path: path.join(out, `${n}.png`) });
 const until = async (fn, msg, ms = 8000) => {
   const t = Date.now();
+  let lastError = null;
   while (Date.now() - t < ms) {
-    if (await fn()) return;
+    // A git command polled while the app rewrites refs (rebase, merge) can fail for a moment:
+    // treat that as "not yet" and retry.
+    try {
+      if (await fn()) return;
+      lastError = null;
+    } catch (e) {
+      lastError = e;
+    }
     await page.waitForTimeout(120);
   }
-  throw new Error(msg);
+  throw new Error(lastError ? `${msg} (last error: ${lastError.message})` : msg);
 };
 
 let failed = false;
@@ -105,12 +113,66 @@ try {
     await page.waitForSelector(".details .file-row");
     await page.waitForSelector(".diff .dl.add");
     await shot("02-details");
+    // The panel can be hidden again with its "Hide" tab and with Esc.
+    await page.click(".details-hide");
+    await page.waitForSelector(".details", { state: "detached" });
+    await page.locator(".grow", { hasText: "Document usage" }).click();
+    await page.waitForSelector(".details .file-row");
+    await page.locator(".graph-scroll").press("Escape");
+    await page.waitForSelector(".details", { state: "detached" });
+    await page.locator(".grow", { hasText: "Document usage" }).click();
+    await page.waitForSelector(".details .file-row");
   });
 
   await check("search filters commits", async () => {
     await page.fill(".search-box input", "greeting");
     await until(async () => (await page.locator(".grow.match").count()) >= 2, "no search matches");
     await page.fill(".search-box input", "");
+  });
+
+  await check("review mode shows commits, files and a full-height diff", async () => {
+    await page.click(".history-mode button:has-text('Review')");
+    await page.waitForSelector(".review .grow.compact");
+    await page.locator(".review .grow.compact", { hasText: "Merge branch 'feature/auth'" }).click();
+    await page.waitForSelector(".review-details .file-row");
+    await page.waitForSelector(".review-details .diff .dl");
+    // Arrow keys move between commits without the graph.
+    await page.locator(".review .graph-scroll").press("ArrowDown");
+    await until(async () => (await page.locator(".review .grow.compact.selected").innerText()).includes("Enable debug mode"), "ArrowDown did not select the next commit");
+    await page.waitForSelector(".review-details .diff .dl");
+    // Alt+arrows step through files with the commit list focused, without changing the commit.
+    await page.locator(".review .grow.compact", { hasText: "Initial project structure" }).click();
+    // Wait for this commit's details (three files), not the previous commit's file list.
+    await page.waitForSelector(".review-details .details-meta h2:has-text('Initial project structure')");
+    await until(async () => (await page.locator(".review-details .file-row").count()) === 3, "commit files did not load");
+    await page.waitForSelector(".review-details .file-row.selected");
+    const firstFile = await page.locator(".review-details .file-row.selected").innerText();
+    // The selected file carries over between commits; step towards the side that has a neighbour.
+    const atEnd = await page.locator(".review-details .file-row").last().evaluate((el) => el.classList.contains("selected"));
+    const key = atEnd ? "Alt+ArrowUp" : "Alt+ArrowDown";
+    await page.locator(".review .graph-scroll").press(key);
+    await until(async () => (await page.locator(".review-details .file-row.selected").innerText()) !== firstFile, `${key} did not move to another file`);
+    const selected = await page.locator(".review .grow.compact.selected").innerText();
+    if (!selected.includes("Initial project structure")) throw new Error(`${key} changed the commit to: ${selected}`);
+    await shot("18-review");
+    await page.click(".history-mode button:has-text('Graph')");
+    await page.waitForSelector(".graph-cols");
+  });
+
+  await check("typing into a dialog keeps every character", async () => {
+    await page.click(".tb-btn:has-text('Branch')");
+    const input = page.locator(".modal input.input");
+    await input.waitFor();
+    await page.waitForTimeout(200);
+    // Real key presses with pauses: each re-render must not re-select (and so replace) the text.
+    await page.keyboard.type("feat/typed-name", { delay: 80 });
+    const value = await input.inputValue();
+    if (value !== "feat/typed-name") throw new Error(`input holds ${JSON.stringify(value)}`);
+    // Text fields carry no dropdown chevron (only selects do).
+    const bg = await input.evaluate((el) => getComputedStyle(el).backgroundImage);
+    if (bg !== "none") throw new Error(`text input has a background image: ${bg.slice(0, 60)}`);
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".modal", { state: "detached" });
   });
 
   await check("stage a single line from the diff", async () => {

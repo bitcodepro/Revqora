@@ -37,6 +37,11 @@ export interface Settings {
   syncScroll: boolean;
   diffFullFile: boolean;
   checkUpdates: boolean;
+  /** Background fetch interval in minutes; 0 turns it off. */
+  autoFetchMinutes: number;
+  /** History layout: the graph, or Review (commit list, files and a full-height diff). */
+  historyMode: "graph" | "review";
+  reviewListWidth: number;
   skippedUpdate: string | null;
   set: (patch: Partial<Settings>) => void;
   addRecent: (path: string) => void;
@@ -80,6 +85,9 @@ export const useSettings = create<Settings>()(
       syncScroll: true,
       diffFullFile: false,
       checkUpdates: true,
+      autoFetchMinutes: 5,
+      historyMode: "graph",
+      reviewListWidth: 340,
       skippedUpdate: null,
       set: (patch) => set(patch),
       addRecent: (path) => set({ recent: [path, ...get().recent.filter((p) => p.toLowerCase() !== path.toLowerCase())].slice(0, 15) }),

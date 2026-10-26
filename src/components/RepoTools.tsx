@@ -81,7 +81,7 @@ function RepoToolsBody({ root, initial, close }: { root: string; initial: "overv
         <>
           {!size ? (
             <div className="loading-center" style={{ minHeight: 120 }}>
-              <Loader2 className="spin" />
+              <span className="loader" />
             </div>
           ) : (
             <div className="settings-grid">

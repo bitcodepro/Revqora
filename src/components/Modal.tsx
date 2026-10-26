@@ -14,15 +14,19 @@ interface ModalProps {
 
 export function Modal({ title, subtitle, icon, tone = "accent", wide, children, footer, onClose, onSubmit }: ModalProps) {
   const ref = useRef<HTMLDivElement>(null);
+  // Callers pass a new onClose on every render; keep the latest without re-running the effect,
+  // which would re-focus and select the input after each keystroke (typing replaced the text).
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        closeRef.current();
       }
     };
     window.addEventListener("keydown", onKey, true);
-    // Focus the first input for keyboard-first use.
+    // Focus the first input once, when the dialog opens, for keyboard-first use.
     const t = setTimeout(() => {
       const el = ref.current?.querySelector<HTMLElement>("input:not([type=checkbox]):not([type=radio]), textarea, select, button.primary");
       el?.focus();
@@ -32,7 +36,7 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
       window.removeEventListener("keydown", onKey, true);
       clearTimeout(t);
     };
-  }, [onClose]);
+  }, []);
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <form

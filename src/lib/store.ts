@@ -18,6 +18,8 @@ export interface RepoTab {
   info: RepoInfo | null;
   status: StatusSummary | null;
   refs: RefsSnapshot | null;
+  /** Branches whose changes are already in HEAD without a merge link (squash / rebase merged). */
+  squashMerged: string[];
   extras: RepoExtras | null;
   layers: LayersState | null;
   graph: GraphSummary | null;
@@ -62,6 +64,7 @@ function emptyTab(root: string): RepoTab {
     info: null,
     status: null,
     refs: null,
+    squashMerged: [],
     extras: null,
     layers: null,
     graph: null,
@@ -206,6 +209,11 @@ async function refreshOnce(root: string, parts: Parts) {
   }
   if (!useRepos.getState().tabs[root]) return;
   useRepos.getState().patch(root, { ...patch, loaded: true });
+  if (patch.refs)
+    api.squashMerged(root).then(
+      (squashMerged) => useRepos.getState().tabs[root] && useRepos.getState().patch(root, { squashMerged }),
+      () => {},
+    );
   // Wait for history only when it was explicitly requested; a dirty/clean toggle reloads it in the background.
   if (graphP && parts.graph) await graphP;
 }

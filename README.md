@@ -70,8 +70,8 @@ Screenshots use a generated demo repository (`scripts/make-demo-repo.sh`); all n
 - Warns about large staged files and moves them to Git LFS in one click.
 - Readable hook failures with "Retry" and "Commit without hooks".
 
-**GitHub & GitLab**
-- Pull / merge requests: list, create (pushes the branch first), check out, compare, open in the browser; CI checks per PR and per commit. The token comes from git's credential manager.
+**GitHub, GitLab & Bitbucket**
+- Pull / merge requests: list, create (pushes the branch first), check out, compare, open in the browser; CI checks per PR and per commit. Works with GitHub (and Enterprise), GitLab, Bitbucket Cloud and Bitbucket Server / Data Center. The token comes from git's credential manager (OAuth, personal access tokens and Bitbucket app passwords).
 
 **Self-contained git and credentials**
 - Uses the Git already installed on the computer (shows a download link if it is missing); credentials go through its own credential manager.
@@ -85,6 +85,7 @@ Screenshots use a generated demo repository (`scripts/make-demo-repo.sh`); all n
 - Dark and light themes (or follow the system), selectable UI / code fonts and sizes.
 - Command palette (Ctrl+K), rebindable keyboard shortcuts, first-run guide, optional author pictures (Gravatar / GitHub, off by default), auto-refresh through a file watcher.
 - Portable: unpack the zip anywhere and run `revqora.exe`; a second launch opens folders as tabs in the running window.
+- Everything it remembers (recent repositories, open tabs, settings, window size) is kept only in a `data` folder next to the exe; nothing is stored in `%APPDATA%` or `%LOCALAPPDATA%`. Move or copy the folder as a whole; updates keep `data`. The app folder must be writable. On macOS and Linux only the window size goes there; the web view keeps its storage in the system location.
 - Updates itself: checks GitHub Releases at startup (and every few hours); when a new version is out, an **Update** chip appears in the status bar. One click downloads the package for your platform, verifies its SHA-256 checksum and replaces the files in place, then "Restart to update" finishes it. Skip a version or turn checks off in Settings.
 
 ## Requirements

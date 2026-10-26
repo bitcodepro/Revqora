@@ -8,7 +8,6 @@ import {
   Columns2,
   FileDiff as FileDiffIcon,
   FileWarning,
-  Loader2,
   Maximize2,
   Minus,
   Plus,
@@ -454,7 +453,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, onA
   } else if (!diff) {
     body = loading ? (
       <div className="loading-center">
-        <Loader2 className="spin" />
+        <span className="loader" />
       </div>
     ) : (
       <div className="empty">

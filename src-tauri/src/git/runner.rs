@@ -245,7 +245,12 @@ fn classify(s: &str) -> String {
         "dirty-worktree".into()
     } else if l.contains("conflict") {
         "conflict".into()
-    } else if l.contains("authentication failed") || l.contains("could not read username") || l.contains("permission denied (publickey)") {
+    } else if l.contains("authentication failed")
+        || l.contains("could not read username")
+        || l.contains("could not read password")
+        || l.contains("unable to get password from user")
+        || l.contains("permission denied (publickey)")
+    {
         "auth".into()
     } else if l.contains("non-fast-forward") || l.contains("[rejected]") || l.contains("fetch first") {
         "rejected".into()
@@ -388,6 +393,26 @@ pub fn version_at_least(major: u32, minor: u32) -> bool {
 mod tests {
     use super::is_read_only;
 
+    #[test]
+    fn classifies_noninteractive_credential_failures() {
+        // Older Git reports the disabled prompt; newer Git uses the generic password error.
+        for stderr in [
+            "fatal: could not read Username for 'https://example.com': terminal prompts disabled",
+            "fatal: could not read Password for 'https://test@example.com': terminal prompts disabled",
+            "fatal: unable to get password from user",
+            "fatal: Authentication failed for 'https://example.com/repo.git/'",
+            "git@example.com: Permission denied (publickey).",
+        ] {
+            let out = super::Output { stdout: Vec::new(), stderr: stderr.into(), code: 128 };
+            let err = super::to_error("git fetch", &out);
+            assert_eq!(err.kind, "auth", "{stderr}");
+            assert_eq!(err.code, Some(128));
+            assert_eq!(err.stderr, stderr);
+        }
+        // Network and filesystem errors must still be retried/handled as ordinary errors.
+        assert_eq!(super::classify("fatal: Could not resolve host: example.com"), "error");
+        assert_eq!(super::classify("fatal: unable to access repository: Permission denied"), "error");
+    }
     #[test]
     fn classifies_read_only_commands() {
         assert!(is_read_only(&["status", "--porcelain=v2"]));

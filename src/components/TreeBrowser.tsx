@@ -189,7 +189,7 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
                 renderNode(tree, 0)
               ) : (
                 <div className="loading-center">
-                  <Loader2 className="spin" />
+                  <span className="loader" />
                 </div>
               )}
             </div>
@@ -205,7 +205,7 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
             </div>
             {file && text === null && (
               <div className="loading-center">
-                <Loader2 className="spin" />
+                <span className="loader" />
               </div>
             )}
             <div className="cf-editor" ref={host} key={file ?? ""} />
