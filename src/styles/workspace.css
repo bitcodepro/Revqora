@@ -98,6 +98,7 @@
 .diff-head > .spacer { display: none; }
 .diff-head .seg, .diff-head > button { flex: none; }
 .diff-body { min-width: 0; min-height: 0; }
+.diff .diff-body .code { tab-size: var(--diff-tab-size, 4); }
 .diff-content { width: max-content; min-width: 100%; }
 .diff-content .hunk { content-visibility: visible; contain-intrinsic-size: none; }
 .diff-body:not(.wrap) .dl { grid-template-columns: 46px 46px 18px minmax(max-content, 1fr); }

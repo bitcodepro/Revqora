@@ -22,6 +22,7 @@ import { useSettings } from "../lib/settings";
 import { highlightLines, languageFor, type Tok } from "../lib/languages";
 import { wordDiff, type Span } from "../lib/worddiff";
 import { basename, dirname } from "../lib/format";
+import { DIFF_TAB_SIZE, measureDiffLine } from "../lib/diffMetrics";
 import type { LanguageSupport } from "@codemirror/language";
 import { ImageDiff, isImagePath, type ImageSides } from "./ImageDiff";
 
@@ -184,9 +185,10 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, onA
     const context = document.createElement("canvas").getContext("2d");
     if (!context) return 0;
     context.font = `${s.codeFontSize}px "${s.codeFont}", monospace`;
+    const measure = (text: string) => context.measureText(text).width;
     let width = 0;
     for (const h of diff.hunks) for (const line of h.lines) {
-      width = Math.max(width, context.measureText(line.text.replace(/\t/g, "    ")).width);
+      width = Math.max(width, measureDiffLine(line.text, measure));
     }
     return Math.ceil(width);
   }, [virtual, splitPan, diff, s.codeFontSize, s.codeFont]);
@@ -562,7 +564,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, onA
   }
 
   return (
-    <div className="diff" style={{ ["--diff-view-width" as string]: `${viewW}px`, ["--split-scroll" as string]: `${splitPan ? horizontal.position : 0}px` }} onKeyDown={onKeyDown} tabIndex={-1}>
+    <div className="diff" style={{ ["--diff-view-width" as string]: `${viewW}px`, ["--split-scroll" as string]: `${splitPan ? horizontal.position : 0}px`, ["--diff-tab-size" as string]: DIFF_TAB_SIZE }} onKeyDown={onKeyDown} tabIndex={-1}>
       {path && head}
       {findBar}
       <div ref={bodyRef} className={`diff-body ${s.wrapDiff ? "wrap" : ""}`} onScroll={(e) => {

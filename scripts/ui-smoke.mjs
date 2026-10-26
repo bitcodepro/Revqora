@@ -481,6 +481,7 @@ try {
   });
 
   await check("repository panels collapse independently and review files can be resized", async () => {
+    const viewport = page.viewportSize() ?? await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
     await page.click(".view-tab:has-text('History')");
     await page.click(".history-mode button:has-text('Review')");
     await page.locator(".review .graph-scroll").press("End");
@@ -496,6 +497,8 @@ try {
     await page.waitForSelector(".repository-slot", { state: "hidden" });
     await page.click(".topbar button[aria-label='Toggle repositories panel']");
     await page.waitForSelector(".repository-slot", { state: "visible" });
+    // Give a growing pane actual headroom instead of depending on the runner's display.
+    await page.setViewportSize({ width: 1600, height: 900 });
     const before = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
     const splitter = await page.locator(".commit-details > .splitter-v").boundingBox();
     await page.mouse.move(splitter.x + 3, splitter.y + 180);
@@ -505,7 +508,27 @@ try {
     const after = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
     if (after < before + 40) throw new Error("file list did not resize");
     const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.commitFilesWidth);
-    if (Math.abs(saved - after) > 4) throw new Error("file list width was not persisted");
+    if (Math.abs(saved - (before + 67)) > 4) throw new Error("preferred file list width was not persisted");
+    // A narrower window clamps the rendered width without rewriting the preference.
+    await page.setViewportSize({ width: 1028, height: 760 });
+    const containerWidth = await page.locator(".commit-details").evaluate((el) => el.clientWidth);
+    const narrowBefore = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
+    const clamped = (preferred) => Math.max(140, Math.min(preferred, containerWidth * .45));
+    if (Math.abs(narrowBefore - clamped(saved)) > 2) throw new Error("file list did not respect the available width");
+    if (await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.commitFilesWidth) !== saved) throw new Error("viewport resize overwrote preferred file list width");
+    const target = Math.max(140, narrowBefore - 60);
+    const narrowSplitter = await page.locator(".commit-details > .splitter-v").boundingBox();
+    const x = narrowSplitter.x + narrowSplitter.width / 2, y = narrowSplitter.y + narrowSplitter.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + target - saved, y, { steps: 8 });
+    await page.mouse.up();
+    const narrowAfter = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
+    const narrowSaved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.commitFilesWidth);
+    if (narrowBefore - narrowAfter < 40) throw new Error("file list did not shrink in a narrow window");
+    if (Math.abs(narrowSaved - target) > 4 || Math.abs(narrowAfter - clamped(narrowSaved)) > 2) throw new Error("narrow resize did not persist preferred width independently of its layout clamp");
+    await shot("24-resize-narrow");
+    await page.setViewportSize(viewport);
     await page.click(".focus-toggle");
     await page.waitForSelector(".repository-slot", { state: "hidden" });
     await page.waitForSelector(".branches-slot", { state: "hidden" });
@@ -514,7 +537,6 @@ try {
     await page.click(".focus-toggle");
     await page.waitForSelector(".repository-slot", { state: "visible" });
     await page.waitForSelector(".branches-slot", { state: "visible" });
-    const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
     await page.setViewportSize({ width: 980, height: 700 });
     const fits = await page.evaluate(() => document.querySelector(".app").scrollWidth <= innerWidth + 1);
     if (!fits) throw new Error("workspace overflowed the minimum window width");
@@ -533,6 +555,7 @@ try {
     at(seed, "config", "user.name", "Fixture");
     at(seed, "config", "user.email", "fixture@example.com");
     fs.writeFileSync(path.join(seed, "shared.txt"), "initial\n");
+    fs.writeFileSync(path.join(seed, "tabs.txt"), "a\t".repeat(120) + "OLD_TAB_END\n");
     at(seed, "add", "-A");
     at(seed, "commit", "-qm", "Initial fixture");
     at(seed, "clone", "-q", "--bare", seed, origin);
@@ -548,6 +571,7 @@ try {
     at(repos[2], "commit", "-qm", "Local-only fixture");
     const dirtyHead = at(repos[1], "rev-parse", "HEAD"), divergedHead = at(repos[2], "rev-parse", "HEAD");
     fs.writeFileSync(path.join(seed, "long.ts"), 'export const longLine = "' + "long-text-".repeat(100) + '";\n');
+    fs.writeFileSync(path.join(seed, "tabs.txt"), "abc\t".repeat(120) + "NEW_TAB_END\n");
     fs.writeFileSync(path.join(seed, "large.txt"), Array.from({ length: 3200 }, (_, i) => i === 2200 ? "virtual-long-".repeat(120) : "line " + i).join("\n") + "\n");
     at(seed, "add", "-A");
     at(seed, "commit", "-qm", "Incoming fixture update keeps long commit messages readable across the whole preview header", "-m",
@@ -598,6 +622,24 @@ try {
     await page.locator(".diff-hscroll input").fill("180");
     await until(async () => await page.locator(".split-dl .half.add .code").first().evaluate((el) => el.getBoundingClientRect().left < el.parentElement.getBoundingClientRect().left - 100), "split columns did not pan together");
     await shot("21-long-lines");
+    await page.locator(".details .file-row", { hasText: "tabs.txt" }).click();
+    await page.waitForSelector(".split-dl .half.add .code:has-text('NEW_TAB_END')");
+    await page.waitForSelector(".diff-hscroll input");
+    const tabScroll = page.locator(".diff-hscroll input");
+    await tabScroll.fill(String(Math.floor(Number(await tabScroll.getAttribute("max")))));
+    await until(async () => await page.locator(".split-dl .half:not(.empty) .code").evaluateAll((nodes) => nodes.length === 2 && nodes.every((code) => {
+      // Inspect the final glyphs, not the clipped span's full bounding box.
+      const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+      let last = null;
+      while (walker.nextNode()) last = walker.currentNode;
+      if (!last) return false;
+      const range = document.createRange();
+      range.setStart(last, Math.max(0, last.textContent.length - 7));
+      range.setEnd(last, last.textContent.length);
+      const tail = range.getBoundingClientRect(), viewport = code.parentElement.getBoundingClientRect();
+      return getComputedStyle(code).tabSize === "4" && tail.left >= viewport.left - 1 && tail.right <= viewport.right + 1;
+    })), "tabbed split lines cannot be scrolled to their ends");
+    await shot("25-tabbed-lines");
     await page.click("button[title='Unified']");
     await page.locator(".details .file-row", { hasText: "large.txt" }).click();
     await page.waitForSelector(".virtual-diff");
