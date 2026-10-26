@@ -47,6 +47,11 @@
 .details { display: flex; min-width: 0; }
 .details.review-details { grid-area: 2 / 1; display: flex; grid-template-columns: none; }
 .review-focused > .details.review-details { grid-area: 1 / 1; }
+.columns-history { display: grid; position: relative; flex: 1; min-width: 0; min-height: 0; }
+.columns-commits { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--border); }
+.columns-commits .graph-panel { flex: 1; min-height: 0; }
+.columns-commits .search-box { width: 100% !important; }
+.details.columns-details { grid-column: 2; min-height: 0; border-top: 0; }
 .commit-details { position: relative; flex: 1; display: grid; min-height: 0; min-width: 0; grid-template-columns: clamp(140px, var(--commit-files-w, 240px), 45%) minmax(0, 1fr); }
 .details-left { min-width: 0; }
 .details-meta { padding: 12px; }
@@ -55,6 +60,16 @@
 .commit-preview-head { display: flex; align-items: flex-start; gap: 16px; padding: 11px 14px; border-bottom: 1px solid var(--border); background: var(--bg-elev); flex: none; min-width: 0; }
 .commit-subject { flex: 1; min-width: 0; margin: 0; font-size: var(--fs-lg); line-height: 1.5; font-weight: 600; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .commit-preview-actions { display: flex; flex: none; align-items: center; gap: 6px; }
+.commit-heading { flex: 1; min-width: 0; }
+.commit-byline { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 5px; color: var(--text-faint); font-size: var(--fs-sm); }
+.commit-byline > .hash-chip { flex: none; }
+.commit-byline > span:last-child { white-space: nowrap; }
+.commit-metadata { flex: none; min-width: 0; border-bottom: 1px solid var(--border-soft); }
+.commit-metadata > summary { padding: 8px 12px; cursor: pointer; color: var(--text-dim); font-size: var(--fs-sm); }
+.commit-metadata .details-meta { max-height: min(260px, 35vh); }
+.delete-branch-option { display: flex; align-items: flex-start; gap: 9px; overflow-wrap: anywhere; margin: 4px 0; }
+.delete-branch-option input { flex: none; margin-top: 3px; accent-color: var(--accent); }
+.delete-branch-error { white-space: pre-wrap; overflow-wrap: anywhere; }
 .commit-preview-actions .details-hide { position: static; margin: 0; }
 .commit-message { min-width: 0; font-size: var(--fs); line-height: 1.65; overflow-wrap: anywhere; }
 .commit-message > h2 { margin: 0 0 20px; font-size: var(--fs-xl); line-height: 1.5; white-space: pre-wrap; }

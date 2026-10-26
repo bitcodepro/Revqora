@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { restoreWorkspaceLayouts, type HistoryMode, type WorkspaceLayout, type WorkspaceMode } from "./workspaceLayouts";
 
 export type ThemePref = "system" | "dark" | "light";
 export type DiffMode = "unified" | "split";
@@ -21,13 +22,8 @@ export interface Settings {
   recent: string[];
   openTabs: string[];
   activeTab: string | null;
-  sidebarWidth: number;
-  repositoriesOpen: boolean;
-  repositoriesWidth: number;
-  branchesOpen: boolean;
-  commitFilesWidth: number;
-  detailsHeight: number;
-  changesListWidth: number;
+  layouts: Record<WorkspaceMode, WorkspaceLayout>;
+  setLayout: (mode: WorkspaceMode, patch: Partial<WorkspaceLayout>) => void;
   pullMode: "ff-only" | "merge" | "rebase";
   commitGraphDismissed: string[];
   avatars: boolean;
@@ -43,9 +39,8 @@ export interface Settings {
   checkUpdates: boolean;
   /** Background fetch interval in minutes; 0 turns it off. */
   autoFetchMinutes: number;
-  /** History layout: the graph, or Review (commit list, files and a full-height diff). */
-  historyMode: "graph" | "review";
-  reviewListHeight: number;
+  /** Graph, stacked Review, or commit/file/diff columns. */
+  historyMode: HistoryMode;
   skippedUpdate: string | null;
   set: (patch: Partial<Settings>) => void;
   addRecent: (path: string) => void;
@@ -73,13 +68,8 @@ export const useSettings = create<Settings>()(
       recent: [],
       openTabs: [],
       activeTab: null,
-      sidebarWidth: 264,
-      repositoriesOpen: true,
-      repositoriesWidth: 224,
-      branchesOpen: true,
-      commitFilesWidth: 240,
-      detailsHeight: 340,
-      changesListWidth: 360,
+      layouts: restoreWorkspaceLayouts(),
+      setLayout: (mode, patch) => set((state) => ({ layouts: { ...state.layouts, [mode]: { ...state.layouts[mode], ...patch } } })),
       pullMode: "ff-only",
       commitGraphDismissed: [],
       avatars: false,
@@ -95,13 +85,16 @@ export const useSettings = create<Settings>()(
       checkUpdates: true,
       autoFetchMinutes: 5,
       historyMode: "graph",
-      reviewListHeight: 220,
       skippedUpdate: null,
       set: (patch) => set(patch),
       addRecent: (path) => set({ recent: [path, ...get().recent.filter((p) => p.toLowerCase() !== path.toLowerCase())].slice(0, 100) }),
       removeRecent: (path) => set({ recent: get().recent.filter((p) => p !== path) }),
     }),
-    { name: "revqora.settings", version: 1 },
+    {
+      name: "revqora.settings", version: 2,
+      migrate: (stored) => ({ ...(stored as object), layouts: restoreWorkspaceLayouts(stored) }),
+      merge: (stored, current) => ({ ...current, ...(stored as object), layouts: restoreWorkspaceLayouts(stored) }),
+    },
   ),
 );
 

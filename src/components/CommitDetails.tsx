@@ -14,8 +14,9 @@ import { jumpToCommit } from "./GraphView";
 import { fileHistoryDialog } from "./FileHistory";
 import { Splitter } from "./Overlays";
 import { CommitMessageDialog } from "./CommitMessage";
+import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 
-export function CommitDetails({ root, oid, onClose }: { root: string; oid: string; onClose?: () => void }) {
+export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
   const [d, setD] = useState<Details | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [file, setFile] = useState<string | null>(null);
@@ -26,8 +27,9 @@ export function CommitDetails({ root, oid, onClose }: { root: string; oid: strin
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [checksBusy, setChecksBusy] = useState(false);
   const [hasForge, setHasForge] = useState(false);
-  const filesWidth = useSettings((s) => s.commitFilesWidth);
+  const { mode, layout: { commitFilesWidth: filesWidth }, setLayout } = useWorkspaceLayout();
   const [fw, setFw] = useState(filesWidth);
+  useEffect(() => setFw(filesWidth), [mode, filesWidth]);
   useEffect(() => {
     api.forgeInfo(root).then((f) => setHasForge(!!f), () => setHasForge(false));
   }, [root]);
@@ -107,7 +109,14 @@ export function CommitDetails({ root, oid, onClose }: { root: string; oid: strin
   const current = d && d.oid.slice(0, oid.length) === oid.slice(0, d.oid.length) ? d : null;
   const header = (
     <header className="commit-preview-head">
-      <h2 className="commit-subject selectable" title={current?.subject}>{current?.subject ?? "Commit preview"}</h2>
+      <div className="commit-heading">
+        <h2 className="commit-subject selectable" title={current?.subject}>{current?.subject ?? "Commit preview"}</h2>
+        {compactMeta && current && <div className="commit-byline">
+          <span className="ellipsis" title={current.authorEmail}>{current.author}</span>
+          <button type="button" className="hash-chip" title="Copy commit hash" onClick={() => copyText(current.oid, "Hash copied")}><GitCommitHorizontal size={12} /> {shortOid(current.oid)}</button>
+          <span title={fullTime(current.authorTime)}>{relativeTime(current.authorTime)}</span>
+        </div>}
+      </div>
       <div className="commit-preview-actions">
         <button type="button" className="btn sm commit-message-open" disabled={!current} title="Read the full commit message" onClick={async () => {
           if (!current) return;
@@ -130,79 +139,83 @@ export function CommitDetails({ root, oid, onClose }: { root: string; oid: strin
   const adds = d.files.reduce((a, f) => a + (f.additions ?? 0), 0);
   const dels = d.files.reduce((a, f) => a + (f.deletions ?? 0), 0);
 
+  const metadata = (
+    <div className="details-meta">
+      <div className="hstack" style={{ gap: 10 }}>
+        <Avatar name={d.author} email={d.authorEmail} large />
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 600 }} className="ellipsis selectable">
+            {d.author} <span className="faint" style={{ fontWeight: 400 }}>&lt;{d.authorEmail}&gt;</span>
+          </div>
+          <div className="faint" style={{ fontSize: "var(--fs-sm)" }} title={fullTime(d.authorTime)}>
+            {relativeTime(d.authorTime)} · {absoluteTime(d.authorTime)}
+          </div>
+        </div>
+      </div>
+      <div className="meta-grid">
+        <span className="k">Commit</span>
+        <span>
+          <span className="hash-chip" onClick={() => copyText(d.oid, "Hash copied")} title="Copy full hash">
+            {d.oid.slice(0, 12)} <Copy size={11} />
+          </span>
+        </span>
+        {d.parents.length > 0 && (
+          <>
+            <span className="k">{d.parents.length > 1 ? "Parents" : "Parent"}</span>
+            <span className="hstack" style={{ gap: 6, flexWrap: "wrap" }}>
+              {d.parents.map((p) => (
+                <span key={p} className="hash-chip" onClick={() => jumpToCommit(root, p)} title="Go to parent">
+                  {shortOid(p)} <GitCommitHorizontal size={11} />
+                </span>
+              ))}
+            </span>
+          </>
+        )}
+        {(d.committer !== d.author || d.commitTime !== d.authorTime) && (
+          <>
+            <span className="k">Committed</span>
+            <span className="muted" title={fullTime(d.commitTime)}>
+              {d.committer} · {relativeTime(d.commitTime)}
+            </span>
+          </>
+        )}
+        {sig && sig.status !== "N" && (
+          <>
+            <span className="k">Signature</span>
+            <span title={[sig.signer, sig.key, sig.fingerprint].filter(Boolean).join("\n")}>
+              <SignatureBadge sig={sig} />
+            </span>
+          </>
+        )}
+        {hasForge && d.containedInRemote && (
+          <>
+            <span className="k">CI</span>
+            <span>
+              {checks ? (
+                <span className="hstack" style={{ gap: 6 }} title={checks.map((c) => `${c.state}: ${c.name}`).join("\n")}>
+                  {summarizeChecks(checks) ? <CheckIcon state={summarizeChecks(checks)!} /> : null}
+                  {checks.length ? `${checks.filter((c) => c.state === "success").length}/${checks.length} passed` : "no checks"}
+                </span>
+              ) : (
+                <button className="btn sm ghost" onClick={loadChecks} disabled={checksBusy}>
+                  {checksBusy ? <Loader2 size={12} className="spin" /> : null} Show CI status
+                </button>
+              )}
+            </span>
+          </>
+        )}
+        <span className="k">Status</span>
+        <span>{d.containedInRemote ? <span className="pill green">pushed</span> : <span className="pill amber">local only</span>}</span>
+      </div>
+    </div>
+  );
+
   return (
     <div className="commit-preview">
       {header}
       <div className="commit-details" style={{ ["--commit-files-w" as string]: `${fw}px` }}>
         <div className="details-left">
-          <div className="details-meta">
-            <div className="hstack" style={{ gap: 10 }}>
-              <Avatar name={d.author} email={d.authorEmail} large />
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 600 }} className="ellipsis selectable">
-                  {d.author} <span className="faint" style={{ fontWeight: 400 }}>&lt;{d.authorEmail}&gt;</span>
-                </div>
-                <div className="faint" style={{ fontSize: "var(--fs-sm)" }} title={fullTime(d.authorTime)}>
-                  {relativeTime(d.authorTime)} · {absoluteTime(d.authorTime)}
-                </div>
-              </div>
-            </div>
-            <div className="meta-grid">
-              <span className="k">Commit</span>
-              <span>
-                <span className="hash-chip" onClick={() => copyText(d.oid, "Hash copied")} title="Copy full hash">
-                  {d.oid.slice(0, 12)} <Copy size={11} />
-                </span>
-              </span>
-              {d.parents.length > 0 && (
-                <>
-                  <span className="k">{d.parents.length > 1 ? "Parents" : "Parent"}</span>
-                  <span className="hstack" style={{ gap: 6, flexWrap: "wrap" }}>
-                    {d.parents.map((p) => (
-                      <span key={p} className="hash-chip" onClick={() => jumpToCommit(root, p)} title="Go to parent">
-                        {shortOid(p)} <GitCommitHorizontal size={11} />
-                      </span>
-                    ))}
-                  </span>
-                </>
-              )}
-              {(d.committer !== d.author || d.commitTime !== d.authorTime) && (
-                <>
-                  <span className="k">Committed</span>
-                  <span className="muted" title={fullTime(d.commitTime)}>
-                    {d.committer} · {relativeTime(d.commitTime)}
-                  </span>
-                </>
-              )}
-              {sig && sig.status !== "N" && (
-                <>
-                  <span className="k">Signature</span>
-                  <span title={[sig.signer, sig.key, sig.fingerprint].filter(Boolean).join("\n")}>
-                    <SignatureBadge sig={sig} />
-                  </span>
-                </>
-              )}
-              {hasForge && d.containedInRemote && (
-                <>
-                  <span className="k">CI</span>
-                  <span>
-                    {checks ? (
-                      <span className="hstack" style={{ gap: 6 }} title={checks.map((c) => `${c.state}: ${c.name}`).join("\n")}>
-                        {summarizeChecks(checks) ? <CheckIcon state={summarizeChecks(checks)!} /> : null}
-                        {checks.length ? `${checks.filter((c) => c.state === "success").length}/${checks.length} passed` : "no checks"}
-                      </span>
-                    ) : (
-                      <button className="btn sm ghost" onClick={loadChecks} disabled={checksBusy}>
-                        {checksBusy ? <Loader2 size={12} className="spin" /> : null} Show CI status
-                      </button>
-                    )}
-                  </span>
-                </>
-              )}
-              <span className="k">Status</span>
-              <span>{d.containedInRemote ? <span className="pill green">pushed</span> : <span className="pill amber">local only</span>}</span>
-            </div>
-          </div>
+          {compactMeta ? <details className="commit-metadata"><summary>Commit details</summary>{metadata}</details> : metadata}
           <div className="file-list-head">
             <span>{d.files.length} files</span>
             <button
@@ -260,7 +273,7 @@ export function CommitDetails({ root, oid, onClose }: { root: string; oid: strin
             )} />
           </div>
         </div>
-        <Splitter dir="v" style={{ left: "clamp(140px, var(--commit-files-w), 45%)" }} onDrag={(d) => setFw((w) => Math.max(140, Math.min(600, w + d)))} onEnd={() => useSettings.getState().set({ commitFilesWidth: fw })} />
+        <Splitter dir="v" style={{ left: "clamp(140px, var(--commit-files-w), 45%)" }} onDrag={(d) => setFw((w) => Math.max(140, Math.min(600, w + d)))} onEnd={() => setLayout({ commitFilesWidth: fw })} />
         <DiffView
           diff={diff}
           loading={diffLoading}

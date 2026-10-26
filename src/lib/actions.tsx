@@ -5,6 +5,8 @@ import { ALL, getTab, useRepos, type Parts } from "./store";
 import { endBusy, showDialog, startBusy, toast, useUi } from "./ui";
 import { GitMerge } from "lucide-react";
 import { Modal } from "../components/Modal";
+import { DeleteBranchDialog } from "../components/DeleteBranchDialog";
+import { deletionTargets } from "./branchDeletion";
 import { useSettings } from "./settings";
 import type { OpOutcome } from "./types";
 import { shortOid } from "./format";
@@ -283,18 +285,13 @@ export async function renameBranch(root: string, name: string) {
 }
 
 export async function deleteBranch(root: string, name: string) {
-  const ok = await confirmDialog({ title: `Delete branch ${name}?`, message: "The branch label is removed. Commits stay reachable through other branches or the reflog.", confirm: "Delete", danger: true });
-  if (!ok) return;
   try {
-    await api.branchDelete(root, name, false);
-    toast.success(`Deleted ${name}`);
+    const refs = await api.refs(root);
+    const targets = deletionTargets(refs, name);
+    await showDialog<void>((close) => <DeleteBranchDialog root={root} name={name} targets={targets} onClose={() => close()} />);
   } catch (e) {
-    if (isGitError(e) && e.kind === "not-merged") {
-      const force = await confirmDialog({ title: `${name} is not fully merged`, message: "Its commits are not in your current branch. Delete it anyway?", confirm: "Force delete", danger: true });
-      if (force) await act(root, () => api.branchDelete(root, name, true), { success: `Deleted ${name}` });
-    } else toast.error(e);
+    toast.error(e);
   }
-  await useRepos.getState().refresh(root, ALL);
 }
 
 export async function deleteRemoteBranch(root: string, remoteBranch: string) {

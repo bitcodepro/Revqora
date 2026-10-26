@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { useRepos, type RepoTab } from "../lib/store";
 import { resolvedTheme, useSettings } from "../lib/settings";
+import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { openOverlay, useUi } from "../lib/ui";
 import * as A from "../lib/actions";
 import * as XA from "../lib/extraActions";
@@ -63,8 +64,7 @@ export function TopBar() {
   const root = tab?.root;
   const dark = resolvedTheme(theme) === "dark";
   const overview = useUi((s) => s.repositoryOverview);
-  const repositoriesOpen = useSettings((s) => s.repositoriesOpen);
-  const focusMode = useUi((s) => s.focusMode);
+  const { layout: { repositoriesOpen, focusMode }, setLayout } = useWorkspaceLayout();
 
   return (
     <div className="topbar">
@@ -72,7 +72,7 @@ export function TopBar() {
         <img src="/logo.svg" alt="" />
         <span>Revqora</span>
       </div>
-      <button className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => { setS({ repositoriesOpen: focusMode || !repositoriesOpen }); useUi.setState({ focusMode: false }); }}><PanelLeft size={16} /></button>
+      <button className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => setLayout({ repositoriesOpen: focusMode || !repositoriesOpen, focusMode: false })}><PanelLeft size={16} /></button>
       <button className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
       <div className="repo-current" title={root ?? ""}>
         <b>{overview ? "All repositories" : tab?.info?.name ?? "Repositories"}</b>

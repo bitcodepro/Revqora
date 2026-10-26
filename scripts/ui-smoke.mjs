@@ -507,7 +507,7 @@ try {
     await page.mouse.up();
     const after = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
     if (after < before + 40) throw new Error("file list did not resize");
-    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.commitFilesWidth);
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth);
     if (Math.abs(saved - (before + 67)) > 4) throw new Error("preferred file list width was not persisted");
     // A narrower window clamps the rendered width without rewriting the preference.
     await page.setViewportSize({ width: 1028, height: 760 });
@@ -515,7 +515,7 @@ try {
     const narrowBefore = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
     const clamped = (preferred) => Math.max(140, Math.min(preferred, containerWidth * .45));
     if (Math.abs(narrowBefore - clamped(saved)) > 2) throw new Error("file list did not respect the available width");
-    if (await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.commitFilesWidth) !== saved) throw new Error("viewport resize overwrote preferred file list width");
+    if (await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth) !== saved) throw new Error("viewport resize overwrote preferred file list width");
     const target = Math.max(140, narrowBefore - 60);
     const narrowSplitter = await page.locator(".commit-details > .splitter-v").boundingBox();
     const x = narrowSplitter.x + narrowSplitter.width / 2, y = narrowSplitter.y + narrowSplitter.height / 2;
@@ -524,7 +524,7 @@ try {
     await page.mouse.move(x + target - saved, y, { steps: 8 });
     await page.mouse.up();
     const narrowAfter = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
-    const narrowSaved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.commitFilesWidth);
+    const narrowSaved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth);
     if (narrowBefore - narrowAfter < 40) throw new Error("file list did not shrink in a narrow window");
     if (Math.abs(narrowSaved - target) > 4 || Math.abs(narrowAfter - clamped(narrowSaved)) > 2) throw new Error("narrow resize did not persist preferred width independently of its layout clamp");
     await shot("24-resize-narrow");
@@ -542,6 +542,133 @@ try {
     if (!fits) throw new Error("workspace overflowed the minimum window width");
     await page.setViewportSize(viewport);
     await page.click(".history-mode button:has-text('Graph')");
+  });
+
+  await check("column history keeps independent panel sizes, visibility and focus after reload", async () => {
+    const viewport = page.viewportSize() ?? await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+    await page.setViewportSize({ width: 1650, height: 950 });
+    const layouts = () => page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts);
+    const drag = async (selector, dx) => {
+      const box = await page.locator(selector).boundingBox();
+      const x = box.x + box.width / 2, y = box.y + box.height / 2;
+      await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + dx, y, { steps: 8 }); await page.mouse.up();
+    };
+    const before = await layouts();
+    await page.click(".history-mode button:has-text('Columns')");
+    await page.waitForSelector(".columns-details .commit-message-open:not(:disabled)");
+    const positions = await page.locator(".repository-slot, .branches-slot, .columns-commits, .columns-details .details-left, .columns-details .diff").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().x));
+    if (positions.length !== 5 || positions.some((x, i) => i > 0 && x <= positions[i - 1])) throw new Error("repository, branch, commit, file and diff columns are out of order");
+    await drag(".repository-sidebar > .splitter-v", 20);
+    await drag(".workspace > .splitter-v", 20);
+    await page.click(".topbar button[aria-label='Toggle repositories panel']");
+    await page.click(".branches-toggle");
+    await drag(".columns-history > .splitter-v", 60);
+    await drag(".commit-details > .splitter-v", 40);
+    await page.click(".topbar button[aria-label='Toggle repositories panel']");
+    await page.click(".branches-toggle");
+    await page.click(".focus-toggle");
+    await page.waitForSelector(".repository-slot", { state: "hidden" });
+    await page.waitForSelector(".branches-slot", { state: "hidden" });
+    await page.waitForSelector(".columns-commits", { state: "visible" });
+    const expected = (await layouts()).columns;
+    if (expected.repositoriesWidth < before.columns.repositoriesWidth + 15 || expected.sidebarWidth < before.columns.sidebarWidth + 15 || expected.historyListWidth < before.columns.historyListWidth + 50 || expected.commitFilesWidth < before.columns.commitFilesWidth + 30) throw new Error("column widths were not persisted");
+    await page.click(".history-mode button:has-text('Review')");
+    await page.waitForSelector(".repository-slot", { state: "visible" });
+    await page.waitForSelector(".branches-slot", { state: "visible" });
+    if (JSON.stringify((await layouts()).review) !== JSON.stringify(before.review)) throw new Error("Columns changed Review's preferences");
+    await page.click(".branches-toggle");
+    await page.click(".history-mode button:has-text('Graph')");
+    await page.waitForSelector(".branches-slot", { state: "visible" });
+    if (JSON.stringify((await layouts()).graph) !== JSON.stringify(before.graph)) throw new Error("another layout changed Graph's preferences");
+    await page.click(".history-mode button:has-text('Columns')");
+    await page.waitForSelector(".repository-slot", { state: "hidden" });
+    if (JSON.stringify((await layouts()).columns) !== JSON.stringify(expected)) throw new Error("Columns preferences were not restored");
+    await page.reload();
+    await page.waitForSelector(".columns-commits .grow:not(.wip) .text", { timeout: 20000 });
+    await page.waitForSelector(".repository-slot", { state: "hidden" });
+    await page.waitForSelector(".branches-slot", { state: "hidden" });
+    if (JSON.stringify((await layouts()).columns) !== JSON.stringify(expected)) throw new Error("reload lost the saved column layout");
+    await page.locator(".columns-commits .graph-scroll").press("End");
+    await page.waitForSelector(".columns-details .commit-subject:has-text('Initial project structure')");
+    await page.waitForSelector(".columns-details .diff .dl");
+    await shot("26-three-columns");
+    await page.keyboard.press("Control+Shift+r");
+    await page.waitForSelector(".history-mode button.on:has-text('Graph')");
+    await page.keyboard.press("Control+Shift+r");
+    await page.waitForSelector(".history-mode button.on:has-text('Review')");
+    await page.keyboard.press("Control+Shift+r");
+    await page.waitForSelector(".history-mode button.on:has-text('Columns')");
+    await page.click(".history-mode button:has-text('Graph')");
+    await page.setViewportSize(viewport);
+  });
+
+  await check("branch deletion supports local-only, remote, force confirmation and partial failure", async () => {
+    const localExists = (name) => git("branch", "--list", name) !== "";
+    const remoteExists = (name) => git("ls-remote", "--heads", "origin", "refs/heads/" + name) !== "";
+    const create = (name, remoteName = name) => {
+      git("branch", name, "HEAD");
+      git("push", "-q", "origin", `${name}:refs/heads/${remoteName}`);
+      git("branch", `--set-upstream-to=origin/${remoteName}`, name);
+    };
+    const openDelete = async (name) => {
+      await page.fill(".sidebar input[placeholder^='Filter branches']", name);
+      await page.click("button[title='Refresh (F5)']");
+      await page.locator(`.sidebar [data-branch-kind='local'][data-branch-name='${name}']`).click({ button: "right" });
+      await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
+      await page.waitForSelector(".modal .delete-remote-branch");
+    };
+    create("ui-local-only");
+    await openDelete("ui-local-only");
+    if (await page.locator(".delete-remote-branch").isChecked()) throw new Error("remote deletion must be opt-in");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".modal", { state: "detached" });
+    if (localExists("ui-local-only") || !remoteExists("ui-local-only")) throw new Error("local-only deletion touched the remote or kept the local branch");
+    git("push", "-q", "origin", ":refs/heads/ui-local-only");
+    create("ui-delete-both", "published/ui-delete-both");
+    git("push", "-q", "origin", "ui-delete-both:refs/heads/ui-delete-both");
+    await openDelete("ui-delete-both");
+    await page.check(".delete-remote-branch");
+    await page.waitForSelector(".modal select");
+    if (await page.locator(".modal select").inputValue() !== "origin/published/ui-delete-both") throw new Error("delete dialog did not prefer the configured upstream");
+    await shot("27-delete-both");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".modal", { state: "detached" });
+    if (localExists("ui-delete-both") || remoteExists("published/ui-delete-both") || !remoteExists("ui-delete-both")) throw new Error("combined deletion did not delete only the selected upstream");
+    git("push", "-q", "origin", ":refs/heads/ui-delete-both");
+    create("ui-unmerged");
+    const tip = git("commit-tree", git("rev-parse", "HEAD^{tree}"), "-p", "HEAD", "-m", "Unpushed branch-only commit");
+    git("update-ref", "refs/heads/ui-unmerged", tip);
+    await openDelete("ui-unmerged");
+    await page.check(".delete-remote-branch");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".force-delete-branch");
+    if (!(await page.locator(".delete-branch-confirm").isDisabled()) || !localExists("ui-unmerged") || !remoteExists("ui-unmerged")) throw new Error("unmerged guard deleted a ref before force confirmation");
+    await page.click(".modal button:has-text('Cancel')");
+    await openDelete("ui-unmerged");
+    await page.check(".delete-remote-branch");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".force-delete-branch");
+    await page.check(".force-delete-branch");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".modal", { state: "detached" });
+    if (localExists("ui-unmerged") || remoteExists("ui-unmerged")) throw new Error("explicit force confirmation did not complete deletion");
+    create("ui-failed-remote");
+    const pushUrl = git("remote", "get-url", "--push", "origin");
+    git("remote", "set-url", "--push", "origin", path.join(work, "missing-remote.git"));
+    try {
+      await openDelete("ui-failed-remote");
+      await page.check(".delete-remote-branch");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".delete-branch-error:has-text('Local branch deleted. Remote deletion failed')");
+      if (localExists("ui-failed-remote") || !remoteExists("ui-failed-remote")) throw new Error("partial deletion state was reported incorrectly");
+      await shot("28-delete-remote-failed");
+      // Restore access and retry only the failed remote part from the same dialog.
+      git("remote", "set-url", "--push", "origin", pushUrl);
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".modal", { state: "detached" });
+      if (remoteExists("ui-failed-remote")) throw new Error("remote retry failed");
+    } finally { git("remote", "set-url", "--push", "origin", pushUrl); }
+    await page.fill(".sidebar input[placeholder^='Filter branches']", "");
   });
 
   await check("twenty repositories support bulk fetch and clean fast-forward pull", async () => {

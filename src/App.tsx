@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Columns3, FilePlus2, GitBranch, GitCommitHorizontal, GitGraph, GitPullRequest, Maximize2, Minimize2, RefreshCw } from "lucide-react";
+import { Columns3, FilePlus2, GitBranch, GitCommitHorizontal, GitGraph, GitPullRequest, Maximize2, Minimize2, RefreshCw, Rows3 } from "lucide-react";
 import { PullRequestsView } from "./components/PullRequests";
 import { useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
@@ -32,6 +32,8 @@ import { TreeBrowser } from "./components/TreeBrowser";
 import { startUpdateChecks } from "./lib/update";
 import { createAutoFetch, defaultFetch } from "./lib/autofetch";
 import { RepositoryOverview, RepositorySidebar } from "./components/Repositories";
+import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
+import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
 import "./styles/workspace.css";
 
 function useAppearance() {
@@ -62,16 +64,22 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
   const root = tab.root;
   const overlay = useUi((s) => (s.overlay && s.overlay.root === tab.root ? s.overlay : null));
   const patch = useRepos((s) => s.patch);
-  const sidebarW = useSettings((s) => s.sidebarWidth);
-  const detailsH = useSettings((s) => s.detailsHeight);
+  const { mode, layout, setLayout } = useWorkspaceLayout();
+  const sidebarW = layout.sidebarWidth;
+  const detailsH = layout.detailsHeight;
   const setS = useSettings((s) => s.set);
   const [sw, setSw] = useState(sidebarW);
   const [dh, setDh] = useState(detailsH);
   const historyMode = useSettings((s) => s.historyMode);
-  const reviewH = useSettings((s) => s.reviewListHeight);
+  const reviewH = layout.reviewListHeight;
   const [rh, setRh] = useState(reviewH);
-  const branchesOpen = useSettings((s) => s.branchesOpen);
-  const focusMode = useUi((s) => s.focusMode);
+  const [cw, setCw] = useState(layout.historyListWidth);
+  useEffect(() => setSw(sidebarW), [mode, sidebarW]);
+  useEffect(() => setDh(detailsH), [mode, detailsH]);
+  useEffect(() => setRh(reviewH), [mode, reviewH]);
+  useEffect(() => setCw(layout.historyListWidth), [mode, layout.historyListWidth]);
+  const branchesOpen = layout.branchesOpen;
+  const focusMode = layout.focusMode;
   const showBranches = branchesOpen && !focusMode;
   const changesCount = tab.status?.files.length ?? 0;
   const [forgeKind, setForgeKind] = useState<string | null>(null);
@@ -84,14 +92,19 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
   const openConflict = (path: string) => patch(root, { conflictPath: path, view: "changes", changeSel: { kind: "conflict", path } });
 
   const commitSelected = tab.selected && tab.selected !== WORKTREE ? tab.selected : null;
+  const closePreview = () => {
+    patch(root, { selected: null, multi: [] });
+    setLayout({ focusMode: false });
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(".review .graph-scroll, .columns-commits .graph-scroll")?.focus({ preventScroll: true }));
+  };
 
   return (
     <div className="workspace" style={{ ["--sidebar-w" as string]: `${showBranches ? sw : 0}px` }}>
       <div className="branches-slot" hidden={!showBranches}><Sidebar tab={tab} /></div>
-      {showBranches && <Splitter dir="v" style={{ left: sw }} onDrag={(d) => setSw((w) => Math.max(180, Math.min(420, w + d)))} onEnd={() => setS({ sidebarWidth: sw })} />}
+      {showBranches && <Splitter dir="v" style={{ left: sw }} onDrag={(d) => setSw((w) => Math.max(180, Math.min(420, w + d)))} onEnd={() => setLayout({ sidebarWidth: sw })} />}
       <div className="main">
         <div className="main-head">
-          <button className={`btn sm branches-toggle ${showBranches ? "active" : ""}`} aria-expanded={showBranches} title="Toggle branches panel" onClick={() => { setS({ branchesOpen: !showBranches }); useUi.setState({ focusMode: false }); }}><GitBranch size={13} /> Branches</button>
+          <button className={`btn sm branches-toggle ${showBranches ? "active" : ""}`} aria-expanded={showBranches} title="Toggle branches panel" onClick={() => setLayout({ branchesOpen: !showBranches, focusMode: false })}><GitBranch size={13} /> Branches</button>
           <div className="view-tabs">
             <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onClick={() => patch(root, { view: "history" })} title="Ctrl+1">
               <GitCommitHorizontal size={15} /> History
@@ -108,15 +121,15 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
           )}
           <div className="spacer" />
           {tab.view === "history" && (
-            <div className="seg history-mode" title={`Graph or Review layout (${prettyCombo(bindingFor("reviewMode"))})`}>
-              {(["graph", "review"] as const).map((m) => (
+            <div className="seg history-mode" title={`History layout (${prettyCombo(bindingFor("reviewMode"))})`}>
+              {HISTORY_MODES.map((m) => (
                 <button key={m} type="button" className={historyMode === m ? "on" : ""} onClick={() => setS({ historyMode: m })}>
-                  {m === "graph" ? <GitGraph size={13} /> : <Columns3 size={13} />} {m === "graph" ? "Graph" : "Review"}
+                  {m === "graph" ? <GitGraph size={13} /> : m === "review" ? <Rows3 size={13} /> : <Columns3 size={13} />} {m === "graph" ? "Graph" : m === "review" ? "Review" : "Columns"}
                 </button>
               ))}
             </div>
           )}
-          <button className={`icon-btn focus-toggle ${focusMode ? "active" : ""}`} title={focusMode ? "Exit focus mode" : "Focus on code"} aria-label={focusMode ? "Exit focus mode" : "Focus on code"} aria-pressed={focusMode} onClick={() => useUi.setState({ focusMode: !focusMode })}>{focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
+          <button className={`icon-btn focus-toggle ${focusMode ? "active" : ""}`} title={focusMode ? "Exit focus mode" : "Focus on code"} aria-label={focusMode ? "Exit focus mode" : "Focus on code"} aria-pressed={focusMode} onClick={() => setLayout({ focusMode: !focusMode })}>{focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
           <button className="icon-btn" title="Refresh (F5)" onClick={() => useRepos.getState().refresh(root)}>
             <RefreshCw size={15} />
           </button>
@@ -127,21 +140,25 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
             <div className="review-list" hidden={focusMode && !!commitSelected}>
               <GraphView tab={tab} compact onEnterChanges={() => patch(root, { view: "changes" })} />
             </div>
-            {!focusMode && commitSelected && <div className="review-resizer"><Splitter dir="h" onDrag={(d) => setRh((h) => Math.max(100, Math.min(400, h + d)))} onEnd={() => setS({ reviewListHeight: rh })} /></div>}
+            {!focusMode && commitSelected && <div className="review-resizer"><Splitter dir="h" onDrag={(d) => setRh((h) => Math.max(100, Math.min(400, h + d)))} onEnd={() => setLayout({ reviewListHeight: rh })} /></div>}
             {commitSelected && <div className="details review-details">
-              <CommitDetails root={root} oid={commitSelected} onClose={() => {
-                patch(root, { selected: null, multi: [] });
-                useUi.setState({ focusMode: false });
-                requestAnimationFrame(() => document.querySelector<HTMLElement>(".review .graph-scroll")?.focus({ preventScroll: true }));
-              }} />
+              <CommitDetails root={root} oid={commitSelected} onClose={closePreview} />
             </div>}
+          </div>
+        ) : tab.view === "history" && historyMode === "columns" ? (
+          <div className="columns-history" style={{ ["--history-list-w" as string]: `${cw}px`, gridTemplateColumns: commitSelected ? "clamp(180px, var(--history-list-w), 35%) minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+            <div className="columns-commits"><GraphView tab={tab} compact onEnterChanges={() => patch(root, { view: "changes" })} /></div>
+            {commitSelected && <>
+              <Splitter dir="v" style={{ left: "clamp(180px, var(--history-list-w), 35%)" }} onDrag={(d) => setCw((w) => Math.max(180, Math.min(600, w + d)))} onEnd={() => setLayout({ historyListWidth: cw })} />
+              <div className="details columns-details"><CommitDetails root={root} oid={commitSelected} compactMeta onClose={closePreview} /></div>
+            </>}
           </div>
         ) : tab.view === "history" ? (
           <div className="history">
             <GraphView tab={tab} onEnterChanges={() => patch(root, { view: "changes" })} />
             {commitSelected && (
               <>
-                <Splitter dir="h" onDrag={(d) => setDh((h) => Math.max(160, Math.min(window.innerHeight - 260, h - d)))} onEnd={() => setS({ detailsHeight: dh })} />
+                <Splitter dir="h" onDrag={(d) => setDh((h) => Math.max(160, Math.min(window.innerHeight - 260, h - d)))} onEnd={() => setLayout({ detailsHeight: dh })} />
                 <div className="details" style={{ height: dh }}>
                   <CommitDetails root={root} oid={commitSelected} onClose={() => patch(root, { selected: null, multi: [] })} />
                 </div>
@@ -195,8 +212,10 @@ export default function App() {
   const [dropping, setDropping] = useState(false);
   const restored = useRef(false);
   const overview = useUi((s) => s.repositoryOverview);
-  const focusMode = useUi((s) => s.focusMode);
-  const repositoriesOpen = useSettings((s) => s.repositoriesOpen);
+  const historyMode = useSettings((s) => s.historyMode);
+  const layoutMode = workspaceMode(overview ? "overview" : tab?.view, historyMode);
+  const { layout } = useWorkspaceLayout(layoutMode);
+  const { focusMode, repositoriesOpen } = layout;
   const repositoryCount = useRepos((s) => s.order.length);
 
   // Restore the tabs from the previous session.
@@ -279,20 +298,22 @@ export default function App() {
       const st = useRepos.getState();
       const a = st.active;
       const t = a ? st.tabs[a] : null;
+      const mode = workspaceMode(useUi.getState().repositoryOverview ? "overview" : t?.view, useSettings.getState().historyMode);
+      const layout = useSettings.getState().layouts[mode];
       const run: Record<string, () => void> = {
         palette: () => useUi.getState().setPalette(true),
         open: () => A.openRepoDialog(),
         refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && st.refresh(a),
         overview: () => useUi.setState({ repositoryOverview: true }),
-        repositoriesPanel: () => { const s = useSettings.getState(); s.set({ repositoriesOpen: !s.repositoriesOpen }); useUi.setState({ focusMode: false }); },
-        branchesPanel: () => { const s = useSettings.getState(); s.set({ branchesOpen: !s.branchesOpen }); useUi.setState({ focusMode: false }); },
-        focusMode: () => useUi.setState({ focusMode: !useUi.getState().focusMode }),
+        repositoriesPanel: () => useSettings.getState().setLayout(mode, { repositoriesOpen: !layout.repositoriesOpen, focusMode: false }),
+        branchesPanel: () => useSettings.getState().setLayout(mode, { branchesOpen: !layout.branchesOpen, focusMode: false }),
+        focusMode: () => useSettings.getState().setLayout(mode, { focusMode: !layout.focusMode }),
         history: () => a && st.patch(a, { view: "history" }),
         changes: () => a && st.patch(a, { view: "changes" }),
         pulls: () => a && st.patch(a, { view: "pulls" }),
         reviewMode: () => {
           const s = useSettings.getState();
-          s.set({ historyMode: s.historyMode === "review" ? "graph" : "review" });
+          s.set({ historyMode: HISTORY_MODES[(HISTORY_MODES.indexOf(s.historyMode) + 1) % HISTORY_MODES.length] });
           if (a) st.patch(a, { view: "history" });
         },
         fetch: () => a && A.fetchAll(a),
@@ -345,7 +366,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="app">
+    <WorkspaceLayoutContext.Provider value={layoutMode}><div className="app">
       <TopBar />
       {busy && <div className="progress-bar" />}
       <div className="app-body">
@@ -361,6 +382,6 @@ export default function App() {
       <GitMissing />
       <Onboarding />
       {dropping && <div className="drop-hint">Drop a folder to open it</div>}
-    </div>
+    </div></WorkspaceLayoutContext.Provider>
   );
 }

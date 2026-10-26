@@ -32,6 +32,7 @@ import {
 import { api, errorMessage, isGitError } from "../lib/api";
 import { useRepos, type ChangeSel, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
+import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { contextMenu, copyText, openOverlay, showDialog, toast, type MenuItem } from "../lib/ui";
 import * as A from "../lib/actions";
 import type { CommitHelpers, FileDiff, FileStatus, GitError, LargeFile, LayerConflict, LayerOp, LayerView } from "../lib/types";
@@ -193,14 +194,14 @@ function dragFile(e: React.DragEvent, from: "unstaged" | "staged", path: string)
 export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConflict: (path: string) => void }) {
   const root = tab.root;
   const patch = useRepos((s) => s.patch);
-  const width = useSettings((s) => s.changesListWidth);
-  const setSettings = useSettings((s) => s.set);
+  const { mode, layout: { changesListWidth: width }, setLayout: setSettings } = useWorkspaceLayout();
   const opts = useDiffOpts();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [diffErr, setDiffErr] = useState<string | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [w, setW] = useState(width);
+  useEffect(() => setW(width), [mode, width]);
   const [dropOn, setDropOn] = useState<string | null>(null);
   const treeView = useSettings((s) => s.fileView) === "tree";
 
