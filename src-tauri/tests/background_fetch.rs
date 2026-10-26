@@ -46,8 +46,15 @@ fn missing_credentials_fail_fast_without_prompting() {
         runner::run(r, &args).unwrap();
     }
     runner::run(r, ["remote", "add", "origin", &format!("http://127.0.0.1:{port}/repo.git")]).unwrap();
-    let started = Instant::now();
-    let err = ops::fetch_background(r).unwrap_err();
-    assert!(started.elapsed() < Duration::from_secs(30), "background fetch waited {:?}", started.elapsed());
-    assert_eq!(err.kind, "auth", "{}", err.message);
+    // Cover both a missing username and a known username with a missing password. Older Git
+    // uses different messages for these; newer Git reports "unable to get password from user".
+    for username in [None, Some("test")] {
+        if let Some(user) = username {
+            runner::run(r, ["config", "credential.username", user]).unwrap();
+        }
+        let started = Instant::now();
+        let err = ops::fetch_background(r).unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(30), "background fetch waited {:?}", started.elapsed());
+        assert_eq!(err.kind, "auth", "username={username:?}: {}", err.message);
+    }
 }
