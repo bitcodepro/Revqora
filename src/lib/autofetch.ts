@@ -4,6 +4,7 @@ export interface AutoFetchDeps {
   fetch: (root: string) => Promise<unknown>;
   refresh: (root: string) => Promise<unknown>;
   busy: () => boolean;
+  failed?: (root: string, error: unknown) => void;
 }
 
 /**
@@ -21,6 +22,7 @@ export function createAutoFetch(deps: AutoFetchDeps) {
       await deps.fetch(root);
       await deps.refresh(root);
     } catch (e) {
+      deps.failed?.(root, e);
       if (isGitError(e) && e.kind === "auth") disabled.add(root);
     } finally {
       inFlight.delete(root);

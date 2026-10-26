@@ -22,6 +22,10 @@ export interface Settings {
   openTabs: string[];
   activeTab: string | null;
   sidebarWidth: number;
+  repositoriesOpen: boolean;
+  repositoriesWidth: number;
+  branchesOpen: boolean;
+  commitFilesWidth: number;
   detailsHeight: number;
   changesListWidth: number;
   pullMode: "ff-only" | "merge" | "rebase";
@@ -41,7 +45,7 @@ export interface Settings {
   autoFetchMinutes: number;
   /** History layout: the graph, or Review (commit list, files and a full-height diff). */
   historyMode: "graph" | "review";
-  reviewListWidth: number;
+  reviewListHeight: number;
   skippedUpdate: string | null;
   set: (patch: Partial<Settings>) => void;
   addRecent: (path: string) => void;
@@ -70,6 +74,10 @@ export const useSettings = create<Settings>()(
       openTabs: [],
       activeTab: null,
       sidebarWidth: 264,
+      repositoriesOpen: true,
+      repositoriesWidth: 224,
+      branchesOpen: true,
+      commitFilesWidth: 240,
       detailsHeight: 340,
       changesListWidth: 360,
       pullMode: "ff-only",
@@ -87,10 +95,10 @@ export const useSettings = create<Settings>()(
       checkUpdates: true,
       autoFetchMinutes: 5,
       historyMode: "graph",
-      reviewListWidth: 340,
+      reviewListHeight: 220,
       skippedUpdate: null,
       set: (patch) => set(patch),
-      addRecent: (path) => set({ recent: [path, ...get().recent.filter((p) => p.toLowerCase() !== path.toLowerCase())].slice(0, 15) }),
+      addRecent: (path) => set({ recent: [path, ...get().recent.filter((p) => p.toLowerCase() !== path.toLowerCase())].slice(0, 100) }),
       removeRecent: (path) => set({ recent: get().recent.filter((p) => p !== path) }),
     }),
     { name: "revqora.settings", version: 1 },

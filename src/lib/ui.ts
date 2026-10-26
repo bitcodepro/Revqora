@@ -52,6 +52,8 @@ interface UiState {
   busy: BusyOp[];
   paletteOpen: boolean;
   overlay: Overlay | null;
+  repositoryOverview: boolean;
+  focusMode: boolean;
   toast: (t: Omit<Toast, "id">, ttl?: number) => void;
   dismissToast: (id: number) => void;
   openMenu: (x: number, y: number, items: MenuItem[]) => void;
@@ -69,6 +71,8 @@ export const useUi = create<UiState>()((set, get) => ({
   busy: [],
   paletteOpen: false,
   overlay: null,
+  repositoryOverview: false,
+  focusMode: false,
   toast: (t, ttl) => {
     const id = ++toastId;
     set({ toasts: [...get().toasts.slice(-4), { ...t, id }] });

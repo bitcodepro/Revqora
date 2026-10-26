@@ -16,6 +16,8 @@ import {
   GitPullRequestArrow,
   History,
   Moon,
+  LayoutGrid,
+  PanelLeft,
   Plus,
   RefreshCw,
   Search,
@@ -53,7 +55,6 @@ export function TopBar() {
   const tabs = useRepos((s) => s.tabs);
   const active = useRepos((s) => s.active);
   const activate = useRepos((s) => s.activate);
-  const close = useRepos((s) => s.close);
   const tab = active ? tabs[active] : null;
   const theme = useSettings((s) => s.theme);
   const setS = useSettings((s) => s.set);
@@ -61,53 +62,24 @@ export function TopBar() {
   const stashCount = tab?.refs?.stashes.length ?? 0;
   const root = tab?.root;
   const dark = resolvedTheme(theme) === "dark";
+  const overview = useUi((s) => s.repositoryOverview);
+  const repositoriesOpen = useSettings((s) => s.repositoriesOpen);
+  const focusMode = useUi((s) => s.focusMode);
 
   return (
     <div className="topbar">
-      <div className="brand" onClick={() => activate(null)} title="Home">
+      <div className="brand" onClick={() => order.length ? useUi.setState({ repositoryOverview: true }) : activate(null)} title="Repositories overview">
         <img src="/logo.svg" alt="" />
         <span>Revqora</span>
       </div>
-      <div className="repo-tabs">
-        {order.map((r) => {
-          const t = tabs[r];
-          const branch = t?.info?.head.branch ?? (t?.info?.head.detached ? shortOid(t.info.head.oid) : "");
-          return (
-            <div
-              key={r}
-              className={`repo-tab ${r === active ? "active" : ""}`}
-              onMouseDown={(e) => {
-                if (e.button === 1) {
-                  e.preventDefault();
-                  close(r);
-                } else activate(r);
-              }}
-              title={r}
-            >
-              <FolderGit2 size={14} style={{ flex: "none", color: r === active ? "var(--accent)" : undefined }} />
-              <div style={{ display: "flex", flexDirection: "column", minWidth: 0, lineHeight: 1.15 }}>
-                <span className="name">{t?.info?.name ?? basename(r)}</span>
-                {branch && <span className="branch">{branch}</span>}
-              </div>
-              <button
-                className="icon-btn sm close"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  close(r);
-                }}
-              >
-                <X size={13} />
-              </button>
-            </div>
-          );
-        })}
-        <button className="icon-btn" style={{ alignSelf: "center", marginLeft: 2 }} title="Open repository (Ctrl+O)" onClick={() => A.openRepoDialog()}>
-          <Plus size={16} />
-        </button>
+      <button className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => { setS({ repositoriesOpen: focusMode || !repositoriesOpen }); useUi.setState({ focusMode: false }); }}><PanelLeft size={16} /></button>
+      <button className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
+      <div className="repo-current" title={root ?? ""}>
+        <b>{overview ? "All repositories" : tab?.info?.name ?? "Repositories"}</b>
+        {!overview && tab && <span><GitBranch size={12} />{tab.info?.head.branch ?? shortOid(tab.info?.head.oid ?? "")}</span>}
       </div>
-      <div className="spacer" />
-      {root && (
+      <button className="icon-btn" title="Open repository (Ctrl+O)" aria-label="Open repositories" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>
+      {root && !overview && (
         <div className="toolbar">
           <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes">
             <RefreshCw size={15} /> Fetch

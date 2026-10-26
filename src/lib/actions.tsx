@@ -138,8 +138,8 @@ export async function openRepoPath(path: string) {
 }
 
 export async function openRepoDialog() {
-  const dir = await openFolder({ directory: true, title: "Open a Git repository" });
-  if (typeof dir === "string") await openRepoPath(dir);
+  const dirs = await openFolder({ directory: true, multiple: true, title: "Open Git repositories" });
+  for (const dir of typeof dirs === "string" ? [dirs] : dirs ?? []) await openRepoPath(dir);
 }
 
 export async function initRepoDialog() {
@@ -172,7 +172,11 @@ export async function cloneRepo() {
 
 // ───────────── remotes ─────────────
 
-export const fetchAll = (root: string) => remote(root, "Fetching", (id) => api.fetch(root, null, true, id), () => "Fetched from all remotes");
+export const fetchAll = async (root: string) => {
+  const out = await remote(root, "Fetching", (id) => api.fetch(root, null, true, id), () => "Fetched from all remotes");
+  useRepos.getState().patch(root, out !== undefined ? { lastFetchedAt: Date.now(), fetchError: null } : { fetchError: "Fetch failed. Try Fetch again to sign in or see the error." });
+  return out;
+};
 
 export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase") {
   const mode = modeOverride ?? useSettings.getState().pullMode;

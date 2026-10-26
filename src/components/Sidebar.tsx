@@ -15,6 +15,7 @@ import {
   HardDrive,
   Lock,
   Package,
+  PanelLeftClose,
   Pencil,
   Play,
   Plus,
@@ -35,6 +36,7 @@ import { AheadBehind } from "./bits";
 import { branchMenu, tagMenu } from "./menus";
 import { highlightBranch, jumpToCommit } from "./GraphView";
 import { promptDialog } from "./dialogs";
+import { useSettings } from "../lib/settings";
 
 interface TreeNode {
   name: string;
@@ -204,6 +206,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
 
   return (
     <aside className="sidebar">
+      <div className="branches-heading"><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={() => useSettings.getState().set({ branchesOpen: false })}><PanelLeftClose size={14} /></button></div>
       <div className="sb-repo">
         <div className="input-wrap">
           <Search size={13} />
