@@ -629,29 +629,61 @@ try {
     await openDelete("ui-delete-both");
     await page.check(".delete-remote-branch");
     await page.waitForSelector(".modal select");
-    if (await page.locator(".modal select").inputValue() !== "origin/published/ui-delete-both") throw new Error("delete dialog did not prefer the configured upstream");
+    if (await page.locator(".modal select").inputValue() !== JSON.stringify(["origin", "refs/heads/published/ui-delete-both"])) throw new Error("delete dialog did not prefer the configured upstream");
     await shot("27-delete-both");
     await page.click(".delete-branch-confirm");
     await page.waitForSelector(".modal", { state: "detached" });
     if (localExists("ui-delete-both") || remoteExists("published/ui-delete-both") || !remoteExists("ui-delete-both")) throw new Error("combined deletion did not delete only the selected upstream");
     git("push", "-q", "origin", ":refs/heads/ui-delete-both");
-    create("ui-unmerged");
-    const tip = git("commit-tree", git("rev-parse", "HEAD^{tree}"), "-p", "HEAD", "-m", "Unpushed branch-only commit");
-    git("update-ref", "refs/heads/ui-unmerged", tip);
-    await openDelete("ui-unmerged");
-    await page.check(".delete-remote-branch");
-    await page.click(".delete-branch-confirm");
-    await page.waitForSelector(".force-delete-branch");
-    if (!(await page.locator(".delete-branch-confirm").isDisabled()) || !localExists("ui-unmerged") || !remoteExists("ui-unmerged")) throw new Error("unmerged guard deleted a ref before force confirmation");
-    await page.click(".modal button:has-text('Cancel')");
-    await openDelete("ui-unmerged");
-    await page.check(".delete-remote-branch");
-    await page.click(".delete-branch-confirm");
-    await page.waitForSelector(".force-delete-branch");
-    await page.check(".force-delete-branch");
-    await page.click(".delete-branch-confirm");
-    await page.waitForSelector(".modal", { state: "detached" });
-    if (localExists("ui-unmerged") || remoteExists("ui-unmerged")) throw new Error("explicit force confirmation did not complete deletion");
+    for (const pushed of [false, true]) {
+      create("ui-unmerged");
+      const tip = git("commit-tree", git("rev-parse", "HEAD^{tree}"), "-p", "HEAD", "-m", "Branch-only commit");
+      git("update-ref", "refs/heads/ui-unmerged", tip);
+      if (pushed) git("push", "-q", "origin", "ui-unmerged");
+      await openDelete("ui-unmerged");
+      await page.check(".delete-remote-branch");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".force-delete-branch");
+      if (!(await page.locator(".delete-branch-confirm").isDisabled()) || !localExists("ui-unmerged") || !remoteExists("ui-unmerged")) throw new Error("unmerged guard deleted a ref before force confirmation");
+      if (pushed) {
+        await shot("29-pushed-unmerged-guard");
+        await page.check(".force-delete-branch");
+        await page.uncheck(".delete-remote-branch");
+        await page.waitForSelector(".force-delete-branch", { state: "detached" });
+        if ((await page.locator(".delete-branch-confirm").innerText()).includes("Force")) throw new Error("force acknowledgement leaked into another deletion mode");
+        await page.check(".delete-remote-branch");
+        await page.click(".delete-branch-confirm");
+        await page.waitForSelector(".force-delete-branch");
+        if (!(await page.locator(".delete-branch-confirm").isDisabled())) throw new Error("combined deletion reused an old force acknowledgement");
+      }
+      await page.click(".modal button:has-text('Cancel')");
+      await openDelete("ui-unmerged");
+      await page.check(".delete-remote-branch");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".force-delete-branch");
+      await page.check(".force-delete-branch");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".modal", { state: "detached" });
+      if (localExists("ui-unmerged") || remoteExists("ui-unmerged")) throw new Error("explicit force confirmation did not complete deletion");
+    }
+    // The tracking alias deliberately matches an unrelated, real server branch.
+    create("ui-mapped");
+    git("push", "-q", "origin", "ui-mapped:refs/heads/ui-mapped-alias");
+    const fetchSpecs = git("config", "--get-all", "remote.origin.fetch").split(/\r?\n/);
+    git("config", "remote.origin.fetch", "+refs/heads/ui-mapped:refs/remotes/origin/ui-mapped-alias");
+    git("fetch", "-q", "origin");
+    try {
+      await openDelete("ui-mapped");
+      await page.check(".delete-remote-branch");
+      if (!(await page.locator(".modal").innerText()).includes("origin/ui-mapped")) throw new Error("resolved server branch missing from dialog");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".modal", { state: "detached" });
+      if (localExists("ui-mapped") || remoteExists("ui-mapped") || !remoteExists("ui-mapped-alias")) throw new Error("custom fetch mapping deleted the wrong server ref");
+    } finally {
+      git("config", "--unset-all", "remote.origin.fetch");
+      for (const spec of fetchSpecs) git("config", "--add", "remote.origin.fetch", spec);
+    }
+    git("push", "-q", "origin", ":refs/heads/ui-mapped-alias");
     create("ui-failed-remote");
     const pushUrl = git("remote", "get-url", "--push", "origin");
     git("remote", "set-url", "--push", "origin", path.join(work, "missing-remote.git"));

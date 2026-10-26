@@ -1,5 +1,14 @@
 // Mirrors of the Rust backend types (serde camelCase).
 
+export interface RemoteBranchTarget {
+  label: string;
+  remote: string;
+  remoteRef: string;
+  trackingRef: string;
+  oid: string;
+  isUpstream: boolean;
+}
+
 export interface GitError {
   message: string;
   stderr: string;

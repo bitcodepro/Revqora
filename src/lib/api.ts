@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { RemoteBranchTarget } from "./types";
 import type {
   Check,
   CommitHelpers,
@@ -120,7 +121,8 @@ export const api = {
   checkout: (repo: string, target: string, kind: "local" | "remote" | "commit") => call<string>("checkout", { repo, target, kind }),
   branchCreate: (repo: string, name: string, start: string | null, checkout: boolean) => call<void>("branch_create", { repo, name, start, checkout }),
   branchRename: (repo: string, old: string, newName: string) => call<void>("branch_rename", { repo, old, new: newName }),
-  branchDelete: (repo: string, name: string, force: boolean) => call<void>("branch_delete", { repo, name, force }),
+  branchDeleteTargets: (repo: string, name: string) => call<RemoteBranchTarget[]>("branch_delete_targets", { repo, name }),
+  branchDelete: (repo: string, name: string, force: boolean, target: RemoteBranchTarget | null = null) => call<void>("branch_delete", { repo, name, force, target }),
   branchSetUpstream: (repo: string, branch: string, upstream: string | null) => call<void>("branch_set_upstream", { repo, branch, upstream }),
   tagCreate: (repo: string, name: string, target: string, message: string | null) => call<void>("tag_create", { repo, name, target, message }),
   tagDelete: (repo: string, name: string) => call<void>("tag_delete", { repo, name }),

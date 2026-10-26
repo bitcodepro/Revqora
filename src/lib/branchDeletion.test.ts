@@ -1,21 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { deletionTargets } from "./branchDeletion";
-import type { RefsSnapshot } from "./types";
+import { deletionTargetKey, remoteDeletionRefspec, type RemoteBranchTarget } from "./branchDeletion";
 
-function refs(upstream: string | null, remoteNames: string[], branches: string[]): RefsSnapshot {
-  return { local: [{ name: "topic", upstream }], remotes: remoteNames.map((name) => ({ name })), remote: branches.map((name) => ({ name })) } as RefsSnapshot;
-}
+const target: RemoteBranchTarget = { label: "origin/topic", remote: "origin", remoteRef: "refs/heads/topic", trackingRef: "refs/remotes/origin/topic2", oid: "abc", isUpstream: true };
 
 describe("remote deletion targets", () => {
-  it("prefers the tracked remote ref even when it differs from the local name", () => {
-    expect(deletionTargets(refs("backup/published/topic", ["origin", "backup"], ["origin/topic", "backup/published/topic", "origin/unrelated"]), "topic")).toEqual([
-      { label: "backup/published/topic", remote: "backup", branch: "published/topic" },
-      { label: "origin/topic", remote: "origin", branch: "topic" },
-    ]);
+  it("deletes the resolved server ref even when its tracking ref has another name", () => {
+    expect(remoteDeletionRefspec(target)).toBe(":refs/heads/topic");
   });
-  it("matches configured remote names with slashes and never guesses unrelated refs", () => {
-    expect(deletionTargets(refs("team/upstream/topic", ["team/upstream"], ["team/upstream/topic"]), "topic")).toEqual([{ label: "team/upstream/topic", remote: "team/upstream", branch: "topic" }]);
-    expect(deletionTargets(refs("team/upstream/topic", ["team", "team/upstream"], ["team/upstream/topic"]), "topic")).toEqual([]);
-    expect(deletionTargets(refs(null, ["origin"], ["origin/main", "unknown/topic"]), "topic")).toEqual([]);
+  it("distinguishes targets with identical display labels", () => {
+    expect(deletionTargetKey({ ...target, remote: "team/upstream", remoteRef: "refs/heads/topic" })).not.toBe(deletionTargetKey({ ...target, remote: "team", remoteRef: "refs/heads/upstream/topic" }));
+  });
+  it("refuses missing, non-branch and wildcard destinations", () => {
+    for (const remoteRef of ["", "refs/heads/", "refs/tags/topic", "refs/heads/*", "refs/heads/topic:other"]) {
+      expect(() => remoteDeletionRefspec({ ...target, remoteRef })).toThrow();
+    }
   });
 });

@@ -150,7 +150,7 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
         "worktree" => a.get(1).map(|s| s == "list").unwrap_or(false),
         "submodule" => a.get(1).map(|s| s == "status").unwrap_or(false),
         "lfs" => matches!(a.get(1).map(|s| s.as_str()), Some("version" | "ls-files" | "track")) && a.len() == 2,
-        "config" => has("--get") || has("--get-regexp") || has("-l") || has("--list"),
+        "config" => has("--get") || has("--get-all") || has("--get-regexp") || has("-l") || has("--list"),
         "branch" => has("--contains") || has("--list"),
         _ => false,
     }

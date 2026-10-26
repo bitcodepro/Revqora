@@ -1,3 +1,4 @@
+pub mod branch_deletion;
 pub mod commit;
 pub mod conflicts;
 pub mod diff;

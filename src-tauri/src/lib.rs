@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use git::branch_deletion::{self, RemoteBranchTarget};
 use git::commit::{self as gcommit, CommitDetails, FileHistoryEntry};
 use git::conflicts::{self, ConflictInfo};
 use git::diff::{self, DiffOptions, FileDiff, SelectionMode, WorkSide};
@@ -339,8 +340,13 @@ async fn branch_rename(repo: String, old: String, new: String) -> GitResult<()> 
 }
 
 #[tauri::command]
-async fn branch_delete(repo: String, name: String, force: bool) -> GitResult<()> {
-    blocking(move || ops::delete_branch(&p(&repo), &name, force)).await
+async fn branch_delete_targets(repo: String, name: String) -> GitResult<Vec<RemoteBranchTarget>> {
+    blocking(move || branch_deletion::targets(&p(&repo), &name)).await
+}
+
+#[tauri::command]
+async fn branch_delete(repo: String, name: String, force: bool, target: Option<RemoteBranchTarget>) -> GitResult<()> {
+    blocking(move || branch_deletion::delete(&p(&repo), &name, force, target.as_ref())).await
 }
 
 #[tauri::command]
@@ -1093,6 +1099,7 @@ pub fn run() {
             branch_create,
             branch_rename,
             branch_delete,
+            branch_delete_targets,
             branch_set_upstream,
             tag_create,
             tag_delete,

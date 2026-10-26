@@ -6,7 +6,6 @@ import { endBusy, showDialog, startBusy, toast, useUi } from "./ui";
 import { GitMerge } from "lucide-react";
 import { Modal } from "../components/Modal";
 import { DeleteBranchDialog } from "../components/DeleteBranchDialog";
-import { deletionTargets } from "./branchDeletion";
 import { useSettings } from "./settings";
 import type { OpOutcome } from "./types";
 import { shortOid } from "./format";
@@ -286,8 +285,7 @@ export async function renameBranch(root: string, name: string) {
 
 export async function deleteBranch(root: string, name: string) {
   try {
-    const refs = await api.refs(root);
-    const targets = deletionTargets(refs, name);
+    const targets = await api.branchDeleteTargets(root, name);
     await showDialog<void>((close) => <DeleteBranchDialog root={root} name={name} targets={targets} onClose={() => close()} />);
   } catch (e) {
     toast.error(e);
