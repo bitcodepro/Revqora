@@ -143,7 +143,10 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, onA
   const [hitIdx, setHitIdx] = useState(0);
   const [scroll, setScroll] = useState(0);
   const [viewH, setViewH] = useState(800);
+  const [viewW, setViewW] = useState(800);
+  const [horizontal, setHorizontal] = useState({ max: 0, position: 0 });
   const bodyRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
 
   const totalLines = diff?.hunks.reduce((a, h) => a + h.lines.length, 0) ?? 0;
@@ -174,13 +177,56 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, onA
     setHitIdx(0);
   }, [path]);
 
+  const splitPan = s.diffMode === "split" && !s.wrapDiff;
+  // Virtual rows and clipped split columns cannot supply an intrinsic scroll width.
+  const textWidth = useMemo(() => {
+    if ((!virtual && !splitPan) || !diff) return 0;
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) return 0;
+    context.font = `${s.codeFontSize}px "${s.codeFont}", monospace`;
+    let width = 0;
+    for (const h of diff.hunks) for (const line of h.lines) {
+      width = Math.max(width, context.measureText(line.text.replace(/\t/g, "    ")).width);
+    }
+    return Math.ceil(width);
+  }, [virtual, splitPan, diff, s.codeFontSize, s.codeFont]);
+
   useEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setViewH(el.clientHeight));
+    const update = () => {
+      setViewH(el.clientHeight);
+      setViewW(el.clientWidth);
+      const max = splitPan ? Math.max(0, textWidth - (el.clientWidth - 26) / 2 + 80) : Math.max(0, el.scrollWidth - el.clientWidth);
+      setHorizontal((h) => {
+        const position = splitPan ? Math.min(h.position, max) : el.scrollLeft;
+        return h.max === max && h.position === position ? h : { max, position };
+      });
+    };
+    const ro = new ResizeObserver(update);
     ro.observe(el);
+    if (contentRef.current) ro.observe(contentRef.current);
+    update();
     return () => ro.disconnect();
-  }, [diff]);
+  }, [diff, s.wrapDiff, s.diffMode, s.codeFontSize, s.codeFont, collapsed, splitPan, textWidth]);
+
+  useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollLeft = 0;
+    setHorizontal((h) => ({ ...h, position: 0 }));
+  }, [path, s.diffMode, s.wrapDiff]);
+
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el || !splitPan) return;
+    const wheel = (e: WheelEvent) => {
+      const delta = e.deltaX || (e.shiftKey ? e.deltaY : 0);
+      if (!delta) return;
+      e.preventDefault();
+      setHorizontal((h) => ({ ...h, position: Math.max(0, Math.min(h.max, h.position + delta)) }));
+    };
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => el.removeEventListener("wheel", wheel);
+  }, [splitPan]);
 
   const interactive = mode !== "readonly" && !!onApply;
   const rowH = Math.ceil(s.codeFontSize * 1.6);
@@ -396,8 +442,8 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, onA
       <button className={`icon-btn ${s.ignoreWhitespace ? "active" : ""}`} title="Ignore whitespace" onClick={() => s.set({ ignoreWhitespace: !s.ignoreWhitespace })}>
         <Space size={15} />
       </button>
-      <button className={`icon-btn ${s.wrapDiff ? "active" : ""}`} title="Wrap lines" onClick={() => s.set({ wrapDiff: !s.wrapDiff })}>
-        <WrapText size={15} />
+      <button className={`btn sm diff-wrap ${s.wrapDiff ? "active" : ""}`} title="Wrap lines" aria-pressed={s.wrapDiff} onClick={() => s.set({ wrapDiff: !s.wrapDiff })}>
+        <WrapText size={15} /> Wrap lines
       </button>
     </div>
   );
@@ -488,7 +534,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, onA
       rows.push(r.kind === "hunk" ? <Fragment key={"h" + r.h}>{hunkHeader(diff.hunks[r.h], r.h, { ...style, height: rowH })}</Fragment> : lineRow(r.h, r.l, style));
     }
     body = (
-      <div className="virtual-diff" style={{ height: flat.length * rowH + 20 }}>
+      <div className="virtual-diff" style={{ height: flat.length * rowH + 20, minWidth: textWidth + 150 }}>
         {rows}
       </div>
     );
@@ -516,12 +562,27 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, onA
   }
 
   return (
-    <div className="diff" onKeyDown={onKeyDown} tabIndex={-1}>
+    <div className="diff" style={{ ["--diff-view-width" as string]: `${viewW}px`, ["--split-scroll" as string]: `${splitPan ? horizontal.position : 0}px` }} onKeyDown={onKeyDown} tabIndex={-1}>
       {path && head}
       {findBar}
-      <div ref={bodyRef} className={`diff-body ${s.wrapDiff ? "wrap" : ""}`} onScroll={(e) => setScroll((e.target as HTMLDivElement).scrollTop)}>
-        {body}
+      <div ref={bodyRef} className={`diff-body ${s.wrapDiff ? "wrap" : ""}`} onScroll={(e) => {
+        const el = e.currentTarget;
+        setScroll(el.scrollTop);
+        if (!splitPan) setHorizontal((h) => h.position === el.scrollLeft ? h : { ...h, position: el.scrollLeft });
+      }}>
+        <div ref={contentRef} className={`diff-content ${virtual ? "virtual-content" : ""} ${s.diffMode === "split" ? "split-content" : ""}`}>{body}</div>
       </div>
+      {!s.wrapDiff && horizontal.max > 1 && (
+        <div className="diff-hscroll">
+          <span aria-hidden="true">↔</span>
+          <input type="range" min={0} max={horizontal.max} step={1} value={Math.min(horizontal.position, horizontal.max)} aria-label="Horizontal code scroll"
+            onChange={(e) => {
+              const position = Number(e.target.value);
+              if (splitPan) setHorizontal((h) => ({ ...h, position }));
+              else if (bodyRef.current) bodyRef.current.scrollLeft = position;
+            }} />
+        </div>
+      )}
       {interactive && sel.size > 0 && (
         <div className="sel-bar">
           <span>
@@ -608,18 +669,18 @@ function SplitHunk({
           {no ?? ""}
         </span>
         <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
-        <span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, toks?.[idx], words?.get(idx), l.kind)}</span>
+        <span className="code-viewport"><span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, toks?.[idx], words?.get(idx), l.kind)}</span></span>
       </div>
     );
   };
   return (
-    <>
+    <div className="split-hunk">
       {rows.map(([a, b], ri) => (
         <div className="split-dl" key={ri}>
           {half(a, "l")}
           {half(b, "r")}
         </div>
       ))}
-    </>
+    </div>
   );
 }

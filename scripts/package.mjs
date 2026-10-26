@@ -17,7 +17,8 @@ if (!fs.existsSync(exe)) throw new Error("Release build not found — run `npx t
 
 const out = path.join(root, "release");
 const stage = path.join(out, "Revqora");
-fs.rmSync(stage, { recursive: true, force: true });
+// This is also a convenient location to run local builds. Keep the portable data
+// profile across rebuilds, and only put the package's own files into the archive.
 fs.mkdirSync(stage, { recursive: true });
 fs.copyFileSync(exe, path.join(stage, "revqora.exe"));
 for (const f of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) fs.copyFileSync(path.join(root, f), path.join(stage, f));
@@ -25,6 +26,6 @@ for (const f of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) fs.copyFileSync(path.join
 const zip = path.join(out, `Revqora-${version}-win-x64.zip`);
 fs.rmSync(zip, { force: true });
 const tar = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
-execFileSync(tar, ["-a", "-c", "-f", zip, "-C", out, "Revqora"], { stdio: "inherit" });
+execFileSync(tar, ["-a", "-c", "-f", zip, "-C", out, "Revqora/revqora.exe", "Revqora/LICENSE", "Revqora/THIRD_PARTY_NOTICES.md"], { stdio: "inherit" });
 const mb = (fs.statSync(zip).size / 1024 / 1024).toFixed(1);
 console.log(`Packed ${path.relative(root, zip)} (${mb} MB)`);

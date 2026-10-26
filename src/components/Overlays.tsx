@@ -118,6 +118,8 @@ export function DialogHost() {
 
 export function Splitter({ dir, onDrag, onEnd, style }: { dir: "v" | "h"; onDrag: (delta: number) => void; onEnd?: () => void; style?: React.CSSProperties }) {
   const [dragging, setDragging] = useState(false);
+  const endRef = useRef(onEnd);
+  endRef.current = onEnd;
   return (
     <div
       className={`splitter-${dir} ${dragging ? "dragging" : ""}`}
@@ -136,7 +138,7 @@ export function Splitter({ dir, onDrag, onEnd, style }: { dir: "v" | "h"; onDrag
           window.removeEventListener("mousemove", move);
           window.removeEventListener("mouseup", up);
           document.body.style.cursor = "";
-          onEnd?.();
+          endRef.current?.();
         };
         document.body.style.cursor = dir === "v" ? "col-resize" : "row-resize";
         window.addEventListener("mousemove", move);

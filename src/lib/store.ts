@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import { api, errorMessage } from "./api";
 import { useSettings } from "./settings";
+import { useUi } from "./ui";
 import type { GraphSummary, LayersState, RefsSnapshot, RepoExtras, RepoInfo, StatusSummary } from "./types";
 import { WORKTREE } from "./types";
 
@@ -35,6 +36,8 @@ export interface RepoTab {
   conflictPath: string | null;
   error: string | null;
   loaded: boolean;
+  lastFetchedAt: number | null;
+  fetchError: string | null;
 }
 
 export interface Parts {
@@ -80,6 +83,8 @@ function emptyTab(root: string): RepoTab {
     conflictPath: null,
     error: null,
     loaded: false,
+    lastFetchedAt: null,
+    fetchError: null,
   };
 }
 
@@ -120,7 +125,10 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       tab.info = info;
       set({ tabs: { ...s.tabs, [root]: tab }, order: [...s.order, root] });
     }
-    if (activate) set({ active: root });
+    if (activate) {
+      set({ active: root });
+      useUi.setState({ repositoryOverview: false });
+    }
     useSettings.getState().addRecent(root);
     persistTabs();
     api.watchRepo(root).catch(() => {});
@@ -142,11 +150,14 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     set({ tabs, order, active });
     api.unwatchRepo(root).catch(() => {});
     persistTabs();
+    if (active && active !== s.active) void get().refresh(active, ALL);
   },
 
   activate: (root) => {
     set({ active: root });
+    useUi.setState({ repositoryOverview: false });
     persistTabs();
+    if (root) void get().refresh(root, { info: true, status: true, refs: true, graph: true });
   },
 
   patch: (root, p) => {
