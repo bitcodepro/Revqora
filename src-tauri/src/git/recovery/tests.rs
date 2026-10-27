@@ -513,3 +513,20 @@ fn review_full_checkpoint_ignores_sparse_settings_enabled_after_capture() {
     assert!(!f.root.join("other/no.txt").exists());
     assert_eq!(fs::read(gd.join("index")).unwrap(), source_index);
 }
+
+#[test]
+fn review_sparse_without_patterns_does_not_invent_exclusions() {
+    let f = Fixture::new(false, false);
+    f.write("keep/yes.txt", b"keep\n");
+    f.write("other/no.txt", b"also present\n");
+    f.commit("Folders");
+    runner::run(&f.root, ["config", "core.sparseCheckout", "on"]).unwrap();
+    let cp = f.save(true);
+    assert!(detail(&f.root, &cp.id).unwrap().sparse_patterns.is_none());
+    let source_index = fs::read(repo::git_dir(&f.root).unwrap().join("index")).unwrap();
+    let restored = f.restore(&cp.id, "missing-patterns-recovery");
+    assert_eq!(fs::read(restored.join("other/no.txt")).unwrap(), b"also present\n");
+    assert_eq!(porcelain(&restored), porcelain(&f.root));
+    assert!(!repo::git_dir(&restored).unwrap().join("info/sparse-checkout").exists());
+    assert_eq!(fs::read(repo::git_dir(&f.root).unwrap().join("index")).unwrap(), source_index);
+}
