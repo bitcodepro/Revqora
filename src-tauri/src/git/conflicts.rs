@@ -142,7 +142,7 @@ pub fn info(repo: &Path, path: &str) -> GitResult<ConflictInfo> {
 
 /// Three-way merges blobs with `git merge-file --zdiff3`; returns text and conflict count.
 pub fn merge_file(ours: &[u8], base: &[u8], theirs: &[u8]) -> GitResult<(String, u32)> {
-    let dir = tempfile::tempdir()?;
+    let dir = tempfile::tempdir_in(crate::portable::temp_dir()?)?;
     let (o, b, t) = (dir.path().join("ours"), dir.path().join("base"), dir.path().join("theirs"));
     std::fs::write(&o, ours)?;
     std::fs::write(&b, base)?;

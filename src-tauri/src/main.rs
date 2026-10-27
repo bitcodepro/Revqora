@@ -7,6 +7,7 @@ fn main() {
         std::process::exit(code);
     }
     revqora_lib::update::launch();
+    revqora_lib::portable::configure_environment().expect("Cannot write Revqora data beside the executable");
     revqora_lib::update::wait_for_previous_instance();
     revqora_lib::run()
 }

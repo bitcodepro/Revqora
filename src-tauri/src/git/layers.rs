@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::diff::EMPTY_TREE;
-use super::repo;
+
 use super::runner::{self, GitError, GitResult};
 
 pub const LAYER_REF: &str = "refs/worktree/revqora/layers";
@@ -554,7 +554,7 @@ pub fn discard(repo: &Path, k: usize) -> GitResult<String> {
 }
 
 fn temp_index(repo: &Path) -> GitResult<PathBuf> {
-    let dir = repo::git_dir(repo)?.join("revqora");
+    let dir = super::storage::dir(repo)?;
     std::fs::create_dir_all(&dir)?;
     Ok(dir.join(format!("index-{}", std::process::id())))
 }
@@ -624,7 +624,7 @@ pub fn commit_through(repo: &Path, k: usize, message: &str, opts: &super::ops::C
     let tmp = temp_index(repo)?;
     let tmp_s = tmp.to_string_lossy().into_owned();
     let env = [("GIT_INDEX_FILE", tmp_s.as_str())];
-    let msg_file = repo::git_dir(repo)?.join("revqora").join("LAYER_COMMIT_MSG");
+    let msg_file = super::storage::dir(repo)?.join("LAYER_COMMIT_MSG");
     std::fs::write(&msg_file, message)?;
     let res = (|| -> GitResult<()> {
         runner::run_env(repo, ["read-tree", &tree], &env, None)?;

@@ -182,6 +182,7 @@ pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl Fn
                 return Err(GitError::new(format!("Finish or abort the current {} operation first.", state.kind)).kind("operation-in-progress"));
             }
         }
+        super::recovery::before(repo, command, expected)?;
         f()
     })
 }
@@ -232,14 +233,21 @@ pub fn state_token(repo: &Path, raw_status: &str, files: &[super::status::FileSt
     // Cache-tree/stat extensions and packed-ref layout can change without changing
     // what the user staged. Compare semantic index entries and resolved refs instead.
     hash.update(runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?);
-    hash.update(runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"])?);
+    // Recovery pins are app metadata, not changes to the user's prepared Git
+    // state. A rejected action may save a checkpoint before offering force
+    // consent. Recovery itself verifies each pin independently with exact OIDs.
+    for reference in runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"])?.lines() {
+        if !reference.starts_with(super::recovery::PREFIX) {
+            hash.update(reference.as_bytes());
+            hash.update(b"\n");
+        }
+    }
     for name in [
         "MERGE_HEAD",
         "MERGE_MSG",
         "CHERRY_PICK_HEAD",
         "REVERT_HEAD",
         "SQUASH_MSG",
-        "revqora-squash",
         "BISECT_LOG",
         "rebase-merge/git-rebase-todo",
         "rebase-merge/done",
@@ -249,6 +257,7 @@ pub fn state_token(repo: &Path, raw_status: &str, files: &[super::status::FileSt
     ] {
         hash_file(&mut hash, &gd.join(name))?;
     }
+    hash_file(&mut hash, &super::storage::dir(repo)?.join("squash-target"))?;
     for file in files {
         hash.update(file.path.as_bytes());
         hash_file(&mut hash, &repo.join(&file.path))?;

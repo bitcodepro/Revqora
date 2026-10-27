@@ -25,7 +25,7 @@ impl OpOutcome {
 }
 
 fn temp_file(repo: &Path, name: &str, content: &str) -> GitResult<PathBuf> {
-    let dir = repo::git_dir(repo)?.join("revqora");
+    let dir = super::storage::dir(repo)?;
     std::fs::create_dir_all(&dir)?;
     let p = dir.join(name);
     std::fs::write(&p, content)?;
@@ -85,10 +85,10 @@ pub fn unstage_paths(repo: &Path, paths: &[String], base: Option<&str>) -> GitRe
     Ok(())
 }
 
-/// Copies files into `.git/revqora/trash/<time>/` before destructive operations.
+/// Copies files into portable `data/repositories/<id>/trash/<time>/` before destructive operations.
 pub fn backup_files(repo: &Path, paths: &[String]) -> GitResult<PathBuf> {
     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let dir = repo::git_dir(repo)?.join("revqora").join("trash").join(ts.to_string());
+    let dir = super::storage::dir(repo)?.join("trash").join(ts.to_string());
     for p in paths {
         let src = repo.join(p);
         if src.is_file() {
@@ -174,9 +174,7 @@ fn commit_confirmed(repo: &Path, message: &str, opts: &CommitOptions) -> GitResu
     }
     runner::run(repo, &args)?;
     let _ = std::fs::remove_file(&file);
-    if let Ok(gd) = repo::git_dir(repo) {
-        let _ = std::fs::remove_file(gd.join("revqora-squash"));
-    }
+    let _ = std::fs::remove_file(super::storage::dir(repo)?.join("squash-target"));
     Ok(head_oid(repo).unwrap_or_default())
 }
 
@@ -295,6 +293,7 @@ pub fn undo_last_commit(repo: &Path) -> GitResult<()> {
 // ───────────────────────────── remotes ─────────────────────────────
 
 pub fn fetch(repo: &Path, remote: Option<&str>, prune: bool, on_line: impl FnMut(&str)) -> GitResult<String> {
+    super::recovery::protect_transport(repo, false, remote, None, true)?;
     let mut args = vec!["fetch".to_string(), "--progress".into()];
     match remote {
         Some(r) => args.push(r.into()),
@@ -334,6 +333,7 @@ pub fn background_env(ssh_configured: bool) -> Vec<(&'static str, &'static str)>
 
 /// Quiet periodic fetch of all remotes; never shows a credential prompt.
 pub fn fetch_background(repo: &Path) -> GitResult<String> {
+    super::recovery::protect_transport(repo, false, None, None, true)?;
     let ssh_configured = std::env::var_os("GIT_SSH_COMMAND").is_some()
         || std::env::var_os("GIT_SSH").is_some()
         || runner::run(repo, ["config", "--get", "core.sshCommand"]).map(|s| !s.trim().is_empty()).unwrap_or(false);
@@ -341,6 +341,7 @@ pub fn fetch_background(repo: &Path) -> GitResult<String> {
 }
 
 pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<OpOutcome> {
+    super::recovery::protect_transport(repo, false, None, None, false)?;
     let mut args = vec!["pull".to_string(), "--progress".into()];
     match mode {
         "rebase" => {
@@ -381,6 +382,8 @@ pub struct PushOptions {
 }
 
 pub fn push(repo: &Path, o: &PushOptions, on_line: impl FnMut(&str)) -> GitResult<String> {
+    let explicit = o.remote.as_ref().and(o.branch.as_ref()).map(|b| format!("refs/heads/{b}:refs/heads/{}", o.remote_branch.as_deref().unwrap_or(b)));
+    super::recovery::protect_transport(repo, true, o.remote.as_deref(), explicit.as_deref(), false)?;
     let mut args = vec!["push".to_string(), "--progress".into()];
     if o.set_upstream {
         args.push("--set-upstream".into());
@@ -402,6 +405,10 @@ pub fn push(repo: &Path, o: &PushOptions, on_line: impl FnMut(&str)) -> GitResul
 }
 
 pub fn push_ref(repo: &Path, remote: &str, refspec: &str, on_line: impl FnMut(&str)) -> GitResult<String> {
+    if refspec.starts_with('-') {
+        return Err(GitError::new("Choose an explicit branch or tag refspec."));
+    }
+    super::recovery::protect_transport(repo, true, Some(remote), Some(refspec), false)?;
     runner::run_streaming(repo, &["push".into(), "--progress".into(), remote.into(), refspec.into()], &[], on_line)
 }
 
@@ -454,7 +461,7 @@ pub fn merge_start(repo: &Path, target: &str, strategy: &str) -> GitResult<OpOut
     let merging = gd.join("MERGE_HEAD").exists();
     let conflicts = conflicted(repo);
     if strategy == "squash" && (out.ok() || !conflicts.is_empty()) {
-        std::fs::write(gd.join("revqora-squash"), target)?;
+        std::fs::write(super::storage::dir(repo)?.join("squash-target"), target)?;
         return Ok(OpOutcome {
             status: if conflicts.is_empty() { "pending".into() } else { "conflicts".into() },
             conflicts,
@@ -486,7 +493,7 @@ pub fn abort_op(repo: &Path, kind: &str) -> GitResult<()> {
         "squash" => {
             runner::run(repo, ["reset", "--merge"])?;
             let _ = std::fs::remove_file(gd.join("SQUASH_MSG"));
-            let _ = std::fs::remove_file(gd.join("revqora-squash"));
+            let _ = std::fs::remove_file(super::storage::dir(repo)?.join("squash-target"));
         }
         "rebase" => {
             runner::run(repo, ["rebase", "--abort"])?;

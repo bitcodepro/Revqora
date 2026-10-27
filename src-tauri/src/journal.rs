@@ -555,7 +555,7 @@ impl Drop for Operation {
     }
 }
 
-fn suspend<T>(f: impl FnOnce() -> T) -> T {
+pub(crate) fn suspend<T>(f: impl FnOnce() -> T) -> T {
     struct Restore(Vec<Arc<Context>>);
     impl Drop for Restore {
         fn drop(&mut self) {

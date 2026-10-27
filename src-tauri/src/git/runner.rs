@@ -133,7 +133,7 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
         | "count-objects" | "name-rev" | "grep" | "check-ignore" => true,
         // Immutable object creation is safe concurrently; it does not modify refs,
         // the index or the working tree. An enclosing mutation still holds its gate.
-        "hash-object" | "commit-tree" | "merge-tree" => true,
+        "hash-object" | "commit-tree" | "merge-tree" | "mktree" => true,
         "merge-file" => has("-p") || has("--stdout"),
         "remote" => a.len() == 1 || (a.len() == 2 && a[1] == "-v"),
         "stash" => a.get(1).map(|s| s == "list").unwrap_or(false),

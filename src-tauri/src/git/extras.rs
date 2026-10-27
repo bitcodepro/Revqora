@@ -201,7 +201,7 @@ pub struct BisectStatus {
 }
 
 fn bisect_note(repo: &Path) -> GitResult<PathBuf> {
-    let dir = repo::git_dir(repo)?.join("revqora");
+    let dir = super::storage::dir(repo)?;
     std::fs::create_dir_all(&dir)?;
     Ok(dir.join("bisect-last.txt"))
 }
