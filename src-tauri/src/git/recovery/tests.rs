@@ -484,7 +484,8 @@ fn review_legacy_sparse_restore_uses_saved_patterns_and_preserves_source_setting
         assert!(!restored.join("other/no.txt").exists());
         assert_eq!(runner::run(&f.root, ["config", "--bool", "--get", "core.sparseCheckout"]).unwrap().trim(), "false");
         assert_eq!(runner::run(&f.root, ["config", "--bool", "--get", "core.sparseCheckoutCone"]).unwrap().trim(), "false");
-        assert_eq!(runner::run(&f.root, ["rev-parse", "--show-toplevel"]).unwrap().trim().replace('\\', "/"), display_path(&f.root).replace('\\', "/"));
+        let source_top = runner::run(&f.root, ["rev-parse", "--show-toplevel"]).unwrap();
+        assert_eq!(fs::canonicalize(source_top.trim()).unwrap(), fs::canonicalize(&f.root).unwrap());
         assert_eq!(fs::read_to_string(gd.join("info/sparse-checkout")).unwrap(), "/other/\n");
         assert_eq!(fs::read(gd.join("index")).unwrap(), source_index);
         assert_eq!(porcelain(&f.root), source_status);

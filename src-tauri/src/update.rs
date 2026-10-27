@@ -592,7 +592,22 @@ mod tests {
                 let _ = self.0.wait();
             }
         }
-        let mut old = Probe(std::process::Command::new(root.join("revqora")).arg("30").spawn().unwrap());
+        // Parallel tests may fork while extraction/copy holds a writable FD.
+        // A child can retain that FD until exec even with CLOEXEC, so Linux may
+        // briefly refuse the executable. Retry only ETXTBSY before a child starts.
+        fn spawn_ready(command: &mut std::process::Command) -> std::process::Child {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match command.spawn() {
+                    Ok(child) => return child,
+                    Err(e) if e.raw_os_error() == Some(26) && std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("could not start relaunch probe: {e}"),
+                }
+            }
+        }
+        let mut old = Probe(spawn_ready(std::process::Command::new(root.join("revqora")).arg("30")));
         // Establish which image is running before moving it. Under concurrent
         // process creation /proc can briefly expose the child's pre-exec image.
         let expected = fs::canonicalize(root.join("revqora")).unwrap();
@@ -624,7 +639,10 @@ mod tests {
         let running = fs::read_link(format!("/proc/{}/exe", old.0.id())).unwrap();
         assert!(running.starts_with(root.join(STAGING)), "running binary now resolves to {}", running.display());
         assert_eq!(Launch::from_exe(&root.join("revqora")).unwrap(), launch);
-        let out = std::process::Command::new(launch.installed_exe()).output().unwrap();
+        let mut command = std::process::Command::new(launch.installed_exe());
+        command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let out = spawn_ready(&mut command).wait_with_output().unwrap();
+        assert!(out.status.success(), "replacement binary failed: {out:?}");
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0.2.0");
     }
 
