@@ -21,7 +21,8 @@ export function recoveryDialog(root: string) {
 function RecoveryCenter({ root, close }: { root: string; close: () => void }) {
   const [catalog, setCatalog] = useState<RecoveryCatalog | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const [detail, setDetail] = useState<RecoveryCheckpoint | null>(null);
+  const [loadedDetail, setDetail] = useState<RecoveryCheckpoint | null>(null);
+  const detail = loadedDetail?.id === selected ? loadedDetail : null;
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("all");
   const [error, setError] = useState<string | null>(null);
@@ -111,7 +112,7 @@ function RecoveryCenter({ root, close }: { root: string; close: () => void }) {
           </button>)}
           {!entries.length && <div className="recovery-empty"><ShieldCheck size={28} /><p>{query ? "No matching checkpoints" : "Checkpoints appear before destructive actions. You can also create one now."}</p></div>}
         </div>
-        <section className="recovery-detail">
+        <section className="recovery-detail" data-checkpoint-id={detail?.id} aria-busy={!!selected && !detail && !detailError}>
           {detailError && <div className="recovery-error">{detailError}</div>}
           {!detail && !detailError && <div className="recovery-empty">{selected ? "Loading checkpoint…" : "Select a checkpoint to inspect recovery options"}</div>}
           {detail && <>

@@ -109,7 +109,11 @@ service below stores recoverable files, index contents and selected Git referenc
 - Full checkpoints copy the raw index, its shared index when present, and exact bytes
   of changed tracked/untracked paths reported by Git. They preserve staged/unstaged
   differences, deletions, renames, binary files, links and executable modes. Sparse
-  checkout patterns are retained. Capturing does not refresh or rewrite the source
+  checkout patterns and Git-normalized booleans are retained. Recovery applies saved
+  settings to the new worktree even if shared settings changed after capture. When
+  legacy shared sparsity needs isolation, Git upgrades to worktree-specific config
+  (including its native core.worktree/core.bare migration); the original worktree's
+  effective settings, sparse patterns, files and index stay intact. Capturing does not refresh or rewrite the source
   index. Before/after state checks and file hashes reject observed concurrent changes;
   they cannot prevent a later external write.
   Restoring drops filesystem-monitor/untracked-cache extensions belonging to the
@@ -177,3 +181,12 @@ The update downloader stages packages beside the executable in `.revqora-update/
 Native Git objects, refs, indexes and operation state remain in the repository.
 Automation may explicitly supply an isolated profile; production ignores external
 `WEBVIEW2_USER_DATA_FOLDER` overrides.
+
+
+Conflict `Take ours/theirs/base/delete` and `Mark unresolved` actions capture the
+current working files/index after preflight, before replacement. This preserves
+manual resolutions made after the merge began; it is separate from the pre-merge
+checkpoint. Capture failures stop the replacement.
+Undo Center exposes the loaded detail checkpoint ID, hides stale detail/actions
+immediately on row changes, and tests wait for that ID before selecting a reference.
+The native regression holds detail responses behind a deterministic IPC gate.

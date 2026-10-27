@@ -1110,7 +1110,8 @@ try {
     const sourceHead = git("rev-parse", "HEAD");
     const sourceIndex = fs.readFileSync(path.join(repo, ".git", "index"));
     await page.click("button[aria-label='Undo Center']");
-    await page.locator(`[data-checkpoint-id='${cp.id}']`).click();
+    await page.locator(`.recovery-row[data-checkpoint-id='${cp.id}']`).click();
+    await page.locator(`.recovery-detail[data-checkpoint-id='${cp.id}']`).waitFor();
     const destination = path.join(work, "recovered-native-worktree");
     await page.fill("input[aria-label='Recovery destination']", destination);
     await page.fill("input[aria-label='Recovery worktree branch']", "ui-recovered-workspace");
@@ -1143,15 +1144,44 @@ try {
       const cp = catalog.checkpoints.find((cp) => cp.command === "stash_drop");
       return invoke("recovery_detail", { repo: root, id: cp.id });
     }, repo);
+    // Hold each detail response until the UI has entered its loading state.
+    // This reproduces the CI race without depending on machine speed or sleeps.
+    const selectLoadedCheckpoint = async (id) => {
+      await page.evaluate((id) => {
+        const original = window.fetch;
+        const endpoint = window.__TAURI_INTERNALS__.convertFileSrc("recovery_detail", "ipc");
+        window.__recoveryOriginalFetch = original;
+        window.fetch = async function (input, init) {
+          const response = await original.call(this, input, init);
+          if (String(input) === endpoint && (await response.clone().json()).id === id) {
+            await new Promise((resolve) => { window.__recoveryReleaseDetail = resolve; });
+          }
+          return response;
+        };
+      }, id);
+      try {
+        await page.locator(`.recovery-row[data-checkpoint-id='${id}']`).click();
+        await page.waitForFunction(() => typeof window.__recoveryReleaseDetail === "function");
+        if (await page.locator(".recovery-detail[data-checkpoint-id]").count()) throw new Error("stale checkpoint actions remained available during loading");
+      } finally {
+        await page.evaluate(() => {
+          window.fetch = window.__recoveryOriginalFetch;
+          window.__recoveryReleaseDetail?.();
+          delete window.__recoveryReleaseDetail;
+          delete window.__recoveryOriginalFetch;
+        });
+      }
+      await page.locator(`.recovery-detail[data-checkpoint-id='${id}']`).waitFor();
+    };
     await page.click("button[aria-label='Undo Center']");
-    await page.locator(`[data-checkpoint-id='${branch.id}']`).click();
+    await selectLoadedCheckpoint(branch.id);
     const branchRef = branch.refs.findIndex((ref) => ref.name === "refs/heads/ui-removed-recovery");
     await page.selectOption("select[aria-label='Saved recovery reference']", String(branchRef));
     await page.fill("input[aria-label='Recovered local branch']", "ui-removed-recovery");
     await page.getByRole("button", { name: "Restore branch", exact: true }).click();
     await until(() => !!git("branch", "--list", "ui-removed-recovery"), "branch was not recovered", 15000);
     await page.waitForSelector(".recovery-center[aria-busy='false']");
-    await page.locator(`[data-checkpoint-id='${stash.id}']`).click();
+    await selectLoadedCheckpoint(stash.id);
     await page.selectOption("select[aria-label='Saved recovery reference']", String(stash.refs.findIndex((ref) => ref.kind === "stash" && ref.oid === stashOid)));
     await page.getByRole("button", { name: "Restore stash", exact: true }).click();
     await until(() => git("rev-parse", "--verify", "--quiet", "stash@{0}") === stashOid, "stash was not recovered", 15000);
@@ -1161,7 +1191,7 @@ try {
     await shot("43-undo-center-references");
     await page.click("button[aria-label='Delete checkpoint']");
     await page.locator(".modal").last().getByRole("button", { name: "Delete checkpoint", exact: true }).click();
-    await page.locator(`[data-checkpoint-id='${stash.id}']`).waitFor({ state: "detached" });
+    await page.locator(`.recovery-row[data-checkpoint-id='${stash.id}']`).waitFor({ state: "detached" });
     if (git("for-each-ref", `refs/revqora/recovery/${stash.id}`)) throw new Error("removed checkpoint still pins objects");
     await page.locator(".modal button", { hasText: /^Close$/ }).click();
   });

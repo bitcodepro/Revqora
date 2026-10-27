@@ -373,3 +373,143 @@ fn checkpoint_payloads_are_portable_and_shared_by_linked_worktrees() {
     assert_ne!(super::super::storage::dir(&linked).unwrap(), super::super::storage::dir(&f.root).unwrap());
     assert_eq!(fs::read(f.root.join("file.txt")).unwrap(), b"portable recovery\n");
 }
+
+#[test]
+fn review_conflict_replacements_capture_manual_files_and_index() {
+    for action in ["ours", "theirs", "base", "delete", "unresolve"] {
+        let f = Fixture::new(false, false);
+        runner::run(&f.root, ["checkout", "-qb", "topic"]).unwrap();
+        f.write("file.txt", b"topic\n");
+        f.commit("Topic");
+        runner::run(&f.root, ["checkout", "main"]).unwrap();
+        f.write("file.txt", b"main\n");
+        f.commit("Main");
+        assert!(!runner::exec(&f.root, ["merge", "--no-commit", "topic"]).unwrap().ok());
+        let manual = b"manually edited resolution\r\nkeep these bytes\r\n";
+        f.write("file.txt", manual);
+        if action == "unresolve" {
+            runner::run(&f.root, ["add", "file.txt"]).unwrap();
+            f.write("file.txt", b"further unstaged resolution\r\n");
+        }
+        let saved_bytes = fs::read(f.root.join("file.txt")).unwrap();
+        let saved_index = runner::run_bytes(&f.root, ["ls-files", "--stage", "-z"]).unwrap();
+        let expected = status::status(&f.root).unwrap().state_token;
+        let command = if action == "unresolve" { "conflict_unresolve" } else { "conflict_take" };
+        operations::run(
+            &f.root,
+            command,
+            expected.as_deref(),
+            |_, _| {},
+            || {
+                if action == "unresolve" {
+                    super::super::conflicts::unresolve(&f.root, "file.txt")
+                } else {
+                    super::super::conflicts::take_side(&f.root, "file.txt", action)
+                }
+            },
+        )
+        .unwrap();
+        let catalog = list(&f.root).unwrap();
+        assert_eq!(catalog.checkpoints.len(), 1, "missing automatic capture before {action}");
+        assert_eq!(catalog.checkpoints[0].command, command);
+        assert_ne!(fs::read(f.root.join("file.txt")).ok(), Some(saved_bytes.clone()));
+        let after_action = porcelain(&f.root);
+        let restored = f.restore(&catalog.checkpoints[0].id, "manual-resolution-recovery");
+        assert_eq!(fs::read(restored.join("file.txt")).unwrap(), saved_bytes, "manual resolution lost before {action}");
+        assert_eq!(runner::run_bytes(&restored, ["ls-files", "--stage", "-z"]).unwrap(), saved_index);
+        assert_eq!(porcelain(&f.root), after_action, "recovery changed original worktree");
+    }
+}
+
+#[test]
+fn review_git_boolean_spellings_preserve_sparse_checkouts() {
+    for value in ["yes", "on", "1"] {
+        let f = Fixture::new(false, false);
+        f.write("keep/yes.txt", b"keep\n");
+        f.write("other/no.txt", b"hidden\n");
+        f.commit("Folders");
+        runner::run(&f.root, ["sparse-checkout", "init", "--cone"]).unwrap();
+        runner::run(&f.root, ["sparse-checkout", "set", "keep"]).unwrap();
+        runner::run(&f.root, ["config", "extensions.worktreeConfig", value]).unwrap();
+        for key in ["core.sparseCheckout", "core.sparseCheckoutCone"] {
+            runner::run(&f.root, ["config", "--worktree", key, value]).unwrap();
+        }
+        let cp = f.save(true);
+        let saved = detail(&f.root, &cp.id).unwrap();
+        assert!(saved.sparse && saved.sparse_cone, "Git boolean {value} was lost");
+        let restored = f.restore(&cp.id, "bool-recovery");
+        assert!(!restored.join("other/no.txt").exists());
+        assert_eq!(runner::run(&restored, ["config", "--bool", "--get", "core.sparseCheckout"]).unwrap().trim(), "true");
+        assert_eq!(runner::run(&restored, ["config", "--bool", "--get", "core.sparseCheckoutCone"]).unwrap().trim(), "true");
+    }
+}
+
+#[test]
+fn review_legacy_sparse_restore_uses_saved_patterns_and_preserves_source_settings() {
+    for cone in [false, true] {
+        let f = Fixture::new(false, false);
+        f.write("keep/yes.txt", b"keep\n");
+        f.write("other/no.txt", b"hidden\n");
+        f.commit("Folders");
+        let gd = repo::git_dir(&f.root).unwrap();
+        fs::create_dir_all(gd.join("info")).unwrap();
+        let patterns = if cone { "/*\n!/*/\n/keep/\n" } else { "/keep/yes.txt\n" };
+        fs::write(gd.join("info/sparse-checkout"), patterns).unwrap();
+        runner::run(&f.root, ["config", "core.sparseCheckout", "true"]).unwrap();
+        runner::run(&f.root, ["config", "core.sparseCheckoutCone", if cone { "true" } else { "false" }]).unwrap();
+        runner::run(&f.root, ["read-tree", "--reset", "-u", "HEAD"]).unwrap();
+        f.write("keep/yes.txt", b"saved staged sparse edit\n");
+        runner::run(&f.root, ["add", "keep/yes.txt"]).unwrap();
+        f.write("keep/yes.txt", b"saved unstaged sparse edit\r\n");
+        let cp = f.save(true);
+        let saved_status = porcelain(&f.root);
+        runner::run(&f.root, ["reset", "--hard", "HEAD"]).unwrap();
+        runner::run(&f.root, ["config", "core.sparseCheckout", "false"]).unwrap();
+        runner::run(&f.root, ["config", "core.sparseCheckoutCone", "false"]).unwrap();
+        runner::run(&f.root, ["config", "core.worktree", &display_path(&f.root)]).unwrap();
+        runner::run(&f.root, ["read-tree", "--reset", "-u", "HEAD"]).unwrap();
+        fs::write(gd.join("info/sparse-checkout"), "/other/\n").unwrap();
+        let source_index = fs::read(gd.join("index")).unwrap();
+        let source_status = porcelain(&f.root);
+        let source_other = fs::read(f.root.join("other/no.txt")).ok();
+        let restored = f.restore(&cp.id, "legacy-sparse-recovery");
+        assert!(!restored.join("other/no.txt").exists(), "current shared settings materialized an excluded file");
+        assert_eq!(porcelain(&restored), saved_status);
+        assert_eq!(fs::read(restored.join("keep/yes.txt")).unwrap(), b"saved unstaged sparse edit\r\n");
+        assert_eq!(runner::run(&restored, ["show", ":keep/yes.txt"]).unwrap(), "saved staged sparse edit\n");
+        assert_eq!(runner::run(&restored, ["config", "--bool", "--get", "core.sparseCheckout"]).unwrap().trim(), "true");
+        assert_eq!(runner::run(&restored, ["config", "--bool", "--get", "core.sparseCheckoutCone"]).unwrap().trim(), if cone { "true" } else { "false" });
+        assert_eq!(fs::read_to_string(repo::git_dir(&restored).unwrap().join("info/sparse-checkout")).unwrap(), patterns);
+        runner::run(&restored, ["sparse-checkout", "reapply"]).unwrap();
+        assert!(!restored.join("other/no.txt").exists());
+        assert_eq!(runner::run(&f.root, ["config", "--bool", "--get", "core.sparseCheckout"]).unwrap().trim(), "false");
+        assert_eq!(runner::run(&f.root, ["config", "--bool", "--get", "core.sparseCheckoutCone"]).unwrap().trim(), "false");
+        assert_eq!(runner::run(&f.root, ["rev-parse", "--show-toplevel"]).unwrap().trim().replace('\\', "/"), display_path(&f.root).replace('\\', "/"));
+        assert_eq!(fs::read_to_string(gd.join("info/sparse-checkout")).unwrap(), "/other/\n");
+        assert_eq!(fs::read(gd.join("index")).unwrap(), source_index);
+        assert_eq!(porcelain(&f.root), source_status);
+        assert_eq!(fs::read(f.root.join("other/no.txt")).ok(), source_other);
+    }
+}
+
+#[test]
+fn review_full_checkpoint_ignores_sparse_settings_enabled_after_capture() {
+    let f = Fixture::new(false, false);
+    f.write("keep/yes.txt", b"keep\n");
+    f.write("other/no.txt", b"full checkout\n");
+    f.commit("Folders");
+    let cp = f.save(true);
+    let gd = repo::git_dir(&f.root).unwrap();
+    fs::create_dir_all(gd.join("info")).unwrap();
+    fs::write(gd.join("info/sparse-checkout"), "/keep/yes.txt\n").unwrap();
+    runner::run(&f.root, ["config", "core.sparseCheckout", "yes"]).unwrap();
+    runner::run(&f.root, ["config", "core.sparseCheckoutCone", "off"]).unwrap();
+    runner::run(&f.root, ["read-tree", "--reset", "-u", "HEAD"]).unwrap();
+    let source_index = fs::read(gd.join("index")).unwrap();
+    let restored = f.restore(&cp.id, "full-checkout-recovery");
+    assert_eq!(fs::read(restored.join("other/no.txt")).unwrap(), b"full checkout\n");
+    assert_eq!(runner::run(&restored, ["config", "--bool", "--get", "core.sparseCheckout"]).unwrap().trim(), "false");
+    assert_eq!(runner::run(&f.root, ["config", "--bool", "--get", "core.sparseCheckout"]).unwrap().trim(), "true");
+    assert!(!f.root.join("other/no.txt").exists());
+    assert_eq!(fs::read(gd.join("index")).unwrap(), source_index);
+}

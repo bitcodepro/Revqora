@@ -88,6 +88,19 @@ fn git(root: &Path, args: &[String], input: Option<&[u8]>) -> GitResult<String> 
     }
     Ok(out.text().trim().to_owned())
 }
+/// Let Git normalize true/yes/on/1 (and valueless keys), and fail closed on
+/// malformed configuration rather than silently capturing a different layout.
+fn config_bool(root: &Path, key: &str) -> GitResult<bool> {
+    let out = runner::exec(root, ["config", "--bool", "--get", key])?;
+    if out.ok() {
+        return Ok(out.text().trim() == "true");
+    }
+    if out.code == 1 {
+        return Ok(false);
+    }
+    Err(runner::to_error("git config --bool --get", &out))
+}
+
 fn strings(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| (*s).into()).collect()
 }
@@ -439,8 +452,8 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
             let sha256 = copy_file(&source, &folder.path().join("meta").join(&name), &mut budget)?;
             cp.index_files.push(IndexFile { name, sha256 });
         }
-        cp.sparse = runner::run(&root, ["config", "--get", "core.sparseCheckout"]).unwrap_or_default().trim() == "true";
-        cp.sparse_cone = runner::run(&root, ["config", "--get", "core.sparseCheckoutCone"]).unwrap_or_default().trim() == "true";
+        cp.sparse = config_bool(&root, "core.sparseCheckout")?;
+        cp.sparse_cone = config_bool(&root, "core.sparseCheckoutCone")?;
         if cp.sparse && gd.join("info/sparse-checkout").is_file() {
             cp.sparse_patterns = Some(fs::read_to_string(gd.join("info/sparse-checkout"))?);
         }
@@ -753,17 +766,27 @@ fn restore_workspace_locked(root: &Path, id: &str, destination: &Path, name: &st
             return Err(fail("Unexpected recovery worktree root."));
         }
         let gd = repo::git_dir(&destination)?;
+        // Legacy shared sparse settings cannot describe an independent restored
+        // layout. Git upgrades to per-worktree config and migrates core.worktree /
+        // core.bare safely; the original worktree's effective settings stay intact.
+        if !config_bool(root, "extensions.worktreeConfig")? && (cp.sparse || config_bool(&destination, "core.sparseCheckout")?) {
+            runner::run(&destination, ["sparse-checkout", "init", if cp.sparse_cone { "--cone" } else { "--no-cone" }, "--no-sparse-index"])?;
+        }
+        if config_bool(&destination, "extensions.worktreeConfig")? {
+            runner::run(&destination, ["config", "--worktree", "core.sparseCheckout", if cp.sparse { "true" } else { "false" }])?;
+            runner::run(&destination, ["config", "--worktree", "core.sparseCheckoutCone", if cp.sparse_cone { "true" } else { "false" }])?;
+        }
         if cp.sparse {
             fs::create_dir_all(gd.join("info"))?;
             if let Some(patterns) = &cp.sparse_patterns {
                 fs::write(gd.join("info/sparse-checkout"), patterns)?;
             }
         }
-        if runner::run(root, ["config", "--get", "extensions.worktreeConfig"]).unwrap_or_default().trim() == "true" {
-            runner::run(&destination, ["config", "--worktree", "core.sparseCheckout", if cp.sparse { "true" } else { "false" }])?;
-            runner::run(&destination, ["config", "--worktree", "core.sparseCheckoutCone", if cp.sparse_cone { "true" } else { "false" }])?;
-        }
-        runner::run(&destination, ["read-tree", "--reset", "-u", &cp.base_commit])?;
+        // Always materialize using captured settings, including a full checkpoint
+        // restored after shared sparsity was enabled. Never change the source index.
+        let sparse = format!("core.sparseCheckout={}", cp.sparse);
+        let cone = format!("core.sparseCheckoutCone={}", cp.sparse_cone);
+        runner::run(&destination, ["-c", &sparse, "-c", &cone, "read-tree", "--reset", "-u", &cp.base_commit])?;
         let index_lock = gd.join("index.lock");
         let mut index = OpenOptions::new().create_new(true).write(true).open(&index_lock)?;
         struct Unlock {
@@ -878,6 +901,8 @@ pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<(
             | "checkout_file"
             | "apply_from_commit"
             | "stash_restore_file"
+            | "conflict_take"
+            | "conflict_unresolve"
     );
     let refs = matches!(command, "branch_delete" | "branch_delete_remote" | "stash_drop" | "push" | "push_ref");
     if workspace || refs {
