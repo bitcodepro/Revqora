@@ -33,6 +33,7 @@ import {
   Undo2,
   Bug,
   Wrench,
+  ShieldCheck,
 } from "lucide-react";
 import { useRepos, type RepoTab } from "../lib/store";
 import { resolvedTheme, useSettings } from "../lib/settings";
@@ -49,6 +50,7 @@ import { UpdateChip } from "./UpdateChip";
 import { reflogDialog, settingsDialog } from "./dialogs";
 import { applyPatchFile, repoToolsDialog } from "./RepoTools";
 import { OperationLogButton, operationLogDialog } from "./OperationLog";
+import { recoveryDialog } from "./RecoveryCenter";
 
 // ───────────── top bar ─────────────
 
@@ -110,6 +112,7 @@ export function TopBar() {
           <button className="icon-btn" title="Undo history (reflog)" onClick={() => reflogDialog(root, (oid) => A.resetTo(root, oid, "reflog entry"))}>
             <History size={16} />
           </button>
+          <button type="button" className="icon-btn" title="Undo Center" aria-label="Undo Center" onClick={() => void recoveryDialog(root)}><ShieldCheck size={16} /></button>
           <button className="icon-btn" title="Open terminal here" onClick={() => api.openTerminal(root)}>
             <SquareTerminal size={16} />
           </button>
@@ -480,6 +483,7 @@ export function CommandPalette() {
       { id: "init", label: "New repository…", group: "Repository", icon: <Plus size={15} />, run: () => A.initRepoDialog() },
       { id: "settings", label: "Settings", group: "App", icon: <Settings2 size={15} />, run: () => settingsDialog(tab?.root ?? null) },
       { id: "operation-log", label: "Operation log…", group: "App", icon: <History size={15} />, run: () => operationLogDialog(tab?.root ?? null) },
+      ...(tab ? [{ id: "recovery-center", label: "Undo Center…", group: "Repository", icon: <ShieldCheck size={15} />, run: () => recoveryDialog(tab.root) }] : []),
       {
         id: "theme",
         label: "Toggle dark / light theme",

@@ -1077,6 +1077,89 @@ try {
     }
   });
 
+  await check("Undo Center persists checkpoints and recovers exact files and staging into a new worktree", async () => {
+    fs.writeFileSync(path.join(repo, "ui-recovery.txt"), "staged checkpoint content\n");
+    git("add", "ui-recovery.txt");
+    fs.writeFileSync(path.join(repo, "ui-recovery.txt"), "unstaged checkpoint content\r\n");
+    fs.writeFileSync(path.join(repo, "ui-recovery.bin"), Buffer.from([0, 255, 1, 13, 10]));
+    await page.click("button[aria-label='Undo Center']");
+    await page.waitForSelector(".recovery-center");
+    await page.click(".recovery-toolbar button:has-text('Create checkpoint')");
+    const prompt = page.locator(".modal").last();
+    await prompt.locator("input").fill("Native recovery snapshot");
+    await prompt.getByRole("button", { name: "Create checkpoint", exact: true }).click();
+    await page.waitForSelector(".recovery-title h3:has-text('Native recovery snapshot')");
+    await page.waitForSelector(".recovery-center[aria-busy='false']");
+    const saved = await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("recovery_list", { repo: root }), repo);
+    const cp = saved.checkpoints.find((item) => item.label === "Native recovery snapshot");
+    if (!cp?.workspace) throw new Error("manual checkpoint was not saved");
+    await shot("41-undo-center");
+    await page.locator(".modal button", { hasText: /^Close$/ }).click();
+    const exited = child.exitCode !== null ? Promise.resolve() : new Promise((resolve) => child.once("exit", resolve));
+    await close(); await exited;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    ({ page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 })); attachPage();
+    await page.waitForSelector(".repo-current:has-text('demo')");
+    git("reset", "--hard", "HEAD"); git("clean", "-fd");
+    const sourceHead = git("rev-parse", "HEAD");
+    const sourceIndex = fs.readFileSync(path.join(repo, ".git", "index"));
+    await page.click("button[aria-label='Undo Center']");
+    await page.locator(`[data-checkpoint-id='${cp.id}']`).click();
+    const destination = path.join(work, "recovered-native-worktree");
+    await page.fill("input[aria-label='Recovery destination']", destination);
+    await page.fill("input[aria-label='Recovery worktree branch']", "ui-recovered-workspace");
+    await page.click("button:has-text('Recover in new worktree')");
+    await page.waitForSelector(".recovery-success", { timeout: 30000 });
+    const recoveredGit = (...args) => execFileSync("git", ["-C", destination, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
+    if (fs.readFileSync(path.join(destination, "ui-recovery.txt"), "utf8") !== "unstaged checkpoint content\r\n" || recoveredGit("show", ":ui-recovery.txt") !== "staged checkpoint content") throw new Error("file bytes or staging were not recovered");
+    if (!fs.readFileSync(path.join(destination, "ui-recovery.bin")).equals(Buffer.from([0, 255, 1, 13, 10]))) throw new Error("binary recovery failed");
+    if (git("rev-parse", "HEAD") !== sourceHead || !sourceIndex.equals(fs.readFileSync(path.join(repo, ".git", "index"))) || fs.existsSync(path.join(repo, "ui-recovery.txt"))) throw new Error("recovery replaced current worktree state");
+    await shot("42-undo-center-recovered");
+    await page.locator(".modal button", { hasText: /^Close$/ }).click();
+  });
+
+  await check("automatic checkpoints restore deleted branches and stashes and can be explicitly removed", async () => {
+    git("branch", "ui-removed-recovery");
+    const branch = await page.evaluate(async (root) => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      await invoke("branch_delete", { repo: root, name: "ui-removed-recovery", force: true });
+      const catalog = await invoke("recovery_list", { repo: root });
+      const cp = catalog.checkpoints.find((cp) => cp.command === "branch_delete");
+      return invoke("recovery_detail", { repo: root, id: cp.id });
+    }, repo);
+    fs.writeFileSync(path.join(repo, "ui-stash-recovery.txt"), "preserve this stash\n");
+    git("stash", "push", "-u", "-m", "Recovery smoke stash");
+    const stashOid = git("rev-parse", "stash@{0}");
+    const stash = await page.evaluate(async (root) => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      await invoke("stash_drop", { repo: root, index: 0 });
+      const catalog = await invoke("recovery_list", { repo: root });
+      const cp = catalog.checkpoints.find((cp) => cp.command === "stash_drop");
+      return invoke("recovery_detail", { repo: root, id: cp.id });
+    }, repo);
+    await page.click("button[aria-label='Undo Center']");
+    await page.locator(`[data-checkpoint-id='${branch.id}']`).click();
+    const branchRef = branch.refs.findIndex((ref) => ref.name === "refs/heads/ui-removed-recovery");
+    await page.selectOption("select[aria-label='Saved recovery reference']", String(branchRef));
+    await page.fill("input[aria-label='Recovered local branch']", "ui-removed-recovery");
+    await page.getByRole("button", { name: "Restore branch", exact: true }).click();
+    await until(() => !!git("branch", "--list", "ui-removed-recovery"), "branch was not recovered", 15000);
+    await page.waitForSelector(".recovery-center[aria-busy='false']");
+    await page.locator(`[data-checkpoint-id='${stash.id}']`).click();
+    await page.selectOption("select[aria-label='Saved recovery reference']", String(stash.refs.findIndex((ref) => ref.kind === "stash" && ref.oid === stashOid)));
+    await page.getByRole("button", { name: "Restore stash", exact: true }).click();
+    await until(() => git("rev-parse", "--verify", "--quiet", "stash@{0}") === stashOid, "stash was not recovered", 15000);
+    if (fs.existsSync(path.join(repo, "ui-stash-recovery.txt"))) throw new Error("stash recovery applied files without consent");
+    await page.waitForSelector(".recovery-center[aria-busy='false']");
+    await page.evaluate(() => document.documentElement.dataset.theme = "dark");
+    await shot("43-undo-center-references");
+    await page.click("button[aria-label='Delete checkpoint']");
+    await page.locator(".modal").last().getByRole("button", { name: "Delete checkpoint", exact: true }).click();
+    await page.locator(`[data-checkpoint-id='${stash.id}']`).waitFor({ state: "detached" });
+    if (git("for-each-ref", `refs/revqora/recovery/${stash.id}`)) throw new Error("removed checkpoint still pins objects");
+    await page.locator(".modal button", { hasText: /^Close$/ }).click();
+  });
+
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;

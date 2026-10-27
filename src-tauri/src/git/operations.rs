@@ -182,6 +182,7 @@ pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl Fn
                 return Err(GitError::new(format!("Finish or abort the current {} operation first.", state.kind)).kind("operation-in-progress"));
             }
         }
+        super::recovery::before(repo, command, expected)?;
         f()
     })
 }

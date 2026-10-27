@@ -12,6 +12,7 @@ pub mod maint;
 pub mod more;
 pub mod operations;
 pub mod ops;
+pub mod recovery;
 pub mod refs;
 pub mod repo;
 pub mod runner;

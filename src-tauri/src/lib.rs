@@ -21,6 +21,7 @@ use git::diff::{self, DiffOptions, FileDiff, SelectionMode, WorkSide};
 use git::graph::{self, GraphCache, GraphRow, GraphSummary, SearchMode};
 use git::layers::{self, LayersState};
 use git::ops::{self, CommitOptions, OpOutcome, PushOptions, ReflogEntry, RewriteAction};
+use git::recovery;
 use git::refs::{self, RefsSnapshot};
 use git::repo::{self, RepoInfo};
 use git::runner::{self, GitError, GitResult};
@@ -105,6 +106,7 @@ where
         }
         emit(if result.is_ok() { "finished" } else { "failed" }, 0);
         let _ = app.emit("operation-log-changed", ());
+        let _ = app.emit("recovery-changed", ());
         result
     })
     .await
@@ -169,6 +171,55 @@ async fn operation_log_retry(app: AppHandle) -> GitResult<journal::Health> {
 }
 
 // ───────────────────────────── app / repo ─────────────────────────────
+
+#[tauri::command]
+async fn recovery_list(repo: String) -> GitResult<recovery::Catalog> {
+    blocking(move || git::operations::read(&p(&repo), || recovery::list(&p(&repo)))).await
+}
+#[tauri::command]
+async fn recovery_detail(repo: String, id: String) -> GitResult<recovery::Checkpoint> {
+    blocking(move || git::operations::read(&p(&repo), || recovery::detail(&p(&repo), &id))).await
+}
+#[tauri::command]
+async fn recovery_create(app: AppHandle, expected_state: Option<String>, repo: String, label: String) -> GitResult<recovery::Summary> {
+    mutating(repo.clone(), expected_state, app, "recovery_create", None, move || {
+        journal::suspend(|| recovery::create(&p(&repo), "manual", &label, true, false))
+    })
+    .await
+}
+#[tauri::command]
+async fn recovery_delete(app: AppHandle, expected_state: Option<String>, repo: String, id: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app, "recovery_delete", None, move || recovery::delete(&p(&repo), &id)).await
+}
+#[tauri::command]
+async fn recovery_restore_branch(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    id: String,
+    reference: Option<usize>,
+    name: String,
+) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app, "recovery_restore_branch", None, move || recovery::restore_branch(&p(&repo), &id, reference, &name)).await
+}
+#[tauri::command]
+async fn recovery_restore_stash(app: AppHandle, expected_state: Option<String>, repo: String, id: String, reference: usize) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app, "recovery_restore_stash", None, move || recovery::restore_stash(&p(&repo), &id, reference)).await
+}
+#[tauri::command]
+async fn recovery_restore_workspace(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    id: String,
+    destination: String,
+    name: String,
+) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app, "recovery_restore_workspace", None, move || {
+        recovery::restore_workspace(&p(&repo), &id, &p(&destination), &name)
+    })
+    .await
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -310,8 +361,12 @@ async fn apply_selection(
     untracked: bool,
     opts: Option<DiffOptions>,
 ) -> GitResult<()> {
+    let checkpoint_expected = expected_state.clone();
     mutating(repo.clone(), expected_state, app.clone(), "apply_selection", None, move || {
         let r = p(&repo);
+        if mode == SelectionMode::Discard {
+            recovery::automatic_expected(&r, "discard_lines", true, false, checkpoint_expected.as_deref())?;
+        }
         let base = if mode == SelectionMode::Unstage { layers::staged_base(&r) } else { None };
         diff::apply_selection(&r, &path, mode, &selection, &hash, base.as_deref(), untracked, &opts.unwrap_or_default())
     })
@@ -340,7 +395,15 @@ async fn discard(app: AppHandle, expected_state: Option<String>, repo: String, t
 
 #[tauri::command]
 async fn commit(app: AppHandle, expected_state: Option<String>, repo: String, message: String, opts: Option<CommitOptions>) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "commit", None, move || ops::commit(&p(&repo), &message, &opts.unwrap_or_default())).await
+    let checkpoint_expected = expected_state.clone();
+    mutating(repo.clone(), expected_state, app.clone(), "commit", None, move || {
+        let opts = opts.unwrap_or_default();
+        if opts.amend {
+            recovery::automatic_expected(&p(&repo), "amend", true, false, checkpoint_expected.as_deref())?;
+        }
+        ops::commit(&p(&repo), &message, &opts)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -878,11 +941,12 @@ async fn worktree_remove(
     force: bool,
 ) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "worktree_remove", None, move || {
-        if let Some(expected) = expected_target_state {
+        if let Some(expected) = &expected_target_state {
             if status::status(&p(&path))?.state_token.as_deref() != Some(expected.as_str()) {
                 return Err(GitError::new("The worktree changed while the confirmation was open. Review it before removing it.").kind("stale-operation"));
             }
         }
+        recovery::automatic_expected(&p(&path), "worktree_remove", true, true, expected_target_state.as_deref())?;
         extras::worktree_remove(&p(&repo), &path, force)
     })
     .await
@@ -1329,6 +1393,13 @@ pub fn run() {
             operation_log_clear,
             operation_log_export,
             operation_log_retry,
+            recovery_list,
+            recovery_detail,
+            recovery_create,
+            recovery_delete,
+            recovery_restore_branch,
+            recovery_restore_stash,
+            recovery_restore_workspace,
             git_version,
             update_check,
             update_install,

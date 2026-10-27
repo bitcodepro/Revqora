@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
-import type { RemoteBranchTarget, RemoteDeletionReview, OperationLogDetail, OperationLogFilter, OperationLogPage, OperationLogHealth } from "./types";
+import type { RemoteBranchTarget, RemoteDeletionReview, OperationLogDetail, OperationLogFilter, OperationLogPage, OperationLogHealth, RecoveryCatalog, RecoveryCheckpoint, RecoverySummary } from "./types";
 import type {
   Check,
   CommitHelpers,
@@ -67,6 +67,13 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  recoveryList: (repo: string) => call<RecoveryCatalog>("recovery_list", { repo }),
+  recoveryDetail: (repo: string, id: string) => call<RecoveryCheckpoint>("recovery_detail", { repo, id }),
+  recoveryCreate: (repo: string, label: string) => call<RecoverySummary>("recovery_create", { repo, label }),
+  recoveryDelete: (repo: string, id: string) => call<void>("recovery_delete", { repo, id }),
+  recoveryRestoreBranch: (repo: string, id: string, reference: number | null, name: string) => call<void>("recovery_restore_branch", { repo, id, reference, name }),
+  recoveryRestoreStash: (repo: string, id: string, reference: number) => call<void>("recovery_restore_stash", { repo, id, reference }),
+  recoveryRestoreWorkspace: (repo: string, id: string, destination: string, name: string) => call<string>("recovery_restore_workspace", { repo, id, destination, name }),
   operationLogHealth: () => call<OperationLogHealth>("operation_log_health"),
   operationLogList: (filter: OperationLogFilter) => call<OperationLogPage>("operation_log_list", { filter }),
   operationLogDetail: (id: string) => call<OperationLogDetail>("operation_log_detail", { id }),

@@ -295,6 +295,7 @@ pub fn undo_last_commit(repo: &Path) -> GitResult<()> {
 // ───────────────────────────── remotes ─────────────────────────────
 
 pub fn fetch(repo: &Path, remote: Option<&str>, prune: bool, on_line: impl FnMut(&str)) -> GitResult<String> {
+    super::recovery::protect_transport(repo, false, remote, None, true)?;
     let mut args = vec!["fetch".to_string(), "--progress".into()];
     match remote {
         Some(r) => args.push(r.into()),
@@ -334,6 +335,7 @@ pub fn background_env(ssh_configured: bool) -> Vec<(&'static str, &'static str)>
 
 /// Quiet periodic fetch of all remotes; never shows a credential prompt.
 pub fn fetch_background(repo: &Path) -> GitResult<String> {
+    super::recovery::protect_transport(repo, false, None, None, true)?;
     let ssh_configured = std::env::var_os("GIT_SSH_COMMAND").is_some()
         || std::env::var_os("GIT_SSH").is_some()
         || runner::run(repo, ["config", "--get", "core.sshCommand"]).map(|s| !s.trim().is_empty()).unwrap_or(false);
@@ -341,6 +343,7 @@ pub fn fetch_background(repo: &Path) -> GitResult<String> {
 }
 
 pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<OpOutcome> {
+    super::recovery::protect_transport(repo, false, None, None, false)?;
     let mut args = vec!["pull".to_string(), "--progress".into()];
     match mode {
         "rebase" => {
@@ -381,6 +384,8 @@ pub struct PushOptions {
 }
 
 pub fn push(repo: &Path, o: &PushOptions, on_line: impl FnMut(&str)) -> GitResult<String> {
+    let explicit = o.remote.as_ref().and(o.branch.as_ref()).map(|b| format!("refs/heads/{b}:refs/heads/{}", o.remote_branch.as_deref().unwrap_or(b)));
+    super::recovery::protect_transport(repo, true, o.remote.as_deref(), explicit.as_deref(), false)?;
     let mut args = vec!["push".to_string(), "--progress".into()];
     if o.set_upstream {
         args.push("--set-upstream".into());
@@ -402,6 +407,10 @@ pub fn push(repo: &Path, o: &PushOptions, on_line: impl FnMut(&str)) -> GitResul
 }
 
 pub fn push_ref(repo: &Path, remote: &str, refspec: &str, on_line: impl FnMut(&str)) -> GitResult<String> {
+    if refspec.starts_with('-') {
+        return Err(GitError::new("Choose an explicit branch or tag refspec."));
+    }
+    super::recovery::protect_transport(repo, true, Some(remote), Some(refspec), false)?;
     runner::run_streaming(repo, &["push".into(), "--progress".into(), remote.into(), refspec.into()], &[], on_line)
 }
 

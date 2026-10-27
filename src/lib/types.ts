@@ -617,3 +617,17 @@ export interface Check {
   state: "success" | "failure" | "pending" | "neutral" | "skipped" | "cancelled";
   url: string | null;
 }
+export interface RecoverySummary {
+  id: string; createdAt: number; command: string; label: string; sourceRoot: string;
+  branch: string | null; head: string | null; workspace: boolean; includesIgnored: boolean;
+  files: number; references: number; bytes: number;
+}
+export interface RecoveryRef { name: string; oid: string; kind: "branch" | "remote" | "stash" | "layer"; }
+export interface RecoveryCheckpoint extends RecoverySummary {
+  version: number; commonDir: string; pin: string; baseCommit: string;
+  refs: RecoveryRef[]; paths: { path: string; kind: "file" | "missing" | "directory" | "link" }[];
+}
+export interface RecoveryCatalog {
+  checkpoints: RecoverySummary[]; storagePath: string; warning: string | null;
+  maxCheckpointBytes: number; maxTotalBytes: number; maxCount: number; retentionDays: number;
+}

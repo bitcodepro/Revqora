@@ -1,4 +1,4 @@
-# Repository operation engine and journal (stages 1–2)
+# Repository operation engine, journal and recovery (stages 1–3)
 
 - Every existing-repository mutation exposed by Tauri runs through `mutating` in `lib.rs`.
   The client/backend command registry parity is checked by a frontend regression test.
@@ -48,7 +48,8 @@
 The gate is in-process, not a lock on other Git programs or editors. External processes
 can still write after preflight; Git's lock files and operation-specific stale checks
 remain necessary. A successful preflight is not a recovery guarantee. The engine does
-not provide checkpoints, process cancellation or cross-process Git orchestration.
+not provide process cancellation or cross-process Git orchestration. Recovery
+checkpoints are a separate service described below.
 A UI sequence such as commit then push consists of two backend operations.
 
 ## Persistent operation journal (stage 2)
@@ -86,8 +87,57 @@ A UI sequence such as commit then push consists of two backend operations.
   sessions have distinct results. A command's non-zero exit code can be a normal Git
   check; the enclosing action's result is recorded separately.
 
-Recovery checkpoints and Undo Center remain the next stage. Journal HEAD metadata and
-diagnostic output are not backups of files, index contents or repository references.
+Journal HEAD metadata and diagnostic output are not backups. The separate checkpoint
+service below stores recoverable files, index contents and selected Git references.
+
+## Recovery checkpoints and Undo Center (stage 3)
+
+- Manual checkpoints and automatic checkpoints run inside the repository writer gate.
+  Automatic capture follows stale-state and pending-operation checks, before reset,
+  undo commit, rebase/rewrite, merge/pull, cherry-pick/revert, discard (including lines
+  and layers), stash apply/drop, file replacement, branch deletion and pushes. Amend
+  has a dedicated capture; removing a worktree captures the target after checking its
+  reviewed state. Git is not started if capture fails. A failed subsequent action may
+  leave a useful checkpoint; it does not imply the action succeeded.
+  Prepared state is checked again after waiting for the checkpoint-storage lock.
+- Data lives in the common Git directory under `revqora/recovery/`, shared by linked
+  worktrees. An OS file lock serializes checkpoint creation/recovery/removal across app
+  instances. This lock does not coordinate external Git programs or editors.
+- Full checkpoints copy the raw index, its shared index when present, and exact bytes
+  of changed tracked/untracked paths reported by Git. They preserve staged/unstaged
+  differences, deletions, renames, binary files, links and executable modes. Sparse
+  checkout patterns are retained. Capturing does not refresh or rewrite the source
+  index. Before/after state checks and file hashes reject observed concurrent changes;
+  they cannot prevent a later external write.
+  Restoring drops filesystem-monitor/untracked-cache extensions belonging to the
+  original worktree while preserving semantic staging flags, including intent-to-add.
+- Immutable Git objects and commits reachable from saved local/remote-tracking heads,
+  stash entries and worktree layer refs are pinned under `refs/revqora/recovery/`.
+  Index objects (including conflict stages) are pinned as well. Protected refs are not
+  included in the normal history graph. Tags are outside this recovery format.
+- Files are checksummed; manifests are published after their object pin exists.
+  Incomplete/unreadable checkpoints are preserved and reported. Exact compare-and-swap
+  deletion refuses a changed pin. Retention removes old managed checkpoints after
+  30 days, 100 entries or a 1 GiB saved-file budget; a checkpoint is limited to 100 MiB
+  and 20,000 changed paths. Already existing Git objects/history pinned by recovery
+  are not included in this file budget, so it is not a physical repository-size cap.
+- Undo Center offers search/filtering, inspection, manual capture and deletion.
+  Reference recovery creates a NEW local branch, or appends an existing saved stash.
+  Workspace recovery creates a NEW branch/worktree at a new path outside existing
+  worktrees. Existing branches, files and remote servers are not replaced. A failure
+  after creating the new worktree preserves it for inspection and reports its path.
+- Workspace recovery restores files and staging, not an active merge/rebase/bisect
+  state machine or stage-layer labels. Conflict stages can be recovered for manual
+  resolution. Unborn repositories recover with an unborn branch. Dirty submodule
+  contents and nested repositories are not backed up; capture refuses modified
+  submodules. Ordinary captures exclude ignored files and changes Git deliberately
+  hides via index flags. Worktree-removal captures additionally include ignored files
+  and refuse removal if the backup exceeds the limits. Remote-tracking refs reflect
+  locally observed SHAs; no unseen server history or remote undo is promised.
+- Checkpoints contain private project data and stay local. The client's transport
+  checks reject mirror/wildcard mappings that would publish or prune private recovery
+  refs; ordinary branch/tag mappings remain available. External CLI `push --mirror`
+  and equivalent refspecs can publish these refs and must exclude the namespace.
 
 ## Regression coverage
 
