@@ -631,3 +631,16 @@ export interface RecoveryCatalog {
   checkpoints: RecoverySummary[]; storagePath: string; warning: string | null;
   maxCheckpointBytes: number; maxTotalBytes: number; maxCount: number; retentionDays: number;
 }
+
+
+export interface DeletionProof {
+  name: string; localOid: string; baseRef: string | null; baseOid: string | null; target: RemoteBranchTarget | null;
+}
+export interface DeletionPlan {
+  proof: DeletionProof; bases: { reference: string; label: string }[];
+  localOnly: number | null; remoteOnly: number | null; localUnmerged: number; remoteUnmerged: number | null;
+  localIntegration: string; remoteIntegration: string | null;
+  worktrees: { path: string; current: boolean; dirty: boolean | null; changedFiles: number | null; operation: string | null; error: string | null }[];
+  currentChanges: number; stateToken: string;
+}
+export interface DeletionResult { checkpoint: RecoverySummary; warning: string | null }

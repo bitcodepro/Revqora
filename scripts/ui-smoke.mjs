@@ -652,6 +652,7 @@ try {
       await page.locator(`.sidebar [data-branch-kind='local'][data-branch-name='${name}']`).click({ button: "right" });
       await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
       await page.waitForSelector(".modal .delete-remote-branch");
+      await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
     };
     create("ui-local-only");
     await openDelete("ui-local-only");
@@ -664,8 +665,8 @@ try {
     git("push", "-q", "origin", "ui-delete-both:refs/heads/ui-delete-both");
     await openDelete("ui-delete-both");
     await page.check(".delete-remote-branch");
-    await page.waitForSelector(".modal select");
-    if (await page.locator(".modal select").inputValue() !== JSON.stringify(["origin", "refs/heads/published/ui-delete-both"])) throw new Error("delete dialog did not prefer the configured upstream");
+    await page.waitForSelector("select[aria-label='Remote branch']");
+    if (await page.locator("select[aria-label='Remote branch']").inputValue() !== JSON.stringify(["origin", "refs/heads/published/ui-delete-both"])) throw new Error("delete dialog did not prefer the configured upstream");
     await shot("27-delete-both");
     await page.click(".delete-branch-confirm");
     await page.waitForSelector(".modal", { state: "detached" });
@@ -741,7 +742,7 @@ try {
       const changed = otherGit("rev-parse", "HEAD");
       // Retry must keep the original lease even after the local part succeeded.
       await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".refresh-remote-deletion");
+      await page.waitForSelector(".branch-review[data-remote-changed='true']");
       if (!(await page.locator(".delete-branch-confirm").isDisabled()) || !remoteExists("ui-failed-remote")) throw new Error("retry deleted an unseen server tip");
       await page.click(".refresh-remote-deletion");
       await page.waitForSelector(".remote-deletion-review");
@@ -753,7 +754,7 @@ try {
       otherGit("commit", "--allow-empty", "-qm", "Another unseen server commit");
       otherGit("push", "-q", "origin", "ui-failed-remote");
       await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".refresh-remote-deletion");
+      await page.waitForSelector(".branch-review[data-remote-changed='true']");
       if (!remoteExists("ui-failed-remote")) throw new Error("force deleted a newer unseen tip");
       await page.click(".refresh-remote-deletion");
       await page.waitForSelector(".remote-deletion-review");
@@ -764,6 +765,63 @@ try {
       if (remoteExists("ui-failed-remote")) throw new Error("remote retry failed");
     } finally { if (fs.existsSync(hook)) fs.unlinkSync(hook); }
     await page.fill(".sidebar input[placeholder^='Filter branches']", "");
+  });
+
+  await check("deletion review selects its target and opens the exact recovery checkpoint", async () => {
+    const openDelete = async (name) => {
+      await page.fill(".sidebar input[placeholder^='Filter branches']", name);
+      await page.click("button[title='Refresh (F5)']");
+      await page.locator(`.sidebar [data-branch-kind='local'][data-branch-name='${name}']`).click({ button: "right" });
+      await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
+      await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
+    };
+    const original = git("rev-parse", "HEAD");
+    const tip = git("-c", "commit.gpgsign=false", "commit-tree", git("rev-parse", "HEAD^{tree}"), "-p", "HEAD", "-m", "Squash-integrated history");
+    git("branch", "ui-review-source", tip);
+    git("branch", "ui-review-target", tip);
+    await openDelete("ui-review-source");
+    if (!(await page.locator(".branch-review-integration").innerText()).includes("Changes appear integrated")) throw new Error("squash estimate missing");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".force-delete-branch");
+    if (!git("branch", "--list", "ui-review-source")) throw new Error("squash estimate bypassed force consent");
+    await shot("44-squash-review");
+    await page.selectOption("select[aria-label='Comparison branch']", "refs/heads/ui-review-target");
+    await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
+    if (await page.locator(".force-delete-branch").count()) throw new Error("target change retained force consent");
+    if (!(await page.locator(".branch-review-integration").innerText()).includes("0 local commits outside target")) throw new Error("selected comparison target was ignored");
+    await shot("45-selected-deletion-target");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".modal", { state: "detached" });
+    if (git("branch", "--list", "ui-review-source") || git("rev-parse", "HEAD") !== original) throw new Error("selected-target deletion affected the current branch");
+    const notice = page.locator(".toast").filter({ hasText: "Deleted local branch ui-review-source" });
+    const id = (await notice.innerText()).match(/Recovery checkpoint (\S+) saved/)?.[1];
+    if (!id) throw new Error("saved checkpoint ID missing from deletion notice");
+    await notice.getByRole("button", { name: "Open recovery checkpoint", exact: true }).click();
+    await page.locator(`.recovery-detail[data-checkpoint-id='${id}']`).waitFor();
+    const sourceOption = await page.locator("select[aria-label='Saved recovery reference'] option").evaluateAll((options) => options.find((o) => o.textContent.startsWith("refs/heads/ui-review-source ·"))?.value);
+    if (!sourceOption) throw new Error("deleted source reference missing from its checkpoint");
+    await page.selectOption("select[aria-label='Saved recovery reference']", sourceOption);
+    await page.fill("input[aria-label='Recovered local branch']", "ui-review-restored");
+    await page.getByRole("button", { name: "Restore branch", exact: true }).click();
+    await until(() => git("rev-parse", "--verify", "--quiet", "refs/heads/ui-review-restored") === tip, "deletion checkpoint did not restore the exact branch tip", 15000);
+    await shot("46-deletion-checkpoint");
+    await page.locator(".modal button", { hasText: /^Close$/ }).click();
+    git("branch", "-D", "ui-review-target", "ui-review-restored");
+
+    git("branch", "ui-review-worktree");
+    const worktree = path.join(work, "env", "linked review проверка 'quoted'");
+    git("worktree", "add", "-q", worktree, "ui-review-worktree");
+    fs.writeFileSync(path.join(worktree, "manual-edit.txt"), "Keep this uncommitted edit\n");
+    try {
+      await openDelete("ui-review-worktree");
+      const text = await page.locator(".branch-review-worktrees").innerText();
+      if (!text.includes(worktree.replaceAll("\\", "/")) && !text.includes(worktree)) throw new Error("linked worktree path missing");
+      if (!text.includes("1 changed files") || !(await page.locator(".delete-branch-confirm").isDisabled())) throw new Error("dirty checked-out branch was not blocked");
+      await shot("47-worktree-deletion-review");
+      await page.click(".modal button:has-text('Cancel')");
+    } finally { git("worktree", "remove", "--force", worktree); git("branch", "-D", "ui-review-worktree"); }
+    await page.fill(".sidebar input[placeholder^='Filter branches']", "");
+    await page.click("button[title='Refresh (F5)']");
   });
 
   await check("twenty repositories support bulk fetch and clean fast-forward pull", async () => {
@@ -951,7 +1009,7 @@ try {
     await page.click("button[title='Refresh (F5)']");
     await page.locator(".sidebar [data-branch-kind='local'][data-branch-name='ui-stale-confirm']").click({ button: "right" });
     await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
-    await page.waitForSelector(".delete-branch-confirm");
+    await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
     git("branch", "ui-stale-external");
     await page.waitForSelector(".sidebar [data-branch-kind='local'][data-branch-name='ui-stale-external']");
     await page.click(".delete-branch-confirm");

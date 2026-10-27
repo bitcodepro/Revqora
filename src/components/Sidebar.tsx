@@ -159,8 +159,8 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
             <span className="label">{n.name}</span>
             <span className="meta">
               {kind === "local" && tab.squashMerged.includes(b.name) ? (
-                <span className="pill green" title={`Its changes are already in ${current ?? "the current branch"} — safe to delete`}>
-                  merged
+                <span className="pill amber" title={`Changes appear integrated in ${current ?? "the current branch"}. Original commit SHAs can still be outside it; review unique history before deletion.`}>
+                  integrated
                 </span>
               ) : (
                 b.gone && (

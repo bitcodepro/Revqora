@@ -131,7 +131,7 @@ fn push_destination(repo: &Path, remote: &str) -> GitResult<Option<String>> {
 
 // A local branch may already be gone after a partial failure. Validate the actual
 // fetch mapping independently of its upstream configuration on EVERY retry.
-fn validate_mapping(repo: &Path, target: &RemoteBranchTarget) -> GitResult<()> {
+pub(super) fn validate_mapping(repo: &Path, target: &RemoteBranchTarget) -> GitResult<()> {
     let stale = || GitError::new("The remote branch mapping changed. Close and reopen the deletion dialog.").kind("stale-selection");
     if target.remote.starts_with('-')
         || !runner::run(repo, ["remote"])?.lines().any(|name| name == target.remote)

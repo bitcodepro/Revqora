@@ -14,13 +14,13 @@ import "../styles/recovery.css";
 const bytes = (n: number) => n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1048576).toFixed(1)} MiB`;
 const date = (n: number) => new Date(n).toLocaleString();
 
-export function recoveryDialog(root: string) {
-  return showDialog<void>((close) => <RecoveryCenter root={root} close={close} />);
+export function recoveryDialog(root: string, initialId?: string) {
+  return showDialog<void>((close) => <RecoveryCenter root={root} initialId={initialId} close={close} />);
 }
 
-function RecoveryCenter({ root, close }: { root: string; close: () => void }) {
+function RecoveryCenter({ root, close, initialId }: { root: string; close: () => void; initialId?: string }) {
   const [catalog, setCatalog] = useState<RecoveryCatalog | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialId ?? null);
   const [loadedDetail, setDetail] = useState<RecoveryCheckpoint | null>(null);
   const detail = loadedDetail?.id === selected ? loadedDetail : null;
   const [query, setQuery] = useState("");
@@ -62,7 +62,7 @@ function RecoveryCenter({ root, close }: { root: string; close: () => void }) {
   const entries = useMemo(() => (catalog?.checkpoints ?? []).filter((cp) =>
     (kind === "all" || (kind === "workspace" ? cp.workspace : !cp.workspace)) &&
     `${cp.label} ${cp.command.replaceAll("_", " ")} ${cp.branch ?? ""} ${cp.sourceRoot}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())), [catalog, kind, query]);
-  useEffect(() => { setSelected((id) => entries.some((cp) => cp.id === id) ? id : entries[0]?.id ?? null); }, [entries]);
+  useEffect(() => { if (catalog) setSelected((id) => entries.some((cp) => cp.id === id) ? id : entries[0]?.id ?? null); }, [entries, catalog]);
   const run = async <T,>(action: () => Promise<T>, success: string): Promise<T | undefined> => {
     setBusy(true); setError(null);
     try {
