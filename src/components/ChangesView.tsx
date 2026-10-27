@@ -55,6 +55,14 @@ const layerColor = (i: number) => `var(--lane-${LAYER_COLORS[i % LAYER_COLORS.le
  * overlapping changes in the merge editor and retries with those resolutions.
  */
 async function layerAct(root: string, fn: (res?: Record<string, string>) => Promise<unknown>, success?: string, op?: LayerOp) {
+  const tab = useRepos.getState().tabs[root];
+  if (!tab || tab.pendingMutations > 0) {
+    toast.info("Updating changes", "Wait for the current operation before changing stage layers.");
+    return false;
+  }
+  // Keep layer indices unavailable until their list AND status have caught up,
+  // including after the API's own post-operation status refresh.
+  useRepos.getState().patch(root, { pendingMutations: tab.pendingMutations + 1 });
   try {
     await fn();
     if (success) toast.success(success);
@@ -93,7 +101,11 @@ async function layerAct(root: string, fn: (res?: Record<string, string>) => Prom
     toast.error(e);
     return false;
   } finally {
-    await useRepos.getState().refresh(root, { status: true, layers: true });
+    try { await useRepos.getState().refresh(root, { status: true, layers: true }); }
+    finally {
+      const current = useRepos.getState().tabs[root];
+      if (current) useRepos.getState().patch(root, { pendingMutations: Math.max(0, current.pendingMutations - 1) });
+    }
   }
 }
 
@@ -135,7 +147,7 @@ async function resolveLayerConflicts(root: string, op: LayerOp): Promise<Record<
 }
 
 function layerMenu(root: string, l: LayerView, total: number): MenuItem[] {
-  return [
+  const items: MenuItem[] = [
     { label: "Unstage layer", icon: <Minus size={14} />, onClick: () => layerAct(root, (res) => api.layerUnstage(root, l.index, res), `${l.name} unstaged`, { op: "unstage", index: l.index }) },
     {
       label: "Discard layer…",
@@ -170,6 +182,8 @@ function layerMenu(root: string, l: LayerView, total: number): MenuItem[] {
       },
     },
   ];
+  const pending = (useRepos.getState().tabs[root]?.pendingMutations ?? 0) > 0;
+  return items.map((item) => ({ ...item, disabled: pending || item.disabled }));
 }
 
 async function commitLayer(root: string, l: LayerView, through: boolean) {
@@ -195,6 +209,7 @@ function dragFile(e: React.DragEvent, from: "unstaged" | "staged", path: string)
 
 export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConflict: (path: string) => void }) {
   const root = tab.root;
+  const pending = tab.pendingMutations > 0;
   const patch = useRepos((s) => s.patch);
   const { mode, layout: { changesListWidth: width }, setLayout: setSettings } = useWorkspaceLayout();
   const opts = useDiffOpts();
@@ -381,7 +396,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
         </button>
       )}
       {sel.kind === "layer" && (
-        <button className="btn sm" onClick={() => layerAct(root, () => api.layerUnstageFiles(root, sel.layer, [sel.path]), "Removed from layer")}>
+        <button disabled={pending} className="btn sm" onClick={() => layerAct(root, () => api.layerUnstageFiles(root, sel.layer, [sel.path]), "Removed from layer")}>
           <Minus size={12} /> Remove from layer
         </button>
       )}
@@ -391,7 +406,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const conflictSel = sel?.kind === "conflict" ? conflicts.find((f) => f.path === sel.path) : undefined;
 
   return (
-    <div className="changes" style={{ ["--changes-w" as string]: `${w}px` }}>
+    <div className="changes" data-pending={pending} style={{ ["--changes-w" as string]: `${w}px` }}>
       <div className="changes-left">
         <div className="changes-lists">
           <div className="hstack" style={{ justifyContent: "flex-end", padding: "4px 4px 0" }}>
@@ -498,7 +513,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
             layers ? layers.layers.reduce((a, l) => a + l.files.length, 0) + layers.openFiles.length : staged.length,
             <>
               {(layers ? layers.openFiles.length > 0 : staged.length > 0) && (
-                <button className="icon-btn sm" title="Seal what is staged now into a layer — new staging goes on top" onClick={() => layerAct(root, () => api.layerSeal(root, null), "Layer created")}>
+                <button disabled={pending} className="icon-btn sm" title="Seal what is staged now into a layer — new staging goes on top" onClick={() => layerAct(root, () => api.layerSeal(root, null), "Layer created")}>
                   <Layers size={14} />
                 </button>
               )}
@@ -568,7 +583,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                     {plural(l.files.length, "file")} · {relativeTime(l.created)}
                   </span>
                   <div className="actions">
-                    <button className="icon-btn sm" title="Unstage layer" onClick={() => layerAct(root, (res) => api.layerUnstage(root, l.index, res), `${l.name} unstaged`, { op: "unstage", index: l.index })}>
+                    <button disabled={pending} className="icon-btn sm" title="Unstage layer" onClick={() => layerAct(root, (res) => api.layerUnstage(root, l.index, res), `${l.name} unstaged`, { op: "unstage", index: l.index })}>
                       <Minus size={14} />
                     </button>
                     <button className="icon-btn sm" title="More" onClick={(e) => contextMenu(e, layerMenu(root, l, layers.layers.length))}>
@@ -584,7 +599,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                       onClick={() => select({ kind: "layer", layer: l.index, path: f.path })}
                       onContextMenu={(e) =>
                         contextMenu(e, [
-                          { label: "Remove from this layer", icon: <Minus size={14} />, onClick: () => layerAct(root, () => api.layerUnstageFiles(root, l.index, [f.path]), "Removed from layer") },
+                          { label: "Remove from this layer", disabled: pending, icon: <Minus size={14} />, onClick: () => layerAct(root, () => api.layerUnstageFiles(root, l.index, [f.path]), "Removed from layer") },
                           { separator: true },
                           { label: "Copy path", icon: <Copy size={14} />, onClick: () => copyText(f.path, "Path copied") },
                         ])
@@ -593,7 +608,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                       <StatusIcon code={f.status} />
                       <PathLabel path={f.path} />
                       <div className="row-actions">
-                        <button className="icon-btn sm" title="Remove from layer" onClick={(e) => (e.stopPropagation(), layerAct(root, () => api.layerUnstageFiles(root, l.index, [f.path])))}>
+                        <button disabled={pending} className="icon-btn sm" title="Remove from layer" onClick={(e) => (e.stopPropagation(), layerAct(root, () => api.layerUnstageFiles(root, l.index, [f.path])))}>
                           <Minus size={14} />
                         </button>
                       </div>
@@ -611,10 +626,10 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 <div className="actions">
                   {layers.openFiles.length > 0 && (
                     <>
-                      <button className="icon-btn sm" title="Seal into a layer" onClick={() => layerAct(root, () => api.layerSeal(root, null), "Layer created")}>
+                      <button disabled={pending} className="icon-btn sm" title="Seal into a layer" onClick={() => layerAct(root, () => api.layerSeal(root, null), "Layer created")}>
                         <Layers size={14} />
                       </button>
-                      <button className="icon-btn sm" title="Unstage all of this" onClick={() => layerAct(root, (res) => api.layerUnstage(root, layers.layers.length, res), undefined, { op: "unstage", index: layers.layers.length })}>
+                      <button disabled={pending} className="icon-btn sm" title="Unstage all of this" onClick={() => layerAct(root, (res) => api.layerUnstage(root, layers.layers.length, res), undefined, { op: "unstage", index: layers.layers.length })}>
                         <Minus size={14} />
                       </button>
                     </>

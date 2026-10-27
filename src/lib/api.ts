@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
-import type { RemoteBranchTarget } from "./types";
+import type { RemoteBranchTarget, RemoteDeletionReview } from "./types";
 import type {
   Check,
   CommitHelpers,
@@ -124,6 +124,8 @@ export const api = {
   branchRename: (repo: string, old: string, newName: string, expectedState?: string | null) => call<void>("branch_rename", { repo, old, new: newName, expectedState }),
   branchDeleteTargets: (repo: string, name: string) => call<RemoteBranchTarget[]>("branch_delete_targets", { repo, name }),
   branchDelete: (repo: string, name: string, force: boolean, target: RemoteBranchTarget | null = null, expectedState?: string | null) => call<void>("branch_delete", { repo, name, force, target, expectedState }),
+  branchDeleteRemote: (repo: string, target: RemoteBranchTarget, force: boolean, opId: string) => call<string>("branch_delete_remote", { repo, target, force, opId }),
+  branchDeleteRefresh: (repo: string, target: RemoteBranchTarget, opId: string) => call<RemoteDeletionReview>("branch_delete_refresh", { repo, target, opId }),
   branchSetUpstream: (repo: string, branch: string, upstream: string | null) => call<void>("branch_set_upstream", { repo, branch, upstream }),
   tagCreate: (repo: string, name: string, target: string, message: string | null, expectedState?: string | null) => call<void>("tag_create", { repo, name, target, message, expectedState }),
   tagDelete: (repo: string, name: string, expectedState?: string | null) => call<void>("tag_delete", { repo, name, expectedState }),

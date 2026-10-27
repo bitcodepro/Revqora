@@ -213,10 +213,40 @@ try {
   await check("seal a stage layer and stage more on top", async () => {
     await page.click("button[title^='Seal what is staged']");
     await page.waitForSelector(".layer:not(.open-layer)");
+    await page.waitForSelector(".changes[data-pending='false']");
+    // Reproduce a real response ordering: refresh's status was read before add,
+    // its layer list after add, while add's completion is still in transit.
+    // Delay transport responses; do not fabricate repository state or bypass Git.
+    await page.evaluate(() => {
+      const original = window.fetch;
+      let staged;
+      const stageDone = new Promise((resolve) => { staged = resolve; });
+      let release;
+      const completion = new Promise((resolve) => { release = resolve; });
+      window.__layerRace = { statusHeld: false, release: () => { window.fetch = original; release(); } };
+      let firstStatus = true, firstLayers = true;
+      window.fetch = async (url, init) => {
+        const command = decodeURIComponent(new URL(url).pathname.slice(1));
+        if (command === "layers_state" && firstLayers) { firstLayers = false; await stageDone; }
+        const response = await original(url, init);
+        if (command === "status" && firstStatus) {
+          firstStatus = false;
+          await response.clone().json();
+          window.__layerRace.statusHeld = true;
+          await stageDone;
+        }
+        if (command === "stage") { await response.clone().json(); staged(); await completion; }
+        return response;
+      };
+    });
+    await page.click("button[title='Refresh (F5)']");
+    await page.waitForFunction(() => window.__layerRace.statusHeld);
     await page.locator(".file-row", { hasText: "config.json" }).first().hover();
     await page.locator(".file-row", { hasText: "config.json" }).first().locator("button[title='Stage']").click();
     await until(async () => (await page.locator(".open-layer .file-row", { hasText: "config.json" }).count()) === 1, "config.json not in open layer");
+    if (!(await page.locator(".layer:not(.open-layer) button[title='Unstage layer']").isDisabled())) throw new Error("layer action enabled before staging completion/state refresh");
     await shot("04-layers");
+    await page.evaluate(() => window.__layerRace.release());
   });
 
   await check("unstage the first layer only", async () => {
@@ -687,7 +717,12 @@ try {
     git("push", "-q", "origin", ":refs/heads/ui-mapped-alias");
     create("ui-failed-remote");
     const pushUrl = git("remote", "get-url", "--push", "origin");
-    git("remote", "set-url", "--push", "origin", path.join(work, "missing-remote.git"));
+    const hook = path.join(path.resolve(repo, pushUrl), "hooks", "pre-receive");
+    const other = path.join(work, "env", "deletion-other-clone");
+    git("clone", "-q", "--branch", "ui-failed-remote", pushUrl, other);
+    const otherGit = (...args) => execFileSync("git", ["-C", other, "-c", "commit.gpgsign=false", "-c", "user.name=Other clone", "-c", "user.email=other@example.com", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    fs.writeFileSync(hook, "#!/bin/sh\necho 'Server temporarily refuses updates' >&2\nexit 1\n");
+    fs.chmodSync(hook, 0o755);
     try {
       await openDelete("ui-failed-remote");
       await page.check(".delete-remote-branch");
@@ -695,12 +730,34 @@ try {
       await page.waitForSelector(".delete-branch-error:has-text('Local branch deleted. Remote deletion failed')");
       if (localExists("ui-failed-remote") || !remoteExists("ui-failed-remote")) throw new Error("partial deletion state was reported incorrectly");
       await shot("28-delete-remote-failed");
-      // Restore access and retry only the failed remote part from the same dialog.
-      git("remote", "set-url", "--push", "origin", pushUrl);
+      fs.unlinkSync(hook);
+      otherGit("commit", "--allow-empty", "-qm", "Unseen server commit");
+      otherGit("push", "-q", "origin", "ui-failed-remote");
+      const changed = otherGit("rev-parse", "HEAD");
+      // Retry must keep the original lease even after the local part succeeded.
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".refresh-remote-deletion");
+      if (!(await page.locator(".delete-branch-confirm").isDisabled()) || !remoteExists("ui-failed-remote")) throw new Error("retry deleted an unseen server tip");
+      await page.click(".refresh-remote-deletion");
+      await page.waitForSelector(".remote-deletion-review");
+      if (!(await page.locator(".remote-deletion-review").innerText()).includes(changed.slice(0, 12))) throw new Error("refreshed remote SHA missing");
+      if (!(await page.locator(".delete-branch-confirm").isDisabled())) throw new Error("refreshed tip did not require new consent");
+      await shot("38-remote-deletion-review");
+      await page.check(".confirm-reviewed-remote");
+      // Even explicit force consent to B must not delete a subsequent C.
+      otherGit("commit", "--allow-empty", "-qm", "Another unseen server commit");
+      otherGit("push", "-q", "origin", "ui-failed-remote");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".refresh-remote-deletion");
+      if (!remoteExists("ui-failed-remote")) throw new Error("force deleted a newer unseen tip");
+      await page.click(".refresh-remote-deletion");
+      await page.waitForSelector(".remote-deletion-review");
+      if (await page.locator(".confirm-reviewed-remote").isChecked()) throw new Error("old remote consent leaked into refreshed state");
+      await page.check(".confirm-reviewed-remote");
       await page.click(".delete-branch-confirm");
       await page.waitForSelector(".modal", { state: "detached" });
       if (remoteExists("ui-failed-remote")) throw new Error("remote retry failed");
-    } finally { git("remote", "set-url", "--push", "origin", pushUrl); }
+    } finally { if (fs.existsSync(hook)) fs.unlinkSync(hook); }
     await page.fill(".sidebar input[placeholder^='Filter branches']", "");
   });
 

@@ -3,10 +3,20 @@
 export interface RemoteBranchTarget {
   label: string;
   remote: string;
+  pushUrl: string;
   remoteRef: string;
   trackingRef: string;
   oid: string;
   isUpstream: boolean;
+}
+
+export interface RemoteDeletionReview {
+  target: RemoteBranchTarget;
+  previousOid: string;
+  newCommits: number;
+  removedCommits: number;
+  unmergedCommits: number;
+  commits: string[];
 }
 
 export interface GitError {

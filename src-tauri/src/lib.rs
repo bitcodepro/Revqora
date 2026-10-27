@@ -415,6 +415,35 @@ async fn branch_delete(
 }
 
 #[tauri::command]
+async fn branch_delete_remote(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    target: RemoteBranchTarget,
+    force: bool,
+    op_id: String,
+) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "branch_delete_remote", Some(op_id.clone()), move || {
+        branch_deletion::delete_remote(&p(&repo), &target, force, progress(&app, &op_id))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn branch_delete_refresh(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    target: RemoteBranchTarget,
+    op_id: String,
+) -> GitResult<branch_deletion::RemoteDeletionReview> {
+    mutating(repo.clone(), expected_state, app.clone(), "branch_delete_refresh", Some(op_id.clone()), move || {
+        branch_deletion::refresh_remote(&p(&repo), &target, progress(&app, &op_id))
+    })
+    .await
+}
+
+#[tauri::command]
 async fn branch_set_upstream(app: AppHandle, expected_state: Option<String>, repo: String, branch: String, upstream: Option<String>) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "branch_set_upstream", None, move || ops::set_upstream(&p(&repo), &branch, upstream.as_deref())).await
 }
@@ -1255,6 +1284,8 @@ pub fn run() {
             branch_rename,
             branch_delete,
             branch_delete_targets,
+            branch_delete_remote,
+            branch_delete_refresh,
             branch_set_upstream,
             tag_create,
             tag_delete,

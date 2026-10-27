@@ -33,6 +33,15 @@
 - Ephemeral `repository-operation` events report queued/running/finished/failed states;
   the status bar shows running and queued counts. Completion refreshes related open
   worktrees. This is not the persistent operation journal planned for stage 2.
+- Layer actions remain unavailable through the preceding mutation's completion and
+  through their own list/status refresh. A fresh layer list alone does not imply that
+  the displayed status token has caught up with staging.
+- Combined branch deletion uses a dedicated remote operation with an explicit
+  `--force-with-lease=<resolved ref>:<reviewed SHA>` on every attempt, including force
+  and partial-failure retries. A local state token cannot detect unseen server pushes.
+  A lease rejection requires explicit refresh and new consent to the displayed SHA
+  and commit counts. The target also binds one push URL; refresh reads that server,
+  including when it differs from the fetch server.
 
 ## Boundaries
 
@@ -50,3 +59,7 @@ timestamp content changes, external ref updates, errors/panics and read-only ind
 Native UI scenarios additionally block a commit hook, queue fetch and reset, verify the
 queue indicator and reject stale reset; another keeps a delete dialog open across an
 external Git change and checks that its original consent is preserved.
+Additional tests use two clones to advance/replace server history before deletion,
+between a partial failure and retry, and after refreshed force consent. The native
+staging test delays real IPC responses to expose a new layer list before the prior
+staging completion, then checks that layer actions wait for synchronization.
