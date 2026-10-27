@@ -236,3 +236,25 @@ SHA for subsequent replanning. Initial or refreshed previews never replace this
 receipt. The native regression advances A to B, refreshes the review, deletes B,
 rejects the server update, refreshes/retries remote deletion, then restores the named
 local reference from the final success checkpoint and verifies it is exactly B.
+
+
+## Commit preview responsiveness
+
+A historical file list uses one raw/numstat tree diff, with linear path lookup for
+statistics. Metadata disables implicit signature verification even when Git's
+log.showSignature is enabled; explicit verification remains in the commit panel.
+Remote containment stops after its first matching ref.
+
+The UI keeps bounded memory LRUs for full-object-ID previews and file diffs. Keys
+include repository, remote-ref snapshot for the pushed badge, and all diff inputs.
+Mutable refs and abbreviated IDs are not cached. Errors and oversized entries are
+not retained, concurrent identical requests coalesce, and obsolete responses cannot
+replace the selected view. Actual repository events invalidate cached interpretation
+of attributes/config; invalidation also fences older in-flight responses.
+
+The watcher excludes only known application-owned child folders: portable data,
+WebView profile and runtime files. This prevents a client installed inside its own
+repository from reacting to its profile/journal/temp writes. Project files and Git
+metadata remain watched; a repository explicitly opened inside an owned folder is
+not excluded wholesale. Native smoke runs its isolated profile in an ignored folder
+inside the fixture repository and verifies both noise exclusion and user-file events.

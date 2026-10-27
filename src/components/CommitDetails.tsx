@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
 import * as A from "../lib/actions";
 import { api, errorMessage } from "../lib/api";
@@ -8,6 +8,8 @@ import { toast } from "../lib/ui";
 import { absoluteTime, fullTime, joinPath, relativeTime, shortOid } from "../lib/format";
 import { contextMenu, copyText, openOverlay, showDialog } from "../lib/ui";
 import { Avatar, FileGroups, PathLabel, StatusIcon } from "./bits";
+import { useRepos } from "../lib/store";
+import { detailsKey, diffKey, loadDetails, loadDiff, peekDetails, peekDiff } from "../lib/commitPreview";
 import { useSettings } from "../lib/settings";
 import { DiffView, useDiffOpts } from "./DiffView";
 import { jumpToCommit } from "./GraphView";
@@ -17,13 +19,22 @@ import { CommitMessageDialog } from "./CommitMessage";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
-  const [d, setD] = useState<Details | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [file, setFile] = useState<string | null>(null);
-  const [diff, setDiff] = useState<FileDiff | null>(null);
-  const [diffErr, setDiffErr] = useState<string | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
-  const [sig, setSig] = useState<Signature | null>(null);
+  const remoteRefs = useRepos((s) => s.tabs[root]?.refs?.remote);
+  const remoteVersion = useMemo(() => JSON.stringify((remoteRefs ?? []).map((r) => [r.fullName, r.oid]).sort((a, b) => a[0].localeCompare(b[0]))), [remoteRefs]);
+  const detailKey = detailsKey(root, oid, remoteVersion);
+  const [detailResult, setDetailResult] = useState<{ key: string; value: Details } | null>(null);
+  const d = peekDetails(detailKey, oid) ?? (detailResult?.key === detailKey ? detailResult.value : null);
+  const [detailError, setDetailError] = useState<{ key: string; message: string } | null>(null);
+  const err = detailError?.key === detailKey ? detailError.message : null;
+  const [chosenFile, setFile] = useState<string | null>(null);
+  const file = d ? (chosenFile && d.files.some((f) => f.path === chosenFile) ? chosenFile : d.files[0]?.path ?? null) : null;
+  const [diffResult, setDiffResult] = useState<{ key: string; value: FileDiff } | null>(null);
+  const [diffError, setDiffError] = useState<{ key: string; message: string } | null>(null);
+  const [signatureResult, setSignatureResult] = useState<{ key: string; value: Signature } | null>(null);
+  const signatureKey = JSON.stringify([root, oid]);
+  const sig = signatureResult?.key === signatureKey ? signatureResult.value : null;
+  const [signatureBusy, setSignatureBusy] = useState(false);
+  const signatureVersion = useRef(0);
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [checksBusy, setChecksBusy] = useState(false);
   const [hasForge, setHasForge] = useState(false);
@@ -49,46 +60,48 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
 
   useEffect(() => {
     let alive = true;
-    setErr(null);
-    api.commitDetails(root, oid).then(
-      (r) => {
-        if (!alive) return;
-        setD(r);
-        setFile((f) => (f && r.files.some((x) => x.path === f) ? f : r.files[0]?.path ?? null));
-      },
-      (e) => alive && setErr(errorMessage(e)),
-    );
-    return () => {
-      alive = false;
-    };
-  }, [root, oid]);
+    setDetailError(null);
+    if (peekDetails(detailKey, oid)) return;
+    // Skip transient selections while holding an arrow key or rapidly clicking.
+    const timer = window.setTimeout(() => {
+      void loadDetails(detailKey, root, oid).then(
+        (value) => { if (alive) setDetailResult({ key: detailKey, value }); },
+        (e) => { if (alive) setDetailError({ key: detailKey, message: errorMessage(e) }); },
+      );
+    }, 50);
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [root, oid, detailKey]);
 
   useEffect(() => {
-    let alive = true;
-    setSig(null);
-    api.commitSignature(root, oid).then((s) => alive && setSig(s), () => {});
-    return () => {
-      alive = false;
-    };
-  }, [root, oid]);
+    signatureVersion.current++; setSignatureResult(null); setSignatureBusy(false);
+    return () => { signatureVersion.current++; };
+  }, [signatureKey]);
+  const verifySignature = async () => {
+    const version = ++signatureVersion.current;
+    setSignatureBusy(true);
+    try {
+      const value = await api.commitSignature(root, oid);
+      if (version === signatureVersion.current) setSignatureResult({ key: signatureKey, value });
+    } catch (e) { if (version === signatureVersion.current) toast.error(e, "Could not verify signature"); }
+    finally { if (version === signatureVersion.current) setSignatureBusy(false); }
+  };
 
+  const selectedDiffKey = d && file ? diffKey(root, d.diffBase, d.oid, file, diffOpts) : null;
+  const diff = selectedDiffKey ? peekDiff(selectedDiffKey, oid) ?? (diffResult?.key === selectedDiffKey ? diffResult.value : null) : null;
+  const diffErr = diffError?.key === selectedDiffKey ? diffError!.message : null;
+  const diffLoading = !!selectedDiffKey && !diff && !diffErr;
   useEffect(() => {
-    if (!d || !file || d.oid !== oid) {
-      setDiff(null);
-      return;
-    }
+    if (!d || !file || !selectedDiffKey || peekDiff(selectedDiffKey, oid)) return;
     let alive = true;
-    setDiff(null);
-    setDiffLoading(true);
-    setDiffErr(null);
-    api.revDiff(root, d.diffBase, d.oid, file, diffOpts).then(
-      (r) => alive && (setDiff(r), setDiffLoading(false)),
-      (e) => alive && (setDiffErr(errorMessage(e)), setDiffLoading(false)),
-    );
-    return () => {
-      alive = false;
-    };
-  }, [root, d, file, oid, diffOpts]);
+    setDiffError(null);
+    const timer = window.setTimeout(() => {
+      void loadDiff(selectedDiffKey, root, d.diffBase, d.oid, file, diffOpts).then(
+        (value) => { if (alive) setDiffResult({ key: selectedDiffKey, value }); },
+        (e) => { if (alive) setDiffError({ key: selectedDiffKey, message: errorMessage(e) }); },
+      );
+    }, 30);
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [root, d, file, oid, selectedDiffKey, diffOpts]);
 
   // Alt+↑ / Alt+↓ step through the commit's files (handy in Review mode, works in Graph too).
   useEffect(() => {
@@ -97,14 +110,15 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
       if (document.querySelector(".modal-backdrop")) return;
       e.preventDefault();
       setFile((cur) => {
-        const i = d.files.findIndex((f) => f.path === cur);
+        const selected = cur && d.files.some((f) => f.path === cur) ? cur : file;
+        const i = d.files.findIndex((f) => f.path === selected);
         const next = Math.max(0, Math.min(d.files.length - 1, (i < 0 ? -1 : i) + (e.key === "ArrowDown" ? 1 : -1)));
         return d.files[next].path;
       });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [d]);
+  }, [d, file]);
 
   const current = d && d.oid.slice(0, oid.length) === oid.slice(0, d.oid.length) ? d : null;
   const header = (
@@ -179,14 +193,15 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
             </span>
           </>
         )}
-        {sig && sig.status !== "N" && (
-          <>
-            <span className="k">Signature</span>
-            <span title={[sig.signer, sig.key, sig.fingerprint].filter(Boolean).join("\n")}>
-              <SignatureBadge sig={sig} />
-            </span>
-          </>
-        )}
+        <span className="k">Signature</span>
+        <span className="hstack" style={{ gap: 6 }}>
+          {sig && <span title={[sig.signer, sig.key, sig.fingerprint].filter(Boolean).join("\n")}>
+            {sig.status === "N" ? <span className="pill">Not signed</span> : <SignatureBadge sig={sig} />}
+          </span>}
+          <button type="button" className="btn sm ghost commit-signature-check" disabled={signatureBusy} onClick={() => void verifySignature()}>
+            {signatureBusy && <Loader2 size={12} className="spin" />} {sig ? "Verify again" : "Verify signature"}
+          </button>
+        </span>
         {hasForge && d.containedInRemote && (
           <>
             <span className="k">CI</span>

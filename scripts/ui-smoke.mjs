@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProfile, launch } from "./ui-driver.mjs";
+import { launch } from "./ui-driver.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
@@ -37,7 +37,11 @@ process.env.REVQORA_UPDATE_FEED = `http://127.0.0.1:${feed.address().port}/`;
 
 let step = 0;
 const results = [];
-const smokeProfile = createProfile("revqora-smoke-profile-");
+// Exercise the portable-profile-inside-repo case without adding runtime files
+// to staging/checkpoints. The production watcher must ignore this exact folder.
+const smokeProfile = path.join(repo, ".revqora-smoke-profile");
+fs.mkdirSync(smokeProfile);
+fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n/.revqora-smoke-profile/\n");
 let { page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 });
 const errors = [];
 const attachPage = () => {
@@ -101,6 +105,25 @@ try {
     await chip.waitFor({ state: "detached" });
   });
 
+  await check("portable profile writes do not trigger repository refresh storms", async () => {
+    const listener = await page.evaluate(async () => {
+      window.__profileSignals = [];
+      return window.__TAURI_INTERNALS__.invoke("plugin:event|listen", { event: "repo-changed", target: { kind: "Any" }, handler: window.__TAURI_INTERNALS__.transformCallback((e) => window.__profileSignals.push(e.payload)) });
+    });
+    const userFile = path.join(repo, "watcher-user-probe.txt");
+    try {
+      for (let i = 0; i < 3; i++) { fs.writeFileSync(path.join(smokeProfile, "watcher-profile-probe.tmp"), String(i)); await page.waitForTimeout(200); }
+      await page.waitForTimeout(700); // More than the watcher's 350ms debounce.
+      // Initial background ref checks may legitimately report Git metadata.
+      if (await page.evaluate(() => window.__profileSignals.some((e) => e.worktree))) throw new Error("portable profile writes caused a repository refresh");
+      fs.writeFileSync(userFile, "User changes must still be watched\n");
+      await page.waitForFunction(() => window.__profileSignals.some((e) => e.worktree), null, { timeout: 10000 });
+    } finally {
+      await page.evaluate(async (eventId) => { window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener("repo-changed", eventId); await window.__TAURI_INTERNALS__.invoke("plugin:event|unlisten", { event: "repo-changed", eventId }); }, listener);
+      fs.rmSync(userFile, { force: true });
+    }
+  });
+
   await check("history graph renders all commits", async () => {
     await page.waitForSelector(".grow:not(.wip) .g-subject .text", { timeout: 20000 });
     await page.waitForTimeout(1200);
@@ -128,6 +151,38 @@ try {
     await page.waitForSelector(".details", { state: "detached" });
     await page.locator(".grow", { hasText: "Document usage" }).click();
     await page.waitForSelector(".details .file-row");
+  });
+
+  await check("commit previews reuse files and diffs while signature verification stays optional", async () => {
+    await page.evaluate(() => {
+      const original = window.fetch;
+      const base = window.__TAURI_INTERNALS__.convertFileSrc("", "ipc");
+      window.__previewFetch = original; window.__previewReads = []; window.__signatureRelease = null;
+      window.fetch = async function(input, init) {
+        const command = String(input).startsWith(base) ? String(input).slice(base.length) : "";
+        if (["commit_details", "rev_diff", "commit_signature"].includes(command)) window.__previewReads.push(command);
+        const response = await original.call(this, input, init);
+        if (command === "commit_signature") await new Promise((resolve) => { window.__signatureRelease = resolve; });
+        return response;
+      };
+    });
+    try {
+      const select = async (subject) => { await page.locator(".grow:not(.wip)", { hasText: subject }).click(); await page.waitForSelector(`.commit-subject:has-text('${subject}')`); await page.waitForSelector(".details .diff .dl"); };
+      await select("Enable debug mode");
+      await select("Document usage");
+      await select("Enable debug mode");
+      const before = await page.evaluate(() => [...window.__previewReads]);
+      if (before.filter((c) => c === "commit_details").length !== 1 || before.filter((c) => c === "rev_diff").length !== 1 || before.includes("commit_signature")) throw new Error(`preview did unnecessary Git work: ${before}`);
+      await page.click(".commit-signature-check");
+      await page.waitForFunction(() => typeof window.__signatureRelease === "function");
+      if (!(await page.locator(".details .file-row").count()) || !(await page.locator(".details .diff .dl").count())) throw new Error("signature verification hid loaded files or diff");
+      await select("Document usage");
+      await page.evaluate(() => window.__signatureRelease());
+      await page.waitForSelector(".commit-signature-check:not([disabled]):has-text('Verify signature')");
+      const after = await page.evaluate(() => [...window.__previewReads]);
+      if (after.filter((c) => c === "commit_details").length !== 1 || after.filter((c) => c === "rev_diff").length !== 1 || after.filter((c) => c === "commit_signature").length !== 1) throw new Error(`cached revisit reran Git: ${after}`);
+      await shot("50-preview-cache");
+    } finally { await page.evaluate(() => { window.__signatureRelease?.(); window.fetch = window.__previewFetch; }); }
   });
 
   await check("search filters commits", async () => {
