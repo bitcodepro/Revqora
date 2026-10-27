@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { repositoryCall } from "./operationClient";
+import type { RemoteBranchTarget, RemoteDeletionReview } from "./types";
 import type {
   Check,
   CommitHelpers,
@@ -59,7 +61,7 @@ export function errorMessage(e: unknown): string {
   return String(e);
 }
 
-const call = <T>(cmd: string, args?: Record<string, unknown>) => invoke<T>(cmd, args);
+const call = <T>(cmd: string, args?: Record<string, unknown>) => repositoryCall<T>(invoke, cmd, args);
 
 let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
@@ -94,7 +96,7 @@ export const api = {
   ) => call<void>("apply_selection", { repo, path, mode, selection, hash, untracked, opts }),
   stage: (repo: string, paths: string[]) => call<void>("stage", { repo, paths }),
   unstage: (repo: string, paths: string[]) => call<void>("unstage", { repo, paths }),
-  discard: (repo: string, tracked: string[], untracked: string[]) => call<string>("discard", { repo, tracked, untracked }),
+  discard: (repo: string, tracked: string[], untracked: string[], expectedState?: string | null) => call<string>("discard", { repo, tracked, untracked, expectedState }),
   commit: (repo: string, message: string, opts?: CommitOptions) => call<string>("commit", { repo, message, opts }),
   lastMessage: (repo: string) => call<string>("last_message", { repo }),
 
@@ -118,50 +120,53 @@ export const api = {
   squashMerged: (repo: string) => call<string[]>("squash_merged", { repo }),
   branchDetails: (repo: string, name: string, base: string) => call<BranchDetails>("branch_details", { repo, name, base }),
   checkout: (repo: string, target: string, kind: "local" | "remote" | "commit") => call<string>("checkout", { repo, target, kind }),
-  branchCreate: (repo: string, name: string, start: string | null, checkout: boolean) => call<void>("branch_create", { repo, name, start, checkout }),
-  branchRename: (repo: string, old: string, newName: string) => call<void>("branch_rename", { repo, old, new: newName }),
-  branchDelete: (repo: string, name: string, force: boolean) => call<void>("branch_delete", { repo, name, force }),
+  branchCreate: (repo: string, name: string, start: string | null, checkout: boolean, expectedState?: string | null) => call<void>("branch_create", { repo, name, start, checkout, expectedState }),
+  branchRename: (repo: string, old: string, newName: string, expectedState?: string | null) => call<void>("branch_rename", { repo, old, new: newName, expectedState }),
+  branchDeleteTargets: (repo: string, name: string) => call<RemoteBranchTarget[]>("branch_delete_targets", { repo, name }),
+  branchDelete: (repo: string, name: string, force: boolean, target: RemoteBranchTarget | null = null, expectedState?: string | null) => call<void>("branch_delete", { repo, name, force, target, expectedState }),
+  branchDeleteRemote: (repo: string, target: RemoteBranchTarget, force: boolean, opId: string) => call<string>("branch_delete_remote", { repo, target, force, opId }),
+  branchDeleteRefresh: (repo: string, target: RemoteBranchTarget, opId: string) => call<RemoteDeletionReview>("branch_delete_refresh", { repo, target, opId }),
   branchSetUpstream: (repo: string, branch: string, upstream: string | null) => call<void>("branch_set_upstream", { repo, branch, upstream }),
-  tagCreate: (repo: string, name: string, target: string, message: string | null) => call<void>("tag_create", { repo, name, target, message }),
-  tagDelete: (repo: string, name: string) => call<void>("tag_delete", { repo, name }),
-  reset: (repo: string, target: string, mode: "soft" | "mixed" | "hard" | "keep") => call<void>("reset", { repo, target, mode }),
+  tagCreate: (repo: string, name: string, target: string, message: string | null, expectedState?: string | null) => call<void>("tag_create", { repo, name, target, message, expectedState }),
+  tagDelete: (repo: string, name: string, expectedState?: string | null) => call<void>("tag_delete", { repo, name, expectedState }),
+  reset: (repo: string, target: string, mode: "soft" | "mixed" | "hard" | "keep", expectedState?: string | null) => call<void>("reset", { repo, target, mode, expectedState }),
   undoCommit: (repo: string) => call<void>("undo_commit", { repo }),
 
   fetch: (repo: string, remote: string | null, prune: boolean, opId: string) => call<string>("fetch", { repo, remote, prune, opId }),
   pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string) => call<OpOutcome>("pull", { repo, mode, opId }),
-  push: (repo: string, opts: PushOptions, opId: string) => call<string>("push", { repo, opts, opId }),
-  pushRef: (repo: string, remote: string, refspec: string, opId: string) => call<string>("push_ref", { repo, remote, refspec, opId }),
+  push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
+  pushRef: (repo: string, remote: string, refspec: string, opId: string, expectedState?: string | null) => call<string>("push_ref", { repo, remote, refspec, opId, expectedState }),
   remoteAdd: (repo: string, name: string, url: string) => call<void>("remote_add", { repo, name, url }),
   remoteRemove: (repo: string, name: string) => call<void>("remote_remove", { repo, name }),
   remoteSetUrl: (repo: string, name: string, url: string) => call<void>("remote_set_url", { repo, name, url }),
 
-  mergeStart: (repo: string, target: string, strategy: "no-ff" | "ff" | "ff-only" | "squash") => call<OpOutcome>("merge_start", { repo, target, strategy }),
-  opAbort: (repo: string, kind: string) => call<void>("op_abort", { repo, kind }),
-  opContinue: (repo: string, kind: string, message?: string | null) => call<OpOutcome>("op_continue", { repo, kind, message }),
+  mergeStart: (repo: string, target: string, strategy: "no-ff" | "ff" | "ff-only" | "squash", expectedState?: string | null) => call<OpOutcome>("merge_start", { repo, target, strategy, expectedState }),
+  opAbort: (repo: string, kind: string, expectedState?: string | null) => call<void>("op_abort", { repo, kind, expectedState }),
+  opContinue: (repo: string, kind: string, message?: string | null, expectedState?: string | null) => call<OpOutcome>("op_continue", { repo, kind, message, expectedState }),
   opSkip: (repo: string, kind: string) => call<OpOutcome>("op_skip", { repo, kind }),
   cherryPick: (repo: string, oids: string[], noCommit: boolean) => call<OpOutcome>("cherry_pick", { repo, oids, noCommit }),
   revert: (repo: string, oid: string, noCommit: boolean) => call<OpOutcome>("revert", { repo, oid, noCommit }),
-  rebaseOnto: (repo: string, upstream: string) => call<OpOutcome>("rebase_onto", { repo, upstream }),
-  rewrite: (repo: string, action: RewriteAction) => call<OpOutcome>("rewrite", { repo, action }),
+  rebaseOnto: (repo: string, upstream: string, expectedState?: string | null) => call<OpOutcome>("rebase_onto", { repo, upstream, expectedState }),
+  rewrite: (repo: string, action: RewriteAction, expectedState?: string | null) => call<OpOutcome>("rewrite", { repo, action, expectedState }),
   rebasePlan: (repo: string, oldest: string) => call<RebasePlan>("rebase_plan", { repo, oldest }),
-  interactiveRebase: (repo: string, base: string | null, items: { oid: string; action: RebaseAction; message: string | null }[]) =>
-    call<OpOutcome>("interactive_rebase", { repo, base, items }),
+  interactiveRebase: (repo: string, base: string | null, items: { oid: string; action: RebaseAction; message: string | null }[], expectedState?: string | null) =>
+    call<OpOutcome>("interactive_rebase", { repo, base, items, expectedState }),
 
   conflictInfo: (repo: string, path: string) => call<ConflictInfo>("conflict_info", { repo, path }),
-  conflictSave: (repo: string, path: string, content: string, stage: boolean) => call<void>("conflict_save", { repo, path, content, stage }),
-  conflictTake: (repo: string, path: string, which: "ours" | "theirs" | "base" | "delete") => call<void>("conflict_take", { repo, path, which }),
+  conflictSave: (repo: string, path: string, content: string, stage: boolean, expectedState?: string | null) => call<void>("conflict_save", { repo, path, content, stage, expectedState }),
+  conflictTake: (repo: string, path: string, which: "ours" | "theirs" | "base" | "delete", expectedState?: string | null) => call<void>("conflict_take", { repo, path, which, expectedState }),
   conflictMarkResolved: (repo: string, paths: string[]) => call<void>("conflict_mark_resolved", { repo, paths }),
   conflictUnresolve: (repo: string, path: string) => call<void>("conflict_unresolve", { repo, path }),
 
   stashSave: (repo: string, message: string, includeUntracked: boolean, keepIndex: boolean, paths?: string[]) =>
     call<void>("stash_save", { repo, message, includeUntracked, keepIndex, paths }),
   stashApply: (repo: string, index: number, pop: boolean) => call<OpOutcome>("stash_apply", { repo, index, pop }),
-  stashDrop: (repo: string, index: number) => call<void>("stash_drop", { repo, index }),
+  stashDrop: (repo: string, index: number, expectedState?: string | null) => call<void>("stash_drop", { repo, index, expectedState }),
 
   layersState: (repo: string) => call<LayersState>("layers_state", { repo }),
   layerSeal: (repo: string, name?: string | null) => call<void>("layer_seal", { repo, name }),
   layerUnstage: (repo: string, index: number, resolutions?: Record<string, string>) => call<void>("layer_unstage", { repo, index, resolutions }),
-  layerDiscard: (repo: string, index: number) => call<string>("layer_discard", { repo, index }),
+  layerDiscard: (repo: string, index: number, expectedState?: string | null) => call<string>("layer_discard", { repo, index, expectedState }),
   layerMergeDown: (repo: string, index: number) => call<void>("layer_merge_down", { repo, index }),
   layerMove: (repo: string, index: number, delta: number, resolutions?: Record<string, string>) => call<void>("layer_move", { repo, index, delta, resolutions }),
   layerPreview: (repo: string, op: LayerOp, resolutions: Record<string, string>) => call<LayerConflict | null>("layer_preview", { repo, op, resolutions }),
@@ -177,7 +182,7 @@ export const api = {
   submoduleSync: (repo: string) => call<void>("submodule_sync", { repo }),
   worktreeAdd: (repo: string, path: string, branch: string | null, newBranch: string | null, start: string | null) =>
     call<void>("worktree_add", { repo, path, branch, newBranch, start }),
-  worktreeRemove: (repo: string, path: string, force: boolean) => call<void>("worktree_remove", { repo, path, force }),
+  worktreeRemove: (repo: string, path: string, force: boolean, expectedState?: string | null, expectedTargetState?: string | null) => call<void>("worktree_remove", { repo, path, force, expectedState, expectedTargetState }),
   worktreeLock: (repo: string, path: string, lock: boolean) => call<void>("worktree_lock", { repo, path, lock }),
   worktreePrune: (repo: string) => call<void>("worktree_prune", { repo }),
   bisectStatus: (repo: string) => call<BisectStatus>("bisect_status", { repo }),

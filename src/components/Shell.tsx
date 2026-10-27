@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { useRepos, type RepoTab } from "../lib/store";
 import { resolvedTheme, useSettings } from "../lib/settings";
+import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { openOverlay, useUi } from "../lib/ui";
 import * as A from "../lib/actions";
 import * as XA from "../lib/extraActions";
@@ -63,8 +64,7 @@ export function TopBar() {
   const root = tab?.root;
   const dark = resolvedTheme(theme) === "dark";
   const overview = useUi((s) => s.repositoryOverview);
-  const repositoriesOpen = useSettings((s) => s.repositoriesOpen);
-  const focusMode = useUi((s) => s.focusMode);
+  const { layout: { repositoriesOpen, focusMode }, setLayout } = useWorkspaceLayout();
 
   return (
     <div className="topbar">
@@ -72,7 +72,7 @@ export function TopBar() {
         <img src="/logo.svg" alt="" />
         <span>Revqora</span>
       </div>
-      <button className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => { setS({ repositoriesOpen: focusMode || !repositoriesOpen }); useUi.setState({ focusMode: false }); }}><PanelLeft size={16} /></button>
+      <button className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => setLayout({ repositoriesOpen: focusMode || !repositoriesOpen, focusMode: false })}><PanelLeft size={16} /></button>
       <button className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
       <div className="repo-current" title={root ?? ""}>
         <b>{overview ? "All repositories" : tab?.info?.name ?? "Repositories"}</b>
@@ -270,7 +270,7 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
         <div className="op-sub">{sub}</div>
       </div>
       <div className="hstack" style={{ gap: 6, flex: "none" }}>
-        {actions}
+        <fieldset disabled={(tab.pendingMutations ?? 0) > 0} style={{ display: "contents", border: 0, padding: 0, margin: 0 }}>{actions}</fieldset>
       </div>
     </div>
   );
@@ -305,6 +305,7 @@ function BusyItem({ label, line }: { label: string; line: string }) {
 export function StatusBar() {
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   const busy = useUi((s) => s.busy);
+  const operations = useUi((s) => s.repositoryOperations);
   const [git, setGit] = useState("");
   useEffect(() => {
     api.gitSelection().then(
@@ -345,6 +346,10 @@ export function StatusBar() {
         </span>
       )}
       {b && <BusyItem label={b.label} line={b.line} />}
+      {!b && operations.length === 0 && (tab?.pendingMutations ?? 0) > 0 && <BusyItem label="Updating changes" line="" />}
+      {operations.length > 0 && <span className="item repository-queue" role="status" title={operations.map((o) => `${o.repo}: ${o.command.replaceAll("_", " ")} (${o.phase})`).join("\n")}>
+        {operations.filter((o) => o.phase === "running").length} running · {operations.filter((o) => o.phase === "queued").length} queued
+      </span>}
       <div className="spacer" />
       {tab?.error && (
         <span className="item" style={{ color: "var(--red)" }} title={tab.error}>

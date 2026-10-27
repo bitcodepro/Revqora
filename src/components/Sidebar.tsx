@@ -26,6 +26,7 @@ import {
   Trash2,
 } from "lucide-react";
 import * as X from "../lib/extraActions";
+import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import type { BranchInfo } from "../lib/types";
 import { useRepos, type RepoTab } from "../lib/store";
 import { contextMenu, copyText, openOverlay } from "../lib/ui";
@@ -36,7 +37,6 @@ import { AheadBehind } from "./bits";
 import { branchMenu, tagMenu } from "./menus";
 import { highlightBranch, jumpToCommit } from "./GraphView";
 import { promptDialog } from "./dialogs";
-import { useSettings } from "../lib/settings";
 
 interface TreeNode {
   name: string;
@@ -71,6 +71,7 @@ function sortedChildren(n: TreeNode): TreeNode[] {
 }
 
 export function Sidebar({ tab }: { tab: RepoTab }) {
+  const { setLayout } = useWorkspaceLayout();
   const root = tab.root;
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ tags: true });
@@ -108,6 +109,8 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
         return [
           <div
             key={b.fullName}
+            data-branch-name={b.name}
+            data-branch-kind={kind}
             className={`sb-item ${isCur ? "current" : ""}`}
             style={{ paddingLeft: pad + 16 }}
             title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}${b.upstream ? `\ntracks ${b.upstream}` : ""}${isCur ? "" : "\nCtrl+click or double-click to check out"}`}
@@ -206,7 +209,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
 
   return (
     <aside className="sidebar">
-      <div className="branches-heading"><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={() => useSettings.getState().set({ branchesOpen: false })}><PanelLeftClose size={14} /></button></div>
+      <div className="branches-heading"><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={() => setLayout({ branchesOpen: false })}><PanelLeftClose size={14} /></button></div>
       <div className="sb-repo">
         <div className="input-wrap">
           <Search size={13} />

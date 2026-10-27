@@ -14,7 +14,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "history", label: "Show history", default: "Ctrl+1" },
   { id: "changes", label: "Show changes", default: "Ctrl+2" },
   { id: "pulls", label: "Show pull requests", default: "Ctrl+3" },
-  { id: "reviewMode", label: "Switch history between Graph and Review", default: "Ctrl+Shift+R" },
+  { id: "reviewMode", label: "Cycle history layouts: Graph, Review, Columns", default: "Ctrl+Shift+R" },
   { id: "overview", label: "All repositories", default: "Ctrl+Shift+O" },
   { id: "repositoriesPanel", label: "Toggle repositories panel", default: "Ctrl+Alt+R" },
   { id: "branchesPanel", label: "Toggle branches panel", default: "Ctrl+Alt+B" },

@@ -1,5 +1,24 @@
 // Mirrors of the Rust backend types (serde camelCase).
 
+export interface RemoteBranchTarget {
+  label: string;
+  remote: string;
+  pushUrl: string;
+  remoteRef: string;
+  trackingRef: string;
+  oid: string;
+  isUpstream: boolean;
+}
+
+export interface RemoteDeletionReview {
+  target: RemoteBranchTarget;
+  previousOid: string;
+  newCommits: number;
+  removedCommits: number;
+  unmergedCommits: number;
+  commits: string[];
+}
+
 export interface GitError {
   message: string;
   stderr: string;
@@ -32,6 +51,7 @@ export interface OpState {
 export interface RepoInfo {
   root: string;
   gitDir: string;
+  commonDir?: string;
   name: string;
   head: HeadInfo;
   state: OpState;
@@ -49,6 +69,8 @@ export interface FileStatus {
 }
 
 export interface StatusSummary {
+  stateToken?: string | null;
+  stateVersion?: number;
   branch: string | null;
   oid: string | null;
   upstream: string | null;
@@ -249,6 +271,7 @@ export interface ConflictSide {
 }
 
 export interface ConflictInfo {
+  stateToken?: string;
   path: string;
   code: string;
   base: ConflictSide;
@@ -418,6 +441,7 @@ export interface PlanCommit {
 }
 
 export interface RebasePlan {
+  stateToken?: string;
   base: string | null;
   commits: PlanCommit[];
 }

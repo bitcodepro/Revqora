@@ -165,6 +165,7 @@ function locate(blocks: ConflictBlock[], ours: string, theirs: string) {
 
 /** Loads a conflicted file of the working tree into the merge editor. */
 export function ConflictEditor({ root, path, onClose }: { root: string; path: string; onClose: () => void }) {
+  const observedState = useRef<string | null>(null);
   const [info, setInfo] = useState<ConflictInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const statusFiles = useRepos((s) => s.tabs[root]?.status?.files);
@@ -172,10 +173,11 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
 
   useEffect(() => {
     let alive = true;
+    observedState.current = useRepos.getState().tabs[root]?.status?.stateToken ?? null;
     setInfo(null);
     setErr(null);
     api.conflictInfo(root, path).then(
-      (i) => alive && setInfo(i),
+      (i) => { if (alive) { observedState.current = i.stateToken ?? null; setInfo(i); } },
       (e) => alive && setErr(errorMessage(e)),
     );
     return () => {
@@ -203,12 +205,12 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
       position={conflicts.length > 1 && fileIdx >= 0 ? `file ${fileIdx + 1} of ${conflicts.length}` : undefined}
       onClose={onClose}
       onSave={async (text) => {
-        await api.conflictSave(root, path, text, true);
+        await api.conflictSave(root, path, text, true, observedState.current);
         toast.success(`Resolved ${path}`);
         await nextFile();
       }}
       onTake={async (which) => {
-        await api.conflictTake(root, path, which);
+        await api.conflictTake(root, path, which, observedState.current);
         toast.success(which === "delete" ? `Deleted ${path}` : `Took ${which} for ${path}`);
         await nextFile();
       }}

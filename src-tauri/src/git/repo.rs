@@ -38,6 +38,7 @@ pub struct OpState {
 pub struct RepoInfo {
     pub root: String,
     pub git_dir: String,
+    pub common_dir: String,
     pub name: String,
     pub head: HeadInfo,
     pub state: OpState,
@@ -178,7 +179,15 @@ pub fn info(path: &Path) -> GitResult<RepoInfo> {
     let head = head(&root)?;
     let state = op_state(&root, &gd);
     let name = root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| root.to_string_lossy().into_owned());
-    Ok(RepoInfo { root: root.to_string_lossy().into_owned(), git_dir: gd.to_string_lossy().into_owned(), name, head, state, is_bare: false })
+    Ok(RepoInfo {
+        root: root.to_string_lossy().into_owned(),
+        git_dir: gd.to_string_lossy().into_owned(),
+        common_dir: super::operations::repository_key(&root).to_string_lossy().into_owned(),
+        name,
+        head,
+        state,
+        is_bare: false,
+    })
 }
 
 pub fn init(path: &Path, initial_branch: &str) -> GitResult<RepoInfo> {

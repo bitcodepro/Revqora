@@ -37,7 +37,7 @@ process.env.REVQORA_UPDATE_FEED = `http://127.0.0.1:${feed.address().port}/`;
 let step = 0;
 const results = [];
 const { page, close } = await launch({ exe, args: [repo], profile: createProfile("revqora-smoke-profile-"), port: 0 });
-page.setDefaultTimeout(10000);
+page.setDefaultTimeout(30000); // Compound operations include queue waits and the final state refresh.
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));
 page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
@@ -49,6 +49,7 @@ async function check(name, fn) {
     results.push(`ok   ${step}. ${name}`);
   } catch (e) {
     results.push(`FAIL ${step}. ${name}: ${e.message.split("\n")[0]}`);
+    console.log(e.stack ?? String(e));
     await page.screenshot({ path: path.join(out, `fail-${step}.png`) }).catch(() => {});
     throw e;
   }
@@ -212,10 +213,40 @@ try {
   await check("seal a stage layer and stage more on top", async () => {
     await page.click("button[title^='Seal what is staged']");
     await page.waitForSelector(".layer:not(.open-layer)");
+    await page.waitForSelector(".changes[data-pending='false']");
+    // Reproduce a real response ordering: refresh's status was read before add,
+    // its layer list after add, while add's completion is still in transit.
+    // Delay transport responses; do not fabricate repository state or bypass Git.
+    await page.evaluate(() => {
+      const original = window.fetch;
+      let staged;
+      const stageDone = new Promise((resolve) => { staged = resolve; });
+      let release;
+      const completion = new Promise((resolve) => { release = resolve; });
+      window.__layerRace = { statusHeld: false, release: () => { window.fetch = original; release(); } };
+      let firstStatus = true, firstLayers = true;
+      window.fetch = async (url, init) => {
+        const command = decodeURIComponent(new URL(url).pathname.slice(1));
+        if (command === "layers_state" && firstLayers) { firstLayers = false; await stageDone; }
+        const response = await original(url, init);
+        if (command === "status" && firstStatus) {
+          firstStatus = false;
+          await response.clone().json();
+          window.__layerRace.statusHeld = true;
+          await stageDone;
+        }
+        if (command === "stage") { await response.clone().json(); staged(); await completion; }
+        return response;
+      };
+    });
+    await page.click("button[title='Refresh (F5)']");
+    await page.waitForFunction(() => window.__layerRace.statusHeld);
     await page.locator(".file-row", { hasText: "config.json" }).first().hover();
     await page.locator(".file-row", { hasText: "config.json" }).first().locator("button[title='Stage']").click();
     await until(async () => (await page.locator(".open-layer .file-row", { hasText: "config.json" }).count()) === 1, "config.json not in open layer");
+    if (!(await page.locator(".layer:not(.open-layer) button[title='Unstage layer']").isDisabled())) throw new Error("layer action enabled before staging completion/state refresh");
     await shot("04-layers");
+    await page.evaluate(() => window.__layerRace.release());
   });
 
   await check("unstage the first layer only", async () => {
@@ -507,7 +538,7 @@ try {
     await page.mouse.up();
     const after = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
     if (after < before + 40) throw new Error("file list did not resize");
-    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.commitFilesWidth);
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth);
     if (Math.abs(saved - (before + 67)) > 4) throw new Error("preferred file list width was not persisted");
     // A narrower window clamps the rendered width without rewriting the preference.
     await page.setViewportSize({ width: 1028, height: 760 });
@@ -515,7 +546,7 @@ try {
     const narrowBefore = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
     const clamped = (preferred) => Math.max(140, Math.min(preferred, containerWidth * .45));
     if (Math.abs(narrowBefore - clamped(saved)) > 2) throw new Error("file list did not respect the available width");
-    if (await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.commitFilesWidth) !== saved) throw new Error("viewport resize overwrote preferred file list width");
+    if (await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth) !== saved) throw new Error("viewport resize overwrote preferred file list width");
     const target = Math.max(140, narrowBefore - 60);
     const narrowSplitter = await page.locator(".commit-details > .splitter-v").boundingBox();
     const x = narrowSplitter.x + narrowSplitter.width / 2, y = narrowSplitter.y + narrowSplitter.height / 2;
@@ -524,7 +555,7 @@ try {
     await page.mouse.move(x + target - saved, y, { steps: 8 });
     await page.mouse.up();
     const narrowAfter = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
-    const narrowSaved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.commitFilesWidth);
+    const narrowSaved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth);
     if (narrowBefore - narrowAfter < 40) throw new Error("file list did not shrink in a narrow window");
     if (Math.abs(narrowSaved - target) > 4 || Math.abs(narrowAfter - clamped(narrowSaved)) > 2) throw new Error("narrow resize did not persist preferred width independently of its layout clamp");
     await shot("24-resize-narrow");
@@ -542,6 +573,192 @@ try {
     if (!fits) throw new Error("workspace overflowed the minimum window width");
     await page.setViewportSize(viewport);
     await page.click(".history-mode button:has-text('Graph')");
+  });
+
+  await check("column history keeps independent panel sizes, visibility and focus after reload", async () => {
+    const viewport = page.viewportSize() ?? await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+    await page.setViewportSize({ width: 1650, height: 950 });
+    const layouts = () => page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts);
+    const drag = async (selector, dx) => {
+      const box = await page.locator(selector).boundingBox();
+      const x = box.x + box.width / 2, y = box.y + box.height / 2;
+      await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + dx, y, { steps: 8 }); await page.mouse.up();
+    };
+    const before = await layouts();
+    await page.click(".history-mode button:has-text('Columns')");
+    await page.waitForSelector(".columns-details .commit-message-open:not(:disabled)");
+    const positions = await page.locator(".repository-slot, .branches-slot, .columns-commits, .columns-details .details-left, .columns-details .diff").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().x));
+    if (positions.length !== 5 || positions.some((x, i) => i > 0 && x <= positions[i - 1])) throw new Error("repository, branch, commit, file and diff columns are out of order");
+    await drag(".repository-sidebar > .splitter-v", 20);
+    await drag(".workspace > .splitter-v", 20);
+    await page.click(".topbar button[aria-label='Toggle repositories panel']");
+    await page.click(".branches-toggle");
+    await drag(".columns-history > .splitter-v", 60);
+    await drag(".commit-details > .splitter-v", 40);
+    await page.click(".topbar button[aria-label='Toggle repositories panel']");
+    await page.click(".branches-toggle");
+    await page.click(".focus-toggle");
+    await page.waitForSelector(".repository-slot", { state: "hidden" });
+    await page.waitForSelector(".branches-slot", { state: "hidden" });
+    await page.waitForSelector(".columns-commits", { state: "visible" });
+    const expected = (await layouts()).columns;
+    if (expected.repositoriesWidth < before.columns.repositoriesWidth + 15 || expected.sidebarWidth < before.columns.sidebarWidth + 15 || expected.historyListWidth < before.columns.historyListWidth + 50 || expected.commitFilesWidth < before.columns.commitFilesWidth + 30) throw new Error("column widths were not persisted");
+    await page.click(".history-mode button:has-text('Review')");
+    await page.waitForSelector(".repository-slot", { state: "visible" });
+    await page.waitForSelector(".branches-slot", { state: "visible" });
+    if (JSON.stringify((await layouts()).review) !== JSON.stringify(before.review)) throw new Error("Columns changed Review's preferences");
+    await page.click(".branches-toggle");
+    await page.click(".history-mode button:has-text('Graph')");
+    await page.waitForSelector(".branches-slot", { state: "visible" });
+    if (JSON.stringify((await layouts()).graph) !== JSON.stringify(before.graph)) throw new Error("another layout changed Graph's preferences");
+    await page.click(".history-mode button:has-text('Columns')");
+    await page.waitForSelector(".repository-slot", { state: "hidden" });
+    if (JSON.stringify((await layouts()).columns) !== JSON.stringify(expected)) throw new Error("Columns preferences were not restored");
+    await page.reload();
+    await page.waitForSelector(".columns-commits .grow:not(.wip) .text", { timeout: 20000 });
+    await page.waitForSelector(".repository-slot", { state: "hidden" });
+    await page.waitForSelector(".branches-slot", { state: "hidden" });
+    if (JSON.stringify((await layouts()).columns) !== JSON.stringify(expected)) throw new Error("reload lost the saved column layout");
+    await page.locator(".columns-commits .graph-scroll").press("End");
+    await page.waitForSelector(".columns-details .commit-subject:has-text('Initial project structure')");
+    await page.waitForSelector(".columns-details .diff .dl");
+    await shot("26-three-columns");
+    await page.keyboard.press("Control+Shift+r");
+    await page.waitForSelector(".history-mode button.on:has-text('Graph')");
+    await page.keyboard.press("Control+Shift+r");
+    await page.waitForSelector(".history-mode button.on:has-text('Review')");
+    await page.keyboard.press("Control+Shift+r");
+    await page.waitForSelector(".history-mode button.on:has-text('Columns')");
+    await page.click(".history-mode button:has-text('Graph')");
+    await page.setViewportSize(viewport);
+  });
+
+  await check("branch deletion supports local-only, remote, force confirmation and partial failure", async () => {
+    const localExists = (name) => git("branch", "--list", name) !== "";
+    const remoteExists = (name) => git("ls-remote", "--heads", "origin", "refs/heads/" + name) !== "";
+    const create = (name, remoteName = name) => {
+      git("branch", name, "HEAD");
+      git("push", "-q", "origin", `${name}:refs/heads/${remoteName}`);
+      git("branch", `--set-upstream-to=origin/${remoteName}`, name);
+    };
+    const openDelete = async (name) => {
+      await page.fill(".sidebar input[placeholder^='Filter branches']", name);
+      await page.click("button[title='Refresh (F5)']");
+      await page.locator(`.sidebar [data-branch-kind='local'][data-branch-name='${name}']`).click({ button: "right" });
+      await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
+      await page.waitForSelector(".modal .delete-remote-branch");
+    };
+    create("ui-local-only");
+    await openDelete("ui-local-only");
+    if (await page.locator(".delete-remote-branch").isChecked()) throw new Error("remote deletion must be opt-in");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".modal", { state: "detached" });
+    if (localExists("ui-local-only") || !remoteExists("ui-local-only")) throw new Error("local-only deletion touched the remote or kept the local branch");
+    git("push", "-q", "origin", ":refs/heads/ui-local-only");
+    create("ui-delete-both", "published/ui-delete-both");
+    git("push", "-q", "origin", "ui-delete-both:refs/heads/ui-delete-both");
+    await openDelete("ui-delete-both");
+    await page.check(".delete-remote-branch");
+    await page.waitForSelector(".modal select");
+    if (await page.locator(".modal select").inputValue() !== JSON.stringify(["origin", "refs/heads/published/ui-delete-both"])) throw new Error("delete dialog did not prefer the configured upstream");
+    await shot("27-delete-both");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".modal", { state: "detached" });
+    if (localExists("ui-delete-both") || remoteExists("published/ui-delete-both") || !remoteExists("ui-delete-both")) throw new Error("combined deletion did not delete only the selected upstream");
+    git("push", "-q", "origin", ":refs/heads/ui-delete-both");
+    for (const pushed of [false, true]) {
+      create("ui-unmerged");
+      const tip = git("commit-tree", git("rev-parse", "HEAD^{tree}"), "-p", "HEAD", "-m", "Branch-only commit");
+      git("update-ref", "refs/heads/ui-unmerged", tip);
+      if (pushed) git("push", "-q", "origin", "ui-unmerged");
+      await openDelete("ui-unmerged");
+      await page.check(".delete-remote-branch");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".force-delete-branch");
+      if (!(await page.locator(".delete-branch-confirm").isDisabled()) || !localExists("ui-unmerged") || !remoteExists("ui-unmerged")) throw new Error("unmerged guard deleted a ref before force confirmation");
+      if (pushed) {
+        await shot("29-pushed-unmerged-guard");
+        await page.check(".force-delete-branch");
+        await page.uncheck(".delete-remote-branch");
+        await page.waitForSelector(".force-delete-branch", { state: "detached" });
+        if ((await page.locator(".delete-branch-confirm").innerText()).includes("Force")) throw new Error("force acknowledgement leaked into another deletion mode");
+        await page.check(".delete-remote-branch");
+        await page.click(".delete-branch-confirm");
+        await page.waitForSelector(".force-delete-branch");
+        if (!(await page.locator(".delete-branch-confirm").isDisabled())) throw new Error("combined deletion reused an old force acknowledgement");
+      }
+      await page.click(".modal button:has-text('Cancel')");
+      await openDelete("ui-unmerged");
+      await page.check(".delete-remote-branch");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".force-delete-branch");
+      await page.check(".force-delete-branch");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".modal", { state: "detached" });
+      if (localExists("ui-unmerged") || remoteExists("ui-unmerged")) throw new Error("explicit force confirmation did not complete deletion");
+    }
+    // The tracking alias deliberately matches an unrelated, real server branch.
+    create("ui-mapped");
+    git("push", "-q", "origin", "ui-mapped:refs/heads/ui-mapped-alias");
+    const fetchSpecs = git("config", "--get-all", "remote.origin.fetch").split(/\r?\n/);
+    git("config", "remote.origin.fetch", "+refs/heads/ui-mapped:refs/remotes/origin/ui-mapped-alias");
+    git("fetch", "-q", "origin");
+    try {
+      await openDelete("ui-mapped");
+      await page.check(".delete-remote-branch");
+      if (!(await page.locator(".modal").innerText()).includes("origin/ui-mapped")) throw new Error("resolved server branch missing from dialog");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".modal", { state: "detached" });
+      if (localExists("ui-mapped") || remoteExists("ui-mapped") || !remoteExists("ui-mapped-alias")) throw new Error("custom fetch mapping deleted the wrong server ref");
+    } finally {
+      git("config", "--unset-all", "remote.origin.fetch");
+      for (const spec of fetchSpecs) git("config", "--add", "remote.origin.fetch", spec);
+    }
+    git("push", "-q", "origin", ":refs/heads/ui-mapped-alias");
+    create("ui-failed-remote");
+    const pushUrl = git("remote", "get-url", "--push", "origin");
+    const hook = path.join(path.resolve(repo, pushUrl), "hooks", "pre-receive");
+    const other = path.join(work, "env", "deletion-other-clone");
+    git("clone", "-q", "--branch", "ui-failed-remote", pushUrl, other);
+    const otherGit = (...args) => execFileSync("git", ["-C", other, "-c", "commit.gpgsign=false", "-c", "user.name=Other clone", "-c", "user.email=other@example.com", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    fs.writeFileSync(hook, "#!/bin/sh\necho 'Server temporarily refuses updates' >&2\nexit 1\n");
+    fs.chmodSync(hook, 0o755);
+    try {
+      await openDelete("ui-failed-remote");
+      await page.check(".delete-remote-branch");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".delete-branch-error:has-text('Local branch deleted. Remote deletion failed')");
+      if (localExists("ui-failed-remote") || !remoteExists("ui-failed-remote")) throw new Error("partial deletion state was reported incorrectly");
+      await shot("28-delete-remote-failed");
+      fs.unlinkSync(hook);
+      otherGit("commit", "--allow-empty", "-qm", "Unseen server commit");
+      otherGit("push", "-q", "origin", "ui-failed-remote");
+      const changed = otherGit("rev-parse", "HEAD");
+      // Retry must keep the original lease even after the local part succeeded.
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".refresh-remote-deletion");
+      if (!(await page.locator(".delete-branch-confirm").isDisabled()) || !remoteExists("ui-failed-remote")) throw new Error("retry deleted an unseen server tip");
+      await page.click(".refresh-remote-deletion");
+      await page.waitForSelector(".remote-deletion-review");
+      if (!(await page.locator(".remote-deletion-review").innerText()).includes(changed.slice(0, 12))) throw new Error("refreshed remote SHA missing");
+      if (!(await page.locator(".delete-branch-confirm").isDisabled())) throw new Error("refreshed tip did not require new consent");
+      await shot("38-remote-deletion-review");
+      await page.check(".confirm-reviewed-remote");
+      // Even explicit force consent to B must not delete a subsequent C.
+      otherGit("commit", "--allow-empty", "-qm", "Another unseen server commit");
+      otherGit("push", "-q", "origin", "ui-failed-remote");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".refresh-remote-deletion");
+      if (!remoteExists("ui-failed-remote")) throw new Error("force deleted a newer unseen tip");
+      await page.click(".refresh-remote-deletion");
+      await page.waitForSelector(".remote-deletion-review");
+      if (await page.locator(".confirm-reviewed-remote").isChecked()) throw new Error("old remote consent leaked into refreshed state");
+      await page.check(".confirm-reviewed-remote");
+      await page.click(".delete-branch-confirm");
+      await page.waitForSelector(".modal", { state: "detached" });
+      if (remoteExists("ui-failed-remote")) throw new Error("remote retry failed");
+    } finally { if (fs.existsSync(hook)) fs.unlinkSync(hook); }
+    await page.fill(".sidebar input[placeholder^='Filter branches']", "");
   });
 
   await check("twenty repositories support bulk fetch and clean fast-forward pull", async () => {
@@ -676,6 +893,70 @@ try {
     await page.click(".history-mode button:has-text('Graph')");
     await page.locator(".repository-item", { hasText: "demo" }).locator(".repository-select").click();
     await page.waitForSelector(".repo-current:has-text('demo')");
+  });
+
+  await check("repository transactions queue fetch and reject a stale reset after a commit", async () => {
+    const original = git("rev-parse", "HEAD");
+    const hook = path.join(repo, ".git", "hooks", "pre-commit");
+    const savedHook = fs.existsSync(hook) ? fs.readFileSync(hook) : null;
+    const started = path.join(repo, ".git", "revqora-queue-started");
+    const release = path.join(repo, ".git", "revqora-queue-release");
+    fs.writeFileSync(path.join(repo, "queue-commit.txt"), "Queued commit\n");
+    git("add", "queue-commit.txt");
+    fs.writeFileSync(hook, "#!/bin/sh\ntouch .git/revqora-queue-started\nwhile test ! -f .git/revqora-queue-release; do sleep 0.05; done\n");
+    fs.chmodSync(hook, 0o755);
+    try {
+      await page.evaluate(async (root) => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        const status = await invoke("status", { repo: root });
+        const settle = (p) => p.then((value) => ({ ok: true, value }), (error) => ({ ok: false, error }));
+        window.__queueTest = { expected: status.stateToken, commit: settle(invoke("commit", { repo: root, expectedState: status.stateToken, message: "Queue test commit", opts: {} })) };
+      }, repo);
+      await until(() => fs.existsSync(started), "commit hook did not start", 15000);
+      await page.evaluate((root) => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        const settle = (p) => p.then((value) => ({ ok: true, value }), (error) => ({ ok: false, error }));
+        window.__queueTest.fetch = settle(invoke("fetch_background", { repo: root }));
+        window.__queueTest.reset = settle(invoke("reset", { repo: root, expectedState: window.__queueTest.expected, target: "HEAD~1", mode: "hard" }));
+      }, repo);
+      await page.waitForSelector(".repository-queue:has-text('2 queued')");
+      await shot("36-repository-queue");
+      fs.writeFileSync(path.join(repo, "queue-external.txt"), "Keep this IDE edit\n");
+      fs.writeFileSync(release, "continue\n");
+      const result = await page.evaluate(async () => {
+        const [commit, fetch, reset] = await Promise.all([window.__queueTest.commit, window.__queueTest.fetch, window.__queueTest.reset]);
+        return { commit, fetch, reset };
+      });
+      if (!result.commit.ok || !result.fetch.ok || result.reset.ok || result.reset.error.kind !== "stale-operation") throw new Error("queued commit/fetch/reset did not preserve the original precondition");
+      if (git("rev-parse", "HEAD") !== result.commit.value || fs.readFileSync(path.join(repo, "queue-external.txt"), "utf8") !== "Keep this IDE edit\n") throw new Error("queued reset lost commit or worktree data");
+      await page.waitForSelector(".repository-queue", { state: "detached" });
+    } finally {
+      fs.writeFileSync(release, "continue\n");
+      await page.evaluate(async () => { if (window.__queueTest) await Promise.all([window.__queueTest.commit, window.__queueTest.fetch, window.__queueTest.reset]); });
+      if (savedHook) fs.writeFileSync(hook, savedHook); else fs.rmSync(hook, { force: true });
+      git("reset", "--mixed", original);
+      for (const file of [started, release, path.join(repo, "queue-commit.txt"), path.join(repo, "queue-external.txt")]) fs.rmSync(file, { force: true });
+      await page.click("button[title='Refresh (F5)']");
+    }
+  });
+
+  await check("a deletion confirmation keeps its precondition across external Git changes", async () => {
+    git("branch", "ui-stale-confirm");
+    await page.fill(".sidebar input[placeholder^='Filter branches']", "ui-stale");
+    await page.click("button[title='Refresh (F5)']");
+    await page.locator(".sidebar [data-branch-kind='local'][data-branch-name='ui-stale-confirm']").click({ button: "right" });
+    await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
+    await page.waitForSelector(".delete-branch-confirm");
+    git("branch", "ui-stale-external");
+    await page.waitForSelector(".sidebar [data-branch-kind='local'][data-branch-name='ui-stale-external']");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".delete-branch-error:has-text('repository changed')");
+    if (!git("branch", "--list", "ui-stale-confirm")) throw new Error("stale confirmation removed a branch");
+    await shot("37-stale-confirmation");
+    await page.click(".modal button:has-text('Cancel')");
+    git("branch", "-D", "ui-stale-confirm", "ui-stale-external");
+    await page.fill(".sidebar input[placeholder^='Filter branches']", "");
+    await page.click("button[title='Refresh (F5)']");
   });
 
   await check("dark theme renders", async () => {

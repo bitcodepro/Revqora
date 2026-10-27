@@ -2,10 +2,10 @@
 import { useEffect, useState } from "react";
 import { open as openFolder } from "@tauri-apps/plugin-dialog";
 import { FolderGit2, FolderOpen, HardDrive, Package } from "lucide-react";
-import { api, newOpId } from "./api";
+import { api, isGitError, newOpId } from "./api";
 import { getTab, useRepos } from "./store";
 import { endBusy, showDialog, startBusy, toast } from "./ui";
-import { act } from "./actions";
+import { act, prepareOperation } from "./actions";
 import type { LfsFile } from "./types";
 import { Modal } from "../components/Modal";
 import { confirmDialog, promptDialog, validBranchName } from "../components/dialogs";
@@ -136,19 +136,25 @@ function WorktreeDialog({ root, close }: { root: string; close: () => void }) {
 }
 
 export async function removeWorktree(root: string, path: string) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
+  let expectedTargetState: string | null;
+  try { expectedTargetState = (await api.status(path)).stateToken ?? null; }
+  catch (e) { toast.error(e); return; }
   const ok = await confirmDialog({ title: "Remove this worktree?", message: `The folder ${path} is deleted. Its branch and commits stay in the repository.`, confirm: "Remove", danger: true });
   if (!ok) return;
   try {
-    await api.worktreeRemove(root, path, false);
+    await api.worktreeRemove(root, path, false, expectedState, expectedTargetState);
     toast.success("Worktree removed");
   } catch (e) {
+    if (!isGitError(e) || e.kind !== "dirty-worktree") { toast.error(e); return; }
     const force = await confirmDialog({
       title: "The worktree has local changes",
       message: "Remove it anyway? Uncommitted changes in that folder will be lost.",
       confirm: "Remove anyway",
       danger: true,
     });
-    if (force) await act(root, () => api.worktreeRemove(root, path, true), { success: "Worktree removed" });
+    if (force) await act(root, () => api.worktreeRemove(root, path, true, expectedState, expectedTargetState), { success: "Worktree removed" });
     else toast.error(e);
   }
   await useRepos.getState().refresh(root);

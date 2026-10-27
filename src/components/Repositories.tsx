@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowDownToLine, Check, CircleAlert, FolderGit2, GitBranch, LayoutGrid, Plus, RefreshCw, Search, X } from "lucide-react";
 import { api, errorMessage, newOpId } from "../lib/api";
 import * as A from "../lib/actions";
 import { basename, relativeTime } from "../lib/format";
 import { pullBlockReason, runRepositoryBatch, type BatchResult } from "../lib/repositoryBatch";
-import { useSettings } from "../lib/settings";
+import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { useRepos, type RepoTab } from "../lib/store";
 import { endBusy, showDialog, startBusy, toast, useUi } from "../lib/ui";
 import { AheadBehind } from "./bits";
@@ -148,9 +148,9 @@ export function RepositorySidebar() {
   const overview = useUi((s) => s.repositoryOverview);
   const [query, setQuery] = useState("");
   const [updatesOnly, setUpdatesOnly] = useState(false);
-  const width = useSettings((s) => s.repositoriesWidth);
-  const set = useSettings((s) => s.set);
+  const { mode, layout: { repositoriesWidth: width }, setLayout: set } = useWorkspaceLayout();
   const [w, setW] = useState(width);
+  useEffect(() => setW(width), [mode, width]);
   const count = order.filter((r) => (tabs[r]?.status?.behind ?? 0) > 0).length;
   const visible = order.filter((r) => (r + " " + tabs[r]?.info?.name).toLowerCase().includes(query.trim().toLowerCase()) && (!updatesOnly || !!tabs[r]?.status?.behind));
   return (

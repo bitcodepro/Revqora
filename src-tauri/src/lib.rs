@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use git::branch_deletion::{self, RemoteBranchTarget};
 use git::commit::{self as gcommit, CommitDetails, FileHistoryEntry};
 use git::conflicts::{self, ConflictInfo};
 use git::diff::{self, DiffOptions, FileDiff, SelectionMode, WorkSide};
@@ -37,6 +38,58 @@ where
     F: FnOnce() -> GitResult<T> + Send + 'static,
 {
     tauri::async_runtime::spawn_blocking(f).await.map_err(|e| GitError::new(format!("Background task failed: {e}")))?
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationEvent {
+    id: String,
+    repo: String,
+    repository_key: String,
+    command: String,
+    phase: String,
+    ahead: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Observed<T> {
+    #[serde(flatten)]
+    value: T,
+    state_token: String,
+}
+
+async fn mutating<T, F>(repo: String, expected: Option<String>, app: AppHandle, command: &'static str, id: Option<String>, f: F) -> GitResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> GitResult<T> + Send + 'static,
+{
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static IDS: AtomicU64 = AtomicU64::new(0);
+    let id = id.unwrap_or_else(|| format!("repository-op-{}", IDS.fetch_add(1, Ordering::Relaxed)));
+    blocking(move || {
+        let repository_key = git::operations::repository_key(&p(&repo)).to_string_lossy().into_owned();
+        let emit = |phase: &str, ahead: usize| {
+            let _ = app.emit(
+                "repository-operation",
+                OperationEvent {
+                    id: id.clone(),
+                    repo: repo.clone(),
+                    repository_key: repository_key.clone(),
+                    command: command.into(),
+                    phase: phase.into(),
+                    ahead,
+                },
+            );
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| git::operations::run(&p(&repo), command, expected.as_deref(), emit, f)))
+            .unwrap_or_else(|_| {
+                Err(GitError::new("The operation failed unexpectedly. Refresh and inspect the repository before retrying.").kind("operation-failed"))
+            });
+        emit(if result.is_ok() { "finished" } else { "failed" }, 0);
+        result
+    })
+    .await
 }
 
 fn p(repo: &str) -> PathBuf {
@@ -141,8 +194,8 @@ async fn identity_get(repo: String) -> GitResult<Identity> {
 }
 
 #[tauri::command]
-async fn identity_set(repo: String, name: String, email: String, global: bool) -> GitResult<()> {
-    blocking(move || {
+async fn identity_set(app: AppHandle, expected_state: Option<String>, repo: String, name: String, email: String, global: bool) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "identity_set", None, move || {
         let r = p(&repo);
         repo::config_set(&r, "user.name", name.trim(), global)?;
         repo::config_set(&r, "user.email", email.trim(), global)
@@ -168,7 +221,10 @@ async fn rev_diff(repo: String, from: Option<String>, to: String, path: String, 
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments preserve the existing client contract.
 async fn apply_selection(
+    app: AppHandle,
+    expected_state: Option<String>,
     repo: String,
     path: String,
     mode: SelectionMode,
@@ -177,7 +233,7 @@ async fn apply_selection(
     untracked: bool,
     opts: Option<DiffOptions>,
 ) -> GitResult<()> {
-    blocking(move || {
+    mutating(repo.clone(), expected_state, app.clone(), "apply_selection", None, move || {
         let r = p(&repo);
         let base = if mode == SelectionMode::Unstage { layers::staged_base(&r) } else { None };
         diff::apply_selection(&r, &path, mode, &selection, &hash, base.as_deref(), untracked, &opts.unwrap_or_default())
@@ -186,13 +242,13 @@ async fn apply_selection(
 }
 
 #[tauri::command]
-async fn stage(repo: String, paths: Vec<String>) -> GitResult<()> {
-    blocking(move || ops::stage_paths(&p(&repo), &paths)).await
+async fn stage(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "stage", None, move || ops::stage_paths(&p(&repo), &paths)).await
 }
 
 #[tauri::command]
-async fn unstage(repo: String, paths: Vec<String>) -> GitResult<()> {
-    blocking(move || {
+async fn unstage(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "unstage", None, move || {
         let r = p(&repo);
         let base = layers::staged_base(&r);
         ops::unstage_paths(&r, &paths, base.as_deref())
@@ -201,13 +257,13 @@ async fn unstage(repo: String, paths: Vec<String>) -> GitResult<()> {
 }
 
 #[tauri::command]
-async fn discard(repo: String, tracked: Vec<String>, untracked: Vec<String>) -> GitResult<String> {
-    blocking(move || ops::discard_paths(&p(&repo), &tracked, &untracked)).await
+async fn discard(app: AppHandle, expected_state: Option<String>, repo: String, tracked: Vec<String>, untracked: Vec<String>) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "discard", None, move || ops::discard_paths(&p(&repo), &tracked, &untracked)).await
 }
 
 #[tauri::command]
-async fn commit(repo: String, message: String, opts: Option<CommitOptions>) -> GitResult<String> {
-    blocking(move || ops::commit(&p(&repo), &message, &opts.unwrap_or_default())).await
+async fn commit(app: AppHandle, expected_state: Option<String>, repo: String, message: String, opts: Option<CommitOptions>) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "commit", None, move || ops::commit(&p(&repo), &message, &opts.unwrap_or_default())).await
 }
 
 #[tauri::command]
@@ -266,8 +322,11 @@ async fn commit_graph_status(repo: String) -> GitResult<bool> {
 }
 
 #[tauri::command]
-async fn commit_graph_write(app: AppHandle, repo: String, op_id: String) -> GitResult<String> {
-    blocking(move || graph::write_commit_graph(&p(&repo), progress(&app, &op_id))).await
+async fn commit_graph_write(expected_state: Option<String>, app: AppHandle, repo: String, op_id: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "commit_graph_write", Some(op_id.clone()), move || {
+        graph::write_commit_graph(&p(&repo), progress(&app, &op_id))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -324,187 +383,253 @@ async fn branch_details(repo: String, name: String, base: String) -> GitResult<r
 }
 
 #[tauri::command]
-async fn checkout(repo: String, target: String, kind: String) -> GitResult<String> {
-    blocking(move || ops::checkout(&p(&repo), &target, &kind)).await
+async fn checkout(app: AppHandle, expected_state: Option<String>, repo: String, target: String, kind: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "checkout", None, move || ops::checkout(&p(&repo), &target, &kind)).await
 }
 
 #[tauri::command]
-async fn branch_create(repo: String, name: String, start: Option<String>, checkout: bool) -> GitResult<()> {
-    blocking(move || ops::create_branch(&p(&repo), &name, start.as_deref(), checkout)).await
+async fn branch_create(app: AppHandle, expected_state: Option<String>, repo: String, name: String, start: Option<String>, checkout: bool) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "branch_create", None, move || ops::create_branch(&p(&repo), &name, start.as_deref(), checkout)).await
 }
 
 #[tauri::command]
-async fn branch_rename(repo: String, old: String, new: String) -> GitResult<()> {
-    blocking(move || ops::rename_branch(&p(&repo), &old, &new)).await
+async fn branch_rename(app: AppHandle, expected_state: Option<String>, repo: String, old: String, new: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "branch_rename", None, move || ops::rename_branch(&p(&repo), &old, &new)).await
 }
 
 #[tauri::command]
-async fn branch_delete(repo: String, name: String, force: bool) -> GitResult<()> {
-    blocking(move || ops::delete_branch(&p(&repo), &name, force)).await
+async fn branch_delete_targets(repo: String, name: String) -> GitResult<Vec<RemoteBranchTarget>> {
+    blocking(move || branch_deletion::targets(&p(&repo), &name)).await
 }
 
 #[tauri::command]
-async fn branch_set_upstream(repo: String, branch: String, upstream: Option<String>) -> GitResult<()> {
-    blocking(move || ops::set_upstream(&p(&repo), &branch, upstream.as_deref())).await
+async fn branch_delete(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    name: String,
+    force: bool,
+    target: Option<RemoteBranchTarget>,
+) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "branch_delete", None, move || branch_deletion::delete(&p(&repo), &name, force, target.as_ref())).await
 }
 
 #[tauri::command]
-async fn tag_create(repo: String, name: String, target: String, message: Option<String>) -> GitResult<()> {
-    blocking(move || ops::create_tag(&p(&repo), &name, &target, message.as_deref())).await
+async fn branch_delete_remote(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    target: RemoteBranchTarget,
+    force: bool,
+    op_id: String,
+) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "branch_delete_remote", Some(op_id.clone()), move || {
+        branch_deletion::delete_remote(&p(&repo), &target, force, progress(&app, &op_id))
+    })
+    .await
 }
 
 #[tauri::command]
-async fn tag_delete(repo: String, name: String) -> GitResult<()> {
-    blocking(move || ops::delete_tag(&p(&repo), &name)).await
+async fn branch_delete_refresh(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    target: RemoteBranchTarget,
+    op_id: String,
+) -> GitResult<branch_deletion::RemoteDeletionReview> {
+    mutating(repo.clone(), expected_state, app.clone(), "branch_delete_refresh", Some(op_id.clone()), move || {
+        branch_deletion::refresh_remote(&p(&repo), &target, progress(&app, &op_id))
+    })
+    .await
 }
 
 #[tauri::command]
-async fn reset(repo: String, target: String, mode: String) -> GitResult<()> {
-    blocking(move || ops::reset(&p(&repo), &target, &mode)).await
+async fn branch_set_upstream(app: AppHandle, expected_state: Option<String>, repo: String, branch: String, upstream: Option<String>) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "branch_set_upstream", None, move || ops::set_upstream(&p(&repo), &branch, upstream.as_deref())).await
 }
 
 #[tauri::command]
-async fn undo_commit(repo: String) -> GitResult<()> {
-    blocking(move || ops::undo_last_commit(&p(&repo))).await
+async fn tag_create(app: AppHandle, expected_state: Option<String>, repo: String, name: String, target: String, message: Option<String>) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "tag_create", None, move || ops::create_tag(&p(&repo), &name, &target, message.as_deref())).await
+}
+
+#[tauri::command]
+async fn tag_delete(app: AppHandle, expected_state: Option<String>, repo: String, name: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "tag_delete", None, move || ops::delete_tag(&p(&repo), &name)).await
+}
+
+#[tauri::command]
+async fn reset(app: AppHandle, expected_state: Option<String>, repo: String, target: String, mode: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "reset", None, move || ops::reset(&p(&repo), &target, &mode)).await
+}
+
+#[tauri::command]
+async fn undo_commit(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "undo_commit", None, move || ops::undo_last_commit(&p(&repo))).await
 }
 
 // ───────────────────────────── remotes ─────────────────────────────
 
 #[tauri::command]
-async fn fetch(app: AppHandle, repo: String, remote: Option<String>, prune: bool, op_id: String) -> GitResult<String> {
-    blocking(move || ops::fetch(&p(&repo), remote.as_deref(), prune, progress(&app, &op_id))).await
+async fn fetch(expected_state: Option<String>, app: AppHandle, repo: String, remote: Option<String>, prune: bool, op_id: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "fetch", Some(op_id.clone()), move || {
+        ops::fetch(&p(&repo), remote.as_deref(), prune, progress(&app, &op_id))
+    })
+    .await
 }
 
 /// Periodic fetch in the background: never asks for credentials.
 #[tauri::command]
-async fn fetch_background(repo: String) -> GitResult<String> {
-    blocking(move || ops::fetch_background(&p(&repo))).await
+async fn fetch_background(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "fetch_background", None, move || ops::fetch_background(&p(&repo))).await
 }
 
 #[tauri::command]
-async fn pull(app: AppHandle, repo: String, mode: String, op_id: String) -> GitResult<OpOutcome> {
-    blocking(move || ops::pull(&p(&repo), &mode, progress(&app, &op_id))).await
+async fn pull(expected_state: Option<String>, app: AppHandle, repo: String, mode: String, op_id: String) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || ops::pull(&p(&repo), &mode, progress(&app, &op_id))).await
 }
 
 #[tauri::command]
-async fn push(app: AppHandle, repo: String, opts: PushOptions, op_id: String) -> GitResult<String> {
-    blocking(move || ops::push(&p(&repo), &opts, progress(&app, &op_id))).await
+async fn push(expected_state: Option<String>, app: AppHandle, repo: String, opts: PushOptions, op_id: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "push", Some(op_id.clone()), move || ops::push(&p(&repo), &opts, progress(&app, &op_id))).await
 }
 
 #[tauri::command]
-async fn push_ref(app: AppHandle, repo: String, remote: String, refspec: String, op_id: String) -> GitResult<String> {
-    blocking(move || ops::push_ref(&p(&repo), &remote, &refspec, progress(&app, &op_id))).await
+async fn push_ref(expected_state: Option<String>, app: AppHandle, repo: String, remote: String, refspec: String, op_id: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "push_ref", Some(op_id.clone()), move || {
+        ops::push_ref(&p(&repo), &remote, &refspec, progress(&app, &op_id))
+    })
+    .await
 }
 
 #[tauri::command]
-async fn remote_add(repo: String, name: String, url: String) -> GitResult<()> {
-    blocking(move || ops::remote_add(&p(&repo), &name, &url)).await
+async fn remote_add(app: AppHandle, expected_state: Option<String>, repo: String, name: String, url: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "remote_add", None, move || ops::remote_add(&p(&repo), &name, &url)).await
 }
 
 #[tauri::command]
-async fn remote_remove(repo: String, name: String) -> GitResult<()> {
-    blocking(move || ops::remote_remove(&p(&repo), &name)).await
+async fn remote_remove(app: AppHandle, expected_state: Option<String>, repo: String, name: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "remote_remove", None, move || ops::remote_remove(&p(&repo), &name)).await
 }
 
 #[tauri::command]
-async fn remote_set_url(repo: String, name: String, url: String) -> GitResult<()> {
-    blocking(move || ops::remote_set_url(&p(&repo), &name, &url)).await
+async fn remote_set_url(app: AppHandle, expected_state: Option<String>, repo: String, name: String, url: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "remote_set_url", None, move || ops::remote_set_url(&p(&repo), &name, &url)).await
 }
 
 // ───────────────────────────── merge & friends ─────────────────────────────
 
 #[tauri::command]
-async fn merge_start(repo: String, target: String, strategy: String) -> GitResult<OpOutcome> {
-    blocking(move || ops::merge_start(&p(&repo), &target, &strategy)).await
+async fn merge_start(app: AppHandle, expected_state: Option<String>, repo: String, target: String, strategy: String) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "merge_start", None, move || ops::merge_start(&p(&repo), &target, &strategy)).await
 }
 
 #[tauri::command]
-async fn op_abort(repo: String, kind: String) -> GitResult<()> {
-    blocking(move || ops::abort_op(&p(&repo), &kind)).await
+async fn op_abort(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "op_abort", None, move || ops::abort_op(&p(&repo), &kind)).await
 }
 
 #[tauri::command]
-async fn op_continue(repo: String, kind: String, message: Option<String>) -> GitResult<OpOutcome> {
-    blocking(move || ops::continue_op(&p(&repo), &kind, message.as_deref())).await
+async fn op_continue(app: AppHandle, expected_state: Option<String>, repo: String, kind: String, message: Option<String>) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "op_continue", None, move || ops::continue_op(&p(&repo), &kind, message.as_deref())).await
 }
 
 #[tauri::command]
-async fn op_skip(repo: String, kind: String) -> GitResult<OpOutcome> {
-    blocking(move || ops::skip_op(&p(&repo), &kind)).await
+async fn op_skip(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "op_skip", None, move || ops::skip_op(&p(&repo), &kind)).await
 }
 
 #[tauri::command]
-async fn cherry_pick(repo: String, oids: Vec<String>, no_commit: bool) -> GitResult<OpOutcome> {
-    blocking(move || ops::cherry_pick(&p(&repo), &oids, no_commit)).await
+async fn cherry_pick(app: AppHandle, expected_state: Option<String>, repo: String, oids: Vec<String>, no_commit: bool) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "cherry_pick", None, move || ops::cherry_pick(&p(&repo), &oids, no_commit)).await
 }
 
 #[tauri::command]
-async fn revert(repo: String, oid: String, no_commit: bool) -> GitResult<OpOutcome> {
-    blocking(move || ops::revert(&p(&repo), &oid, no_commit)).await
+async fn revert(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, no_commit: bool) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "revert", None, move || ops::revert(&p(&repo), &oid, no_commit)).await
 }
 
 #[tauri::command]
-async fn rebase_onto(repo: String, upstream: String) -> GitResult<OpOutcome> {
-    blocking(move || ops::rebase_onto(&p(&repo), &upstream)).await
+async fn rebase_onto(app: AppHandle, expected_state: Option<String>, repo: String, upstream: String) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "rebase_onto", None, move || ops::rebase_onto(&p(&repo), &upstream)).await
 }
 
 #[tauri::command]
-async fn rebase_plan(repo: String, oldest: String) -> GitResult<ops::RebasePlan> {
-    blocking(move || ops::rebase_plan(&p(&repo), &oldest)).await
+async fn rebase_plan(repo: String, oldest: String) -> GitResult<Observed<ops::RebasePlan>> {
+    blocking(move || git::operations::inspect(&p(&repo), || ops::rebase_plan(&p(&repo), &oldest)).map(|(value, state_token)| Observed { value, state_token }))
+        .await
 }
 
 #[tauri::command]
-async fn interactive_rebase(repo: String, base: Option<String>, items: Vec<ops::RebaseItem>) -> GitResult<OpOutcome> {
-    blocking(move || ops::interactive_rebase(&p(&repo), base.as_deref(), &items)).await
+async fn interactive_rebase(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    base: Option<String>,
+    items: Vec<ops::RebaseItem>,
+) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "interactive_rebase", None, move || ops::interactive_rebase(&p(&repo), base.as_deref(), &items)).await
 }
 
 #[tauri::command]
-async fn rewrite(repo: String, action: RewriteAction) -> GitResult<OpOutcome> {
-    blocking(move || ops::rewrite(&p(&repo), &action)).await
+async fn rewrite(app: AppHandle, expected_state: Option<String>, repo: String, action: RewriteAction) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "rewrite", None, move || ops::rewrite(&p(&repo), &action)).await
 }
 
 // ───────────────────────────── conflicts ─────────────────────────────
 
 #[tauri::command]
-async fn conflict_info(repo: String, path: String) -> GitResult<ConflictInfo> {
-    blocking(move || conflicts::info(&p(&repo), &path)).await
+async fn conflict_info(repo: String, path: String) -> GitResult<Observed<ConflictInfo>> {
+    blocking(move || git::operations::inspect(&p(&repo), || conflicts::info(&p(&repo), &path)).map(|(value, state_token)| Observed { value, state_token }))
+        .await
 }
 
 #[tauri::command]
-async fn conflict_save(repo: String, path: String, content: String, stage: bool) -> GitResult<()> {
-    blocking(move || conflicts::save_resolution(&p(&repo), &path, &content, stage)).await
+async fn conflict_save(app: AppHandle, expected_state: Option<String>, repo: String, path: String, content: String, stage: bool) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "conflict_save", None, move || conflicts::save_resolution(&p(&repo), &path, &content, stage)).await
 }
 
 #[tauri::command]
-async fn conflict_take(repo: String, path: String, which: String) -> GitResult<()> {
-    blocking(move || conflicts::take_side(&p(&repo), &path, &which)).await
+async fn conflict_take(app: AppHandle, expected_state: Option<String>, repo: String, path: String, which: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "conflict_take", None, move || conflicts::take_side(&p(&repo), &path, &which)).await
 }
 
 #[tauri::command]
-async fn conflict_mark_resolved(repo: String, paths: Vec<String>) -> GitResult<()> {
-    blocking(move || conflicts::mark_resolved(&p(&repo), &paths)).await
+async fn conflict_mark_resolved(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "conflict_mark_resolved", None, move || conflicts::mark_resolved(&p(&repo), &paths)).await
 }
 
 #[tauri::command]
-async fn conflict_unresolve(repo: String, path: String) -> GitResult<()> {
-    blocking(move || conflicts::unresolve(&p(&repo), &path)).await
+async fn conflict_unresolve(app: AppHandle, expected_state: Option<String>, repo: String, path: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "conflict_unresolve", None, move || conflicts::unresolve(&p(&repo), &path)).await
 }
 
 // ───────────────────────────── stash ─────────────────────────────
 
 #[tauri::command]
-async fn stash_save(repo: String, message: String, include_untracked: bool, keep_index: bool, paths: Option<Vec<String>>) -> GitResult<()> {
-    blocking(move || ops::stash_save(&p(&repo), &message, include_untracked, keep_index, &paths.unwrap_or_default())).await
+async fn stash_save(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    message: String,
+    include_untracked: bool,
+    keep_index: bool,
+    paths: Option<Vec<String>>,
+) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "stash_save", None, move || {
+        ops::stash_save(&p(&repo), &message, include_untracked, keep_index, &paths.unwrap_or_default())
+    })
+    .await
 }
 
 #[tauri::command]
-async fn stash_apply(repo: String, index: u32, pop: bool) -> GitResult<OpOutcome> {
-    blocking(move || ops::stash_apply(&p(&repo), index, pop)).await
+async fn stash_apply(app: AppHandle, expected_state: Option<String>, repo: String, index: u32, pop: bool) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "stash_apply", None, move || ops::stash_apply(&p(&repo), index, pop)).await
 }
 
 #[tauri::command]
-async fn stash_drop(repo: String, index: u32) -> GitResult<()> {
-    blocking(move || ops::stash_drop(&p(&repo), index)).await
+async fn stash_drop(app: AppHandle, expected_state: Option<String>, repo: String, index: u32) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "stash_drop", None, move || ops::stash_drop(&p(&repo), index)).await
 }
 
 // ───────────────────────────── stage layers ─────────────────────────────
@@ -515,53 +640,73 @@ async fn layers_state(repo: String) -> GitResult<LayersState> {
 }
 
 #[tauri::command]
-async fn layer_seal(repo: String, name: Option<String>) -> GitResult<()> {
-    blocking(move || layers::seal(&p(&repo), name.as_deref())).await
+async fn layer_seal(app: AppHandle, expected_state: Option<String>, repo: String, name: Option<String>) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "layer_seal", None, move || layers::seal(&p(&repo), name.as_deref())).await
 }
 
 #[tauri::command]
-async fn layer_unstage(repo: String, index: usize, resolutions: Option<layers::Resolutions>) -> GitResult<()> {
-    blocking(move || layers::unstage(&p(&repo), index, &resolutions.unwrap_or_default())).await
+async fn layer_unstage(app: AppHandle, expected_state: Option<String>, repo: String, index: usize, resolutions: Option<layers::Resolutions>) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "layer_unstage", None, move || layers::unstage(&p(&repo), index, &resolutions.unwrap_or_default()))
+        .await
 }
 
 #[tauri::command]
-async fn layer_discard(repo: String, index: usize) -> GitResult<String> {
-    blocking(move || layers::discard(&p(&repo), index)).await
+async fn layer_discard(app: AppHandle, expected_state: Option<String>, repo: String, index: usize) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "layer_discard", None, move || layers::discard(&p(&repo), index)).await
 }
 
 #[tauri::command]
-async fn layer_merge_down(repo: String, index: usize) -> GitResult<()> {
-    blocking(move || layers::merge_down(&p(&repo), index)).await
+async fn layer_merge_down(app: AppHandle, expected_state: Option<String>, repo: String, index: usize) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "layer_merge_down", None, move || layers::merge_down(&p(&repo), index)).await
 }
 
 #[tauri::command]
-async fn layer_move(repo: String, index: usize, delta: i32, resolutions: Option<layers::Resolutions>) -> GitResult<()> {
-    blocking(move || layers::move_layer(&p(&repo), index, delta, &resolutions.unwrap_or_default())).await
+async fn layer_move(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    index: usize,
+    delta: i32,
+    resolutions: Option<layers::Resolutions>,
+) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "layer_move", None, move || {
+        layers::move_layer(&p(&repo), index, delta, &resolutions.unwrap_or_default())
+    })
+    .await
 }
 
 #[tauri::command]
-async fn layer_rename(repo: String, index: usize, name: String) -> GitResult<()> {
-    blocking(move || layers::rename(&p(&repo), index, &name)).await
+async fn layer_rename(app: AppHandle, expected_state: Option<String>, repo: String, index: usize, name: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "layer_rename", None, move || layers::rename(&p(&repo), index, &name)).await
 }
 
 #[tauri::command]
-async fn layers_flatten(repo: String) -> GitResult<()> {
-    blocking(move || layers::flatten(&p(&repo))).await
+async fn layers_flatten(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "layers_flatten", None, move || layers::flatten(&p(&repo))).await
 }
 
 /// Dry-runs a layer operation and returns the first conflict that still needs a resolution.
 #[tauri::command]
-async fn layer_preview(repo: String, op: layers::LayerOp, resolutions: Option<layers::Resolutions>) -> GitResult<Option<layers::LayerConflict>> {
-    blocking(move || layers::preview(&p(&repo), &op, &resolutions.unwrap_or_default())).await
+async fn layer_preview(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    op: layers::LayerOp,
+    resolutions: Option<layers::Resolutions>,
+) -> GitResult<Option<layers::LayerConflict>> {
+    mutating(repo.clone(), expected_state, app.clone(), "layer_preview", None, move || layers::preview(&p(&repo), &op, &resolutions.unwrap_or_default())).await
 }
 
 #[tauri::command]
-async fn layer_unstage_files(repo: String, index: usize, paths: Vec<String>) -> GitResult<()> {
-    blocking(move || layers::unstage_files(&p(&repo), index, &paths)).await
+async fn layer_unstage_files(app: AppHandle, expected_state: Option<String>, repo: String, index: usize, paths: Vec<String>) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "layer_unstage_files", None, move || layers::unstage_files(&p(&repo), index, &paths)).await
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments preserve the existing client contract.
 async fn layer_commit(
+    app: AppHandle,
+    expected_state: Option<String>,
     repo: String,
     index: usize,
     message: String,
@@ -569,7 +714,7 @@ async fn layer_commit(
     opts: Option<CommitOptions>,
     resolutions: Option<layers::Resolutions>,
 ) -> GitResult<String> {
-    blocking(move || {
+    mutating(repo.clone(), expected_state, app.clone(), "layer_commit", None, move || {
         let o = opts.unwrap_or_default();
         if through {
             layers::commit_through(&p(&repo), index, &message, &o)
@@ -610,38 +755,70 @@ async fn repo_extras(repo: String) -> GitResult<RepoExtras> {
 }
 
 #[tauri::command]
-async fn submodule_update(app: AppHandle, repo: String, paths: Vec<String>, op_id: String) -> GitResult<String> {
-    blocking(move || extras::submodule_update(&p(&repo), &paths, progress(&app, &op_id))).await
+async fn submodule_update(expected_state: Option<String>, app: AppHandle, repo: String, paths: Vec<String>, op_id: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "submodule_update", Some(op_id.clone()), move || {
+        extras::submodule_update(&p(&repo), &paths, progress(&app, &op_id))
+    })
+    .await
 }
 
 #[tauri::command]
-async fn submodule_add(app: AppHandle, repo: String, url: String, path: String, op_id: String) -> GitResult<String> {
-    blocking(move || extras::submodule_add(&p(&repo), &url, &path, progress(&app, &op_id))).await
+async fn submodule_add(expected_state: Option<String>, app: AppHandle, repo: String, url: String, path: String, op_id: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "submodule_add", Some(op_id.clone()), move || {
+        extras::submodule_add(&p(&repo), &url, &path, progress(&app, &op_id))
+    })
+    .await
 }
 
 #[tauri::command]
-async fn submodule_sync(repo: String) -> GitResult<()> {
-    blocking(move || extras::submodule_sync(&p(&repo))).await
+async fn submodule_sync(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "submodule_sync", None, move || extras::submodule_sync(&p(&repo))).await
 }
 
 #[tauri::command]
-async fn worktree_add(repo: String, path: String, branch: Option<String>, new_branch: Option<String>, start: Option<String>) -> GitResult<()> {
-    blocking(move || extras::worktree_add(&p(&repo), &path, branch.as_deref(), new_branch.as_deref(), start.as_deref())).await
+async fn worktree_add(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    path: String,
+    branch: Option<String>,
+    new_branch: Option<String>,
+    start: Option<String>,
+) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "worktree_add", None, move || {
+        extras::worktree_add(&p(&repo), &path, branch.as_deref(), new_branch.as_deref(), start.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
-async fn worktree_remove(repo: String, path: String, force: bool) -> GitResult<()> {
-    blocking(move || extras::worktree_remove(&p(&repo), &path, force)).await
+async fn worktree_remove(
+    app: AppHandle,
+    expected_state: Option<String>,
+    expected_target_state: Option<String>,
+    repo: String,
+    path: String,
+    force: bool,
+) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "worktree_remove", None, move || {
+        if let Some(expected) = expected_target_state {
+            if status::status(&p(&path))?.state_token.as_deref() != Some(expected.as_str()) {
+                return Err(GitError::new("The worktree changed while the confirmation was open. Review it before removing it.").kind("stale-operation"));
+            }
+        }
+        extras::worktree_remove(&p(&repo), &path, force)
+    })
+    .await
 }
 
 #[tauri::command]
-async fn worktree_lock(repo: String, path: String, lock: bool) -> GitResult<()> {
-    blocking(move || extras::worktree_lock(&p(&repo), &path, lock)).await
+async fn worktree_lock(app: AppHandle, expected_state: Option<String>, repo: String, path: String, lock: bool) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "worktree_lock", None, move || extras::worktree_lock(&p(&repo), &path, lock)).await
 }
 
 #[tauri::command]
-async fn worktree_prune(repo: String) -> GitResult<()> {
-    blocking(move || extras::worktree_prune(&p(&repo))).await
+async fn worktree_prune(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "worktree_prune", None, move || extras::worktree_prune(&p(&repo))).await
 }
 
 #[tauri::command]
@@ -650,18 +827,18 @@ async fn bisect_status(repo: String) -> GitResult<BisectStatus> {
 }
 
 #[tauri::command]
-async fn bisect_start(repo: String, bad: String, good: String) -> GitResult<BisectStatus> {
-    blocking(move || extras::bisect_start(&p(&repo), &bad, &good)).await
+async fn bisect_start(app: AppHandle, expected_state: Option<String>, repo: String, bad: String, good: String) -> GitResult<BisectStatus> {
+    mutating(repo.clone(), expected_state, app.clone(), "bisect_start", None, move || extras::bisect_start(&p(&repo), &bad, &good)).await
 }
 
 #[tauri::command]
-async fn bisect_mark(repo: String, verdict: String, rev: Option<String>) -> GitResult<BisectStatus> {
-    blocking(move || extras::bisect_mark(&p(&repo), &verdict, rev.as_deref())).await
+async fn bisect_mark(app: AppHandle, expected_state: Option<String>, repo: String, verdict: String, rev: Option<String>) -> GitResult<BisectStatus> {
+    mutating(repo.clone(), expected_state, app.clone(), "bisect_mark", None, move || extras::bisect_mark(&p(&repo), &verdict, rev.as_deref())).await
 }
 
 #[tauri::command]
-async fn bisect_reset(repo: String) -> GitResult<()> {
-    blocking(move || extras::bisect_reset(&p(&repo))).await
+async fn bisect_reset(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "bisect_reset", None, move || extras::bisect_reset(&p(&repo))).await
 }
 
 #[tauri::command]
@@ -670,13 +847,14 @@ async fn lfs_files(repo: String) -> GitResult<Vec<LfsFile>> {
 }
 
 #[tauri::command]
-async fn lfs_track(repo: String, pattern: String, track: bool) -> GitResult<()> {
-    blocking(move || extras::lfs_track(&p(&repo), &pattern, track)).await
+async fn lfs_track(app: AppHandle, expected_state: Option<String>, repo: String, pattern: String, track: bool) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "lfs_track", None, move || extras::lfs_track(&p(&repo), &pattern, track)).await
 }
 
 #[tauri::command]
-async fn lfs_run(app: AppHandle, repo: String, action: String, op_id: String) -> GitResult<String> {
-    blocking(move || extras::lfs_run(&p(&repo), &action, progress(&app, &op_id))).await
+async fn lfs_run(expected_state: Option<String>, app: AppHandle, repo: String, action: String, op_id: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "lfs_run", Some(op_id.clone()), move || extras::lfs_run(&p(&repo), &action, progress(&app, &op_id)))
+        .await
 }
 
 #[tauri::command]
@@ -685,8 +863,8 @@ async fn signing_get(repo: String) -> GitResult<SigningConfig> {
 }
 
 #[tauri::command]
-async fn signing_set(repo: String, config: SigningInput, global: bool) -> GitResult<()> {
-    blocking(move || extras::set_signing(&p(&repo), &config, global)).await
+async fn signing_set(app: AppHandle, expected_state: Option<String>, repo: String, config: SigningInput, global: bool) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "signing_set", None, move || extras::set_signing(&p(&repo), &config, global)).await
 }
 
 #[tauri::command]
@@ -705,8 +883,9 @@ async fn repo_size(repo: String) -> GitResult<maint::RepoSize> {
 }
 
 #[tauri::command]
-async fn maintenance_run(app: AppHandle, repo: String, task: String, op_id: String) -> GitResult<String> {
-    blocking(move || maint::run(&p(&repo), &task, progress(&app, &op_id))).await
+async fn maintenance_run(expected_state: Option<String>, app: AppHandle, repo: String, task: String, op_id: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "maintenance_run", Some(op_id.clone()), move || maint::run(&p(&repo), &task, progress(&app, &op_id)))
+        .await
 }
 
 #[tauri::command]
@@ -720,8 +899,8 @@ async fn deleted_branches(repo: String) -> GitResult<Vec<more::DeletedBranch>> {
 }
 
 #[tauri::command]
-async fn restore_branch(repo: String, name: String, oid: String) -> GitResult<()> {
-    blocking(move || more::restore_branch(&p(&repo), &name, &oid)).await
+async fn restore_branch(app: AppHandle, expected_state: Option<String>, repo: String, name: String, oid: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "restore_branch", None, move || more::restore_branch(&p(&repo), &name, &oid)).await
 }
 
 #[tauri::command]
@@ -735,18 +914,29 @@ async fn create_patch(repo: String, oids: Vec<String>, file: String) -> GitResul
 }
 
 #[tauri::command]
-async fn apply_patch(repo: String, file: String) -> GitResult<OpOutcome> {
-    blocking(move || more::apply_patch(&p(&repo), &file)).await
+async fn apply_patch(app: AppHandle, expected_state: Option<String>, repo: String, file: String) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "apply_patch", None, move || more::apply_patch(&p(&repo), &file)).await
 }
 
 #[tauri::command]
-async fn checkout_file(repo: String, rev: String, path: String) -> GitResult<()> {
-    blocking(move || more::checkout_file(&p(&repo), &rev, &path)).await
+async fn checkout_file(app: AppHandle, expected_state: Option<String>, repo: String, rev: String, path: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "checkout_file", None, move || more::checkout_file(&p(&repo), &rev, &path)).await
 }
 
 #[tauri::command]
-async fn apply_from_commit(repo: String, from: Option<String>, to: String, path: String, selection: Option<Vec<(usize, usize)>>) -> GitResult<()> {
-    blocking(move || more::apply_from_commit(&p(&repo), from.as_deref(), &to, &path, selection.as_deref())).await
+async fn apply_from_commit(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    from: Option<String>,
+    to: String,
+    path: String,
+    selection: Option<Vec<(usize, usize)>>,
+) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "apply_from_commit", None, move || {
+        more::apply_from_commit(&p(&repo), from.as_deref(), &to, &path, selection.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -755,8 +945,8 @@ async fn stash_contents(repo: String, index: u32) -> GitResult<more::StashConten
 }
 
 #[tauri::command]
-async fn stash_restore_file(repo: String, index: u32, path: String, untracked: bool) -> GitResult<()> {
-    blocking(move || more::stash_restore_file(&p(&repo), index, &path, untracked)).await
+async fn stash_restore_file(app: AppHandle, expected_state: Option<String>, repo: String, index: u32, path: String, untracked: bool) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "stash_restore_file", None, move || more::stash_restore_file(&p(&repo), index, &path, untracked)).await
 }
 
 #[tauri::command]
@@ -816,8 +1006,8 @@ async fn pull_request_create(repo: String, title: String, body: String, head: St
 }
 
 #[tauri::command]
-async fn pull_request_checkout(repo: String, number: u64) -> GitResult<String> {
-    blocking(move || forge::checkout(&p(&repo), number)).await
+async fn pull_request_checkout(app: AppHandle, expected_state: Option<String>, repo: String, number: u64) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "pull_request_checkout", None, move || forge::checkout(&p(&repo), number)).await
 }
 
 #[tauri::command]
@@ -1093,6 +1283,9 @@ pub fn run() {
             branch_create,
             branch_rename,
             branch_delete,
+            branch_delete_targets,
+            branch_delete_remote,
+            branch_delete_refresh,
             branch_set_upstream,
             tag_create,
             tag_delete,
