@@ -634,7 +634,7 @@ export interface RecoveryCatalog {
 
 
 export interface DeletionProof {
-  name: string; localOid: string; baseRef: string | null; baseOid: string | null; target: RemoteBranchTarget | null;
+  name: string; localOid: string; remoteOnly: boolean; localPresent: boolean; baseRef: string | null; baseOid: string | null; target: RemoteBranchTarget | null;
 }
 export interface DeletionPlan {
   proof: DeletionProof; bases: { reference: string; label: string }[];

@@ -317,14 +317,13 @@ export async function deleteBranch(root: string, name: string) {
 }
 
 export async function deleteRemoteBranch(root: string, remoteBranch: string) {
-  const expectedState = await prepareOperation(root);
-  if (!expectedState) return;
-  const i = remoteBranch.indexOf("/");
-  const remoteName = remoteBranch.slice(0, i);
-  const branch = remoteBranch.slice(i + 1);
-  const ok = await confirmDialog({ title: `Delete ${remoteBranch} on the server?`, message: `This deletes the branch '${branch}' from remote '${remoteName}' for everyone.`, confirm: "Delete remote branch", danger: true });
-  if (!ok) return;
-  await remote(root, `Deleting ${remoteBranch}`, (id) => api.pushRef(root, remoteName, `:refs/heads/${branch}`, id, expectedState), () => `Deleted ${remoteBranch}`);
+  try {
+    const expectedState = await prepareOperation(root);
+    if (!expectedState) return;
+    const target = await api.branchDeleteRemoteTarget(root, `refs/remotes/${remoteBranch}`);
+    const name = target.remoteRef.slice("refs/heads/".length);
+    await showDialog<void>((close) => <DeleteBranchDialog expectedState={expectedState} root={root} name={name} targets={[target]} remoteOnly onClose={() => close()} />);
+  } catch (e) { toast.error(e); }
 }
 
 export async function setUpstream(root: string, branch: string) {

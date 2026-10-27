@@ -808,6 +808,22 @@ try {
     await page.locator(".modal button", { hasText: /^Close$/ }).click();
     git("branch", "-D", "ui-review-target", "ui-review-restored");
 
+    // The remote-list menu must use the same reviewed, leased deletion flow.
+    git("push", "-q", "origin", "HEAD:refs/heads/ui-review-server-only");
+    await page.fill(".sidebar input[placeholder^='Filter branches']", "ui-review-server-only");
+    await page.click("button[title='Refresh (F5)']");
+    await page.locator(".sidebar [data-branch-kind='remote'][data-branch-name='origin/ui-review-server-only']").click({ button: "right" });
+    await page.locator(".ctx-item").filter({ hasText: /^Delete on remote…$/ }).click();
+    await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
+    if (await page.locator(".delete-remote-branch").count()) throw new Error("remote-only deletion offered to remove a local branch");
+    if (!(await page.locator(".modal").innerText()).includes("local branch and its worktrees are kept")) throw new Error("remote-only consequences missing");
+    const localHead = git("rev-parse", "HEAD");
+    const localIndex = fs.readFileSync(path.join(repo, ".git", "index"));
+    await shot("48-direct-remote-review");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".modal", { state: "detached" });
+    if (git("ls-remote", "--heads", "origin", "refs/heads/ui-review-server-only") || git("rev-parse", "HEAD") !== localHead || !fs.readFileSync(path.join(repo, ".git", "index")).equals(localIndex)) throw new Error("direct remote deletion changed local work or kept the server branch");
+
     git("branch", "ui-review-worktree");
     const worktree = path.join(work, "env", "linked review проверка 'quoted'");
     git("worktree", "add", "-q", worktree, "ui-review-worktree");

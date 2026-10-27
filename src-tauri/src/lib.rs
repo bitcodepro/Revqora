@@ -545,8 +545,9 @@ async fn branch_delete_plan(
     base: Option<String>,
     target: Option<RemoteBranchTarget>,
     saved_local_oid: Option<String>,
+    remote_only: Option<bool>,
 ) -> GitResult<DeletionPlan> {
-    blocking(move || branch_review::plan(&p(&repo), &name, base.as_deref(), target, saved_local_oid.as_deref())).await
+    blocking(move || branch_review::plan(&p(&repo), &name, base.as_deref(), target, saved_local_oid.as_deref(), remote_only.unwrap_or(false))).await
 }
 
 #[tauri::command]
@@ -579,6 +580,11 @@ async fn branch_delete_remote_reviewed(
         branch_review::delete_remote(&p(&repo), &review, force, expected.as_deref(), progress(&app, &op_id))
     })
     .await
+}
+
+#[tauri::command]
+async fn branch_delete_remote_target(repo: String, tracking_ref: String) -> GitResult<RemoteBranchTarget> {
+    blocking(move || branch_deletion::remote_target(&p(&repo), &tracking_ref)).await
 }
 
 #[tauri::command]
@@ -1491,6 +1497,7 @@ pub fn run() {
             branch_delete_reviewed,
             branch_delete_remote_reviewed,
             branch_delete_targets,
+            branch_delete_remote_target,
             branch_delete_remote,
             branch_delete_refresh,
             branch_set_upstream,

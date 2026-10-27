@@ -12,6 +12,8 @@ use super::{operations, recovery, repo, status};
 pub struct DeletionProof {
     pub name: String,
     pub local_oid: String,
+    pub remote_only: bool,
+    pub local_present: bool,
     pub base_ref: Option<String>,
     pub base_oid: Option<String>,
     pub target: Option<RemoteBranchTarget>,
@@ -111,7 +113,9 @@ fn validate_base(root: &Path, proof: &DeletionProof) -> GitResult<()> {
     match (&proof.base_ref, &proof.base_oid) {
         (None, None) => Ok(()),
         (Some(reference), Some(oid))
-            if valid_oid(oid) && (reference == "HEAD" || reference.starts_with("refs/heads/")) && reference != &format!("refs/heads/{}", proof.name) =>
+            if valid_oid(oid)
+                && (reference == "HEAD" || reference.starts_with("refs/heads/"))
+                && (proof.remote_only || reference != &format!("refs/heads/{}", proof.name)) =>
         {
             let symbolic = runner::exec(root, ["symbolic-ref", "-q", reference])?;
             if symbolic.ok() {
@@ -147,27 +151,39 @@ fn validate_target(root: &Path, name: &str, target: &RemoteBranchTarget, local_e
     Ok(())
 }
 
-pub fn plan(root: &Path, name: &str, base: Option<&str>, target: Option<RemoteBranchTarget>, saved_local_oid: Option<&str>) -> GitResult<DeletionPlan> {
+pub fn plan(
+    root: &Path,
+    name: &str,
+    base: Option<&str>,
+    target: Option<RemoteBranchTarget>,
+    saved_local_oid: Option<&str>,
+    remote_only: bool,
+) -> GitResult<DeletionPlan> {
     let (mut plan, token) = operations::inspect(root, || {
         runner::run(root, ["check-ref-format", "--branch", name])?;
         let local_ref = format!("refs/heads/{name}");
         let current_local = runner::exec(root, ["rev-parse", "--verify", &format!("{local_ref}^{{commit}}")])?;
         let exists = current_local.ok();
+        if remote_only && target.is_none() {
+            return Err(stale("Choose the remote branch to review."));
+        }
         let local_oid = if exists {
             current_local.text().trim().into()
+        } else if remote_only {
+            target.as_ref().unwrap().oid.clone()
         } else {
             let oid = saved_local_oid.filter(|value| valid_oid(value)).ok_or_else(|| stale("The local branch no longer exists. Reopen deletion review."))?;
             commit_oid(root, oid)?
         };
         if let Some(target) = &target {
-            validate_target(root, name, target, exists)?;
+            validate_target(root, name, target, exists && !remote_only)?;
         }
         let raw = runner::run(root, ["for-each-ref", "--format=%(refname)%09%(symref)", "refs/heads"])?;
         let mut bases: Vec<BaseChoice> = raw
             .lines()
             .filter_map(|line| {
                 let (reference, symref) = line.split_once('\t')?;
-                (reference != local_ref && symref.is_empty())
+                ((remote_only || reference != local_ref) && symref.is_empty())
                     .then(|| BaseChoice { reference: reference.into(), label: reference.trim_start_matches("refs/heads/").into() })
             })
             .collect();
@@ -186,12 +202,12 @@ pub fn plan(root: &Path, name: &str, base: Option<&str>, target: Option<RemoteBr
                 .map(|b| b.reference.clone()),
         };
         let base_oid = base_ref.as_deref().map(|reference| commit_oid(root, reference)).transpose()?;
-        let proof = DeletionProof { name: name.into(), local_oid, base_ref, base_oid, target };
+        let proof = DeletionProof { name: name.into(), local_oid, remote_only, local_present: exists, base_ref, base_oid, target };
         validate_base(root, &proof)?;
         let local_unmerged = count(root, proof.base_oid.as_deref(), &proof.local_oid)?;
         let remote_unmerged = proof.target.as_ref().map(|t| count(root, proof.base_oid.as_deref(), &t.oid)).transpose()?;
-        let local_only = proof.target.as_ref().map(|t| count(root, Some(&t.oid), &proof.local_oid)).transpose()?;
-        let remote_only = proof.target.as_ref().map(|t| count(root, Some(&proof.local_oid), &t.oid)).transpose()?;
+        let local_only = proof.target.as_ref().filter(|_| !remote_only || exists).map(|t| count(root, Some(&t.oid), &proof.local_oid)).transpose()?;
+        let remote_count = proof.target.as_ref().filter(|_| !remote_only || exists).map(|t| count(root, Some(&proof.local_oid), &t.oid)).transpose()?;
         let local_integration = integration(root, proof.base_oid.as_deref(), &proof.local_oid, local_unmerged)?;
         let remote_integration =
             proof.target.as_ref().zip(remote_unmerged).map(|(t, n)| integration(root, proof.base_oid.as_deref(), &t.oid, n)).transpose()?;
@@ -226,7 +242,7 @@ pub fn plan(root: &Path, name: &str, base: Option<&str>, target: Option<RemoteBr
             proof,
             bases,
             local_only,
-            remote_only,
+            remote_only: remote_count,
             local_unmerged,
             remote_unmerged,
             local_integration,
@@ -249,6 +265,9 @@ fn validate(root: &Path, proof: &DeletionProof, local: bool) -> GitResult<()> {
     let reference = format!("refs/heads/{}", proof.name);
     let now = runner::exec(root, ["rev-parse", "--verify", &format!("{reference}^{{commit}}")])?;
     if local {
+        if proof.remote_only {
+            return Err(stale("Remote-only review cannot delete a local branch."));
+        }
         if !now.ok() || now.text().trim() != proof.local_oid {
             return Err(stale("The local branch changed. Refresh deletion review."));
         }
@@ -257,11 +276,15 @@ fn validate(root: &Path, proof: &DeletionProof, local: bool) -> GitResult<()> {
                 GitError::new("This branch is checked out in a worktree. Switch that worktree to another branch before deleting it.").kind("branch-in-use")
             );
         }
+    } else if proof.remote_only {
+        if now.ok() != proof.local_present || (now.ok() && now.text().trim() != proof.local_oid) {
+            return Err(stale("The matching local branch changed. Refresh remote deletion review."));
+        }
     } else if now.ok() {
         return Err(stale("The local branch exists again. Reopen deletion review before removing the server branch."));
     }
     if let Some(target) = &proof.target {
-        validate_target(root, &proof.name, target, local)?;
+        validate_target(root, &proof.name, target, local && !proof.remote_only)?;
     }
     Ok(())
 }
@@ -279,7 +302,10 @@ fn require_retained(root: &Path, proof: &DeletionProof, local: bool, remote: boo
 }
 
 fn checkpoint(root: &Path, proof: &DeletionProof, command: &str, expected: Option<&str>) -> GitResult<recovery::Summary> {
-    let mut references = vec![recovery::SavedRef { name: format!("refs/heads/{}", proof.name), oid: proof.local_oid.clone(), kind: "branch".into() }];
+    let mut references = Vec::new();
+    if !proof.remote_only || proof.local_present {
+        references.push(recovery::SavedRef { name: format!("refs/heads/{}", proof.name), oid: proof.local_oid.clone(), kind: "branch".into() });
+    }
     if let Some(t) = &proof.target {
         references.push(recovery::SavedRef {
             name: format!("push/{}/{}", t.remote, t.remote_ref.trim_start_matches("refs/heads/")),

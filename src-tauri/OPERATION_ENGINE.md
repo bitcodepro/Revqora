@@ -222,3 +222,11 @@ dirty worktrees with Unicode/quoted paths, changed local/base SHA rejection,
 checkpoint failure, leased remote retries and distinct fetch/push servers followed
 by reflog expiry/GC and restoration. Native WebView2 scenarios cover the target
 selector, reset consent, exact-checkpoint navigation/restoration and worktree guard.
+
+The remote-list `Delete on remote` menu uses the same review, checkpoint and leased
+sender. The server ref is resolved from the actual fetch mapping of the displayed
+tracking ref, including renamed aliases. Remote-only proofs keep local refs and
+working files intact, freeze the presence/SHA of a same-named local branch and allow
+that branch as a comparison target even when checked out. No local ref is invented
+when the branch exists only on the server. Refreshed server history requires new
+consent, and force never disables its exact-SHA lease.

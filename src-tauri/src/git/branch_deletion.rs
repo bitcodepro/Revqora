@@ -34,9 +34,26 @@ fn excluded(spec: &str, source: &str) -> bool {
 }
 
 pub fn targets(repo: &Path, name: &str) -> GitResult<Vec<RemoteBranchTarget>> {
+    targets_for(repo, name, None)
+}
+
+/// Resolve the actual server ref from a displayed tracking ref, never its suffix.
+pub fn remote_target(repo: &Path, tracking_ref: &str) -> GitResult<RemoteBranchTarget> {
+    let mut found = targets_for(repo, "revqora-remote-review", Some(tracking_ref))?;
+    if found.len() != 1 {
+        return Err(GitError::new("This tracking reference has no single safe remote mapping. Check its fetch configuration.").kind("stale-selection"));
+    }
+    Ok(found.remove(0))
+}
+
+fn targets_for(repo: &Path, name: &str, only_tracking: Option<&str>) -> GitResult<Vec<RemoteBranchTarget>> {
     runner::run(repo, ["check-ref-format", "--branch", name])?;
     let local_ref = format!("refs/heads/{name}");
-    let upstream = runner::run(repo, ["for-each-ref", "--format=%(refname)%09%(upstream:remotename)%09%(upstream:remoteref)%09%(upstream)", &local_ref])?;
+    let upstream = if only_tracking.is_none() {
+        runner::run(repo, ["for-each-ref", "--format=%(refname)%09%(upstream:remotename)%09%(upstream:remoteref)%09%(upstream)", &local_ref])?
+    } else {
+        String::new()
+    };
     let upstream: Vec<&str> = upstream.lines().find(|line| line.split('\t').next() == Some(local_ref.as_str())).unwrap_or("").split('\t').collect();
     let refs = runner::run(repo, ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)"])?;
     let mut result = Vec::new();
@@ -54,6 +71,9 @@ pub fn targets(repo: &Path, name: &str) -> GitResult<Vec<RemoteBranchTarget>> {
                 continue;
             }
             let tracking_ref = fields[0];
+            if only_tracking.is_some_and(|selected| selected != tracking_ref) {
+                continue;
+            }
             let mut sources = BTreeSet::new();
             for spec in &specs {
                 let spec = spec.strip_prefix('+').unwrap_or(spec);
@@ -77,7 +97,7 @@ pub fn targets(repo: &Path, name: &str) -> GitResult<Vec<RemoteBranchTarget>> {
             } else {
                 continue;
             };
-            if !is_upstream && source != local_ref {
+            if only_tracking.is_none() && !is_upstream && source != local_ref {
                 continue;
             }
             result.push(RemoteBranchTarget {
