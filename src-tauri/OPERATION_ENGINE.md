@@ -1,4 +1,4 @@
-# Repository operation engine (stage 1)
+# Repository operation engine and journal (stages 1–2)
 
 - Every existing-repository mutation exposed by Tauri runs through `mutating` in `lib.rs`.
   The client/backend command registry parity is checked by a frontend regression test.
@@ -32,7 +32,7 @@
   commit cannot finish a pending merge: the explicit continue/confirmation path is used.
 - Ephemeral `repository-operation` events report queued/running/finished/failed states;
   the status bar shows running and queued counts. Completion refreshes related open
-  worktrees. This is not the persistent operation journal planned for stage 2.
+  worktrees. These events are transient; the persistent journal is described below.
 - Layer actions remain unavailable through the preceding mutation's completion and
   through their own list/status refresh. A fresh layer list alone does not imply that
   the displayed status token has caught up with staging.
@@ -47,9 +47,47 @@
 
 The gate is in-process, not a lock on other Git programs or editors. External processes
 can still write after preflight; Git's lock files and operation-specific stale checks
-remain necessary. A successful preflight is not a recovery guarantee. Checkpoints,
-process cancellation, cross-process orchestration and a persistent journal are outside
-stage 1. A UI sequence such as commit then push consists of two backend operations.
+remain necessary. A successful preflight is not a recovery guarantee. The engine does
+not provide checkpoints, process cancellation or cross-process Git orchestration.
+A UI sequence such as commit then push consists of two backend operations.
+
+## Persistent operation journal (stage 2)
+
+- SQLite lives under portable `data/operation-log/`. UI automation profiles use an
+  isolated journal inside their own WebView profile. No log is sent to a service.
+- Existing-repository mutations, initialization and cloning record queue/run/result
+  times, worktree/common-directory identity, observed HEAD before/after, outcome and
+  bounded nested Git command diagnostics. Ordinary read-only UI browsing is not logged.
+- A successful Git result remains successful when logging fails. Storage errors are
+  visible through the journal button/view; Retry logging checks storage again.
+  Failed terminal writes retain up to 2,000 sanitized results in memory. Retry saves
+  them transactionally without rerunning Git, preserving genuinely queued/running
+  actions. If exact result metadata is unavailable, completed actions are marked
+  as having unknown outcomes. Process restart uses session recovery instead.
+- Each process holds an OS lock on its session file. Startup and journal reads mark
+  orphaned queued/running records as interrupted with UNKNOWN Git outcome. A live
+  second instance's work is preserved. An orphan Git process may continue after the
+  app exits; the journal never resumes actions or claims to have rolled them back.
+- Queries support repository/common worktree scope, result, Unicode-aware search,
+  date bounds and stable keyset pagination. Export reads one SQLite snapshot, writes
+  JSON atomically and refuses to overwrite the live database. Clearing affects only
+  completed entries matching the chosen filters; queued/running actions remain.
+- Retention keeps up to 2,000 completed operations for 30 days, within a 50 MiB logical
+  payload budget. Each operation records at most 64 commands and 64 KiB of output;
+  arguments/output have additional per-field bounds, and omissions are indicated.
+  SQLite may retain reusable database/WAL pages after pruning; the payload limit is
+  not a promise about the exact physical file size.
+- Sanitization happens BEFORE SQLite writes. Standard input and environment values
+  are never captured, message/config-value arguments are omitted, and output from
+  source/configuration plumbing is omitted. Known URL credentials, auth headers,
+  secret assignments, PAT formats and private-key blocks are redacted. Git/server/hook
+  output can contain other sensitive text: exported diagnostics still need review.
+- Queued/running, succeeded, failed, paused workflows needing attention and interrupted
+  sessions have distinct results. A command's non-zero exit code can be a normal Git
+  check; the enclosing action's result is recorded separately.
+
+Recovery checkpoints and Undo Center remain the next stage. Journal HEAD metadata and
+diagnostic output are not backups of files, index contents or repository references.
 
 ## Regression coverage
 
@@ -63,3 +101,9 @@ Additional tests use two clones to advance/replace server history before deletio
 between a partial failure and retry, and after refreshed force consent. The native
 staging test delays real IPC responses to expose a new layer list before the prior
 staging completion, then checks that layer actions wait for synchronization.
+
+Journal regressions cover real Git commands and HEAD observations, filtering and
+pagination, linked worktrees, redaction before persistence/export, output/retention
+bounds, read-only storage failures, panic cleanup and concurrent active app sessions.
+Native scenarios export/clear a filtered log and terminate/restart the actual app
+with one running and one queued action, verifying persistence and unknown outcomes.

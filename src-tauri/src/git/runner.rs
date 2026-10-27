@@ -157,44 +157,55 @@ where
         !is_read_only(&args),
         |_, _| {},
         || {
-            let mut c = command(repo);
-            c.args(args.iter().map(|a| a.as_ref()));
-            for (k, v) in env {
-                c.env(k, v);
-            }
-            c.stdout(Stdio::piped()).stderr(Stdio::piped());
-            if input.is_some() {
-                c.stdin(Stdio::piped());
-            }
-            let mut child = c.spawn().map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    GitError::new("Git executable was not found. Install Git and make sure it is on PATH.").kind("git-missing")
-                } else {
-                    GitError::from(e)
+            let diagnostic_args: Vec<String> = args.iter().map(|a| a.as_ref().to_string_lossy().into_owned()).collect();
+            let mut capture = crate::journal::command(repo, &diagnostic_args);
+            let result: GitResult<Output> = (|| {
+                let mut c = command(repo);
+                c.args(args.iter().map(|a| a.as_ref()));
+                for (k, v) in env {
+                    c.env(k, v);
                 }
-            })?;
-            // Feed stdin on a separate thread so large inputs cannot deadlock with stdout.
-            let writer = input.map(|data| {
-                let data = data.to_vec();
-                let mut stdin = child.stdin.take().expect("stdin piped");
-                std::thread::spawn(move || {
-                    let _ = stdin.write_all(&data);
-                })
-            });
-            let mut stderr_pipe = child.stderr.take().expect("stderr piped");
-            let err_thread = std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = stderr_pipe.read_to_end(&mut buf);
-                buf
-            });
-            let mut stdout = Vec::new();
-            child.stdout.take().expect("stdout piped").read_to_end(&mut stdout)?;
-            let status = child.wait()?;
-            if let Some(w) = writer {
-                let _ = w.join();
+                c.stdout(Stdio::piped()).stderr(Stdio::piped());
+                if input.is_some() {
+                    c.stdin(Stdio::piped());
+                }
+                let mut child = c.spawn().map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        GitError::new("Git executable was not found. Install Git and make sure it is on PATH.").kind("git-missing")
+                    } else {
+                        GitError::from(e)
+                    }
+                })?;
+                // Feed stdin on a separate thread so large inputs cannot deadlock with stdout.
+                let writer = input.map(|data| {
+                    let data = data.to_vec();
+                    let mut stdin = child.stdin.take().expect("stdin piped");
+                    std::thread::spawn(move || {
+                        let _ = stdin.write_all(&data);
+                    })
+                });
+                let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+                let err_thread = std::thread::spawn(move || {
+                    let mut buf = Vec::new();
+                    let _ = stderr_pipe.read_to_end(&mut buf);
+                    buf
+                });
+                let mut stdout = Vec::new();
+                child.stdout.take().expect("stdout piped").read_to_end(&mut stdout)?;
+                let status = child.wait()?;
+                if let Some(w) = writer {
+                    let _ = w.join();
+                }
+                let stderr = String::from_utf8_lossy(&err_thread.join().unwrap_or_default()).into_owned();
+                Ok(Output { stdout, stderr, code: status.code().unwrap_or(-1) })
+            })();
+            if let Some(trace) = capture.as_mut() {
+                match &result {
+                    Ok(out) => trace.finish(Some(out.code), &out.stdout, &out.stderr),
+                    Err(e) => trace.finish(e.code, &[], &e.message),
+                }
             }
-            let stderr = String::from_utf8_lossy(&err_thread.join().unwrap_or_default()).into_owned();
-            Ok(Output { stdout, stderr, code: status.code().unwrap_or(-1) })
+            result
         },
     )
 }
@@ -297,60 +308,70 @@ where
         !is_read_only(args),
         |_, _| {},
         || {
-            let mut c = command(repo);
-            c.args(args);
-            for (k, v) in env {
-                c.env(k, v);
-            }
-            c.stdout(Stdio::piped()).stderr(Stdio::piped());
-            let mut child = c.spawn().map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    GitError::new("Git executable was not found. Install Git and make sure it is on PATH.").kind("git-missing")
+            let mut capture = crate::journal::command(repo, args);
+            let result: GitResult<String> = (|| {
+                let mut c = command(repo);
+                c.args(args);
+                for (k, v) in env {
+                    c.env(k, v);
+                }
+                c.stdout(Stdio::piped()).stderr(Stdio::piped());
+                let mut child = c.spawn().map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        GitError::new("Git executable was not found. Install Git and make sure it is on PATH.").kind("git-missing")
+                    } else {
+                        GitError::from(e)
+                    }
+                })?;
+                let mut out_pipe = child.stdout.take().expect("stdout piped");
+                let out_thread = std::thread::spawn(move || {
+                    let mut buf = Vec::new();
+                    let _ = out_pipe.read_to_end(&mut buf);
+                    buf
+                });
+                let mut collected = String::new();
+                {
+                    // git progress uses '\r' to redraw lines; split on both separators.
+                    let reader = BufReader::new(child.stderr.take().expect("stderr piped"));
+                    let mut buf = Vec::new();
+                    let mut flush = |buf: &mut Vec<u8>, collected: &mut String| {
+                        if !buf.is_empty() {
+                            let line = String::from_utf8_lossy(buf).into_owned();
+                            on_line(&line);
+                            collected.push_str(&line);
+                            collected.push('\n');
+                            buf.clear();
+                        }
+                    };
+                    for byte in reader.bytes() {
+                        match byte {
+                            Ok(b'\n') | Ok(b'\r') => flush(&mut buf, &mut collected),
+                            Ok(b) => buf.push(b),
+                            Err(_) => break,
+                        }
+                    }
+                    flush(&mut buf, &mut collected);
+                }
+                let status = child.wait()?;
+                let stdout = String::from_utf8_lossy(&out_thread.join().unwrap_or_default()).into_owned();
+                let out = Output { stdout: stdout.clone().into_bytes(), stderr: collected.clone(), code: status.code().unwrap_or(-1) };
+                if let Some(trace) = capture.as_mut() {
+                    trace.finish(Some(out.code), &out.stdout, &out.stderr);
+                }
+                if out.ok() {
+                    Ok(format!("{stdout}{collected}"))
                 } else {
-                    GitError::from(e)
+                    // Keep only meaningful lines (drop progress counters) in the error.
+                    let filtered: String =
+                        collected.lines().filter(|l| !l.contains('%') || l.contains("error") || l.contains("fatal")).collect::<Vec<_>>().join("\n");
+                    let out = Output { stdout: stdout.into_bytes(), stderr: filtered, code: out.code };
+                    Err(fail(format!("git {}", args.first().cloned().unwrap_or_default()), &out))
                 }
-            })?;
-            let mut out_pipe = child.stdout.take().expect("stdout piped");
-            let out_thread = std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = out_pipe.read_to_end(&mut buf);
-                buf
-            });
-            let mut collected = String::new();
-            {
-                // git progress uses '\r' to redraw lines; split on both separators.
-                let reader = BufReader::new(child.stderr.take().expect("stderr piped"));
-                let mut buf = Vec::new();
-                let mut flush = |buf: &mut Vec<u8>, collected: &mut String| {
-                    if !buf.is_empty() {
-                        let line = String::from_utf8_lossy(buf).into_owned();
-                        on_line(&line);
-                        collected.push_str(&line);
-                        collected.push('\n');
-                        buf.clear();
-                    }
-                };
-                for byte in reader.bytes() {
-                    match byte {
-                        Ok(b'\n') | Ok(b'\r') => flush(&mut buf, &mut collected),
-                        Ok(b) => buf.push(b),
-                        Err(_) => break,
-                    }
-                }
-                flush(&mut buf, &mut collected);
+            })();
+            if let (Some(trace), Err(e)) = (capture.as_mut(), &result) {
+                trace.finish(e.code, &[], &e.message);
             }
-            let status = child.wait()?;
-            let stdout = String::from_utf8_lossy(&out_thread.join().unwrap_or_default()).into_owned();
-            let out = Output { stdout: stdout.clone().into_bytes(), stderr: collected.clone(), code: status.code().unwrap_or(-1) };
-            if out.ok() {
-                Ok(format!("{stdout}{collected}"))
-            } else {
-                // Keep only meaningful lines (drop progress counters) in the error.
-                let filtered: String =
-                    collected.lines().filter(|l| !l.contains('%') || l.contains("error") || l.contains("fatal")).collect::<Vec<_>>().join("\n");
-                let out = Output { stdout: stdout.into_bytes(), stderr: filtered, code: out.code };
-                Err(fail(format!("git {}", args.first().cloned().unwrap_or_default()), &out))
-            }
+            result
         },
     )
 }

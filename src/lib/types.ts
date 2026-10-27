@@ -27,6 +27,24 @@ export interface GitError {
   details: string[];
 }
 
+export type OperationLogStatus = "queued" | "running" | "succeeded" | "failed" | "attention" | "interrupted";
+export interface OperationLogEntry {
+  id: string; repo: string; repositoryKey: string; command: string; status: OperationLogStatus;
+  requestedAt: number; startedAt: number | null; finishedAt: number | null;
+  waitMs: number | null; durationMs: number | null; beforeHead: string | null; afterHead: string | null;
+  outcome: string | null; errorKind: string | null; error: string | null; truncated: boolean;
+}
+export interface OperationLogStep {
+  sequence: number; cwd: string; args: string[]; startedAt: number; durationMs: number | null;
+  exitCode: number | null; stdout: string; stderr: string; outputOmitted: boolean; truncated: boolean;
+}
+export interface OperationLogDetail { entry: OperationLogEntry; steps: OperationLogStep[] }
+export interface OperationLogFilter {
+  repo?: string | null; status?: OperationLogStatus | null; search?: string; since?: number | null; until?: number | null; before?: string | null;
+}
+export interface OperationLogPage { entries: OperationLogEntry[]; next: string | null; total: number }
+export interface OperationLogHealth { available: boolean; warning: string | null; path: string | null; retentionDays: number; maxEntries: number }
+
 export interface HeadInfo {
   branch: string | null;
   oid: string | null;

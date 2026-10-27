@@ -25,6 +25,7 @@ const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" 
 execFileSync(bash, [path.join(here, "make-demo-repo.sh").replace(/\\/g, "/"), path.join(work, "env").replace(/\\/g, "/")], { stdio: "ignore" });
 const repo = path.join(work, "env", "demo");
 const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
+git("config", "core.hooksPath", path.join(repo, ".git", "hooks"));
 
 // A fake release feed with a much newer version, so the update chip can be exercised offline.
 const feed = http.createServer((req, res) => {
@@ -36,11 +37,15 @@ process.env.REVQORA_UPDATE_FEED = `http://127.0.0.1:${feed.address().port}/`;
 
 let step = 0;
 const results = [];
-const { page, close } = await launch({ exe, args: [repo], profile: createProfile("revqora-smoke-profile-"), port: 0 });
-page.setDefaultTimeout(30000); // Compound operations include queue waits and the final state refresh.
+const smokeProfile = createProfile("revqora-smoke-profile-");
+let { page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 });
 const errors = [];
-page.on("pageerror", (e) => errors.push(String(e)));
-page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+const attachPage = () => {
+  page.setDefaultTimeout(30000);
+  page.on("pageerror", (e) => errors.push(String(e)));
+  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+};
+attachPage();
 
 async function check(name, fn) {
   step++;
@@ -971,6 +976,105 @@ try {
     await page.click(".view-tab:has-text('Changes')");
     await page.waitForTimeout(500);
     await shot("08-changes-dark");
+  });
+
+  let persistentOperation;
+  await check("operation journal filters, redacts credentials, exports and clears selected history", async () => {
+    const secret = "ghp_JOURNAL_TEST_SECRET_12345678";
+    const data = await page.evaluate(async ({ root, secret }) => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      await invoke("remote_add", { repo: root, name: "ui-journal-redaction", url: `https://user:${secret}@127.0.0.1:1/not-a-repo` });
+      await invoke("remote_remove", { repo: root, name: "ui-journal-redaction" });
+      const page = await invoke("operation_log_list", { filter: { repo: root, search: "remote add", status: "succeeded" } });
+      const detail = await invoke("operation_log_detail", { id: page.entries[0].id });
+      const keep = await invoke("operation_log_list", { filter: { repo: root, search: "remote remove", status: "succeeded" } });
+      return { detail, keep: keep.entries[0].id, health: await invoke("operation_log_health") };
+    }, { root: repo, secret });
+    persistentOperation = data.keep;
+    if (!data.health.available || data.health.warning) throw new Error(`journal unavailable: ${data.health.warning}`);
+    if (JSON.stringify(data.detail).includes(secret) || !JSON.stringify(data.detail).includes("[redacted]")) throw new Error("credential redaction did not happen before persistence");
+    for (const file of [data.health.path, data.health.path + "-wal"]) {
+      if (fs.existsSync(file) && fs.readFileSync(file).includes(Buffer.from(secret))) throw new Error("raw credential present in journal files");
+    }
+    await page.click(".operation-log-open");
+    await page.waitForSelector(".operation-log .log-row");
+    await page.fill("input[aria-label='Search operation log']", "reset");
+    await page.selectOption(".log-status-filter", "failed");
+    await page.locator(".log-row", { hasText: "Reset" }).first().click();
+    await page.waitForSelector(".log-result-error:has-text('stale-operation')");
+    await shot("39-operation-log");
+    await page.fill("input[aria-label='Search operation log']", "remote add");
+    await page.selectOption(".log-status-filter", "succeeded");
+    await page.locator(".log-row", { hasText: "Remote add" }).first().click();
+    await page.waitForSelector(".log-command summary:has-text('ui-journal-redaction')");
+    if ((await page.locator(".log-detail").innerText()).includes(secret)) throw new Error("UI exposed a credential");
+    const destination = path.join(work, "operation-log-export.json");
+    const count = await page.evaluate(({ root, destination }) => window.__TAURI_INTERNALS__.invoke("operation_log_export", { filter: { repo: root, search: "remote add", status: "succeeded" }, destination }), { root: repo, destination });
+    const exported = fs.readFileSync(destination, "utf8");
+    if (!count || exported.includes(secret) || !JSON.parse(exported).operations.some((o) => o.entry.id === data.detail.entry.id)) throw new Error("journal export does not match the selected filter");
+    await page.click(".log-clear");
+    await page.locator(".modal button", { hasText: /^Clear completed entries$/ }).click();
+    await until(async () => await page.locator(".log-row").count() === 0, "cleared journal entries remain visible");
+    const kept = await page.evaluate((id) => window.__TAURI_INTERNALS__.invoke("operation_log_detail", { id }), persistentOperation);
+    if (kept.entry.status !== "succeeded") throw new Error("clearing a filter removed unrelated history");
+    await page.locator(".modal button", { hasText: /^Close$/ }).click();
+  });
+
+  await check("journal survives process restart and marks abandoned queued/running actions as unknown", async () => {
+    const hook = path.join(repo, ".git", "hooks", "pre-commit");
+    const savedHook = fs.existsSync(hook) ? fs.readFileSync(hook) : null;
+    const started = path.join(repo, ".git", "journal-started");
+    const release = path.join(repo, ".git", "journal-release");
+    const done = path.join(repo, ".git", "journal-done");
+    fs.writeFileSync(path.join(repo, "journal-restart.txt"), "Keep this work after restart\n");
+    git("add", "-A");
+    fs.writeFileSync(hook, "#!/bin/sh\ntouch .git/journal-started\nwhile test ! -f .git/journal-release; do sleep 0.05; done\ntouch .git/journal-done\n");
+    fs.chmodSync(hook, 0o755);
+    try {
+      await page.click(".operation-log-open");
+      await page.evaluate(async (root) => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        const state = await invoke("status", { repo: root });
+        window.__journalExpected = state.stateToken;
+        window.__journalCommit = invoke("commit", { repo: root, expectedState: state.stateToken, message: "Journal restart probe", opts: {} }).catch(() => {});
+      }, repo);
+      await until(() => fs.existsSync(started), "journal probe hook did not start", 15000);
+      await page.evaluate((root) => { window.__journalQueued = window.__TAURI_INTERNALS__.invoke("branch_create", { repo: root, name: "ui-journal-never-run", start: null, checkout: false, expectedState: window.__journalExpected }).catch(() => {}); }, repo);
+      await page.waitForSelector(".repository-queue:has-text('queued')");
+      await page.waitForSelector(".operation-log .log-row .log-state.running");
+      await page.waitForSelector(".operation-log .log-row .log-state.queued");
+      const unfinished = await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("operation_log_list", { filter: { repo: root } }), repo);
+      const ids = unfinished.entries.filter((e) => e.command === "commit" && e.status === "running" || e.command === "branch_create" && e.status === "queued").map((e) => e.id);
+      if (ids.length !== 2) throw new Error("journal did not record queued and running actions before shutdown");
+      const exited = child.exitCode !== null ? Promise.resolve() : new Promise((resolve) => child.once("exit", resolve));
+      await close();
+      await exited;
+      fs.writeFileSync(release, "continue\n");
+      const deadline = Date.now() + 15000;
+      while (fs.existsSync(path.join(repo, ".git", "index.lock")) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+      if (fs.existsSync(path.join(repo, ".git", "index.lock"))) throw new Error("orphan Git process did not release index lock");
+      // Give the closed WebView provider time to release the same profile directory.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      ({ page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 }));
+      attachPage();
+      await page.waitForSelector(".repo-current:has-text('demo')");
+      const recovered = await page.evaluate(async ({ ids, keep }) => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        return { entries: await Promise.all(ids.map((id) => invoke("operation_log_detail", { id }))), kept: await invoke("operation_log_detail", { id: keep }) };
+      }, { ids, keep: persistentOperation });
+      if (recovered.entries.some((d) => d.entry.status !== "interrupted") || recovered.kept.entry.status !== "succeeded") throw new Error("restart lost history or claimed an unknown action succeeded");
+      if (git("branch", "--list", "ui-journal-never-run")) throw new Error("queued action was replayed after restart");
+      await page.click(".operation-log-open");
+      await page.locator(".log-row:has(.log-state.interrupted)").first().click();
+      await page.waitForSelector(".log-detail .log-notice:has-text('final result is unknown')");
+      await shot("40-operation-log-recovered");
+      await page.locator(".modal button", { hasText: /^Close$/ }).click();
+    } finally {
+      fs.writeFileSync(release, "continue\n");
+      const deadline = Date.now() + 15000;
+      while (fs.existsSync(started) && !fs.existsSync(done) && fs.existsSync(path.join(repo, ".git", "index.lock")) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+      if (savedHook) fs.writeFileSync(hook, savedHook); else if (fs.existsSync(hook)) fs.unlinkSync(hook);
+    }
   });
 
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));

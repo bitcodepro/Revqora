@@ -48,6 +48,7 @@ import { AheadBehind } from "./bits";
 import { UpdateChip } from "./UpdateChip";
 import { reflogDialog, settingsDialog } from "./dialogs";
 import { applyPatchFile, repoToolsDialog } from "./RepoTools";
+import { OperationLogButton, operationLogDialog } from "./OperationLog";
 
 // ───────────── top bar ─────────────
 
@@ -121,6 +122,7 @@ export function TopBar() {
       <button className="icon-btn" title="Command palette (Ctrl+K)" onClick={() => useUi.getState().setPalette(true)}>
         <Command size={16} />
       </button>
+      <OperationLogButton root={root} />
       <button className="icon-btn" title={dark ? "Light theme" : "Dark theme"} onClick={() => setS({ theme: dark ? "light" : "dark" })}>
         {dark ? <Sun size={16} /> : <Moon size={16} />}
       </button>
@@ -347,9 +349,9 @@ export function StatusBar() {
       )}
       {b && <BusyItem label={b.label} line={b.line} />}
       {!b && operations.length === 0 && (tab?.pendingMutations ?? 0) > 0 && <BusyItem label="Updating changes" line="" />}
-      {operations.length > 0 && <span className="item repository-queue" role="status" title={operations.map((o) => `${o.repo}: ${o.command.replaceAll("_", " ")} (${o.phase})`).join("\n")}>
+      {operations.length > 0 && <button type="button" className="item repository-queue" aria-live="polite" title={operations.map((o) => `${o.repo}: ${o.command.replaceAll("_", " ")} (${o.phase})`).join("\n")} onClick={() => void operationLogDialog(tab?.root ?? null)}>
         {operations.filter((o) => o.phase === "running").length} running · {operations.filter((o) => o.phase === "queued").length} queued
-      </span>}
+      </button>}
       <div className="spacer" />
       {tab?.error && (
         <span className="item" style={{ color: "var(--red)" }} title={tab.error}>
@@ -477,6 +479,7 @@ export function CommandPalette() {
       { id: "clone", label: "Clone repository…", group: "Repository", icon: <Download size={15} />, run: () => A.cloneRepo() },
       { id: "init", label: "New repository…", group: "Repository", icon: <Plus size={15} />, run: () => A.initRepoDialog() },
       { id: "settings", label: "Settings", group: "App", icon: <Settings2 size={15} />, run: () => settingsDialog(tab?.root ?? null) },
+      { id: "operation-log", label: "Operation log…", group: "App", icon: <History size={15} />, run: () => operationLogDialog(tab?.root ?? null) },
       {
         id: "theme",
         label: "Toggle dark / light theme",
