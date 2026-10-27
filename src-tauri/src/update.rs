@@ -585,7 +585,29 @@ mod tests {
         fs::copy("/bin/sleep", root.join("revqora")).unwrap();
         fs::write(root.join("build-info.json"), r#"{"version":"0.1.0","rid":"linux-x64"}"#).unwrap();
         let launch = Launch::from_exe(&root.join("revqora")).unwrap();
-        let mut old = std::process::Command::new(root.join("revqora")).arg("30").spawn().unwrap();
+        struct Probe(std::process::Child);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut old = Probe(std::process::Command::new(root.join("revqora")).arg("30").spawn().unwrap());
+        // Establish which image is running before moving it. Under concurrent
+        // process creation /proc can briefly expose the child's pre-exec image.
+        let expected = fs::canonicalize(root.join("revqora")).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let running = fs::read_link(format!("/proc/{}/exe", old.0.id()));
+            if running.as_ref().is_ok_and(|path| path == &expected) {
+                break;
+            }
+            if let Some(status) = old.0.try_wait().unwrap() {
+                panic!("relaunch probe exited before exec: {status}");
+            }
+            assert!(std::time::Instant::now() < deadline, "relaunch probe did not start its installed image: {running:?}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
 
         let staging = tmp.path().join("pkg");
         fs::create_dir_all(&staging).unwrap();
@@ -599,13 +621,11 @@ mod tests {
         tar.into_inner().unwrap().finish().unwrap();
 
         apply_archive(&root, &archive, "0.2.0", "linux-x64").unwrap();
-        let running = fs::read_link(format!("/proc/{}/exe", old.id())).unwrap();
+        let running = fs::read_link(format!("/proc/{}/exe", old.0.id())).unwrap();
         assert!(running.starts_with(root.join(STAGING)), "running binary now resolves to {}", running.display());
         assert_eq!(Launch::from_exe(&root.join("revqora")).unwrap(), launch);
         let out = std::process::Command::new(launch.installed_exe()).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0.2.0");
-        let _ = old.kill();
-        let _ = old.wait();
     }
 
     #[test]
