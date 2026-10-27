@@ -2,6 +2,7 @@
 mod redact;
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -111,10 +112,60 @@ pub struct Health {
 
 pub struct Journal {
     db: Mutex<Connection>,
+    completions: Mutex<Completions>,
     path: PathBuf,
     session: String,
     _lock: tempfile::NamedTempFile,
     next: AtomicU64,
+}
+
+#[derive(Default)]
+struct Completions {
+    active: HashSet<String>,
+    pending: HashMap<String, Terminal>,
+}
+
+#[derive(Clone)]
+struct Terminal {
+    status: &'static str,
+    finished_at: i64,
+    duration_ms: Option<i64>,
+    outcome: Option<String>,
+    kind: Option<String>,
+    error: Option<String>,
+}
+
+impl Terminal {
+    fn unknown() -> Self {
+        Self {
+            status: "interrupted",
+            finished_at: now(),
+            duration_ms: None,
+            outcome: None,
+            kind: Some("interrupted".into()),
+            error: Some("The action ended without a saved journal result. Refresh the repository; the recorded Git outcome is unknown.".into()),
+        }
+    }
+
+    fn write(&self, db: &Connection, session: &str, id: &str) -> Result<()> {
+        db.execute(
+            "UPDATE operations SET status=?1,finished_at=?2,duration_ms=?3,outcome=?4,error_kind=?5,error=?6,bytes=bytes+?7
+            WHERE id=?8 AND session=?9 AND status IN ('queued','running')",
+            params![
+                self.status,
+                self.finished_at,
+                self.duration_ms,
+                self.outcome,
+                self.kind,
+                self.error,
+                self.error.as_ref().map_or(0, String::len) as i64,
+                id,
+                session
+            ],
+        )
+        .map_err(diagnostic)?;
+        Ok(())
+    }
 }
 
 impl Journal {
@@ -155,7 +206,7 @@ impl Journal {
         )
         .map_err(diagnostic)?;
         db.execute("INSERT INTO sessions(id) VALUES(?1)", [&session]).map_err(diagnostic)?;
-        let journal = Arc::new(Self { db: Mutex::new(db), path, session, _lock: lock, next: AtomicU64::new(0) });
+        let journal = Arc::new(Self { db: Mutex::new(db), completions: Mutex::default(), path, session, _lock: lock, next: AtomicU64::new(0) });
         journal.recover()?;
         journal.prune()?;
         Ok(journal)
@@ -199,6 +250,9 @@ impl Journal {
         let root = root.to_string_lossy().into_owned();
         let key = operations::repository_key(Path::new(&root)).to_string_lossy().into_owned();
         let search = format!("{} {}", command.replace('_', " "), root).to_lowercase();
+        // Lifecycle changes and retry take this lock before the database lock, so a
+        // newly inserted action cannot be mistaken for a failed completion.
+        let mut completions = self.completions.lock();
         self.db
             .lock()
             .execute(
@@ -207,9 +261,47 @@ impl Journal {
                 params![id, self.session, root, key, command, search, now(), (root.len() + key.len() + command.len() + search.len()) as i64],
             )
             .map_err(diagnostic)?;
+        completions.active.insert(id.clone());
+        drop(completions);
         let context = Arc::new(Context { store: self.clone(), id, count: AtomicU64::new(0), closed: AtomicBool::new(false) });
         CURRENT.with(|c| c.borrow_mut().push(context.clone()));
         Ok(Operation { context, created: Instant::now() })
+    }
+
+    fn complete(&self, id: &str, terminal: Terminal) -> Result<()> {
+        let mut completions = self.completions.lock();
+        completions.active.remove(id);
+        let result = terminal.write(&self.db.lock(), &self.session, id);
+        if result.is_err() && completions.pending.len() < MAX_ENTRIES as usize {
+            // Only sanitized, bounded terminal metadata is retained, never Git work.
+            completions.pending.insert(id.to_owned(), terminal);
+        }
+        result
+    }
+
+    fn retry(&self) -> Result<()> {
+        let mut completions = self.completions.lock();
+        let mut db = self.db.lock();
+        let tx = db.transaction().map_err(diagnostic)?;
+        tx.execute("UPDATE sessions SET id=id WHERE id=?1", [&self.session]).map_err(diagnostic)?;
+        let unfinished = tx
+            .prepare("SELECT id FROM operations WHERE session=?1 AND status IN ('queued','running')")
+            .map_err(diagnostic)?
+            .query_map([&self.session], |r| r.get::<_, String>(0))
+            .map_err(diagnostic)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(diagnostic)?;
+        for id in unfinished {
+            if !completions.active.contains(&id) {
+                let terminal = completions.pending.get(&id).cloned().unwrap_or_else(Terminal::unknown);
+                terminal.write(&tx, &self.session, &id)?;
+            }
+        }
+        // A failed retry leaves the cache intact. Missing/previously completed rows
+        // need no retry; all remaining cached results were saved in this transaction.
+        tx.commit().map_err(diagnostic)?;
+        completions.pending.clear();
+        Ok(())
     }
 
     fn prune(&self) -> Result<()> {
@@ -433,18 +525,9 @@ impl Operation {
         };
         let error = result.as_ref().err().map(|e| redact::bounded(&redact::text(&e.message), 2048).0);
         let kind = result.as_ref().err().map(|e| redact::bounded(&redact::text(&e.kind), 128).0);
-        let update = self.context.store.db.lock().execute(
-            "UPDATE operations SET status=?1,finished_at=?2,duration_ms=?3,outcome=?4,error_kind=?5,error=?6,bytes=bytes+?7 WHERE id=?8",
-            params![
-                status,
-                now(),
-                self.created.elapsed().as_millis() as i64,
-                outcome,
-                kind,
-                error,
-                error.as_ref().map_or(0, String::len) as i64,
-                self.context.id
-            ],
+        let update = self.context.store.complete(
+            &self.context.id,
+            Terminal { status, finished_at: now(), duration_ms: Some(self.created.elapsed().as_millis() as i64), outcome, kind, error },
         );
         if let Err(e) = update {
             warn(e);
@@ -464,7 +547,7 @@ impl Drop for Operation {
     fn drop(&mut self) {
         CURRENT.with(|c| c.borrow_mut().retain(|s| s.id != self.context.id));
         if !self.context.closed.swap(true, Ordering::Relaxed) {
-            let result = self.context.store.db.lock().execute("UPDATE operations SET status='interrupted',finished_at=?1,error_kind='interrupted',error='The action ended without a recorded result. Refresh the repository; the Git outcome is unknown.' WHERE id=?2",params![now(),self.context.id]);
+            let result = self.context.store.complete(&self.context.id, Terminal::unknown());
             if let Err(e) = result {
                 warn(e);
             }
@@ -602,7 +685,7 @@ pub fn health() -> Health {
 pub fn retry() -> Result<()> {
     let mut current = STORE.get_or_init(|| Mutex::new(None)).lock();
     if let Some(store) = current.as_ref() {
-        store.db.lock().execute("UPDATE sessions SET id=id WHERE id=?1", [&store.session]).map_err(diagnostic)?;
+        store.retry()?;
     } else {
         let dir = DIRECTORY.get().and_then(Option::as_ref).ok_or("The app data folder is unavailable.")?;
         *current = Some(Journal::open(dir)?);

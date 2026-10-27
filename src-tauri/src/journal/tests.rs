@@ -122,7 +122,11 @@ fn abandoned_session_is_recovered_with_unknown_outcome_and_trace() {
 fn logging_failure_does_not_change_successful_git_result() {
     let f = Fixture::new();
     fs::write(f.root.join("file.txt"), "keep staged\n").unwrap();
+    let running = f.log.begin(&f.root, "fetch").unwrap();
+    running.phase("running", &f.root);
+    let queued = f.log.begin(&f.root, "branch_create").unwrap();
     let op = f.log.begin(&f.root, "stage").unwrap();
+    let id = op.context.id.clone();
     op.phase("running", &f.root);
     f.log.db.lock().execute_batch("PRAGMA query_only=ON").unwrap();
     let result = runner::run(&f.root, ["add", "file.txt"]);
@@ -131,6 +135,69 @@ fn logging_failure_does_not_change_successful_git_result() {
     drop(op);
     assert!(result.is_ok());
     assert!(runner::run(&f.root, ["diff", "--cached", "--name-only"]).unwrap().contains("file.txt"));
+    assert_eq!(f.log.detail(&id).unwrap().entry.status, "running", "the terminal SQLite write failed");
+    assert!(f.log.retry().is_err(), "retry still fails while storage is read-only");
+    assert_eq!(f.log.completions.lock().pending.len(), 1, "failed retry must retain the result");
+    f.log.db.lock().execute_batch("PRAGMA query_only=OFF").unwrap();
+    f.log.retry().unwrap();
+    let completed = f.log.detail(&id).unwrap().entry;
+    assert_eq!(completed.status, "succeeded");
+    assert!(completed.finished_at.is_some());
+    assert!(completed.duration_ms.is_some());
+    assert_eq!(f.log.detail(&running.context.id).unwrap().entry.status, "running");
+    assert_eq!(f.log.detail(&queued.context.id).unwrap().entry.status, "queued");
+    f.log.retry().unwrap();
+    assert_eq!(f.log.detail(&id).unwrap().entry.finished_at, completed.finished_at, "retry is idempotent");
+    assert_eq!(f.log.clear(&Filter::default()).unwrap(), 1, "reconciled entries can be cleared, live actions cannot");
+    queued.finish(&Ok(()));
+    running.finish(&Ok(()));
+}
+
+#[test]
+fn retry_restores_failed_and_paused_results_and_handles_missing_terminal_metadata() {
+    let f = Fixture::new();
+    let failed = f.log.begin(&f.root, "push").unwrap();
+    let paused = f.log.begin(&f.root, "merge_start").unwrap();
+    let abandoned = f.log.begin(&f.root, "reset").unwrap();
+    let abandoned_id = abandoned.context.id.clone();
+    let uncached = f.log.begin(&f.root, "fetch").unwrap();
+    f.log.db.lock().execute_batch("PRAGMA query_only=ON").unwrap();
+    failed.finish(&Err::<(), _>(GitError::new("Authorization: Bearer privateRetryToken").kind("auth")));
+    paused.finish(&Ok(serde_json::json!({"status":"conflicts"})));
+    drop(abandoned);
+    uncached.finish(&Ok(()));
+    // A bounded cache cannot retain every result indefinitely. Reconciliation
+    // must also handle a completed row whose exact terminal metadata is absent.
+    f.log.completions.lock().pending.remove(&uncached.context.id);
+    f.log.db.lock().execute_batch("PRAGMA query_only=OFF").unwrap();
+    f.log
+        .db
+        .lock()
+        .execute_batch(
+            "CREATE TEMP TRIGGER fail_completion BEFORE UPDATE OF status ON operations
+        WHEN OLD.command='merge_start' BEGIN SELECT RAISE(ABORT,'injected journal failure'); END;",
+        )
+        .unwrap();
+    assert!(f.log.retry().is_err());
+    for id in [&failed.context.id, &paused.context.id, &abandoned_id, &uncached.context.id] {
+        assert_eq!(f.log.detail(id).unwrap().entry.status, "queued", "a partially failed reconciliation is rolled back");
+    }
+    f.log.db.lock().execute_batch("DROP TRIGGER fail_completion").unwrap();
+    f.log.retry().unwrap();
+    let failure = f.log.detail(&failed.context.id).unwrap().entry;
+    assert_eq!(failure.status, "failed");
+    assert_eq!(failure.error_kind.as_deref(), Some("auth"));
+    assert!(!failure.error.unwrap().contains("privateRetryToken"));
+    let attention = f.log.detail(&paused.context.id).unwrap().entry;
+    assert_eq!(attention.status, "attention");
+    assert_eq!(attention.outcome.as_deref(), Some("conflicts"));
+    for id in [&abandoned_id, &uncached.context.id] {
+        let entry = f.log.detail(id).unwrap().entry;
+        assert_eq!(entry.status, "interrupted");
+        assert!(entry.error.unwrap().contains("unknown"));
+    }
+    assert_eq!(f.log.list(&Filter::default(), 50).unwrap().total, 4);
+    assert!(runner::run(&f.root, ["status", "--porcelain"]).unwrap().is_empty(), "retry never replays Git actions");
 }
 
 #[test]

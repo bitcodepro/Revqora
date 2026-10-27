@@ -60,6 +60,10 @@ A UI sequence such as commit then push consists of two backend operations.
   bounded nested Git command diagnostics. Ordinary read-only UI browsing is not logged.
 - A successful Git result remains successful when logging fails. Storage errors are
   visible through the journal button/view; Retry logging checks storage again.
+  Failed terminal writes retain up to 2,000 sanitized results in memory. Retry saves
+  them transactionally without rerunning Git, preserving genuinely queued/running
+  actions. If exact result metadata is unavailable, completed actions are marked
+  as having unknown outcomes. Process restart uses session recovery instead.
 - Each process holds an OS lock on its session file. Startup and journal reads mark
   orphaned queued/running records as interrupted with UNKNOWN Git outcome. A live
   second instance's work is preserved. An orphan Git process may continue after the
