@@ -257,6 +257,25 @@ fn checkpoint_storage_wait_cannot_accept_an_obsolete_precondition() {
 }
 
 #[test]
+fn saving_a_checkpoint_does_not_invalidate_force_consent_but_user_refs_still_do() {
+    let f = Fixture::new(false, false);
+    let tree = runner::run(&f.root, ["rev-parse", "HEAD^{tree}"]).unwrap();
+    let tip = runner::run(&f.root, ["commit-tree", tree.trim(), "-p", "HEAD", "-m", "Unmerged topic"]).unwrap();
+    runner::run(&f.root, ["branch", "unmerged", tip.trim()]).unwrap();
+    let expected = status::status(&f.root).unwrap().state_token.unwrap();
+    let result =
+        operations::run(&f.root, "branch_delete", Some(&expected), |_, _| {}, || super::super::branch_deletion::delete(&f.root, "unmerged", false, None));
+    assert!(result.is_err());
+    assert_eq!(list(&f.root).unwrap().checkpoints.len(), 1);
+    assert_eq!(status::status(&f.root).unwrap().state_token.as_deref(), Some(expected.as_str()));
+    operations::run(&f.root, "branch_delete", Some(&expected), |_, _| {}, || super::super::branch_deletion::delete(&f.root, "unmerged", true, None)).unwrap();
+    assert!(!runner::exec(&f.root, ["show-ref", "--verify", "--quiet", "refs/heads/unmerged"]).unwrap().ok());
+    let before = status::status(&f.root).unwrap().state_token;
+    runner::run(&f.root, ["branch", "external-change"]).unwrap();
+    assert_ne!(before, status::status(&f.root).unwrap().state_token);
+}
+
+#[test]
 fn damaged_checkpoints_and_destination_collisions_cannot_replace_existing_data() {
     let f = Fixture::new(false, false);
     f.write("file.txt", b"save me\n");

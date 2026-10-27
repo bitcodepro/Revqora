@@ -233,7 +233,15 @@ pub fn state_token(repo: &Path, raw_status: &str, files: &[super::status::FileSt
     // Cache-tree/stat extensions and packed-ref layout can change without changing
     // what the user staged. Compare semantic index entries and resolved refs instead.
     hash.update(runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?);
-    hash.update(runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"])?);
+    // Recovery pins are app metadata, not changes to the user's prepared Git
+    // state. A rejected action may save a checkpoint before offering force
+    // consent. Recovery itself verifies each pin independently with exact OIDs.
+    for reference in runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"])?.lines() {
+        if !reference.starts_with(super::recovery::PREFIX) {
+            hash.update(reference.as_bytes());
+            hash.update(b"\n");
+        }
+    }
     for name in [
         "MERGE_HEAD",
         "MERGE_MSG",

@@ -17,7 +17,7 @@ const MAX_TOTAL: u64 = 1024 * 1024 * 1024;
 const MAX_COUNT: usize = 100;
 const MAX_FILES: usize = 20_000;
 const RETENTION: i64 = 30 * 24 * 3600 * 1000;
-const PREFIX: &str = "refs/revqora/recovery/";
+pub(crate) const PREFIX: &str = "refs/revqora/recovery/";
 
 fn fail(message: impl Into<String>) -> GitError {
     GitError::new(message).kind("recovery")

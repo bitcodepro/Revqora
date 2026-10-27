@@ -100,6 +100,9 @@ service below stores recoverable files, index contents and selected Git referenc
   reviewed state. Git is not started if capture fails. A failed subsequent action may
   leave a useful checkpoint; it does not imply the action succeeded.
   Prepared state is checked again after waiting for the checkpoint-storage lock.
+  Managed recovery refs are excluded from prepared-state tokens so a failed attempt's
+  backup does not invalidate subsequent force consent. User refs, files and index
+  changes remain guarded; recovery pin integrity has its own exact-OID checks.
 - Data lives in the common Git directory under `revqora/recovery/`, shared by linked
   worktrees. An OS file lock serializes checkpoint creation/recovery/removal across app
   instances. This lock does not coordinate external Git programs or editors.
