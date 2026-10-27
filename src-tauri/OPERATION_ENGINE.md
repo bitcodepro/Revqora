@@ -230,3 +230,9 @@ working files intact, freeze the presence/SHA of a same-named local branch and a
 that branch as a comparison target even when checked out. No local ref is invented
 when the branch exists only on the server. Refreshed server history requires new
 consent, and force never disables its exact-SHA lease.
+
+After a successful local deletion, the dialog freezes that mutation's reviewed local
+SHA for subsequent replanning. Initial or refreshed previews never replace this
+receipt. The native regression advances A to B, refreshes the review, deletes B,
+rejects the server update, refreshes/retries remote deletion, then restores the named
+local reference from the final success checkpoint and verifies it is exactly B.

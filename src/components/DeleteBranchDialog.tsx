@@ -34,7 +34,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
   const version = useRef(0);
   const first = useRef(true);
   const localDoneRef = useRef(false);
-  const savedLocalOid = useRef<string | undefined>(undefined);
+  const deletedLocalOid = useRef<string | undefined>(undefined);
   const target = review?.target ?? targets.find((t) => deletionTargetKey(t) === selected);
   const ready = !!plan && targetVersion(plan.proof.target) === targetVersion(target)
     && (base === undefined || (base || null) === plan.proof.baseRef);
@@ -44,9 +44,8 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
     const v = ++version.current;
     setLoading(true); setPlan(null); setError(null); setForceRequired(false); setForce(false); setReviewConfirmed(false);
     try {
-      const next = await api.branchDeletePlan(root, name, base, target ?? null, localDoneRef.current ? savedLocalOid.current : undefined, remoteOnly);
+      const next = await api.branchDeletePlan(root, name, base, target ?? null, localDoneRef.current ? deletedLocalOid.current : undefined, remoteOnly);
       if (v !== version.current) return;
-      savedLocalOid.current ??= next.proof.localOid;
       const changedInitially = first.current && !explicit && !!expectedState && next.stateToken !== expectedState;
       first.current = false;
       setPlan(next); setStale(changedInitially);
@@ -76,6 +75,9 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
         const result = await api.branchDeleteReviewed(root, plan.proof, includeRemote, force, plan.stateToken);
         saved = result.checkpoint; setCheckpoint(saved);
         if (result.warning) warnings.push(result.warning);
+        // Pin the tip actually deleted by this successful mutation. A refreshed
+        // review may differ from the initial tip; remote retries must keep it.
+        deletedLocalOid.current = plan.proof.localOid;
         deletedLocal = true; localDoneRef.current = true; setLocalDone(true);
       }
       if (includeRemote && target) {

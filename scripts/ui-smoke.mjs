@@ -641,8 +641,8 @@ try {
   await check("branch deletion supports local-only, remote, force confirmation and partial failure", async () => {
     const localExists = (name) => git("branch", "--list", name) !== "";
     const remoteExists = (name) => git("ls-remote", "--heads", "origin", "refs/heads/" + name) !== "";
-    const create = (name, remoteName = name) => {
-      git("branch", name, "HEAD");
+    const create = (name, remoteName = name, start = "HEAD") => {
+      git("branch", name, start);
       git("push", "-q", "origin", `${name}:refs/heads/${remoteName}`);
       git("branch", `--set-upstream-to=origin/${remoteName}`, name);
     };
@@ -721,7 +721,10 @@ try {
       for (const spec of fetchSpecs) git("config", "--add", "remote.origin.fetch", spec);
     }
     git("push", "-q", "origin", ":refs/heads/ui-mapped-alias");
-    create("ui-failed-remote");
+    create("ui-failed-remote", "ui-failed-remote", "HEAD~1");
+    const originalLocalOid = git("rev-parse", "ui-failed-remote");
+    const deletedLocalOid = git("rev-parse", "HEAD");
+    if (originalLocalOid === deletedLocalOid) throw new Error("refreshed-deletion fixture needs distinct local tips A and B");
     const pushUrl = git("remote", "get-url", "--push", "origin");
     const hook = path.join(path.resolve(repo, pushUrl), "hooks", "pre-receive");
     const other = path.join(work, "env", "deletion-other-clone");
@@ -731,6 +734,11 @@ try {
     fs.chmodSync(hook, 0o755);
     try {
       await openDelete("ui-failed-remote");
+      // Review A, advance the local branch externally to B, then explicitly refresh.
+      // After local B is deleted, every remote retry must retain B, not the initial A.
+      git("update-ref", "refs/heads/ui-failed-remote", deletedLocalOid, originalLocalOid);
+      await page.click(".refresh-branch-review");
+      await page.waitForSelector(`.branch-review[aria-busy='false'][data-review-local-oid='${deletedLocalOid}']`);
       await page.check(".delete-remote-branch");
       await page.click(".delete-branch-confirm");
       await page.waitForSelector(".delete-branch-error:has-text('Local branch deleted. Remote deletion failed')");
@@ -750,7 +758,7 @@ try {
       if (!(await page.locator(".delete-branch-confirm").isDisabled())) throw new Error("refreshed tip did not require new consent");
       await shot("38-remote-deletion-review");
       await page.check(".confirm-reviewed-remote");
-      // Even explicit force consent to B must not delete a subsequent C.
+      // Even explicit force consent must not delete a subsequent server tip.
       otherGit("commit", "--allow-empty", "-qm", "Another unseen server commit");
       otherGit("push", "-q", "origin", "ui-failed-remote");
       await page.click(".delete-branch-confirm");
@@ -763,6 +771,25 @@ try {
       await page.click(".delete-branch-confirm");
       await page.waitForSelector(".modal", { state: "detached" });
       if (remoteExists("ui-failed-remote")) throw new Error("remote retry failed");
+      // Follow the success action to the FINAL remote checkpoint, not the earlier
+      // local checkpoint that still retains B even when this regression occurs.
+      const notice = page.locator(".toast").filter({ hasText: "Deleted ui-failed-remote and origin/ui-failed-remote" });
+      const checkpointId = (await notice.innerText()).match(/Recovery checkpoint (\S+) saved/)?.[1];
+      if (!checkpointId) throw new Error("final recovery checkpoint ID missing");
+      await notice.getByRole("button", { name: "Open recovery checkpoint", exact: true }).click();
+      await page.locator(`.recovery-detail[data-checkpoint-id='${checkpointId}']`).waitFor();
+      const branchOption = await page.locator("select[aria-label='Saved recovery reference'] option").evaluateAll((options) => options.find((o) => o.textContent.startsWith("refs/heads/ui-failed-remote ·"))?.value);
+      if (branchOption === undefined) throw new Error("deleted local reference missing from final checkpoint");
+      await page.selectOption("select[aria-label='Saved recovery reference']", branchOption);
+      await page.fill("input[aria-label='Recovered local branch']", "ui-refreshed-deletion-recovery");
+      await page.getByRole("button", { name: "Restore branch", exact: true }).click();
+      await until(() => localExists("ui-refreshed-deletion-recovery"), "final checkpoint did not restore the deleted branch", 15000);
+      const restoredOid = git("rev-parse", "ui-refreshed-deletion-recovery");
+      if (restoredOid !== deletedLocalOid) throw new Error(`final checkpoint restored ${restoredOid} instead of deleted local tip ${deletedLocalOid} (initial review ${originalLocalOid})`);
+      await page.waitForSelector(".recovery-center[aria-busy='false']");
+      await shot("49-refreshed-deletion-recovery");
+      await page.locator(".modal button", { hasText: /^Close$/ }).click();
+      git("branch", "-D", "ui-refreshed-deletion-recovery");
     } finally { if (fs.existsSync(hook)) fs.unlinkSync(hook); }
     await page.fill(".sidebar input[placeholder^='Filter branches']", "");
   });
