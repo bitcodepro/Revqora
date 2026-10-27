@@ -821,7 +821,8 @@ try {
     const localIndex = fs.readFileSync(path.join(repo, ".git", "index"));
     await shot("48-direct-remote-review");
     await page.click(".delete-branch-confirm");
-    await page.waitForSelector(".modal", { state: "detached" });
+    // Wait for checkpoint + leased transport completion before checking Git state.
+    await page.waitForSelector(".modal", { state: "detached", timeout: 60000 });
     if (git("ls-remote", "--heads", "origin", "refs/heads/ui-review-server-only") || git("rev-parse", "HEAD") !== localHead || !fs.readFileSync(path.join(repo, ".git", "index")).equals(localIndex)) throw new Error("direct remote deletion changed local work or kept the server branch");
 
     git("branch", "ui-review-worktree");
