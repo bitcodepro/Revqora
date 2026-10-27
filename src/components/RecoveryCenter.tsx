@@ -137,7 +137,7 @@ function RecoveryCenter({ root, close }: { root: string; close: () => void }) {
           </>}
         </section>
       </div>
-      <div className="recovery-storage"><span>Stored locally in Git metadata. Saved files may contain private project data.</span>{catalog && <button type="button" className="recovery-location" disabled={!catalog.checkpoints.length && !catalog.warning} title={catalog.storagePath} onClick={() => void api.revealPath(catalog.storagePath).catch((e) => toast.error(e))}>Open storage folder</button>}</div>
+      <div className="recovery-storage"><span>Stored in data beside the application. Saved files may contain private project data.</span>{catalog && <button type="button" className="recovery-location" disabled={!catalog.checkpoints.length && !catalog.warning} title={catalog.storagePath} onClick={() => void api.revealPath(catalog.storagePath).catch((e) => toast.error(e))}>Open storage folder</button>}</div>
     </div>
   </Modal>;
 }

@@ -1093,6 +1093,12 @@ try {
     const saved = await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("recovery_list", { repo: root }), repo);
     const cp = saved.checkpoints.find((item) => item.label === "Native recovery snapshot");
     if (!cp?.workspace) throw new Error("manual checkpoint was not saved");
+    const storage = path.resolve(saved.storagePath.replace(/^\\\\\?\\/, ""));
+    const portableData = path.join(smokeProfile, "revqora-data");
+    const relativeStorage = path.relative(portableData, storage);
+    if (path.isAbsolute(relativeStorage) || relativeStorage === ".." || relativeStorage.startsWith(`..${path.sep}`)) throw new Error("checkpoint files escaped the portable profile");
+    if (!fs.existsSync(path.join(storage, cp.id, "checkpoint.json")) || fs.existsSync(path.join(repo, ".git", "revqora")) || fs.existsSync(path.join(repo, ".git", "revqora-squash"))) throw new Error("application data remained inside Git metadata");
+    if (!fs.existsSync(path.join(portableData, "temp"))) throw new Error("portable temporary folder was not initialized");
     await shot("41-undo-center");
     await page.locator(".modal button", { hasText: /^Close$/ }).click();
     const exited = child.exitCode !== null ? Promise.resolve() : new Promise((resolve) => child.once("exit", resolve));

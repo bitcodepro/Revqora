@@ -25,7 +25,7 @@ impl OpOutcome {
 }
 
 fn temp_file(repo: &Path, name: &str, content: &str) -> GitResult<PathBuf> {
-    let dir = repo::git_dir(repo)?.join("revqora");
+    let dir = super::storage::dir(repo)?;
     std::fs::create_dir_all(&dir)?;
     let p = dir.join(name);
     std::fs::write(&p, content)?;
@@ -85,10 +85,10 @@ pub fn unstage_paths(repo: &Path, paths: &[String], base: Option<&str>) -> GitRe
     Ok(())
 }
 
-/// Copies files into `.git/revqora/trash/<time>/` before destructive operations.
+/// Copies files into portable `data/repositories/<id>/trash/<time>/` before destructive operations.
 pub fn backup_files(repo: &Path, paths: &[String]) -> GitResult<PathBuf> {
     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let dir = repo::git_dir(repo)?.join("revqora").join("trash").join(ts.to_string());
+    let dir = super::storage::dir(repo)?.join("trash").join(ts.to_string());
     for p in paths {
         let src = repo.join(p);
         if src.is_file() {
@@ -174,9 +174,7 @@ fn commit_confirmed(repo: &Path, message: &str, opts: &CommitOptions) -> GitResu
     }
     runner::run(repo, &args)?;
     let _ = std::fs::remove_file(&file);
-    if let Ok(gd) = repo::git_dir(repo) {
-        let _ = std::fs::remove_file(gd.join("revqora-squash"));
-    }
+    let _ = std::fs::remove_file(super::storage::dir(repo)?.join("squash-target"));
     Ok(head_oid(repo).unwrap_or_default())
 }
 
@@ -463,7 +461,7 @@ pub fn merge_start(repo: &Path, target: &str, strategy: &str) -> GitResult<OpOut
     let merging = gd.join("MERGE_HEAD").exists();
     let conflicts = conflicted(repo);
     if strategy == "squash" && (out.ok() || !conflicts.is_empty()) {
-        std::fs::write(gd.join("revqora-squash"), target)?;
+        std::fs::write(super::storage::dir(repo)?.join("squash-target"), target)?;
         return Ok(OpOutcome {
             status: if conflicts.is_empty() { "pending".into() } else { "conflicts".into() },
             conflicts,
@@ -495,7 +493,7 @@ pub fn abort_op(repo: &Path, kind: &str) -> GitResult<()> {
         "squash" => {
             runner::run(repo, ["reset", "--merge"])?;
             let _ = std::fs::remove_file(gd.join("SQUASH_MSG"));
-            let _ = std::fs::remove_file(gd.join("revqora-squash"));
+            let _ = std::fs::remove_file(super::storage::dir(repo)?.join("squash-target"));
         }
         "rebase" => {
             runner::run(repo, ["rebase", "--abort"])?;

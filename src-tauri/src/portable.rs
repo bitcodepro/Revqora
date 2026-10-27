@@ -27,10 +27,45 @@ pub fn data_dir() -> Option<&'static Path> {
 /// The web view's profile folder: `data/webview`, or the throwaway profile tests pass in
 /// `WEBVIEW2_USER_DATA_FOLDER`.
 pub fn webview_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("WEBVIEW2_USER_DATA_FOLDER") {
-        return Some(PathBuf::from(dir));
+    if std::env::var_os("REVQORA_MULTI_INSTANCE").is_some() {
+        if let Some(dir) = std::env::var_os("WEBVIEW2_USER_DATA_FOLDER") {
+            return Some(PathBuf::from(dir));
+        }
     }
     data_dir().map(|d| d.join("webview"))
+}
+
+/// Runtime files have one portable root; automation uses its explicitly isolated profile.
+/// Unit-test executables have a separate directory and cannot touch the app's profile.
+pub fn runtime_dir() -> std::io::Result<PathBuf> {
+    let mut root =
+        if std::env::var_os("REVQORA_MULTI_INSTANCE").is_some() { webview_dir().map(|p| p.join("revqora-data")) } else { data_dir().map(Path::to_path_buf) }
+            .ok_or_else(|| std::io::Error::other("Cannot locate the portable data folder beside Revqora."))?;
+    if cfg!(test) {
+        root = root.join(format!("tests-{}", std::process::id()));
+    }
+    std::fs::create_dir_all(&root)?;
+    Ok(root)
+}
+
+pub fn temp_dir() -> std::io::Result<PathBuf> {
+    let dir = runtime_dir()?.join("temp");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Called before Tauri starts worker threads. Child processes (including WebView)
+/// use the portable temporary folder rather than the user's system temp directory.
+pub fn configure_environment() -> std::io::Result<()> {
+    let temp = temp_dir()?;
+    if let Some(profile) = webview_dir() {
+        // WebView2 environment variables take precedence over builder options.
+        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", profile);
+    }
+    for key in ["TEMP", "TMP", "TMPDIR"] {
+        std::env::set_var(key, &temp);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

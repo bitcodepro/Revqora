@@ -32,7 +32,7 @@ Screenshots use a generated demo repository (`scripts/make-demo-repo.sh`); all n
 - Stage / unstage / discard whole files, hunks or **single lines** (click line numbers, Shift-click for ranges).
 - **Stage layers** — several staging areas stacked on top of each other. Seal what is staged into a layer, keep staging into a new one, then unstage, discard, reorder, merge or commit any layer on its own. Dependent layers (same lines changed again) are detected and reported instead of breaking anything.
 - When layers overlap (a later layer edits lines an earlier one introduced), unstaging, moving or committing a layer opens the merge editor so you decide what the later change should look like on its own.
-- Discards keep a backup copy in `.git/revqora/trash/`.
+- Discards keep a backup copy in portable `data/repositories/<id>/trash/` beside the executable.
 - Commit with amend, sign-off, skip hooks; commit & push.
 
 **Merging without surprises**

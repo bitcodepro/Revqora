@@ -28,8 +28,8 @@ fn oid(value: &str) -> bool {
 fn valid_id(id: &str) -> bool {
     id.starts_with("cp-") && id.len() <= 80 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
-fn base(root: &Path) -> PathBuf {
-    operations::repository_key(root).join("revqora").join("recovery")
+fn base(root: &Path) -> GitResult<PathBuf> {
+    Ok(super::storage::common(root)?.join("recovery"))
 }
 
 fn display_path(path: &Path) -> String {
@@ -162,8 +162,8 @@ fn read(root: &Path, id: &str) -> GitResult<Checkpoint> {
     if !valid_id(id) {
         return Err(fail("Invalid recovery checkpoint ID."));
     }
-    let dir = base(root).join(id);
-    for path in [base(root).parent().unwrap().to_owned(), base(root), dir.clone(), dir.join("files"), dir.join("meta")] {
+    let dir = base(root)?.join(id);
+    for path in [base(root)?.parent().unwrap().to_owned(), base(root)?, dir.clone(), dir.join("files"), dir.join("meta")] {
         let m = fs::symlink_metadata(path)?;
         if !m.is_dir() || m.file_type().is_symlink() {
             return Err(fail("Checkpoint directories cannot be symbolic links."));
@@ -205,12 +205,12 @@ fn read(root: &Path, id: &str) -> GitResult<Checkpoint> {
 }
 
 pub fn list(root: &Path) -> GitResult<Catalog> {
-    if fs::symlink_metadata(base(root)).is_ok_and(|m| m.file_type().is_symlink()) {
+    if fs::symlink_metadata(base(root)?).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err(fail("Recovery storage cannot be a symbolic link."));
     }
     let mut items = Vec::new();
     let mut skipped = 0;
-    match fs::read_dir(base(root)) {
+    match fs::read_dir(base(root)?) {
         Ok(entries) => {
             for entry in entries {
                 let entry = entry?;
@@ -230,7 +230,7 @@ pub fn list(root: &Path) -> GitResult<Catalog> {
     items.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
     Ok(Catalog {
         checkpoints: items,
-        storage_path: base(root).to_string_lossy().into_owned(),
+        storage_path: base(root)?.to_string_lossy().into_owned(),
         warning: (skipped > 0).then(|| format!("{skipped} incomplete or unreadable checkpoints were preserved and omitted.")),
         max_checkpoint_bytes: MAX_SNAPSHOT,
         max_total_bytes: MAX_TOTAL,
@@ -244,8 +244,8 @@ pub fn detail(root: &Path, id: &str) -> GitResult<Checkpoint> {
 }
 
 fn lock(root: &Path) -> GitResult<File> {
-    let common = operations::repository_key(root);
-    for dir in [common.join("revqora"), base(root)] {
+    let common = super::storage::common(root)?;
+    for dir in [common.clone(), base(root)?] {
         if dir.exists() && fs::symlink_metadata(&dir)?.file_type().is_symlink() {
             return Err(fail("Recovery storage cannot be a symbolic link."));
         }
@@ -256,7 +256,7 @@ fn lock(root: &Path) -> GitResult<File> {
             fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
         }
     }
-    let lock_path = common.join("revqora/recovery.lock");
+    let lock_path = common.join("recovery.lock");
     if fs::symlink_metadata(&lock_path).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err(fail("Recovery lock cannot be a symbolic link."));
     }
@@ -388,7 +388,7 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
     if workspace && before.files.iter().any(|f| f.submodule) {
         return Err(fail("Modified submodules are not included in workspace checkpoints. Commit or stash their changes before this action."));
     }
-    let folder = tempfile::Builder::new().prefix("cp-").tempdir_in(base(&root))?;
+    let folder = tempfile::Builder::new().prefix("cp-").tempdir_in(base(&root)?)?;
     let id = folder.path().file_name().unwrap().to_string_lossy().into_owned();
     fs::create_dir(folder.path().join("files"))?;
     fs::create_dir(folder.path().join("meta"))?;
@@ -591,12 +591,12 @@ fn verify(root: &Path, id: &str) -> GitResult<Checkpoint> {
 fn verify_files(root: &Path, cp: &Checkpoint) -> GitResult<()> {
     let id = &cp.summary.id;
     for item in &cp.index_files {
-        if digest(&base(root).join(id).join("meta").join(&item.name))? != item.sha256 {
+        if digest(&base(root)?.join(id).join("meta").join(&item.name))? != item.sha256 {
             return Err(fail("Checkpoint index checksum mismatch."));
         }
     }
     for (i, item) in cp.paths.iter().enumerate() {
-        if item.kind == "file" && digest(&base(root).join(id).join("files").join(i.to_string()))? != item.sha256.as_deref().unwrap_or("") {
+        if item.kind == "file" && digest(&base(root)?.join(id).join("files").join(i.to_string()))? != item.sha256.as_deref().unwrap_or("") {
             return Err(fail("Checkpoint file checksum mismatch."));
         }
     }
@@ -613,7 +613,7 @@ fn delete_locked(root: &Path, id: &str) -> GitResult<()> {
         }
         runner::run(root, ["update-ref", "-d", &reference, &cp.pin])?;
     }
-    let parent = fs::canonicalize(base(root))?;
+    let parent = fs::canonicalize(base(root)?)?;
     let target = fs::canonicalize(parent.join(id))?;
     if target.parent() != Some(parent.as_path()) {
         return Err(fail("Unsafe checkpoint directory."));
@@ -796,7 +796,7 @@ fn restore_workspace_locked(root: &Path, id: &str, destination: &Path, name: &st
             let target = destination.join(path);
             match item.kind.as_str() {
                 "file" => {
-                    fs::copy(base(root).join(id).join("files").join(i.to_string()), &target)?;
+                    fs::copy(base(root)?.join(id).join("files").join(i.to_string()), &target)?;
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
@@ -819,7 +819,7 @@ fn restore_workspace_locked(root: &Path, id: &str, destination: &Path, name: &st
             }
         }
         for saved in &cp.index_files {
-            let source = base(root).join(id).join("meta").join(&saved.name);
+            let source = base(root)?.join(id).join("meta").join(&saved.name);
             if saved.name == "index" {
                 std::io::copy(&mut File::open(source)?, &mut index)?;
             } else {

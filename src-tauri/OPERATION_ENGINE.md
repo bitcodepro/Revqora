@@ -103,7 +103,7 @@ service below stores recoverable files, index contents and selected Git referenc
   Managed recovery refs are excluded from prepared-state tokens so a failed attempt's
   backup does not invalidate subsequent force consent. User refs, files and index
   changes remain guarded; recovery pin integrity has its own exact-OID checks.
-- Data lives in the common Git directory under `revqora/recovery/`, shared by linked
+- Data lives beside the executable under `data/repositories/<common-git-dir-hash>/recovery/`, shared by linked
   worktrees. An OS file lock serializes checkpoint creation/recovery/removal across app
   instances. This lock does not coordinate external Git programs or editors.
 - Full checkpoints copy the raw index, its shared index when present, and exact bytes
@@ -160,3 +160,20 @@ pagination, linked worktrees, redaction before persistence/export, output/retent
 bounds, read-only storage failures, panic cleanup and concurrent active app sessions.
 Native scenarios export/clear a filtered log and terminate/restart the actual app
 with one running and one queued action, verifying persistence and unknown outcomes.
+
+
+## Portable storage
+
+All Revqora-owned runtime files live under `data/` beside the executable: WebView
+profile/settings, operation journal, recovery files, discard backups, deleted-branch
+records, bisect notes, temporary indexes/messages, and temporary process files.
+Repository scopes use SHA-256 of the canonical Git directory; linked worktrees
+share the common recovery scope and keep their worktree-specific state separate.
+Legacy `.git/revqora/` contents and the squash marker migrate on first access.
+Copies are written atomically, synced and compared before removing their originals;
+conflicting or linked entries stop migration and preserve the old data. An unwritable
+portable directory is an error, never a fallback to AppData or system temp.
+The update downloader stages packages beside the executable in `.revqora-update/`.
+Native Git objects, refs, indexes and operation state remain in the repository.
+Automation may explicitly supply an isolated profile; production ignores external
+`WEBVIEW2_USER_DATA_FOLDER` overrides.

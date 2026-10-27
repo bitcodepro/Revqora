@@ -161,10 +161,11 @@ pub fn op_state(repo: &Path, gd: &Path) -> OpState {
         st.message = std::fs::read_to_string(gd.join("MERGE_MSG")).ok();
         return st;
     }
-    if gd.join("SQUASH_MSG").exists() && gd.join("revqora-squash").exists() {
+    let squash = super::storage::dir(repo).ok().map(|dir| dir.join("squash-target"));
+    if gd.join("SQUASH_MSG").exists() && squash.as_ref().is_some_and(|p| p.is_file()) {
         st.kind = "squash".into();
         st.message = std::fs::read_to_string(gd.join("SQUASH_MSG")).ok();
-        st.incoming_label = read_trim(&gd.join("revqora-squash"));
+        st.incoming_label = squash.as_deref().and_then(read_trim);
         return st;
     }
     if gd.join("BISECT_LOG").exists() {

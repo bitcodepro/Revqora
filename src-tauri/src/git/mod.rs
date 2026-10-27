@@ -17,4 +17,5 @@ pub mod refs;
 pub mod repo;
 pub mod runner;
 pub mod status;
+pub mod storage;
 pub mod watcher;

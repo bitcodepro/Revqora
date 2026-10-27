@@ -248,7 +248,6 @@ pub fn state_token(repo: &Path, raw_status: &str, files: &[super::status::FileSt
         "CHERRY_PICK_HEAD",
         "REVERT_HEAD",
         "SQUASH_MSG",
-        "revqora-squash",
         "BISECT_LOG",
         "rebase-merge/git-rebase-todo",
         "rebase-merge/done",
@@ -258,6 +257,7 @@ pub fn state_token(repo: &Path, raw_status: &str, files: &[super::status::FileSt
     ] {
         hash_file(&mut hash, &gd.join(name))?;
     }
+    hash_file(&mut hash, &super::storage::dir(repo)?.join("squash-target"))?;
     for file in files {
         hash.update(file.path.as_bytes());
         hash_file(&mut hash, &repo.join(&file.path))?;

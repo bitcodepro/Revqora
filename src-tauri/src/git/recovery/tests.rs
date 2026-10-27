@@ -286,11 +286,11 @@ fn damaged_checkpoints_and_destination_collisions_cannot_replace_existing_data()
     assert!(restore_workspace(&f.root, &cp.id, &dest, "occupied").is_err());
     assert_eq!(fs::read(dest.join("private.txt")).unwrap(), b"keep");
     assert!(restore_workspace(&f.root, &cp.id, &f.root.join("nested"), "nested").is_err());
-    fs::write(base(&f.root).join(&cp.id).join("files/0"), b"corrupt").unwrap();
+    fs::write(base(&f.root).unwrap().join(&cp.id).join("files/0"), b"corrupt").unwrap();
     assert!(restore_workspace(&f.root, &cp.id, &f.dir.path().join("bad"), "bad").is_err());
     assert!(!f.dir.path().join("bad").exists());
     restore_branch(&f.root, &cp.id, None, "branch-from-damaged-files").unwrap();
-    let manifest = base(&f.root).join(&cp.id).join("checkpoint.json");
+    let manifest = base(&f.root).unwrap().join(&cp.id).join("checkpoint.json");
     let mut damaged = detail(&f.root, &cp.id).unwrap();
     damaged.paths[0].path = "../outside.txt".into();
     fs::write(&manifest, serde_json::to_vec(&damaged).unwrap()).unwrap();
@@ -304,13 +304,13 @@ fn retention_and_explicit_removal_delete_only_the_checkpoints_expected_pin() {
     let old = f.save(true);
     let mut cp = detail(&f.root, &old.id).unwrap();
     cp.summary.created_at = crate::journal::now() - RETENTION - 1;
-    fs::write(base(&f.root).join(&old.id).join("checkpoint.json"), serde_json::to_vec(&cp).unwrap()).unwrap();
+    fs::write(base(&f.root).unwrap().join(&old.id).join("checkpoint.json"), serde_json::to_vec(&cp).unwrap()).unwrap();
     let fresh = f.save(true);
-    assert!(!base(&f.root).join(&old.id).exists());
+    assert!(!base(&f.root).unwrap().join(&old.id).exists());
     let head = repo::head(&f.root).unwrap().oid.unwrap();
     runner::run(&f.root, ["update-ref", &format!("{PREFIX}{}", fresh.id), &head]).unwrap();
     assert!(delete(&f.root, &fresh.id).is_err());
-    assert!(base(&f.root).join(&fresh.id).exists());
+    assert!(base(&f.root).unwrap().join(&fresh.id).exists());
     let full = detail(&f.root, &fresh.id).unwrap();
     runner::run(&f.root, ["update-ref", &format!("{PREFIX}{}", fresh.id), &full.pin]).unwrap();
     delete(&f.root, &fresh.id).unwrap();
@@ -355,4 +355,21 @@ fn transport_cannot_publish_or_prune_private_checkpoint_references() {
     assert_eq!(super::super::ops::fetch(&f.root, Some("origin"), true, |_| {}).unwrap_err().kind, "recovery-protected");
     assert_eq!(super::super::ops::fetch_background(&f.root).unwrap_err().kind, "recovery-protected");
     assert_eq!(list(&f.root).unwrap().checkpoints.len(), 1);
+}
+
+#[test]
+fn checkpoint_payloads_are_portable_and_shared_by_linked_worktrees() {
+    let f = Fixture::new(false, false);
+    f.write("file.txt", b"portable recovery\n");
+    let cp = f.save(true);
+    let storage = base(&f.root).unwrap();
+    assert!(storage.starts_with(crate::portable::runtime_dir().unwrap()));
+    assert!(!storage.starts_with(operations::repository_key(&f.root)));
+    assert!(!repo::git_dir(&f.root).unwrap().join("revqora").exists());
+    let linked = f.dir.path().join("linked");
+    runner::run(&f.root, ["worktree", "add", "-qb", "linked", linked.to_str().unwrap()]).unwrap();
+    assert_eq!(base(&linked).unwrap(), storage);
+    assert!(list(&linked).unwrap().checkpoints.iter().any(|p| p.id == cp.id));
+    assert_ne!(super::super::storage::dir(&linked).unwrap(), super::super::storage::dir(&f.root).unwrap());
+    assert_eq!(fs::read(f.root.join("file.txt")).unwrap(), b"portable recovery\n");
 }
