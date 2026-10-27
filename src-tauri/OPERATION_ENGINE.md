@@ -190,3 +190,49 @@ checkpoint. Capture failures stop the replacement.
 Undo Center exposes the loaded detail checkpoint ID, hides stale detail/actions
 immediately on row changes, and tests wait for that ID before selecting a reference.
 The native regression holds detail responses behind a deterministic IPC gate.
+
+
+## Reviewed branch deletion (stage 4)
+
+The deletion dialog freezes a plan with a selected surviving comparison branch and
+its exact SHA, the local branch SHA, remote mapping/push URL and cached or explicitly
+refreshed remote SHA. It shows local-only/remote-only counts, SHA reachability,
+content-integration estimates and linked-worktree state. Squash/content integration
+is advisory: missing original SHAs still require force consent. An in-use branch
+cannot be deleted even with force. The current working files are not discarded.
+
+Changing the comparison/remote selection reloads the plan and resets consent.
+External changes never silently update an already visible proof. Local deletion
+checks the operation token, comparison SHA, local SHA and worktree usage before and
+after creating a checkpoint, then removes the exact ref with update-ref --no-deref
+and its expected old SHA. Remote deletion rechecks the comparison and routing,
+requires the local branch to remain absent and always sends an exact server-SHA
+lease. Partial failure retains the local checkpoint and original remote lease;
+refreshing a server tip requires explicit new review, including unmerged history.
+
+Each successful phase returns its actual recovery checkpoint ID. Besides ordinary
+repository refs, it pins the reviewed local commit and the actual push-server commit,
+even if the fetch URL/cache points elsewhere. The success notice opens that exact
+checkpoint in Undo Center. Metadata-cleanup failures after local ref removal are
+warnings, so the completed destructive action is not retried. No PR status is claimed
+until the PR integration stages are implemented.
+
+Regression coverage includes selected-target deletion, squash consent, checked-out
+dirty worktrees with Unicode/quoted paths, changed local/base SHA rejection,
+checkpoint failure, leased remote retries and distinct fetch/push servers followed
+by reflog expiry/GC and restoration. Native WebView2 scenarios cover the target
+selector, reset consent, exact-checkpoint navigation/restoration and worktree guard.
+
+The remote-list `Delete on remote` menu uses the same review, checkpoint and leased
+sender. The server ref is resolved from the actual fetch mapping of the displayed
+tracking ref, including renamed aliases. Remote-only proofs keep local refs and
+working files intact, freeze the presence/SHA of a same-named local branch and allow
+that branch as a comparison target even when checked out. No local ref is invented
+when the branch exists only on the server. Refreshed server history requires new
+consent, and force never disables its exact-SHA lease.
+
+After a successful local deletion, the dialog freezes that mutation's reviewed local
+SHA for subsequent replanning. Initial or refreshed previews never replace this
+receipt. The native regression advances A to B, refreshes the review, deletes B,
+rejects the server update, refreshes/retries remote deletion, then restores the named
+local reference from the final success checkpoint and verifies it is exactly B.

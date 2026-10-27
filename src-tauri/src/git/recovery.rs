@@ -359,6 +359,30 @@ pub fn create(root: &Path, command: &str, label: &str, workspace: bool, ignored:
 }
 
 fn create_expected(root: &Path, command: &str, label: &str, workspace: bool, ignored: bool, expected: Option<&str>) -> GitResult<Summary> {
+    create_expected_refs(root, command, label, workspace, ignored, expected, &[])
+}
+
+/// Also protect a reviewed push-server tip that may not have a tracking ref
+/// (for example when fetch and push point at different servers).
+pub fn reference_checkpoint(root: &Path, command: &str, label: &str, references: &[SavedRef], expected: Option<&str>) -> GitResult<Summary> {
+    crate::journal::suspend(|| create_expected_refs(root, command, label, false, false, expected, references)).map_err(|e| {
+        if e.kind == "stale-operation" {
+            e
+        } else {
+            fail(format!("Recovery checkpoint could not be saved: {}. The requested action was not started.", e.message)).kind("checkpoint-failed")
+        }
+    })
+}
+
+fn create_expected_refs(
+    root: &Path,
+    command: &str,
+    label: &str,
+    workspace: bool,
+    ignored: bool,
+    expected: Option<&str>,
+    references: &[SavedRef],
+) -> GitResult<Summary> {
     operations::access(
         root,
         true,
@@ -368,12 +392,20 @@ fn create_expected(root: &Path, command: &str, label: &str, workspace: bool, ign
                 Some(value) => Some(value.to_owned()),
                 None => status::status(root)?.state_token,
             };
-            create_locked(root, command, label, workspace, ignored, observed.as_deref())
+            create_locked(root, command, label, workspace, ignored, observed.as_deref(), references)
         },
     )
 }
 
-fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignored: bool, expected: Option<&str>) -> GitResult<Summary> {
+fn create_locked(
+    root: &Path,
+    command: &str,
+    label: &str,
+    workspace: bool,
+    ignored: bool,
+    expected: Option<&str>,
+    references: &[SavedRef],
+) -> GitResult<Summary> {
     // Capture is a mutation: pinning objects must never occur in a read path.
     let _lock = lock(root)?;
     let root = fs::canonicalize(repo::discover(root)?)?;
@@ -433,6 +465,17 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
         sparse_cone: false,
         sparse_patterns: None,
     };
+    for reference in references {
+        if !oid(&reference.oid) || !runner::exec(&root, ["cat-file", "-e", &format!("{}^{{commit}}", reference.oid)])?.ok() {
+            return Err(fail("A reviewed recovery reference is unavailable."));
+        }
+        if !cp.refs.iter().any(|r| r.name == reference.name && r.oid == reference.oid) {
+            cp.refs.push(reference.clone());
+        }
+    }
+    if cp.refs.len() > MAX_FILES {
+        return Err(fail("Too many references for a recovery checkpoint."));
+    }
     if workspace {
         let mut index_paths = Vec::new();
         if gd.join("index").exists() {

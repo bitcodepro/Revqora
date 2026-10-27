@@ -1,0 +1,20 @@
+.branch-review { display: flex; flex-direction: column; gap: 14px; }
+.branch-review-heading { display: flex; align-items: flex-end; gap: 12px; }
+.branch-review-heading .field { flex: 1; margin: 0; }
+.branch-review-tips { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.branch-review-tips > div { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.branch-review-tips span, .branch-review-tips small { color: var(--text-faint); font-size: 12px; }
+.branch-review-tips b { overflow-wrap: anywhere; }
+.branch-review-tips code { color: var(--accent); }
+.branch-review-integration { padding: 12px 14px; border-left: 3px solid var(--accent); background: var(--bg); display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.branch-review-integration code { font-size: 12px; font-weight: 400; }
+.branch-review-estimate { color: var(--text-faint); line-height: 1.5; }
+.branch-review-worktrees { display: flex; flex-direction: column; gap: 10px; }
+.branch-review-worktrees > div { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.branch-review-worktrees code { overflow-wrap: anywhere; white-space: normal; }
+.branch-review-worktrees span, .branch-review-worktrees small { font-size: 12px; }
+.branch-review-checkpoint { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; background: color-mix(in srgb,var(--accent) 8%,transparent); border-radius: 10px; }
+.branch-review-checkpoint > svg { flex-shrink: 0; color: var(--accent); margin-top: 2px; }
+.branch-review-checkpoint > div { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; font-size: 13px; }
+.branch-review-checkpoint span, .branch-review-checkpoint small { color: var(--text-faint); line-height: 1.5; }
+@media (max-width: 650px) { .branch-review-heading { flex-direction: column; align-items: stretch; } .branch-review-tips { grid-template-columns: minmax(0,1fr); } }

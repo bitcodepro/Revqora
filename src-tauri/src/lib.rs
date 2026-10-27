@@ -15,6 +15,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use git::branch_deletion::{self, RemoteBranchTarget};
+use git::branch_review::{self, DeletionPlan, DeletionProof, DeletionResult};
 use git::commit::{self as gcommit, CommitDetails, FileHistoryEntry};
 use git::conflicts::{self, ConflictInfo};
 use git::diff::{self, DiffOptions, FileDiff, SelectionMode, WorkSide};
@@ -535,6 +536,55 @@ async fn branch_create(app: AppHandle, expected_state: Option<String>, repo: Str
 #[tauri::command]
 async fn branch_rename(app: AppHandle, expected_state: Option<String>, repo: String, old: String, new: String) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "branch_rename", None, move || ops::rename_branch(&p(&repo), &old, &new)).await
+}
+
+#[tauri::command]
+async fn branch_delete_plan(
+    repo: String,
+    name: String,
+    base: Option<String>,
+    target: Option<RemoteBranchTarget>,
+    saved_local_oid: Option<String>,
+    remote_only: Option<bool>,
+) -> GitResult<DeletionPlan> {
+    blocking(move || branch_review::plan(&p(&repo), &name, base.as_deref(), target, saved_local_oid.as_deref(), remote_only.unwrap_or(false))).await
+}
+
+#[tauri::command]
+async fn branch_delete_reviewed(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    review: DeletionProof,
+    include_remote: bool,
+    force: bool,
+) -> GitResult<DeletionResult> {
+    let expected = expected_state.clone();
+    mutating(repo.clone(), expected_state, app.clone(), "branch_delete_reviewed", None, move || {
+        branch_review::delete_local(&p(&repo), &review, include_remote, force, expected.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn branch_delete_remote_reviewed(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    review: DeletionProof,
+    force: bool,
+    op_id: String,
+) -> GitResult<DeletionResult> {
+    let expected = expected_state.clone();
+    mutating(repo.clone(), expected_state, app.clone(), "branch_delete_remote_reviewed", Some(op_id.clone()), move || {
+        branch_review::delete_remote(&p(&repo), &review, force, expected.as_deref(), progress(&app, &op_id))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn branch_delete_remote_target(repo: String, tracking_ref: String) -> GitResult<RemoteBranchTarget> {
+    blocking(move || branch_deletion::remote_target(&p(&repo), &tracking_ref)).await
 }
 
 #[tauri::command]
@@ -1443,7 +1493,11 @@ pub fn run() {
             branch_create,
             branch_rename,
             branch_delete,
+            branch_delete_plan,
+            branch_delete_reviewed,
+            branch_delete_remote_reviewed,
             branch_delete_targets,
+            branch_delete_remote_target,
             branch_delete_remote,
             branch_delete_refresh,
             branch_set_upstream,

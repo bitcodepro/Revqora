@@ -135,7 +135,7 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
         // the index or the working tree. An enclosing mutation still holds its gate.
         "hash-object" | "commit-tree" | "merge-tree" | "mktree" => true,
         "merge-file" => has("-p") || has("--stdout"),
-        "remote" => a.len() == 1 || (a.len() == 2 && a[1] == "-v"),
+        "remote" => a.len() == 1 || (a.len() == 2 && a[1] == "-v") || a.get(1).is_some_and(|s| s == "get-url"),
         "stash" => a.get(1).map(|s| s == "list").unwrap_or(false),
         "worktree" => a.get(1).map(|s| s == "list").unwrap_or(false),
         "submodule" => a.get(1).map(|s| s == "status").unwrap_or(false),

@@ -641,8 +641,8 @@ try {
   await check("branch deletion supports local-only, remote, force confirmation and partial failure", async () => {
     const localExists = (name) => git("branch", "--list", name) !== "";
     const remoteExists = (name) => git("ls-remote", "--heads", "origin", "refs/heads/" + name) !== "";
-    const create = (name, remoteName = name) => {
-      git("branch", name, "HEAD");
+    const create = (name, remoteName = name, start = "HEAD") => {
+      git("branch", name, start);
       git("push", "-q", "origin", `${name}:refs/heads/${remoteName}`);
       git("branch", `--set-upstream-to=origin/${remoteName}`, name);
     };
@@ -652,6 +652,7 @@ try {
       await page.locator(`.sidebar [data-branch-kind='local'][data-branch-name='${name}']`).click({ button: "right" });
       await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
       await page.waitForSelector(".modal .delete-remote-branch");
+      await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
     };
     create("ui-local-only");
     await openDelete("ui-local-only");
@@ -664,8 +665,8 @@ try {
     git("push", "-q", "origin", "ui-delete-both:refs/heads/ui-delete-both");
     await openDelete("ui-delete-both");
     await page.check(".delete-remote-branch");
-    await page.waitForSelector(".modal select");
-    if (await page.locator(".modal select").inputValue() !== JSON.stringify(["origin", "refs/heads/published/ui-delete-both"])) throw new Error("delete dialog did not prefer the configured upstream");
+    await page.waitForSelector("select[aria-label='Remote branch']");
+    if (await page.locator("select[aria-label='Remote branch']").inputValue() !== JSON.stringify(["origin", "refs/heads/published/ui-delete-both"])) throw new Error("delete dialog did not prefer the configured upstream");
     await shot("27-delete-both");
     await page.click(".delete-branch-confirm");
     await page.waitForSelector(".modal", { state: "detached" });
@@ -720,7 +721,10 @@ try {
       for (const spec of fetchSpecs) git("config", "--add", "remote.origin.fetch", spec);
     }
     git("push", "-q", "origin", ":refs/heads/ui-mapped-alias");
-    create("ui-failed-remote");
+    create("ui-failed-remote", "ui-failed-remote", "HEAD~1");
+    const originalLocalOid = git("rev-parse", "ui-failed-remote");
+    const deletedLocalOid = git("rev-parse", "HEAD");
+    if (originalLocalOid === deletedLocalOid) throw new Error("refreshed-deletion fixture needs distinct local tips A and B");
     const pushUrl = git("remote", "get-url", "--push", "origin");
     const hook = path.join(path.resolve(repo, pushUrl), "hooks", "pre-receive");
     const other = path.join(work, "env", "deletion-other-clone");
@@ -730,6 +734,11 @@ try {
     fs.chmodSync(hook, 0o755);
     try {
       await openDelete("ui-failed-remote");
+      // Review A, advance the local branch externally to B, then explicitly refresh.
+      // After local B is deleted, every remote retry must retain B, not the initial A.
+      git("update-ref", "refs/heads/ui-failed-remote", deletedLocalOid, originalLocalOid);
+      await page.click(".refresh-branch-review");
+      await page.waitForSelector(`.branch-review[aria-busy='false'][data-review-local-oid='${deletedLocalOid}']`);
       await page.check(".delete-remote-branch");
       await page.click(".delete-branch-confirm");
       await page.waitForSelector(".delete-branch-error:has-text('Local branch deleted. Remote deletion failed')");
@@ -741,7 +750,7 @@ try {
       const changed = otherGit("rev-parse", "HEAD");
       // Retry must keep the original lease even after the local part succeeded.
       await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".refresh-remote-deletion");
+      await page.waitForSelector(".branch-review[data-remote-changed='true']");
       if (!(await page.locator(".delete-branch-confirm").isDisabled()) || !remoteExists("ui-failed-remote")) throw new Error("retry deleted an unseen server tip");
       await page.click(".refresh-remote-deletion");
       await page.waitForSelector(".remote-deletion-review");
@@ -749,11 +758,11 @@ try {
       if (!(await page.locator(".delete-branch-confirm").isDisabled())) throw new Error("refreshed tip did not require new consent");
       await shot("38-remote-deletion-review");
       await page.check(".confirm-reviewed-remote");
-      // Even explicit force consent to B must not delete a subsequent C.
+      // Even explicit force consent must not delete a subsequent server tip.
       otherGit("commit", "--allow-empty", "-qm", "Another unseen server commit");
       otherGit("push", "-q", "origin", "ui-failed-remote");
       await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".refresh-remote-deletion");
+      await page.waitForSelector(".branch-review[data-remote-changed='true']");
       if (!remoteExists("ui-failed-remote")) throw new Error("force deleted a newer unseen tip");
       await page.click(".refresh-remote-deletion");
       await page.waitForSelector(".remote-deletion-review");
@@ -762,8 +771,106 @@ try {
       await page.click(".delete-branch-confirm");
       await page.waitForSelector(".modal", { state: "detached" });
       if (remoteExists("ui-failed-remote")) throw new Error("remote retry failed");
+      // Follow the success action to the FINAL remote checkpoint, not the earlier
+      // local checkpoint that still retains B even when this regression occurs.
+      const notice = page.locator(".toast").filter({ hasText: "Deleted ui-failed-remote and origin/ui-failed-remote" });
+      const checkpointId = (await notice.innerText()).match(/Recovery checkpoint (\S+) saved/)?.[1];
+      if (!checkpointId) throw new Error("final recovery checkpoint ID missing");
+      await notice.getByRole("button", { name: "Open recovery checkpoint", exact: true }).click();
+      await page.locator(`.recovery-detail[data-checkpoint-id='${checkpointId}']`).waitFor();
+      const branchOption = await page.locator("select[aria-label='Saved recovery reference'] option").evaluateAll((options) => options.find((o) => o.textContent.startsWith("refs/heads/ui-failed-remote ·"))?.value);
+      if (branchOption === undefined) throw new Error("deleted local reference missing from final checkpoint");
+      await page.selectOption("select[aria-label='Saved recovery reference']", branchOption);
+      await page.fill("input[aria-label='Recovered local branch']", "ui-refreshed-deletion-recovery");
+      await page.getByRole("button", { name: "Restore branch", exact: true }).click();
+      await until(() => localExists("ui-refreshed-deletion-recovery"), "final checkpoint did not restore the deleted branch", 15000);
+      const restoredOid = git("rev-parse", "ui-refreshed-deletion-recovery");
+      if (restoredOid !== deletedLocalOid) throw new Error(`final checkpoint restored ${restoredOid} instead of deleted local tip ${deletedLocalOid} (initial review ${originalLocalOid})`);
+      await page.waitForSelector(".recovery-center[aria-busy='false']");
+      await shot("49-refreshed-deletion-recovery");
+      await page.locator(".modal button", { hasText: /^Close$/ }).click();
+      git("branch", "-D", "ui-refreshed-deletion-recovery");
     } finally { if (fs.existsSync(hook)) fs.unlinkSync(hook); }
     await page.fill(".sidebar input[placeholder^='Filter branches']", "");
+  });
+
+  await check("deletion review selects its target and opens the exact recovery checkpoint", async () => {
+    const openDelete = async (name) => {
+      await page.fill(".sidebar input[placeholder^='Filter branches']", name);
+      await page.click("button[title='Refresh (F5)']");
+      await page.locator(`.sidebar [data-branch-kind='local'][data-branch-name='${name}']`).click({ button: "right" });
+      await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
+      await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
+    };
+    const original = git("rev-parse", "HEAD");
+    const tip = git("-c", "commit.gpgsign=false", "commit-tree", git("rev-parse", "HEAD^{tree}"), "-p", "HEAD", "-m", "Squash-integrated history");
+    git("branch", "ui-review-source", tip);
+    git("branch", "ui-review-target", tip);
+    await openDelete("ui-review-source");
+    if (!(await page.locator(".branch-review-integration").innerText()).includes("Changes appear integrated")) throw new Error("squash estimate missing");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".force-delete-branch");
+    if (!git("branch", "--list", "ui-review-source")) throw new Error("squash estimate bypassed force consent");
+    await shot("44-squash-review");
+    await page.selectOption("select[aria-label='Comparison branch']", "refs/heads/ui-review-target");
+    await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
+    if (await page.locator(".force-delete-branch").count()) throw new Error("target change retained force consent");
+    if (!(await page.locator(".branch-review-integration").innerText()).includes("0 local commits outside target")) throw new Error("selected comparison target was ignored");
+    await shot("45-selected-deletion-target");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".modal", { state: "detached" });
+    if (git("branch", "--list", "ui-review-source") || git("rev-parse", "HEAD") !== original) throw new Error("selected-target deletion affected the current branch");
+    const notice = page.locator(".toast").filter({ hasText: "Deleted local branch ui-review-source" });
+    const id = (await notice.innerText()).match(/Recovery checkpoint (\S+) saved/)?.[1];
+    if (!id) throw new Error("saved checkpoint ID missing from deletion notice");
+    await notice.getByRole("button", { name: "Open recovery checkpoint", exact: true }).click();
+    await page.locator(`.recovery-detail[data-checkpoint-id='${id}']`).waitFor();
+    const sourceOption = await page.locator("select[aria-label='Saved recovery reference'] option").evaluateAll((options) => options.find((o) => o.textContent.startsWith("refs/heads/ui-review-source ·"))?.value);
+    if (!sourceOption) throw new Error("deleted source reference missing from its checkpoint");
+    await page.selectOption("select[aria-label='Saved recovery reference']", sourceOption);
+    await page.fill("input[aria-label='Recovered local branch']", "ui-review-restored");
+    await page.getByRole("button", { name: "Restore branch", exact: true }).click();
+    await until(() => git("rev-parse", "--verify", "--quiet", "refs/heads/ui-review-restored") === tip, "deletion checkpoint did not restore the exact branch tip", 15000);
+    await shot("46-deletion-checkpoint");
+    await page.locator(".modal button", { hasText: /^Close$/ }).click();
+    git("branch", "-D", "ui-review-target", "ui-review-restored");
+
+    // The remote-list menu must use the same reviewed, leased deletion flow.
+    git("push", "-q", "origin", "HEAD:refs/heads/ui-review-server-only");
+    await page.fill(".sidebar input[placeholder^='Filter branches']", "ui-review-server-only");
+    await page.click("button[title='Refresh (F5)']");
+    await page.locator(".sidebar [data-branch-kind='remote'][data-branch-name='origin/ui-review-server-only']").click({ button: "right" });
+    await page.locator(".ctx-item").filter({ hasText: /^Delete on remote…$/ }).click();
+    await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
+    if (await page.locator(".delete-remote-branch").count()) throw new Error("remote-only deletion offered to remove a local branch");
+    if (!(await page.locator(".modal").innerText()).includes("local branch and its worktrees are kept")) throw new Error("remote-only consequences missing");
+    const localHead = git("rev-parse", "HEAD");
+    const localIndex = fs.readFileSync(path.join(repo, ".git", "index"));
+    await shot("48-direct-remote-review");
+    await page.click(".delete-branch-confirm");
+    // Wait for checkpoint + leased transport completion before checking Git state.
+    await page.waitForSelector(".modal", { state: "detached", timeout: 60000 });
+    if (git("ls-remote", "--heads", "origin", "refs/heads/ui-review-server-only") || git("rev-parse", "HEAD") !== localHead || !fs.readFileSync(path.join(repo, ".git", "index")).equals(localIndex)) throw new Error("direct remote deletion changed local work or kept the server branch");
+
+    git("branch", "ui-review-worktree");
+    const worktree = path.join(work, "env", "linked review проверка 'quoted'");
+    git("worktree", "add", "-q", worktree, "ui-review-worktree");
+    fs.writeFileSync(path.join(worktree, "manual-edit.txt"), "Keep this uncommitted edit\n");
+    try {
+      await openDelete("ui-review-worktree");
+      const text = await page.locator(".branch-review-worktrees").innerText();
+      const shownPath = await page.locator(".branch-review-worktrees code").innerText();
+      const canonicalPath = (value) => {
+        const canonical = fs.realpathSync.native(value).replaceAll("\\", "/");
+        return process.platform === "win32" ? canonical.toLowerCase() : canonical;
+      };
+      if (canonicalPath(shownPath) !== canonicalPath(worktree)) throw new Error(`linked worktree path mismatch: expected ${worktree}, saw ${shownPath}`);
+      if (!text.includes("1 changed files") || !(await page.locator(".delete-branch-confirm").isDisabled())) throw new Error("dirty checked-out branch was not blocked");
+      await shot("47-worktree-deletion-review");
+      await page.click(".modal button:has-text('Cancel')");
+    } finally { git("worktree", "remove", "--force", worktree); git("branch", "-D", "ui-review-worktree"); }
+    await page.fill(".sidebar input[placeholder^='Filter branches']", "");
+    await page.click("button[title='Refresh (F5)']");
   });
 
   await check("twenty repositories support bulk fetch and clean fast-forward pull", async () => {
@@ -897,7 +1004,8 @@ try {
     await page.waitForSelector(".repository-slot", { state: "visible" });
     await page.click(".history-mode button:has-text('Graph')");
     await page.locator(".repository-item", { hasText: "demo" }).locator(".repository-select").click();
-    await page.waitForSelector(".repo-current:has-text('demo')");
+    // Loading twenty repository tabs can exceed the normal per-action timeout.
+    await page.waitForSelector(".repo-current:has-text('demo')", { timeout: 60000 });
   });
 
   await check("repository transactions queue fetch and reject a stale reset after a commit", async () => {
@@ -951,7 +1059,7 @@ try {
     await page.click("button[title='Refresh (F5)']");
     await page.locator(".sidebar [data-branch-kind='local'][data-branch-name='ui-stale-confirm']").click({ button: "right" });
     await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
-    await page.waitForSelector(".delete-branch-confirm");
+    await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
     git("branch", "ui-stale-external");
     await page.waitForSelector(".sidebar [data-branch-kind='local'][data-branch-name='ui-stale-external']");
     await page.click(".delete-branch-confirm");
@@ -1057,7 +1165,8 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 500));
       ({ page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 }));
       attachPage();
-      await page.waitForSelector(".repo-current:has-text('demo')");
+      // Loading twenty repository tabs can exceed the normal per-action timeout.
+    await page.waitForSelector(".repo-current:has-text('demo')", { timeout: 60000 });
       const recovered = await page.evaluate(async ({ ids, keep }) => {
         const invoke = window.__TAURI_INTERNALS__.invoke;
         return { entries: await Promise.all(ids.map((id) => invoke("operation_log_detail", { id }))), kept: await invoke("operation_log_detail", { id: keep }) };
@@ -1105,7 +1214,8 @@ try {
     await close(); await exited;
     await new Promise((resolve) => setTimeout(resolve, 500));
     ({ page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 })); attachPage();
-    await page.waitForSelector(".repo-current:has-text('demo')");
+    // Loading twenty repository tabs can exceed the normal per-action timeout.
+    await page.waitForSelector(".repo-current:has-text('demo')", { timeout: 60000 });
     git("reset", "--hard", "HEAD"); git("clean", "-fd");
     const sourceHead = git("rev-parse", "HEAD");
     const sourceIndex = fs.readFileSync(path.join(repo, ".git", "index"));
