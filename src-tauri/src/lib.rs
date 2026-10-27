@@ -2,6 +2,7 @@
 
 pub mod askpass;
 pub mod git;
+pub mod journal;
 pub mod portable;
 pub mod update;
 
@@ -61,7 +62,7 @@ struct Observed<T> {
 
 async fn mutating<T, F>(repo: String, expected: Option<String>, app: AppHandle, command: &'static str, id: Option<String>, f: F) -> GitResult<T>
 where
-    T: Send + 'static,
+    T: Send + Serialize + 'static,
     F: FnOnce() -> GitResult<T> + Send + 'static,
 {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -69,7 +70,12 @@ where
     let id = id.unwrap_or_else(|| format!("repository-op-{}", IDS.fetch_add(1, Ordering::Relaxed)));
     blocking(move || {
         let repository_key = git::operations::repository_key(&p(&repo)).to_string_lossy().into_owned();
+        let log = journal::begin(&p(&repo), command);
+        let _ = app.emit("operation-log-changed", ());
         let emit = |phase: &str, ahead: usize| {
+            if let Some(log) = &log {
+                log.phase(phase, &p(&repo));
+            }
             let _ = app.emit(
                 "repository-operation",
                 OperationEvent {
@@ -82,11 +88,23 @@ where
                 },
             );
         };
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| git::operations::run(&p(&repo), command, expected.as_deref(), emit, f)))
-            .unwrap_or_else(|_| {
-                Err(GitError::new("The operation failed unexpectedly. Refresh and inspect the repository before retrying.").kind("operation-failed"))
-            });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            git::operations::run(&p(&repo), command, expected.as_deref(), emit, || {
+                let result = f();
+                if let Some(log) = &log {
+                    log.after(&p(&repo));
+                }
+                result
+            })
+        }))
+        .unwrap_or_else(|_| {
+            Err(GitError::new("The operation failed unexpectedly. Refresh and inspect the repository before retrying.").kind("operation-failed"))
+        });
+        if let Some(log) = &log {
+            log.finish(&result);
+        }
         emit(if result.is_ok() { "finished" } else { "failed" }, 0);
+        let _ = app.emit("operation-log-changed", ());
         result
     })
     .await
@@ -109,6 +127,45 @@ fn progress(app: &AppHandle, op_id: &str) -> impl FnMut(&str) {
     move |line: &str| {
         let _ = app.emit("op-progress", Progress { op_id: op_id.clone(), line: line.to_string() });
     }
+}
+
+// Diagnostics only: these commands never mutate a Git repository.
+fn log_error(message: String) -> GitError {
+    GitError::new(message).kind("operation-log")
+}
+
+#[tauri::command]
+async fn operation_log_health() -> GitResult<journal::Health> {
+    blocking(|| Ok(journal::health())).await
+}
+
+#[tauri::command]
+async fn operation_log_list(filter: journal::Filter) -> GitResult<journal::Page> {
+    blocking(move || journal::store().and_then(|s| s.list(&filter, 50)).map_err(log_error)).await
+}
+
+#[tauri::command]
+async fn operation_log_detail(id: String) -> GitResult<journal::Detail> {
+    blocking(move || journal::store().and_then(|s| s.detail(&id)).map_err(log_error)).await
+}
+
+#[tauri::command]
+async fn operation_log_clear(app: AppHandle, filter: journal::Filter) -> GitResult<usize> {
+    let count = blocking(move || journal::store().and_then(|s| s.clear(&filter)).map_err(log_error)).await?;
+    let _ = app.emit("operation-log-changed", ());
+    Ok(count)
+}
+
+#[tauri::command]
+async fn operation_log_export(filter: journal::Filter, destination: String) -> GitResult<usize> {
+    blocking(move || journal::store().and_then(|s| s.export(&filter, &p(&destination))).map_err(log_error)).await
+}
+
+#[tauri::command]
+async fn operation_log_retry(app: AppHandle) -> GitResult<journal::Health> {
+    blocking(|| journal::retry().map_err(log_error)).await?;
+    let _ = app.emit("operation-log-changed", ());
+    Ok(journal::health())
 }
 
 // ───────────────────────────── app / repo ─────────────────────────────
@@ -154,15 +211,35 @@ async fn repo_open(path: String) -> GitResult<RepoInfo> {
 }
 
 #[tauri::command]
-async fn repo_init(path: String, branch: Option<String>) -> GitResult<RepoInfo> {
-    blocking(move || repo::init(&p(&path), branch.as_deref().unwrap_or("main"))).await
+async fn repo_init(app: AppHandle, path: String, branch: Option<String>) -> GitResult<RepoInfo> {
+    // Initialization is logged separately because the repository gate does not exist yet.
+    blocking(move || {
+        journal::record(
+            &p(&path),
+            "repo_init",
+            || {
+                let _ = app.emit("operation-log-changed", ());
+            },
+            || repo::init(&p(&path), branch.as_deref().unwrap_or("main")),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
 async fn repo_clone(app: AppHandle, parent: String, url: String, name: String, op_id: String) -> GitResult<RepoInfo> {
     blocking(move || {
-        let root = ops::clone(&p(&parent), &url, &name, progress(&app, &op_id))?;
-        repo::info(&root)
+        journal::record(
+            &p(&parent).join(&name),
+            "repo_clone",
+            || {
+                let _ = app.emit("operation-log-changed", ());
+            },
+            || {
+                let root = ops::clone(&p(&parent), &url, &name, progress(&app, &op_id))?;
+                repo::info(&root)
+            },
+        )
     })
     .await
 }
@@ -1213,6 +1290,12 @@ pub fn run() {
         .manage(AppState::default())
         .setup(move |app| {
             git::locate::configure();
+            let log_dir = if std::env::var_os("REVQORA_MULTI_INSTANCE").is_some() {
+                portable::webview_dir().map(|p| p.join("revqora-operation-log"))
+            } else {
+                portable::data_dir().map(|p| p.join("operation-log"))
+            };
+            journal::initialize(log_dir.as_deref());
             if let Some(cfg) = app.config().app.windows.iter().find(|w| w.label == "main").cloned() {
                 // No Edge form autofill (its dropdown arrow showed up inside text fields).
                 let mut wb = tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.general_autofill_enabled(false);
@@ -1240,6 +1323,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            operation_log_health,
+            operation_log_list,
+            operation_log_detail,
+            operation_log_clear,
+            operation_log_export,
+            operation_log_retry,
             git_version,
             update_check,
             update_install,

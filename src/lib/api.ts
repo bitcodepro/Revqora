@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
-import type { RemoteBranchTarget, RemoteDeletionReview } from "./types";
+import type { RemoteBranchTarget, RemoteDeletionReview, OperationLogDetail, OperationLogFilter, OperationLogPage, OperationLogHealth } from "./types";
 import type {
   Check,
   CommitHelpers,
@@ -67,6 +67,12 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  operationLogHealth: () => call<OperationLogHealth>("operation_log_health"),
+  operationLogList: (filter: OperationLogFilter) => call<OperationLogPage>("operation_log_list", { filter }),
+  operationLogDetail: (id: string) => call<OperationLogDetail>("operation_log_detail", { id }),
+  operationLogClear: (filter: OperationLogFilter) => call<number>("operation_log_clear", { filter }),
+  operationLogExport: (filter: OperationLogFilter, destination: string) => call<number>("operation_log_export", { filter, destination }),
+  operationLogRetry: () => call<OperationLogHealth>("operation_log_retry"),
   gitVersion: () => call<GitVersionInfo>("git_version"),
   gitSelection: () => call<GitSelection | null>("git_selection"),
   updateCheck: () => call<UpdateInfo>("update_check"),

@@ -1,0 +1,64 @@
+.operation-log-open { position: relative; }
+.statusbar button.repository-queue { border: 0; background: transparent; color: var(--text-dim); border-radius: 4px; font: inherit; cursor: pointer; }
+.statusbar button.repository-queue:hover { background: var(--bg-hover); }
+.log-clear { color: var(--red); }
+.operation-log-open.log-warning { color: var(--amber); }
+.log-warning-dot { position: absolute; top: 3px; right: 3px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.modal:has(.operation-log) { width: min(1180px, calc(100vw - 48px)); max-width: none; }
+.modal:has(.operation-log) .modal-body { padding: 0; gap: 0; overflow: hidden; min-height: 0; }
+.operation-log { min-height: 0; height: min(72vh, 760px); display: flex; flex-direction: column; min-width: 0; }
+.log-toolbar { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.log-search { display: flex; align-items: center; gap: 7px; flex: 1 1 240px; min-width: 180px; padding: 0 9px; height: 31px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-faint); }
+.log-search:focus-within { border-color: var(--accent); }
+.log-search input { width: 100%; min-width: 0; background: none; border: 0; outline: 0; font-size: 12px; }
+.log-toolbar .input { width: auto; min-width: 110px; max-width: 210px; padding-top: 5px; padding-bottom: 5px; font-size: 12px; }
+.log-health { margin: 8px 16px 0; align-items: center; }
+.log-health span { flex: 1; overflow-wrap: anywhere; }
+.log-error { margin: 8px 16px 0; overflow-wrap: anywhere; }
+.log-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(240px, 32%) minmax(0, 1fr); }
+.log-list { overflow: auto; min-width: 0; border-right: 1px solid var(--border); }
+.log-list-caption { padding: 9px 12px; font-size: 11px; color: var(--text-faint); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 1; background: var(--bg); }
+.log-row { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border); background: transparent; padding: 10px 12px; }
+.log-row:hover { background: var(--bg-hover); }
+.log-row.selected { background: color-mix(in srgb, var(--accent) 11%, transparent); box-shadow: inset 3px 0 var(--accent); }
+.log-row-title { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; justify-content: space-between; font-size: 12px; margin-bottom: 6px; }
+.log-row-title b { overflow-wrap: anywhere; font-weight: 600; }
+.log-row-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-faint); font-size: 10px; margin-top: 3px; }
+.log-row-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-row-meta > span:last-child { display: inline-flex; gap: 3px; align-items: center; flex-shrink: 0; }
+.log-row-meta time { flex-shrink: 0; font-size: 10px; }
+.log-state { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 550; padding: 2px 6px; border-radius: 4px; background: var(--bg-hover); white-space: nowrap; }
+.log-state.succeeded { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
+.log-state.failed { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
+.log-state.running, .log-state.queued { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.log-state.attention, .log-state.interrupted { color: var(--amber); background: color-mix(in srgb, var(--amber) 10%, transparent); }
+.log-detail { min-width: 0; overflow: auto; padding: 16px 20px; user-select: text; }
+.log-detail-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 16px; }
+.log-detail-head h3 { margin: 0 0 5px; font-size: 16px; overflow-wrap: anywhere; }
+.log-detail-head .btn { flex-shrink: 0; }
+.log-metadata { display: grid; grid-template-columns: 135px minmax(0, 1fr); gap: 7px 12px; font-size: 12px; margin: 0 0 18px; }
+.log-metadata dt { color: var(--text-faint); }
+.log-metadata dd { margin: 0; overflow-wrap: anywhere; }
+.log-result-error, .log-notice { border-radius: 6px; padding: 10px 12px; background: color-mix(in srgb, var(--red) 8%, transparent); margin-bottom: 12px; font-size: 12px; }
+.log-result-error b { color: var(--red); }
+.log-notice { background: color-mix(in srgb, var(--amber) 10%, transparent); }
+.log-result-error pre, .log-command pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-family: var(--font-code); font-size: 11px; user-select: text; }
+.log-commands-title { font-size: 12px; margin: 15px 0 9px; }
+.log-command { border: 1px solid var(--border); border-radius: 6px; margin: 7px 0; }
+.log-command summary { cursor: pointer; padding: 8px 10px; font-size: 11px; }
+.log-command summary code { font-family: var(--font-code); overflow-wrap: anywhere; }
+.log-command summary > span { display: block; color: var(--text-faint); font-size: 10px; margin: 5px 0 0 14px; }
+.log-command-output { border-top: 1px solid var(--border); padding: 10px 12px; font-size: 11px; overflow-wrap: anywhere; }
+.log-command-output > b { display: block; margin-top: 9px; font-size: 10px; color: var(--text-faint); }
+.log-privacy { border-top: 1px solid var(--border); padding: 8px 16px; font-size: 10px; color: var(--text-faint); }
+.log-empty { min-height: 160px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; color: var(--text-faint); padding: 24px; font-size: 12px; }
+.log-loading { display: flex; justify-content: center; gap: 8px; align-items: center; padding: 12px; color: var(--text-faint); }
+.log-more { display: block; margin: 10px auto; font-size: 12px; }
+.log-retention { flex: 1; font-size: 10px; }
+@media (max-width: 780px) {
+  .modal:has(.operation-log) { width: calc(100vw - 20px); }
+  .log-body { grid-template-columns: minmax(190px, 36%) minmax(0, 1fr); }
+  .log-detail { padding: 12px; }
+  .log-metadata { grid-template-columns: 100px minmax(0, 1fr); }
+  .log-row-meta { flex-wrap: wrap; }
+}
