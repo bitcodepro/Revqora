@@ -960,9 +960,8 @@ try {
     await page.waitForSelector(".repository-slot", { state: "visible" });
     await page.click(".history-mode button:has-text('Graph')");
     await page.locator(".repository-item", { hasText: "demo" }).locator(".repository-select").click();
-    // Restoring twenty repository tabs can exceed the normal per-action timeout.
-      // Wait for the restored active repository before asserting journal state.
-      await page.waitForSelector(".repo-current:has-text('demo')", { timeout: 60000 });
+    // Loading twenty repository tabs can exceed the normal per-action timeout.
+    await page.waitForSelector(".repo-current:has-text('demo')", { timeout: 60000 });
   });
 
   await check("repository transactions queue fetch and reject a stale reset after a commit", async () => {
@@ -1122,9 +1121,8 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 500));
       ({ page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 }));
       attachPage();
-      // Restoring twenty repository tabs can exceed the normal per-action timeout.
-      // Wait for the restored active repository before asserting journal state.
-      await page.waitForSelector(".repo-current:has-text('demo')", { timeout: 60000 });
+      // Loading twenty repository tabs can exceed the normal per-action timeout.
+    await page.waitForSelector(".repo-current:has-text('demo')", { timeout: 60000 });
       const recovered = await page.evaluate(async ({ ids, keep }) => {
         const invoke = window.__TAURI_INTERNALS__.invoke;
         return { entries: await Promise.all(ids.map((id) => invoke("operation_log_detail", { id }))), kept: await invoke("operation_log_detail", { id: keep }) };
@@ -1172,9 +1170,8 @@ try {
     await close(); await exited;
     await new Promise((resolve) => setTimeout(resolve, 500));
     ({ page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 })); attachPage();
-    // Restoring twenty repository tabs can exceed the normal per-action timeout.
-      // Wait for the restored active repository before asserting journal state.
-      await page.waitForSelector(".repo-current:has-text('demo')", { timeout: 60000 });
+    // Loading twenty repository tabs can exceed the normal per-action timeout.
+    await page.waitForSelector(".repo-current:has-text('demo')", { timeout: 60000 });
     git("reset", "--hard", "HEAD"); git("clean", "-fd");
     const sourceHead = git("rev-parse", "HEAD");
     const sourceIndex = fs.readFileSync(path.join(repo, ".git", "index"));
