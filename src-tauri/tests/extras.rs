@@ -53,10 +53,22 @@ fn worktrees_add_list_lock_remove() {
 
 #[test]
 fn submodules_add_status_update() {
-    // Local file:// submodules are blocked by default since git 2.38; allow them for the test.
-    std::env::set_var("GIT_CONFIG_COUNT", "1");
-    std::env::set_var("GIT_CONFIG_KEY_0", "protocol.file.allow");
-    std::env::set_var("GIT_CONFIG_VALUE_0", "always");
+    // Give this fixture's Git children a complete config environment atomically.
+    // Mutating process-wide GIT_CONFIG_* in parallel tests can expose COUNT=1
+    // before KEY/VALUE exist, causing unrelated Git commands to fail.
+    const CHILD: &str = "REVQORA_SUBMODULE_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "submodules_add_status_update", "--nocapture"])
+            .env(CHILD, "1")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "protocol.file.allow")
+            .env("GIT_CONFIG_VALUE_0", "always")
+            .status()
+            .unwrap();
+        assert!(status.success(), "isolated submodule fixture failed: {status}");
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let lib = repo(tmp.path(), "lib");
     commit(&lib, "lib.txt", "v1\n", "lib v1");
