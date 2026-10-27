@@ -6,7 +6,7 @@ import { Columns3, FilePlus2, GitBranch, GitCommitHorizontal, GitGraph, GitPullR
 import { PullRequestsView } from "./components/PullRequests";
 import { useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
-import { openOverlay, updateBusy, useUi } from "./lib/ui";
+import { openOverlay, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
 import { actionFor, comboFromEvent } from "./lib/shortcuts";
 import { settingsDialog } from "./components/dialogs";
 import { repoToolsDialog } from "./components/RepoTools";
@@ -188,7 +188,7 @@ const quietFetch = createAutoFetch({
     return useRepos.getState().refresh(root, { info: true, status: true, refs: true, graph: useRepos.getState().active === root });
   },
   failed: (root, e) => useRepos.getState().patch(root, { fetchError: errorMessage(e) }),
-  busy: () => useUi.getState().busy.length > 0,
+  busy: () => useUi.getState().busy.length > 0 || useUi.getState().repositoryOperations.length > 0 || Object.values(useRepos.getState().tabs).some((t) => t.pendingMutations > 0),
 });
 
 /** Fetches the open repositories in the background every few minutes (Settings → Auto fetch). */
@@ -208,7 +208,8 @@ export default function App() {
   useEffect(startUpdateChecks, []);
   useAutoFetch();
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
-  const busy = useUi((s) => s.busy.length > 0);
+  const pending = useRepos((s) => Object.values(s.tabs).some((t) => t.pendingMutations > 0));
+  const busy = useUi((s) => s.busy.length > 0 || s.repositoryOperations.length > 0) || pending;
   const [dropping, setDropping] = useState(false);
   const restored = useRef(false);
   const overview = useUi((s) => s.repositoryOverview);
@@ -256,6 +257,15 @@ export default function App() {
       }),
     );
     unsubs.push(listen<{ opId: string; line: string }>("op-progress", (e) => updateBusy(e.payload.opId, e.payload.line)));
+    unsubs.push(listen<RepositoryOperation>("repository-operation", (e) => {
+      updateRepositoryOperation(e.payload);
+      if (e.payload.phase === "finished" || e.payload.phase === "failed") {
+        // Shared refs can change in another worktree. Refresh all open views.
+        for (const root of useRepos.getState().order) {
+          if (root === e.payload.repo || useRepos.getState().tabs[root]?.info?.commonDir === e.payload.repositoryKey) void useRepos.getState().refresh(root);
+        }
+      }
+    }));
     unsubs.push(listen<string[]>("open-paths", (e) => e.payload.forEach((p) => A.openRepoPath(p))));
     unsubs.push(
       getCurrentWebview().onDragDropEvent((e) => {

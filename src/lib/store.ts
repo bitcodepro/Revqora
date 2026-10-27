@@ -5,6 +5,7 @@ import { useSettings } from "./settings";
 import { useUi } from "./ui";
 import type { GraphSummary, LayersState, RefsSnapshot, RepoExtras, RepoInfo, StatusSummary } from "./types";
 import { WORKTREE } from "./types";
+import { setOperationHooks } from "./operationClient";
 
 export type View = "history" | "changes" | "pulls";
 
@@ -15,6 +16,7 @@ export type ChangeSel =
   | { kind: "layer"; layer: number; path: string };
 
 export interface RepoTab {
+  pendingMutations: number;
   root: string;
   info: RepoInfo | null;
   status: StatusSummary | null;
@@ -63,6 +65,7 @@ interface RepoStore {
 
 function emptyTab(root: string): RepoTab {
   return {
+    pendingMutations: 0,
     root,
     info: null,
     status: null,
@@ -90,6 +93,32 @@ function emptyTab(root: string): RepoTab {
 
 const inflight = new Map<string, Promise<void>>();
 const pending = new Map<string, Parts>();
+const squashJobs = new Map<string, { wanted: string; done: string; running: boolean }>();
+
+/** Coalesce background branch analysis; rapid refreshes must not create a Git backlog. */
+function updateSquashMerged(root: string) {
+  const tab = useRepos.getState().tabs[root];
+  if (!tab?.refs) return;
+  const key = `${tab.status?.oid ?? ""}|${[...tab.refs.local, ...tab.refs.remote].map((b) => `${b.name}:${b.oid}`).join("|")}`;
+  let job = squashJobs.get(root);
+  if (!job) { job = { wanted: key, done: "", running: false }; squashJobs.set(root, job); }
+  job.wanted = key;
+  if (job.running || job.done === key) return;
+  job.running = true;
+  const current = job;
+  void (async () => {
+    try {
+      while (current.done !== current.wanted && squashJobs.get(root) === current && useRepos.getState().tabs[root]) {
+        const wanted = current.wanted;
+        try {
+          const squashMerged = await api.squashMerged(root);
+          if (squashJobs.get(root) === current && current.wanted === wanted && useRepos.getState().tabs[root]) useRepos.getState().patch(root, { squashMerged });
+        } catch { /* This optional annotation must not block the workspace. */ }
+        current.done = wanted;
+      }
+    } finally { current.running = false; }
+  })();
+}
 
 function merge(a: Parts | undefined, b: Parts): Parts {
   return {
@@ -138,6 +167,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
   },
 
   close: (root) => {
+    squashJobs.delete(root);
     const s = get();
     const order = s.order.filter((r) => r !== root);
     const tabs = { ...s.tabs };
@@ -163,6 +193,11 @@ export const useRepos = create<RepoStore>()((set, get) => ({
   patch: (root, p) => {
     const t = get().tabs[root];
     if (!t) return;
+    // A delayed read started before a queued mutation must not replace its newer state.
+    if (p.status && (p.status.stateVersion ?? 0) < (t.status?.stateVersion ?? 0)) {
+      p = { ...p };
+      delete p.status;
+    }
     set({ tabs: { ...get().tabs, [root]: { ...t, ...p } } });
   },
 
@@ -187,6 +222,18 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     }
   },
 }));
+
+setOperationHooks({
+  pending: (root, delta) => {
+    const tab = useRepos.getState().tabs[root];
+    if (tab) useRepos.getState().patch(root, { pendingMutations: Math.max(0, tab.pendingMutations + delta) });
+  },
+  observed: (root) => useRepos.getState().tabs[root]?.status?.stateToken ?? null,
+  observedHead: (root) => useRepos.getState().tabs[root]?.info?.head ?? null,
+  refreshed: (root, status, info) => {
+    if (useRepos.getState().tabs[root]) useRepos.getState().patch(root, { status, info });
+  },
+});
 
 async function refreshOnce(root: string, parts: Parts) {
   const store = useRepos.getState();
@@ -220,11 +267,7 @@ async function refreshOnce(root: string, parts: Parts) {
   }
   if (!useRepos.getState().tabs[root]) return;
   useRepos.getState().patch(root, { ...patch, loaded: true });
-  if (patch.refs)
-    api.squashMerged(root).then(
-      (squashMerged) => useRepos.getState().tabs[root] && useRepos.getState().patch(root, { squashMerged }),
-      () => {},
-    );
+  if (patch.refs) updateSquashMerged(root);
   // Wait for history only when it was explicitly requested; a dirty/clean toggle reloads it in the background.
   if (graphP && parts.graph) await graphP;
 }

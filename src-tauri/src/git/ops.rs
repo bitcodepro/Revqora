@@ -139,6 +139,16 @@ pub struct CommitOptions {
 }
 
 pub fn commit(repo: &Path, message: &str, opts: &CommitOptions) -> GitResult<String> {
+    let gd = repo::git_dir(repo)?;
+    let state = repo::op_state(repo, &gd);
+    if state.kind != "none" && !(state.kind == "rebase" && opts.amend) {
+        return Err(GitError::new(format!("Use the explicit confirmation for the current {} operation.", state.kind)).kind("operation-in-progress"));
+    }
+    commit_confirmed(repo, message, opts)
+}
+
+/// Called only after an explicit merge confirmation, or the ordinary commit guard.
+fn commit_confirmed(repo: &Path, message: &str, opts: &CommitOptions) -> GitResult<String> {
     if message.trim().is_empty() && !opts.amend {
         return Err(GitError::new("Commit message is empty."));
     }
@@ -504,11 +514,14 @@ pub fn continue_op(repo: &Path, kind: &str, message: Option<&str>) -> GitResult<
     let gd = repo::git_dir(repo)?;
     match kind {
         "merge" | "squash" => {
+            if repo::op_state(repo, &gd).kind != kind {
+                return Err(GitError::new("The pending operation changed. Refresh before confirming.").kind("operation-in-progress"));
+            }
             let msg = message
                 .map(|m| m.to_string())
                 .or_else(|| std::fs::read_to_string(gd.join(if kind == "merge" { "MERGE_MSG" } else { "SQUASH_MSG" })).ok())
                 .unwrap_or_else(|| "Merge".into());
-            let oid = commit(repo, &msg, &CommitOptions::default())?;
+            let oid = commit_confirmed(repo, &msg, &CommitOptions::default())?;
             Ok(OpOutcome::done(oid))
         }
         "cherry-pick" | "revert" | "rebase" | "am" => {

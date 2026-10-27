@@ -3,14 +3,11 @@
 //! Every call runs non-interactively (no pager, no prompts, no console window)
 //! with stable, machine-readable output settings.
 
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, OnceLock};
 
-use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, thiserror::Error)]
@@ -126,25 +123,18 @@ where
     exec_full(repo, args, &[], None)
 }
 
-/// Per-repository lock: commands that write the working tree, index or refs run alone, read
-/// commands share. Without it a background `git status` (file watcher) can hold a file open
-/// on Windows exactly when `stash`/`checkout`/`reset` rewrites it, leaving it half-updated.
-fn repo_lock(repo: &Path) -> Arc<RwLock<()>> {
-    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<RwLock<()>>>>> = OnceLock::new();
-    let key = repo.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_lowercase();
-    LOCKS.get_or_init(Default::default).lock().entry(key).or_default().clone()
-}
-
 /// True for git invocations that never modify the working tree, the index or refs.
 pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
     let a: Vec<String> = args.iter().map(|s| s.as_ref().to_string_lossy().into_owned()).collect();
     let has = |flag: &str| a.iter().any(|x| x == flag);
     match a.first().map(|s| s.as_str()).unwrap_or("") {
         "status" | "diff" | "log" | "show" | "rev-parse" | "cat-file" | "for-each-ref" | "ls-files" | "ls-tree" | "rev-list" | "merge-base" | "blame"
-        | "symbolic-ref" | "diff-tree" | "diff-index" | "reflog" | "show-ref" | "check-ref-format" | "merge-file" | "merge-tree" | "commit-tree"
-        | "hash-object" | "version" | "--version" | "fetch" | "push" | "ls-remote" | "describe" | "count-objects" | "name-rev" | "grep" | "check-ignore" => {
-            true
-        }
+        | "symbolic-ref" | "diff-tree" | "diff-index" | "reflog" | "show-ref" | "check-ref-format" | "version" | "--version" | "ls-remote" | "describe"
+        | "count-objects" | "name-rev" | "grep" | "check-ignore" => true,
+        // Immutable object creation is safe concurrently; it does not modify refs,
+        // the index or the working tree. An enclosing mutation still holds its gate.
+        "hash-object" | "commit-tree" | "merge-tree" => true,
+        "merge-file" => has("-p") || has("--stdout"),
         "remote" => a.len() == 1 || (a.len() == 2 && a[1] == "-v"),
         "stash" => a.get(1).map(|s| s == "list").unwrap_or(false),
         "worktree" => a.get(1).map(|s| s == "list").unwrap_or(false),
@@ -156,67 +146,57 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
     }
 }
 
-/// Held only for its `Drop`, which releases the lock when the git process has finished.
-#[allow(dead_code)]
-enum Guard<'a> {
-    Read(parking_lot::RwLockReadGuard<'a, ()>),
-    Write(parking_lot::RwLockWriteGuard<'a, ()>),
-}
-
-fn acquire<'a, S: AsRef<OsStr>>(lock: &'a RwLock<()>, args: &[S]) -> Guard<'a> {
-    if is_read_only(args) {
-        Guard::Read(lock.read())
-    } else {
-        Guard::Write(lock.write())
-    }
-}
-
 pub fn exec_full<I, S>(repo: &Path, args: I, env: &[(&str, &str)], input: Option<&[u8]>) -> GitResult<Output>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
     let args: Vec<S> = args.into_iter().collect();
-    let lock = repo_lock(repo);
-    let _guard = acquire(&lock, &args);
-    let mut c = command(repo);
-    c.args(args.iter().map(|a| a.as_ref()));
-    for (k, v) in env {
-        c.env(k, v);
-    }
-    c.stdout(Stdio::piped()).stderr(Stdio::piped());
-    if input.is_some() {
-        c.stdin(Stdio::piped());
-    }
-    let mut child = c.spawn().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            GitError::new("Git executable was not found. Install Git and make sure it is on PATH.").kind("git-missing")
-        } else {
-            GitError::from(e)
-        }
-    })?;
-    // Feed stdin on a separate thread so large inputs cannot deadlock with stdout.
-    let writer = input.map(|data| {
-        let data = data.to_vec();
-        let mut stdin = child.stdin.take().expect("stdin piped");
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(&data);
-        })
-    });
-    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
-    let err_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr_pipe.read_to_end(&mut buf);
-        buf
-    });
-    let mut stdout = Vec::new();
-    child.stdout.take().expect("stdout piped").read_to_end(&mut stdout)?;
-    let status = child.wait()?;
-    if let Some(w) = writer {
-        let _ = w.join();
-    }
-    let stderr = String::from_utf8_lossy(&err_thread.join().unwrap_or_default()).into_owned();
-    Ok(Output { stdout, stderr, code: status.code().unwrap_or(-1) })
+    super::operations::access(
+        repo,
+        !is_read_only(&args),
+        |_, _| {},
+        || {
+            let mut c = command(repo);
+            c.args(args.iter().map(|a| a.as_ref()));
+            for (k, v) in env {
+                c.env(k, v);
+            }
+            c.stdout(Stdio::piped()).stderr(Stdio::piped());
+            if input.is_some() {
+                c.stdin(Stdio::piped());
+            }
+            let mut child = c.spawn().map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    GitError::new("Git executable was not found. Install Git and make sure it is on PATH.").kind("git-missing")
+                } else {
+                    GitError::from(e)
+                }
+            })?;
+            // Feed stdin on a separate thread so large inputs cannot deadlock with stdout.
+            let writer = input.map(|data| {
+                let data = data.to_vec();
+                let mut stdin = child.stdin.take().expect("stdin piped");
+                std::thread::spawn(move || {
+                    let _ = stdin.write_all(&data);
+                })
+            });
+            let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+            let err_thread = std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = stderr_pipe.read_to_end(&mut buf);
+                buf
+            });
+            let mut stdout = Vec::new();
+            child.stdout.take().expect("stdout piped").read_to_end(&mut stdout)?;
+            let status = child.wait()?;
+            if let Some(w) = writer {
+                let _ = w.join();
+            }
+            let stderr = String::from_utf8_lossy(&err_thread.join().unwrap_or_default()).into_owned();
+            Ok(Output { stdout, stderr, code: status.code().unwrap_or(-1) })
+        },
+    )
 }
 
 fn fail(args_desc: String, out: &Output) -> GitError {
@@ -312,61 +292,67 @@ pub fn run_streaming<F>(repo: &Path, args: &[String], env: &[(&str, &str)], mut 
 where
     F: FnMut(&str),
 {
-    let lock = repo_lock(repo);
-    let _guard = acquire(&lock, args);
-    let mut c = command(repo);
-    c.args(args);
-    for (k, v) in env {
-        c.env(k, v);
-    }
-    c.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = c.spawn().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            GitError::new("Git executable was not found. Install Git and make sure it is on PATH.").kind("git-missing")
-        } else {
-            GitError::from(e)
-        }
-    })?;
-    let mut out_pipe = child.stdout.take().expect("stdout piped");
-    let out_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = out_pipe.read_to_end(&mut buf);
-        buf
-    });
-    let mut collected = String::new();
-    {
-        // git progress uses '\r' to redraw lines; split on both separators.
-        let reader = BufReader::new(child.stderr.take().expect("stderr piped"));
-        let mut buf = Vec::new();
-        let mut flush = |buf: &mut Vec<u8>, collected: &mut String| {
-            if !buf.is_empty() {
-                let line = String::from_utf8_lossy(buf).into_owned();
-                on_line(&line);
-                collected.push_str(&line);
-                collected.push('\n');
-                buf.clear();
+    super::operations::access(
+        repo,
+        !is_read_only(args),
+        |_, _| {},
+        || {
+            let mut c = command(repo);
+            c.args(args);
+            for (k, v) in env {
+                c.env(k, v);
             }
-        };
-        for byte in reader.bytes() {
-            match byte {
-                Ok(b'\n') | Ok(b'\r') => flush(&mut buf, &mut collected),
-                Ok(b) => buf.push(b),
-                Err(_) => break,
+            c.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut child = c.spawn().map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    GitError::new("Git executable was not found. Install Git and make sure it is on PATH.").kind("git-missing")
+                } else {
+                    GitError::from(e)
+                }
+            })?;
+            let mut out_pipe = child.stdout.take().expect("stdout piped");
+            let out_thread = std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = out_pipe.read_to_end(&mut buf);
+                buf
+            });
+            let mut collected = String::new();
+            {
+                // git progress uses '\r' to redraw lines; split on both separators.
+                let reader = BufReader::new(child.stderr.take().expect("stderr piped"));
+                let mut buf = Vec::new();
+                let mut flush = |buf: &mut Vec<u8>, collected: &mut String| {
+                    if !buf.is_empty() {
+                        let line = String::from_utf8_lossy(buf).into_owned();
+                        on_line(&line);
+                        collected.push_str(&line);
+                        collected.push('\n');
+                        buf.clear();
+                    }
+                };
+                for byte in reader.bytes() {
+                    match byte {
+                        Ok(b'\n') | Ok(b'\r') => flush(&mut buf, &mut collected),
+                        Ok(b) => buf.push(b),
+                        Err(_) => break,
+                    }
+                }
+                flush(&mut buf, &mut collected);
             }
-        }
-        flush(&mut buf, &mut collected);
-    }
-    let status = child.wait()?;
-    let stdout = String::from_utf8_lossy(&out_thread.join().unwrap_or_default()).into_owned();
-    let out = Output { stdout: stdout.clone().into_bytes(), stderr: collected.clone(), code: status.code().unwrap_or(-1) };
-    if out.ok() {
-        Ok(format!("{stdout}{collected}"))
-    } else {
-        // Keep only meaningful lines (drop progress counters) in the error.
-        let filtered: String = collected.lines().filter(|l| !l.contains('%') || l.contains("error") || l.contains("fatal")).collect::<Vec<_>>().join("\n");
-        let out = Output { stdout: stdout.into_bytes(), stderr: filtered, code: out.code };
-        Err(fail(format!("git {}", args.first().cloned().unwrap_or_default()), &out))
-    }
+            let status = child.wait()?;
+            let stdout = String::from_utf8_lossy(&out_thread.join().unwrap_or_default()).into_owned();
+            let out = Output { stdout: stdout.clone().into_bytes(), stderr: collected.clone(), code: status.code().unwrap_or(-1) };
+            if out.ok() {
+                Ok(format!("{stdout}{collected}"))
+            } else {
+                // Keep only meaningful lines (drop progress counters) in the error.
+                let filtered: String =
+                    collected.lines().filter(|l| !l.contains('%') || l.contains("error") || l.contains("fatal")).collect::<Vec<_>>().join("\n");
+                let out = Output { stdout: stdout.into_bytes(), stderr: filtered, code: out.code };
+                Err(fail(format!("git {}", args.first().cloned().unwrap_or_default()), &out))
+            }
+        },
+    )
 }
 
 /// Splits NUL-separated output, dropping the trailing empty element.
@@ -418,7 +404,13 @@ mod tests {
         assert!(is_read_only(&["status", "--porcelain=v2"]));
         assert!(is_read_only(&["stash", "list"]));
         assert!(is_read_only(&["config", "--get", "user.name"]));
-        assert!(is_read_only(&["fetch", "--all"]));
+        assert!(!is_read_only(&["fetch", "--all"]));
+        assert!(!is_read_only(&["push", "origin"]));
+        assert!(is_read_only(&["commit-tree", "HEAD^{tree}"]));
+        assert!(is_read_only(&["hash-object", "-w", "file"]));
+        assert!(!is_read_only(&["merge-file", "ours", "base", "theirs"]));
+        assert!(is_read_only(&["merge-file", "-p", "ours", "base", "theirs"]));
+        assert!(is_read_only(&["hash-object", "file"]));
         assert!(!is_read_only(&["stash", "push"]));
         assert!(!is_read_only(&["checkout", "main"]));
         assert!(!is_read_only(&["config", "user.name", "x"]));

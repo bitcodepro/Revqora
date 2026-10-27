@@ -24,6 +24,7 @@ const ACTIONS: { v: RebaseAction; label: string; hint: string }[] = [
 const fullMessage = (c: PlanCommit) => (c.body ? `${c.subject}\n\n${c.body}` : c.subject);
 
 export function RebaseView({ root, oldest }: { root: string; oldest: string }) {
+  const [expectedState, setExpectedState] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [base, setBase] = useState<string | null>(null);
   const [orig, setOrig] = useState<string[]>([]);
@@ -35,6 +36,7 @@ export function RebaseView({ root, oldest }: { root: string; oldest: string }) {
   useEffect(() => {
     api.rebasePlan(root, oldest).then(
       (p) => {
+        setExpectedState(p.stateToken ?? null);
         setBase(p.base);
         setOrig(p.commits.map((c) => c.oid));
         setRows(p.commits.map((c) => ({ ...c, action: "pick", message: fullMessage(c) })));
@@ -106,7 +108,7 @@ export function RebaseView({ root, oldest }: { root: string; oldest: string }) {
         const needsMessage = r.action === "reword" || (g?.hasSquash ?? false);
         return { oid: r.oid, action: r.action, message: needsMessage ? r.message : null };
       });
-      const out = await api.interactiveRebase(root, base, items);
+      const out = await api.interactiveRebase(root, base, items, expectedState);
       closeOverlay();
       if (out.status === "done") toast.success("History rewritten");
       else handleOutcome(root, out, "Interactive rebase");
@@ -135,7 +137,7 @@ export function RebaseView({ root, oldest }: { root: string; oldest: string }) {
         <button className="btn" onClick={closeOverlay}>
           <X size={14} /> Cancel
         </button>
-        <button className="btn primary" onClick={start} disabled={!rows || !changed || !!invalid || busy}>
+        <button className="btn primary" onClick={start} disabled={!rows || !expectedState || !changed || !!invalid || busy}>
           {busy ? <Loader2 size={14} className="spin" /> : <Play size={14} />} Start rebase
         </button>
       </div>

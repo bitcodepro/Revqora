@@ -10,6 +10,7 @@ pub mod layers;
 pub mod locate;
 pub mod maint;
 pub mod more;
+pub mod operations;
 pub mod ops;
 pub mod refs;
 pub mod repo;

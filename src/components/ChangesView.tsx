@@ -142,6 +142,8 @@ function layerMenu(root: string, l: LayerView, total: number): MenuItem[] {
       icon: <Trash2 size={14} />,
       danger: true,
       onClick: async () => {
+        const expectedState = await A.prepareOperation(root);
+        if (!expectedState) return;
         const ok = await confirmDialog({
           title: `Discard ${l.name}?`,
           message: "These changes are removed from the index and from your working files. A backup is kept in .git/revqora/trash.",
@@ -149,7 +151,7 @@ function layerMenu(root: string, l: LayerView, total: number): MenuItem[] {
           danger: true,
           details: l.files.map((f) => f.path),
         });
-        if (ok) await layerAct(root, () => api.layerDiscard(root, l.index), `${l.name} discarded`);
+        if (ok) await layerAct(root, () => api.layerDiscard(root, l.index, expectedState), `${l.name} discarded`);
       },
     },
     { separator: true },
@@ -795,7 +797,8 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const merging = kind === "merge" || kind === "squash";
   const picking = kind === "cherry-pick" || kind === "revert";
   const rebasing = kind === "rebase";
-  const canCommit = !busy && !!summary.trim() && conflicts === 0 && (stagedCount > 0 || amend || merging);
+  const pendingMutations = useRepos((s) => s.tabs[root]?.pendingMutations ?? 0);
+  const canCommit = !busy && pendingMutations === 0 && !!summary.trim() && conflicts === 0 && (stagedCount > 0 || amend || merging);
 
   const reset = () => {
     setSummary("");

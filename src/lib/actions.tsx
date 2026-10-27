@@ -31,6 +31,24 @@ interface ActOptions<T> {
   quiet?: boolean;
 }
 
+/** Establish the state shown by a confirmation, then keep it fixed until submission. */
+export async function prepareOperation(root: string): Promise<string | null> {
+  try {
+    const [status, info] = await Promise.all([api.status(root), api.repoInfo(root)]);
+    if (status.branch !== info.head.branch || status.oid !== info.head.oid) {
+      toast.warning("Repository is changing", "Refresh and review its current state before trying again.");
+      return null;
+    }
+    const displayed = getTab(root)?.info?.head;
+    useRepos.getState().patch(root, { status, info });
+    if (displayed && (displayed.branch !== info.head.branch || displayed.oid !== info.head.oid)) {
+      toast.warning("Repository changed", "The current branch or commit changed. Review the refreshed view before trying again.");
+      return null;
+    }
+    return status.stateToken ?? null;
+  } catch (e) { toast.error(e); return null; }
+}
+
 /** Runs a backend action with consistent error handling and refresh. */
 export async function act<T>(root: string, fn: () => Promise<T>, o: ActOptions<T> = {}): Promise<T | undefined> {
   const busyId = o.busy ? newOpId() : null;
@@ -244,7 +262,7 @@ export async function push(root: string) {
   const status = t2.status;
   const opts = await pushDialog({ branch, remotes: t2.refs?.remotes ?? [], upstream: status?.upstream ?? null, ahead: status?.ahead ?? 0, behind: status?.behind ?? 0 });
   if (!opts) return;
-  await remote(root, `Pushing ${branch}`, (id) => api.push(root, opts, id), () => `Pushed ${branch}`);
+  await remote(root, `Pushing ${branch}`, (id) => api.push(root, opts, id, status?.stateToken), () => `Pushed ${branch}`);
 }
 
 /** One-click push used after committing; asks only when needed. */
@@ -272,33 +290,41 @@ export function checkout(root: string, target: string, kind: "local" | "remote" 
 }
 
 export async function createBranch(root: string, start: string | null, startLabel: string) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const r = await createBranchDialog(startLabel);
   if (!r) return;
-  await act(root, () => api.branchCreate(root, r.name, start, r.checkout), { success: `Branch ${r.name} created` });
+  await act(root, () => api.branchCreate(root, r.name, start, r.checkout, expectedState), { success: `Branch ${r.name} created` });
 }
 
 export async function renameBranch(root: string, name: string) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const v = await promptDialog({ title: `Rename ${name}`, label: "New name", initial: name, validate: validBranchName, confirm: "Rename" });
   if (!v || v === name) return;
-  await act(root, () => api.branchRename(root, name, v.trim()), { success: `Renamed to ${v.trim()}` });
+  await act(root, () => api.branchRename(root, name, v.trim(), expectedState), { success: `Renamed to ${v.trim()}` });
 }
 
 export async function deleteBranch(root: string, name: string) {
   try {
+    const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
     const targets = await api.branchDeleteTargets(root, name);
-    await showDialog<void>((close) => <DeleteBranchDialog root={root} name={name} targets={targets} onClose={() => close()} />);
+    await showDialog<void>((close) => <DeleteBranchDialog expectedState={expectedState} root={root} name={name} targets={targets} onClose={() => close()} />);
   } catch (e) {
     toast.error(e);
   }
 }
 
 export async function deleteRemoteBranch(root: string, remoteBranch: string) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const i = remoteBranch.indexOf("/");
   const remoteName = remoteBranch.slice(0, i);
   const branch = remoteBranch.slice(i + 1);
   const ok = await confirmDialog({ title: `Delete ${remoteBranch} on the server?`, message: `This deletes the branch '${branch}' from remote '${remoteName}' for everyone.`, confirm: "Delete remote branch", danger: true });
   if (!ok) return;
-  await remote(root, `Deleting ${remoteBranch}`, (id) => api.pushRef(root, remoteName, `:refs/heads/${branch}`, id), () => `Deleted ${remoteBranch}`);
+  await remote(root, `Deleting ${remoteBranch}`, (id) => api.pushRef(root, remoteName, `:refs/heads/${branch}`, id, expectedState), () => `Deleted ${remoteBranch}`);
 }
 
 export async function setUpstream(root: string, branch: string) {
@@ -310,20 +336,24 @@ export async function setUpstream(root: string, branch: string) {
 }
 
 export async function mergeInto(root: string, target: string) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const tab = getTab(root);
   const current = tab?.info?.head.branch ?? "HEAD";
   const strategy = await mergeDialog(target, current);
   if (!strategy) return;
-  const out = await act(root, () => api.mergeStart(root, target, strategy), { busy: `Merging ${target}` });
+  const out = await act(root, () => api.mergeStart(root, target, strategy, expectedState), { busy: `Merging ${target}` });
   handleOutcome(root, out, "Merge");
 }
 
 export async function rebaseOnto(root: string, target: string) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const tab = getTab(root);
   const current = tab?.info?.head.branch ?? "HEAD";
   const ok = await confirmDialog({ title: `Rebase ${current} onto ${target}?`, message: "Your commits are replayed on top of the target. Commits get new hashes; avoid this for branches others already use.", confirm: "Rebase" });
   if (!ok) return;
-  const out = await act(root, () => api.rebaseOnto(root, target), { busy: "Rebasing" });
+  const out = await act(root, () => api.rebaseOnto(root, target, expectedState), { busy: "Rebasing" });
   handleOutcome(root, out, "Rebase");
 }
 
@@ -340,23 +370,29 @@ export async function revertCommit(root: string, oid: string) {
 }
 
 export async function resetTo(root: string, oid: string, subject: string) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const tab = getTab(root);
   const mode = await resetDialog(tab?.info?.head.branch ?? "HEAD", oid, subject);
   if (!mode) return;
-  await act(root, () => api.reset(root, oid, mode), { success: `Reset to ${shortOid(oid)}` });
+  await act(root, () => api.reset(root, oid, mode, expectedState), { success: `Reset to ${shortOid(oid)}` });
 }
 
 export async function reword(root: string, oid: string) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const details = await api.commitDetails(root, oid).catch(() => null);
   const current = details ? (details.body ? `${details.subject}\n\n${details.body}` : details.subject) : "";
   const msg = await promptDialog({ title: "Edit commit message", initial: current, multiline: true, confirm: "Save message", help: "Ctrl+Enter to save. Commits after this one are re-created." });
   if (!msg || msg === current) return;
-  const out = await act(root, () => api.rewrite(root, { action: "reword", oid, message: msg }), { busy: "Rewriting history" });
+  const out = await act(root, () => api.rewrite(root, { action: "reword", oid, message: msg }, expectedState), { busy: "Rewriting history" });
   if (out && out.status !== "done") handleOutcome(root, out, "Edit message");
   else if (out) toast.success("Commit message updated");
 }
 
 export async function dropCommits(root: string, oids: string[]) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const ok = await confirmDialog({
     title: oids.length === 1 ? "Drop this commit?" : `Drop ${oids.length} commits?`,
     message: "The commit is removed from the branch history and its changes disappear. You can get it back from the reflog.",
@@ -364,15 +400,17 @@ export async function dropCommits(root: string, oids: string[]) {
     danger: true,
   });
   if (!ok) return;
-  const out = await act(root, () => api.rewrite(root, { action: "drop", oids }), { busy: "Rewriting history" });
+  const out = await act(root, () => api.rewrite(root, { action: "drop", oids }, expectedState), { busy: "Rewriting history" });
   if (out && out.status !== "done") handleOutcome(root, out, "Drop");
   else if (out) toast.success("Dropped");
 }
 
 export async function squashCommits(root: string, oids: string[], subjects: string[]) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const msg = await promptDialog({ title: `Squash ${oids.length} commits`, initial: subjects.join("\n"), multiline: true, confirm: "Squash", help: "The combined commit gets this message." });
   if (!msg) return;
-  const out = await act(root, () => api.rewrite(root, { action: "squash", oids, message: msg }), { busy: "Squashing" });
+  const out = await act(root, () => api.rewrite(root, { action: "squash", oids, message: msg }, expectedState), { busy: "Squashing" });
   if (out && out.status !== "done") handleOutcome(root, out, "Squash");
   else if (out) toast.success("Commits squashed");
 }
@@ -392,14 +430,18 @@ export async function undoLastCommit(root: string) {
 }
 
 export async function createTag(root: string, oid: string) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const r = await tagDialog(oid);
   if (!r) return;
-  await act(root, () => api.tagCreate(root, r.name, oid, r.message || null), { success: `Tag ${r.name} created` });
+  await act(root, () => api.tagCreate(root, r.name, oid, r.message || null, expectedState), { success: `Tag ${r.name} created` });
 }
 
 export async function deleteTag(root: string, name: string) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const ok = await confirmDialog({ title: `Delete tag ${name}?`, confirm: "Delete", danger: true });
-  if (ok) await act(root, () => api.tagDelete(root, name), { success: `Deleted tag ${name}` });
+  if (ok) await act(root, () => api.tagDelete(root, name, expectedState), { success: `Deleted tag ${name}` });
 }
 
 export async function pushTag(root: string, name: string) {
@@ -422,20 +464,26 @@ export async function stashApply(root: string, index: number, pop: boolean) {
 }
 
 export async function stashDrop(root: string, index: number) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const ok = await confirmDialog({ title: "Delete this stash?", confirm: "Delete", danger: true });
-  if (ok) await act(root, () => api.stashDrop(root, index), { success: "Stash deleted" });
+  if (ok) await act(root, () => api.stashDrop(root, index, expectedState), { success: "Stash deleted" });
 }
 
 // ───────────── in-progress operations ─────────────
 
 export async function abortOp(root: string, kind: string) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const what = kind === "merge" || kind === "squash" ? "merge" : kind;
   const ok = await confirmDialog({ title: `Abort ${what}?`, message: "Everything returns to the state before it started. Conflict resolutions you made are lost.", confirm: `Abort ${what}`, danger: true });
   if (!ok) return;
-  await act(root, () => api.opAbort(root, kind), { success: `${what[0].toUpperCase() + what.slice(1)} aborted` });
+  await act(root, () => api.opAbort(root, kind, expectedState), { success: `${what[0].toUpperCase() + what.slice(1)} aborted` });
 }
 
 export async function confirmMerge(root: string, kind: "merge" | "squash", message: string | null) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   const msg = await promptDialog({
     title: kind === "merge" ? "Confirm merge" : "Commit squashed changes",
     label: "Commit message",
@@ -444,7 +492,7 @@ export async function confirmMerge(root: string, kind: "merge" | "squash", messa
     confirm: kind === "merge" ? "Create merge commit" : "Commit",
   });
   if (!msg) return;
-  const out = await act(root, () => api.opContinue(root, kind, msg), { busy: "Committing" });
+  const out = await act(root, () => api.opContinue(root, kind, msg, expectedState), { busy: "Committing" });
   if (out) toast.success(kind === "merge" ? "Merge committed" : "Squash committed");
 }
 
@@ -476,8 +524,10 @@ export const stagePaths = (root: string, paths: string[]) => act(root, () => api
 export const unstagePaths = (root: string, paths: string[]) => act(root, () => api.unstage(root, paths), { refresh: { status: true, layers: true } });
 
 export async function discardPaths(root: string, tracked: string[], untracked: string[]) {
+  const expectedState = await prepareOperation(root);
+  if (!expectedState) return;
   if (useSettings.getState().confirmDiscard && !(await discardDialog([...tracked, ...untracked]))) return;
-  await act(root, () => api.discard(root, tracked, untracked), { success: "Changes discarded (backup kept)", refresh: { status: true, layers: true } });
+  await act(root, () => api.discard(root, tracked, untracked, expectedState), { success: "Changes discarded (backup kept)", refresh: { status: true, layers: true } });
 }
 
 /** Stage into a fresh layer: seal what is staged now, then stage the new paths on top. */

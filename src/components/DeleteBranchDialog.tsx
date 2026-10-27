@@ -7,8 +7,8 @@ import { ALL, useRepos } from "../lib/store";
 import { endBusy, startBusy, toast } from "../lib/ui";
 import { Modal } from "./Modal";
 
-export function DeleteBranchDialog({ root, name, targets, onClose }: {
-  root: string; name: string; targets: RemoteBranchTarget[]; onClose: () => void;
+export function DeleteBranchDialog({ root, name, targets, expectedState, onClose }: {
+  root: string; name: string; targets: RemoteBranchTarget[]; expectedState?: string | null; onClose: () => void;
 }) {
   const [includeRemote, setIncludeRemote] = useState(false);
   const [selected, setSelected] = useState(targets[0] ? deletionTargetKey(targets[0]) : "");
@@ -34,11 +34,14 @@ export function DeleteBranchDialog({ root, name, targets, onClose }: {
     try {
       // Do not touch the server if Git refuses an unmerged or checked-out local branch.
       if (!deletedLocal) {
-        await api.branchDelete(root, name, force, includeRemote ? target! : null);
+        await api.branchDelete(root, name, force, includeRemote ? target! : null, expectedState);
         deletedLocal = true;
         setLocalDone(true);
       }
-      if (includeRemote && target) await api.pushRef(root, target.remote, remoteDeletionRefspec(target), id);
+      if (includeRemote && target) {
+        const retryState = localDone ? (await api.status(root)).stateToken : undefined;
+        await api.pushRef(root, target.remote, remoteDeletionRefspec(target), id, retryState);
+      }
       toast.success(includeRemote ? `Deleted ${name} and ${target!.label}` : `Deleted local branch ${name}`);
       onClose();
     } catch (e) {

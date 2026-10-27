@@ -24,6 +24,9 @@ pub struct FileStatus {
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusSummary {
+    /// Optimistic precondition for mutations queued from this displayed state.
+    pub state_token: Option<String>,
+    pub state_version: u64,
     pub branch: Option<String>,
     pub oid: Option<String>,
     pub upstream: Option<String>,
@@ -134,8 +137,14 @@ pub fn parse(raw: &str) -> StatusSummary {
 }
 
 pub fn status(repo: &Path) -> GitResult<StatusSummary> {
-    let raw = runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames"])?;
-    Ok(parse(&raw))
+    super::operations::read(repo, || {
+        let version = super::operations::next_version(repo);
+        let raw = runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames"])?;
+        let mut status = parse(&raw);
+        status.state_token = Some(super::operations::state_token(repo, &raw, &status.files)?);
+        status.state_version = version;
+        Ok(status)
+    })
 }
 
 #[cfg(test)]

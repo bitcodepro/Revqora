@@ -32,6 +32,20 @@ export interface BusyOp {
   started: number;
 }
 
+export interface RepositoryOperation {
+  id: string;
+  repo: string;
+  repositoryKey: string;
+  command: string;
+  phase: "queued" | "running" | "finished" | "failed";
+  ahead: number;
+}
+
+export function updateRepositoryOperation(op: RepositoryOperation) {
+  const others = useUi.getState().repositoryOperations.filter((o) => o.id !== op.id);
+  useUi.setState({ repositoryOperations: op.phase === "finished" || op.phase === "failed" ? others : [...others, op] });
+}
+
 interface Dialog {
   id: number;
   render: (close: (v: unknown) => void) => ReactNode;
@@ -50,6 +64,7 @@ interface UiState {
   menu: { x: number; y: number; items: MenuItem[] } | null;
   dialogs: Dialog[];
   busy: BusyOp[];
+  repositoryOperations: RepositoryOperation[];
   paletteOpen: boolean;
   overlay: Overlay | null;
   repositoryOverview: boolean;
@@ -68,6 +83,7 @@ export const useUi = create<UiState>()((set, get) => ({
   menu: null,
   dialogs: [],
   busy: [],
+  repositoryOperations: [],
   paletteOpen: false,
   overlay: null,
   repositoryOverview: false,

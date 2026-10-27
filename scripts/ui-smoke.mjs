@@ -37,7 +37,7 @@ process.env.REVQORA_UPDATE_FEED = `http://127.0.0.1:${feed.address().port}/`;
 let step = 0;
 const results = [];
 const { page, close } = await launch({ exe, args: [repo], profile: createProfile("revqora-smoke-profile-"), port: 0 });
-page.setDefaultTimeout(10000);
+page.setDefaultTimeout(30000); // Compound operations include queue waits and the final state refresh.
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));
 page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
@@ -49,6 +49,7 @@ async function check(name, fn) {
     results.push(`ok   ${step}. ${name}`);
   } catch (e) {
     results.push(`FAIL ${step}. ${name}: ${e.message.split("\n")[0]}`);
+    console.log(e.stack ?? String(e));
     await page.screenshot({ path: path.join(out, `fail-${step}.png`) }).catch(() => {});
     throw e;
   }
@@ -835,6 +836,70 @@ try {
     await page.click(".history-mode button:has-text('Graph')");
     await page.locator(".repository-item", { hasText: "demo" }).locator(".repository-select").click();
     await page.waitForSelector(".repo-current:has-text('demo')");
+  });
+
+  await check("repository transactions queue fetch and reject a stale reset after a commit", async () => {
+    const original = git("rev-parse", "HEAD");
+    const hook = path.join(repo, ".git", "hooks", "pre-commit");
+    const savedHook = fs.existsSync(hook) ? fs.readFileSync(hook) : null;
+    const started = path.join(repo, ".git", "revqora-queue-started");
+    const release = path.join(repo, ".git", "revqora-queue-release");
+    fs.writeFileSync(path.join(repo, "queue-commit.txt"), "Queued commit\n");
+    git("add", "queue-commit.txt");
+    fs.writeFileSync(hook, "#!/bin/sh\ntouch .git/revqora-queue-started\nwhile test ! -f .git/revqora-queue-release; do sleep 0.05; done\n");
+    fs.chmodSync(hook, 0o755);
+    try {
+      await page.evaluate(async (root) => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        const status = await invoke("status", { repo: root });
+        const settle = (p) => p.then((value) => ({ ok: true, value }), (error) => ({ ok: false, error }));
+        window.__queueTest = { expected: status.stateToken, commit: settle(invoke("commit", { repo: root, expectedState: status.stateToken, message: "Queue test commit", opts: {} })) };
+      }, repo);
+      await until(() => fs.existsSync(started), "commit hook did not start", 15000);
+      await page.evaluate((root) => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        const settle = (p) => p.then((value) => ({ ok: true, value }), (error) => ({ ok: false, error }));
+        window.__queueTest.fetch = settle(invoke("fetch_background", { repo: root }));
+        window.__queueTest.reset = settle(invoke("reset", { repo: root, expectedState: window.__queueTest.expected, target: "HEAD~1", mode: "hard" }));
+      }, repo);
+      await page.waitForSelector(".repository-queue:has-text('2 queued')");
+      await shot("36-repository-queue");
+      fs.writeFileSync(path.join(repo, "queue-external.txt"), "Keep this IDE edit\n");
+      fs.writeFileSync(release, "continue\n");
+      const result = await page.evaluate(async () => {
+        const [commit, fetch, reset] = await Promise.all([window.__queueTest.commit, window.__queueTest.fetch, window.__queueTest.reset]);
+        return { commit, fetch, reset };
+      });
+      if (!result.commit.ok || !result.fetch.ok || result.reset.ok || result.reset.error.kind !== "stale-operation") throw new Error("queued commit/fetch/reset did not preserve the original precondition");
+      if (git("rev-parse", "HEAD") !== result.commit.value || fs.readFileSync(path.join(repo, "queue-external.txt"), "utf8") !== "Keep this IDE edit\n") throw new Error("queued reset lost commit or worktree data");
+      await page.waitForSelector(".repository-queue", { state: "detached" });
+    } finally {
+      fs.writeFileSync(release, "continue\n");
+      await page.evaluate(async () => { if (window.__queueTest) await Promise.all([window.__queueTest.commit, window.__queueTest.fetch, window.__queueTest.reset]); });
+      if (savedHook) fs.writeFileSync(hook, savedHook); else fs.rmSync(hook, { force: true });
+      git("reset", "--mixed", original);
+      for (const file of [started, release, path.join(repo, "queue-commit.txt"), path.join(repo, "queue-external.txt")]) fs.rmSync(file, { force: true });
+      await page.click("button[title='Refresh (F5)']");
+    }
+  });
+
+  await check("a deletion confirmation keeps its precondition across external Git changes", async () => {
+    git("branch", "ui-stale-confirm");
+    await page.fill(".sidebar input[placeholder^='Filter branches']", "ui-stale");
+    await page.click("button[title='Refresh (F5)']");
+    await page.locator(".sidebar [data-branch-kind='local'][data-branch-name='ui-stale-confirm']").click({ button: "right" });
+    await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
+    await page.waitForSelector(".delete-branch-confirm");
+    git("branch", "ui-stale-external");
+    await page.waitForSelector(".sidebar [data-branch-kind='local'][data-branch-name='ui-stale-external']");
+    await page.click(".delete-branch-confirm");
+    await page.waitForSelector(".delete-branch-error:has-text('repository changed')");
+    if (!git("branch", "--list", "ui-stale-confirm")) throw new Error("stale confirmation removed a branch");
+    await shot("37-stale-confirmation");
+    await page.click(".modal button:has-text('Cancel')");
+    git("branch", "-D", "ui-stale-confirm", "ui-stale-external");
+    await page.fill(".sidebar input[placeholder^='Filter branches']", "");
+    await page.click("button[title='Refresh (F5)']");
   });
 
   await check("dark theme renders", async () => {

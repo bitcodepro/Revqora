@@ -270,7 +270,7 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
         <div className="op-sub">{sub}</div>
       </div>
       <div className="hstack" style={{ gap: 6, flex: "none" }}>
-        {actions}
+        <fieldset disabled={(tab.pendingMutations ?? 0) > 0} style={{ display: "contents", border: 0, padding: 0, margin: 0 }}>{actions}</fieldset>
       </div>
     </div>
   );
@@ -305,6 +305,7 @@ function BusyItem({ label, line }: { label: string; line: string }) {
 export function StatusBar() {
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   const busy = useUi((s) => s.busy);
+  const operations = useUi((s) => s.repositoryOperations);
   const [git, setGit] = useState("");
   useEffect(() => {
     api.gitSelection().then(
@@ -345,6 +346,10 @@ export function StatusBar() {
         </span>
       )}
       {b && <BusyItem label={b.label} line={b.line} />}
+      {!b && operations.length === 0 && (tab?.pendingMutations ?? 0) > 0 && <BusyItem label="Updating changes" line="" />}
+      {operations.length > 0 && <span className="item repository-queue" role="status" title={operations.map((o) => `${o.repo}: ${o.command.replaceAll("_", " ")} (${o.phase})`).join("\n")}>
+        {operations.filter((o) => o.phase === "running").length} running · {operations.filter((o) => o.phase === "queued").length} queued
+      </span>}
       <div className="spacer" />
       {tab?.error && (
         <span className="item" style={{ color: "var(--red)" }} title={tab.error}>
