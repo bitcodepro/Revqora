@@ -1093,7 +1093,7 @@ try {
     const saved = await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("recovery_list", { repo: root }), repo);
     const cp = saved.checkpoints.find((item) => item.label === "Native recovery snapshot");
     if (!cp?.workspace) throw new Error("manual checkpoint was not saved");
-    const storage = path.resolve(saved.storagePath.replace(/^\\\\\?\\/, ""));
+    const storage = path.resolve(saved.storagePath);
     const portableData = path.join(smokeProfile, "revqora-data");
     const relativeStorage = path.relative(portableData, storage);
     if (path.isAbsolute(relativeStorage) || relativeStorage === ".." || relativeStorage.startsWith(`..${path.sep}`)) throw new Error("checkpoint files escaped the portable profile");
