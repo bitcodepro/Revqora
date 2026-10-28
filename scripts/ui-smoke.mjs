@@ -1723,8 +1723,10 @@ try {
     await page.waitForSelector(`.studio-result[data-session-id='${studioId}'][data-phase='completed']`); await page.waitForSelector(".studio-same-tree");
     const r = await studioReport(); if (r.afterHead !== studioAfter) throw new Error("Studio record followed a later HEAD after restart");
     await page.locator(".studio-before-checkpoint").click(); await page.waitForSelector(`.recovery-detail[data-checkpoint-id='${r.beforeCheckpoint.id}']`);
-    const option = await page.locator("select[aria-label='Saved recovery reference'] option").evaluateAll((nodes) => nodes.find((n) => n.textContent.startsWith("refs/heads/main ·"))?.value);
-    if (option === undefined) throw new Error("original main ref missing from Studio checkpoint");
+    const savedMain = page.locator(`.recovery-detail[data-checkpoint-id='${r.beforeCheckpoint.id}'] select[aria-label='Saved recovery reference'] option`).filter({ hasText: /^refs\/heads\/main\s+·/ });
+    await savedMain.waitFor({ state: "attached" });
+    const option = await savedMain.getAttribute("value");
+    if (option === null) throw new Error("original main ref missing from Studio checkpoint");
     await page.selectOption("select[aria-label='Saved recovery reference']", option); await page.fill("input[aria-label='Recovered local branch']", "studio-original-recovered"); await page.getByRole("button", { name: "Restore branch", exact: true }).click();
     await until(() => studioGit("rev-parse", "refs/heads/studio-original-recovered") === studioBefore, "Studio checkpoint restored the wrong head", 30000);
     if (studioGit("rev-parse", "refs/heads/main") !== studioLater) throw new Error("recovering the original branch replaced current main");
