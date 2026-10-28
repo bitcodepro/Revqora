@@ -1,3 +1,4 @@
+import { repositoryFiles } from "./RepositoryFiles";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
@@ -44,6 +45,9 @@ import { confirmDialog, identityDialog, promptDialog } from "./dialogs";
 import { Modal } from "./Modal";
 import { fileHistoryDialog } from "./FileHistory";
 import { Splitter } from "./Overlays";
+
+const isNestedFile = (f: FileStatus) => f.untracked && f.path.endsWith("/");
+const openNestedFile = (root: string, f: FileStatus) => { void useRepos.getState().open(joinPath(root, f.path)).catch((e) => toast.error(e)); };
 
 const LAYER_COLORS = [0, 1, 2, 3, 5, 6, 8, 9];
 const layerColor = (i: number) => `var(--lane-${LAYER_COLORS[i % LAYER_COLORS.length]})`;
@@ -305,6 +309,19 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
 
   const onApply = async (selection: [number, number][], action: LineAction) => {
     if (!diff || !sel || (sel.kind !== "unstaged" && sel.kind !== "staged") || action === "apply") return;
+    if (action === "stash") {
+      if (sel.kind !== "unstaged") return;
+      const expected = tab.status?.stateToken ?? null;
+      const message = await promptDialog({ title: "Stash selected changes", label: "Message", initial: `Selected changes in ${sel.path}`, confirm: "Stash selection", help: "Only the selected unstaged text changes will be saved and removed. Staged changes remain in place." });
+      if (message === null) return;
+      try {
+        const result = await api.stashSelection(root, sel.path, selection, diff.hash, opts, message, expected);
+        if (result.warning) toast.info("Stash saved — inspect working file", result.warning); else toast.success("Selected changes stashed");
+      } catch (e) { toast.error(e); }
+      await useRepos.getState().refresh(root, { status: true, layers: true, refs: true });
+      await loadDiff();
+      return;
+    }
     if (action === "discard" && useSettings.getState().confirmDiscard) {
       const ok = await confirmDialog({ title: "Discard selected lines?", message: "The selected changes are removed from your working file.", confirm: "Discard", danger: true });
       if (!ok) return;
@@ -318,7 +335,11 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
     await loadDiff();
   };
 
-  const fileMenu = (f: FileStatus, kind: "unstaged" | "staged"): MenuItem[] => [
+  const fileMenu = (f: FileStatus, kind: "unstaged" | "staged"): MenuItem[] => isNestedFile(f) ? [
+    { label: "Open nested repository", icon: <FolderOpen size={14} />, onClick: () => openNestedFile(root, f) },
+    { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(joinPath(root, f.path)) },
+    { label: "Copy path", icon: <Copy size={14} />, onClick: () => copyText(f.path, "Path copied") },
+  ] : [
     ...(kind === "unstaged"
       ? [
           { label: "Stage", icon: <Plus size={14} />, onClick: () => A.stagePaths(root, [f.path]) },
@@ -410,6 +431,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
       <div className="changes-left">
         <div className="changes-lists">
           <div className="hstack" style={{ justifyContent: "flex-end", padding: "4px 4px 0" }}>
+            <button className="btn sm" style={{ marginRight: "auto" }} onClick={() => repositoryFiles(root, "ignored")}>Ignored</button>
             <div className="seg">
               <button className={!treeView ? "on" : ""} title="Flat list" onClick={() => useSettings.getState().set({ fileView: "list" })}>
                 <List size={12} />
@@ -484,8 +506,8 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
               <div
                 key={f.path}
                 className={`file-row ${selectedIs("unstaged", f.path) ? "selected" : ""}`}
-                onClick={() => select({ kind: "unstaged", path: f.path, untracked: f.untracked })}
-                onDoubleClick={() => A.stagePaths(root, [f.path])}
+                onClick={() => isNestedFile(f) ? openNestedFile(root, f) : select({ kind: "unstaged", path: f.path, untracked: f.untracked })}
+                onDoubleClick={() => { if (!isNestedFile(f)) void A.stagePaths(root, [f.path]); }}
                 draggable
                 onDragStart={(e) => dragFile(e, "unstaged", f.path)}
                 onContextMenu={(e) => contextMenu(e, fileMenu(f, "unstaged"))}
@@ -494,6 +516,8 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 <StatusIcon code={f.untracked ? "?" : f.worktree} />
                 <PathLabel path={f.path} hideDir={grouped} />
                 <div className="row-actions">
+                  {isNestedFile(f) ? <button className="btn sm" onClick={(e) => { e.stopPropagation(); openNestedFile(root, f); }}><FolderOpen size={13} /> Open repository</button> : <>
+
                   <button className="icon-btn sm" title="Discard" onClick={(e) => (e.stopPropagation(), A.discardPaths(root, f.untracked ? [] : [f.path], f.untracked ? [f.path] : []))}>
                     <Undo2 size={13} />
                   </button>
@@ -503,6 +527,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                   <button className="icon-btn sm" title="Stage" onClick={(e) => (e.stopPropagation(), A.stagePaths(root, [f.path]))}>
                     <Plus size={14} />
                   </button>
+                  </>}
                 </div>
               </div>
             )} />}
@@ -685,6 +710,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
           path={sel?.path ?? ""}
           actions={diffActions}
           onApply={onApply}
+          canStash={sel?.kind === "unstaged" && !sel.untracked && !files.find((f) => f.path === sel.path)?.submodule && !opts.ignoreWhitespace && !!diff && !diff.binary && !diff.isNew && !diff.isDeleted && !diff.truncated && diff.oldPath === null && diff.oldMode === diff.newMode}
           root={root}
           images={
             !sel || sel.kind === "conflict"

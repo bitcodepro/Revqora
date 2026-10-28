@@ -1,3 +1,4 @@
+import { renameRemoteBranch } from "./RemoteRename";
 import {
   ArrowDown,
   ArrowUp,
@@ -66,6 +67,7 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote")
     items.push({ label: "Rename…", icon: <Pencil size={I} />, onClick: () => A.renameBranch(root, name) });
     items.push({ label: "Delete…", icon: <Trash2 size={I} />, danger: true, disabled: isCurrent, onClick: () => A.deleteBranch(root, name) });
   } else {
+    items.push({ label: "Rename on remote…", icon: <Pencil size={I} />, onClick: () => renameRemoteBranch(root, name) });
     items.push({ label: "Delete on remote…", icon: <Trash2 size={I} />, danger: true, onClick: () => A.deleteRemoteBranch(root, name) });
   }
   items.push({ separator: true });

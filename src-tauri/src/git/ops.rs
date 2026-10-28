@@ -53,7 +53,7 @@ fn with_paths(repo: &Path, args: &[&str], paths: &[String]) -> GitResult<String>
     let mut a: Vec<&str> = args.to_vec();
     a.push("--pathspec-from-file=-");
     a.push("--pathspec-file-nul");
-    runner::run_env(repo, &a, &[], Some(&nul_join(paths)))
+    runner::run_env(repo, &a, &[("GIT_LITERAL_PATHSPECS", "1")], Some(&nul_join(paths)))
 }
 
 fn conflicted(repo: &Path) -> Vec<String> {
@@ -67,6 +67,37 @@ fn head_oid(repo: &Path) -> Option<String> {
 // ───────────────────────────── working copy ─────────────────────────────
 
 pub fn stage_paths(repo: &Path, paths: &[String]) -> GitResult<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    if paths.iter().any(|p| Path::new(p).components().any(|c| !matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir))) {
+        return Err(GitError::new("Stage paths must be inside the repository."));
+    }
+    // A plain `git add` silently embeds an unregistered child as a gitlink.
+    // Check all selections before adding anything, including Stage all / folders.
+    let selected: Vec<_> = paths.iter().filter_map(|p| std::fs::canonicalize(repo.join(p)).ok()).collect();
+    let raw = runner::run(repo, ["status", "--porcelain=v2", "-z", "--untracked-files=all"])?;
+    // A deliberately configured submodule may have been unstaged; allow it to
+    // be staged again, instead of treating it as an accidental embedded repo.
+    let registered = if repo.join(".gitmodules").is_file() {
+        let config = runner::exec(repo, ["config", "--file", ".gitmodules", "--null", "--get-regexp", r"^submodule\..*\.path$"])?;
+        if config.code != 0 && config.code != 1 {
+            return Err(runner::to_error("Read .gitmodules", &config));
+        }
+        config.text().split('\0').filter_map(|r| r.split_once('\n')).filter_map(|(_, p)| std::fs::canonicalize(repo.join(p)).ok()).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    for file in status::parse(&raw).files.into_iter().filter(|f| f.untracked && f.path.ends_with('/')) {
+        let child = repo.join(&file.path);
+        if child.join(".git").exists() {
+            if let Ok(child) = std::fs::canonicalize(child) {
+                if !registered.contains(&child) && selected.iter().any(|p| child.starts_with(p)) {
+                    return Err(GitError::new(format!("Nested repository {} was not staged. Open it separately, ignore it in the parent, or add it explicitly as a submodule. No selected paths were staged.", file.path)).kind("nested-repository"));
+                }
+            }
+        }
+    }
     with_paths(repo, &["add", "-A"], paths)?;
     Ok(())
 }

@@ -644,3 +644,10 @@ export interface DeletionPlan {
   currentChanges: number; stateToken: string;
 }
 export interface DeletionResult { checkpoint: RecoverySummary; warning: string | null }
+
+export interface IgnoredFiles { paths: string[]; truncated: boolean; }
+export interface NestedRepository { path: string; relativePath: string; kind: string; branch: string | null; }
+export interface NestedRepositories { repositories: NestedRepository[]; truncated: boolean; skipped: number; }
+export interface PartialStashResult { oid: string; removed: boolean; warning: string | null; }
+export interface RemoteRenamePlan { target: RemoteBranchTarget; newRef: string; serverOid: string; stateToken: string; }
+export interface RemoteRenameResult { checkpoint: RecoverySummary; trackingRef: string | null; localBranches: string[]; warnings: string[]; }

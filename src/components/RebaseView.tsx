@@ -1,3 +1,5 @@
+import { autosquash } from "../lib/autosquash";
+import { confirmDialog } from "./dialogs";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, GripVertical, ListOrdered, Loader2, Play, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
@@ -32,6 +34,7 @@ export function RebaseView({ root, oldest }: { root: string; oldest: string }) {
   const [drag, setDrag] = useState<number | null>(null);
   const [over, setOver] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [autosquashWarnings, setAutosquashWarnings] = useState<string[]>([]);
 
   useEffect(() => {
     api.rebasePlan(root, oldest).then(
@@ -134,6 +137,14 @@ export function RebaseView({ root, oldest }: { root: string; oldest: string }) {
             {rows.length} commits → {resulting}
           </span>
         )}
+        <button className="btn" disabled={!rows || busy} onClick={async () => {
+          if (!rows) return;
+          if (changed && !await confirmDialog({ title: "Rebuild autosquash plan?", message: "Current manual actions and messages in this plan will be replaced. No Git history changes until you start rebase.", confirm: "Rebuild plan" })) return;
+          const commits = orig.map((oid) => rows.find((r) => r.oid === oid)!);
+          const result = autosquash(commits);
+          setRows(result.rows); setAutosquashWarnings(result.warnings);
+          if (!result.matched) toast.info("No matching fixup!/squash! commits", "Choose a range that includes both the original commits and their fixups.");
+        }}>Autosquash fixups</button>
         <button className="btn" onClick={closeOverlay}>
           <X size={14} /> Cancel
         </button>
@@ -149,6 +160,7 @@ export function RebaseView({ root, oldest }: { root: string; oldest: string }) {
       )}
       {rows && (
         <div style={{ flex: 1, overflow: "auto", padding: "14px 18px" }}>
+          {autosquashWarnings.map((warning) => <div className="callout warn" key={warning} style={{ marginBottom: 8 }}>{warning}</div>)}
           {invalid && (
             <div className="callout danger" style={{ marginBottom: 10 }}>
               The first kept commit cannot be squashed — there is nothing above it to squash into.

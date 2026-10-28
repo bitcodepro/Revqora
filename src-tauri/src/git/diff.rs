@@ -346,7 +346,7 @@ pub fn working_raw(repo: &Path, path: &str, side: WorkSide, base: Option<&str>, 
         args.push("--".into());
         args.push("/dev/null".into());
         args.push(path.into());
-        let out = runner::exec(repo, &args)?;
+        let out = runner::exec_full(repo, &args, &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
         if out.code > 1 {
             return Err(runner::to_error("git diff --no-index", &out));
         }
@@ -360,7 +360,11 @@ pub fn working_raw(repo: &Path, path: &str, side: WorkSide, base: Option<&str>, 
     }
     args.push("--".into());
     args.push(path.into());
-    runner::run_bytes(repo, &args)
+    let out = runner::exec_full(repo, &args, &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
+    if !out.ok() {
+        return Err(runner::to_error("git diff", &out));
+    }
+    Ok(out.stdout)
 }
 
 pub fn working_diff(repo: &Path, path: &str, side: WorkSide, base: Option<&str>, untracked: bool, opts: &DiffOptions) -> GitResult<FileDiff> {
@@ -383,7 +387,11 @@ pub fn rev_diff(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &Di
     args.push(to.to_string());
     args.push("--".into());
     args.push(path.into());
-    let raw = runner::run_bytes(repo, &args)?;
+    let out = runner::exec_full(repo, &args, &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
+    if !out.ok() {
+        return Err(runner::to_error("git diff", &out));
+    }
+    let raw = out.stdout;
     let hash = fingerprint(&raw);
     let files = parse(&raw);
     let pick = files.iter().find(|f| f.new_path.as_deref() == Some(path)).or_else(|| files.first());

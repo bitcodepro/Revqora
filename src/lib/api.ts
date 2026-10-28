@@ -1,3 +1,4 @@
+import type { IgnoredFiles, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
 import type { DeletionPlan, DeletionProof, DeletionResult, RemoteBranchTarget, RemoteDeletionReview, OperationLogDetail, OperationLogFilter, OperationLogPage, OperationLogHealth, RecoveryCatalog, RecoveryCheckpoint, RecoverySummary } from "./types";
@@ -91,6 +92,11 @@ export const api = {
   repoInit: (path: string, branch?: string) => call<RepoInfo>("repo_init", { path, branch }),
   repoClone: (parent: string, url: string, name: string, opId: string) => call<RepoInfo>("repo_clone", { parent, url, name, opId }),
   repoInfo: (repo: string) => call<RepoInfo>("repo_info", { repo }),
+  ignoredFiles: (repo: string) => call<IgnoredFiles>("ignored_files", { repo }),
+  nestedRepositories: (repo: string) => call<NestedRepositories>("nested_repositories", { repo }),
+  stashSelection: (repo: string, path: string, selection: [number, number][], hash: string, opts: DiffOptions, message: string, expectedState: string | null) => call<PartialStashResult>("stash_selection", { repo, path, selection, hash, opts, message, expectedState }),
+  remoteRenamePlan: (repo: string, trackingRef: string, newName: string) => call<RemoteRenamePlan>("remote_rename_plan", { repo, trackingRef, newName }),
+  remoteBranchRename: (repo: string, plan: RemoteRenamePlan) => call<RemoteRenameResult>("remote_branch_rename", { repo, plan, expectedState: plan.stateToken }),
   status: (repo: string) => call<StatusSummary>("status", { repo }),
   identityGet: (repo: string) => call<Identity>("identity_get", { repo }),
   identitySet: (repo: string, name: string, email: string, global: boolean) => call<void>("identity_set", { repo, name, email, global }),
