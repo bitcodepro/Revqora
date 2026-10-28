@@ -304,8 +304,10 @@ creates the new server ref and removes the old ref with explicit leases on both;
 there is no non-atomic fallback on unsupported servers. A lost push response is
 reconciled against both server refs; uncertain outcomes require manual refresh.
 A confirmed server success stays successful even when local cache refresh fails.
-Fetch refs are updated only for the same server, using unambiguous mappings and
-expected-OID writes; unrelated or changed refs are preserved. Local branch names
+The push uses a command-scoped remote with no fetch mapping, preventing Git
+2.56 URL matching from changing tracking refs implicitly. No remote configuration
+is saved. Fetch refs are updated only for the same server, using unambiguous
+mappings and expected-OID writes; unrelated or changed refs are preserved. Local branch names
 and upstream configuration are never silently rewritten. The success dialog offers
 an explicit upstream update for affected local branches. Different fetch/push
 servers retain their independent local fetch state.

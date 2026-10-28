@@ -127,7 +127,18 @@ pub fn rename(root: &Path, plan: &RenamePlan) -> GitResult<RenameResult> {
         &[SavedRef { name: plan.target.remote_ref.clone(), oid: plan.server_oid.clone(), kind: "remote".into() }],
         Some(&plan.state_token),
     )?;
+    // Git 2.56 also updates a named remote's tracking refs when an explicit
+    // push URL matches it, even when its fetch server is different. Use a
+    // command-scoped remote without a fetch mapping; update caches ourselves
+    // only after success and only after checking ownership and expected OIDs.
+    let transport = format!("revqora-rename-{}", checkpoint.id);
+    let group = runner::exec(root, ["config", "--get-all", &format!("remotes.{transport}")])?;
+    if runner::run(root, ["remote"])?.lines().any(|name| name == transport) || group.code != 1 {
+        return Err(GitError::new("Cannot allocate an isolated rename transport. Review the rename again; nothing was pushed."));
+    }
     let args = vec![
+        "-c".into(),
+        format!("remote.{transport}.url={}", plan.target.push_url),
         "push".into(),
         "--atomic".into(),
         "--porcelain".into(),
@@ -135,7 +146,7 @@ pub fn rename(root: &Path, plan: &RenamePlan) -> GitResult<RenameResult> {
         format!("--force-with-lease={}:{}", plan.target.remote_ref, plan.server_oid),
         format!("--force-with-lease={}:", plan.new_ref),
         "--".into(),
-        plan.target.push_url.clone(),
+        transport,
         format!("{}:{}", plan.server_oid, plan.new_ref),
         format!(":{}", plan.target.remote_ref),
     ];

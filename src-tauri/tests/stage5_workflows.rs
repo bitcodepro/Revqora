@@ -297,7 +297,10 @@ fn push_server_tip_is_preserved_without_rewriting_a_different_fetch_server() {
     let p = r.plan("refs/remotes/origin/topic", "new").unwrap();
     assert_eq!(p.server_oid, pushed);
     assert_eq!(p.target.oid, base);
+    let config = fs::read(r.root.join(".git/config")).unwrap();
     let result = r.rename(&p).unwrap();
+    assert_eq!(fs::read(r.root.join(".git/config")).unwrap(), config);
+    assert!(!runner::exec(&r.root, ["show-ref", "--verify", "--quiet", "refs/remotes/origin/new"]).unwrap().ok());
     assert!(result.tracking_ref.is_none());
     assert!(!result.warnings.is_empty());
     assert_eq!(git_at(&fetch, &["rev-parse", "refs/heads/topic"]), base);
