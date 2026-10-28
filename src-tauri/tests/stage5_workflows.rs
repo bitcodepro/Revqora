@@ -344,6 +344,14 @@ fn a_symbolic_destination_cache_cannot_move_a_local_branch() {
     let r = Repo::new();
     let oid = r.base();
     let bare = r.origin();
+    fs::write(r.root.join("f.txt"), "independent local main\n").unwrap();
+    let main = r.commit("Local main differs from the server");
+    assert_ne!(main, oid);
+    fs::write(r.root.join("f.txt"), "local staged changes\n").unwrap();
+    r.git(&["add", "f.txt"]);
+    fs::write(r.root.join("f.txt"), "local unstaged changes\n").unwrap();
+    let index = r.index();
+    let working = fs::read(r.root.join("f.txt")).unwrap();
     r.git(&["symbolic-ref", "refs/remotes/origin/new", "refs/heads/main"]);
     let p = r.plan("refs/remotes/origin/topic", "new").unwrap();
     let result = r.rename(&p).unwrap();
@@ -351,7 +359,10 @@ fn a_symbolic_destination_cache_cannot_move_a_local_branch() {
     assert!(result.tracking_ref.is_none());
     assert!(!result.warnings.is_empty());
     assert_eq!(r.git(&["symbolic-ref", "refs/remotes/origin/new"]), "refs/heads/main");
-    assert_eq!(r.git(&["rev-parse", "main"]), oid);
+    assert_eq!(r.git(&["rev-parse", "refs/heads/main"]), main);
+    assert_eq!(r.git(&["rev-parse", "HEAD"]), main);
+    assert_eq!(r.index(), index);
+    assert_eq!(fs::read(r.root.join("f.txt")).unwrap(), working);
 }
 
 #[test]
