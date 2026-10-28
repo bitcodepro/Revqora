@@ -1657,6 +1657,7 @@ try {
   const studioRoot = path.join(work, "env", "stage6-studio");
   const studioRemote = path.join(work, "env", "stage6-origin.git");
   const studioWt = path.join(work, "env", "stage6-related");
+  const studioWtAlias = path.join(work, "env", "stage6-related-alias");
   const studioGit = (...args) => execFileSync("git", ["-C", studioRoot, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
   const studioReport = () => page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("rebase_studio_report", { repo: root }), studioRoot);
   let studioFirst, studioBefore, studioTag, studioId, studioAfter, studioLater;
@@ -1686,13 +1687,21 @@ try {
     studioGit("clone", "--bare", ".", studioRemote); studioGit("remote", "add", "origin", studioRemote); studioGit("fetch", "origin"); studioGit("branch", "--set-upstream-to=origin/main", "main");
     studioGit("branch", "studio-kept", studioFirst); studioGit("branch", "studio-free", studioFirst); studioGit("tag", "-a", "studio-tag", "-m", "Keep original annotation", studioFirst); studioTag = studioGit("rev-parse", "refs/tags/studio-tag");
     studioGit("worktree", "add", studioWt, "studio-kept"); studioGit("config", "rebase.updateRefs", "true");
+    // Git reports physical paths; Windows TEMP can use an 8.3 alias. Exercise
+    // equivalent paths explicitly so the assertion also covers this locally.
+    fs.symlinkSync(studioWt, studioWtAlias, process.platform === "win32" ? "junction" : "dir");
     await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), studioRoot);
     await page.waitForSelector(".repository-item.active .repository-label:has-text('stage6-studio')");
     await studioOpenPlan("Studio first change", studioFirst); const row = page.locator(".rebase-row", { hasText: "Studio first change" });
     await row.getByRole("button", { name: "Reword", exact: true }).click(); await row.locator("textarea").fill("Studio first change rewritten");
     await page.locator(".studio-review-plan").click(); await page.waitForSelector(".studio-review");
     for (const ref of ["refs/heads/studio-free", "refs/heads/studio-kept", "refs/tags/studio-tag"]) if (!await page.locator(`.studio-review [data-reference='${ref}']`).count()) throw new Error(`missing reference ${ref}`);
-    if (!(await page.locator(".studio-review").innerText()).includes(studioWt)) throw new Error("related worktree missing");
+    const worktreePaths = await page.locator(".studio-review .studio-card").filter({ has: page.getByText("Related worktrees", { exact: true }) }).locator(".muted").allTextContents();
+    const physicalPath = (value) => {
+      const resolved = fs.realpathSync.native(value);
+      return process.platform === "win32" ? path.toNamespacedPath(resolved).toLowerCase() : resolved;
+    };
+    if (!worktreePaths.some((p) => physicalPath(p) === physicalPath(studioWtAlias))) throw new Error("related worktree missing");
     if (!await page.locator(".cf-head button:has-text('Start rebase')").isDisabled()) throw new Error("published warning was not gated");
     await page.locator(".studio-ack-published").check(); await shot("60-studio-review");
     await row.locator("textarea").fill("Studio first change rewritten after review"); await page.waitForSelector(".studio-review", { state: "detached" });
