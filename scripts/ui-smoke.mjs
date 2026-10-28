@@ -1629,7 +1629,7 @@ try {
     await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".grow:has-text('fixup! Autosquash target')");
     // Semantic text matching normalizes rendered whitespace; the exact Git
     // identity is checked in the plan before any history rewrite is started.
-    await page.locator(".graph-scroll").getByText("Autosquash target", { exact: true }).click({ button: "right" });
+    await page.locator(".graph-scroll .grow").filter({ has: page.getByText("Autosquash target", { exact: true }) }).locator(".g-graph").click({ button: "right" });
     const rebase = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
     await until(async () => { if (await rebase.isVisible()) return true; await page.mouse.move(8, 8); await page.locator(".ctx-item", { hasText: /^Edit history$/ }).hover(); return rebase.isVisible(); }, "rebase submenu did not open", 10000);
     await rebase.click(); await page.waitForSelector(".rebase-row"); await page.getByRole("button", { name: "Autosquash fixups", exact: true }).click();
