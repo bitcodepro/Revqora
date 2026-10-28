@@ -794,6 +794,58 @@ async fn conflict_unresolve(app: AppHandle, expected_state: Option<String>, repo
     mutating(repo.clone(), expected_state, app.clone(), "conflict_unresolve", None, move || conflicts::unresolve(&p(&repo), &path)).await
 }
 
+#[tauri::command]
+async fn ignored_files(repo: String) -> GitResult<git::workspace_files::IgnoredFiles> {
+    blocking(move || git::workspace_files::ignored(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn nested_repositories(repo: String) -> GitResult<git::workspace_files::NestedRepositories> {
+    blocking(move || git::workspace_files::nested(&p(&repo))).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn stash_selection(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    path: String,
+    selection: Vec<(usize, usize)>,
+    hash: String,
+    opts: Option<DiffOptions>,
+    message: String,
+) -> GitResult<git::partial_stash::PartialStashResult> {
+    mutating(repo.clone(), expected_state, app, "stash_selection", None, move || {
+        git::partial_stash::save(&p(&repo), &path, &selection, &hash, &opts.unwrap_or_default(), &message)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn remote_rename_plan(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    tracking_ref: String,
+    new_name: String,
+) -> GitResult<git::remote_rename::RenamePlan> {
+    mutating(repo.clone(), expected_state, app, "remote_rename_plan", None, move || git::remote_rename::plan(&p(&repo), &tracking_ref, &new_name)).await
+}
+
+#[tauri::command]
+async fn remote_branch_rename(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    plan: git::remote_rename::RenamePlan,
+) -> GitResult<git::remote_rename::RenameResult> {
+    if expected_state.as_deref() != Some(plan.state_token.as_str()) {
+        return Err(GitError::new("Reopen the remote rename review.").kind("stale-operation"));
+    }
+    mutating(repo.clone(), expected_state, app, "remote_branch_rename", None, move || git::remote_rename::rename(&p(&repo), &plan)).await
+}
+
 // ───────────────────────────── stash ─────────────────────────────
 
 #[tauri::command]
@@ -1527,6 +1579,11 @@ pub fn run() {
             conflict_take,
             conflict_mark_resolved,
             conflict_unresolve,
+            ignored_files,
+            nested_repositories,
+            stash_selection,
+            remote_rename_plan,
+            remote_branch_rename,
             stash_save,
             stash_apply,
             stash_drop,

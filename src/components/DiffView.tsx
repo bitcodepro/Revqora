@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  Archive,
   AlignJustify,
   ChevronDown,
   ChevronRight,
@@ -27,7 +28,7 @@ import type { LanguageSupport } from "@codemirror/language";
 import { ImageDiff, isImagePath, type ImageSides } from "./ImageDiff";
 
 export type DiffMode = "unstaged" | "staged" | "readonly" | "pick";
-export type LineAction = "stage" | "unstage" | "discard" | "apply";
+export type LineAction = "stage" | "unstage" | "discard" | "apply" | "stash";
 
 interface Props {
   diff: FileDiff | null;
@@ -37,6 +38,7 @@ interface Props {
   path: string;
   badge?: ReactNode;
   actions?: ReactNode;
+  canStash?: boolean;
   onApply?: (selection: [number, number][], action: LineAction) => Promise<void> | void;
   emptyText?: string;
   /** Repository root and blob locations used to preview binary images. */
@@ -133,7 +135,7 @@ function renderCode(text: string, toks: Tok[] | undefined, spans: Span[] | undef
 
 type FlatRow = { kind: "hunk"; h: number } | { kind: "line"; h: number; l: number };
 
-export function DiffView({ diff, loading, error, mode, path, badge, actions, onApply, emptyText, root, images }: Props) {
+export function DiffView({ diff, loading, error, mode, path, badge, actions, canStash = false, onApply, emptyText, root, images }: Props) {
   const s = useSettings();
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [anchor, setAnchor] = useState<{ h: number; l: number } | null>(null);
@@ -347,6 +349,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, onA
               <button className="btn sm" disabled={busy} onClick={() => apply(hunkSelection(hi), "stage")}>
                 <Plus size={12} /> Stage hunk
               </button>
+              {canStash && <button className="btn sm" disabled={busy} onClick={() => apply(hunkSelection(hi), "stash")}><Archive size={12} /> Stash hunk</button>}
               <button className="btn sm ghost" disabled={busy} onClick={() => apply(hunkSelection(hi), "discard")} title="Discard hunk">
                 <Trash2 size={12} />
               </button>
@@ -595,6 +598,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, onA
               <button className="btn sm primary" disabled={busy} onClick={() => apply(selectedPairs(), "stage")}>
                 <Plus size={12} /> Stage lines
               </button>
+              {canStash && <button className="btn sm" disabled={busy} onClick={() => apply(selectedPairs(), "stash")}><Archive size={12} /> Stash lines</button>}
               <button className="btn sm danger" disabled={busy} onClick={() => apply(selectedPairs(), "discard")}>
                 <Trash2 size={12} /> Discard lines
               </button>

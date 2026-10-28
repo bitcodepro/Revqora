@@ -264,3 +264,48 @@ repository from reacting to its profile/journal/temp writes. Project files and G
 metadata remain watched; a repository explicitly opened inside an owned folder is
 not excluded wholesale. Native smoke runs its isolated profile in an ignored folder
 inside the fixture repository and verifies both noise exclusion and user-file events.
+
+
+## Daily Git workflows (stage 5)
+
+Ignored paths are an explicit read-only view, separate from the staged/unstaged
+lists. Git supplies repository, info/exclude and global rules. Wholly ignored
+folders are collapsed, and at most 10,000 results are displayed. Nested repository
+scans are also explicit: no background scan is added to commit selection. They
+skip Git metadata, common build folders and links, stop at each discovered child,
+and bound traversal to 50,000 entries, 200 repositories and twelve directory
+levels. Children open as independent repository tabs; bare stores open as folders.
+Unregistered child working repositories also open directly from Changes. Staging
+checks all selected paths first and refuses implicit embedded gitlinks; users can
+open/ignore a child or add a submodule explicitly. Path operations use literal
+Git pathspecs, so brackets/glob characters in filenames cannot select other files.
+
+Partial stash acts on tracked regular text files without renames, mode changes,
+binary contents or whole-file addition/deletion. Ignore-whitespace must be off.
+The displayed state token and diff hash bind the selection. A workspace recovery
+checkpoint precedes removal. A disposable portable index applies the selected
+index-to-working-tree delta to HEAD with Git's three-way merge; dependencies on
+staged edits fail without changing files or the real index. The stash has native
+HEAD/index parents and contains only the selected delta, not unrelated staging.
+A compare-and-swap reflog update publishes the stash before reverse-applying the
+selection to the working file. If removal fails after publication, the result
+explicitly says the stash was saved and requests inspection rather than retry.
+
+Autosquash builds a reviewable interactive-rebase plan from fixup!/squash! subjects
+or target object IDs. Only a unique earlier target is matched; missing/ambiguous
+or out-of-range targets remain Pick with warnings. Manual plan edits require
+confirmation before rebuilding. Starting the plan uses the existing guarded
+rebase transaction, checkpoint, conflict/continue and abort workflows.
+
+Remote branch rename resolves the displayed tracking ref through Git fetch
+mappings, reads the actual push-server SHA and refuses visible destination refs.
+The reviewed SHA is pinned in an exact reference checkpoint. One atomic push
+creates the new server ref and removes the old ref with explicit leases on both;
+there is no non-atomic fallback on unsupported servers. A lost push response is
+reconciled against both server refs; uncertain outcomes require manual refresh.
+A confirmed server success stays successful even when local cache refresh fails.
+Fetch refs are updated only for the same server, using unambiguous mappings and
+expected-OID writes; unrelated or changed refs are preserved. Local branch names
+and upstream configuration are never silently rewritten. The success dialog offers
+an explicit upstream update for affected local branches. Different fetch/push
+servers retain their independent local fetch state.

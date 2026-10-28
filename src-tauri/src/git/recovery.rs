@@ -949,6 +949,7 @@ pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<(
             | "layer_discard"
             | "layer_commit"
             | "stash_apply"
+            | "stash_selection"
             | "apply_patch"
             | "checkout_file"
             | "apply_from_commit"

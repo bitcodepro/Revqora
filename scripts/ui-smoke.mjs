@@ -1483,6 +1483,150 @@ try {
     await page.locator(".modal button", { hasText: /^Close$/ }).click();
   });
 
+  // Stage 5 uses a fresh repository so earlier history/recovery cases cannot
+  // accidentally satisfy its file, staging or remote-ref assertions.
+  const stage5 = path.join(work, "env", "stage5-workflows");
+  const remote5 = path.join(work, "env", "stage5-origin.git");
+  const git5 = (...args) => execFileSync("git", ["-C", stage5, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
+  const server5 = (...args) => execFileSync("git", ["--git-dir", remote5, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
+  let base5;
+  let index5;
+  const select5 = async () => {
+    await page.locator(".repository-select", { has: page.locator(".repository-label", { hasText: /^stage5-workflows$/ }) }).click();
+    await page.waitForSelector(".repository-item.active .repository-label:has-text('stage5-workflows')");
+  };
+
+  await check("ignored paths have a separate read-only view", async () => {
+    fs.mkdirSync(stage5);
+    git5("init", "-q", "-b", "main"); git5("config", "user.name", "Stage 5 Tester"); git5("config", "user.email", "stage5@example.com"); git5("config", "commit.gpgsign", "false"); git5("config", "core.autocrlf", "false"); git5("config", "core.hooksPath", ".git/hooks");
+    fs.writeFileSync(path.join(stage5, "f.txt"), Array.from({ length: 24 }, (_, i) => `line ${i + 1}\n`).join(""));
+    fs.writeFileSync(path.join(stage5, "staged.txt"), "base\n"); fs.writeFileSync(path.join(stage5, ".gitignore"), "ignored.log\nnested/\n");
+    git5("add", "-A"); git5("commit", "-qm", "Stage 5 baseline"); base5 = git5("rev-parse", "HEAD");
+    git5("clone", "--bare", ".", remote5); git5("remote", "add", "origin", remote5); git5("push", "origin", "HEAD:refs/heads/topic-old"); git5("fetch", "origin"); git5("branch", "--set-upstream-to=origin/topic-old", "main");
+    fs.writeFileSync(path.join(stage5, "ignored.log"), "ignored fixture\n");
+    const nested = path.join(stage5, "nested", "child"); fs.mkdirSync(nested, { recursive: true });
+    execFileSync("git", ["-C", nested, "init", "-q", "-b", "child"]);
+    execFileSync("git", ["-C", nested, "-c", "user.name=Child", "-c", "user.email=child@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Nested child baseline"]);
+    index5 = fs.readFileSync(path.join(stage5, ".git", "index"));
+    await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), stage5);
+    await page.click(".history-mode button:has-text('Graph')");
+    await page.waitForSelector(".grow:has-text('Stage 5 baseline')");
+    await page.click(".view-tab:has-text('Changes')");
+    if (await page.locator(".changes .file-row", { hasText: "ignored.log" }).count()) throw new Error("ignored file appeared as a normal change");
+    await page.getByRole("button", { name: "Ignored", exact: true }).click();
+    await page.waitForSelector(".repository-file-results .file-row:has-text('ignored.log')");
+    await page.waitForSelector(".repository-file-results .file-row:has-text('nested/')");
+    if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(index5)) throw new Error("ignored inspection rewrote the index");
+    await shot("53-ignored-files"); await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+  });
+
+  await check("nested repositories open in an independent repository tab", async () => {
+    await page.click(".toolbar button[title='Repository tools']");
+    await page.locator(".modal").last().getByRole("button", { name: "Nested repositories", exact: true }).click();
+    await page.waitForSelector(".nested-repository:has-text('nested/child')");
+    await shot("54-nested-repositories");
+    await page.locator(".nested-repository", { hasText: "nested/child" }).getByRole("button", { name: "Open repository", exact: true }).click();
+    await page.waitForSelector(".grow:has-text('Nested child baseline')");
+    if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(index5)) throw new Error("opening a child changed the parent index");
+    await select5();
+    await page.waitForSelector(".view-tab.on:has-text('Changes')");
+  });
+
+  await check("partial stash saves selected lines without changing staged or unselected data", async () => {
+    fs.writeFileSync(path.join(stage5, "staged.txt"), "STAGED\n"); git5("add", "staged.txt"); index5 = fs.readFileSync(path.join(stage5, ".git", "index"));
+    const original = fs.readFileSync(path.join(stage5, "f.txt"), "utf8"); fs.writeFileSync(path.join(stage5, "f.txt"), original.replace("line 4\n", "line 4\nFIRST\n").replace("line 20\n", "line 20\nSECOND\n"));
+    await page.click(".view-tab:has-text('Changes')"); await page.click("button[title='Refresh (F5)']");
+    await page.locator(".changes .file-row", { hasText: "f.txt" }).first().click();
+    await page.waitForSelector(".changes .diff .dl.add:has-text('FIRST')");
+    await page.locator(".changes .diff .dl.add", { hasText: "FIRST" }).locator(".ln").nth(1).click();
+    await page.getByRole("button", { name: "Stash lines", exact: true }).click();
+    await page.locator(".modal").last().getByRole("button", { name: "Stash selection", exact: true }).click();
+    await until(() => !fs.readFileSync(path.join(stage5, "f.txt"), "utf8").includes("FIRST"), "selected line was not removed", 30000);
+    if (!fs.readFileSync(path.join(stage5, "f.txt"), "utf8").includes("SECOND")) throw new Error("unselected line was removed");
+    if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(index5)) throw new Error("partial stash changed the real index");
+    const content = git5("show", "stash@{0}:f.txt"); if (!content.includes("FIRST") || content.includes("SECOND")) throw new Error("stash contains the wrong lines");
+    await page.waitForSelector(".changes .diff .dl.add:has-text('FIRST')", { state: "detached" });
+    await page.waitForSelector(".changes .diff .dl.add:has-text('SECOND')");
+    await shot("55-partial-stash-lines");
+  });
+
+  await check("partial stash also works for a complete selected hunk", async () => {
+    await page.waitForSelector(".changes .diff .dl.add:has-text('SECOND')");
+    await page.getByRole("button", { name: "Stash hunk", exact: true }).click();
+    await page.locator(".modal").last().getByRole("button", { name: "Stash selection", exact: true }).click();
+    await until(() => !fs.readFileSync(path.join(stage5, "f.txt"), "utf8").includes("SECOND"), "selected hunk was not removed", 30000);
+    if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(index5)) throw new Error("hunk stash changed staging");
+    if (git5("stash", "list").split("\n").length !== 2 || !git5("show", "stash@{0}:f.txt").includes("SECOND")) throw new Error("hunk stash was not saved independently");
+    await page.waitForSelector(".changes[data-pending='false']");
+  });
+
+  await check("autosquash previews fixup ordering before rewriting the selected range", async () => {
+    git5("commit", "-qm", "Autosquash target"); fs.writeFileSync(path.join(stage5, "other.txt"), "unrelated\n"); git5("add", "other.txt"); git5("commit", "-qm", "Unrelated work");
+    fs.appendFileSync(path.join(stage5, "staged.txt"), "fixup content\n"); git5("add", "staged.txt"); git5("commit", "-qm", "fixup! Autosquash target");
+    const tree = git5("rev-parse", "HEAD^{tree}");
+    await page.click(".view-tab:has-text('History')"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".grow:has-text('fixup! Autosquash target')");
+    await page.locator(".g-subject .text", { hasText: /^Autosquash target$/ }).click({ button: "right" });
+    const rebase = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
+    await until(async () => { if (await rebase.isVisible()) return true; await page.mouse.move(8, 8); await page.locator(".ctx-item", { hasText: /^Edit history$/ }).hover(); return rebase.isVisible(); }, "rebase submenu did not open", 10000);
+    await rebase.click(); await page.waitForSelector(".rebase-row"); await page.getByRole("button", { name: "Autosquash fixups", exact: true }).click();
+    const rows = page.locator(".rebase-row"); if (await rows.count() !== 3 || !(await rows.nth(1).getAttribute("class")).includes("fixup") || !(await rows.nth(1).innerText()).includes("fixup! Autosquash target")) throw new Error("autosquash preview did not reorder fixups");
+    await shot("56-autosquash-plan"); await page.locator(".cf-head").getByRole("button", { name: "Start rebase", exact: true }).click();
+    await until(() => git5("rev-list", "--count", `${base5}..HEAD`) === "2", "autosquash did not combine the fixup", 30000);
+    await page.waitForSelector(".conflict-overlay", { state: "detached" });
+    if (git5("rev-parse", "HEAD^{tree}") !== tree || git5("log", "--format=%s").includes("fixup!")) throw new Error("autosquash changed the result tree or retained the fixup");
+  });
+
+  const openRename5 = async (oldName, newName) => {
+    await page.locator(".sidebar .sb-item", { hasText: oldName }).first().click({ button: "right" });
+    await page.locator(".ctx-item", { hasText: "Rename on remote…" }).click();
+    await page.fill("input[aria-label='New remote branch name']", newName);
+    await page.locator(".modal").last().getByRole("button", { name: "Review rename", exact: true }).click();
+    await page.waitForSelector(".modal input[type='checkbox']");
+  };
+  await check("remote rename reviews the server SHA and offers explicit local upstream repair", async () => {
+    await openRename5("topic-old", "topic-renamed");
+    if (!(await page.locator(".modal").last().innerText()).includes(base5)) throw new Error("review did not show the server commit");
+    const confirm = page.locator(".modal").last().getByRole("button", { name: "Rename on server", exact: true });
+    if (!await confirm.isDisabled()) throw new Error("rename allowed without explicit confirmation");
+    await page.locator(".modal input[type='checkbox']").check(); await shot("57-remote-rename-review"); await confirm.click();
+    await page.waitForSelector(".modal:has-text('The server branch was renamed')", { timeout: 30000 });
+    if (server5("rev-parse", "refs/heads/topic-renamed") !== base5 || server5("for-each-ref", "--format=%(refname)", "refs/heads/topic-old")) throw new Error("server rename was not exact");
+    if (git5("config", "branch.main.merge") !== "refs/heads/topic-old") throw new Error("upstream was silently changed");
+    await page.getByRole("button", { name: "Use renamed upstream", exact: true }).click();
+    await until(() => git5("config", "branch.main.merge") === "refs/heads/topic-renamed", "explicit upstream update failed", 15000);
+    await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+  });
+
+  await check("a changed remote tip clears rename consent and requires a fresh server review", async () => {
+    server5("update-ref", "refs/heads/stale-old", base5); git5("push", "origin", "HEAD:refs/heads/seed"); git5("fetch", "origin");
+    await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".sidebar .sb-item:has-text('stale-old')");
+    await openRename5("stale-old", "stale-new");
+    const advanced = git5("rev-parse", "HEAD"); server5("update-ref", "refs/heads/stale-old", advanced);
+    await page.locator(".modal input[type='checkbox']").check(); await page.locator(".modal").last().getByRole("button", { name: "Rename on server", exact: true }).click();
+    await page.locator(".modal").last().getByRole("button", { name: "Review rename", exact: true }).waitFor();
+    if (server5("rev-parse", "refs/heads/stale-old") !== advanced || server5("for-each-ref", "--format=%(refname)", "refs/heads/stale-new")) throw new Error("stale consent changed server refs");
+    await page.locator(".modal").last().getByRole("button", { name: "Review rename", exact: true }).click(); await page.waitForSelector(".modal input[type='checkbox']");
+    if (!(await page.locator(".modal").last().innerText()).includes(advanced) || await page.locator(".modal input[type='checkbox']").isChecked()) throw new Error("fresh review reused the old SHA or consent");
+    await page.locator(".modal input[type='checkbox']").check(); await page.locator(".modal").last().getByRole("button", { name: "Rename on server", exact: true }).click();
+    await page.waitForSelector(".modal:has-text('The server branch was renamed')", { timeout: 30000 });
+    if (server5("rev-parse", "refs/heads/stale-new") !== advanced) throw new Error("fresh rename moved the wrong commit");
+    await shot("58-remote-rename-complete"); await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+  });
+
+  await check("Stage all refuses implicit nested gitlinks and opens the child from Changes", async () => {
+    fs.writeFileSync(path.join(stage5, ".gitignore"), "ignored.log\n"); fs.writeFileSync(path.join(stage5, "regular.txt"), "must remain unstaged\n");
+    const before = fs.readFileSync(path.join(stage5, ".git", "index"));
+    await page.click(".view-tab:has-text('Changes')"); await page.click("button[title='Refresh (F5)']");
+    const child = page.locator(".changes .file-row[title='nested/child/']");
+    await child.waitFor();
+    await page.click(".changes button[title='Stage all']"); await page.waitForSelector(".toast:has-text('Nested repository')");
+    await page.waitForSelector(".changes[data-pending='false']");
+    if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(before) || git5("diff", "--cached", "--name-only")) throw new Error("refused Stage all still changed the index");
+    await child.hover(); await shot("59-nested-staging-guard"); await child.click();
+    await page.waitForSelector(".grow:has-text('Nested child baseline')"); await select5();
+    if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(before)) throw new Error("opening the nested row changed parent staging");
+  });
+
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;
