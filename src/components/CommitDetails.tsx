@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
 import * as A from "../lib/actions";
 import { api, errorMessage } from "../lib/api";
@@ -32,6 +32,8 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
   const err = detailError?.key === detailKey && detailError.generation === generation ? detailError.message : null;
   const [chosenFile, setFile] = useState<string | null>(null);
   const file = d ? (chosenFile && d.files.some((f) => f.path === chosenFile) ? chosenFile : d.files[0]?.path ?? null) : null;
+  const lastFile = useRef<{ key: string; path: string } | null>(null);
+  useLayoutEffect(() => { if (file) lastFile.current = { key: detailKey, path: file }; }, [detailKey, file]);
   const [diffResult, setDiffResult] = useState<{ key: string; generation: number; value: FileDiff } | null>(null);
   const [diffError, setDiffError] = useState<{ key: string; generation: number; message: string } | null>(null);
   const [signatureResult, setSignatureResult] = useState<{ key: string; value: Signature } | null>(null);
@@ -150,11 +152,18 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
       </div>
     </header>
   );
+  const splitter = <Splitter dir="v" style={{ left: "clamp(140px, var(--commit-files-w), 45%)" }} onDrag={(d) => setFw((w) => Math.max(140, Math.min(600, w + d)))} onEnd={() => setLayout({ commitFilesWidth: fw })} />;
   if (err || !current || !d)
     return (
       <div className="commit-preview">
         {header}
-        {err ? <div className="empty">{err}</div> : <div className="loading-center"><span className="loader" /></div>}
+        <div className="commit-details" style={{ ["--commit-files-w" as string]: `${fw}px` }}>
+          <div className="details-left">{err ? <div className="empty">{err}</div> : <div className="loading-center"><span className="loader" /></div>}</div>
+          {splitter}
+          {/* Keep the viewer mounted across refreshes: its search field/query
+              survive while stale metadata/diff and mutation actions are absent. */}
+          <DiffView diff={null} loading={!err} mode="pick" path={lastFile.current?.key === detailKey ? lastFile.current.path : ""} root={root} />
+        </div>
       </div>
     );
 
@@ -296,7 +305,7 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
             )} />
           </div>
         </div>
-        <Splitter dir="v" style={{ left: "clamp(140px, var(--commit-files-w), 45%)" }} onDrag={(d) => setFw((w) => Math.max(140, Math.min(600, w + d)))} onEnd={() => setLayout({ commitFilesWidth: fw })} />
+        {splitter}
         <DiffView
           diff={diff}
           loading={diffLoading}

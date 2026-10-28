@@ -254,7 +254,9 @@ of attributes/config. Each repository exposes an observable invalidation generat
 mounted previews restart on refresh even with unchanged OID/refs, and generation
 checks reject older local results, errors and in-flight responses. Native component
 regressions cover A -> B -> cached A -> external file edit and refreshes during
-both delayed metadata and delayed diff responses.
+both delayed metadata and delayed diff responses. The viewer remains mounted with
+empty data and no mutation actions while reloading, so an open diff search and
+its query survive invalidation; a held-response native regression checks this.
 
 The watcher excludes only known application-owned child folders: portable data,
 WebView profile and runtime files. This prevents a client installed inside its own

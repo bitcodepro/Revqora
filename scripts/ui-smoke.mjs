@@ -265,6 +265,39 @@ try {
     await shot("51-preview-invalidation");
   });
 
+  await check("refresh keeps the active diff search while stale data and actions are cleared", async () => {
+    await page.locator(".grow:not(.wip)", { hasText: "Document usage" }).click();
+    await page.waitForSelector(".commit-subject:has-text('Document usage')");
+    await page.waitForSelector(".details .diff .dl.add");
+    await page.click(".details .diff button[title^='Find in diff']");
+    await page.fill(".diff-find input", "usage");
+    await page.waitForSelector(".details .dl.search-cur");
+    await page.evaluate(() => {
+      const original = window.fetch;
+      const endpoint = window.__TAURI_INTERNALS__.convertFileSrc("commit_details", "ipc");
+      window.__searchRefreshFetch = original; window.__searchRefreshRelease = null;
+      window.fetch = async function(input, init) {
+        const response = await original.call(this, input, init);
+        if (String(input) === endpoint) await new Promise((resolve) => { window.__searchRefreshRelease = resolve; });
+        return response;
+      };
+    });
+    try {
+      await page.click("button[title='Refresh (F5)']");
+      await page.waitForFunction(() => typeof window.__searchRefreshRelease === "function");
+      if (await page.locator(".diff-find input").inputValue() !== "usage") throw new Error("refresh lost the active search query");
+      if (await page.locator(".details .file-row, .details .diff .dl, .details .apply-hunk").count()) throw new Error("stale preview data remained during reload");
+    } finally {
+      await page.evaluate(() => { window.fetch = window.__searchRefreshFetch; window.__searchRefreshRelease?.(); });
+    }
+    await page.waitForSelector(".commit-subject:has-text('Document usage')");
+    await page.waitForSelector(".details .dl.search-cur");
+    if (await page.locator(".diff-find input").inputValue() !== "usage") throw new Error("loaded diff lost the active search query");
+    await page.locator(".diff-find input").press("Escape");
+    await page.waitForSelector(".diff-find", { state: "detached" });
+    await shot("52-preview-search-refresh");
+  });
+
   await check("search filters commits", async () => {
     await page.fill(".search-box input", "greeting");
     await until(async () => (await page.locator(".grow.match").count()) >= 2, "no search matches");
