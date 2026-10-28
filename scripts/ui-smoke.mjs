@@ -1660,12 +1660,18 @@ try {
   const studioGit = (...args) => execFileSync("git", ["-C", studioRoot, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
   const studioReport = () => page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("rebase_studio_report", { repo: root }), studioRoot);
   let studioFirst, studioBefore, studioTag, studioId, studioAfter, studioLater;
-  const studioOpenPlan = async (subject) => {
+  const studioOpenPlan = async (subject, expectedOid) => {
     await page.click(".view-tab:has-text('History')"); await page.click(".history-mode button:has-text('Graph')"); await page.click("button[title='Refresh (F5)']");
-    await page.locator(".graph-scroll").getByText(subject, { exact: true }).click({ button: "right" });
+    // Ref badges can consume the subject's entire width in a narrow layout.
+    // Match its text for identity, then use the row's visible graph cell to
+    // open the commit menu without bypassing Playwright's actionability checks.
+    const commit = page.locator(".graph-scroll .grow").filter({ has: page.getByText(subject, { exact: true }) });
+    await commit.locator(".g-graph").click({ button: "right" });
     const item = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
     await until(async () => { if (await item.isVisible()) return true; await page.mouse.move(8, 8); await page.locator(".ctx-item", { hasText: /^Edit history$/ }).hover(); return item.isVisible(); }, "Studio menu did not open", 10000);
     await item.click(); await page.waitForSelector(".rebase-row");
+    const firstOid = (await page.locator(".rebase-row").first().locator(".mono").first().innerText()).trim();
+    if (studioGit("rev-parse", "--verify", `${firstOid}^{commit}`) !== expectedOid) throw new Error("Studio opened a plan for the wrong commit");
   };
   const studioOpenResult = async () => {
     await page.click(".toolbar button[title='Repository tools']"); await page.locator(".modal").last().getByRole("button", { name: "Rebase Studio result", exact: true }).click(); await page.waitForSelector(".studio-result");
@@ -1682,7 +1688,7 @@ try {
     studioGit("worktree", "add", studioWt, "studio-kept"); studioGit("config", "rebase.updateRefs", "true");
     await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), studioRoot);
     await page.waitForSelector(".repository-item.active .repository-label:has-text('stage6-studio')");
-    await studioOpenPlan("Studio first change"); const row = page.locator(".rebase-row", { hasText: "Studio first change" });
+    await studioOpenPlan("Studio first change", studioFirst); const row = page.locator(".rebase-row", { hasText: "Studio first change" });
     await row.getByRole("button", { name: "Reword", exact: true }).click(); await row.locator("textarea").fill("Studio first change rewritten");
     await page.locator(".studio-review-plan").click(); await page.waitForSelector(".studio-review");
     for (const ref of ["refs/heads/studio-free", "refs/heads/studio-kept", "refs/tags/studio-tag"]) if (!await page.locator(`.studio-review [data-reference='${ref}']`).count()) throw new Error(`missing reference ${ref}`);
@@ -1726,7 +1732,7 @@ try {
   });
 
   await check("Studio edit stop and abort record the outcome without losing manual edits from recovery", async () => {
-    await studioOpenPlan("Later workspace change"); await page.locator(".rebase-row").getByRole("button", { name: "Edit", exact: true }).click(); await reviewStudio(); await studioStart();
+    await studioOpenPlan("Later workspace change", studioLater); await page.locator(".rebase-row").getByRole("button", { name: "Edit", exact: true }).click(); await reviewStudio(); await studioStart();
     await page.waitForSelector(".conflict-overlay", { state: "detached" }); await page.waitForSelector(".op-banner");
     if ((await studioReport()).phase !== "paused") throw new Error("edit stop was not recorded");
     fs.writeFileSync(path.join(studioRoot, "later.txt"), "manual work after edit stop\n");
@@ -1739,7 +1745,7 @@ try {
   });
 
   await check("Studio external completion needs explicit association with the reviewed current HEAD", async () => {
-    await studioOpenPlan("Later workspace change"); await page.locator(".rebase-row").getByRole("button", { name: "Edit", exact: true }).click(); await reviewStudio(); await studioStart(); await page.waitForSelector(".op-banner");
+    await studioOpenPlan("Later workspace change", studioLater); await page.locator(".rebase-row").getByRole("button", { name: "Edit", exact: true }).click(); await reviewStudio(); await studioStart(); await page.waitForSelector(".op-banner");
     studioGit("rebase", "--continue"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".op-banner", { state: "detached" }); await studioOpenResult();
     await page.waitForSelector(".studio-result[data-phase='unconfirmed']"); const button = page.getByRole("button", { name: "Save reviewed current result", exact: true });
     if (!await button.isDisabled()) throw new Error("external completion was associated without consent");
