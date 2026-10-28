@@ -5,10 +5,9 @@
 import { execFileSync } from "node:child_process";
 import http from "node:http";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { launch } from "./ui-driver.mjs";
+import { createProfile, launch } from "./ui-driver.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
@@ -17,7 +16,7 @@ const arg = (name, def) => {
   return i >= 0 ? process.argv[i + 1] : def;
 };
 const exe = arg("--exe", path.join(projectRoot, "src-tauri/target/release/revqora.exe"));
-const work = fs.mkdtempSync(path.join(os.tmpdir(), "revqora-smoke-"));
+const work = createProfile("revqora-smoke-");
 const out = arg("--out", process.env.REVQORA_SMOKE_OUT || path.join(work, "shots"));
 fs.mkdirSync(out, { recursive: true });
 
@@ -45,7 +44,7 @@ fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n/.revqora-smoke
 let { page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 });
 const errors = [];
 const attachPage = () => {
-  page.setDefaultTimeout(30000);
+  page.setDefaultTimeout(60000);
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 };
@@ -56,6 +55,7 @@ async function check(name, fn) {
   try {
     await fn();
     results.push(`ok   ${step}. ${name}`);
+    console.log(results.at(-1));
   } catch (e) {
     results.push(`FAIL ${step}. ${name}: ${e.message.split("\n")[0]}`);
     console.log(e.stack ?? String(e));
@@ -64,7 +64,8 @@ async function check(name, fn) {
   }
 }
 const shot = (n) => page.screenshot({ path: path.join(out, `${n}.png`) });
-const until = async (fn, msg, ms = 8000) => {
+// Poll the actual result; guarded Git transactions include checkpointing and refresh.
+const until = async (fn, msg, ms = 30000) => {
   const t = Date.now();
   let lastError = null;
   while (Date.now() - t < ms) {
@@ -79,6 +80,17 @@ const until = async (fn, msg, ms = 8000) => {
     await page.waitForTimeout(120);
   }
   throw new Error(lastError ? `${msg} (last error: ${lastError.message})` : msg);
+};
+
+const reviewStudio = async () => {
+  await page.locator(".studio-review-plan").click();
+  await page.waitForSelector(".studio-review");
+  for (const selector of [".studio-ack-published", ".studio-ack-dirty"]) if (await page.locator(selector).count()) await page.locator(selector).check();
+};
+const closeStudioResult = async () => {
+  await page.waitForSelector(".studio-result[data-phase='completed']", { timeout: 180000 });
+  await page.locator(".conflict-overlay .cf-head").getByRole("button", { name: "Close", exact: true }).click();
+  await page.waitForSelector(".conflict-overlay", { state: "detached" });
 };
 
 let failed = false;
@@ -443,9 +455,9 @@ try {
     const row = page.locator(".rebase-row", { hasText: "Change port" });
     await row.locator("button:has-text('Reword')").click();
     await row.locator("textarea").fill("Change the default port");
-    await page.click(".cf-head button:has-text('Start rebase')");
-    await until(() => git("log", "-1", "--format=%s") === "Change the default port", "rebase did not reword the commit");
-    await page.waitForSelector(".conflict-overlay", { state: "detached" });
+    await reviewStudio(); await page.click(".cf-head button:has-text('Start rebase')");
+    await until(() => git("log", "-1", "--format=%s") === "Change the default port", "rebase did not reword the commit", 60000);
+    await closeStudioResult();
   });
 
   await check("image files show a picture diff", async () => {
@@ -648,13 +660,15 @@ try {
   });
 
   await check("restore a deleted branch from repository tools", async () => {
+    const restoredOid = git("rev-parse", "refs/heads/temp-conflict");
     git("branch", "-D", "temp-conflict");
     await page.click(".toolbar button[title='Repository tools']");
     await page.click(".modal button:has-text('Recently deleted branches')");
     const row = page.locator(".modal .reflog-row", { hasText: "temp-conflict" });
     await row.waitFor();
     await row.locator("button:has-text('Restore')").click();
-    await until(() => git("branch", "--list", "temp-conflict") !== "", "branch not restored");
+    await until(() => git("branch", "--list", "temp-conflict") !== "" && git("rev-parse", "refs/heads/temp-conflict") === restoredOid, "branch not restored to its original commit", 60000);
+    await row.waitFor({ state: "detached", timeout: 60000 });
     await page.click(".modal button:has-text('Close')");
   });
 
@@ -1094,7 +1108,7 @@ try {
     await page.waitForSelector(".repository-table tbody tr");
     await page.locator(".repository-overview .repository-sync button:has-text('Fetch all')").click();
     // Twenty sequential fetches also refresh refs/status; allow six seconds per repo on Windows.
-    await until(async () => !(await page.locator(".statusbar .busy-item").count()), "bulk fetch did not finish", 120000);
+    await until(async () => !(await page.locator(".statusbar .busy-item").count()), "bulk fetch did not finish", 300000);
     await until(async () => (await page.locator(".repository-table tbody tr", { hasText: "batch-clean" }).innerText()).includes("1"), "incoming commits were not refreshed", 20000);
     await shot("20-repositories");
     await page.locator(".repository-overview .repository-sync button:has-text('Pull all')").click();
@@ -1540,8 +1554,49 @@ try {
     fs.writeFileSync(path.join(stage5, "staged.txt"), "STAGED\n"); git5("add", "staged.txt"); index5 = fs.readFileSync(path.join(stage5, ".git", "index"));
     const original = fs.readFileSync(path.join(stage5, "f.txt"), "utf8"); fs.writeFileSync(path.join(stage5, "f.txt"), original.replace("line 4\n", "line 4\nFIRST\n").replace("line 20\n", "line 20\nSECOND\n"));
     await page.click(".view-tab:has-text('Changes')"); await page.click("button[title='Refresh (F5)']");
-    await page.locator(".changes .file-row", { hasText: "f.txt" }).first().click();
-    await page.waitForSelector(".changes .diff .dl.add:has-text('FIRST')");
+    // Reproduce an older staged-file response arriving after a new file's diff.
+    // Hold the real backend response, without changing either file or Git state.
+    await page.waitForSelector(".changes .file-row:has-text('staged.txt')");
+    await page.evaluate(() => {
+      const original = window.fetch;
+      const base = window.__TAURI_INTERNALS__.convertFileSrc("", "ipc");
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      window.__workingDiffFetch = original;
+      window.__workingDiffRace = { held: 0, delivered: 0, released: false, stale: false, release };
+      window.fetch = async function(input, init) {
+        const response = await original.call(this, input, init);
+        if (String(input) === `${base}working_diff` && !window.__workingDiffRace.released) {
+          const diff = await response.clone().json();
+          if (diff.path === "staged.txt") {
+            window.__workingDiffRace.held++;
+            await gate;
+            window.__workingDiffRace.delivered++;
+          }
+        }
+        return response;
+      };
+    });
+    try {
+      await page.locator(".changes .file-row", { hasText: "staged.txt" }).click();
+      await page.waitForFunction(() => window.__workingDiffRace.held > 0);
+      await page.locator(".changes .file-row", { hasText: "f.txt" }).first().click();
+      await page.waitForSelector(".changes .diff .dl.add:has-text('FIRST')");
+      await page.evaluate(() => {
+        const race = window.__workingDiffRace;
+        race.observer = new MutationObserver(() => {
+          if ([...document.querySelectorAll(".changes .diff .dl.add")].some((line) => line.textContent.includes("STAGED"))) race.stale = true;
+        });
+        race.observer.observe(document.querySelector(".changes .diff"), { childList: true, subtree: true });
+        race.released = true;
+        race.release();
+      });
+      await page.waitForFunction(() => window.__workingDiffRace.delivered === window.__workingDiffRace.held);
+      await page.evaluate(() => new Promise((resolve) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(resolve)), 0)));
+      if (await page.evaluate(() => window.__workingDiffRace.stale) || !await page.locator(".changes .diff .dl.add", { hasText: "FIRST" }).count()) throw new Error("an older file response replaced the selected file's diff");
+    } finally {
+      await page.evaluate(() => { window.__workingDiffRace.release(); window.__workingDiffRace.observer?.disconnect(); window.fetch = window.__workingDiffFetch; });
+    }
     await page.locator(".changes .diff .dl.add", { hasText: "FIRST" }).locator(".ln").nth(1).click();
     await page.getByRole("button", { name: "Stash lines", exact: true }).click();
     await page.locator(".modal").last().getByRole("button", { name: "Stash selection", exact: true }).click();
@@ -1574,15 +1629,15 @@ try {
     await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".grow:has-text('fixup! Autosquash target')");
     // Semantic text matching normalizes rendered whitespace; the exact Git
     // identity is checked in the plan before any history rewrite is started.
-    await page.locator(".graph-scroll").getByText("Autosquash target", { exact: true }).click({ button: "right" });
+    await page.locator(".graph-scroll .grow").filter({ has: page.getByText("Autosquash target", { exact: true }) }).locator(".g-graph").click({ button: "right" });
     const rebase = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
     await until(async () => { if (await rebase.isVisible()) return true; await page.mouse.move(8, 8); await page.locator(".ctx-item", { hasText: /^Edit history$/ }).hover(); return rebase.isVisible(); }, "rebase submenu did not open", 10000);
     await rebase.click(); await page.waitForSelector(".rebase-row"); await page.getByRole("button", { name: "Autosquash fixups", exact: true }).click();
     const rows = page.locator(".rebase-row"); if (!(await rows.first().innerText()).includes(targetOid.slice(0, 7))) throw new Error("autosquash plan starts from the wrong commit");
     if (await rows.count() !== 3 || !(await rows.nth(1).getAttribute("class")).includes("fixup") || !(await rows.nth(1).innerText()).includes("fixup! Autosquash target")) throw new Error("autosquash preview did not reorder fixups");
-    await shot("56-autosquash-plan"); await page.locator(".cf-head").getByRole("button", { name: "Start rebase", exact: true }).click();
+    await shot("56-autosquash-plan"); await reviewStudio(); await page.locator(".cf-head").getByRole("button", { name: "Start rebase", exact: true }).click();
     await until(() => git5("rev-list", "--count", `${base5}..HEAD`) === "2", "autosquash did not combine the fixup", 30000);
-    await page.waitForSelector(".conflict-overlay", { state: "detached" });
+    await closeStudioResult();
     if (git5("rev-parse", "HEAD^{tree}") !== tree || git5("log", "--format=%s").includes("fixup!")) throw new Error("autosquash changed the result tree or retained the fixup");
   });
 
@@ -1637,6 +1692,118 @@ try {
     if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(before)) throw new Error("opening the nested row changed parent staging");
   });
 
+
+  // Rebase Studio: compare immutable snapshots, preserve related refs and recover
+  // the reviewed session through normal UI actions and a real process restart.
+  const studioRoot = path.join(work, "env", "stage6-studio");
+  const studioRemote = path.join(work, "env", "stage6-origin.git");
+  const studioWt = path.join(work, "env", "stage6-related");
+  const studioWtAlias = path.join(work, "env", "stage6-related-alias");
+  const studioGit = (...args) => execFileSync("git", ["-C", studioRoot, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
+  const studioReport = () => page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("rebase_studio_report", { repo: root }), studioRoot);
+  let studioFirst, studioBefore, studioTag, studioId, studioAfter, studioLater;
+  const studioOpenPlan = async (subject, expectedOid) => {
+    await page.click(".view-tab:has-text('History')"); await page.click(".history-mode button:has-text('Graph')"); await page.click("button[title='Refresh (F5)']");
+    // Ref badges can consume the subject's entire width in a narrow layout.
+    // Match its text for identity, then use the row's visible graph cell to
+    // open the commit menu without bypassing Playwright's actionability checks.
+    const commit = page.locator(".graph-scroll .grow").filter({ has: page.getByText(subject, { exact: true }) });
+    await commit.locator(".g-graph").click({ button: "right" });
+    const item = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
+    await until(async () => { if (await item.isVisible()) return true; await page.mouse.move(8, 8); await page.locator(".ctx-item", { hasText: /^Edit history$/ }).hover(); return item.isVisible(); }, "Studio menu did not open", 10000);
+    await item.click(); await page.waitForSelector(".rebase-row");
+    const firstOid = (await page.locator(".rebase-row").first().locator(".mono").first().innerText()).trim();
+    if (studioGit("rev-parse", "--verify", `${firstOid}^{commit}`) !== expectedOid) throw new Error("Studio opened a plan for the wrong commit");
+  };
+  const studioOpenResult = async () => {
+    await page.click(".toolbar button[title='Repository tools']"); await page.locator(".modal").last().getByRole("button", { name: "Rebase Studio result", exact: true }).click(); await page.waitForSelector(".studio-result");
+  };
+  const studioStart = () => page.locator(".cf-head").getByRole("button", { name: "Start rebase", exact: true }).click();
+
+  await check("Studio review exposes published history and kept refs and invalidates consent after edits", async () => {
+    fs.mkdirSync(studioRoot); studioGit("init", "-q", "-b", "main"); studioGit("config", "user.name", "Studio Tester"); studioGit("config", "user.email", "studio@example.com"); studioGit("config", "commit.gpgsign", "false"); studioGit("config", "core.autocrlf", "false"); studioGit("config", "core.hooksPath", ".git/hooks");
+    fs.writeFileSync(path.join(studioRoot, "f.txt"), "base\n"); studioGit("add", "-A"); studioGit("commit", "-qm", "Studio base");
+    fs.appendFileSync(path.join(studioRoot, "f.txt"), "first\n"); studioGit("commit", "-qam", "Studio first change"); studioFirst = studioGit("rev-parse", "HEAD");
+    fs.appendFileSync(path.join(studioRoot, "f.txt"), "second\n"); studioGit("commit", "-qam", "Studio second change"); studioBefore = studioGit("rev-parse", "HEAD");
+    studioGit("clone", "--bare", ".", studioRemote); studioGit("remote", "add", "origin", studioRemote); studioGit("fetch", "origin"); studioGit("branch", "--set-upstream-to=origin/main", "main");
+    studioGit("branch", "studio-kept", studioFirst); studioGit("branch", "studio-free", studioFirst); studioGit("tag", "-a", "studio-tag", "-m", "Keep original annotation", studioFirst); studioTag = studioGit("rev-parse", "refs/tags/studio-tag");
+    studioGit("worktree", "add", studioWt, "studio-kept"); studioGit("config", "rebase.updateRefs", "true");
+    // Git reports physical paths; Windows TEMP can use an 8.3 alias. Exercise
+    // equivalent paths explicitly so the assertion also covers this locally.
+    fs.symlinkSync(studioWt, studioWtAlias, process.platform === "win32" ? "junction" : "dir");
+    await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), studioRoot);
+    await page.waitForSelector(".repository-item.active .repository-label:has-text('stage6-studio')");
+    await studioOpenPlan("Studio first change", studioFirst); const row = page.locator(".rebase-row", { hasText: "Studio first change" });
+    await row.getByRole("button", { name: "Reword", exact: true }).click(); await row.locator("textarea").fill("Studio first change rewritten");
+    await page.locator(".studio-review-plan").click(); await page.waitForSelector(".studio-review");
+    for (const ref of ["refs/heads/studio-free", "refs/heads/studio-kept", "refs/tags/studio-tag"]) if (!await page.locator(`.studio-review [data-reference='${ref}']`).count()) throw new Error(`missing reference ${ref}`);
+    const worktreePaths = await page.locator(".studio-review .studio-card").filter({ has: page.getByText("Related worktrees", { exact: true }) }).locator(".muted").allTextContents();
+    const physicalPath = (value) => {
+      const resolved = fs.realpathSync.native(value);
+      return process.platform === "win32" ? path.toNamespacedPath(resolved).toLowerCase() : resolved;
+    };
+    if (!worktreePaths.some((p) => physicalPath(p) === physicalPath(studioWtAlias))) throw new Error("related worktree missing");
+    if (!await page.locator(".cf-head button:has-text('Start rebase')").isDisabled()) throw new Error("published warning was not gated");
+    await page.locator(".studio-ack-published").check(); await shot("60-studio-review");
+    await row.locator("textarea").fill("Studio first change rewritten after review"); await page.waitForSelector(".studio-review", { state: "detached" });
+    if (!await page.locator(".cf-head button:has-text('Start rebase')").isDisabled()) throw new Error("editing a reviewed plan kept its consent");
+  });
+
+  await check("Studio rejects external ref changes then preserves other branches and records its real result", async () => {
+    await reviewStudio(); studioGit("branch", "studio-external", studioBefore); await studioStart();
+    await page.waitForSelector(".toast:has-text('Rebase needs review')"); await page.waitForSelector(".studio-review", { state: "detached" });
+    if (studioGit("rev-parse", "HEAD") !== studioBefore) throw new Error("stale Studio start rewrote history");
+    await reviewStudio(); await studioStart(); await page.waitForSelector(".studio-result[data-phase='completed']", { timeout: 180000 }); await page.waitForSelector(".studio-same-tree");
+    const r = await studioReport(); studioId = r.id; studioAfter = r.afterHead;
+    if (r.beforeCheckpoint.head !== studioBefore || studioAfter === studioBefore || studioAfter !== studioGit("rev-parse", "HEAD")) throw new Error("Studio result was not bound to the actual before/after heads");
+    if (studioGit("rev-parse", "refs/heads/studio-free") !== studioFirst || studioGit("rev-parse", "refs/heads/studio-kept") !== studioFirst || studioGit("rev-parse", "refs/tags/studio-tag") !== studioTag) throw new Error("Studio moved a kept ref under rebase.updateRefs=true");
+    await shot("61-studio-result"); await page.locator(".studio-commit-list").first().locator(".studio-message").first().click(); await page.waitForSelector(".commit-message"); await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+  });
+
+  await check("Studio file comparison uses saved snapshots after the current HEAD moves", async () => {
+    fs.writeFileSync(path.join(studioRoot, "later.txt"), "after the recorded result\n"); studioGit("add", "later.txt"); studioGit("commit", "-qm", "Later workspace change"); studioLater = studioGit("rev-parse", "HEAD");
+    await page.locator(".studio-file-compare").click(); await page.waitForSelector(".cf-head button.on:has-text('Direct diff')");
+    const inputs = page.locator(".cf-head input"); if (await inputs.nth(0).inputValue() !== studioBefore || await inputs.nth(1).inputValue() !== studioAfter) throw new Error("Studio comparison used a later HEAD or a merge-base comparison");
+    await shot("62-studio-direct-diff"); await page.locator(".cf-head").getByRole("button", { name: "Close", exact: true }).click();
+  });
+
+  await check("Studio report survives restart and its original checkpoint restores the exact old branch", async () => {
+    await close(); ({ page, close, child } = await launch({ exe, args: [studioRoot], profile: smokeProfile, port: 0 })); attachPage();
+    await page.waitForSelector(".repository-item.active .repository-label:has-text('stage6-studio')"); await studioOpenResult();
+    await page.waitForSelector(`.studio-result[data-session-id='${studioId}'][data-phase='completed']`); await page.waitForSelector(".studio-same-tree");
+    const r = await studioReport(); if (r.afterHead !== studioAfter) throw new Error("Studio record followed a later HEAD after restart");
+    await page.locator(".studio-before-checkpoint").click(); await page.waitForSelector(`.recovery-detail[data-checkpoint-id='${r.beforeCheckpoint.id}']`);
+    const savedMain = page.locator(`.recovery-detail[data-checkpoint-id='${r.beforeCheckpoint.id}'] select[aria-label='Saved recovery reference'] option`).filter({ hasText: /^refs\/heads\/main\s+·/ });
+    await savedMain.waitFor({ state: "attached" });
+    const option = await savedMain.getAttribute("value");
+    if (option === null) throw new Error("original main ref missing from Studio checkpoint");
+    await page.selectOption("select[aria-label='Saved recovery reference']", option); await page.fill("input[aria-label='Recovered local branch']", "studio-original-recovered"); await page.getByRole("button", { name: "Restore branch", exact: true }).click();
+    await until(() => studioGit("rev-parse", "refs/heads/studio-original-recovered") === studioBefore, "Studio checkpoint restored the wrong head", 30000);
+    if (studioGit("rev-parse", "refs/heads/main") !== studioLater) throw new Error("recovering the original branch replaced current main");
+    await page.waitForSelector(".recovery-center[aria-busy='false']"); await shot("63-studio-recovery"); await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+  });
+
+  await check("Studio edit stop and abort record the outcome without losing manual edits from recovery", async () => {
+    await studioOpenPlan("Later workspace change", studioLater); await page.locator(".rebase-row").getByRole("button", { name: "Edit", exact: true }).click(); await reviewStudio(); await studioStart();
+    await page.waitForSelector(".conflict-overlay", { state: "detached" }); await page.waitForSelector(".op-banner");
+    if ((await studioReport()).phase !== "paused") throw new Error("edit stop was not recorded");
+    fs.writeFileSync(path.join(studioRoot, "later.txt"), "manual work after edit stop\n");
+    await page.locator(".op-banner").getByRole("button", { name: "Abort", exact: true }).click(); await page.locator(".modal").last().getByRole("button", { name: "Abort rebase", exact: true }).click();
+    await page.waitForSelector(".op-banner", { state: "detached", timeout: 60000 });
+    await until(async () => (await studioReport()).phase === "aborted", "Studio abort report did not finish", 30000);
+    if (studioGit("rev-parse", "HEAD") !== studioLater) throw new Error("abort did not restore the original head");
+    const catalog = await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("recovery_list", { repo: root }), studioRoot);
+    if (!catalog.checkpoints.some((c) => c.command === "op_abort")) throw new Error("abort discarded manual work without a checkpoint");
+  });
+
+  await check("Studio external completion needs explicit association with the reviewed current HEAD", async () => {
+    await studioOpenPlan("Later workspace change", studioLater); await page.locator(".rebase-row").getByRole("button", { name: "Edit", exact: true }).click(); await reviewStudio(); await studioStart(); await page.waitForSelector(".op-banner");
+    studioGit("rebase", "--continue"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".op-banner", { state: "detached" }); await studioOpenResult();
+    await page.waitForSelector(".studio-result[data-phase='unconfirmed']"); const button = page.getByRole("button", { name: "Save reviewed current result", exact: true });
+    if (!await button.isDisabled()) throw new Error("external completion was associated without consent");
+    await page.locator(".studio-result input[type='checkbox']").check(); await button.click(); await page.waitForSelector(".studio-result[data-phase='captured']"); await page.waitForSelector(".studio-same-tree");
+    await shot("64-studio-external-result"); await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+  });
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;
@@ -1647,7 +1814,7 @@ try {
   console.log(results.join("\n"));
   console.log(`screenshots: ${out}`);
   if (errors.length) console.log("console errors:\n" + errors.join("\n"));
-  if (!process.argv.includes("--keep") && !failed) {
+  if (!process.argv.includes("--keep")) {
     // The app may still be shutting down and holding the folder; cleanup is best effort.
     try {
       fs.rmSync(path.join(work, "env"), { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });

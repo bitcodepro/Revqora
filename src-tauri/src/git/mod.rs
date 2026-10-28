@@ -24,3 +24,5 @@ pub mod watcher;
 pub mod partial_stash;
 pub mod remote_rename;
 pub mod workspace_files;
+
+pub mod rebase_studio;

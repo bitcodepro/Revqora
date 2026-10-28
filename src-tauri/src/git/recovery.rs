@@ -358,7 +358,7 @@ pub fn create(root: &Path, command: &str, label: &str, workspace: bool, ignored:
     create_expected(root, command, label, workspace, ignored, None)
 }
 
-fn create_expected(root: &Path, command: &str, label: &str, workspace: bool, ignored: bool, expected: Option<&str>) -> GitResult<Summary> {
+pub(crate) fn create_expected(root: &Path, command: &str, label: &str, workspace: bool, ignored: bool, expected: Option<&str>) -> GitResult<Summary> {
     create_expected_refs(root, command, label, workspace, ignored, expected, &[])
 }
 
@@ -937,6 +937,8 @@ pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<(
     let workspace = matches!(
         command,
         "reset"
+            | "op_abort"
+            | "op_skip"
             | "undo_commit"
             | "rebase_onto"
             | "interactive_rebase"

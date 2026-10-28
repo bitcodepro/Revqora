@@ -1,3 +1,4 @@
+import type { RebaseItem, StudioReview, StudioReport, StudioComparison } from "./types";
 import type { IgnoredFiles, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
@@ -164,13 +165,18 @@ export const api = {
   remoteSetUrl: (repo: string, name: string, url: string) => call<void>("remote_set_url", { repo, name, url }),
 
   mergeStart: (repo: string, target: string, strategy: "no-ff" | "ff" | "ff-only" | "squash", expectedState?: string | null) => call<OpOutcome>("merge_start", { repo, target, strategy, expectedState }),
-  opAbort: (repo: string, kind: string, expectedState?: string | null) => call<void>("op_abort", { repo, kind, expectedState }),
+  opAbort: (repo: string, kind: string, expectedState?: string | null) => call<OpOutcome>("op_abort", { repo, kind, expectedState }),
   opContinue: (repo: string, kind: string, message?: string | null, expectedState?: string | null) => call<OpOutcome>("op_continue", { repo, kind, message, expectedState }),
   opSkip: (repo: string, kind: string) => call<OpOutcome>("op_skip", { repo, kind }),
   cherryPick: (repo: string, oids: string[], noCommit: boolean) => call<OpOutcome>("cherry_pick", { repo, oids, noCommit }),
   revert: (repo: string, oid: string, noCommit: boolean) => call<OpOutcome>("revert", { repo, oid, noCommit }),
   rebaseOnto: (repo: string, upstream: string, expectedState?: string | null) => call<OpOutcome>("rebase_onto", { repo, upstream, expectedState }),
   rewrite: (repo: string, action: RewriteAction, expectedState?: string | null) => call<OpOutcome>("rewrite", { repo, action, expectedState }),
+  rebaseStudioReview: (repo: string, oldest: string, items: RebaseItem[]) => call<StudioReview>("rebase_studio_review", { repo, oldest, items }),
+  rebaseStudioStart: (repo: string, oldest: string, items: RebaseItem[], review: StudioReview, ackPublished: boolean, ackDirty: boolean) => call<{ outcome: OpOutcome; report: StudioReport }>("rebase_studio_start", { repo, expectedState: review.stateToken, request: { oldest, items, reviewToken: review.token, ackPublished, ackDirty } }),
+  rebaseStudioReport: (repo: string) => call<StudioReport | null>("rebase_studio_report", { repo }),
+  rebaseStudioComparison: (repo: string, id: string) => call<StudioComparison>("rebase_studio_comparison", { repo, id }),
+  rebaseStudioCapture: (repo: string, id: string, head: string) => call<StudioReport>("rebase_studio_capture", { repo, id, head }),
   rebasePlan: (repo: string, oldest: string) => call<RebasePlan>("rebase_plan", { repo, oldest }),
   interactiveRebase: (repo: string, base: string | null, items: { oid: string; action: RebaseAction; message: string | null }[], expectedState?: string | null) =>
     call<OpOutcome>("interactive_rebase", { repo, base, items, expectedState }),

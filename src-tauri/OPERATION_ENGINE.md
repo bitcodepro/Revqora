@@ -311,3 +311,35 @@ mappings and expected-OID writes; unrelated or changed refs are preserved. Local
 and upstream configuration are never silently rewritten. The success dialog offers
 an explicit upstream update for affected local branches. Different fetch/push
 servers retain their independent local fetch state.
+
+
+## Rebase Studio (stage 6)
+
+Interactive plans are reviewed against the displayed repository token and a digest
+of their exact actions/messages, original HEAD, fetch mappings, affected refs and
+related worktrees. Publication analysis uses cached fetch refs (including custom
+fetch destinations), not live-server promises. Published-history and working-change
+warnings require separate acknowledgements. Duplicate checkouts of the current
+branch are blockers. Planning is read-only and never refreshes the index.
+
+Explicit interactive todos disable Git's updateRefs and autoSquash defaults.
+Only the current branch is planned for rewrite; result reports compare actual refs
+so hook/external changes remain visible. A full workspace/index checkpoint and an
+atomically saved intent precede Git. A per-worktree filesystem lock serializes
+Studio writers across app processes, with state revalidation after waiting.
+Abort and Skip also checkpoint manual work before discarding it.
+
+One versioned latest report is kept under portable per-worktree storage (8 MiB,
+500 editable commits). Native rebase identity uses a unique Git-generated HEAD reflog start action,
+orig-head, head-name and the orig-head file timestamp (timestamp collisions alone
+cannot match another session); Continue/Skip/Abort only finalize a matching session.
+An external or interrupted completion remains unconfirmed until the user explicitly
+associates a reviewed current HEAD on the original branch. Git success remains
+success when report persistence fails; warnings request inspection rather than retry.
+Before/result objects use the existing checkpoint retention and pinning mechanism.
+
+Comparisons use the recorded SHAs, never a later HEAD. File comparison is a direct
+tree-to-tree diff. Before/after commit lists include messages; Git range-diff is
+shown as human-readable heuristic output for at most 200 commits per side, capped
+at 200,000 characters. Root rewrites use commit lists and direct file comparison.
+Reports are available after restart from Repository tools and operation-result toasts.

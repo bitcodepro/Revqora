@@ -471,13 +471,20 @@ export async function stashDrop(root: string, index: number) {
 
 // ───────────── in-progress operations ─────────────
 
+function offerStudioResult(root: string, out: OpOutcome | undefined) {
+  if (!out?.studioSession) return;
+  const id = out.studioSession;
+  useUi.getState().toast({ kind: out.studioWarning ? "warning" : "info", title: "Rebase Studio result available", detail: out.studioWarning ?? "Compare the saved before/after snapshots or open recovery.", action: { label: "Review result", run: () => { void import("../components/RebaseResult").then((m) => m.rebaseResultDialog(root, id)); } } }, 20000);
+}
+
 export async function abortOp(root: string, kind: string) {
   const expectedState = await prepareOperation(root);
   if (!expectedState) return;
   const what = kind === "merge" || kind === "squash" ? "merge" : kind;
-  const ok = await confirmDialog({ title: `Abort ${what}?`, message: "Everything returns to the state before it started. Conflict resolutions you made are lost.", confirm: `Abort ${what}`, danger: true });
+  const ok = await confirmDialog({ title: `Abort ${what}?`, message: "Git will return to the state before this operation. Current manual changes and staging will be checkpointed in Undo Center before aborting.", confirm: `Abort ${what}`, danger: true });
   if (!ok) return;
-  await act(root, () => api.opAbort(root, kind, expectedState), { success: `${what[0].toUpperCase() + what.slice(1)} aborted` });
+  const out = await act(root, () => api.opAbort(root, kind, expectedState), { success: `${what[0].toUpperCase() + what.slice(1)} aborted` });
+  offerStudioResult(root, out);
 }
 
 export async function confirmMerge(root: string, kind: "merge" | "squash", message: string | null) {
@@ -498,12 +505,13 @@ export async function confirmMerge(root: string, kind: "merge" | "squash", messa
 export async function continueOp(root: string, kind: string) {
   const out = await act(root, () => api.opContinue(root, kind, null), { busy: "Continuing" });
   if (out && out.status !== "done") handleOutcome(root, out, kind[0].toUpperCase() + kind.slice(1));
-  else if (out) toast.success(`${kind[0].toUpperCase() + kind.slice(1)} complete`);
+  else if (out) { toast.success(`${kind[0].toUpperCase() + kind.slice(1)} complete`); offerStudioResult(root, out); }
 }
 
 export async function skipOp(root: string, kind: string) {
   const out = await act(root, () => api.opSkip(root, kind));
   if (out && out.status !== "done") handleOutcome(root, out, kind);
+  else offerStudioResult(root, out);
 }
 
 /** During an "edit" stop: amend staged changes into the commit and continue. */

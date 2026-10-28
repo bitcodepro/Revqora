@@ -22,6 +22,7 @@ use git::diff::{self, DiffOptions, FileDiff, SelectionMode, WorkSide};
 use git::graph::{self, GraphCache, GraphRow, GraphSummary, SearchMode};
 use git::layers::{self, LayersState};
 use git::ops::{self, CommitOptions, OpOutcome, PushOptions, ReflogEntry, RewriteAction};
+use git::rebase_studio as studio;
 use git::recovery;
 use git::refs::{self, RefsSnapshot};
 use git::repo::{self, RepoInfo};
@@ -715,18 +716,27 @@ async fn merge_start(app: AppHandle, expected_state: Option<String>, repo: Strin
 }
 
 #[tauri::command]
-async fn op_abort(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "op_abort", None, move || ops::abort_op(&p(&repo), &kind)).await
+async fn op_abort(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<studio::StepOutcome> {
+    let expected = expected_state.clone();
+    mutating(repo.clone(), expected_state, app.clone(), "op_abort", None, move || studio::abort(&p(&repo), &kind, expected.as_deref())).await
 }
 
 #[tauri::command]
-async fn op_continue(app: AppHandle, expected_state: Option<String>, repo: String, kind: String, message: Option<String>) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "op_continue", None, move || ops::continue_op(&p(&repo), &kind, message.as_deref())).await
+async fn op_continue(app: AppHandle, expected_state: Option<String>, repo: String, kind: String, message: Option<String>) -> GitResult<studio::StepOutcome> {
+    let expected = expected_state.clone();
+    mutating(repo.clone(), expected_state, app.clone(), "op_continue", None, move || {
+        studio::step(&p(&repo), &kind, expected.as_deref(), || ops::continue_op(&p(&repo), &kind, message.as_deref()))
+    })
+    .await
 }
 
 #[tauri::command]
-async fn op_skip(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "op_skip", None, move || ops::skip_op(&p(&repo), &kind)).await
+async fn op_skip(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<studio::StepOutcome> {
+    let expected = expected_state.clone();
+    mutating(repo.clone(), expected_state, app.clone(), "op_skip", None, move || {
+        studio::step(&p(&repo), &kind, expected.as_deref(), || ops::skip_op(&p(&repo), &kind))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -764,6 +774,44 @@ async fn interactive_rebase(
 #[tauri::command]
 async fn rewrite(app: AppHandle, expected_state: Option<String>, repo: String, action: RewriteAction) -> GitResult<OpOutcome> {
     mutating(repo.clone(), expected_state, app.clone(), "rewrite", None, move || ops::rewrite(&p(&repo), &action)).await
+}
+
+#[tauri::command]
+async fn rebase_studio_review(repo: String, oldest: String, items: Vec<ops::RebaseItem>) -> GitResult<Observed<studio::Review>> {
+    blocking(move || {
+        git::operations::inspect(&p(&repo), || studio::review(&p(&repo), &oldest, &items)).map(|(value, state_token)| Observed { value, state_token })
+    })
+    .await
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StudioStartRequest {
+    oldest: String,
+    items: Vec<ops::RebaseItem>,
+    review_token: String,
+    ack_published: bool,
+    ack_dirty: bool,
+}
+#[tauri::command]
+async fn rebase_studio_start(app: AppHandle, expected_state: Option<String>, repo: String, request: StudioStartRequest) -> GitResult<studio::StartResult> {
+    let expected = expected_state.clone().ok_or_else(|| GitError::new("A reviewed repository state is required."))?;
+    mutating(repo.clone(), expected_state, app, "rebase_studio_start", None, move || {
+        studio::start(&p(&repo), &request.oldest, &request.items, &request.review_token, &expected, request.ack_published, request.ack_dirty)
+    })
+    .await
+}
+#[tauri::command]
+async fn rebase_studio_report(repo: String) -> GitResult<Option<studio::Report>> {
+    blocking(move || git::operations::inspect(&p(&repo), || studio::report(&p(&repo))).map(|(value, _)| value)).await
+}
+#[tauri::command]
+async fn rebase_studio_comparison(repo: String, id: String) -> GitResult<studio::Comparison> {
+    blocking(move || git::operations::inspect(&p(&repo), || studio::comparison(&p(&repo), &id)).map(|(value, _)| value)).await
+}
+#[tauri::command]
+async fn rebase_studio_capture(app: AppHandle, expected_state: Option<String>, repo: String, id: String, head: String) -> GitResult<studio::Report> {
+    let expected = expected_state.clone();
+    mutating(repo.clone(), expected_state, app, "rebase_studio_capture", None, move || studio::capture(&p(&repo), &id, &head, expected.as_deref())).await
 }
 
 // ───────────────────────────── conflicts ─────────────────────────────
@@ -1573,6 +1621,11 @@ pub fn run() {
             rebase_onto,
             rewrite,
             rebase_plan,
+            rebase_studio_review,
+            rebase_studio_start,
+            rebase_studio_report,
+            rebase_studio_comparison,
+            rebase_studio_capture,
             interactive_rebase,
             conflict_info,
             conflict_save,

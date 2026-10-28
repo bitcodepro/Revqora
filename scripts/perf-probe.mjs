@@ -1,21 +1,23 @@
 // Measures how fast the built app handles a (large) repository.
 //   node scripts/perf-probe.mjs <repo> [--exe path]
 import path from "node:path";
-import os from "node:os";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { launch } from "./ui-driver.mjs";
+import { createProfile, launch } from "./ui-driver.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = process.argv[2];
 if (!repo) throw new Error("usage: perf-probe.mjs <repo> [--exe path]");
 const i = process.argv.indexOf("--exe");
 const exe = i > 0 ? process.argv[i + 1] : path.join(here, "../src-tauri/target/release/revqora.exe");
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), "revqora-perf-"));
+const profile = createProfile("revqora-perf-");
 
 const t0 = Date.now();
-const { page, close } = await launch({ exe, args: [repo], profile, port: 9700 });
+let close;
 try {
+  const started = await launch({ exe, args: [repo], profile, port: 9700 });
+  close = started.close;
+  const { page } = started;
   await page.waitForSelector(".topbar", { timeout: 60000 });
   const shell = Date.now() - t0;
   await page.waitForSelector(".grow:not(.wip) .g-subject .text", { timeout: 60000 });
@@ -48,5 +50,6 @@ try {
   await page.waitForFunction(() => !document.querySelector(".graph-rows .skel") && document.querySelectorAll(".grow .g-subject .text").length > 0);
   console.log(`jump to the oldest commits rendered in: ${Date.now() - s} ms`);
 } finally {
-  await close();
+  await close?.();
+  if (!process.argv.includes("--keep")) fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
 }

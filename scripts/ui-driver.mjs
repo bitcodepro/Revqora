@@ -8,7 +8,7 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 
 export function createProfile(prefix = "revqora-webview-") {
-  const base = process.platform === "win32" && process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Temp") : os.tmpdir();
+  const base = path.resolve(process.env.REVQORA_TEST_TMP || os.tmpdir());
   fs.mkdirSync(base, { recursive: true });
   return fs.mkdtempSync(path.join(base, prefix));
 }
@@ -82,10 +82,24 @@ export async function launch({ exe, args = [], port = 9333, profile, visible = p
     browser,
     child,
     close: async () => {
+      if (child.exitCode === null && child.signalCode === null && child.pid) {
+        await new Promise((resolve) => {
+          const timeout = setTimeout(resolve, 5000);
+          timeout.unref();
+          child.once("exit", () => { clearTimeout(timeout); resolve(); });
+          if (process.platform === "win32") {
+            // This PID belongs to the app spawned above. Its WebView2 children
+            // must exit too before a disposable profile can be removed.
+            try { execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
+            catch { child.kill(); }
+          } else child.kill();
+        });
+      }
+      // Stop the host first: otherwise WebView2 can recreate its browser/profile
+      // between closing the CDP connection and terminating the application.
       try {
         await browser.close();
       } catch {}
-      child.kill();
     },
   };
 }

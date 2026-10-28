@@ -54,7 +54,7 @@ interface Dialog {
 
 export type Overlay =
   | { kind: "blame"; root: string; path: string; rev: string | null; line?: number }
-  | { kind: "compare"; root: string; from: string; to: string }
+  | { kind: "compare"; root: string; from: string; to: string; direct?: boolean }
   | { kind: "rebase"; root: string; base: string | null; oldest: string }
   | { kind: "stash"; root: string; index: number }
   | { kind: "tree"; root: string; rev: string };

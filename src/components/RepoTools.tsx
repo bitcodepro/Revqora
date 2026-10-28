@@ -1,3 +1,4 @@
+import { rebaseResultDialog } from "./RebaseResult";
 import { repositoryFiles } from "./RepositoryFiles";
 import { useEffect, useState } from "react";
 import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
@@ -70,7 +71,7 @@ function RepoToolsBody({ root, initial, close }: { root: string; initial: "overv
         </button>
       }
     >
-      <div className="hstack"><button className="btn" onClick={() => { close(); void repositoryFiles(root, "ignored"); }}>Ignored files</button><button className="btn" onClick={() => { close(); void repositoryFiles(root, "nested"); }}>Nested repositories</button></div>
+      <div className="studio-actions"><button className="btn" onClick={() => { close(); void rebaseResultDialog(root); }}>Rebase Studio result</button><button className="btn" onClick={() => { close(); void repositoryFiles(root, "ignored"); }}>Ignored files</button><button className="btn" onClick={() => { close(); void repositoryFiles(root, "nested"); }}>Nested repositories</button></div>
       <div className="seg" style={{ alignSelf: "flex-start" }}>
         <button type="button" className={tab === "overview" ? "on" : ""} onClick={() => setTab("overview")}>
           Housekeeping

@@ -1,0 +1,20 @@
+.studio-review, .studio-result { min-width: 0; }
+.studio-review { max-width: 1180px; margin: 0 auto 16px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elev); }
+.studio-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; }
+.studio-card { min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.studio-card > small { display: block; margin-bottom: 6px; color: var(--text-faint); }
+.studio-card > code { display: block; overflow-wrap: anywhere; }
+.studio-ref, .studio-commit { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.studio-ref > span, .studio-commit > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.studio-ref > code, .studio-commit > code { flex: none; font-size: var(--fs-xs); }
+.studio-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.studio-summary { display: flex; align-items: center; gap: 10px; }
+.studio-commit-list { max-height: 260px; overflow: auto; }
+.studio-range-diff { max-height: 360px; overflow: auto; padding: 8px 0; font: var(--fs-sm) var(--font-code); white-space: pre; }
+.studio-result .callout { white-space: pre-wrap; overflow-wrap: anywhere; }
+.studio-ref-list { max-height: 220px; overflow: auto; }
+.studio-editor-row { min-width: 820px; }
+.studio-editor-row > .hstack > .seg { margin-left: auto; }
+.studio-message { flex: 1; min-width: 0; border: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.studio-message:hover { color: var(--accent); text-decoration: underline; }
+.studio-head > .primary { margin-left: auto; }
