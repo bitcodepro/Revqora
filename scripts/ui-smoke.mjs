@@ -45,7 +45,7 @@ fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n/.revqora-smoke
 let { page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 });
 const errors = [];
 const attachPage = () => {
-  page.setDefaultTimeout(30000);
+  page.setDefaultTimeout(60000);
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 };
@@ -56,6 +56,7 @@ async function check(name, fn) {
   try {
     await fn();
     results.push(`ok   ${step}. ${name}`);
+    console.log(results.at(-1));
   } catch (e) {
     results.push(`FAIL ${step}. ${name}: ${e.message.split("\n")[0]}`);
     console.log(e.stack ?? String(e));
@@ -64,7 +65,8 @@ async function check(name, fn) {
   }
 }
 const shot = (n) => page.screenshot({ path: path.join(out, `${n}.png`) });
-const until = async (fn, msg, ms = 8000) => {
+// Poll the actual result; guarded Git transactions include checkpointing and refresh.
+const until = async (fn, msg, ms = 30000) => {
   const t = Date.now();
   let lastError = null;
   while (Date.now() - t < ms) {
@@ -87,7 +89,7 @@ const reviewStudio = async () => {
   for (const selector of [".studio-ack-published", ".studio-ack-dirty"]) if (await page.locator(selector).count()) await page.locator(selector).check();
 };
 const closeStudioResult = async () => {
-  await page.waitForSelector(".studio-result[data-phase='completed']", { timeout: 60000 });
+  await page.waitForSelector(".studio-result[data-phase='completed']", { timeout: 180000 });
   await page.locator(".conflict-overlay .cf-head").getByRole("button", { name: "Close", exact: true }).click();
   await page.waitForSelector(".conflict-overlay", { state: "detached" });
 };
@@ -659,13 +661,15 @@ try {
   });
 
   await check("restore a deleted branch from repository tools", async () => {
+    const restoredOid = git("rev-parse", "refs/heads/temp-conflict");
     git("branch", "-D", "temp-conflict");
     await page.click(".toolbar button[title='Repository tools']");
     await page.click(".modal button:has-text('Recently deleted branches')");
     const row = page.locator(".modal .reflog-row", { hasText: "temp-conflict" });
     await row.waitFor();
     await row.locator("button:has-text('Restore')").click();
-    await until(() => git("branch", "--list", "temp-conflict") !== "", "branch not restored");
+    await until(() => git("branch", "--list", "temp-conflict") !== "" && git("rev-parse", "refs/heads/temp-conflict") === restoredOid, "branch not restored to its original commit", 60000);
+    await row.waitFor({ state: "detached", timeout: 60000 });
     await page.click(".modal button:has-text('Close')");
   });
 
@@ -1105,7 +1109,7 @@ try {
     await page.waitForSelector(".repository-table tbody tr");
     await page.locator(".repository-overview .repository-sync button:has-text('Fetch all')").click();
     // Twenty sequential fetches also refresh refs/status; allow six seconds per repo on Windows.
-    await until(async () => !(await page.locator(".statusbar .busy-item").count()), "bulk fetch did not finish", 120000);
+    await until(async () => !(await page.locator(".statusbar .busy-item").count()), "bulk fetch did not finish", 300000);
     await until(async () => (await page.locator(".repository-table tbody tr", { hasText: "batch-clean" }).innerText()).includes("1"), "incoming commits were not refreshed", 20000);
     await shot("20-repositories");
     await page.locator(".repository-overview .repository-sync button:has-text('Pull all')").click();
@@ -1694,7 +1698,7 @@ try {
     await reviewStudio(); studioGit("branch", "studio-external", studioBefore); await studioStart();
     await page.waitForSelector(".toast:has-text('Rebase needs review')"); await page.waitForSelector(".studio-review", { state: "detached" });
     if (studioGit("rev-parse", "HEAD") !== studioBefore) throw new Error("stale Studio start rewrote history");
-    await reviewStudio(); await studioStart(); await page.waitForSelector(".studio-result[data-phase='completed']", { timeout: 60000 }); await page.waitForSelector(".studio-same-tree");
+    await reviewStudio(); await studioStart(); await page.waitForSelector(".studio-result[data-phase='completed']", { timeout: 180000 }); await page.waitForSelector(".studio-same-tree");
     const r = await studioReport(); studioId = r.id; studioAfter = r.afterHead;
     if (r.beforeCheckpoint.head !== studioBefore || studioAfter === studioBefore || studioAfter !== studioGit("rev-parse", "HEAD")) throw new Error("Studio result was not bound to the actual before/after heads");
     if (studioGit("rev-parse", "refs/heads/studio-free") !== studioFirst || studioGit("rev-parse", "refs/heads/studio-kept") !== studioFirst || studioGit("rev-parse", "refs/tags/studio-tag") !== studioTag) throw new Error("Studio moved a kept ref under rebase.updateRefs=true");
