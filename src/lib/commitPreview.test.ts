@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("./api", () => ({ api: { commitDetails: vi.fn(), revDiff: vi.fn() } }));
-import { PreviewCache, detailsKey, diffKey, loadDetails, peekDetails } from "./commitPreview";
+import { PreviewCache, detailsKey, diffKey, loadDetails, peekDetails, previewGeneration, subscribePreview, invalidatePreview } from "./commitPreview";
 import { api } from "./api";
 import type { CommitDetails, DiffOptions } from "./types";
 
@@ -47,6 +47,25 @@ describe("commit preview memory cache", () => {
     expect(key).not.toBe(diffKey("repo", null, "oid", "file", opts));
     expect(key).not.toBe(diffKey("repo", "base", "oid", "other", opts));
     expect(key).not.toBe(diffKey("repo", "base", "oid", "file", { ...opts, context: 8 }));
+  });
+  it("publishes repository-scoped generations after invalidating cached and pending reads", async () => {
+    const root = "generation-test"; const oid = "b".repeat(40);
+    const key = detailsKey(root, oid, "refs");
+    vi.mocked(api.commitDetails).mockResolvedValue({ oid } as CommitDetails);
+    await loadDetails(key, root, oid);
+    const initial = previewGeneration(root);
+    const other = vi.fn();
+    const stopOther = subscribePreview("other-generation-test", other);
+    const own = vi.fn(() => {
+      expect(previewGeneration(root)).toBe(initial + 1);
+      expect(peekDetails(key, oid)).toBeUndefined();
+    });
+    const stop = subscribePreview(root, own);
+    invalidatePreview(root);
+    expect(own).toHaveBeenCalledTimes(1); expect(other).not.toHaveBeenCalled();
+    stop(); stopOther(); invalidatePreview(root);
+    expect(own).toHaveBeenCalledTimes(1); expect(previewGeneration(root)).toBe(initial + 2);
+    vi.mocked(api.commitDetails).mockClear();
   });
   it("never caches mutable refs or abbreviated object names", async () => {
     vi.mocked(api.commitDetails).mockResolvedValue({ oid: "a".repeat(40) } as CommitDetails);

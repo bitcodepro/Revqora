@@ -250,7 +250,11 @@ include repository, remote-ref snapshot for the pushed badge, and all diff input
 Mutable refs and abbreviated IDs are not cached. Errors and oversized entries are
 not retained, concurrent identical requests coalesce, and obsolete responses cannot
 replace the selected view. Actual repository events invalidate cached interpretation
-of attributes/config; invalidation also fences older in-flight responses.
+of attributes/config. Each repository exposes an observable invalidation generation:
+mounted previews restart on refresh even with unchanged OID/refs, and generation
+checks reject older local results, errors and in-flight responses. Native component
+regressions cover A -> B -> cached A -> external file edit and refreshes during
+both delayed metadata and delayed diff responses.
 
 The watcher excludes only known application-owned child folders: portable data,
 WebView profile and runtime files. This prevents a client installed inside its own

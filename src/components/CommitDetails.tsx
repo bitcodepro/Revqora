@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
 import * as A from "../lib/actions";
 import { api, errorMessage } from "../lib/api";
@@ -9,7 +9,7 @@ import { absoluteTime, fullTime, joinPath, relativeTime, shortOid } from "../lib
 import { contextMenu, copyText, openOverlay, showDialog } from "../lib/ui";
 import { Avatar, FileGroups, PathLabel, StatusIcon } from "./bits";
 import { useRepos } from "../lib/store";
-import { detailsKey, diffKey, loadDetails, loadDiff, peekDetails, peekDiff } from "../lib/commitPreview";
+import { detailsKey, diffKey, loadDetails, loadDiff, peekDetails, peekDiff, previewGeneration, subscribePreview } from "../lib/commitPreview";
 import { useSettings } from "../lib/settings";
 import { DiffView, useDiffOpts } from "./DiffView";
 import { jumpToCommit } from "./GraphView";
@@ -19,19 +19,23 @@ import { CommitMessageDialog } from "./CommitMessage";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
+  const generation = useSyncExternalStore(
+    useCallback((listener) => subscribePreview(root, listener), [root]),
+    useCallback(() => previewGeneration(root), [root]),
+  );
   const remoteRefs = useRepos((s) => s.tabs[root]?.refs?.remote);
   const remoteVersion = useMemo(() => JSON.stringify((remoteRefs ?? []).map((r) => [r.fullName, r.oid]).sort((a, b) => a[0].localeCompare(b[0]))), [remoteRefs]);
   const detailKey = detailsKey(root, oid, remoteVersion);
-  const [detailResult, setDetailResult] = useState<{ key: string; value: Details } | null>(null);
-  const d = peekDetails(detailKey, oid) ?? (detailResult?.key === detailKey ? detailResult.value : null);
-  const [detailError, setDetailError] = useState<{ key: string; message: string } | null>(null);
-  const err = detailError?.key === detailKey ? detailError.message : null;
+  const [detailResult, setDetailResult] = useState<{ key: string; generation: number; value: Details } | null>(null);
+  const d = peekDetails(detailKey, oid) ?? (detailResult?.key === detailKey && detailResult.generation === generation ? detailResult.value : null);
+  const [detailError, setDetailError] = useState<{ key: string; generation: number; message: string } | null>(null);
+  const err = detailError?.key === detailKey && detailError.generation === generation ? detailError.message : null;
   const [chosenFile, setFile] = useState<string | null>(null);
   const file = d ? (chosenFile && d.files.some((f) => f.path === chosenFile) ? chosenFile : d.files[0]?.path ?? null) : null;
-  const [diffResult, setDiffResult] = useState<{ key: string; value: FileDiff } | null>(null);
-  const [diffError, setDiffError] = useState<{ key: string; message: string } | null>(null);
+  const [diffResult, setDiffResult] = useState<{ key: string; generation: number; value: FileDiff } | null>(null);
+  const [diffError, setDiffError] = useState<{ key: string; generation: number; message: string } | null>(null);
   const [signatureResult, setSignatureResult] = useState<{ key: string; value: Signature } | null>(null);
-  const signatureKey = JSON.stringify([root, oid]);
+  const signatureKey = JSON.stringify([root, oid, generation]);
   const sig = signatureResult?.key === signatureKey ? signatureResult.value : null;
   const [signatureBusy, setSignatureBusy] = useState(false);
   const signatureVersion = useRef(0);
@@ -60,17 +64,19 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
 
   useEffect(() => {
     let alive = true;
+    const current = () => alive && previewGeneration(root) === generation;
     setDetailError(null);
     if (peekDetails(detailKey, oid)) return;
     // Skip transient selections while holding an arrow key or rapidly clicking.
     const timer = window.setTimeout(() => {
+      if (!current()) return;
       void loadDetails(detailKey, root, oid).then(
-        (value) => { if (alive) setDetailResult({ key: detailKey, value }); },
-        (e) => { if (alive) setDetailError({ key: detailKey, message: errorMessage(e) }); },
+        (value) => { if (current()) setDetailResult({ key: detailKey, generation, value }); },
+        (e) => { if (current()) setDetailError({ key: detailKey, generation, message: errorMessage(e) }); },
       );
     }, 50);
     return () => { alive = false; window.clearTimeout(timer); };
-  }, [root, oid, detailKey]);
+  }, [root, oid, detailKey, generation]);
 
   useEffect(() => {
     signatureVersion.current++; setSignatureResult(null); setSignatureBusy(false);
@@ -87,21 +93,23 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
   };
 
   const selectedDiffKey = d && file ? diffKey(root, d.diffBase, d.oid, file, diffOpts) : null;
-  const diff = selectedDiffKey ? peekDiff(selectedDiffKey, oid) ?? (diffResult?.key === selectedDiffKey ? diffResult.value : null) : null;
-  const diffErr = diffError?.key === selectedDiffKey ? diffError!.message : null;
+  const diff = selectedDiffKey ? peekDiff(selectedDiffKey, oid) ?? (diffResult?.key === selectedDiffKey && diffResult.generation === generation ? diffResult.value : null) : null;
+  const diffErr = diffError?.key === selectedDiffKey && diffError.generation === generation ? diffError!.message : null;
   const diffLoading = !!selectedDiffKey && !diff && !diffErr;
   useEffect(() => {
     if (!d || !file || !selectedDiffKey || peekDiff(selectedDiffKey, oid)) return;
     let alive = true;
+    const current = () => alive && previewGeneration(root) === generation;
     setDiffError(null);
     const timer = window.setTimeout(() => {
+      if (!current()) return;
       void loadDiff(selectedDiffKey, root, d.diffBase, d.oid, file, diffOpts).then(
-        (value) => { if (alive) setDiffResult({ key: selectedDiffKey, value }); },
-        (e) => { if (alive) setDiffError({ key: selectedDiffKey, message: errorMessage(e) }); },
+        (value) => { if (current()) setDiffResult({ key: selectedDiffKey, generation, value }); },
+        (e) => { if (current()) setDiffError({ key: selectedDiffKey, generation, message: errorMessage(e) }); },
       );
     }, 30);
     return () => { alive = false; window.clearTimeout(timer); };
-  }, [root, d, file, oid, selectedDiffKey, diffOpts]);
+  }, [root, d, file, oid, selectedDiffKey, diffOpts, generation]);
 
   // Alt+↑ / Alt+↓ step through the commit's files (handy in Review mode, works in Graph too).
   useEffect(() => {

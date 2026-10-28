@@ -185,6 +185,86 @@ try {
     } finally { await page.evaluate(() => { window.__signatureRelease?.(); window.fetch = window.__previewFetch; }); }
   });
 
+  await check("a working-tree refresh reloads a cached active commit without changing selection", async () => {
+    const select = async (subject) => {
+      await page.locator(".grow:not(.wip)", { hasText: subject }).click();
+      await page.waitForSelector(`.commit-subject:has-text('${subject}')`);
+      await page.waitForSelector(".details .diff .dl");
+    };
+    // Both start uncached: local component state ends on B while A comes from the LRU.
+    await select("Add average helper");
+    await select("Require longer passwords");
+    await select("Add average helper");
+    await page.evaluate(() => {
+      const original = window.fetch;
+      const base = window.__TAURI_INTERNALS__.convertFileSrc("", "ipc");
+      window.__refreshPreviewFetch = original; window.__refreshPreviewReads = [];
+      window.fetch = function(input, init) {
+        const command = String(input).startsWith(base) ? String(input).slice(base.length) : "";
+        if (["commit_details", "rev_diff"].includes(command)) window.__refreshPreviewReads.push(command);
+        return original.call(this, input, init);
+      };
+    });
+    const userFile = path.join(repo, "preview-refresh-probe.txt");
+    try {
+      fs.writeFileSync(userFile, "External editor change\n");
+      await page.waitForFunction(() => window.__refreshPreviewReads.includes("commit_details") && window.__refreshPreviewReads.includes("rev_diff"), null, { timeout: 12000 });
+      await page.waitForSelector(".commit-subject:has-text('Add average helper')");
+      await page.waitForSelector(".details .file-row.selected:has-text('app.ts')");
+      await page.waitForSelector(".details .diff .dl");
+      if (!(await page.locator(".grow.selected").innerText()).includes("Add average helper")) throw new Error("refresh changed the selected commit");
+    } finally {
+      await page.evaluate(() => { window.fetch = window.__refreshPreviewFetch; });
+      fs.rmSync(userFile, { force: true });
+    }
+    // Let the removal's watcher event settle before the delayed-response test.
+    await page.waitForTimeout(900);
+    await page.waitForSelector(".details .diff .dl");
+  });
+
+  await check("preview invalidation fences delayed metadata and diff responses", async () => {
+    for (const command of ["commit_details", "rev_diff"]) {
+      await page.evaluate((command) => {
+        const original = window.fetch;
+        const endpoint = window.__TAURI_INTERNALS__.convertFileSrc(command, "ipc");
+        window.__generationFetch = original; window.__generationReads = 0; window.__generationRelease = null;
+        window.fetch = async function(input, init) {
+          const isTarget = String(input) === endpoint;
+          const index = isTarget ? ++window.__generationReads : 0;
+          const response = await original.call(this, input, init);
+          if (!isTarget) return response;
+          const value = await response.json();
+          const marker = index === 1 ? "obsolete preview response" : "refreshed preview response";
+          if (command === "commit_details") value.subject = marker;
+          else value.hunks[0].lines[0].text = marker;
+          if (index === 1) await new Promise((resolve) => { window.__generationRelease = resolve; });
+          return new Response(JSON.stringify(value), { status: response.status, headers: response.headers });
+        };
+      }, command);
+      try {
+        await page.click("button[title='Refresh (F5)']");
+        await page.waitForFunction(() => typeof window.__generationRelease === "function");
+        await page.click("button[title='Refresh (F5)']");
+        await page.waitForFunction(() => window.__generationReads >= 2);
+        const marker = command === "commit_details" ? ".commit-subject" : ".details .diff";
+        await until(async () => (await page.locator(marker).innerText()).includes("refreshed preview response"), `new ${command} response did not render`);
+        await page.evaluate(async () => {
+          window.__generationRelease();
+          // Resolve the old IPC promise, its React update and a subsequent paint.
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        });
+        const text = await page.locator(marker).innerText();
+        if (!text.includes("refreshed preview response") || text.includes("obsolete preview response")) throw new Error(`old ${command} replaced the current generation: ${text}`);
+      } finally {
+        await page.evaluate(() => { window.__generationRelease?.(); window.fetch = window.__generationFetch; });
+      }
+    }
+    await page.click("button[title='Refresh (F5)']");
+    await page.waitForSelector(".commit-subject:has-text('Add average helper')");
+    await page.waitForSelector(".details .diff .dl");
+    await shot("51-preview-invalidation");
+  });
+
   await check("search filters commits", async () => {
     await page.fill(".search-box input", "greeting");
     await until(async () => (await page.locator(".grow.match").count()) >= 2, "no search matches");

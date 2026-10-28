@@ -43,6 +43,18 @@ export class PreviewCache<T> {
   }
 }
 
+// Invalidation is observable independently of repository/ref state. A refresh
+// must restart a mounted preview even when the selected immutable OID is unchanged.
+const generations = new Map<string, number>();
+const subscribers = new Map<string, Set<() => void>>();
+export const previewGeneration = (root: string) => generations.get(root) ?? 0;
+export function subscribePreview(root: string, listener: () => void) {
+  let listeners = subscribers.get(root);
+  if (!listeners) { listeners = new Set(); subscribers.set(root, listeners); }
+  listeners.add(listener);
+  return () => { listeners.delete(listener); if (!listeners.size) subscribers.delete(root); };
+}
+
 const details = new PreviewCache<CommitDetails>();
 const diffs = new PreviewCache<FileDiff>(64, 16 * 1024 * 1024);
 const immutable = (oid: string) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(oid);
@@ -57,4 +69,6 @@ export const loadDiff = (key: string, root: string, from: string | null, oid: st
 export function invalidatePreview(root: string) {
   const matches = (key: string) => JSON.parse(key)[0] === root;
   details.invalidate(matches); diffs.invalidate(matches);
+  generations.set(root, previewGeneration(root) + 1);
+  for (const listener of subscribers.get(root) ?? []) listener();
 }
