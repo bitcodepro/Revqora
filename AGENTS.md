@@ -8,3 +8,4 @@
 - `runner.rs` serializes writing git commands per repository; add new read-only subcommands to `is_read_only`.
 - After every change run `npm run verify` (format, clippy, Rust + git workflow tests, typecheck, vitest, release build, UI smoke test). Report any step that fails or could not run.
 - All application-owned settings, profiles, logs, caches, recovery payloads and temporary files must stay under portable data beside the executable. Never fall back to AppData, the user home or system temp. Native Git repository metadata remains in the repository.
+- For local agent-run verification, set `REVQORA_TEST_TMP`, `TEMP`, `TMP` and `TMPDIR` to a dedicated temporary directory inside the task workspace. Do not put test repositories or WebView2 profiles in `C:\Users\...\AppData\Local\Temp`. Remove disposable test data after each run; keep fixtures only while needed for diagnosis, then clean them up.

@@ -5,10 +5,9 @@
 import { execFileSync } from "node:child_process";
 import http from "node:http";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { launch } from "./ui-driver.mjs";
+import { createProfile, launch } from "./ui-driver.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
@@ -17,7 +16,7 @@ const arg = (name, def) => {
   return i >= 0 ? process.argv[i + 1] : def;
 };
 const exe = arg("--exe", path.join(projectRoot, "src-tauri/target/release/revqora.exe"));
-const work = fs.mkdtempSync(path.join(os.tmpdir(), "revqora-smoke-"));
+const work = createProfile("revqora-smoke-");
 const out = arg("--out", process.env.REVQORA_SMOKE_OUT || path.join(work, "shots"));
 fs.mkdirSync(out, { recursive: true });
 
@@ -1757,7 +1756,7 @@ try {
   console.log(results.join("\n"));
   console.log(`screenshots: ${out}`);
   if (errors.length) console.log("console errors:\n" + errors.join("\n"));
-  if (!process.argv.includes("--keep") && !failed) {
+  if (!process.argv.includes("--keep")) {
     // The app may still be shutting down and holding the folder; cleanup is best effort.
     try {
       fs.rmSync(path.join(work, "env"), { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
