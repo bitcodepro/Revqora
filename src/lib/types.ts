@@ -279,6 +279,8 @@ export interface OpOutcome {
   status: "done" | "conflicts" | "stopped" | "upToDate" | "fastForward" | "pending";
   conflicts: string[];
   message: string;
+  studioSession?: string | null;
+  studioWarning?: string | null;
 }
 
 export interface ConflictSide {
@@ -651,3 +653,20 @@ export interface NestedRepositories { repositories: NestedRepository[]; truncate
 export interface PartialStashResult { oid: string; removed: boolean; warning: string | null; }
 export interface RemoteRenamePlan { target: RemoteBranchTarget; newRef: string; serverOid: string; stateToken: string; }
 export interface RemoteRenameResult { checkpoint: RecoverySummary; trackingRef: string | null; localBranches: string[]; warnings: string[]; }
+
+
+export interface RebaseItem { oid: string; action: RebaseAction; message: string | null; }
+export interface StudioRef { name: string; oid: string; symbolic: string | null; kind: string; remote: boolean; rewritten: boolean; }
+export interface StudioReview {
+  stateToken: string; token: string; oldest: string; head: string; branchRef: string | null; upstream: string | null;
+  plan: RebasePlan; items: RebaseItem[]; references: StudioRef[]; refsTruncated: boolean;
+  worktrees: { path: string; branch: string | null; head: string | null; current: boolean; locked: boolean }[];
+  publishedCommits: number; dirtyFiles: number; stagedFiles: number; blockers: string[];
+}
+export interface StudioReport {
+  version: number; id: string; createdAt: number; updatedAt: number; phase: string; review: Omit<StudioReview, "stateToken">;
+  beforeCheckpoint: RecoverySummary; afterCheckpoint: RecoverySummary | null; afterHead: string | null;
+  refChanges: { name: string; before: string; after: string | null; symbolicBefore: string | null; symbolicAfter: string | null }[];
+  warning: string | null; error: string | null; candidateHead: string | null;
+}
+export interface StudioComparison { before: PlanCommit[]; after: PlanCommit[]; sameTree: boolean; rangeDiff: string | null; note: string | null; truncated: boolean; }

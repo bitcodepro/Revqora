@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, GitCompareArrows, Loader2, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { getTab, useRepos } from "../lib/store";
@@ -10,10 +10,10 @@ import { PathLabel, StatusIcon } from "./bits";
 import { DiffView, useDiffOpts } from "./DiffView";
 import { jumpToCommit } from "./GraphView";
 
-export function CompareView({ root, from: initialFrom, to: initialTo }: { root: string; from: string; to: string }) {
+export function CompareView({ root, from: initialFrom, to: initialTo, direct = false }: { root: string; from: string; to: string; direct?: boolean }) {
   const [from, setFrom] = useState(initialFrom);
   const [to, setTo] = useState(initialTo);
-  const [threeDot, setThreeDot] = useState(true);
+  const [threeDot, setThreeDot] = useState(!direct);
   const [cmp, setCmp] = useState<Comparison | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -22,32 +22,38 @@ export function CompareView({ root, from: initialFrom, to: initialTo }: { root: 
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [diffErr, setDiffErr] = useState<string | null>(null);
   const diffOpts = useDiffOpts();
+  const request = useRef(0);
   const refs = getTab(root)?.refs;
   const names = useMemo(() => [...(refs?.local.map((b) => b.name) ?? []), ...(refs?.remote.map((b) => b.name) ?? []), ...(refs?.tags.map((t) => t.name) ?? []), "HEAD", WORKTREE], [refs]);
 
   const run = async (f = from, t = to, three = threeDot) => {
     if (!f.trim() || !t.trim()) return;
-    setLoading(true);
+    const version = ++request.current;
+    setLoading(true); setCmp(null); setDiff(null); setDiffErr(null);
     setErr(null);
     try {
       const c: Comparison =
         t.trim() === WORKTREE
           ? await api.compareWorktree(root, f.trim()).then((w) => ({ from: w.from, to: WORKTREE, base: w.from, mergeBase: null, files: w.files, ahead: [], behind: 0 }))
           : await api.compare(root, f.trim(), t.trim(), three);
+      if (version !== request.current) return;
       setCmp(c);
       setFile((cur) => (cur && c.files.some((x) => x.path === cur) ? cur : c.files[0]?.path ?? null));
     } catch (e) {
+      if (version !== request.current) return;
       setErr(errorMessage(e));
       setCmp(null);
     } finally {
-      setLoading(false);
+      if (version === request.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    run(initialFrom, initialTo, true);
+    setFrom(initialFrom); setTo(initialTo); setThreeDot(!direct);
+    void run(initialFrom, initialTo, !direct);
+    return () => { request.current++; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [root, initialFrom, initialTo]);
+  }, [root, initialFrom, initialTo, direct]);
 
   useEffect(() => {
     if (!cmp || !file) {

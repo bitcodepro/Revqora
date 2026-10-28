@@ -691,14 +691,23 @@ fn commits_since(repo: &Path, base: Option<&str>) -> GitResult<Vec<String>> {
 }
 
 fn run_todo(repo: &Path, base: Option<&str>, todo: &str) -> GitResult<OpOutcome> {
+    run_todo_logged(repo, base, todo, None)
+}
+fn run_todo_logged(repo: &Path, base: Option<&str>, todo: &str, reflog: Option<&str>) -> GitResult<OpOutcome> {
     let file = temp_file(repo, "rebase-todo", todo)?;
     let editor = format!("cp '{}'", sh_path(&file));
-    let mut args = vec!["rebase", "-i", "--autostash", "--keep-empty"];
+    // The UI supplies an explicit todo. User defaults must not rewrite other
+    // refs or silently rearrange that reviewed plan.
+    let mut args = vec!["-c", "rebase.updateRefs=false", "-c", "rebase.autoSquash=false", "rebase", "-i", "--autostash", "--keep-empty", "--no-autosquash"];
     match base {
         Some(b) => args.push(b),
         None => args.push("--root"),
     }
-    let out = runner::exec_full(repo, &args, &[("GIT_SEQUENCE_EDITOR", editor.as_str())], None)?;
+    let mut env = vec![("GIT_SEQUENCE_EDITOR", editor.as_str())];
+    if let Some(action) = reflog {
+        env.push(("GIT_REFLOG_ACTION", action));
+    }
+    let out = runner::exec_full(repo, &args, &env, None)?;
     let res = sequence_outcome(repo, out, "git rebase -i");
     let _ = std::fs::remove_file(&file);
     res
@@ -817,7 +826,7 @@ pub fn rewrite(repo: &Path, action: &RewriteAction) -> GitResult<OpOutcome> {
 
 // ───────────────────────────── interactive rebase ─────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanCommit {
     pub oid: String,
@@ -827,7 +836,7 @@ pub struct PlanCommit {
     pub time: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RebasePlan {
     /// Parent of the oldest commit (None = the root commit is included).
@@ -840,29 +849,44 @@ pub struct RebasePlan {
 pub fn rebase_plan(repo: &Path, oldest: &str) -> GitResult<RebasePlan> {
     let oldest = full_oid(repo, oldest)?;
     let base = ensure_rewritable(repo, &oldest)?;
-    let range = match &base {
-        Some(b) => format!("{b}..HEAD"),
-        None => "HEAD".into(),
-    };
-    let raw = runner::run(repo, ["log", "--reverse", "--format=%H%x1f%an%x1f%at%x1f%s%x1f%b%x1e", &range])?;
-    let commits = raw
-        .split('\x1e')
-        .filter_map(|rec| {
-            let rec = rec.trim_start_matches(['\n', '\r']);
-            let f: Vec<&str> = rec.splitn(5, '\x1f').collect();
-            (f.len() == 5).then(|| PlanCommit {
-                oid: f[0].to_string(),
-                author: f[1].to_string(),
-                time: f[2].parse().unwrap_or(0),
-                subject: f[3].to_string(),
-                body: f[4].trim().to_string(),
-            })
-        })
-        .collect();
+    let commits = read_plan_commits(repo, base.as_deref(), "HEAD")?;
     Ok(RebasePlan { base, commits })
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Read fixed snapshots without signature checks or record separators present in
+/// ordinary commit text. Git commit messages cannot contain NUL bytes.
+pub fn read_plan_commits(repo: &Path, base: Option<&str>, head: &str) -> GitResult<Vec<PlanCommit>> {
+    let range = base.map(|b| format!("{b}..{head}")).unwrap_or_else(|| head.into());
+    let raw = runner::run(
+        repo,
+        ["log", "--no-show-signature", "--no-notes", "--reverse", "--max-count=501", "--format=%H%x00%an%x00%at%x00%s%x00%b%x00", &range, "--"],
+    )?;
+    let fields: Vec<_> = raw.split('\0').collect();
+    let mut commits = Vec::new();
+    let (records, tail) = fields.as_chunks::<5>();
+    if tail.iter().any(|field| !field.trim().is_empty()) {
+        return Err(GitError::new("Cannot safely parse this commit range."));
+    }
+    for f in records {
+        let oid = f[0].trim_start_matches(['\n', '\r']);
+        if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(GitError::new("Cannot safely parse this commit range."));
+        }
+        commits.push(PlanCommit {
+            oid: oid.into(),
+            author: f[1].into(),
+            time: f[2].parse().map_err(|_| GitError::new("Invalid commit timestamp."))?,
+            subject: f[3].into(),
+            body: f[4].trim().into(),
+        });
+    }
+    if commits.len() > 500 {
+        return Err(GitError::new("Choose at most 500 commits for an editable rebase plan."));
+    }
+    Ok(commits)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RebaseItem {
     pub oid: String,
@@ -933,6 +957,9 @@ pub fn build_todo(repo: &Path, items: &[RebaseItem]) -> GitResult<String> {
 
 /// Runs an interactive rebase over `base..HEAD` with the given plan (oldest first).
 pub fn interactive_rebase(repo: &Path, base: Option<&str>, items: &[RebaseItem]) -> GitResult<OpOutcome> {
+    interactive_rebase_logged(repo, base, items, None)
+}
+pub fn interactive_rebase_logged(repo: &Path, base: Option<&str>, items: &[RebaseItem], reflog: Option<&str>) -> GitResult<OpOutcome> {
     let gd = repo::git_dir(repo)?;
     if repo::op_state(repo, &gd).kind != "none" {
         return Err(GitError::new("Finish or abort the operation in progress first."));
@@ -950,7 +977,7 @@ pub fn interactive_rebase(repo: &Path, base: Option<&str>, items: &[RebaseItem])
         return Err(GitError::new("The branch changed since the plan was made. Reopen the rebase dialog.").kind("stale"));
     }
     let todo = build_todo(repo, items)?;
-    run_todo(repo, base, &todo)
+    run_todo_logged(repo, base, &todo, reflog)
 }
 
 // ───────────────────────────── stash ─────────────────────────────

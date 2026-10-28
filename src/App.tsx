@@ -175,7 +175,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
         {overlay?.kind === "stash" && <StashView key={overlay.index} root={root} index={overlay.index} />}
         {overlay?.kind === "tree" && <TreeBrowser key={overlay.rev} root={root} rev={overlay.rev} />}
         {overlay?.kind === "rebase" && <RebaseView key={overlay.oldest} root={root} oldest={overlay.oldest} />}
-        {overlay?.kind === "compare" && <CompareView key={`${overlay.from}..${overlay.to}`} root={root} from={overlay.from} to={overlay.to} />}
+        {overlay?.kind === "compare" && <CompareView key={`${overlay.from}..${overlay.to}`} root={root} from={overlay.from} to={overlay.to} direct={overlay.direct} />}
       </div>
     </div>
   );

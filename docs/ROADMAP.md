@@ -9,8 +9,8 @@ cross-cutting work and does not consume a feature stage.
 | 2 | Persistent operation journal | Merged (#7) |
 | 3 | Recovery checkpoints and Undo Center | Merged (#8) |
 | 4 | Reviewed branch deletion | Merged (#9) |
-| 5 | Ignored files, partial stash, autosquash, nested repositories, remote branch rename | Implemented; review pending |
-| 6 | Rebase Studio: affected refs, force-push implications, result comparison, recovery | Planned |
+| 5 | Ignored files, partial stash, autosquash, nested repositories, remote branch rename | Merged (#11) |
+| 6 | Rebase Studio: affected refs, force-push implications, result comparison, recovery | Implemented; review pending |
 | 7 | Conflict Studio: Base panel, navigation, user-selected validation commands | Planned |
 | 8 | Repository favorites, project groups, workspaces and explicit Sync | Planned |
 | 9 | Advanced Branch Manager | Planned |

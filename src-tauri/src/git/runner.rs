@@ -128,9 +128,9 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
     let a: Vec<String> = args.iter().map(|s| s.as_ref().to_string_lossy().into_owned()).collect();
     let has = |flag: &str| a.iter().any(|x| x == flag);
     match a.first().map(|s| s.as_str()).unwrap_or("") {
-        "status" | "diff" | "log" | "show" | "rev-parse" | "cat-file" | "for-each-ref" | "ls-files" | "ls-tree" | "rev-list" | "merge-base" | "blame"
-        | "symbolic-ref" | "diff-tree" | "diff-index" | "reflog" | "show-ref" | "check-ref-format" | "version" | "--version" | "ls-remote" | "describe"
-        | "count-objects" | "name-rev" | "grep" | "check-ignore" => true,
+        "status" | "diff" | "log" | "show" | "rev-parse" | "cat-file" | "for-each-ref" | "ls-files" | "ls-tree" | "range-diff" | "rev-list" | "merge-base"
+        | "blame" | "symbolic-ref" | "diff-tree" | "diff-index" | "reflog" | "show-ref" | "check-ref-format" | "version" | "--version" | "ls-remote"
+        | "describe" | "count-objects" | "name-rev" | "grep" | "check-ignore" => true,
         // Immutable object creation is safe concurrently; it does not modify refs,
         // the index or the working tree. An enclosing mutation still holds its gate.
         "hash-object" | "commit-tree" | "merge-tree" | "mktree" => true,
