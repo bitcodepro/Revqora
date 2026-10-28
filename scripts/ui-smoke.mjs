@@ -545,8 +545,17 @@ try {
     await page.waitForTimeout(800);
     await page.click(".view-tab:has-text('History')");
     await page.locator(".grow", { hasText: "Initial project structure" }).first().click({ button: "right" });
-    await page.locator(".ctx-item", { hasText: "Bisect" }).hover();
-    await page.locator(".ctx-item", { hasText: "Start: this commit is good" }).click();
+    const startBisect = page.locator(".ctx-item", { hasText: "Start: this commit is good" });
+    // The menu animates and repositions inside the viewport. Re-enter the row
+    // until its submenu is actually open; a hover over its transient position
+    // can leave the pointer over the row without delivering mouseenter.
+    await until(async () => {
+      if (await startBisect.isVisible()) return true;
+      await page.mouse.move(8, 8);
+      await page.locator(".ctx-item", { hasText: /^Bisect$/ }).hover();
+      return startBisect.isVisible();
+    }, "Bisect submenu did not open", 10000);
+    await startBisect.click();
     await page.click(".modal button:has-text('Start bisect')");
     await page.waitForSelector(".op-banner:has-text('Bisect')");
     await shot("13-bisect");
