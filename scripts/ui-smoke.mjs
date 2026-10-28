@@ -1554,8 +1554,49 @@ try {
     fs.writeFileSync(path.join(stage5, "staged.txt"), "STAGED\n"); git5("add", "staged.txt"); index5 = fs.readFileSync(path.join(stage5, ".git", "index"));
     const original = fs.readFileSync(path.join(stage5, "f.txt"), "utf8"); fs.writeFileSync(path.join(stage5, "f.txt"), original.replace("line 4\n", "line 4\nFIRST\n").replace("line 20\n", "line 20\nSECOND\n"));
     await page.click(".view-tab:has-text('Changes')"); await page.click("button[title='Refresh (F5)']");
-    await page.locator(".changes .file-row", { hasText: "f.txt" }).first().click();
-    await page.waitForSelector(".changes .diff .dl.add:has-text('FIRST')");
+    // Reproduce an older staged-file response arriving after a new file's diff.
+    // Hold the real backend response, without changing either file or Git state.
+    await page.waitForSelector(".changes .file-row:has-text('staged.txt')");
+    await page.evaluate(() => {
+      const original = window.fetch;
+      const base = window.__TAURI_INTERNALS__.convertFileSrc("", "ipc");
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      window.__workingDiffFetch = original;
+      window.__workingDiffRace = { held: 0, delivered: 0, released: false, stale: false, release };
+      window.fetch = async function(input, init) {
+        const response = await original.call(this, input, init);
+        if (String(input) === `${base}working_diff` && !window.__workingDiffRace.released) {
+          const diff = await response.clone().json();
+          if (diff.path === "staged.txt") {
+            window.__workingDiffRace.held++;
+            await gate;
+            window.__workingDiffRace.delivered++;
+          }
+        }
+        return response;
+      };
+    });
+    try {
+      await page.locator(".changes .file-row", { hasText: "staged.txt" }).click();
+      await page.waitForFunction(() => window.__workingDiffRace.held > 0);
+      await page.locator(".changes .file-row", { hasText: "f.txt" }).first().click();
+      await page.waitForSelector(".changes .diff .dl.add:has-text('FIRST')");
+      await page.evaluate(() => {
+        const race = window.__workingDiffRace;
+        race.observer = new MutationObserver(() => {
+          if ([...document.querySelectorAll(".changes .diff .dl.add")].some((line) => line.textContent.includes("STAGED"))) race.stale = true;
+        });
+        race.observer.observe(document.querySelector(".changes .diff"), { childList: true, subtree: true });
+        race.released = true;
+        race.release();
+      });
+      await page.waitForFunction(() => window.__workingDiffRace.delivered === window.__workingDiffRace.held);
+      await page.evaluate(() => new Promise((resolve) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(resolve)), 0)));
+      if (await page.evaluate(() => window.__workingDiffRace.stale) || !await page.locator(".changes .diff .dl.add", { hasText: "FIRST" }).count()) throw new Error("an older file response replaced the selected file's diff");
+    } finally {
+      await page.evaluate(() => { window.__workingDiffRace.release(); window.__workingDiffRace.observer?.disconnect(); window.fetch = window.__workingDiffFetch; });
+    }
     await page.locator(".changes .diff .dl.add", { hasText: "FIRST" }).locator(".ln").nth(1).click();
     await page.getByRole("button", { name: "Stash lines", exact: true }).click();
     await page.locator(".modal").last().getByRole("button", { name: "Stash selection", exact: true }).click();
