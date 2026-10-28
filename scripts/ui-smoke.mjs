@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProfile, launch } from "./ui-driver.mjs";
+import { launch } from "./ui-driver.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
@@ -37,7 +37,11 @@ process.env.REVQORA_UPDATE_FEED = `http://127.0.0.1:${feed.address().port}/`;
 
 let step = 0;
 const results = [];
-const smokeProfile = createProfile("revqora-smoke-profile-");
+// Exercise the portable-profile-inside-repo case without adding runtime files
+// to staging/checkpoints. The production watcher must ignore this exact folder.
+const smokeProfile = path.join(repo, ".revqora-smoke-profile");
+fs.mkdirSync(smokeProfile);
+fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n/.revqora-smoke-profile/\n");
 let { page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 });
 const errors = [];
 const attachPage = () => {
@@ -101,6 +105,25 @@ try {
     await chip.waitFor({ state: "detached" });
   });
 
+  await check("portable profile writes do not trigger repository refresh storms", async () => {
+    const listener = await page.evaluate(async () => {
+      window.__profileSignals = [];
+      return window.__TAURI_INTERNALS__.invoke("plugin:event|listen", { event: "repo-changed", target: { kind: "Any" }, handler: window.__TAURI_INTERNALS__.transformCallback((e) => window.__profileSignals.push(e.payload)) });
+    });
+    const userFile = path.join(repo, "watcher-user-probe.txt");
+    try {
+      for (let i = 0; i < 3; i++) { fs.writeFileSync(path.join(smokeProfile, "watcher-profile-probe.tmp"), String(i)); await page.waitForTimeout(200); }
+      await page.waitForTimeout(700); // More than the watcher's 350ms debounce.
+      // Initial background ref checks may legitimately report Git metadata.
+      if (await page.evaluate(() => window.__profileSignals.some((e) => e.worktree))) throw new Error("portable profile writes caused a repository refresh");
+      fs.writeFileSync(userFile, "User changes must still be watched\n");
+      await page.waitForFunction(() => window.__profileSignals.some((e) => e.worktree), null, { timeout: 10000 });
+    } finally {
+      await page.evaluate(async (eventId) => { window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener("repo-changed", eventId); await window.__TAURI_INTERNALS__.invoke("plugin:event|unlisten", { event: "repo-changed", eventId }); }, listener);
+      fs.rmSync(userFile, { force: true });
+    }
+  });
+
   await check("history graph renders all commits", async () => {
     await page.waitForSelector(".grow:not(.wip) .g-subject .text", { timeout: 20000 });
     await page.waitForTimeout(1200);
@@ -128,6 +151,151 @@ try {
     await page.waitForSelector(".details", { state: "detached" });
     await page.locator(".grow", { hasText: "Document usage" }).click();
     await page.waitForSelector(".details .file-row");
+  });
+
+  await check("commit previews reuse files and diffs while signature verification stays optional", async () => {
+    await page.evaluate(() => {
+      const original = window.fetch;
+      const base = window.__TAURI_INTERNALS__.convertFileSrc("", "ipc");
+      window.__previewFetch = original; window.__previewReads = []; window.__signatureRelease = null;
+      window.fetch = async function(input, init) {
+        const command = String(input).startsWith(base) ? String(input).slice(base.length) : "";
+        if (["commit_details", "rev_diff", "commit_signature"].includes(command)) window.__previewReads.push(command);
+        const response = await original.call(this, input, init);
+        if (command === "commit_signature") await new Promise((resolve) => { window.__signatureRelease = resolve; });
+        return response;
+      };
+    });
+    try {
+      const select = async (subject) => { await page.locator(".grow:not(.wip)", { hasText: subject }).click(); await page.waitForSelector(`.commit-subject:has-text('${subject}')`); await page.waitForSelector(".details .diff .dl"); };
+      await select("Enable debug mode");
+      await select("Document usage");
+      await select("Enable debug mode");
+      const before = await page.evaluate(() => [...window.__previewReads]);
+      if (before.filter((c) => c === "commit_details").length !== 1 || before.filter((c) => c === "rev_diff").length !== 1 || before.includes("commit_signature")) throw new Error(`preview did unnecessary Git work: ${before}`);
+      await page.click(".commit-signature-check");
+      await page.waitForFunction(() => typeof window.__signatureRelease === "function");
+      if (!(await page.locator(".details .file-row").count()) || !(await page.locator(".details .diff .dl").count())) throw new Error("signature verification hid loaded files or diff");
+      await select("Document usage");
+      await page.evaluate(() => window.__signatureRelease());
+      await page.waitForSelector(".commit-signature-check:not([disabled]):has-text('Verify signature')");
+      const after = await page.evaluate(() => [...window.__previewReads]);
+      if (after.filter((c) => c === "commit_details").length !== 1 || after.filter((c) => c === "rev_diff").length !== 1 || after.filter((c) => c === "commit_signature").length !== 1) throw new Error(`cached revisit reran Git: ${after}`);
+      await shot("50-preview-cache");
+    } finally { await page.evaluate(() => { window.__signatureRelease?.(); window.fetch = window.__previewFetch; }); }
+  });
+
+  await check("a working-tree refresh reloads a cached active commit without changing selection", async () => {
+    const select = async (subject) => {
+      await page.locator(".grow:not(.wip)", { hasText: subject }).click();
+      await page.waitForSelector(`.commit-subject:has-text('${subject}')`);
+      await page.waitForSelector(".details .diff .dl");
+    };
+    // Both start uncached: local component state ends on B while A comes from the LRU.
+    await select("Add average helper");
+    await select("Require longer passwords");
+    await select("Add average helper");
+    await page.evaluate(() => {
+      const original = window.fetch;
+      const base = window.__TAURI_INTERNALS__.convertFileSrc("", "ipc");
+      window.__refreshPreviewFetch = original; window.__refreshPreviewReads = [];
+      window.fetch = function(input, init) {
+        const command = String(input).startsWith(base) ? String(input).slice(base.length) : "";
+        if (["commit_details", "rev_diff"].includes(command)) window.__refreshPreviewReads.push(command);
+        return original.call(this, input, init);
+      };
+    });
+    const userFile = path.join(repo, "preview-refresh-probe.txt");
+    try {
+      fs.writeFileSync(userFile, "External editor change\n");
+      await page.waitForFunction(() => window.__refreshPreviewReads.includes("commit_details") && window.__refreshPreviewReads.includes("rev_diff"), null, { timeout: 12000 });
+      await page.waitForSelector(".commit-subject:has-text('Add average helper')");
+      await page.waitForSelector(".details .file-row.selected:has-text('app.ts')");
+      await page.waitForSelector(".details .diff .dl");
+      if (!(await page.locator(".grow.selected").innerText()).includes("Add average helper")) throw new Error("refresh changed the selected commit");
+    } finally {
+      await page.evaluate(() => { window.fetch = window.__refreshPreviewFetch; });
+      fs.rmSync(userFile, { force: true });
+    }
+    // Let the removal's watcher event settle before the delayed-response test.
+    await page.waitForTimeout(900);
+    await page.waitForSelector(".details .diff .dl");
+  });
+
+  await check("preview invalidation fences delayed metadata and diff responses", async () => {
+    for (const command of ["commit_details", "rev_diff"]) {
+      await page.evaluate((command) => {
+        const original = window.fetch;
+        const endpoint = window.__TAURI_INTERNALS__.convertFileSrc(command, "ipc");
+        window.__generationFetch = original; window.__generationReads = 0; window.__generationRelease = null;
+        window.fetch = async function(input, init) {
+          const isTarget = String(input) === endpoint;
+          const index = isTarget ? ++window.__generationReads : 0;
+          const response = await original.call(this, input, init);
+          if (!isTarget) return response;
+          const value = await response.json();
+          const marker = index === 1 ? "obsolete preview response" : "refreshed preview response";
+          if (command === "commit_details") value.subject = marker;
+          else value.hunks[0].lines[0].text = marker;
+          if (index === 1) await new Promise((resolve) => { window.__generationRelease = resolve; });
+          return new Response(JSON.stringify(value), { status: response.status, headers: response.headers });
+        };
+      }, command);
+      try {
+        await page.click("button[title='Refresh (F5)']");
+        await page.waitForFunction(() => typeof window.__generationRelease === "function");
+        await page.click("button[title='Refresh (F5)']");
+        await page.waitForFunction(() => window.__generationReads >= 2);
+        const marker = command === "commit_details" ? ".commit-subject" : ".details .diff";
+        await until(async () => (await page.locator(marker).innerText()).includes("refreshed preview response"), `new ${command} response did not render`);
+        await page.evaluate(async () => {
+          window.__generationRelease();
+          // Resolve the old IPC promise, its React update and a subsequent paint.
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        });
+        const text = await page.locator(marker).innerText();
+        if (!text.includes("refreshed preview response") || text.includes("obsolete preview response")) throw new Error(`old ${command} replaced the current generation: ${text}`);
+      } finally {
+        await page.evaluate(() => { window.__generationRelease?.(); window.fetch = window.__generationFetch; });
+      }
+    }
+    await page.click("button[title='Refresh (F5)']");
+    await page.waitForSelector(".commit-subject:has-text('Add average helper')");
+    await page.waitForSelector(".details .diff .dl");
+    await shot("51-preview-invalidation");
+  });
+
+  await check("refresh keeps the active diff search while stale data and actions are cleared", async () => {
+    await page.locator(".grow:not(.wip)", { hasText: "Document usage" }).click();
+    await page.waitForSelector(".commit-subject:has-text('Document usage')");
+    await page.waitForSelector(".details .diff .dl.add");
+    await page.click(".details .diff button[title^='Find in diff']");
+    await page.fill(".diff-find input", "usage");
+    await page.waitForSelector(".details .dl.search-cur");
+    await page.evaluate(() => {
+      const original = window.fetch;
+      const endpoint = window.__TAURI_INTERNALS__.convertFileSrc("commit_details", "ipc");
+      window.__searchRefreshFetch = original; window.__searchRefreshRelease = null;
+      window.fetch = async function(input, init) {
+        const response = await original.call(this, input, init);
+        if (String(input) === endpoint) await new Promise((resolve) => { window.__searchRefreshRelease = resolve; });
+        return response;
+      };
+    });
+    try {
+      await page.click("button[title='Refresh (F5)']");
+      await page.waitForFunction(() => typeof window.__searchRefreshRelease === "function");
+      if (await page.locator(".diff-find input").inputValue() !== "usage") throw new Error("refresh lost the active search query");
+      if (await page.locator(".details .file-row, .details .diff .dl, .details .apply-hunk").count()) throw new Error("stale preview data remained during reload");
+    } finally {
+      await page.evaluate(() => { window.fetch = window.__searchRefreshFetch; window.__searchRefreshRelease?.(); });
+    }
+    await page.waitForSelector(".commit-subject:has-text('Document usage')");
+    await page.waitForSelector(".details .dl.search-cur");
+    if (await page.locator(".diff-find input").inputValue() !== "usage") throw new Error("loaded diff lost the active search query");
+    await page.locator(".diff-find input").press("Escape");
+    await page.waitForSelector(".diff-find", { state: "detached" });
+    await shot("52-preview-search-refresh");
   });
 
   await check("search filters commits", async () => {
@@ -410,8 +578,17 @@ try {
     await page.waitForTimeout(800);
     await page.click(".view-tab:has-text('History')");
     await page.locator(".grow", { hasText: "Initial project structure" }).first().click({ button: "right" });
-    await page.locator(".ctx-item", { hasText: "Bisect" }).hover();
-    await page.locator(".ctx-item", { hasText: "Start: this commit is good" }).click();
+    const startBisect = page.locator(".ctx-item", { hasText: "Start: this commit is good" });
+    // The menu animates and repositions inside the viewport. Re-enter the row
+    // until its submenu is actually open; a hover over its transient position
+    // can leave the pointer over the row without delivering mouseenter.
+    await until(async () => {
+      if (await startBisect.isVisible()) return true;
+      await page.mouse.move(8, 8);
+      await page.locator(".ctx-item", { hasText: /^Bisect$/ }).hover();
+      return startBisect.isVisible();
+    }, "Bisect submenu did not open", 10000);
+    await startBisect.click();
     await page.click(".modal button:has-text('Start bisect')");
     await page.waitForSelector(".op-banner:has-text('Bisect')");
     await shot("13-bisect");

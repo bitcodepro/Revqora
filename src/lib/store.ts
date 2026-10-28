@@ -1,3 +1,4 @@
+import { invalidatePreview } from "./commitPreview";
 // Repository tabs and their cached state.
 import { create } from "zustand";
 import { api, errorMessage } from "./api";
@@ -167,6 +168,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
   },
 
   close: (root) => {
+    invalidatePreview(root);
     squashJobs.delete(root);
     const s = get();
     const order = s.order.filter((r) => r !== root);
@@ -202,6 +204,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
   },
 
   refresh: async (root, parts = ALL) => {
+    invalidatePreview(root);
     if (inflight.has(root)) {
       pending.set(root, merge(pending.get(root), parts));
       return inflight.get(root);

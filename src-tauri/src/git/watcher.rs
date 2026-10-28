@@ -41,10 +41,66 @@ fn classify(root: &Path, git_dir: &Path, p: &Path) -> Option<bool> {
     Some(false)
 }
 
+fn comparable(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy().replace('\\', "/").to_lowercase();
+        let value = if let Some(unc) = value.strip_prefix("//?/unc/") { format!("//{unc}") } else { value.strip_prefix("//?/").unwrap_or(&value).to_owned() };
+        PathBuf::from(value)
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_owned()
+    }
+}
+
+fn classify_owned(root: &Path, git_dir: &Path, ignored: &[PathBuf], path: &Path) -> Option<bool> {
+    let normalized = comparable(path);
+    if ignored.iter().any(|dir| normalized.starts_with(dir)) {
+        return None;
+    }
+    classify(root, git_dir, path)
+}
+
+fn owned_paths(root: &Path, git_dir: &Path) -> Vec<PathBuf> {
+    let mut watched = vec![comparable(root), comparable(git_dir)];
+    for p in [root, git_dir] {
+        if let Ok(p) = std::fs::canonicalize(p) {
+            watched.push(comparable(&p));
+        }
+    }
+    let mut ignored = Vec::new();
+    let mut owned = Vec::new();
+    if let Some(data) = crate::portable::data_dir() {
+        for name in ["webview", "operation-log", "repositories", "temp", "window.json"] {
+            owned.push(data.join(name));
+        }
+    }
+    if let Some(profile) = crate::portable::webview_dir() {
+        owned.push(profile);
+    }
+    if let Ok(runtime) = crate::portable::runtime_dir() {
+        owned.push(runtime.join("repositories"));
+        owned.push(runtime.join("temp"));
+    }
+    for path in owned {
+        for candidate in [Some(path.clone()), std::fs::canonicalize(&path).ok()].into_iter().flatten() {
+            let candidate = comparable(&candidate);
+            // Do not disable watching if a user explicitly opened a repo INSIDE
+            // an owned folder. Exclude only a known owned child of a watched root.
+            if watched.iter().any(|root| candidate != *root && candidate.starts_with(root)) && !ignored.contains(&candidate) {
+                ignored.push(candidate);
+            }
+        }
+    }
+    ignored
+}
+
 pub fn watch<F>(root: PathBuf, git_dir: PathBuf, on_change: F) -> notify::Result<RepoWatcher>
 where
     F: Fn(bool, bool) + Send + 'static,
 {
+    let ignored = owned_paths(&root, &git_dir);
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher = notify::recommended_watcher(move |res| {
         let _ = tx.send(res);
@@ -67,7 +123,7 @@ where
             match rx.recv_timeout(Duration::from_millis(120)) {
                 Ok(Ok(ev)) => {
                     for p in &ev.paths {
-                        match classify(&root, &git_dir, p) {
+                        match classify_owned(&root, &git_dir, &ignored, p) {
                             Some(true) => pending_git = true,
                             Some(false) => pending_wt = true,
                             None => {}
@@ -96,8 +152,29 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::classify;
+    use super::{classify, classify_owned, comparable};
     use std::path::Path;
+
+    #[cfg(windows)]
+    #[test]
+    fn owned_path_comparison_handles_extended_drive_and_unc_paths() {
+        assert_eq!(comparable(Path::new(r"\\?\C:\Repo\DATA")), comparable(Path::new(r"c:\repo\data")));
+        assert_eq!(comparable(Path::new(r"\\?\UNC\Server\Share\Data")), comparable(Path::new(r"\\server\share\data")));
+    }
+
+    #[test]
+    fn portable_noise_is_ignored_without_hiding_project_files_or_git_refs() {
+        let root = Path::new("/repo");
+        let git = Path::new("/repo/.git");
+        let ignored = vec![comparable(Path::new("/repo/client/data/webview")), comparable(Path::new("/repo/client/data/operation-log"))];
+        assert_eq!(classify_owned(root, git, &ignored, Path::new("/repo/client/data/webview/Cache/entry")), None);
+        assert_eq!(classify_owned(root, git, &ignored, Path::new("/repo/client/data/operation-log/journal.sqlite-wal")), None);
+        assert_eq!(classify_owned(root, git, &ignored, Path::new("/repo/client/database/user.txt")), Some(false));
+        assert_eq!(classify_owned(root, git, &ignored, Path::new("/repo/data/user.txt")), Some(false));
+        assert_eq!(classify_owned(root, git, &ignored, Path::new("/repo/client/data/user.txt")), Some(false));
+        assert_eq!(classify_owned(root, git, &ignored, Path::new("/repo/.git/config")), Some(true));
+        assert_eq!(classify_owned(root, git, &ignored, Path::new("/repo/.git/refs/heads/main")), Some(true));
+    }
 
     #[test]
     fn classifies_changes() {
