@@ -102,17 +102,26 @@ pub struct Worktree {
 }
 
 pub fn parse_worktrees(raw: &str, current: &Path) -> Vec<Worktree> {
-    let norm = |p: &str| repo::normalize(PathBuf::from(p)).to_string_lossy().to_lowercase();
-    let cur = current.to_string_lossy().to_lowercase();
-    raw.split("\n\n")
+    let norm = |p: &Path| {
+        let path = repo::normalize(p.to_path_buf());
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        #[cfg(windows)]
+        let path = PathBuf::from(path.to_string_lossy().to_lowercase());
+        path
+    };
+    let cur = norm(current);
+    // NUL porcelain preserves quotes, backslashes, Unicode and line breaks.
+    // Accept the older text form too for existing callers of this parser.
+    let separator = if raw.contains('\0') { '\0' } else { '\n' };
+    raw.split(&format!("{separator}{separator}"))
         .filter(|b| !b.trim().is_empty())
         .filter_map(|block| {
             let mut w =
                 Worktree { path: String::new(), head: None, branch: None, detached: false, bare: false, locked: false, prunable: false, is_current: false };
-            for l in block.lines() {
+            for l in block.split(separator) {
                 if let Some(p) = l.strip_prefix("worktree ") {
                     w.path = repo::normalize(PathBuf::from(p)).to_string_lossy().into_owned();
-                    w.is_current = norm(p) == cur;
+                    w.is_current = norm(Path::new(p)) == cur;
                 } else if let Some(h) = l.strip_prefix("HEAD ") {
                     w.head = Some(h.to_string());
                 } else if let Some(b) = l.strip_prefix("branch ") {
@@ -133,7 +142,7 @@ pub fn parse_worktrees(raw: &str, current: &Path) -> Vec<Worktree> {
 }
 
 pub fn worktrees(repo: &Path) -> GitResult<Vec<Worktree>> {
-    let raw = runner::run(repo, ["worktree", "list", "--porcelain"])?;
+    let raw = runner::run(repo, ["worktree", "list", "--porcelain", "-z"])?;
     Ok(parse_worktrees(&raw, repo))
 }
 
@@ -422,6 +431,36 @@ pub fn signature(repo: &Path, oid: &str) -> GitResult<Signature> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_paths_preserve_porcelain_delimiters_and_resolve_directory_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let current = temp.path().join("current workspace");
+        std::fs::create_dir(&current).unwrap();
+        let unusual = repo::normalize(PathBuf::from("/other/workspace\nwith\tquotes\"and\\slashes"));
+        let raw = format!(
+            "worktree {}\0HEAD abc\0branch refs/heads/main\0\0worktree {}\0HEAD def\0branch refs/heads/other\0locked reason\0\0",
+            current.display(),
+            unusual.display()
+        );
+        let parsed = parse_worktrees(&raw, &current.join("."));
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].is_current);
+        assert!(!parsed[1].is_current);
+        assert_eq!(parsed[1].path, unusual.to_string_lossy());
+        assert_eq!(parsed[1].branch.as_deref(), Some("other"));
+        assert!(parsed[1].locked);
+        #[cfg(unix)]
+        {
+            let alias = temp.path().join("alias");
+            std::os::unix::fs::symlink(&current, &alias).unwrap();
+            assert!(parse_worktrees(&raw, &alias)[0].is_current);
+            let case_variant = "worktree /missing/Case\0HEAD abc\0\0worktree /missing/case\0HEAD def\0\0";
+            let parsed = parse_worktrees(case_variant, Path::new("/missing/Case"));
+            assert!(parsed[0].is_current);
+            assert!(!parsed[1].is_current);
+        }
+    }
 
     #[test]
     fn parses_submodule_status() {

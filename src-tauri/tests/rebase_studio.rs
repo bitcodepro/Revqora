@@ -112,6 +112,21 @@ fn review_is_read_only_and_reports_custom_fetch_aliases_tags_and_worktrees() {
     assert_ne!(changed.token, review.token);
 }
 #[test]
+fn review_identifies_the_current_worktree_through_a_directory_alias() {
+    let r = Repo::new();
+    #[cfg(unix)]
+    let alias = {
+        let alias = r.root.parent().unwrap().join("repository alias");
+        std::os::unix::fs::symlink(&r.root, &alias).unwrap();
+        alias
+    };
+    #[cfg(not(unix))]
+    let alias = r.root.join(".");
+    let (review, _) = operations::inspect(&alias, || studio::review(&alias, &r.a, &r.items())).unwrap();
+    assert!(review.blockers.is_empty());
+    assert_eq!(review.worktrees.iter().filter(|w| w.current).count(), 1);
+}
+#[test]
 fn explicit_plan_disables_update_refs_and_preserves_related_branch_tag_and_worktree() {
     let r = Repo::new();
     r.git(&["config", "rebase.updateRefs", "true"]);
