@@ -1512,6 +1512,7 @@ try {
     execFileSync("git", ["-C", nested, "-c", "user.name=Child", "-c", "user.email=child@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Nested child baseline"]);
     index5 = fs.readFileSync(path.join(stage5, ".git", "index"));
     await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), stage5);
+    await page.waitForSelector(".repository-item.active .repository-label:has-text('stage5-workflows')");
     await page.click(".history-mode button:has-text('Graph')");
     await page.waitForSelector(".grow:has-text('Stage 5 baseline')");
     await page.click(".view-tab:has-text('Changes')");
@@ -1564,15 +1565,21 @@ try {
   });
 
   await check("autosquash previews fixup ordering before rewriting the selected range", async () => {
-    git5("commit", "-qm", "Autosquash target"); fs.writeFileSync(path.join(stage5, "other.txt"), "unrelated\n"); git5("add", "other.txt"); git5("commit", "-qm", "Unrelated work");
+    git5("commit", "-qm", "Autosquash target"); const targetOid = git5("rev-parse", "HEAD"); fs.writeFileSync(path.join(stage5, "other.txt"), "unrelated\n"); git5("add", "other.txt"); git5("commit", "-qm", "Unrelated work");
     fs.appendFileSync(path.join(stage5, "staged.txt"), "fixup content\n"); git5("add", "staged.txt"); git5("commit", "-qm", "fixup! Autosquash target");
     const tree = git5("rev-parse", "HEAD^{tree}");
-    await page.click(".view-tab:has-text('History')"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".grow:has-text('fixup! Autosquash target')");
-    await page.locator(".g-subject .text", { hasText: /^Autosquash target$/ }).click({ button: "right" });
+    await page.click(".view-tab:has-text('History')");
+    await page.click(".history-mode button:has-text('Graph')");
+    await page.waitForSelector(".history-mode button.on:has-text('Graph')");
+    await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".grow:has-text('fixup! Autosquash target')");
+    // Semantic text matching normalizes rendered whitespace; the exact Git
+    // identity is checked in the plan before any history rewrite is started.
+    await page.locator(".graph-scroll").getByText("Autosquash target", { exact: true }).click({ button: "right" });
     const rebase = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
     await until(async () => { if (await rebase.isVisible()) return true; await page.mouse.move(8, 8); await page.locator(".ctx-item", { hasText: /^Edit history$/ }).hover(); return rebase.isVisible(); }, "rebase submenu did not open", 10000);
     await rebase.click(); await page.waitForSelector(".rebase-row"); await page.getByRole("button", { name: "Autosquash fixups", exact: true }).click();
-    const rows = page.locator(".rebase-row"); if (await rows.count() !== 3 || !(await rows.nth(1).getAttribute("class")).includes("fixup") || !(await rows.nth(1).innerText()).includes("fixup! Autosquash target")) throw new Error("autosquash preview did not reorder fixups");
+    const rows = page.locator(".rebase-row"); if (!(await rows.first().innerText()).includes(targetOid.slice(0, 7))) throw new Error("autosquash plan starts from the wrong commit");
+    if (await rows.count() !== 3 || !(await rows.nth(1).getAttribute("class")).includes("fixup") || !(await rows.nth(1).innerText()).includes("fixup! Autosquash target")) throw new Error("autosquash preview did not reorder fixups");
     await shot("56-autosquash-plan"); await page.locator(".cf-head").getByRole("button", { name: "Start rebase", exact: true }).click();
     await until(() => git5("rev-list", "--count", `${base5}..HEAD`) === "2", "autosquash did not combine the fixup", 30000);
     await page.waitForSelector(".conflict-overlay", { state: "detached" });
