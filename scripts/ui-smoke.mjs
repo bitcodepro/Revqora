@@ -816,6 +816,9 @@ try {
   });
 
   await check("branch deletion supports local-only, remote, force confirmation and partial failure", async () => {
+    // Combined deletion serializes separate local and remote checkpointed
+    // operations. Wait for their terminal UI state, allowing slow Git/CI hosts.
+    const deletionTimeout = 90000;
     const localExists = (name) => git("branch", "--list", name) !== "";
     const remoteExists = (name) => git("ls-remote", "--heads", "origin", "refs/heads/" + name) !== "";
     const create = (name, remoteName = name, start = "HEAD") => {
@@ -835,7 +838,7 @@ try {
     await openDelete("ui-local-only");
     if (await page.locator(".delete-remote-branch").isChecked()) throw new Error("remote deletion must be opt-in");
     await page.click(".delete-branch-confirm");
-    await page.waitForSelector(".modal", { state: "detached" });
+    await page.waitForSelector(".modal", { state: "detached", timeout: deletionTimeout });
     if (localExists("ui-local-only") || !remoteExists("ui-local-only")) throw new Error("local-only deletion touched the remote or kept the local branch");
     git("push", "-q", "origin", ":refs/heads/ui-local-only");
     create("ui-delete-both", "published/ui-delete-both");
@@ -846,7 +849,7 @@ try {
     if (await page.locator("select[aria-label='Remote branch']").inputValue() !== JSON.stringify(["origin", "refs/heads/published/ui-delete-both"])) throw new Error("delete dialog did not prefer the configured upstream");
     await shot("27-delete-both");
     await page.click(".delete-branch-confirm");
-    await page.waitForSelector(".modal", { state: "detached" });
+    await page.waitForSelector(".modal", { state: "detached", timeout: deletionTimeout });
     if (localExists("ui-delete-both") || remoteExists("published/ui-delete-both") || !remoteExists("ui-delete-both")) throw new Error("combined deletion did not delete only the selected upstream");
     git("push", "-q", "origin", ":refs/heads/ui-delete-both");
     for (const pushed of [false, true]) {
@@ -877,7 +880,7 @@ try {
       await page.waitForSelector(".force-delete-branch");
       await page.check(".force-delete-branch");
       await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".modal", { state: "detached" });
+      await page.waitForSelector(".modal", { state: "detached", timeout: deletionTimeout });
       if (localExists("ui-unmerged") || remoteExists("ui-unmerged")) throw new Error("explicit force confirmation did not complete deletion");
     }
     // The tracking alias deliberately matches an unrelated, real server branch.
@@ -891,7 +894,7 @@ try {
       await page.check(".delete-remote-branch");
       if (!(await page.locator(".modal").innerText()).includes("origin/ui-mapped")) throw new Error("resolved server branch missing from dialog");
       await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".modal", { state: "detached" });
+      await page.waitForSelector(".modal", { state: "detached", timeout: deletionTimeout });
       if (localExists("ui-mapped") || remoteExists("ui-mapped") || !remoteExists("ui-mapped-alias")) throw new Error("custom fetch mapping deleted the wrong server ref");
     } finally {
       git("config", "--unset-all", "remote.origin.fetch");
@@ -918,7 +921,7 @@ try {
       await page.waitForSelector(`.branch-review[aria-busy='false'][data-review-local-oid='${deletedLocalOid}']`);
       await page.check(".delete-remote-branch");
       await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".delete-branch-error:has-text('Local branch deleted. Remote deletion failed')");
+      await page.waitForSelector(".delete-branch-error:has-text('Local branch deleted. Remote deletion failed')", { timeout: deletionTimeout });
       if (localExists("ui-failed-remote") || !remoteExists("ui-failed-remote")) throw new Error("partial deletion state was reported incorrectly");
       await shot("28-delete-remote-failed");
       fs.unlinkSync(hook);
@@ -927,7 +930,7 @@ try {
       const changed = otherGit("rev-parse", "HEAD");
       // Retry must keep the original lease even after the local part succeeded.
       await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".branch-review[data-remote-changed='true']");
+      await page.waitForSelector(".branch-review[data-remote-changed='true']", { timeout: deletionTimeout });
       if (!(await page.locator(".delete-branch-confirm").isDisabled()) || !remoteExists("ui-failed-remote")) throw new Error("retry deleted an unseen server tip");
       await page.click(".refresh-remote-deletion");
       await page.waitForSelector(".remote-deletion-review");
@@ -939,14 +942,14 @@ try {
       otherGit("commit", "--allow-empty", "-qm", "Another unseen server commit");
       otherGit("push", "-q", "origin", "ui-failed-remote");
       await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".branch-review[data-remote-changed='true']");
+      await page.waitForSelector(".branch-review[data-remote-changed='true']", { timeout: deletionTimeout });
       if (!remoteExists("ui-failed-remote")) throw new Error("force deleted a newer unseen tip");
       await page.click(".refresh-remote-deletion");
       await page.waitForSelector(".remote-deletion-review");
       if (await page.locator(".confirm-reviewed-remote").isChecked()) throw new Error("old remote consent leaked into refreshed state");
       await page.check(".confirm-reviewed-remote");
       await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".modal", { state: "detached" });
+      await page.waitForSelector(".modal", { state: "detached", timeout: deletionTimeout });
       if (remoteExists("ui-failed-remote")) throw new Error("remote retry failed");
       // Follow the success action to the FINAL remote checkpoint, not the earlier
       // local checkpoint that still retains B even when this regression occurs.
