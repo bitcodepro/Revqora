@@ -10,6 +10,36 @@ use super::recovery::{self, Summary};
 use super::runner::{self, GitError, GitResult};
 use super::{repo, status};
 
+// Safety decisions and transport must see the same physical commit graph.
+// A lease checks a ref's old SHA, but does not itself prohibit rewriting history.
+const ACTUAL_HISTORY: [(&str, &str); 2] = [("GIT_NO_REPLACE_OBJECTS", "1"), ("GIT_GRAFT_FILE", if cfg!(windows) { "NUL" } else { "/dev/null" })];
+fn run<I, S>(root: &Path, args: I) -> GitResult<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    runner::run_env(root, args, &ACTUAL_HISTORY, None)
+}
+fn exec<I, S>(root: &Path, args: I) -> GitResult<runner::Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    runner::exec_full(root, args, &ACTUAL_HISTORY, None)
+}
+fn require_actual_history(root: &Path) -> GitResult<()> {
+    // Query the actual configured path before our per-command null override.
+    let grafts = runner::run(root, ["rev-parse", "--git-path", "info/grafts"])?;
+    if !run(root, ["for-each-ref", "--format=%(refname)", "refs/replace/"])?.trim().is_empty()
+        || root.join(grafts.trim()).try_exists()?
+        || std::env::var_os("GIT_REPLACE_REF_BASE").is_some()
+        || std::env::var_os("GIT_GRAFT_FILE").is_some()
+    {
+        return Err(GitError::new("Sync requires original commit history. Local replacement refs, legacy grafts or history override environment variables are configured; use individual Git actions after reviewing their effects."));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncPlan {
@@ -33,6 +63,7 @@ fn stale() -> GitError {
     GitError::new("Repository, upstream or server branch changed. Prepare a new Sync review; nothing was synchronized.").kind("stale-operation")
 }
 fn clean(root: &Path) -> GitResult<status::StatusSummary> {
+    require_actual_history(root)?;
     let info = repo::info(root)?;
     let s = status::status(root)?;
     if info.is_bare || info.head.detached || info.head.unborn || s.branch.is_none() || s.oid.is_none() {
@@ -55,11 +86,11 @@ fn upstream(root: &Path, branch: &str) -> GitResult<RemoteBranchTarget> {
     if owner.remote != target.remote || owner.remote_ref != target.remote_ref {
         return Err(stale());
     }
-    let urls = runner::run(root, ["remote", "get-url", "--all", &target.remote])?;
+    let urls = run(root, ["remote", "get-url", "--all", &target.remote])?;
     if urls.lines().collect::<Vec<_>>() != vec![target.push_url.as_str()] {
         return Err(GitError::new("Fetch and push must use the same single server for Sync. Use Fetch and Push individually for this remote."));
     }
-    if runner::exec(root, ["symbolic-ref", "--quiet", &target.tracking_ref])?.ok() {
+    if exec(root, ["symbolic-ref", "--quiet", &target.tracking_ref])?.ok() {
         return Err(stale());
     }
     Ok(target)
@@ -69,7 +100,7 @@ fn upstream(root: &Path, branch: &str) -> GitResult<RemoteBranchTarget> {
 fn transport(root: &Path, url: &str) -> GitResult<(Vec<String>, String)> {
     static IDS: AtomicU64 = AtomicU64::new(0);
     let name = format!("revqora-sync-{}-{}", std::process::id(), IDS.fetch_add(1, Ordering::Relaxed));
-    if runner::run(root, ["remote"])?.lines().any(|n| n == name) || runner::exec(root, ["config", "--get-all", &format!("remotes.{name}")])?.code != 1 {
+    if run(root, ["remote"])?.lines().any(|n| n == name) || exec(root, ["config", "--get-all", &format!("remotes.{name}")])?.code != 1 {
         return Err(GitError::new("Cannot allocate an isolated Sync transport."));
     }
     let args = vec!["-c".into(), format!("remote.{name}.url={url}"), "-c".into(), format!("remote.{name}.pushurl={url}")];
@@ -79,7 +110,7 @@ fn transport(root: &Path, url: &str) -> GitResult<(Vec<String>, String)> {
     // without contacting the server; explicit pushurl disables pushInsteadOf.
     let mut check = args.clone();
     check.extend(["ls-remote".into(), "--get-url".into(), "--".into(), name.clone()]);
-    if runner::run(root, &check)?.lines().collect::<Vec<_>>() != vec![url] {
+    if run(root, &check)?.lines().collect::<Vec<_>>() != vec![url] {
         return Err(GitError::new("URL rewriting makes the Sync destination ambiguous. Use individual remote actions."));
     }
     Ok((args, name))
@@ -87,7 +118,7 @@ fn transport(root: &Path, url: &str) -> GitResult<(Vec<String>, String)> {
 fn server_tip(root: &Path, target: &RemoteBranchTarget) -> GitResult<String> {
     let (mut args, name) = transport(root, &target.push_url)?;
     args.extend(["ls-remote".into(), "--heads".into(), "--refs".into(), "--".into(), name, target.remote_ref.clone()]);
-    runner::run(root, &args)?
+    run(root, &args)?
         .lines()
         .find_map(|line| {
             let (oid, reference) = line.split_once('\t')?;
@@ -96,7 +127,7 @@ fn server_tip(root: &Path, target: &RemoteBranchTarget) -> GitResult<String> {
         .ok_or_else(|| GitError::new("The upstream branch is missing on the server. Publish it with Push first."))
 }
 fn counts(root: &Path, local: &str, remote: &str) -> GitResult<(u64, u64)> {
-    let text = runner::run(root, ["rev-list", "--left-right", "--count", &format!("{local}...{remote}")])?;
+    let text = run(root, ["rev-list", "--left-right", "--count", &format!("{local}...{remote}")])?;
     let values = text.split_whitespace().map(str::parse::<u64>).collect::<Result<Vec<_>, _>>().map_err(|_| GitError::new("Invalid ahead/behind response."))?;
     if values.len() != 2 {
         return Err(GitError::new("Invalid ahead/behind response."));
@@ -123,7 +154,7 @@ pub fn prepare(root: &Path) -> GitResult<SyncPlan> {
         name,
         server_oid.clone(),
     ]);
-    runner::run(root, &args)?;
+    run(root, &args)?;
     let (ahead, behind) = counts(root, &local_oid, &server_oid)?;
     let after = clean(root)?;
     if before.state_token != after.state_token || upstream(root, &branch)? != target {
@@ -151,7 +182,25 @@ pub fn execute(root: &Path, plan: &SyncPlan, receive: bool, send: bool) -> GitRe
     // and checkpoint instead of encouraging an automatic retry.
     let action = (|| -> GitResult<()> {
         if receive {
-            runner::run(root, ["merge", "--ff-only", "--no-commit", "--no-autostash", "--no-overwrite-ignore", "--", &plan.server_oid])?;
+            run(
+                root,
+                [
+                    "-c",
+                    &format!("branch.{}.mergeOptions=", plan.branch),
+                    "merge",
+                    "--ff-only",
+                    "--no-squash",
+                    "--no-commit",
+                    "--no-autostash",
+                    "--no-overwrite-ignore",
+                    "--",
+                    &plan.server_oid,
+                ],
+            )?;
+            let received = clean(root)?;
+            if received.branch.as_deref() != Some(&plan.branch) || received.oid.as_deref() != Some(&plan.server_oid) {
+                return Err(GitError::new("Receive did not leave the reviewed branch at the expected commit. Review the working copy; the recovery checkpoint preserves its previous state."));
+            }
             result.received = true;
         }
         if send {
@@ -161,7 +210,7 @@ pub fn execute(root: &Path, plan: &SyncPlan, receive: bool, send: bool) -> GitRe
             }
             // A lease alone permits rewriting: explicitly prove fast-forward,
             // then push a fixed SHA rather than a movable local ref.
-            runner::run(root, ["merge-base", "--is-ancestor", &plan.server_oid, &plan.local_oid])?;
+            run(root, ["merge-base", "--is-ancestor", &plan.server_oid, &plan.local_oid])?;
             let (mut args, name) = transport(root, &plan.target.push_url)?;
             args.extend([
                 "push".into(),
@@ -173,7 +222,7 @@ pub fn execute(root: &Path, plan: &SyncPlan, receive: bool, send: bool) -> GitRe
                 name,
                 format!("{}:{}", plan.local_oid, plan.target.remote_ref),
             ]);
-            let pushed = runner::run(root, &args);
+            let pushed = run(root, &args);
             match server_tip(root, &plan.target) {
                 Ok(oid) if oid == plan.local_oid => result.sent = true,
                 Ok(oid) if oid == plan.server_oid => {
@@ -192,7 +241,7 @@ pub fn execute(root: &Path, plan: &SyncPlan, receive: bool, send: bool) -> GitRe
         if upstream(root, &plan.branch)? != plan.target {
             return Err(GitError::new("Sync finished; upstream metadata changed and was preserved."));
         }
-        runner::run(root, ["update-ref", "--no-deref", &plan.target.tracking_ref, tip, &plan.target.oid])?;
+        run(root, ["update-ref", "--no-deref", &plan.target.tracking_ref, tip, &plan.target.oid])?;
         Ok(())
     })();
     if let Err(e) = action {

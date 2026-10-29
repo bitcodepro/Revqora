@@ -185,3 +185,71 @@ fn receiving_does_not_overwrite_ignored_local_files() {
     assert_eq!(git(&f.local, &["rev-parse", "HEAD"]), plan.local_oid);
     assert_eq!(fs::read_to_string(f.local.join("private.txt")).unwrap(), "keep local secret");
 }
+
+fn unrelated_tip(f: &Fixture) -> (String, String) {
+    let server = git(&f.bare, &["rev-parse", "main"]);
+    let tree = git(&f.local, &["rev-parse", "HEAD^{tree}"]);
+    let local = git(&f.local, &["commit-tree", &tree, "-m", "Unrelated root"]);
+    git(&f.local, &["reset", "--hard", &local]);
+    (server, local)
+}
+fn cannot_publish_unrelated(f: &Fixture, server: &str) {
+    if let Ok(plan) = f.plan() {
+        let result = f.run(&plan, false, true);
+        assert!(result.is_err() || !result.unwrap().sent, "Sync published unrelated history");
+    }
+    assert_eq!(git(&f.bare, &["rev-parse", "main"]), server);
+}
+#[test]
+fn replacement_history_cannot_authorize_a_non_fast_forward_push() {
+    let f = Fixture::new();
+    let (server, local) = unrelated_tip(&f);
+    let tree = git(&f.local, &["rev-parse", "HEAD^{tree}"]);
+    let replacement = git(&f.local, &["commit-tree", &tree, "-p", &server, "-m", "Synthetic parent"]);
+    git(&f.local, &["replace", &local, &replacement]);
+    // Reproduce the misleading ancestry that used to authorize the leased push.
+    git(&f.local, &["merge-base", "--is-ancestor", &server, &local]);
+    cannot_publish_unrelated(&f, &server);
+}
+#[test]
+fn legacy_graft_history_cannot_authorize_a_non_fast_forward_push() {
+    let f = Fixture::new();
+    let (server, local) = unrelated_tip(&f);
+    fs::write(f.local.join(".git/info/grafts"), format!("{local} {server}\n")).unwrap();
+    git(&f.local, &["merge-base", "--is-ancestor", &server, &local]);
+    cannot_publish_unrelated(&f, &server);
+}
+#[test]
+fn branch_squash_options_cannot_prevent_the_reviewed_fast_forward() {
+    let f = Fixture::new();
+    let incoming = f.incoming();
+    git(&f.local, &["config", "branch.main.mergeOptions", "--squash --no-ff --autostash"]);
+    let plan = f.plan().unwrap();
+    let result = f.run(&plan, true, false).unwrap();
+    assert!(result.received);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(git(&f.local, &["rev-parse", "HEAD"]), incoming);
+    assert_eq!(git(&f.local, &["status", "--porcelain"]), "");
+    assert_eq!(git(&f.local, &["config", "--get", "branch.main.mergeOptions"]), "--squash --no-ff --autostash");
+}
+#[test]
+fn receive_verifies_head_after_a_successful_merge_command() {
+    let f = Fixture::new();
+    let before = git(&f.local, &["rev-parse", "HEAD"]);
+    f.incoming();
+    git(&f.local, &["config", "core.hooksPath", ".git/hooks"]);
+    let hook = f.local.join(".git/hooks/post-merge");
+    fs::write(&hook, format!("#!/bin/sh\ngit update-ref refs/heads/main {before}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let plan = f.plan().unwrap();
+    let result = f.run(&plan, true, false).unwrap();
+    assert!(!result.received);
+    assert!(!result.warnings.is_empty());
+    assert_eq!(git(&f.local, &["rev-parse", "HEAD"]), before);
+    assert_eq!(git(&f.local, &["rev-parse", "refs/remotes/origin/main"]), plan.target.oid);
+    assert_eq!(result.checkpoint.head.as_deref(), Some(before.as_str()));
+}

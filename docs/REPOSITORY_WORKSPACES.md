@@ -46,6 +46,12 @@ are skipped with reasons. A missing server branch must first be published with P
 Fetch and push must resolve to the same single server. Custom upstream destinations
 outside `refs/remotes/` require the existing individual Git actions.
 
+Sync also refuses replacement refs, legacy grafts and history-override environment
+variables. Its Git commands disable replacement/graft interpretation so ancestry,
+receiving and publication use physical commit parents. Receive overrides branch
+merge options for this command only and checks the resulting branch, exact HEAD
+and clean working tree before reporting success or updating the tracking cache.
+
 A recovery checkpoint is created after preflight and before execution. Results
 report completed receive/send steps and warnings per repository; one failure does
 not stop the remaining repositories. A lost transport response is checked against
