@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { validationDialog } from "./ConflictValidation";
+import { useValidation, validationFresh, validationRunning } from "../lib/validation";
+import { conflictHasUnsaved, useConflictDrafts } from "../lib/conflictStudio";
 import {
   Archive,
   ArchiveRestore,
@@ -47,7 +50,7 @@ import { api } from "../lib/api";
 import { basename, plural, shortOid } from "../lib/format";
 import { AheadBehind } from "./bits";
 import { UpdateChip } from "./UpdateChip";
-import { reflogDialog, settingsDialog } from "./dialogs";
+import { confirmDialog, reflogDialog, settingsDialog } from "./dialogs";
 import { applyPatchFile, repoToolsDialog } from "./RepoTools";
 import { OperationLogButton, operationLogDialog } from "./OperationLog";
 import { recoveryDialog } from "./RecoveryCenter";
@@ -139,6 +142,8 @@ export function TopBar() {
 // ───────────── operation banner ─────────────
 
 export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: string) => void }) {
+  const validation = useValidation((s) => s.reports[tab.root]);
+  useConflictDrafts((s) => s.version);
   const st = tab.info?.state;
   if (!st || st.kind === "none") return null;
   const root = tab.root;
@@ -146,6 +151,14 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
   const staged = tab.status?.stagedCount ?? 0;
   const current = tab.info?.head.branch ?? st.headName ?? "HEAD";
   const ok = conflicts.length === 0;
+  const finish = async (action: () => void | Promise<unknown>) => {
+    const unsaved = conflictHasUnsaved(root, conflicts.map((f) => f.path));
+    if (unsaved && !await confirmDialog({ title: "Unsaved conflict drafts", message: "There are unsaved editor drafts. Finishing uses the files on disk. Save those drafts first to include them.", confirm: "Use files on disk" })) return;
+    if (validation && !validationFresh(validation, tab.status?.stateToken, unsaved, root)) {
+      if (!await confirmDialog({ title: "Continue without a current passing check?", message: "The last validation failed, was cancelled, or belongs to an older Git-visible state. You can run it again before finishing.", confirm: "Continue anyway" })) return;
+    }
+    await action();
+  };
 
   let icon = <GitMerge size={18} />;
   let title = "";
@@ -171,7 +184,7 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
         <>
           {resolveBtn}
           {abort}
-          <button className="btn primary" disabled={!ok} onClick={() => A.confirmMerge(root, st.kind as "merge" | "squash", st.message)} title={ok ? "" : "Resolve all conflicts first"}>
+          <button className="btn primary" disabled={!ok} onClick={() => finish(() => A.confirmMerge(root, st.kind as "merge" | "squash", st.message))} title={ok ? "" : "Resolve all conflicts first"}>
             <Check size={14} /> Confirm merge
           </button>
         </>
@@ -189,7 +202,7 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
           <button className="btn" onClick={() => A.skipOp(root, st.kind)}>
             <SkipForward size={14} /> Skip
           </button>
-          <button className="btn primary" disabled={!ok} onClick={() => A.continueOp(root, st.kind)}>
+          <button className="btn primary" disabled={!ok} onClick={() => finish(() => A.continueOp(root, st.kind))}>
             <Check size={14} /> Continue
           </button>
         </>
@@ -213,11 +226,11 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
             <SkipForward size={14} /> Skip commit
           </button>
           {editing && staged > 0 ? (
-            <button className="btn primary" onClick={() => A.amendAndContinue(root)}>
+            <button className="btn primary" onClick={() => finish(() => A.amendAndContinue(root))}>
               <Pencil size={14} /> Amend & continue
             </button>
           ) : (
-            <button className="btn primary" disabled={!ok} onClick={() => A.continueOp(root, "rebase")}>
+            <button className="btn primary" disabled={!ok} onClick={() => finish(() => A.continueOp(root, "rebase"))}>
               <Check size={14} /> Continue
             </button>
           )}
@@ -275,7 +288,8 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
         <div className="op-sub">{sub}</div>
       </div>
       <div className="hstack op-actions">
-        <fieldset disabled={(tab.pendingMutations ?? 0) > 0} style={{ display: "contents", border: 0, padding: 0, margin: 0 }}>{actions}</fieldset>
+        <button className="btn" onClick={() => validationDialog(root)}>{validationRunning(validation) ? "Check running…" : validationFresh(validation, tab.status?.stateToken, conflictHasUnsaved(root, conflicts.map((f) => f.path)), root) ? "Checks passed" : validation ? "Check result" : "Validate"}</button>
+        <fieldset disabled={(tab.pendingMutations ?? 0) > 0 || validationRunning(validation)} style={{ display: "contents", border: 0, padding: 0, margin: 0 }}>{actions}</fieldset>
       </div>
     </div>
   );

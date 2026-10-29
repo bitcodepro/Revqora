@@ -1,4 +1,4 @@
-import type { RebaseItem, StudioReview, StudioReport, StudioComparison } from "./types";
+import type { RebaseItem, StudioReview, StudioReport, StudioComparison, ValidationReport } from "./types";
 import type { IgnoredFiles, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
@@ -69,6 +69,9 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  validationStart: (repo: string, command: string, expectedState: string, timeoutSeconds: number) => call<ValidationReport>("validation_start", { repo, command, expectedState, timeoutSeconds }),
+  validationReport: (repo: string) => call<ValidationReport | null>("validation_report", { repo }),
+  validationCancel: (repo: string, id: string) => call<void>("validation_cancel", { repo, id }),
   recoveryList: (repo: string) => call<RecoveryCatalog>("recovery_list", { repo }),
   recoveryDetail: (repo: string, id: string) => call<RecoveryCheckpoint>("recovery_detail", { repo, id }),
   recoveryCreate: (repo: string, label: string) => call<RecoverySummary>("recovery_create", { repo, label }),

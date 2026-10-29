@@ -15,10 +15,7 @@ export interface ConflictBlock {
   theirsLabel: string;
 }
 
-const START = "<<<<<<<";
-const BASE = "|||||||";
-const SEP = "=======";
-const END = ">>>>>>>";
+const START = /^(<{7,})(?:\s|$)/;
 
 /** Finds all well-formed conflict blocks in a text. */
 export function parseConflicts(text: string): ConflictBlock[] {
@@ -36,12 +33,15 @@ export function parseConflicts(text: string): ConflictBlock[] {
   let i = 0;
   while (i < lines.length) {
     const line = strip(lines[i]);
-    if (!line.startsWith(START)) {
+    const opening = START.exec(line);
+    if (!opening) {
       i++;
       continue;
     }
     const start = i;
-    const oursLabel = line.slice(START.length).trim();
+    const width = opening[1].length;
+    const marker = (value: string, character: string) => value === character.repeat(width) || value.startsWith(character.repeat(width) + " ");
+    const oursLabel = line.slice(width).trim();
     const ours: string[] = [];
     let base: string[] | null = null;
     const theirs: string[] = [];
@@ -51,18 +51,18 @@ export function parseConflicts(text: string): ConflictBlock[] {
     let theirsLabel = "";
     for (; j < lines.length; j++) {
       const l = strip(lines[j]);
-      if (l.startsWith(START)) break; // malformed: nested start
-      if (section === "ours" && l.startsWith(BASE)) {
+      if (START.test(l)) break; // malformed: nested start
+      if (section === "ours" && marker(l, "|")) {
         section = "base";
         base = [];
         continue;
       }
-      if ((section === "ours" || section === "base") && l === SEP) {
+      if ((section === "ours" || section === "base") && l === "=".repeat(width)) {
         section = "theirs";
         continue;
       }
-      if (section === "theirs" && l.startsWith(END)) {
-        theirsLabel = l.slice(END.length).trim();
+      if (section === "theirs" && marker(l, ">")) {
+        theirsLabel = l.slice(width).trim();
         closed = true;
         break;
       }

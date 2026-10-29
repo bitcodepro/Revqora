@@ -6,6 +6,20 @@ pub mod journal;
 pub mod portable;
 pub mod update;
 
+#[tauri::command]
+async fn validation_start(repo: String, command: String, expected_state: String, timeout_seconds: u64) -> git::runner::GitResult<git::validation::Report> {
+    // Returns immediately; polling and cancellation must not wait for the writer queue.
+    blocking(move || git::validation::start(PathBuf::from(repo), command, expected_state, timeout_seconds)).await
+}
+#[tauri::command]
+fn validation_report(repo: String) -> Option<git::validation::Report> {
+    git::validation::report(&PathBuf::from(repo))
+}
+#[tauri::command]
+fn validation_cancel(repo: String, id: String) -> git::runner::GitResult<()> {
+    git::validation::cancel(&PathBuf::from(repo), &id)
+}
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1628,6 +1642,9 @@ pub fn run() {
             rebase_studio_capture,
             interactive_rebase,
             conflict_info,
+            validation_start,
+            validation_report,
+            validation_cancel,
             conflict_save,
             conflict_take,
             conflict_mark_resolved,
@@ -1699,6 +1716,11 @@ pub fn run() {
             open_terminal,
             startup_paths,
         ])
-        .run(context)
-        .expect("error while running Revqora");
+        .build(context)
+        .expect("error while building Revqora")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                git::validation::cancel_all();
+            }
+        });
 }
