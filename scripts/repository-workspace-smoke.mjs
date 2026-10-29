@@ -6,6 +6,9 @@ import { createProfile, launch } from "./ui-driver.mjs";
 
 export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
   const root = path.join(work, "stage8-workspace"), second = path.join(work, "stage8-tools"), bare = path.join(work, "stage8.git"), peer = path.join(work, "stage8-peer");
+  // Checkpointing and server verification can exceed the generic UI timeout.
+  // Assert the terminal result and exact server SHA after the operation finishes.
+  const syncTimeout = 180000;
   const git = (dir, ...args) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
   const init = (dir) => { fs.mkdirSync(dir); git(dir, "init", "-q", "-b", "main"); git(dir, "config", "user.name", "Workspace Tester"); git(dir, "config", "user.email", "workspace@example.com"); git(dir, "config", "commit.gpgsign", "false"); git(dir, "config", "core.autocrlf", "false"); };
   const commit = (dir, text) => { fs.writeFileSync(path.join(dir, "file.txt"), text); git(dir, "add", "."); git(dir, "commit", "-qm", text); return git(dir, "rev-parse", "HEAD"); };
@@ -61,13 +64,13 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     const incoming = commit(peer, "workspace incoming"); git(peer, "push", "origin", "main");
     await page.locator(".toolbar").getByRole("button", { name: "Sync", exact: true }).click(); await page.waitForSelector(".modal:has-text('Review Sync')");
     if (!await page.getByRole("checkbox", { name: "Receive 1", exact: true }).isChecked()) throw new Error("incoming revision not selected");
-    await shot("77-sync-review"); await page.getByRole("button", { name: "Sync selected (1)", exact: true }).click(); await page.waitForSelector(".modal:has-text('Sync results')");
+    await shot("77-sync-review"); await page.getByRole("button", { name: "Sync selected (1)", exact: true }).click(); await page.waitForSelector(".modal:has-text('Sync results')", { timeout: syncTimeout });
     if (git(root, "rev-parse", "HEAD") !== incoming || !(await page.locator(".modal").innerText()).includes("Incoming commits received")) throw new Error("incoming Sync failed"); await done();
     const outgoing = commit(root, "workspace outgoing"); await page.getByRole("button", { name: "Refresh (F5)", exact: true }).click();
     await page.locator(".toolbar").getByRole("button", { name: "Sync", exact: true }).click(); await page.waitForSelector(".modal:has-text('Review Sync')");
     if (await page.getByRole("checkbox", { name: "Send 1", exact: true }).isChecked() || !await page.getByRole("button", { name: "Sync selected (0)", exact: true }).isDisabled()) throw new Error("outgoing publication was implicit");
     if (git(bare, "rev-parse", "main") !== incoming) throw new Error("preview pushed commits");
-    await page.getByRole("checkbox", { name: "Send 1", exact: true }).check(); await page.getByRole("button", { name: "Sync selected (1)", exact: true }).click(); await page.waitForSelector(".modal:has-text('Sync results')");
+    await page.getByRole("checkbox", { name: "Send 1", exact: true }).check(); await page.getByRole("button", { name: "Sync selected (1)", exact: true }).click(); await page.waitForSelector(".modal:has-text('Sync results')", { timeout: syncTimeout });
     if (git(bare, "rev-parse", "main") !== outgoing || !(await page.locator(".modal").innerText()).includes("Outgoing commits sent")) throw new Error("outgoing Sync failed"); await shot("78-sync-results"); await done();
   });
 }
