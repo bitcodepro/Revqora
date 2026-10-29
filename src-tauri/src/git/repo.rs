@@ -31,6 +31,8 @@ pub struct OpState {
     pub head_name: Option<String>,
     pub onto: Option<String>,
     pub stopped_at: Option<String>,
+    /// Git's amend marker distinguishes an Edit stop from a picked conflict.
+    pub editing_commit: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +116,7 @@ pub fn op_state(repo: &Path, gd: &Path) -> OpState {
         head_name: None,
         onto: None,
         stopped_at: None,
+        editing_commit: false,
     };
     let rebase_merge = gd.join("rebase-merge");
     let rebase_apply = gd.join("rebase-apply");
@@ -124,6 +127,7 @@ pub fn op_state(repo: &Path, gd: &Path) -> OpState {
         st.head_name = read_trim(&rebase_merge.join("head-name")).map(|s| s.trim_start_matches("refs/heads/").to_string());
         st.onto = read_trim(&rebase_merge.join("onto"));
         st.stopped_at = read_trim(&rebase_merge.join("stopped-sha"));
+        st.editing_commit = read_trim(&rebase_merge.join("amend")).is_some();
         st.message = read_trim(&rebase_merge.join("message"));
         if let Some(s) = &st.stopped_at {
             st.incoming_label = subject_of(repo, s);

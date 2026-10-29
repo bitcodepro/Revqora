@@ -5,7 +5,7 @@ import type { RepoInfo, StatusSummary } from "./types";
 const info: RepoInfo = {
   root: "/repo", gitDir: "/repo/.git", name: "repo", isBare: false,
   head: { branch: "main", oid: "abc", detached: false, unborn: false },
-  state: { kind: "none", incoming: null, incomingLabel: null, message: null, step: null, total: null, headName: null, onto: null, stoppedAt: null },
+  state: { kind: "none", incoming: null, incomingLabel: null, message: null, step: null, total: null, headName: null, onto: null, stoppedAt: null, editingCommit: false },
 };
 const status: StatusSummary = { branch: "main", oid: "abc", upstream: "origin/main", ahead: 0, behind: 3, files: [], stagedCount: 0, unstagedCount: 0, conflictCount: 0 };
 const clean = (): RepositorySnapshot => ({ info: structuredClone(info), status: structuredClone(status) });

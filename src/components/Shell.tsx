@@ -198,7 +198,7 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
     case "rebase": {
       icon = <GitPullRequestArrow size={18} />;
       const step = st.step && st.total ? ` · step ${st.step} of ${st.total}` : "";
-      const editing = ok && !!st.stoppedAt;
+      const editing = ok && st.editingCommit;
       title = `Rebasing ${st.headName ?? current}${step}`;
       sub = !ok
         ? `Stopped on ${st.incomingLabel ?? "a commit"} with ${plural(conflicts.length, "conflict")}.`

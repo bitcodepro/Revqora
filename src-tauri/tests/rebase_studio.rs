@@ -1,4 +1,4 @@
-use revqora_lib::git::{operations, ops, rebase_studio as studio, recovery, runner, status, storage};
+use revqora_lib::git::{operations, ops, rebase_studio as studio, recovery, repo, runner, status, storage};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -230,6 +230,9 @@ fn paused_session_is_persistent_and_continuation_records_its_exact_result() {
     let out = r.start(&items, &review, false, false).unwrap();
     assert_eq!(out.report.phase, "paused");
     let loaded = studio::report(&r.root).unwrap().unwrap();
+    let state = repo::op_state(&r.root, &repo::git_dir(&r.root).unwrap());
+    assert!(state.editing_commit);
+    assert_eq!(state.stopped_at.as_deref(), Some(r.a.as_str()));
     assert_eq!(loaded.id, out.report.id);
     assert_eq!(loaded.phase, "paused");
     let result = r.run("op_continue", || studio::step(&r.root, "rebase", None, || ops::continue_op(&r.root, "rebase", None))).unwrap();
@@ -269,10 +272,14 @@ fn a_conflicted_plan_can_finish_and_its_changed_tree_is_reported() {
     let out = r.start(&items, &review, false, false).unwrap();
     assert_eq!(out.outcome.status, "conflicts");
     assert_eq!(out.report.phase, "paused");
+    let gd = repo::git_dir(&r.root).unwrap();
+    assert_eq!(repo::op_state(&r.root, &gd).stopped_at.as_deref(), Some(r.b.as_str()));
+    assert!(!repo::op_state(&r.root, &gd).editing_commit);
     assert!(r.run("op_continue", || studio::step(&r.root, "rebase", None, || ops::continue_op(&r.root, "rebase", None))).is_err());
     assert!(studio::report(&r.root).unwrap().unwrap().error.is_some());
     fs::write(r.root.join("f.txt"), "chosen resolution\n").unwrap();
     r.run("stage", || ops::stage_paths(&r.root, &["f.txt".into()])).unwrap();
+    assert!(!repo::op_state(&r.root, &gd).editing_commit, "Resolving a pick conflict must not offer an amend of the previous commit");
     let out = r.run("op_continue", || studio::step(&r.root, "rebase", None, || ops::continue_op(&r.root, "rebase", None))).unwrap();
     assert_eq!(out.outcome.status, "done");
     let report = studio::report(&r.root).unwrap().unwrap();

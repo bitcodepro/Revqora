@@ -1819,6 +1819,39 @@ try {
     await page.locator(".studio-result input[type='checkbox']").check(); await button.click(); await page.waitForSelector(".studio-result[data-phase='captured']"); await page.waitForSelector(".studio-same-tree");
     await shot("64-studio-external-result"); await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
   });
+  let studioConflictBase;
+  await check("a resolved Studio pick conflict continues without amending the previous commit", async () => {
+    studioConflictBase = studioGit("rev-parse", "HEAD");
+    fs.writeFileSync(path.join(studioRoot, "f.txt"), "base\nA\n"); studioGit("add", "f.txt"); studioGit("commit", "-qm", "Studio conflict first"); const first = studioGit("rev-parse", "HEAD");
+    fs.writeFileSync(path.join(studioRoot, "f.txt"), "base\nB\n"); studioGit("add", "f.txt"); studioGit("commit", "-qm", "Studio conflict second"); const before = studioGit("rev-parse", "HEAD");
+    await studioOpenPlan("Studio conflict first", first); await page.locator(".rebase-row").first().getByRole("button", { name: "Drop", exact: true }).click();
+    await reviewStudio(); await studioStart(); await page.waitForSelector(".op-banner");
+    await page.locator(".op-banner").getByRole("button", { name: /^Resolve/ }).click();
+    await page.waitForSelector(".conflict-overlay .cf-actions"); await page.locator(".cf-actions button.theirs").first().click();
+    await page.waitForSelector(".cf-head .pill.green, .cf-result .pill.green"); await page.click(".cf-head button:has-text('Save & mark resolved')");
+    await page.waitForSelector(".conflict-overlay", { state: "detached" });
+    if (await page.locator(".op-banner").getByRole("button", { name: "Amend & continue", exact: true }).count()) throw new Error("resolved pick conflict offered an amend of the previous commit");
+    await page.locator(".op-banner").getByRole("button", { name: "Continue", exact: true }).click(); await page.waitForSelector(".op-banner", { state: "detached", timeout: 60000 });
+    const report = await studioReport();
+    if (report.phase !== "completed" || report.beforeCheckpoint.head !== before || report.afterHead !== studioGit("rev-parse", "HEAD")) throw new Error("resolved conflict did not record its exact result");
+    if (studioGit("rev-parse", "HEAD^") !== studioConflictBase || studioGit("log", "-1", "--format=%s") !== "Studio conflict second" || fs.readFileSync(path.join(studioRoot, "f.txt"), "utf8") !== "base\nB\n") throw new Error("Continue changed the previous commit or lost the picked change");
+    await studioOpenResult(); await page.waitForSelector(".studio-same-tree"); await shot("65-studio-conflict-continued");
+    await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+  });
+  await check("a real Studio Edit stop still offers Amend and continue for staged changes", async () => {
+    const before = studioGit("rev-parse", "HEAD");
+    await studioOpenPlan("Studio conflict second", before); await page.locator(".rebase-row").getByRole("button", { name: "Edit", exact: true }).click();
+    await reviewStudio(); await studioStart(); await page.waitForSelector(".op-banner .op-sub:has-text('Editing')");
+    fs.appendFileSync(path.join(studioRoot, "f.txt"), "edit amendment\n");
+    await page.click(".view-tab:has-text('Changes')"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".changes .file-row:has-text('f.txt')");
+    await page.click(".changes button[title='Stage all']");
+    await page.locator(".op-banner").getByRole("button", { name: "Amend & continue", exact: true }).click(); await page.waitForSelector(".op-banner", { state: "detached", timeout: 60000 });
+    const report = await studioReport();
+    if (report.phase !== "completed" || report.afterHead !== studioGit("rev-parse", "HEAD") || report.afterHead === before) throw new Error("Edit amendment was not captured");
+    if (studioGit("rev-parse", "HEAD^") !== studioConflictBase || studioGit("log", "-1", "--format=%s") !== "Studio conflict second" || fs.readFileSync(path.join(studioRoot, "f.txt"), "utf8") !== "base\nB\nedit amendment\n") throw new Error("Edit did not amend exactly the intended commit");
+    await studioOpenResult(); await page.waitForSelector(".studio-tree-changed"); await shot("66-studio-edit-amended");
+    await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+  });
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;
