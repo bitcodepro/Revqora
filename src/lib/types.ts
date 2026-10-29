@@ -685,3 +685,19 @@ export interface ValidationReport {
   afterState: string | null;
   error: string | null;
 }
+
+export interface SyncPlan {
+  branch: string;
+  localOid: string;
+  serverOid: string;
+  target: RemoteBranchTarget;
+  ahead: number;
+  behind: number;
+  stateToken: string;
+}
+export interface SyncResult {
+  received: boolean;
+  sent: boolean;
+  checkpoint: RecoverySummary;
+  warnings: string[];
+}

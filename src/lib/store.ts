@@ -1,3 +1,4 @@
+import { useLibrary } from "./repositoryLibrary";
 import { invalidatePreview } from "./commitPreview";
 // Repository tabs and their cached state.
 import { create } from "zustand";
@@ -60,6 +61,7 @@ interface RepoStore {
   open: (path: string, activate?: boolean) => Promise<string | null>;
   close: (root: string) => void;
   activate: (root: string | null) => void;
+  arrange: (roots: string[], active: string | null) => void;
   patch: (root: string, p: Partial<RepoTab>) => void;
   refresh: (root: string, parts?: Parts) => Promise<void>;
 }
@@ -149,6 +151,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       throw e;
     }
     const root = info.root;
+    useLibrary.getState().remember(root, path);
     const s = get();
     if (!s.tabs[root]) {
       const tab = emptyTab(root);
@@ -190,6 +193,12 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     useUi.setState({ repositoryOverview: false });
     persistTabs();
     if (root) void get().refresh(root, { info: true, status: true, refs: true, graph: true });
+  },
+
+  arrange: (roots, active) => {
+    const order = [...new Set([...roots, ...get().order])].filter((r) => !!get().tabs[r]);
+    set({ order, active: active && order.includes(active) ? active : order[0] ?? null });
+    persistTabs();
   },
 
   patch: (root, p) => {

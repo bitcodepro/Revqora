@@ -1,3 +1,4 @@
+import type { SyncPlan, SyncResult } from "./types";
 import type { RebaseItem, StudioReview, StudioReport, StudioComparison, ValidationReport } from "./types";
 import type { IgnoredFiles, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
 import { invoke } from "@tauri-apps/api/core";
@@ -69,6 +70,8 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  syncPrepare: (repo: string) => call<SyncPlan>("sync_prepare", { repo }),
+  syncExecute: (repo: string, plan: SyncPlan, receive: boolean, send: boolean) => call<SyncResult>("sync_execute", { repo, plan, receive, send, expectedState: plan.stateToken }),
   validationStart: (repo: string, command: string, expectedState: string, timeoutSeconds: number) => call<ValidationReport>("validation_start", { repo, command, expectedState, timeoutSeconds }),
   validationReport: (repo: string) => call<ValidationReport | null>("validation_report", { repo }),
   validationCancel: (repo: string, id: string) => call<void>("validation_cancel", { repo, id }),

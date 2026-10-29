@@ -1,3 +1,4 @@
+import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
 //   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
@@ -1652,8 +1653,9 @@ try {
     const rows = page.locator(".rebase-row"); if (!(await rows.first().innerText()).includes(targetOid.slice(0, 7))) throw new Error("autosquash plan starts from the wrong commit");
     if (await rows.count() !== 3 || !(await rows.nth(1).getAttribute("class")).includes("fixup") || !(await rows.nth(1).innerText()).includes("fixup! Autosquash target")) throw new Error("autosquash preview did not reorder fixups");
     await shot("56-autosquash-plan"); await reviewStudio(); await page.locator(".cf-head").getByRole("button", { name: "Start rebase", exact: true }).click();
-    await until(() => git5("rev-list", "--count", `${base5}..HEAD`) === "2", "autosquash did not combine the fixup", 30000);
+
     await closeStudioResult();
+    if (git5("rev-list", "--count", `${base5}..HEAD`) !== "2") throw new Error("autosquash did not combine the fixup");
     if (git5("rev-parse", "HEAD^{tree}") !== tree || git5("log", "--format=%s").includes("fixup!")) throw new Error("autosquash changed the result tree or retained the fixup");
   });
 
@@ -1854,6 +1856,7 @@ try {
     await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
   });
   await conflictStudioSmoke({ page, check, shot, work });
+  await repositoryWorkspaceSmoke({ page, check, shot, work });
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;

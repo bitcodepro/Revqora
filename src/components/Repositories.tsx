@@ -1,5 +1,8 @@
+import { useLibrary, uniqueRoots, repositoryKey } from "../lib/repositoryLibrary";
+import { FavoriteButton, openLibraryRepository, repositoryLibraryDialog } from "./RepositoryLibrary";
+import { SyncButton } from "./SyncRepositories";
 import { useEffect, useState } from "react";
-import { ArrowDownToLine, Check, CircleAlert, FolderGit2, GitBranch, LayoutGrid, Plus, RefreshCw, Search, X } from "lucide-react";
+import { ArrowDownToLine, ChevronDown, ChevronRight, Check, CircleAlert, FolderGit2, GitBranch, LayoutGrid, Plus, RefreshCw, Search, X } from "lucide-react";
 import { api, errorMessage, newOpId } from "../lib/api";
 import * as A from "../lib/actions";
 import { basename, relativeTime } from "../lib/format";
@@ -15,7 +18,8 @@ let running = false;
 let choosingPull = false;
 
 function activate(root: string) {
-  useRepos.getState().activate(root);
+  if (useRepos.getState().tabs[root]) useRepos.getState().activate(root);
+  else void openLibraryRepository(root);
 }
 
 async function runBatch(roots: string[], kind: "fetch" | "pull") {
@@ -80,8 +84,8 @@ async function runBatch(roots: string[], kind: "fetch" | "pull") {
   }
 }
 
-export function fetchRepositories() {
-  return runBatch(useRepos.getState().order, "fetch");
+export function fetchRepositories(roots = useRepos.getState().order) {
+  return runBatch(roots, "fetch");
 }
 
 export async function pullRepositories(onlyRoots?: string[]) {
@@ -100,7 +104,7 @@ export async function pullRepositories(onlyRoots?: string[]) {
 }
 
 function PullRepositoriesDialog({ tabs, close }: { tabs: RepoTab[]; close: (roots: string[] | null) => void }) {
-  const [selected, setSelected] = useState(() => new Set(tabs.filter((t) => !t.fetchError && !pullBlockReason(t)).map((t) => t.root)));
+  const [selected, setSelected] = useState(() => new Set(tabs.filter((t) => !t?.fetchError && !pullBlockReason(t)).map((t) => t.root)));
   const submit = () => selected.size && close([...selected]);
   return (
     <Modal title="Pull repositories" subtitle={`${selected.size} selected · checked-out branches only`} onClose={() => close(null)} onSubmit={submit}
@@ -108,12 +112,12 @@ function PullRepositoriesDialog({ tabs, close }: { tabs: RepoTab[]; close: (root
       <div className="callout">Fast-forward only. Repositories with local changes, diverged history, failed fetches or an operation in progress need individual attention. Use Fetch all first to check for remote updates.</div>
       <div className="batch-list">
         {tabs.map((t) => {
-          const reason = t.fetchError ? "Fetch failed — fetch this repository first" : pullBlockReason(t);
+          const reason = t?.fetchError ? "Fetch failed — fetch this repository first" : pullBlockReason(t);
           return (
             <label className="batch-row" key={t.root} title={t.root}>
               <input type="checkbox" disabled={!!reason} checked={selected.has(t.root)} onChange={(e) => setSelected((s) => { const n = new Set(s); if (e.target.checked) n.add(t.root); else n.delete(t.root); return n; })} />
-              <div className="grow-text"><b>{t.info?.name ?? basename(t.root)}</b><div className="batch-note">{reason ?? `${t.status?.branch} · fast-forward`}</div></div>
-              <AheadBehind ahead={t.status?.ahead ?? 0} behind={t.status?.behind ?? 0} />
+              <div className="grow-text"><b>{t?.info?.name ?? basename(t.root)}</b><div className="batch-note">{reason ?? `${t?.status?.branch} · fast-forward`}</div></div>
+              <AheadBehind ahead={t?.status?.ahead ?? 0} behind={t?.status?.behind ?? 0} />
             </label>
           );
         })}
@@ -131,12 +135,13 @@ function RepoState({ tab }: { tab: RepoTab }) {
   return <span className="faint">Clean</span>;
 }
 
-function SyncButtons() {
+function SyncButtons({ roots, scoped = false }: { roots: string[]; scoped?: boolean }) {
   const busy = useUi((s) => s.busy.length > 0);
   return (
     <div className="repository-sync">
-      <button className="btn sm" disabled={busy} onClick={() => void fetchRepositories()}><RefreshCw size={13} /> Fetch all</button>
-      <button className="btn sm" disabled={busy} onClick={() => void pullRepositories()}><ArrowDownToLine size={13} /> Pull all</button>
+      <SyncButton roots={roots} label={scoped ? "Sync filtered" : "Sync all"} />
+      <button className="btn sm" disabled={busy || !roots.length} onClick={() => void fetchRepositories(roots)}><RefreshCw size={13} /> {scoped ? "Fetch filtered" : "Fetch all"}</button>
+      <button className="btn sm" disabled={busy || !roots.length} onClick={() => void pullRepositories(roots)}><ArrowDownToLine size={13} /> {scoped ? "Pull filtered" : "Pull all"}</button>
     </div>
   );
 }
@@ -148,36 +153,48 @@ export function RepositorySidebar() {
   const overview = useUi((s) => s.repositoryOverview);
   const [query, setQuery] = useState("");
   const [updatesOnly, setUpdatesOnly] = useState(false);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const library = useLibrary();
+  const [groupId, setGroupId] = useState("");
   const { mode, layout: { repositoriesWidth: width }, setLayout: set } = useWorkspaceLayout();
   const [w, setW] = useState(width);
   useEffect(() => setW(width), [mode, width]);
   const count = order.filter((r) => (tabs[r]?.status?.behind ?? 0) > 0).length;
-  const visible = order.filter((r) => (r + " " + tabs[r]?.info?.name).toLowerCase().includes(query.trim().toLowerCase()) && (!updatesOnly || !!tabs[r]?.status?.behind));
+  const candidates = uniqueRoots([...order, ...library.favorites, ...library.groups.flatMap((g) => g.roots)]);
+  const favorite = (r: string) => library.favorites.some((p) => repositoryKey(p) === repositoryKey(r));
+  const groupFilter = library.groups.find((g) => g.id === groupId);
+  const visible = candidates.filter((r) => (r + " " + tabs[r]?.info?.name).toLowerCase().includes(query.trim().toLowerCase()) && (!updatesOnly || !!tabs[r]?.status?.behind) && (!favoritesOnly || favorite(r)) && (!groupFilter || groupFilter.roots.some((p) => repositoryKey(p) === repositoryKey(r))));
+  const sections = [...library.groups.map((g) => ({ ...g, roots: visible.filter((r) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r))) })), { id: "ungrouped", name: "Ungrouped", collapsed: false, roots: visible.filter((r) => !library.groups.some((g) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r)))) }];
   return (
     <div className="repository-sidebar" style={{ width: w }}>
       <header><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{order.length}</span><div className="spacer" /><button className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
       <div className="repository-filter input-wrap"><Search size={13} /><input className="input sm" placeholder="Find repository…" aria-label="Find repository" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
-      <SyncButtons />
+      {library.groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupFilter?.id ?? ""} onChange={(e) => setGroupId(e.target.value)}><option value="">All groups</option>{library.groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select>}
+      <SyncButtons roots={visible.filter((r) => !!tabs[r])} scoped={!!query.trim() || updatesOnly || favoritesOnly || !!groupFilter} />
+      <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites{favoritesOnly ? " · Show all" : ""}</button>
       <button className={`repository-overview-link ${overview ? "active" : ""}`} onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={14} /> All repositories</button>
       <div className="repository-list" role="list" aria-label="Open repositories">
-        {visible.map((r) => {
+        {sections.map((group) => <div key={group.id}>{library.groups.length > 0 && <button type="button" className="repository-group" aria-expanded={!group.collapsed} onClick={() => group.id !== "ungrouped" && library.collapse(group.id)}>{group.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{group.name}<span className="faint">{group.roots.length}</span></button>}{(!group.collapsed || !!query) && group.roots.map((r) => {
           const t = tabs[r];
           return (
             <div role="listitem" className={`repository-item ${r === active && !overview ? "active" : ""}`} key={r}>
-              <button className="repository-select" onClick={() => activate(r)} title={`${r}\n${t.info?.head.branch ?? "Detached HEAD"}${t.fetchError ? "\n" + t.fetchError : ""}`}>
+              <FavoriteButton root={r} />
+              <button className="repository-select" onClick={() => activate(r)} title={`${r}\n${t ? t.info?.head.branch ?? "Detached HEAD" : "Closed · click to open"}${t?.fetchError ? "\n" + t.fetchError : ""}`}>
                 <FolderGit2 size={14} />
-                <span className="repository-label">{t.info?.name ?? basename(r)}</span>
-                <AheadBehind ahead={t.status?.ahead ?? 0} behind={t.status?.behind ?? 0} />
-                {!!t.status?.files.length && <span className="repository-dirty" aria-label="Local changes" />}
-                {!!t.fetchError && <CircleAlert size={12} className="amber" />}
+                <span className="repository-label">{t?.info?.name ?? basename(r)}</span>
+                {!t && <span className="faint">Closed</span>}
+                <AheadBehind ahead={t?.status?.ahead ?? 0} behind={t?.status?.behind ?? 0} />
+                {!!t?.status?.files.length && <span className="repository-dirty" aria-label="Local changes" />}
+                {!!t?.fetchError && <CircleAlert size={12} className="amber" />}
               </button>
-              <button className="repository-close icon-btn sm" title={`Close ${t.info?.name ?? basename(r)}`} aria-label={`Close ${t.info?.name ?? basename(r)}`} onClick={() => useRepos.getState().close(r)}><X size={12} /></button>
+              {t && <button className="repository-close icon-btn sm" title={`Close ${t?.info?.name ?? basename(r)}`} aria-label={`Close ${t?.info?.name ?? basename(r)}`} onClick={() => useRepos.getState().close(r)}><X size={12} /></button>}
             </div>
           );
-        })}
+        })}</div>)}
         {!visible.length && <div className="cg-empty">No matching repositories</div>}
       </div>
       <button className={`repository-updates ${updatesOnly ? "active" : ""}`} aria-pressed={updatesOnly} onClick={() => setUpdatesOnly(!updatesOnly)}>{count} with incoming commits{updatesOnly ? " · Show all" : ""}</button>
+      <button type="button" className="btn sm repository-add" onClick={() => void repositoryLibraryDialog()}>Manage library…</button>
       <button className="btn sm repository-add" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open repositories…</button>
       <Splitter dir="v" style={{ right: -3, left: "auto" }} onDrag={(d) => setW((v) => Math.max(180, Math.min(360, v + d)))} onEnd={() => set({ repositoriesWidth: w })} />
     </div>
@@ -193,7 +210,7 @@ export function RepositoryOverview() {
   const incoming = order.filter((r) => !!tabs[r]?.status?.behind).length;
   return (
     <div className="repository-overview">
-      <header><div><h2>Repositories</h2><span className="faint">{order.length} open · {incoming} with incoming commits</span></div><div className="spacer" /><SyncButtons /><button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button></header>
+      <header><div><h2>Repositories</h2><span className="faint">{order.length} open · {incoming} with incoming commits</span></div><div className="spacer" /><SyncButtons roots={visible} scoped={!!query.trim()} /><button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button></header>
       <div className="repository-overview-search input-wrap"><Search size={14} /><input className="input" placeholder="Find repository…" aria-label="Find repository in overview" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       <div className="repository-table-scroll">
         <table className="repository-table">
@@ -201,12 +218,12 @@ export function RepositoryOverview() {
           <tbody>
             {visible.map((r) => { const t = tabs[r]; return (
               <tr key={r}>
-                <td><button className="repository-name" title={r} onClick={() => activate(r)}><FolderGit2 size={15} />{t.info?.name ?? basename(r)}</button></td>
-                <td title={t.info?.head.branch ?? ""}><GitBranch size={12} /> {t.info?.head.branch ?? (t.info?.head.detached ? "Detached HEAD" : "—")}</td>
+                <td><button className="repository-name" title={r} onClick={() => activate(r)}><FolderGit2 size={15} />{t?.info?.name ?? basename(r)}</button></td>
+                <td title={t?.info?.head.branch ?? ""}><GitBranch size={12} /> {t?.info?.head.branch ?? (t?.info?.head.detached ? "Detached HEAD" : "—")}</td>
                 <td>{t.status ? <AheadBehind ahead={t.status.ahead} behind={t.status.behind} /> : "…"}</td>
                 <td><RepoState tab={t} /></td>
                 <td className="faint">{t.lastFetchedAt ? relativeTime(t.lastFetchedAt / 1000) : "Not fetched this session"}</td>
-                <td><button className="btn sm" disabled={busy || !!t.fetchError || !!pullBlockReason(t)} onClick={() => void pullRepositories([r])}>Pull</button></td>
+                <td><button className="btn sm" disabled={busy || !!t?.fetchError || !!pullBlockReason(t)} onClick={() => void pullRepositories([r])}>Pull</button></td>
               </tr>
             ); })}
           </tbody>
