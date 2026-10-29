@@ -9,7 +9,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProfile, launch } from "./ui-driver.mjs";
+import { createProfile, launch, withViewport } from "./ui-driver.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -102,6 +102,12 @@ try {
     await page.waitForSelector(".modal:has-text('Welcome to Revqora')", { timeout: 20000 });
     await page.click(".modal button:has-text('Skip')");
     await page.waitForSelector(".modal", { state: "detached" });
+    // Fixtures deliberately change server refs with the CLI between reviews.
+    // An unrelated timer fetch must not invalidate a prepared deletion mid-test.
+    // Auto-fetch scheduling itself is covered by the frontend unit tests.
+    await page.getByTitle("Settings", { exact: true }).click();
+    await page.locator(".modal label:has-text('Auto fetch') + .seg").getByRole("button", { name:"Off", exact:true }).click();
+    await page.locator(".modal").getByRole("button", { name:"Done", exact:true }).click();
   });
 
   await check("a newer release shows the update chip, which can be skipped", async () => {
@@ -486,9 +492,8 @@ try {
     await page.locator(".ctx-item", { hasText: "Merge hotfix/greeting into main" }).click();
     await page.click(".modal button:has-text('Start merge')");
     await page.waitForSelector(".op-banner");
-    const previousViewport = page.viewportSize();
-    await page.setViewportSize({ width: 1028, height: 760 });
-    const banner = await page.locator(".op-banner").evaluate((element) => {
+    await withViewport(page, { width: 1028, height: 760 }, async () => {
+      const banner = await page.locator(".op-banner").evaluate((element) => {
       const bounds = element.getBoundingClientRect();
       return {
         titleWidth: element.querySelector(".op-title").getBoundingClientRect().width,
@@ -498,9 +503,9 @@ try {
         }).map((button) => button.textContent.trim()),
       };
     });
-    if (banner.clipped.length || banner.titleWidth < 160) throw new Error(`narrow operation banner clips controls or hides its title: ${JSON.stringify(banner)}`);
-    await shot("05-narrow-operation-banner");
-    if (previousViewport) await page.setViewportSize(previousViewport);
+      if (banner.clipped.length || banner.titleWidth < 160) throw new Error(`narrow operation banner clips controls or hides its title: ${JSON.stringify(banner)}`);
+      await shot("05-narrow-operation-banner");
+    });
     if (git("rev-parse", "HEAD") !== before) throw new Error("HEAD moved before confirmation");
     await shot("05-merge-conflict");
   });

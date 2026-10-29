@@ -7,6 +7,20 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 
+/** CDP-attached native pages have no Playwright viewport until first emulation.
+ * Always restore the actual initial client area, even when viewportSize() is null.
+ * Otherwise a narrow emulated page remains inside a much wider native window.
+ */
+export async function withViewport(page, size, run) {
+  const previous = page.viewportSize() ?? await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  try {
+    await page.setViewportSize(size);
+    return await run();
+  } finally {
+    await page.setViewportSize(previous);
+  }
+}
+
 export function createProfile(prefix = "revqora-webview-") {
   const base = path.resolve(process.env.REVQORA_TEST_TMP || os.tmpdir());
   fs.mkdirSync(base, { recursive: true });
