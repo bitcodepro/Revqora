@@ -9,7 +9,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProfile, launch, withViewport } from "./ui-driver.mjs";
+import { createProfile, launch, withViewport, openSubmenu } from "./ui-driver.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -1732,9 +1732,8 @@ try {
     // Match its text for identity, then use the row's visible graph cell to
     // open the commit menu without bypassing Playwright's actionability checks.
     const commit = page.locator(".graph-scroll .grow").filter({ has: page.getByText(subject, { exact: true }) });
-    await commit.locator(".g-graph").click({ button: "right" });
     const item = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
-    await until(async () => { if (await item.isVisible()) return true; await page.mouse.move(8, 8); await page.locator(".ctx-item", { hasText: /^Edit history$/ }).hover(); return item.isVisible(); }, "Studio menu did not open", 10000);
+    await openSubmenu(page, () => commit.locator(".g-graph").click({ button: "right", timeout: 1500 }), page.locator(".ctx-item", { hasText: /^Edit history$/ }), item);
     await item.click(); await page.waitForSelector(".rebase-row");
     const firstOid = (await page.locator(".rebase-row").first().locator(".mono").first().innerText()).trim();
     if (studioGit("rev-parse", "--verify", `${firstOid}^{commit}`) !== expectedOid) throw new Error("Studio opened a plan for the wrong commit");

@@ -21,6 +21,23 @@ export async function withViewport(page, size, run) {
   }
 }
 
+/** Native blur/resize can close a context menu while its submenu is opening. */
+export async function openSubmenu(page, openRoot, parent, child) {
+  const deadline = Date.now() + 15000;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      if (await child.isVisible()) return;
+      if (!await parent.isVisible()) await openRoot();
+      await page.mouse.move(8, 8);
+      await parent.hover({ timeout: 1500 });
+      await child.waitFor({ state: "visible", timeout: 1500 });
+      return;
+    } catch (e) { lastError = e; await page.waitForTimeout(120); }
+  }
+  throw new Error(`Context submenu did not open: ${lastError?.message ?? "not visible"}`);
+}
+
 export function createProfile(prefix = "revqora-webview-") {
   const base = path.resolve(process.env.REVQORA_TEST_TMP || os.tmpdir());
   fs.mkdirSync(base, { recursive: true });
