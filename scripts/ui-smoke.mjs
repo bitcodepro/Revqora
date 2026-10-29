@@ -1856,6 +1856,23 @@ try {
     await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
   });
   await conflictStudioSmoke({ page, check, shot, work });
+  // Earlier scenarios relaunch with an explicit repository argument. App reload
+  // intentionally reapplies that argument, overriding the saved active tab.
+  // Replay the UI preferences in a separate fixture profile without CLI requests.
+  // The crash-test driver kills WebView2, so recent localStorage writes are not
+  // guaranteed to have reached disk when the previous process is stopped.
+  const workspaceActive = await page.locator(".topbar .repo-current > b").innerText();
+  const workspacePreferences = await page.evaluate(() => Object.fromEntries(
+    ["revqora.settings", "revqora.repositories"].map((key) => [key, localStorage.getItem(key)]),
+  ));
+  await close();
+  ({ page, close, child } = await launch({ exe, args: [], profile: path.join(work, "workspace-profile"), port: 0 }));
+  attachPage();
+  // Wait for the empty startup's own settings write before installing fixtures.
+  await page.waitForFunction(() => localStorage.getItem("revqora.settings") !== null);
+  await page.evaluate((preferences) => { for (const [key, value] of Object.entries(preferences)) if (value !== null) localStorage.setItem(key, value); }, workspacePreferences);
+  await page.reload();
+  await page.locator(".topbar .repo-current > b").filter({ hasText: workspaceActive }).waitFor();
   await repositoryWorkspaceSmoke({ page, check, shot, work });
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
