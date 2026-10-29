@@ -70,6 +70,8 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  branchManagerSnapshot: (repo: string, base: string | null) => call<import("./types").BranchManagerSnapshot>("branch_manager_snapshot", { repo, base }),
+  branchManagerCompare: (repo: string, base: string, tip: string) => call<{ ahead: number; behind: number }>("branch_manager_compare", { repo, base, tip }),
   syncPrepare: (repo: string) => call<SyncPlan>("sync_prepare", { repo }),
   syncExecute: (repo: string, plan: SyncPlan, receive: boolean, send: boolean) => call<SyncResult>("sync_execute", { repo, plan, receive, send, expectedState: plan.stateToken }),
   validationStart: (repo: string, command: string, expectedState: string, timeoutSeconds: number) => call<ValidationReport>("validation_start", { repo, command, expectedState, timeoutSeconds }),
@@ -149,8 +151,8 @@ export const api = {
   branchCreate: (repo: string, name: string, start: string | null, checkout: boolean, expectedState?: string | null) => call<void>("branch_create", { repo, name, start, checkout, expectedState }),
   branchRename: (repo: string, old: string, newName: string, expectedState?: string | null) => call<void>("branch_rename", { repo, old, new: newName, expectedState }),
   branchDeletePlan: (repo: string, name: string, base: string | undefined, target: RemoteBranchTarget | null, savedLocalOid?: string, remoteOnly = false) => call<DeletionPlan>("branch_delete_plan", { repo, name, base, target, savedLocalOid, remoteOnly }),
-  branchDeleteReviewed: (repo: string, review: DeletionProof, includeRemote: boolean, force: boolean, expectedState: string) => call<DeletionResult>("branch_delete_reviewed", { repo, review, includeRemote, force, expectedState }),
-  branchDeleteRemoteReviewed: (repo: string, review: DeletionProof, force: boolean, opId: string, expectedState?: string) => call<DeletionResult>("branch_delete_remote_reviewed", { repo, review, force, opId, expectedState }),
+  branchDeleteReviewed: (repo: string, review: DeletionProof, includeRemote: boolean, force: boolean, expectedState: string, protectionRules?: string[]) => call<DeletionResult>("branch_delete_reviewed", { repo, review, includeRemote, force, expectedState, protectionRules }),
+  branchDeleteRemoteReviewed: (repo: string, review: DeletionProof, force: boolean, opId: string, expectedState?: string, protectionRules?: string[]) => call<DeletionResult>("branch_delete_remote_reviewed", { repo, review, force, opId, expectedState, protectionRules }),
   branchDeleteRemoteTarget: (repo: string, trackingRef: string) => call<RemoteBranchTarget>("branch_delete_remote_target", { repo, trackingRef }),
   branchDeleteTargets: (repo: string, name: string) => call<RemoteBranchTarget[]>("branch_delete_targets", { repo, name }),
   branchDelete: (repo: string, name: string, force: boolean, target: RemoteBranchTarget | null = null, expectedState?: string | null) => call<void>("branch_delete", { repo, name, force, target, expectedState }),

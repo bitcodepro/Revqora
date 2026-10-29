@@ -33,6 +33,35 @@ fn excluded(spec: &str, source: &str) -> bool {
     spec.strip_prefix('^').is_some_and(|pattern| substitute(pattern, pattern, source).is_some())
 }
 
+/// Invert fetch mappings in batches, including negative refspecs and shared aliases.
+/// This is inventory metadata only; destructive operations still revalidate their target.
+pub fn tracking_sources<'a>(repo: &Path, refs: impl Iterator<Item = &'a str>) -> GitResult<std::collections::BTreeMap<String, BTreeSet<(String, String)>>> {
+    let refs: Vec<&str> = refs.collect();
+    let mut result = std::collections::BTreeMap::<String, BTreeSet<(String, String)>>::new();
+    if refs.is_empty() {
+        return Ok(result);
+    }
+    for remote in runner::run(repo, ["remote"])?.lines() {
+        let out = runner::exec(repo, ["config", "--get-all", &format!("remote.{remote}.fetch")])?;
+        if out.code != 0 && out.code != 1 {
+            return Err(runner::to_error("git config", &out));
+        }
+        let text = out.text();
+        for tracking in &refs {
+            for spec in text.lines() {
+                if let Some((source, dest)) = spec.trim_start_matches('+').split_once(':') {
+                    if let Some(source) = substitute(dest, source, tracking) {
+                        if source.starts_with("refs/heads/") && !text.lines().any(|s| excluded(s, &source)) {
+                            result.entry((*tracking).to_owned()).or_default().insert((remote.into(), source));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
 pub fn targets(repo: &Path, name: &str) -> GitResult<Vec<RemoteBranchTarget>> {
     targets_for(repo, name, None)
 }

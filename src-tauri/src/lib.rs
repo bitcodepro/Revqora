@@ -1,4 +1,12 @@
 #[tauri::command]
+async fn branch_manager_snapshot(repo: String, base: Option<String>) -> git::runner::GitResult<git::branch_manager::Snapshot> {
+    blocking(move || git::branch_manager::snapshot(&p(&repo), base.as_deref())).await
+}
+#[tauri::command]
+async fn branch_manager_compare(repo: String, base: String, tip: String) -> git::runner::GitResult<git::branch_manager::Distance> {
+    blocking(move || git::branch_manager::compare(&p(&repo), &base, &tip)).await
+}
+#[tauri::command]
 async fn sync_prepare(repo: String, expected_state: Option<String>, app: AppHandle) -> git::runner::GitResult<git::sync::SyncPlan> {
     mutating(repo.clone(), expected_state, app, "sync_prepare", None, move || git::sync::prepare(&p(&repo))).await
 }
@@ -591,10 +599,11 @@ async fn branch_delete_reviewed(
     review: DeletionProof,
     include_remote: bool,
     force: bool,
+    protection_rules: Option<Vec<String>>,
 ) -> GitResult<DeletionResult> {
     let expected = expected_state.clone();
     mutating(repo.clone(), expected_state, app.clone(), "branch_delete_reviewed", None, move || {
-        branch_review::delete_local(&p(&repo), &review, include_remote, force, expected.as_deref())
+        branch_review::delete_local(&p(&repo), &review, include_remote, force, expected.as_deref(), protection_rules.as_deref())
     })
     .await
 }
@@ -607,10 +616,11 @@ async fn branch_delete_remote_reviewed(
     review: DeletionProof,
     force: bool,
     op_id: String,
+    protection_rules: Option<Vec<String>>,
 ) -> GitResult<DeletionResult> {
     let expected = expected_state.clone();
     mutating(repo.clone(), expected_state, app.clone(), "branch_delete_remote_reviewed", Some(op_id.clone()), move || {
-        branch_review::delete_remote(&p(&repo), &review, force, expected.as_deref(), progress(&app, &op_id))
+        branch_review::delete_remote(&p(&repo), &review, force, expected.as_deref(), protection_rules.as_deref(), progress(&app, &op_id))
     })
     .await
 }
@@ -1569,6 +1579,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            branch_manager_snapshot,
+            branch_manager_compare,
             sync_prepare,
             sync_execute,
             operation_log_health,

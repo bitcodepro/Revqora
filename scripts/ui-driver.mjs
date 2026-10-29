@@ -7,6 +7,40 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 
+/** CDP-attached native pages have no Playwright viewport until first emulation.
+ * Always restore the actual initial client area, even when viewportSize() is null.
+ * Otherwise a narrow emulated page remains inside a much wider native window.
+ */
+export async function withViewport(page, size, run) {
+  const previous = await page.evaluate(() => ({ width:innerWidth, height:innerHeight, deviceScaleFactor:devicePixelRatio, screenWidth:screen.width, screenHeight:screen.height }));
+  try {
+    await page.setViewportSize(size);
+    return await run();
+  } finally {
+    await page.setViewportSize({ width:previous.width, height:previous.height });
+    const session = await page.context().newCDPSession(page);
+    try { await session.send("Emulation.setDeviceMetricsOverride", { ...previous, mobile:false }); }
+    finally { await session.detach(); }
+  }
+}
+
+/** Native blur/resize can close a context menu while its submenu is opening. */
+export async function openSubmenu(page, openRoot, parent, child) {
+  const deadline = Date.now() + 15000;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      if (await child.isVisible()) return;
+      if (!await parent.isVisible()) await openRoot();
+      await page.mouse.move(8, 8);
+      await parent.hover({ timeout: 1500 });
+      await child.waitFor({ state: "visible", timeout: 1500 });
+      return;
+    } catch (e) { lastError = e; await page.waitForTimeout(120); }
+  }
+  throw new Error(`Context submenu did not open: ${lastError?.message ?? "not visible"}`);
+}
+
 export function createProfile(prefix = "revqora-webview-") {
   const base = path.resolve(process.env.REVQORA_TEST_TMP || os.tmpdir());
   fs.mkdirSync(base, { recursive: true });

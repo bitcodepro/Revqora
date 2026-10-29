@@ -1,4 +1,5 @@
 pub mod branch_deletion;
+pub mod branch_protection;
 pub mod branch_review;
 pub mod commit;
 pub mod conflicts;
@@ -28,3 +29,6 @@ pub mod workspace_files;
 pub mod rebase_studio;
 pub mod sync;
 pub mod validation;
+
+pub mod branch_manager;
+pub mod history;

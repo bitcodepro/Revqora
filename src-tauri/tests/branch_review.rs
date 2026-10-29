@@ -7,6 +7,65 @@ struct Fixture {
     temp: tempfile::TempDir,
     root: PathBuf,
 }
+
+#[test]
+fn manager_policy_blocks_combined_protected_server_deletion_before_either_mutation() {
+    for tracking in ["main", "innocent"] {
+        let f = Fixture::new();
+        let server = f.bare("protected-server.git");
+        f.git(&["remote", "add", "origin", server.to_str().unwrap()]);
+        f.git(&["push", "-q", "origin", "main:refs/heads/main"]);
+        f.git(&["config", "remote.origin.fetch", &format!("+refs/heads/main:refs/remotes/origin/{tracking}")]);
+        f.git(&["fetch", "-q", "origin"]);
+        f.git(&["config", "branch.topic.remote", "origin"]);
+        f.git(&["config", "branch.topic.merge", "refs/heads/main"]);
+        let target = branch_deletion::targets(&f.root, "topic").unwrap().remove(0);
+        let plan = branch_review::plan(&f.root, "topic", Some("refs/heads/main"), Some(target.clone()), None, false).unwrap();
+        let refs = f.git(&["show-ref"]);
+        let index = fs::read(f.root.join(".git/index")).unwrap();
+        let rules = vec!["main".to_owned()];
+        // Even force consent cannot bypass the manager policy. No local half,
+        // remote branch, recovery pin or index entry may change on rejection.
+        let error = branch_review::delete_local(&f.root, &plan.proof, true, true, None, Some(&rules)).err().unwrap();
+        assert_eq!(error.kind, "protected-branch");
+        let local_rules = vec!["topic".to_owned()];
+        assert_eq!(branch_review::delete_local(&f.root, &plan.proof, false, true, None, Some(&local_rules)).err().unwrap().kind, "protected-branch");
+        assert!(f.exists());
+        assert_eq!(f.git(&["show-ref"]), refs);
+        assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+        assert_eq!(runner::run(&server, ["rev-parse", "refs/heads/main"]).unwrap().trim(), target.oid);
+        // The same protected upstream must not prevent a local-only cleanup.
+        branch_review::delete_local(&f.root, &plan.proof, false, false, None, Some(&rules)).unwrap();
+        assert!(!f.exists());
+        assert_eq!(runner::run(&server, ["rev-parse", "refs/heads/main"]).unwrap().trim(), target.oid);
+    }
+}
+
+#[test]
+fn manager_policy_checks_refreshed_remote_proofs_and_allows_explicit_rule_changes() {
+    let f = Fixture::new();
+    let server = f.bare("refreshed-policy.git");
+    f.git(&["remote", "add", "origin", server.to_str().unwrap()]);
+    f.git(&["push", "-q", "origin", "main:refs/heads/main"]);
+    f.git(&["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/innocent"]);
+    f.git(&["fetch", "-q", "origin"]);
+    let target = branch_deletion::remote_target(&f.root, "refs/remotes/origin/innocent").unwrap();
+    let next = f.git(&["commit-tree", &f.git(&["rev-parse", "HEAD^{tree}"]), "-p", "HEAD", "-m", "Updated protected main"]);
+    f.git(&["push", "-q", "origin", &format!("{next}:refs/heads/main")]);
+    let refreshed = branch_deletion::refresh_remote(&f.root, &target, |_| {}).unwrap();
+    let plan = branch_review::plan(&f.root, "main", Some("refs/heads/main"), Some(refreshed.target), None, true).unwrap();
+    let refs = f.git(&["show-ref"]);
+    let index = fs::read(f.root.join(".git/index")).unwrap();
+    let rules = vec!["main".to_owned()];
+    assert_eq!(branch_review::delete_remote(&f.root, &plan.proof, true, None, Some(&rules), |_| {}).err().unwrap().kind, "protected-branch");
+    assert_eq!(f.git(&["show-ref"]), refs);
+    assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+    assert_eq!(runner::run(&server, ["rev-parse", "refs/heads/main"]).unwrap().trim(), next);
+    // The protection is a configurable client policy, not an unconditional ban.
+    branch_review::delete_remote(&f.root, &plan.proof, true, None, Some(&[]), |_| {}).unwrap();
+    assert!(!runner::exec(&server, ["show-ref", "--verify", "--quiet", "refs/heads/main"]).unwrap().ok());
+    assert_eq!(f.git(&["rev-parse", "main"]), f.git(&["rev-parse", "HEAD"]));
+}
 impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
@@ -56,7 +115,7 @@ impl Fixture {
             "branch_delete_reviewed",
             Some(&plan.state_token),
             |_, _| {},
-            || branch_review::delete_local(&self.root, &plan.proof, remote, force, Some(&plan.state_token)),
+            || branch_review::delete_local(&self.root, &plan.proof, remote, force, Some(&plan.state_token), None),
         )
     }
     fn bare(&self, name: &str) -> PathBuf {
@@ -127,12 +186,12 @@ fn force_cannot_override_a_changed_base_or_local_tip() {
     let f = Fixture::new();
     let plan = f.plan();
     f.git(&["commit", "--allow-empty", "-qm", "Advance comparison"]);
-    assert!(branch_review::delete_local(&f.root, &plan.proof, false, true, None).is_err());
+    assert!(branch_review::delete_local(&f.root, &plan.proof, false, true, None, None).is_err());
     assert!(f.exists());
     let plan = f.plan();
     let next = f.git(&["commit-tree", &f.git(&["rev-parse", "topic^{tree}"]), "-p", "topic", "-m", "External topic advance"]);
     f.git(&["update-ref", "refs/heads/topic", &next]);
-    assert!(branch_review::delete_local(&f.root, &plan.proof, false, true, None).is_err());
+    assert!(branch_review::delete_local(&f.root, &plan.proof, false, true, None, None).is_err());
     assert_eq!(f.git(&["rev-parse", "topic"]), next);
 }
 
@@ -178,15 +237,15 @@ fn local_remote_divergence_counts_and_server_lease_survive_partial_failure() {
     .trim()
     .to_owned();
     runner::run(&server, ["update-ref", "refs/heads/topic", &next]).unwrap();
-    let failed = branch_review::delete_remote(&f.root, &plan.proof, true, None, |_| {});
+    let failed = branch_review::delete_remote(&f.root, &plan.proof, true, None, None, |_| {});
     assert_eq!(failed.err().unwrap().kind, "remote-changed");
     assert_eq!(runner::run(&server, ["rev-parse", "topic"]).unwrap().trim(), next);
     let refreshed = branch_deletion::refresh_remote(&f.root, &target, |_| {}).unwrap();
     let plan = branch_review::plan(&f.root, "topic", Some("refs/heads/main"), Some(refreshed.target), Some(&plan.proof.local_oid), false).unwrap();
     assert_eq!((plan.local_only, plan.remote_only), (Some(0), Some(1)));
     assert_eq!(plan.remote_unmerged, Some(1));
-    assert!(branch_review::delete_remote(&f.root, &plan.proof, false, None, |_| {}).is_err());
-    branch_review::delete_remote(&f.root, &plan.proof, true, None, |_| {}).unwrap();
+    assert!(branch_review::delete_remote(&f.root, &plan.proof, false, None, None, |_| {}).is_err());
+    branch_review::delete_remote(&f.root, &plan.proof, true, None, None, |_| {}).unwrap();
     assert!(!runner::exec(&server, ["show-ref", "--verify", "--quiet", "refs/heads/topic"]).unwrap().ok());
 }
 
@@ -227,7 +286,7 @@ fn distinct_push_server_tip_is_backed_up_without_rewriting_fetch_tracking_ref() 
     let plan = branch_review::plan(&f.root, "topic", Some("refs/heads/main"), Some(fresh.target), None, false).unwrap();
     assert_eq!((plan.local_only, plan.remote_only), (Some(0), Some(1)));
     let local = f.remove(&plan, true, true).unwrap();
-    let remote = branch_review::delete_remote(&f.root, &plan.proof, true, None, |_| {}).unwrap();
+    let remote = branch_review::delete_remote(&f.root, &plan.proof, true, None, None, |_| {}).unwrap();
     recovery::delete(&f.root, &local.checkpoint.id).unwrap();
     f.git(&["reflog", "expire", "--expire=now", "--all"]);
     f.git(&["gc", "--prune=now"]);
@@ -258,7 +317,7 @@ fn remote_only_deletion_keeps_checked_out_local_branch_and_dirty_files() {
         "branch_delete_remote_reviewed",
         Some(&plan.state_token),
         |_, _| {},
-        || branch_review::delete_remote(&f.root, &plan.proof, false, Some(&plan.state_token), |_| {}),
+        || branch_review::delete_remote(&f.root, &plan.proof, false, Some(&plan.state_token), None, |_| {}),
     )
     .unwrap();
     assert_eq!(f.git(&["rev-parse", "main"]), tip);
@@ -282,12 +341,12 @@ fn remote_only_without_local_branch_requires_force_and_retains_server_tip() {
     assert!(!plan.proof.local_present);
     assert_eq!((plan.local_only, plan.remote_only), (None, None));
     assert_eq!(plan.remote_unmerged, Some(1));
-    assert_eq!(branch_review::delete_remote(&f.root, &plan.proof, false, None, |_| {}).err().unwrap().kind, "not-merged");
+    assert_eq!(branch_review::delete_remote(&f.root, &plan.proof, false, None, None, |_| {}).err().unwrap().kind, "not-merged");
     // Creating a local ref after review must not silently change the shown comparison.
     f.git(&["branch", "topic"]);
-    assert_eq!(branch_review::delete_remote(&f.root, &plan.proof, true, None, |_| {}).err().unwrap().kind, "stale-selection");
+    assert_eq!(branch_review::delete_remote(&f.root, &plan.proof, true, None, None, |_| {}).err().unwrap().kind, "stale-selection");
     f.git(&["branch", "-D", "topic"]);
-    let result = branch_review::delete_remote(&f.root, &plan.proof, true, None, |_| {}).unwrap();
+    let result = branch_review::delete_remote(&f.root, &plan.proof, true, None, None, |_| {}).unwrap();
     assert!(!f.exists());
     let cp = recovery::detail(&f.root, &result.checkpoint.id).unwrap();
     let slot = cp.refs.iter().position(|r| r.name == "push/origin/topic" && r.oid == tip).unwrap();
@@ -309,10 +368,10 @@ fn direct_remote_resolution_uses_fetch_mapping_and_still_leases_the_server() {
     // Force consent never removes the server-SHA lease.
     let next = f.git(&["commit-tree", &f.git(&["rev-parse", "HEAD^{tree}"]), "-p", "HEAD", "-m", "New server history"]);
     f.git(&["push", "-q", "origin", &format!("{next}:refs/heads/published")]);
-    assert_eq!(branch_review::delete_remote(&f.root, &plan.proof, true, None, |_| {}).err().unwrap().kind, "remote-changed");
+    assert_eq!(branch_review::delete_remote(&f.root, &plan.proof, true, None, None, |_| {}).err().unwrap().kind, "remote-changed");
     assert_eq!(runner::run(&server, ["rev-parse", "published"]).unwrap().trim(), next);
     let refreshed = branch_deletion::refresh_remote(&f.root, &target, |_| {}).unwrap();
     let plan = branch_review::plan(&f.root, "published", None, Some(refreshed.target), None, true).unwrap();
-    branch_review::delete_remote(&f.root, &plan.proof, true, None, |_| {}).unwrap();
+    branch_review::delete_remote(&f.root, &plan.proof, true, None, None, |_| {}).unwrap();
     assert!(!runner::exec(&server, ["show-ref", "--verify", "--quiet", "refs/heads/published"]).unwrap().ok());
 }

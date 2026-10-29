@@ -10,23 +10,7 @@ use super::recovery::{self, Summary};
 use super::runner::{self, GitError, GitResult};
 use super::{repo, status};
 
-// Safety decisions and transport must see the same physical commit graph.
-// A lease checks a ref's old SHA, but does not itself prohibit rewriting history.
-const ACTUAL_HISTORY: [(&str, &str); 2] = [("GIT_NO_REPLACE_OBJECTS", "1"), ("GIT_GRAFT_FILE", if cfg!(windows) { "NUL" } else { "/dev/null" })];
-fn run<I, S>(root: &Path, args: I) -> GitResult<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<std::ffi::OsStr>,
-{
-    runner::run_env(root, args, &ACTUAL_HISTORY, None)
-}
-fn exec<I, S>(root: &Path, args: I) -> GitResult<runner::Output>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<std::ffi::OsStr>,
-{
-    runner::exec_full(root, args, &ACTUAL_HISTORY, None)
-}
+use super::history::{exec, run};
 fn require_actual_history(root: &Path) -> GitResult<()> {
     // Query the actual configured path before our per-command null override.
     let grafts = runner::run(root, ["rev-parse", "--git-path", "info/grafts"])?;

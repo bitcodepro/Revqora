@@ -209,7 +209,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
 
   return (
     <aside className="sidebar">
-      <div className="branches-heading"><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={() => setLayout({ branchesOpen: false })}><PanelLeftClose size={14} /></button></div>
+      <div className="branches-heading"><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" aria-label="Branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root: tab.root })}><GitBranch size={14} /></button><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={() => setLayout({ branchesOpen: false })}><PanelLeftClose size={14} /></button></div>
       <div className="sb-repo">
         <div className="input-wrap">
           <Search size={13} />

@@ -1,4 +1,5 @@
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
+import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manager-smoke.mjs";
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
 //   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
@@ -8,7 +9,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProfile, launch } from "./ui-driver.mjs";
+import { createProfile, launch, withViewport, openSubmenu } from "./ui-driver.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -101,6 +102,12 @@ try {
     await page.waitForSelector(".modal:has-text('Welcome to Revqora')", { timeout: 20000 });
     await page.click(".modal button:has-text('Skip')");
     await page.waitForSelector(".modal", { state: "detached" });
+    // Fixtures deliberately change server refs with the CLI between reviews.
+    // An unrelated timer fetch must not invalidate a prepared deletion mid-test.
+    // Auto-fetch scheduling itself is covered by the frontend unit tests.
+    await page.getByTitle("Settings", { exact: true }).click();
+    await page.locator(".modal label:has-text('Auto fetch') + .seg").getByRole("button", { name:"Off", exact:true }).click();
+    await page.locator(".modal").getByRole("button", { name:"Done", exact:true }).click();
   });
 
   await check("a newer release shows the update chip, which can be skipped", async () => {
@@ -355,7 +362,7 @@ try {
   });
 
   await check("typing into a dialog keeps every character", async () => {
-    await page.click(".tb-btn:has-text('Branch')");
+    await page.getByRole("button", { name: "Branch", exact: true }).click();
     const input = page.locator(".modal input.input");
     await input.waitFor();
     await page.waitForTimeout(200);
@@ -485,9 +492,8 @@ try {
     await page.locator(".ctx-item", { hasText: "Merge hotfix/greeting into main" }).click();
     await page.click(".modal button:has-text('Start merge')");
     await page.waitForSelector(".op-banner");
-    const previousViewport = page.viewportSize();
-    await page.setViewportSize({ width: 1028, height: 760 });
-    const banner = await page.locator(".op-banner").evaluate((element) => {
+    await withViewport(page, { width: 1028, height: 760 }, async () => {
+      const banner = await page.locator(".op-banner").evaluate((element) => {
       const bounds = element.getBoundingClientRect();
       return {
         titleWidth: element.querySelector(".op-title").getBoundingClientRect().width,
@@ -497,9 +503,9 @@ try {
         }).map((button) => button.textContent.trim()),
       };
     });
-    if (banner.clipped.length || banner.titleWidth < 160) throw new Error(`narrow operation banner clips controls or hides its title: ${JSON.stringify(banner)}`);
-    await shot("05-narrow-operation-banner");
-    if (previousViewport) await page.setViewportSize(previousViewport);
+      if (banner.clipped.length || banner.titleWidth < 160) throw new Error(`narrow operation banner clips controls or hides its title: ${JSON.stringify(banner)}`);
+      await shot("05-narrow-operation-banner");
+    });
     if (git("rev-parse", "HEAD") !== before) throw new Error("HEAD moved before confirmation");
     await shot("05-merge-conflict");
   });
@@ -1726,9 +1732,8 @@ try {
     // Match its text for identity, then use the row's visible graph cell to
     // open the commit menu without bypassing Playwright's actionability checks.
     const commit = page.locator(".graph-scroll .grow").filter({ has: page.getByText(subject, { exact: true }) });
-    await commit.locator(".g-graph").click({ button: "right" });
     const item = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
-    await until(async () => { if (await item.isVisible()) return true; await page.mouse.move(8, 8); await page.locator(".ctx-item", { hasText: /^Edit history$/ }).hover(); return item.isVisible(); }, "Studio menu did not open", 10000);
+    await openSubmenu(page, () => commit.locator(".g-graph").click({ button: "right", timeout: 1500 }), page.locator(".ctx-item", { hasText: /^Edit history$/ }), item);
     await item.click(); await page.waitForSelector(".rebase-row");
     const firstOid = (await page.locator(".rebase-row").first().locator(".mono").first().innerText()).trim();
     if (studioGit("rev-parse", "--verify", `${firstOid}^{commit}`) !== expectedOid) throw new Error("Studio opened a plan for the wrong commit");
@@ -1874,6 +1879,8 @@ try {
   await page.reload();
   await page.locator(".topbar .repo-current > b").filter({ hasText: workspaceActive }).waitFor();
   await repositoryWorkspaceSmoke({ page, check, shot, work });
+  await branchManagerSmoke({ page, check, shot, work });
+  await branchManagerProtectionSmoke({ page, check, shot, work });
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;

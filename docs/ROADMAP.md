@@ -12,8 +12,8 @@ cross-cutting work and does not consume a feature stage.
 | 5 | Ignored files, partial stash, autosquash, nested repositories, remote branch rename | Merged (#11) |
 | 6 | Rebase Studio: affected refs, force-push implications, result comparison, recovery | Merged (#12, #13) |
 | 7 | Conflict Studio: Base panel, navigation, user-selected validation commands | Merged (#14) |
-| 8 | Repository favorites, project groups, workspaces and explicit Sync | Implemented; review pending |
-| 9 | Advanced Branch Manager | Planned |
+| 8 | Repository favorites, project groups, workspaces and explicit Sync | Merged (#15) |
+| 9 | Advanced Branch Manager | Implemented; review pending |
 | 10 | Reviewed bulk branch cleanup | Planned |
 | 11 | Worktree Manager | Planned |
 | 12 | Accounts and forge integrations | Planned |
@@ -28,3 +28,24 @@ cross-cutting work and does not consume a feature stage.
 
 Performance, compatibility, external-Git changes and data-safety regressions apply
 to every stage. Application data remains portable beside the executable.
+
+## Stage 9 — Advanced Branch Manager
+
+- Dedicated workspace accessible from the toolbar, branch sidebar and command palette.
+- Local/remote scope, author/message/SHA search, stable sorting, and All / Active /
+  Merged / Unmerged / Stale / Diverged / Protected filters. Active includes checked-out
+  worktrees; stale uses the tip commit date, not branch creation or checkout time.
+- Batched read-only metadata, virtualized rows, upstream ahead/behind and missing
+  upstream indicators, tip author/date/message, and occupied/locked/prunable worktrees.
+- Explicit comparison base and immutable commit IDs for selected branch comparisons.
+  Reachability uses original history, ignoring replacement refs and legacy grafts;
+  it does not prove squash/rebase patch integration or safe deletion.
+- Configurable local protection patterns (main, master, develop, release/* by default).
+  Remote protection considers actual server source refs, including aliased mappings.
+  Ambiguous/unmapped remote references disable destructive manager actions.
+- Existing reviewed rename/deletion actions; current or occupied branches cannot be
+  deleted from this screen. Per-repository scope, filter, base, sort, age and rules persist.
+- External Git changes refresh the screen; stale asynchronous results are discarded.
+  Remote counts describe cached tracking references until an explicit/background Fetch.
+
+Bulk cleanup remains stage 10; forge-side protections and PR status are later stages.

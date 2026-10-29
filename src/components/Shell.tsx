@@ -91,6 +91,7 @@ export function TopBar() {
       {root && !overview && (
         <div className="toolbar">
           <SyncButton roots={[root]} />
+          <button className="tb-btn" aria-label="Open branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root })}><GitBranch size={15} />Branches</button>
           <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes">
             <RefreshCw size={15} /> Fetch
           </button>
@@ -520,6 +521,7 @@ export function CommandPalette() {
         { id: "pull", label: "Pull", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => A.pull(root) },
         { id: "push", label: "Push…", group: "Remote", icon: <ArrowUpFromLine size={15} />, run: () => A.push(root) },
         { id: "branch", label: "New branch…", group: "Branch", icon: <GitBranchPlus size={15} />, run: () => A.createBranch(root, null, tab.info?.head.branch ?? "HEAD") },
+        { id: "branch-manager", label: "Branch manager…", group: "Branch", icon: <GitBranch size={15} />, run: () => openOverlay({ kind: "branches", root }) },
         { id: "stash", label: "Stash changes…", group: "Changes", icon: <Archive size={15} />, run: () => A.stash(root) },
         { id: "tools", label: "Repository tools (gc, maintenance)…", group: "Repository", icon: <Wrench size={15} />, run: () => repoToolsDialog(root) },
         { id: "deleted", label: "Recently deleted branches…", group: "Branch", icon: <Undo2 size={15} />, run: () => repoToolsDialog(root, "deleted") },

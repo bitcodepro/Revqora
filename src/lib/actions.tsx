@@ -305,24 +305,24 @@ export async function renameBranch(root: string, name: string) {
   await act(root, () => api.branchRename(root, name, v.trim(), expectedState), { success: `Renamed to ${v.trim()}` });
 }
 
-export async function deleteBranch(root: string, name: string) {
+export async function deleteBranch(root: string, name: string, protectionRules?: string[]) {
   try {
     const expectedState = await prepareOperation(root);
   if (!expectedState) return;
     const targets = await api.branchDeleteTargets(root, name);
-    await showDialog<void>((close) => <DeleteBranchDialog expectedState={expectedState} root={root} name={name} targets={targets} onClose={() => close()} />);
+    await showDialog<void>((close) => <DeleteBranchDialog expectedState={expectedState} root={root} name={name} targets={targets} protectionRules={protectionRules} onClose={() => close()} />);
   } catch (e) {
     toast.error(e);
   }
 }
 
-export async function deleteRemoteBranch(root: string, remoteBranch: string) {
+export async function deleteRemoteBranch(root: string, remoteBranch: string, protectionRules?: string[]) {
   try {
     const expectedState = await prepareOperation(root);
     if (!expectedState) return;
     const target = await api.branchDeleteRemoteTarget(root, `refs/remotes/${remoteBranch}`);
     const name = target.remoteRef.slice("refs/heads/".length);
-    await showDialog<void>((close) => <DeleteBranchDialog expectedState={expectedState} root={root} name={name} targets={[target]} remoteOnly onClose={() => close()} />);
+    await showDialog<void>((close) => <DeleteBranchDialog expectedState={expectedState} root={root} name={name} targets={[target]} remoteOnly protectionRules={protectionRules} onClose={() => close()} />);
   } catch (e) { toast.error(e); }
 }
 
