@@ -159,6 +159,7 @@ export async function conflictStudioSmoke({ page, check, shot, work }) {
     } finally {
       await page.evaluate(() => { const race = window.__validationReviewRace; race.release?.(); window.fetch = race.original; delete window.__validationReviewRace; });
     }
+    await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
   });
 }
 

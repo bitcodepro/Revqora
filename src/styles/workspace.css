@@ -141,3 +141,24 @@
   .repository-overview > header { padding: 14px; }
   .repository-table-scroll { padding: 0 12px; }
 }
+
+/* Repository library: one row per repository, including closed bookmarks. */
+.repository-sync { flex-wrap: wrap; }
+.repository-group { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 10px; background: transparent; color: var(--text); border: 0; text-align: left; font-weight: 600; }
+.repository-group .faint { margin-left: auto; }
+.repository-star { flex: 0 0 auto; opacity: .5; }
+.repository-star.active, .repository-item:hover .repository-star { opacity: 1; }
+.repository-select { min-width: 0; }
+.repository-group-filter { margin: 0 10px 8px; width: calc(100% - 20px); }
+.library-tabs { margin-bottom: 14px; }
+.library-list { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; max-height: 55vh; overflow: auto; }
+.library-row { display: flex; align-items: center; gap: 8px; padding: 9px 4px; border-bottom: 1px solid var(--border); }
+.library-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-group-select { flex: 0 0 135px; width: 135px; }
+.workspace-picker { width: 140px; max-width: 15vw; flex: 0 1 140px; }
+.sync-review-row { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.sync-review-row > div:first-child { flex: 1; min-width: 0; }
+.sync-directions { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; }
+.sync-directions label { display: flex; align-items: center; gap: 7px; }
+@media (max-width: 1100px) { .library-row { flex-wrap: wrap; } .workspace-picker { width: 100px; } }
+.welcome-inner { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); }

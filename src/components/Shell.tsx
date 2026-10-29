@@ -1,3 +1,5 @@
+import { SyncButton } from "./SyncRepositories";
+import { RepositoryLibraryButton, WorkspacePicker } from "./RepositoryLibrary";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { validationDialog } from "./ConflictValidation";
 import { useValidation, validationFresh, validationRunning } from "../lib/validation";
@@ -80,6 +82,7 @@ export function TopBar() {
       </div>
       <button className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => setLayout({ repositoriesOpen: focusMode || !repositoriesOpen, focusMode: false })}><PanelLeft size={16} /></button>
       <button className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
+      <RepositoryLibraryButton /><WorkspacePicker />
       <div className="repo-current" title={root ?? ""}>
         <b>{overview ? "All repositories" : tab?.info?.name ?? "Repositories"}</b>
         {!overview && tab && <span><GitBranch size={12} />{tab.info?.head.branch ?? shortOid(tab.info?.head.oid ?? "")}</span>}
@@ -87,6 +90,7 @@ export function TopBar() {
       <button className="icon-btn" title="Open repository (Ctrl+O)" aria-label="Open repositories" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>
       {root && !overview && (
         <div className="toolbar">
+          <SyncButton roots={[root]} />
           <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes">
             <RefreshCw size={15} /> Fetch
           </button>

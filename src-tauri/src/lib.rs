@@ -1,4 +1,22 @@
-//! Revqora: Tauri command surface over the git backend.
+#[tauri::command]
+async fn sync_prepare(repo: String, expected_state: Option<String>, app: AppHandle) -> git::runner::GitResult<git::sync::SyncPlan> {
+    mutating(repo.clone(), expected_state, app, "sync_prepare", None, move || git::sync::prepare(&p(&repo))).await
+}
+#[tauri::command]
+async fn sync_execute(
+    repo: String,
+    plan: git::sync::SyncPlan,
+    receive: bool,
+    send: bool,
+    expected_state: Option<String>,
+    app: AppHandle,
+) -> git::runner::GitResult<git::sync::SyncResult> {
+    if expected_state.as_deref() != Some(plan.state_token.as_str()) || plan.state_token.is_empty() {
+        return Err(git::runner::GitError::new("Prepare a Sync review first."));
+    }
+    mutating(repo.clone(), expected_state, app, "sync_execute", None, move || git::sync::execute(&p(&repo), &plan, receive, send)).await
+}
+// Revqora: Tauri command surface over the git backend.
 
 pub mod askpass;
 pub mod git;
@@ -1551,6 +1569,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            sync_prepare,
+            sync_execute,
             operation_log_health,
             operation_log_list,
             operation_log_detail,

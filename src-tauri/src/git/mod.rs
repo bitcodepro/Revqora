@@ -26,4 +26,5 @@ pub mod remote_rename;
 pub mod workspace_files;
 
 pub mod rebase_studio;
+pub mod sync;
 pub mod validation;

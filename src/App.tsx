@@ -1,3 +1,5 @@
+import { finishWorkspaceStartup, startWorkspaceTracking } from "./lib/repositoryWorkspaces";
+import { useLibrary } from "./lib/repositoryLibrary";
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -218,7 +220,9 @@ export default function App() {
   const { layout } = useWorkspaceLayout(layoutMode);
   const { focusMode, repositoriesOpen } = layout;
   const repositoryCount = useRepos((s) => s.order.length);
+  const hasBookmarks = useLibrary((s) => s.favorites.length > 0 || s.groups.some((g) => g.roots.length > 0));
 
+  useEffect(startWorkspaceTracking, []);
   // Restore the tabs from the previous session.
   useEffect(() => {
     if (restored.current) return;
@@ -242,6 +246,7 @@ export default function App() {
         }
       }
       useRepos.getState().activate(want ?? useRepos.getState().order[0] ?? null);
+      finishWorkspaceStartup();
     })();
   }, []);
 
@@ -380,7 +385,7 @@ export default function App() {
       <TopBar />
       {busy && <div className="progress-bar" />}
       <div className="app-body">
-        <div className="repository-slot" hidden={!repositoriesOpen || focusMode || !repositoryCount}><RepositorySidebar /></div>
+        <div className="repository-slot" hidden={!repositoriesOpen || focusMode || (!repositoryCount && !hasBookmarks)}><RepositorySidebar /></div>
         <div className="workspace-host">{overview && repositoryCount ? <RepositoryOverview /> : tab ? <RepoWorkspace key={tab.root} tab={tab} /> : <Welcome />}</div>
       </div>
       <StatusBar />
