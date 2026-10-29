@@ -973,6 +973,7 @@ button {
 /* ───────────── op banner ───────────── */
 .op-banner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
@@ -1003,6 +1004,18 @@ button {
 }
 .op-banner .op-title {
   font-weight: 700;
+}
+.op-banner .op-copy {
+  min-width: 0;
+  flex: 1 1 220px;
+}
+.op-banner .op-actions {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 100%;
+  margin-left: auto;
 }
 .op-banner .op-sub {
   font-size: var(--fs-sm);

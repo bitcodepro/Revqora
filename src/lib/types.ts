@@ -64,6 +64,7 @@ export interface OpState {
   headName: string | null;
   onto: string | null;
   stoppedAt: string | null;
+  editingCommit: boolean;
 }
 
 export interface RepoInfo {
