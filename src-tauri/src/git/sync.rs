@@ -182,21 +182,7 @@ pub fn execute(root: &Path, plan: &SyncPlan, receive: bool, send: bool) -> GitRe
     // and checkpoint instead of encouraging an automatic retry.
     let action = (|| -> GitResult<()> {
         if receive {
-            run(
-                root,
-                [
-                    "-c",
-                    &format!("branch.{}.mergeOptions=", plan.branch),
-                    "merge",
-                    "--ff-only",
-                    "--no-squash",
-                    "--no-commit",
-                    "--no-autostash",
-                    "--no-overwrite-ignore",
-                    "--",
-                    &plan.server_oid,
-                ],
-            )?;
+            run(root, ["merge", "--ff-only", "--no-squash", "--no-commit", "--no-autostash", "--no-overwrite-ignore", "--", &plan.server_oid])?;
             let received = clean(root)?;
             if received.branch.as_deref() != Some(&plan.branch) || received.oid.as_deref() != Some(&plan.server_oid) {
                 return Err(GitError::new("Receive did not leave the reviewed branch at the expected commit. Review the working copy; the recovery checkpoint preserves its previous state."));

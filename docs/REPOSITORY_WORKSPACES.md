@@ -48,9 +48,11 @@ outside `refs/remotes/` require the existing individual Git actions.
 
 Sync also refuses replacement refs, legacy grafts and history-override environment
 variables. Its Git commands disable replacement/graft interpretation so ancestry,
-receiving and publication use physical commit parents. Receive overrides branch
-merge options for this command only and checks the resulting branch, exact HEAD
-and clean working tree before reporting success or updating the tracking cache.
+receiving and publication use physical commit parents. Explicit receive options
+override squash, fast-forward and autostash settings while retaining other merge
+policies, including signature verification. Receive checks the resulting branch,
+exact HEAD and clean working tree before reporting success or updating the tracking
+cache.
 
 A recovery checkpoint is created after preflight and before execution. Results
 report completed receive/send steps and warnings per repository; one failure does

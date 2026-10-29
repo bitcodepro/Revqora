@@ -253,3 +253,18 @@ fn receive_verifies_head_after_a_successful_merge_command() {
     assert_eq!(git(&f.local, &["rev-parse", "refs/remotes/origin/main"]), plan.target.oid);
     assert_eq!(result.checkpoint.head.as_deref(), Some(before.as_str()));
 }
+
+#[test]
+fn receiving_preserves_the_users_signature_verification_policy() {
+    let f = Fixture::new();
+    let before = git(&f.local, &["rev-parse", "HEAD"]);
+    f.incoming();
+    git(&f.local, &["config", "branch.main.mergeOptions", "--squash --verify-signatures"]);
+    let plan = f.plan().unwrap();
+    let result = f.run(&plan, true, false).unwrap();
+    assert!(!result.received, "Sync bypassed the configured signature policy");
+    assert!(!result.warnings.is_empty());
+    assert_eq!(git(&f.local, &["rev-parse", "HEAD"]), before);
+    assert_eq!(git(&f.local, &["status", "--porcelain"]), "");
+    assert_eq!(git(&f.local, &["rev-parse", "refs/remotes/origin/main"]), plan.target.oid);
+}
