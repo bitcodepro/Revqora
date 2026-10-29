@@ -109,8 +109,11 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       if (await manager().locator(".bm-detail > small.mono").innerText() !== newBase.slice(0,8)) throw new Error("Old response replaced the refreshed base");
       await page.setViewportSize({width:1000,height:720});
-      const detail = await manager().locator(".bm-detail").boundingBox(), list = await manager().locator(".bm-list").boundingBox();
-      if (!detail || !list || detail.y < list.y + list.height - 1) throw new Error("Narrow manager did not move details below the list");
+      const frame = await manager().boundingBox(), detail = await manager().locator(".bm-detail").boundingBox(), list = await manager().locator(".bm-list").boundingBox();
+      if (!frame || !detail || !list) throw new Error("Manager layout is missing");
+      // Prior workspace scenarios can restore hidden sidebars. Responsiveness
+      // follows this workspace's actual width, not the whole browser viewport.
+      if (frame.width <= 780 ? detail.y < list.y + list.height - 1 : detail.x < list.x + list.width - 1) throw new Error("Manager layout did not adapt to its available width");
       await shot("80-branch-manager-narrow");
     } finally {
       await page.evaluate(() => { const race = window.__branchManagerRace; race.release?.(); window.fetch = race.original; delete window.__branchManagerRace; });
