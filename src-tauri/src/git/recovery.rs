@@ -958,6 +958,8 @@ pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<(
             | "stash_restore_file"
             | "conflict_take"
             | "conflict_unresolve"
+            | "conflict_validation"
+            | "conflict_save"
     );
     let refs = matches!(command, "branch_delete" | "branch_delete_remote" | "stash_drop" | "push" | "push_ref");
     if workspace || refs {

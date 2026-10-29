@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronUp, Loader2, RotateCcw, Save, Swords, X, FileQuestion, Trash2, ArrowUp, ArrowDown } from "lucide-react";
-import { EditorState, RangeSetBuilder, StateField, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, RangeSetBuilder, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
@@ -16,6 +16,10 @@ import { conflictLabel } from "../lib/format";
 import { confirmDialog } from "./dialogs";
 import { useSettings } from "../lib/settings";
 import { Splitter } from "./Overlays";
+import { conflictDraftKey, conflictDrafts, conflictInitialText, conflictOutput, normalizeConflictText, sameConflictVersions } from "../lib/conflictStudio";
+import { ConflictValidation } from "./ConflictValidation";
+import { useValidation, validationRunning } from "../lib/validation";
+import "../styles/conflictStudio.css";
 
 interface Labels {
   ours: string;
@@ -64,6 +68,7 @@ class ActionsWidget extends WidgetType {
 }
 
 function applyAt(view: EditorView, index: number, how: Resolution) {
+  if (view.state.readOnly) return;
   const text = view.state.doc.toString();
   const blocks = parseConflicts(text);
   const b = blocks[index];
@@ -92,7 +97,7 @@ function conflictField(labels: Labels): Extension {
         else if (t.startsWith("|||||||") && section === "ours") {
           section = "base";
           cls = "cm-cf-marker";
-        } else if (t === "=======" && section !== "theirs") {
+        } else if (/^={7,}$/.test(t) && section !== "theirs") {
           section = "theirs";
           cls = "cm-cf-marker";
         } else cls = section === "ours" ? "cm-cf-ours" : section === "base" ? "cm-cf-base" : "cm-cf-theirs";
@@ -149,25 +154,36 @@ const baseExtensions = (): Extension[] => [
 ];
 
 /** Finds where each conflict's sides live in the full ours / theirs files. */
-function locate(blocks: ConflictBlock[], ours: string, theirs: string) {
+function locate(blocks: ConflictBlock[], ours: string, theirs: string, base = "") {
   const oLines = ours.split("\n");
   const tLines = theirs.split("\n");
+  const bLines = base.split("\n");
+  let bFrom = 0;
   let oFrom = 0;
   let tFrom = 0;
   return blocks.map((b) => {
     const o = findLines(oLines, b.ours, oFrom);
     const t = findLines(tLines, b.theirs, tFrom);
+    const ancestor = b.base ? findLines(bLines, b.base, bFrom) : -1;
+    if (ancestor >= 0) bFrom = ancestor + b.base!.length;
     if (o >= 0) oFrom = o + b.ours.length;
     if (t >= 0) tFrom = t + b.theirs.length;
-    return { ours: o >= 0 ? ([o, b.ours.length] as [number, number]) : null, theirs: t >= 0 ? ([t, b.theirs.length] as [number, number]) : null };
+    return { ours: o >= 0 ? ([o, b.ours.length] as [number, number]) : null, theirs: t >= 0 ? ([t, b.theirs.length] as [number, number]) : null, base: ancestor >= 0 ? ([ancestor, b.base!.length] as [number, number]) : null };
   });
 }
 
 /** Loads a conflicted file of the working tree into the merge editor. */
 export function ConflictEditor({ root, path, onClose }: { root: string; path: string; onClose: () => void }) {
+  const draftKey = conflictDraftKey(root, path);
+  const cached = useRef(conflictDrafts.get(draftKey));
   const observedState = useRef<string | null>(null);
   const [info, setInfo] = useState<ConflictInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [showValidation, setShowValidation] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const [changedOnDisk, setChangedOnDisk] = useState(false);
+  const validation = useValidation((s) => s.reports[root]);
   const statusFiles = useRepos((s) => s.tabs[root]?.status?.files);
   const conflicts = useMemo(() => (statusFiles ?? []).filter((f) => f.conflict).map((f) => f.path), [statusFiles]);
 
@@ -176,6 +192,16 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
     observedState.current = useRepos.getState().tabs[root]?.status?.stateToken ?? null;
     setInfo(null);
     setErr(null);
+    const old = conflictDrafts.get(draftKey);
+    if (old) {
+      observedState.current = old.token; setInfo(old.info);
+      void api.conflictInfo(root, path).then((fresh) => {
+        if (!alive) return;
+        if (sameConflictVersions(old.info, fresh)) { observedState.current = fresh.stateToken ?? null; old.token = observedState.current; old.info = fresh; }
+        else setChangedOnDisk(true);
+      }, () => { if (alive) setChangedOnDisk(true); });
+      return () => { alive = false; };
+    }
     api.conflictInfo(root, path).then(
       (i) => { if (alive) { observedState.current = i.stateToken ?? null; setInfo(i); } },
       (e) => alive && setErr(errorMessage(e)),
@@ -183,7 +209,9 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
     return () => {
       alive = false;
     };
-  }, [root, path]);
+  }, [root, path, draftKey]);
+
+  const navigate = (next: string) => useRepos.getState().patch(root, { conflictPath: next, changeSel: { kind: "conflict", path: next } });
 
   const nextFile = async () => {
     await useRepos.getState().refresh(root, { status: true, layers: true, info: true });
@@ -199,18 +227,54 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
   const fileIdx = conflicts.indexOf(path);
   return (
     <MergeEditor
+      key={revision}
       path={path}
       info={info}
       error={err}
       position={conflicts.length > 1 && fileIdx >= 0 ? `file ${fileIdx + 1} of ${conflicts.length}` : undefined}
+      files={conflicts}
+      onNavigate={navigate}
+      initialText={cached.current?.text}
+      onDirtyChange={setDirty}
+      onDraft={(text) => { if (info) conflictDrafts.set(draftKey, { info: conflictDrafts.get(draftKey)?.info ?? info, text, token: observedState.current }); }}
+      blocked={validationRunning(validation)}
+      tools={<>
+        {changedOnDisk && <span className="pill red">File changed on disk · review current versions</span>}
+        <button className="btn sm" onClick={() => setShowValidation((v) => !v)}>Validate</button>
+        <button className="btn sm ghost" disabled={validationRunning(validation)} title="Load current Git versions while retaining this draft for review" onClick={async () => {
+          try {
+            const fresh = await api.conflictInfo(root, path);
+            const draft = conflictDrafts.get(draftKey);
+            if (draft && draft.text !== conflictInitialText(fresh) && !await confirmDialog({
+              title: "Use this draft with the current versions?",
+              message: "The disk result differs from the editor draft. Keeping the draft may replace external edits when you save. Review both texts below; cancel to keep the old state guard.",
+              details: ["Current working file (first 8000 characters):", (fresh.working ?? fresh.merged).slice(0, 8000), "Editor draft (first 8000 characters):", draft.text.slice(0, 8000)],
+              confirm: "Keep draft", danger: true,
+            })) return;
+            observedState.current = fresh.stateToken ?? null;
+            if (draft) { draft.info = fresh; draft.token = observedState.current; cached.current = draft; }
+            setInfo(fresh); setErr(null); setChangedOnDisk(false); setRevision((v) => v + 1);
+          } catch (e) { toast.error(e); }
+        }}>Review current versions</button>
+      </>}
+      footer={showValidation && <ConflictValidation root={root} dirty={dirty} onClose={() => setShowValidation(false)} />}
       onClose={onClose}
+      onSaveDraft={async (text) => {
+        await api.conflictSave(root, path, text, false, observedState.current);
+        const fresh = await api.conflictInfo(root, path);
+        observedState.current = fresh.stateToken ?? null;
+        conflictDrafts.set(draftKey, { info: fresh, text: normalizeConflictText(text), token: observedState.current });
+        toast.success(`Saved draft: ${path}`, "The file remains unresolved.");
+      }}
       onSave={async (text) => {
         await api.conflictSave(root, path, text, true, observedState.current);
+        conflictDrafts.delete(draftKey);
         toast.success(`Resolved ${path}`);
         await nextFile();
       }}
       onTake={async (which) => {
         await api.conflictTake(root, path, which, observedState.current);
+        conflictDrafts.delete(draftKey);
         toast.success(which === "delete" ? `Deleted ${path}` : `Took ${which} for ${path}`);
         await nextFile();
       }}
@@ -225,6 +289,15 @@ export interface MergeEditorProps {
   error?: string | null;
   /** e.g. "file 2 of 3". */
   position?: string;
+  files?: string[];
+  onNavigate?: (path: string) => void;
+  initialText?: string;
+  onDraft?: (text: string) => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  onSaveDraft?: (text: string) => Promise<void>;
+  blocked?: boolean;
+  tools?: ReactNode;
+  footer?: ReactNode;
   saveLabel?: string;
   onSave: (text: string) => Promise<void>;
   onTake: (which: "ours" | "theirs" | "delete") => Promise<void>;
@@ -232,16 +305,25 @@ export interface MergeEditorProps {
 }
 
 /** Three-pane merge editor (ours / theirs / editable result) for any set of three versions. */
-export function MergeEditor({ path, info, error: err, position, saveLabel = "Save & mark resolved", onSave, onTake, onClose }: MergeEditorProps) {
+export function MergeEditor({ path, info, error: err, position, saveLabel = "Save & mark resolved", onSave, onTake, onClose, files, onNavigate, initialText, onDraft, onDirtyChange, onSaveDraft, blocked = false, tools, footer }: MergeEditorProps) {
   const [lang, setLang] = useState<Extension | null>(null);
   const [langReady, setLangReady] = useState(false);
   const [remaining, setRemaining] = useState(0);
   const [current, setCurrent] = useState(0);
   const [saving, setSaving] = useState(false);
+  const busy = useRef(false);
+  const locked = useRef(false);
+  locked.current = saving || blocked;
+  const [dirty, setDirty] = useState(false);
+  const baseline = useRef("");
+  const draftRef = useRef(onDraft); draftRef.current = onDraft;
+  const dirtyRef = useRef(onDirtyChange); dirtyRef.current = onDirtyChange;
+  const editability = useMemo(() => new Compartment(), []);
   const [topH, setTopH] = useState(0.4);
   const bodyRef = useRef<HTMLDivElement>(null);
   const oursHost = useRef<HTMLDivElement>(null);
   const theirsHost = useRef<HTMLDivElement>(null);
+  const baseHost = useRef<HTMLDivElement>(null);
   const resultHost = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -257,14 +339,14 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
     };
   }, [path]);
 
-  const textual = !!info && info.ours.exists && info.theirs.exists && !info.ours.binary && !info.theirs.binary;
+  const textual = !!info && info.ours.exists && info.theirs.exists && !info.ours.binary && !info.theirs.binary && !info.base.binary;
   const initial = useMemo(() => {
     if (!info || !textual) return null;
-    if (info.working !== null && !info.workingHasMarkers && info.working !== info.ours.text) return info.working;
-    return info.merged;
-  }, [info, textual]);
+    return initialText ?? conflictInitialText(info);
+  }, [info, textual, initialText]);
 
-  const located = useMemo(() => (info && textual ? locate(parseConflicts(info.merged), info.ours.text, info.theirs.text) : []), [info, textual]);
+  const located = useMemo(() => (info && textual ? locate(parseConflicts(info.merged), info.ours.text, info.theirs.text, info.base.text) : []), [info, textual]);
+  const showBase = useSettings((s) => s.mergeShowBase);
   const labels: Labels = { ours: info?.oursLabel ?? "ours", theirs: info?.theirsLabel ?? "theirs" };
   const ready = !!info && textual && langReady;
 
@@ -280,6 +362,8 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
     [...baseExtensions(), EditorState.readOnly.of(true), EditorView.editable.of(false), ...(lang ? [lang] : []), sideHighlights(info?.theirs.text ?? "", located.flatMap((l) => (l.theirs ? [l.theirs] : [])), "cm-side-hl-theirs")],
     [ready, info],
   );
+  const baseView = useEditor(baseHost, ready && showBase ? info!.base.text : null,
+    [...baseExtensions(), EditorState.readOnly.of(true), EditorView.editable.of(false), ...(lang ? [lang] : []), sideHighlights(info?.base.text ?? "", located.flatMap((l) => l.base ? [l.base] : []), "cm-cf-base")], [ready, info, showBase]);
 
   const goto = useCallback(
     (i: number) => {
@@ -293,7 +377,11 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
       view.dispatch({ selection: { anchor: b.from }, effects: EditorView.scrollIntoView(b.from, { y: "center" }) });
       view.focus();
       // Align side panes on the matching region when we know it.
-      const loc = located[idx];
+      // Match the remaining block against the original list, whose indexes do
+      // not shift when an earlier conflict is resolved.
+      const original = parseConflicts(info?.merged ?? "");
+      const candidates = original.map((block, index) => ({ block, index })).filter(({ block }) => block.ours.join("\n") === b.ours.join("\n") && block.theirs.join("\n") === b.theirs.join("\n"));
+      const loc = candidates.length === 1 ? located[candidates[0].index] : undefined;
       const scrollSide = (v: EditorView | null, line: number | undefined) => {
         if (!v || line === undefined) return;
         const l = v.state.doc.line(Math.min(v.state.doc.lines, line + 1));
@@ -301,9 +389,10 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
       };
       scrollSide(oursView.current, loc?.ours?.[0]);
       scrollSide(theirsView.current, loc?.theirs?.[0]);
+      scrollSide(baseView.current, loc?.base?.[0]);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [located],
+    [located, info],
   );
 
   const resultView = useEditor(
@@ -313,6 +402,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
       ...baseExtensions(),
       highlightActiveLine(),
       history(),
+      editability.of([EditorState.readOnly.of(locked.current), EditorView.editable.of(!locked.current)]),
       indentOnInput(),
       keymap.of([
         { key: "Alt-ArrowDown", run: () => (gotoRef.current(currentRef.current + 1), true) },
@@ -326,11 +416,24 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
       ...(lang ? [lang] : []),
       conflictField(labels),
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) setRemaining(parseConflicts(u.state.doc.toString()).length);
+        const text = u.state.doc.toString();
+        if (u.docChanged) {
+          setRemaining(parseConflicts(text).length);
+          const changed = text !== baseline.current;
+          setDirty(changed); dirtyRef.current?.(changed); draftRef.current?.(text);
+        }
+        if (u.docChanged || u.selectionSet) {
+          const blocks = parseConflicts(text);
+          const at = blocks.findIndex((b) => b.to > u.state.selection.main.head);
+          setCurrent(at < 0 ? Math.max(0, blocks.length - 1) : at);
+        }
       }),
     ],
     [ready, initial],
   );
+  useEffect(() => {
+    resultView.current?.dispatch({ effects: editability.reconfigure([EditorState.readOnly.of(saving || blocked), EditorView.editable.of(!saving && !blocked)]) });
+  }, [saving, blocked, editability, resultView, ready]);
 
   // Keep the side panes roughly in step with the result pane.
   const syncScroll = useSettings((s) => s.syncScroll);
@@ -339,7 +442,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
     if (!ready || !r || !syncScroll) return;
     const onScroll = () => {
       const ratio = r.scrollTop / Math.max(1, r.scrollHeight - r.clientHeight);
-      for (const v of [oursView.current, theirsView.current]) {
+      for (const v of [oursView.current, theirsView.current, baseView.current]) {
         const d = v?.scrollDOM;
         if (d) d.scrollTop = ratio * (d.scrollHeight - d.clientHeight);
       }
@@ -347,7 +450,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
     r.addEventListener("scroll", onScroll, { passive: true });
     return () => r.removeEventListener("scroll", onScroll);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, initial, syncScroll]);
+  }, [ready, initial, syncScroll, showBase]);
 
   const currentRef = useRef(0);
   currentRef.current = current;
@@ -357,50 +460,64 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
   useEffect(() => {
     if (!ready || initial === null) return;
     setRemaining(parseConflicts(initial).length);
+    baseline.current = info ? conflictInitialText(info) : initial;
+    setDirty(initial !== baseline.current); dirtyRef.current?.(initial !== baseline.current);
     const t = setTimeout(() => goto(0), 60);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, initial]);
 
-  const save = async () => {
+  const save = async (draft = false) => {
     const view = resultView.current;
-    if (!view || saving) return;
+    if (!view || busy.current || locked.current) return;
+    busy.current = true; setSaving(true);
+    // Freeze synchronously before any confirmation or backend await.
+    view.dispatch({ effects: editability.reconfigure([EditorState.readOnly.of(true), EditorView.editable.of(false)]) });
     const text = view.state.doc.toString();
     const left = parseConflicts(text).length;
-    if (left > 0) {
+    try {
+    if (!draft && left > 0) {
       const ok = await confirmDialog({ title: "Conflict markers remain", message: `${left} conflict(s) are still unresolved in the result. Save and mark the file resolved anyway?`, confirm: "Save anyway", danger: true });
       if (!ok) return;
     }
-    setSaving(true);
-    try {
-      await onSave(text);
+      const output = info ? conflictOutput(text, info) : text;
+      if (draft && onSaveDraft) {
+        await onSaveDraft(output);
+        baseline.current = text; setDirty(false); dirtyRef.current?.(false);
+      } else await onSave(output);
     } catch (e) {
       toast.error(e);
     } finally {
       setSaving(false);
+      busy.current = false;
     }
   };
   const saveRef = useRef(save);
   saveRef.current = save;
 
   const take = async (which: "ours" | "theirs" | "delete") => {
+    if (busy.current || locked.current) return;
+    busy.current = true; setSaving(true);
     try {
+      if (dirty && !await confirmDialog({ title: "Replace manual edits?", message: "Taking a whole file replaces this editor draft. The working file is saved in a recovery checkpoint first.", confirm: "Replace draft", danger: true })) return;
       await onTake(which);
     } catch (e) {
       toast.error(e);
-    }
+    } finally { busy.current = false; setSaving(false); }
   };
 
-  const resetResult = () => {
+  const resetResult = async () => {
     const view = resultView.current;
-    if (!view || !info) return;
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: info.merged } });
+    if (!view || !info || locked.current) return;
+    if (!await confirmDialog({ title: "Reset the result?", message: "Replace this editor draft with the generated merge? You can undo the reset with Ctrl+Z.", confirm: "Reset result", danger: true })) return;
+    if (locked.current) return;
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: normalizeConflictText(info.merged) } });
     setTimeout(() => goto(0), 0);
   };
 
   const resolveAllWith = (how: Resolution) => {
     const view = resultView.current;
-    if (!view) return;
+    if (!view || locked.current) return;
     const text = view.state.doc.toString();
     const blocks = parseConflicts(text).reverse();
     const eol = text.includes("\r\n") ? "\r\n" : "\n";
@@ -411,7 +528,13 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
   };
 
   return (
-    <div className="conflict-overlay">
+    <div className="conflict-overlay" onKeyDown={(e) => {
+      if (!e.altKey || !onNavigate || !files?.length || locked.current) return;
+      if (e.key !== "PageDown" && e.key !== "PageUp") return;
+      e.preventDefault();
+      const index = files.indexOf(path);
+      onNavigate(files[(index + (e.key === "PageDown" ? 1 : files.length - 1)) % files.length]);
+    }}>
       <div className="cf-head">
         <Swords size={18} style={{ color: "var(--red)" }} />
         <div className="cf-title">
@@ -421,6 +544,11 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
             {position ? ` · ${position}` : ""}
           </span>
         </div>
+        {onNavigate && files && files.length > 0 && <div className="cf-file-nav" aria-label="Conflicted files">
+          <button className="icon-btn sm" title="Previous file (Alt+PageUp)" disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + files.length - 1) % files.length])}><ChevronUp size={14} /></button>
+          <select className="input" aria-label="Conflict file" value={path} disabled={saving || blocked} onChange={(e) => onNavigate(e.target.value)}>{!files.includes(path) && <option value={path}>{path}</option>}{files.map((file) => <option key={file} value={file}>{file}</option>)}</select>
+          <button className="icon-btn sm" title="Next file (Alt+PageDown)" disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + 1) % files.length])}><ChevronDown size={14} /></button>
+        </div>}
         {textual && (
           <div className="cf-nav">
             <button className="icon-btn sm" onClick={() => goto(current - 1)} title="Previous conflict (Alt+↑)">
@@ -433,6 +561,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
           </div>
         )}
         <div className="spacer" />
+        {tools}
         {textual && (
           <>
             <button className="btn sm" onClick={() => resolveAllWith("ours")} title="Resolve every remaining conflict with our side">
@@ -444,19 +573,25 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
             <label className="check" title="Scroll the ours / theirs panes together with the result">
               <input type="checkbox" checked={syncScroll} onChange={(e) => useSettings.getState().set({ syncScroll: e.target.checked })} /> Sync scroll
             </label>
-            <button className="btn sm ghost" onClick={resetResult} title="Start over">
+            <label className="check"><input type="checkbox" checked={showBase} onChange={(e) => useSettings.getState().set({ mergeShowBase: e.target.checked })} /> Base</label>
+            <button className="btn sm ghost" onClick={resetResult} title="Start over" disabled={saving || blocked}>
               <RotateCcw size={13} /> Reset
             </button>
           </>
         )}
-        <button className="btn" onClick={onClose}>
+        <button className="btn" onClick={async () => {
+          if (dirty && !onDraft && !await confirmDialog({ title: "Close unsaved result?", message: "This result has unsaved changes.", confirm: "Close without saving", danger: true })) return;
+          onClose();
+        }} disabled={saving} title={onDraft ? "Drafts are kept in this session; Save draft writes them to disk" : "Close editor"}>
           <X size={14} /> Close
         </button>
         {textual && (
-          <button className={`btn ${remaining ? "" : "primary"}`} onClick={save} disabled={saving} title="Ctrl+S">
+          <button className={`btn ${remaining ? "" : "primary"}`} onClick={() => save()} disabled={saving || blocked} title="Ctrl+S">
             {saving ? <Loader2 size={14} className="spin" /> : <Save size={14} />} {saveLabel}
           </button>
         )}
+        {textual && onSaveDraft && <button className="btn" disabled={saving || blocked || !dirty} onClick={() => save(true)}>Save draft</button>}
+        {dirty && <span className="cf-draft-note">{onDraft ? "Unsaved · kept during navigation in this session" : "Unsaved changes"}</span>}
       </div>
       {err && <div className="empty">{err}</div>}
       {!err && !info && (
@@ -500,7 +635,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
       )}
       {textual && (
         <div className="cf-body" ref={bodyRef} style={{ gridTemplateRows: `minmax(100px, ${topH * 100}%) 7px minmax(140px, 1fr)` }}>
-          <div className="cf-sides">
+          <div className={`cf-sides ${showBase ? "with-base" : ""}`}>
             <div className="cf-pane">
               <div className="cf-pane-head">
                 <span className="dot" style={{ background: "var(--blue)" }} />
@@ -513,6 +648,10 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
               </div>
               <div className="cf-editor" ref={oursHost} />
             </div>
+            {showBase && <div className="cf-pane cf-base">
+              <div className="cf-pane-head"><span className="lbl">Base</span><span className="sub">{info?.base.exists ? "common ancestor · read only" : "No common ancestor (added on both sides)"}</span></div>
+              <div className="cf-editor" ref={baseHost} />
+            </div>}
             <div className="cf-pane">
               <div className="cf-pane-head">
                 <span className="dot" style={{ background: "var(--pink)" }} />
@@ -545,6 +684,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
           </div>
         </div>
       )}
+      {footer}
     </div>
   );
 }

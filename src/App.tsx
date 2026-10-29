@@ -170,7 +170,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
         ) : (
           <ChangesView tab={tab} onOpenConflict={openConflict} />
         )}
-        {tab.conflictPath && <ConflictEditor key={tab.conflictPath} root={root} path={tab.conflictPath} onClose={() => patch(root, { conflictPath: null })} />}
+        {tab.conflictPath && <ConflictEditor key={`${root}:${tab.conflictPath}`} root={root} path={tab.conflictPath} onClose={() => patch(root, { conflictPath: null })} />}
         {overlay?.kind === "blame" && <BlameView root={root} path={overlay.path} rev={overlay.rev} line={overlay.line} />}
         {overlay?.kind === "stash" && <StashView key={overlay.index} root={root} index={overlay.index} />}
         {overlay?.kind === "tree" && <TreeBrowser key={overlay.rev} root={root} rev={overlay.rev} />}

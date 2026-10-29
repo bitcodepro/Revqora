@@ -1,0 +1,17 @@
+.cf-head { height: auto; min-height: 56px; flex-shrink: 0; flex-wrap: wrap; gap: 8px; padding-block: 9px; }
+.cf-head .cf-title { flex: 1 1 180px; min-width: 100px; }
+.cf-head .cf-title .p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cf-file-nav { display: flex; align-items: center; gap: 4px; min-width: 160px; max-width: 320px; }
+.cf-file-nav select { min-width: 0; flex: 1; }
+.cf-sides.with-base { grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); }
+.cf-base .cf-pane-head { color: var(--text-dim); }
+.cf-validation { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-top: 1px solid var(--border); min-height: 0; flex-shrink: 0; max-height: 40vh; overflow: auto; background: var(--bg); }
+.cf-validation-command { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cf-validation-command > input { flex: 1 1 240px; }
+.cf-validation-command label input { width: 80px; }
+.cf-validation-status { display: flex; gap: 12px; align-items: center; }
+.cf-validation-status[data-fresh="true"] strong { color: var(--green); }
+.cf-validation-output { margin: 0; overflow: auto; min-height: 64px; max-height: 200px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px var(--font-code); user-select: text; }
+.cf-validation-ran { overflow-wrap: anywhere; user-select: text; }
+.cf-draft-note { color: var(--text-dim); font-size: 11px; }
+.cf-sides.with-base > .cf-pane:not(:last-child) { border-right: 1px solid var(--border); }

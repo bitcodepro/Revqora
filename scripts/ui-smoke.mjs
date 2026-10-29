@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createProfile, launch } from "./ui-driver.mjs";
+import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
@@ -1852,6 +1853,7 @@ try {
     await studioOpenResult(); await page.waitForSelector(".studio-tree-changed"); await shot("66-studio-edit-amended");
     await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
   });
+  await conflictStudioSmoke({ page, check, shot, work });
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;

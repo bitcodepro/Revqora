@@ -671,3 +671,17 @@ export interface StudioReport {
   warning: string | null; error: string | null; candidateHead: string | null;
 }
 export interface StudioComparison { before: PlanCommit[]; after: PlanCommit[]; sameTree: boolean; rangeDiff: string | null; note: string | null; truncated: boolean; }
+export interface ValidationReport {
+  id: string;
+  repositoryRoot: string;
+  command: string;
+  phase: "queued" | "running" | "passed" | "failed" | "cancelled" | "timed-out";
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+  exitCode: number | null;
+  elapsedMs: number;
+  beforeState: string | null;
+  afterState: string | null;
+  error: string | null;
+}

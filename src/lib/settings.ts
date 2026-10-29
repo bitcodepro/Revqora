@@ -35,6 +35,8 @@ export interface Settings {
   shortcuts: Record<string, string>;
   onboarded: boolean;
   syncScroll: boolean;
+  mergeShowBase: boolean;
+  validationCommands: Record<string, string[]>;
   diffFullFile: boolean;
   checkUpdates: boolean;
   /** Background fetch interval in minutes; 0 turns it off. */
@@ -81,6 +83,8 @@ export const useSettings = create<Settings>()(
       shortcuts: {},
       onboarded: false,
       syncScroll: true,
+      mergeShowBase: true,
+      validationCommands: {},
       diffFullFile: false,
       checkUpdates: true,
       autoFetchMinutes: 5,
