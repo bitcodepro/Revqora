@@ -1,3 +1,5 @@
+import { matchesRule } from "./branchProtection";
+export { matchesRule } from "./branchProtection";
 import type { ManagedBranch, Worktree } from "./types";
 import { repositoryKey } from "./repositoryLibrary";
 
@@ -22,18 +24,6 @@ export function restoreBranchPreferences(value: unknown): BranchPreferences {
 export function preferencesKey(root: string) { return `revqora.branch-manager.${repositoryKey(root)}`; }
 export function loadBranchPreferences(root: string) {
   try { return restoreBranchPreferences(JSON.parse(localStorage.getItem(preferencesKey(root)) ?? "null")); } catch { return restoreBranchPreferences(null); }
-}
-/** Linear wildcard matcher; user rules are never evaluated as regular expressions. */
-export function matchesRule(name: string, pattern: string): boolean {
-  let n = 0, p = 0, star = -1, retry = 0;
-  while (n < name.length) {
-    if (p < pattern.length && (pattern[p] === "?" || pattern[p] === name[n])) { n++; p++; }
-    else if (pattern[p] === "*") { star = p++; retry = n; }
-    else if (star >= 0) { p = star + 1; n = ++retry; }
-    else return false;
-  }
-  while (pattern[p] === "*") p++;
-  return p === pattern.length;
 }
 export function isProtected(branch: ManagedBranch, rules: string[]) {
   return branch.protectionNames.some(name => rules.some(rule => matchesRule(name, rule)));

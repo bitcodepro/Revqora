@@ -144,7 +144,7 @@ export function BranchManager({ root }: { root: string }) {
           <button className="btn" disabled={!ready || branch.current || !!worktrees.length} onClick={() => action(() => A.checkout(root, branch.name, branch.local ? "local" : "remote"))}>Checkout</button>
           {branch.local && <button className="btn" disabled={!ready} onClick={() => action(() => A.setUpstream(root, branch.name))}>Set upstream…</button>}
           <button className="btn" disabled={!destructive || !!worktrees.length} onClick={() => action(() => branch.local ? A.renameBranch(root, branch.name) : renameRemoteBranch(root, branch.name))}>Rename…</button>
-          <button className="btn danger" disabled={!destructive || branch.current || !!worktrees.length} onClick={() => action(() => branch.local ? A.deleteBranch(root, branch.name) : A.deleteRemoteBranch(root, branch.name))}>Review deletion…</button>
+          <button className="btn danger" disabled={!destructive || branch.current || !!worktrees.length} onClick={() => action(() => branch.local ? A.deleteBranch(root, branch.name, prefs.protections) : A.deleteRemoteBranch(root, branch.name, prefs.protections))}>Review deletion…</button>
         </div>
       </> : <p>Select a branch to inspect its history and worktrees.</p>}</aside>
     </div>

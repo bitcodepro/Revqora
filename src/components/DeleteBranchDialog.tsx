@@ -8,13 +8,14 @@ import { ALL, useRepos } from "../lib/store";
 import { endBusy, startBusy, toast, useUi } from "../lib/ui";
 import { Modal } from "./Modal";
 import { recoveryDialog } from "./RecoveryCenter";
+import { deletionProtection } from "../lib/branchProtection";
 import "../styles/branchReview.css";
 
 const targetVersion = (t: RemoteBranchTarget | null | undefined) => t ? JSON.stringify([deletionTargetKey(t), t.pushUrl, t.trackingRef, t.oid]) : "";
 const integrationText = (value: string) => value === "reachable" ? "Commits reachable from target" : value === "content-integrated" ? "Changes appear integrated (squash/rebase estimate)" : value === "not-integrated" ? "Changes not confirmed as integrated" : "Content integration could not be determined";
 
-export function DeleteBranchDialog({ root, name, targets, expectedState, remoteOnly = false, onClose }: {
-  root: string; name: string; targets: RemoteBranchTarget[]; expectedState?: string | null; remoteOnly?: boolean; onClose: () => void;
+export function DeleteBranchDialog({ root, name, targets, expectedState, remoteOnly = false, protectionRules, onClose }: {
+  root: string; name: string; targets: RemoteBranchTarget[]; expectedState?: string | null; remoteOnly?: boolean; protectionRules?: string[]; onClose: () => void;
 }) {
   const [includeRemote, setIncludeRemote] = useState(remoteOnly);
   const [selected, setSelected] = useState(targets[0] ? deletionTargetKey(targets[0]) : "");
@@ -36,6 +37,8 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
   const localDoneRef = useRef(false);
   const deletedLocalOid = useRef<string | undefined>(undefined);
   const target = review?.target ?? targets.find((t) => deletionTargetKey(t) === selected);
+  const localProtection = deletionProtection(protectionRules, !remoteOnly && !localDone ? name : null, null);
+  const remoteProtection = deletionProtection(protectionRules, null, target);
   const ready = !!plan && targetVersion(plan.proof.target) === targetVersion(target)
     && (base === undefined || (base || null) === plan.proof.baseRef);
   const resetForce = () => { setForceRequired(false); setForce(false); setError(null); };
@@ -56,7 +59,8 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
   useEffect(() => { void loadPlan(!first.current); return () => { version.current++; }; }, [loadPlan]);
   const blocked = busy || loading || !ready || stale || (!remoteOnly && !localDone && !!plan?.worktrees.length)
     || (includeRemote && remoteChanged) || (forceRequired && !force)
-    || (includeRemote && !!review && !reviewConfirmed) || (includeRemote && !target);
+    || (includeRemote && !!review && !reviewConfirmed) || (includeRemote && !target)
+    || !!localProtection || (includeRemote && !!remoteProtection);
   const close = () => {
     if (busy) return;
     if (localDone) toast.warning(`Local branch ${name} deleted`, `Remote deletion of ${target?.label ?? ""} was not completed. The recovery checkpoint remains available.`);
@@ -65,6 +69,10 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
   const openCheckpoint = (id: string) => { onClose(); void recoveryDialog(root, id); };
   const submit = async () => {
     if (blocked || !plan) return;
+    // Recheck the exact proof sent to the backend, including a refreshed target.
+    // Reject the entire combined action before deleting its unprotected local half.
+    const protection = deletionProtection(protectionRules, !remoteOnly && !localDone ? plan.proof.name : null, includeRemote ? plan.proof.target : null);
+    if (protection) { setError(protection); return; }
     setBusy(true); setError(null);
     const id = newOpId(); startBusy(id, `Deleting ${name}`);
     let deletedLocal = localDone;
@@ -72,7 +80,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
     const warnings: string[] = [];
     try {
       if (!remoteOnly && !deletedLocal) {
-        const result = await api.branchDeleteReviewed(root, plan.proof, includeRemote, force, plan.stateToken);
+        const result = await api.branchDeleteReviewed(root, plan.proof, includeRemote, force, plan.stateToken, protectionRules);
         saved = result.checkpoint; setCheckpoint(saved);
         if (result.warning) warnings.push(result.warning);
         // Pin the tip actually deleted by this successful mutation. A refreshed
@@ -81,7 +89,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
         deletedLocal = true; localDoneRef.current = true; setLocalDone(true);
       }
       if (includeRemote && target) {
-        const result = await api.branchDeleteRemoteReviewed(root, plan.proof, force || (!!review && reviewConfirmed), id, remoteOnly ? plan.stateToken : undefined);
+        const result = await api.branchDeleteRemoteReviewed(root, plan.proof, force || (!!review && reviewConfirmed), id, remoteOnly ? plan.stateToken : undefined, protectionRules);
         saved = result.checkpoint; setCheckpoint(saved);
         if (result.warning) warnings.push(result.warning);
       }
@@ -161,10 +169,11 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
       </div>
       {remoteOnly && <div className="callout">The local branch and its worktrees are kept. Only the reviewed server branch will be deleted.</div>}
       {!remoteOnly && <label className="delete-branch-option">
-        <input className="delete-remote-branch" type="checkbox" disabled={busy || localDone || !targets.length} checked={includeRemote}
-          onChange={(e) => { setIncludeRemote(e.target.checked); resetForce(); }} />
+        <input className="delete-remote-branch" type="checkbox" disabled={busy || localDone || !targets.length || (!!remoteProtection && !includeRemote)} checked={includeRemote}
+          onChange={(e) => { if (e.target.checked && remoteProtection) return; setIncludeRemote(e.target.checked); resetForce(); }} />
         <span>Also delete remote branch{targets.length === 1 ? <b> {targets[0].label}</b> : ""}</span>
       </label>}
+      {(localProtection || remoteProtection) && <div className="callout warn branch-deletion-protection" role="alert">{localProtection ?? remoteProtection}{!remoteOnly && !localProtection && " Local-only deletion remains available."}</div>}
       {targets.length > 1 && <label className="field">Remote branch
         <select className="input" aria-label="Remote branch" value={selected} disabled={busy || localDone || loading}
           onChange={(e) => { setSelected(e.target.value); setReview(null); setRemoteChanged(false); setReviewConfirmed(false); resetForce(); }}>{targets.map((t) => <option key={deletionTargetKey(t)} value={deletionTargetKey(t)}>{t.label}</option>)}</select>

@@ -1,5 +1,5 @@
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
-import { branchManagerSmoke } from "./branch-manager-smoke.mjs";
+import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manager-smoke.mjs";
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
 //   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
@@ -1880,6 +1880,7 @@ try {
   await page.locator(".topbar .repo-current > b").filter({ hasText: workspaceActive }).waitFor();
   await repositoryWorkspaceSmoke({ page, check, shot, work });
   await branchManagerSmoke({ page, check, shot, work });
+  await branchManagerProtectionSmoke({ page, check, shot, work });
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;

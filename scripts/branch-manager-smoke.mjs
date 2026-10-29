@@ -132,6 +132,61 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
   });
 }
 
+export async function branchManagerProtectionSmoke({ page, check, shot, work }) {
+  const git = (dir,...args) => execFileSync("git",["-C",dir,...args],{encoding:"utf8",windowsHide:true}).trim();
+  const invoke = (command,args) => page.evaluate(({command,args}) => window.__TAURI_INTERNALS__.invoke(command,args),{command,args});
+  for (const alias of [false,true]) await check(`manager combined deletion enforces protection for ${alias ? "aliased" : "standard"} upstreams`,async()=>{
+    const name=`stage9-protection-${alias ? "alias" : "standard"}`,root=path.join(work,name),server=path.join(work,name+".git");
+    fs.mkdirSync(root);git(root,"init","-q","-b","main");
+    for(const [key,value] of [["user.name","Protection Tester"],["user.email","protection@example.invalid"],["commit.gpgsign","false"],["core.autocrlf","false"],["core.hooksPath",".git/hooks"]])git(root,"config",key,value);
+    fs.writeFileSync(path.join(root,"file.txt"),"retained by main\n");git(root,"add",".");git(root,"commit","-qm","Protection fixture");git(root,"branch","topic");
+    const oid=git(root,"rev-parse","HEAD"),index=fs.readFileSync(path.join(root,".git/index"));
+    git(root,"clone","--bare",".",server);git(server,"config","receive.denyDeleteCurrent","ignore");git(root,"remote","add","origin",server);
+    if(alias){git(root,"config","remote.origin.fetch","+refs/heads/main:refs/remotes/origin/innocent");git(root,"config","--add","remote.origin.fetch","+refs/heads/topic:refs/remotes/origin/topic");}
+    git(root,"fetch","-q","origin");
+    const trackTopic=()=>{git(root,"config","branch.topic.remote","origin");git(root,"config","branch.topic.merge","refs/heads/main");};trackTopic();
+    await invoke("plugin:event|emit",{event:"open-paths",payload:[root]});
+    await page.locator(".topbar .repo-current > b").filter({hasText:name}).waitFor();
+    await page.getByRole("button",{name:"Open branch manager",exact:true}).click();await page.waitForSelector(".bm-body[aria-busy=false]");
+    const openReview=async()=>{
+      await page.getByRole("textbox",{name:"Search branches"}).fill("topic");await page.locator('[data-branch-ref="refs/heads/topic"]').click();
+      await page.locator(".branch-manager").getByRole("button",{name:"Review deletion…",exact:true}).click();
+      await page.waitForSelector(".branch-review[aria-busy=false][data-review-local-oid]");
+    };
+    await openReview();
+    const checkbox=page.locator(".delete-remote-branch"),submit=page.locator(".delete-branch-confirm");
+    if(!await checkbox.isDisabled() || await checkbox.isChecked() || !await submit.isEnabled())throw new Error("Protected upstream did not leave only local deletion available");
+    await page.locator(".branch-deletion-protection").filter({hasText:"main is protected"}).waitFor();
+    // Exercise the backend independently of the disabled checkbox. The entire
+    // combined action must fail before deleting topic, even with force=true.
+    const targets=await invoke("branch_delete_targets",{repo:root,name:"topic"});
+    const target=targets.find(t=>t.remoteRef==="refs/heads/main");
+    const plan=await invoke("branch_delete_plan",{repo:root,name:"topic",base:"refs/heads/main",target,remoteOnly:false});
+    const error=await page.evaluate(async({root,plan})=>{
+      try{await window.__TAURI_INTERNALS__.invoke("branch_delete_reviewed",{repo:root,review:plan.proof,includeRemote:true,force:true,expectedState:plan.stateToken,protectionRules:["main","master","develop","release/*"]});return null;}catch(e){return e;}
+    },{root,plan});
+    if(error?.kind!=="protected-branch" || git(root,"rev-parse","topic")!==oid || git(server,"rev-parse","main")!==oid)throw new Error("Combined deletion bypassed backend protection");
+    const remote=page.getByRole("combobox",{name:"Remote branch",exact:true});
+    await remote.selectOption({label:"origin/topic"});await page.waitForSelector(".branch-review[aria-busy=false][data-review-local-oid]");await checkbox.check();
+    await remote.selectOption({label:"origin/main"});await page.waitForSelector(".branch-review[aria-busy=false][data-review-local-oid]");
+    if(await submit.isEnabled())throw new Error("Switching the selected target bypassed protection");
+    await page.getByRole("button",{name:"Refresh remote state for review",exact:true}).click();await page.waitForSelector(".branch-review[aria-busy=false][data-review-local-oid]");
+    await page.waitForSelector(".remote-deletion-review");await page.locator(".confirm-reviewed-remote").check();
+    if(await submit.isEnabled())throw new Error("Refreshing or confirming the protected target bypassed protection");
+    await checkbox.uncheck();if(!await submit.isEnabled())throw new Error("Local-only deletion became unavailable");
+    await shot(`82-protected-combined-${alias ? "alias" : "standard"}`);
+    await submit.click();await page.waitForSelector(".modal",{state:"detached",timeout:180000});
+    if(git(root,"for-each-ref","--format=%(objectname)","refs/heads/topic") || git(server,"rev-parse","main")!==oid || git(server,"rev-parse","topic")!==oid || !fs.readFileSync(path.join(root,".git/index")).equals(index))throw new Error("Local-only deletion changed protected remote or index");
+    // Explicitly editing the rule is the only supported way to allow main.
+    git(root,"branch","topic");trackTopic();await page.getByRole("button",{name:"Refresh branches",exact:true}).click();await page.waitForSelector(".bm-body[aria-busy=false]");
+    await page.getByRole("button",{name:"Protection rules",exact:true}).click();await page.getByRole("textbox",{name:"Branch protection rules"}).fill("master\ndevelop\nrelease/*");await page.getByRole("button",{name:"Save rules",exact:true}).click();
+    await openReview();if(await checkbox.isDisabled())throw new Error("Edited rules did not allow the reviewed target");
+    await checkbox.check();await submit.click();await page.waitForSelector(".modal",{state:"detached",timeout:180000});
+    if(git(root,"for-each-ref","--format=%(objectname)","refs/heads/topic") || git(server,"for-each-ref","--format=%(objectname)","refs/heads/main") || git(root,"rev-parse","main")!==oid)throw new Error("Explicit rule change did not authorize exactly the selected deletions");
+    await page.getByRole("button",{name:"Close branch manager",exact:true}).click();
+  });
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const work = createProfile("branch-manager-");
   if (!process.argv.includes("--exe")) throw new Error("Pass --exe <built application>");
@@ -141,7 +196,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const errors = []; app.page.on("pageerror", e => errors.push(e.message));
   try {
     await app.page.getByRole("button", { name:"Skip", exact:true }).click({ timeout:60000 });
-    await branchManagerSmoke({ page:app.page, work, check: async (name,fn) => { await fn(); console.log(`PASS ${name}`); }, shot: name => app.page.screenshot({path:path.join(out,`${name}.png`)}) });
+    await app.page.getByTitle("Settings",{exact:true}).click();await app.page.locator(".modal label:has-text('Auto fetch') + .seg").getByRole("button",{name:"Off",exact:true}).click();await app.page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
+    if (!process.argv.includes("--protection-only")) await branchManagerSmoke({ page:app.page, work, check: async (name,fn) => { await fn(); console.log(`PASS ${name}`); }, shot: name => app.page.screenshot({path:path.join(out,`${name}.png`)}) });
+    await branchManagerProtectionSmoke({ page:app.page, work, check: async (name,fn) => { await fn(); console.log(`PASS ${name}`); }, shot: name => app.page.screenshot({path:path.join(out,`${name}.png`)}) });
     if (errors.length) throw new Error(errors.join("\n"));
   } catch (e) {
     await app.page.screenshot({ path:path.join(out,"failure.png") }).catch(() => {});

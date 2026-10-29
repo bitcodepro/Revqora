@@ -316,13 +316,21 @@ fn checkpoint(root: &Path, proof: &DeletionProof, command: &str, expected: Optio
     recovery::reference_checkpoint(root, command, &format!("Before deleting {}", proof.name), &references, expected)
 }
 
-pub fn delete_local(root: &Path, proof: &DeletionProof, include_remote: bool, force: bool, expected: Option<&str>) -> GitResult<DeletionResult> {
+pub fn delete_local(
+    root: &Path,
+    proof: &DeletionProof,
+    include_remote: bool,
+    force: bool,
+    expected: Option<&str>,
+    protection_rules: Option<&[String]>,
+) -> GitResult<DeletionResult> {
     operations::access(
         root,
         true,
         |_, _| {},
         || {
             validate(root, proof, true)?;
+            super::branch_protection::require_allowed(protection_rules, Some(&proof.name), if include_remote { proof.target.as_ref() } else { None })?;
             if include_remote && proof.target.is_none() {
                 return Err(stale("Choose the remote branch to delete."));
             }
@@ -347,7 +355,14 @@ pub fn delete_local(root: &Path, proof: &DeletionProof, include_remote: bool, fo
     )
 }
 
-pub fn delete_remote(root: &Path, proof: &DeletionProof, force: bool, expected: Option<&str>, on_line: impl FnMut(&str)) -> GitResult<DeletionResult> {
+pub fn delete_remote(
+    root: &Path,
+    proof: &DeletionProof,
+    force: bool,
+    expected: Option<&str>,
+    protection_rules: Option<&[String]>,
+    on_line: impl FnMut(&str),
+) -> GitResult<DeletionResult> {
     operations::access(
         root,
         true,
@@ -355,6 +370,7 @@ pub fn delete_remote(root: &Path, proof: &DeletionProof, force: bool, expected: 
         || {
             validate(root, proof, false)?;
             let target = proof.target.as_ref().ok_or_else(|| stale("Choose the remote branch to delete."))?;
+            super::branch_protection::require_allowed(protection_rules, None, Some(target))?;
             require_retained(root, proof, false, true, force)?;
             let checkpoint = checkpoint(root, proof, "branch_delete_remote_reviewed", expected)?;
             validate(root, proof, false)?;
