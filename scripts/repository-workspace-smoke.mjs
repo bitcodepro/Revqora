@@ -11,12 +11,17 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
   const commit = (dir, text) => { fs.writeFileSync(path.join(dir, "file.txt"), text); git(dir, "add", "."); git(dir, "commit", "-qm", text); return git(dir, "rev-parse", "HEAD"); };
   init(root); init(second); commit(root, "workspace base"); commit(second, "tools base");
   git(root, "clone", "--bare", ".", bare); git(root, "remote", "add", "origin", bare); git(root, "fetch", "origin"); git(root, "branch", "--set-upstream-to=origin/main"); git(root, "clone", bare, peer); git(peer, "config", "user.name", "Peer"); git(peer, "config", "user.email", "peer@example.com"); git(peer, "config", "commit.gpgsign", "false");
-  const open = async (dir) => { await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), dir); await page.waitForSelector(`.repository-item.active .repository-label:has-text('${path.basename(dir)}')`); };
+  // Saved workspaces may deliberately hide the repository panel (focus mode).
+  // Observe the always-visible active repository instead of a hidden list row.
+  const waitActive = (name) => page.locator(".topbar .repo-current > b").filter({ hasText: name }).waitFor();
+  const open = async (dir) => { await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), dir); await waitActive(path.basename(dir)); };
   const library = async (tab) => { await page.getByRole("button", { name: "Repository library and workspaces", exact: true }).click(); await page.locator(".library-tabs").getByRole("button", { name: tab, exact: true }).click(); };
   const done = () => page.locator(".modal").last().getByRole("button", { name: "Done", exact: true }).click();
   const save = async (name) => { await library("Workspaces"); await page.getByRole("button", { name: "Save current as…", exact: true }).click(); await page.locator(".modal").last().locator("input").fill(name); await page.locator(".modal").last().getByRole("button", { name: "OK", exact: true }).click(); await page.waitForSelector(`.library-row:has-text('${name} · Active')`); await done(); };
   await check("repository favorites and groups retain closed bookmarks and collapse state", async () => {
     // Start this suite with its own repository set, leaving all working trees intact.
+    const repositoriesToggle = page.getByRole("button", { name: "Toggle repositories panel", exact: true });
+    if (await repositoriesToggle.getAttribute("aria-expanded") === "false") await repositoriesToggle.click();
     while (await page.locator(".repository-close").count()) await page.locator(".repository-close").first().click();
     await open(root);
     await page.getByRole("button", { name: "Favorite stage8-workspace", exact: true }).click();
@@ -26,10 +31,10 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     await page.getByLabel("Group for stage8-workspace", { exact: true }).selectOption(group); await done();
     await page.getByRole("button", { name: "Close stage8-workspace", exact: true }).click();
     // The library remains available even with no open repositories.
-    await library("Repositories"); await page.locator(".library-row", { hasText: "stage8-workspace" }).getByRole("button", { name: "Open", exact: true }).click(); await page.waitForSelector(".repository-item.active .repository-label:has-text('stage8-workspace')");
+    await library("Repositories"); await page.locator(".library-row", { hasText: "stage8-workspace" }).getByRole("button", { name: "Open", exact: true }).click(); await waitActive("stage8-workspace");
     const header = page.locator(".repository-group", { hasText: "Stage 8 projects" }); await header.click(); if (await header.getAttribute("aria-expanded") !== "false") throw new Error("group did not collapse");
     await page.reload(); await page.waitForSelector(".repository-group:has-text('Stage 8 projects')[aria-expanded='false']"); await header.click();
-    await page.waitForSelector(".repository-item.active .repository-label:has-text('stage8-workspace')");
+    await waitActive("stage8-workspace");
     if (await page.getByRole("button", { name: "Unfavorite stage8-workspace", exact: true }).count() !== 1) throw new Error("favorite duplicated or was lost"); await shot("75-repository-library");
   });
   await check("saved workspaces restore repository sets, views and panel layout without switching Git branches", async () => {
@@ -42,14 +47,14 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     if (await branches.getAttribute("aria-expanded") === "false") await branches.click();
     await save("Stage8 all");
     const ids = await page.evaluate(() => Object.fromEntries(JSON.parse(localStorage.getItem("revqora.repositories")).state.workspaces.map((w) => [w.name, w.id])));
-    await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 focused"]); await page.waitForSelector(".repository-item.active .repository-label:has-text('stage8-workspace')");
-    await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 all"]); await page.waitForSelector(".repository-item.active .repository-label:has-text('stage8-tools')");
+    await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 focused"]); await waitActive("stage8-workspace");
+    await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 all"]); await waitActive("stage8-tools");
     if (await page.locator(".history-mode button.on").innerText() !== "Graph") throw new Error("workspace did not restore history mode");
-    await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 focused"]); await page.waitForSelector(".repository-item.active .repository-label:has-text('stage8-workspace')");
+    await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 focused"]); await waitActive("stage8-workspace");
     if (await page.locator(".repository-close").count() !== 1 || await page.locator(".history-mode button.on").innerText() !== "Columns") throw new Error("workspace did not restore repository set");
     if (await branches.getAttribute("aria-expanded") !== "false") throw new Error("workspace did not restore panel visibility");
     if (git(root, "branch", "--show-current") !== "main" || git(second, "branch", "--show-current") !== "main") throw new Error("workspace checked out a branch");
-    await page.reload(); await page.waitForSelector(".repository-item.active .repository-label:has-text('stage8-workspace')"); await shot("76-saved-workspace");
+    await page.reload(); await waitActive("stage8-workspace"); await shot("76-saved-workspace");
     if (await branches.getAttribute("aria-expanded") !== "false") throw new Error("restart lost workspace panel visibility");
   });
   await check("Sync reviews exact incoming revisions and requires opt-in before publishing outgoing commits", async () => {
