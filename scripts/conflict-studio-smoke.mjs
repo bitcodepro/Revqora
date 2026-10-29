@@ -128,26 +128,26 @@ export async function conflictStudioSmoke({ page, check, shot, work }) {
     git("merge", "--abort"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".op-banner", { state: "detached" }); await toolsValidation();
   });
   await check("a second validation completes while the first check's terminal sidebar refresh is deferred", async () => {
-    await page.evaluate((root) => {
+    await page.evaluate(() => {
       const original = window.fetch;
       const endpoint = (command) => window.__TAURI_INTERNALS__.convertFileSrc(command, "ipc");
       const normalized = (value) => value?.replaceAll("\\", "/");
-      const race = window.__validationReviewRace = { armed: false, held: false, original, release: null };
+      const race = window.__validationReviewRace = { armed: false, held: false, original, release: null, repositoryRoot: null };
       // Tauri's invoke property is immutable. Delay its fetch transport just as
       // the other native IPC-generation regressions in ui-smoke do.
       window.fetch = async function(input, init) {
         const response = await original.call(this, input, init);
         if (String(input) === endpoint("validation_report")) {
           const value = await response.clone().json();
-          if (value?.command === "echo review-first" && value.phase === "passed") race.armed = true;
+          if (value?.command === "echo review-first" && value.phase === "passed") { race.armed = true; race.repositoryRoot = value.repositoryRoot; }
         }
         if (String(input) === endpoint("repo_extras") && race.armed && !race.held) {
           const args = JSON.parse(init?.body || "{}");
-          if (normalized(args.repo) === normalized(root)) { race.held = true; await new Promise((resolve) => { race.release = resolve; }); }
+          if (normalized(args.repo) === normalized(race.repositoryRoot)) { race.held = true; await new Promise((resolve) => { race.release = resolve; }); }
         }
         return response;
       };
-    }, root);
+    });
     try {
       await run("echo review-first"); await page.waitForSelector(".cf-validation-status[data-phase='passed']");
       await page.waitForFunction(() => window.__validationReviewRace?.release !== null && window.__validationReviewRace?.held);
