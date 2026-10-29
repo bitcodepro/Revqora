@@ -348,7 +348,9 @@ fn transaction_lock(root: &Path, expected: Option<&str>) -> GitResult<File> {
     Ok(file)
 }
 fn save(root: &Path, report: &Report) -> GitResult<()> {
-    let dir = directory(root)?;
+    // tempfile persists with raw Win32 APIs. Canonicalization supplies the
+    // extended-length prefix for both paths, including atomic replacements.
+    let dir = fs::canonicalize(directory(root)?)?;
     let path = dir.join("last.json");
     if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink() || !m.is_file()) {
         return Err(fail("Unsafe Rebase Studio record."));

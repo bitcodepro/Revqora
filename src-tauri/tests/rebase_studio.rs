@@ -431,3 +431,54 @@ fn unexpected_ref_changes_by_user_hooks_are_recorded_and_warned_about() {
     assert_eq!(change.before, r.a);
     assert_eq!(change.after.as_deref(), Some(r.base.as_str()));
 }
+
+#[cfg(windows)]
+mod windows_long_profile {
+    use super::*;
+    use std::os::windows::ffi::OsStrExt;
+    use std::process::Command;
+
+    #[test]
+    fn report_creation_and_replacement_survive_a_long_portable_profile() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut profile = temporary.path().join("portable profile");
+        let length = profile.as_os_str().encode_wide().count();
+        if length < 150 {
+            profile.push("p".repeat(149 - length));
+        }
+        fs::create_dir_all(&profile).unwrap();
+        // Portable storage is cached per process. Give this case its own
+        // profile without racing the other tests' environment or data.
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "windows_long_profile::roundtrip_child", "--ignored", "--nocapture"])
+            .env("REVQORA_STUDIO_LONG_PROFILE_CHILD", "1")
+            .env("REVQORA_MULTI_INSTANCE", "1")
+            .env("WEBVIEW2_USER_DATA_FOLDER", &profile)
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+    }
+
+    #[test]
+    #[ignore = "Run through the parent with an isolated portable profile"]
+    fn roundtrip_child() {
+        assert_eq!(std::env::var("REVQORA_STUDIO_LONG_PROFILE_CHILD").as_deref(), Ok("1"));
+        let r = Repo::new();
+        let file = storage::dir(&r.root).unwrap().join("rebase-studio/last.json");
+        assert!(file.as_os_str().encode_wide().count() > 260, "Regression requires a path beyond MAX_PATH: {file:?}");
+        // Exercise Studio's longer record path without requiring the user's
+        // Git to enable core.longpaths for unrelated rebase message files.
+        assert!(storage::dir(&r.root).unwrap().join("ri-msg-1").as_os_str().encode_wide().count() < 260);
+        let items = r.items();
+        let review = r.review(&items);
+        // Start saves a new intent, then atomically replaces it with the result.
+        let result = r.start(&items, &review, false, false).unwrap();
+        assert_eq!(result.report.phase, "completed", "{:?}", result.outcome);
+        let reopened = studio::report(&r.root).unwrap().unwrap();
+        assert_eq!(reopened.id, result.report.id);
+        assert_eq!(reopened.phase, "completed");
+        assert_eq!(reopened.after_head.as_deref(), Some(r.git(&["rev-parse", "HEAD"]).as_str()));
+        assert!(reopened.after_checkpoint.is_some());
+        assert!(studio::comparison(&r.root, &reopened.id).unwrap().same_tree);
+    }
+}
