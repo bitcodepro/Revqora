@@ -3,11 +3,11 @@ import { Play, Square, Terminal, X } from "lucide-react";
 import { api } from "../lib/api";
 import { useRepos } from "../lib/store";
 import { useSettings } from "../lib/settings";
-import { toast, showDialog } from "../lib/ui";
+import { toast, showDialog, copyText } from "../lib/ui";
 import { refreshValidation, useValidation, validationFresh, validationRunning } from "../lib/validation";
 import { confirmDialog } from "./dialogs";
 import { Modal } from "./Modal";
-import { conflictHasUnsaved, useConflictDrafts } from "../lib/conflictStudio";
+import { conflictDrafts, conflictHasUnsaved, retainedConflictDrafts, useConflictDrafts } from "../lib/conflictStudio";
 import "../styles/conflictStudio.css";
 const NO_COMMANDS: string[] = [];
 
@@ -16,7 +16,10 @@ export function validationDialog(root: string) {
 }
 export function ConflictValidation({ root, dirty: localDirty = false, onClose }: { root: string; dirty?: boolean; onClose?: () => void }) {
   useConflictDrafts((s) => s.version);
-  const dirty = localDirty || conflictHasUnsaved(root);
+  const status = useRepos((s) => s.tabs[root]?.status);
+  const conflicts = status?.files.filter((f) => f.conflict).map((f) => f.path);
+  const dirty = localDirty || conflictHasUnsaved(root, conflicts);
+  const retained = conflicts && retainedConflictDrafts(root).filter(({ path }) => !conflicts.includes(path));
   const saved = useSettings((s) => s.validationCommands[root] ?? NO_COMMANDS);
   const [command, setCommand] = useState(saved[0] ?? "");
   const [timeout, setTimeoutSeconds] = useState(300);
@@ -49,6 +52,23 @@ export function ConflictValidation({ root, dirty: localDirty = false, onClose }:
       {validationRunning(report) ? <button className="btn" onClick={() => api.validationCancel(root, report!.id).catch(toast.error)}><Square size={13} /> Cancel check</button> : <button className="btn primary" disabled={busy || dirty || !command.trim() || !Number.isInteger(timeout) || timeout < 1 || timeout > 1800} onClick={run}><Play size={13} /> Run</button>}
     </div>
     {dirty && <div className="muted">Save drafts in all edited conflict files before running: checks read the files on disk.</div>}
+    {!!retained?.length && <div className="cf-retained-drafts">
+      <strong>Retained drafts for resolved files</strong>
+      <div className="muted">Kept for recovery in this session. These drafts do not block checks or overwrite files on disk.</div>
+      {retained.map(({ key, path, draft }) => <div className="hstack" style={{ flexWrap: "wrap", gap: 8 }} key={key} data-retained-draft={path}>
+        <span className="ellipsis" title={path} style={{ flex: 1 }}>{path}</span>
+        <button type="button" className="btn sm" onClick={() => showDialog<void>((close) => <Modal title={`Retained draft: ${path}`} wide onClose={() => close()} footer={<>
+          <button type="button" className="btn" onClick={() => copyText(draft.text, "Draft copied")}>Copy draft</button>
+          <button type="button" className="btn" onClick={() => close()}>Close</button>
+        </>}><textarea className="textarea mono" aria-label="Retained conflict draft" readOnly rows={14} value={draft.text} /></Modal>)}>View / copy</button>
+        <button type="button" className="btn sm" onClick={async () => {
+          if (await confirmDialog({ title: `Discard retained draft: ${path}?`, message: "Only this session buffer is removed. The working file and index are unchanged.", confirm: "Discard draft", danger: true })) {
+            // An open editor may have replaced the map entry while confirmation was open.
+            if (conflictDrafts.get(key) === draft) conflictDrafts.delete(key);
+          }
+        }}>Discard draft</button>
+      </div>)}
+    </div>}
     {report && <>
       <div className="cf-validation-status" data-phase={report.phase} data-fresh={fresh}><strong>{validationRunning(report) ? report.phase === "queued" ? "Queued" : "Running…" : fresh ? "Passed · current Git-visible state" : report.phase === "passed" ? "Passed · stale result, run again" : report.phase}</strong><span className="muted">{(report.elapsedMs / 1000).toFixed(1)} s{report.exitCode !== null ? ` · exit ${report.exitCode}` : ""}</span></div>
       <code className="cf-validation-ran">{report.command}</code>

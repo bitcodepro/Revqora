@@ -152,7 +152,7 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
   const current = tab.info?.head.branch ?? st.headName ?? "HEAD";
   const ok = conflicts.length === 0;
   const finish = async (action: () => void | Promise<unknown>) => {
-    const unsaved = conflictHasUnsaved(root);
+    const unsaved = conflictHasUnsaved(root, conflicts.map((f) => f.path));
     if (unsaved && !await confirmDialog({ title: "Unsaved conflict drafts", message: "There are unsaved editor drafts. Finishing uses the files on disk. Save those drafts first to include them.", confirm: "Use files on disk" })) return;
     if (validation && !validationFresh(validation, tab.status?.stateToken, unsaved, root)) {
       if (!await confirmDialog({ title: "Continue without a current passing check?", message: "The last validation failed, was cancelled, or belongs to an older Git-visible state. You can run it again before finishing.", confirm: "Continue anyway" })) return;
@@ -288,7 +288,7 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
         <div className="op-sub">{sub}</div>
       </div>
       <div className="hstack op-actions">
-        <button className="btn" onClick={() => validationDialog(root)}>{validationRunning(validation) ? "Check running…" : validationFresh(validation, tab.status?.stateToken, conflictHasUnsaved(root), root) ? "Checks passed" : validation ? "Check result" : "Validate"}</button>
+        <button className="btn" onClick={() => validationDialog(root)}>{validationRunning(validation) ? "Check running…" : validationFresh(validation, tab.status?.stateToken, conflictHasUnsaved(root, conflicts.map((f) => f.path)), root) ? "Checks passed" : validation ? "Check result" : "Validate"}</button>
         <fieldset disabled={(tab.pendingMutations ?? 0) > 0 || validationRunning(validation)} style={{ display: "contents", border: 0, padding: 0, margin: 0 }}>{actions}</fieldset>
       </div>
     </div>

@@ -25,6 +25,15 @@ class Drafts extends Map<string, ConflictDraft> {
 }
 export const conflictDrafts = new Drafts();
 export const conflictDraftKey = (root: string, path: string) => JSON.stringify([root, path]);
-export function conflictHasUnsaved(root: string) {
-  return [...conflictDrafts.entries()].some(([key, draft]) => (JSON.parse(key) as string[])[0] === root && draft.text !== conflictInitialText(draft.info));
+export function retainedConflictDrafts(root: string) {
+  return [...conflictDrafts.entries()].flatMap(([key, draft]) => {
+    const [repository, path] = JSON.parse(key) as string[];
+    return repository === root && draft.text !== conflictInitialText(draft.info) ? [{ key, path, draft }] : [];
+  });
+}
+export function conflictHasUnsaved(root: string, conflicts?: readonly string[]) {
+  // A file resolved from Changes, Git CLI or abort no longer has an editor in
+  // which to save its old draft. Retain that buffer for recovery, not as a gate.
+  const active = conflicts && new Set(conflicts);
+  return retainedConflictDrafts(root).some(({ path }) => !active || active.has(path));
 }

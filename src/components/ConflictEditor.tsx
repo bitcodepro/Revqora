@@ -257,7 +257,7 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
           } catch (e) { toast.error(e); }
         }}>Review current versions</button>
       </>}
-      footer={showValidation && <ConflictValidation root={root} dirty={dirty} onClose={() => setShowValidation(false)} />}
+      footer={showValidation && <ConflictValidation root={root} dirty={dirty && conflicts.includes(path)} onClose={() => setShowValidation(false)} />}
       onClose={onClose}
       onSaveDraft={async (text) => {
         await api.conflictSave(root, path, text, false, observedState.current);

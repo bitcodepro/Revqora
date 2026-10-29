@@ -19,6 +19,11 @@ during rebase the labels identify the target and the replayed commit.
   current versions** reloads the Git sides; if the disk result differs, it shows
   both texts and requires consent before retaining the old draft with a new guard.
 - Resolution never finishes a merge or creates its commit automatically.
+- If a file is resolved from Changes, external Git, or an abort, its unsaved
+  session buffer is retained for recovery but no longer blocks validation.
+  **Validate → Retained drafts for resolved files** lets you view/copy or discard
+  it without changing the working file or index. This is also available after
+  an operation ends via **Repository tools → Validate / conflict drafts**.
 
 ## Optional tests and builds
 

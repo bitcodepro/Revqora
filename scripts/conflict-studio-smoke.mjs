@@ -75,6 +75,91 @@ export async function conflictStudioSmoke({ page, check, shot, work }) {
     const catalog = await invoke("recovery_list"); if (!catalog.checkpoints.some((c) => c.command === "conflict_save" && c.workspace)) throw new Error("Resolution did not preserve a checkpoint");
     await shot("71-conflict-studio-ready");
   });
+  const toolsValidation = async () => {
+    await page.click(".toolbar button[title='Repository tools']");
+    await page.locator(".modal").last().getByRole("button", { name: "Validate / conflict drafts", exact: true }).click();
+    await page.waitForSelector(".cf-validation");
+  };
+  const discardRetained = async (file) => {
+    await page.locator(`[data-retained-draft='${file}']`).getByRole("button", { name: "Discard draft", exact: true }).click();
+    await page.locator(".modal").last().getByRole("button", { name: "Discard draft", exact: true }).click();
+    await page.locator(`[data-retained-draft='${file}']`).waitFor({ state: "detached" });
+  };
+  await check("Take ours and Mark resolved outside the editor retain recoverable drafts without blocking Run, including after abort", async () => {
+    git("merge", "--abort"); try { git("merge", "--no-commit", "incoming"); } catch {}
+    await page.click("button[title='Refresh (F5)']");
+    for (const [file, action, notice] of [["one.txt", "Take ours (current branch)", "Resolved with ours"], ["two.txt", "Mark as resolved", "Marked resolved"]]) {
+      await open(); await page.getByLabel("Conflict file", { exact: true }).selectOption(file);
+      await page.waitForSelector(`.cf-title .p:has-text('${file}')`); await result().click(); await page.keyboard.press("Control+Home");
+      await page.keyboard.insertText(`retained ${file}\n`); await waitText(`retained ${file}`);
+      await page.locator(".cf-head").getByRole("button", { name: "Close", exact: true }).click();
+      await page.click(".view-tab:has-text('Changes')");
+      await page.locator(".changes .file-row:has(.pill.red)").filter({ hasText: file }).click({ button: "right" });
+      await page.locator(".ctx-item").filter({ hasText: action }).click();
+      await page.waitForSelector(`.toast:has-text('${notice}')`);
+      if (git("ls-files", "-u", "--", file) !== "") throw new Error(`${file} was not resolved outside the editor`);
+    }
+    await page.locator(".op-banner").getByRole("button", { name: /^(Validate|Check result|Checks passed)$/ }).click();
+    await page.waitForSelector("[data-retained-draft='one.txt']"); await page.waitForSelector("[data-retained-draft='two.txt']");
+    await page.getByLabel("Validation command", { exact: true }).fill("echo recovered");
+    if (await page.locator(".cf-validation").getByRole("button", { name: "Run", exact: true }).isDisabled()) throw new Error("resolved drafts still block Run");
+    await page.locator("[data-retained-draft='one.txt']").getByRole("button", { name: "View / copy", exact: true }).click();
+    if (!(await page.getByLabel("Retained conflict draft").inputValue()).includes("retained one.txt")) throw new Error("manual draft was discarded");
+    await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+    await discardRetained("one.txt");
+    await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+    git("merge", "--abort"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".op-banner", { state: "detached" });
+    await toolsValidation(); await page.locator("[data-retained-draft='two.txt']").getByRole("button", { name: "View / copy", exact: true }).click();
+    if (!(await page.getByLabel("Retained conflict draft").inputValue()).includes("retained two.txt")) throw new Error("abort lost the retained draft");
+    await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+    await shot("72-conflict-orphaned-drafts"); await discardRetained("two.txt");
+    await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
+  });
+  await check("external resolution while the editor is open does not leave its unsaved result blocking validation", async () => {
+    try { git("merge", "--no-commit", "incoming"); } catch {}
+    await page.click("button[title='Refresh (F5)']"); await open(); await page.getByLabel("Conflict file", { exact: true }).selectOption("one.txt");
+    await result().click(); await page.keyboard.press("Control+Home"); await page.keyboard.insertText("external recovery draft\n"); await waitText("external recovery draft");
+    git("checkout", "--ours", "--", "one.txt"); git("add", "one.txt");
+    await page.locator(".cf-head").getByRole("button", { name: "Validate", exact: true }).click();
+    await page.waitForSelector("[data-retained-draft='one.txt']"); await page.getByLabel("Validation command", { exact: true }).fill("echo external");
+    if (await page.locator(".cf-validation").getByRole("button", { name: "Run", exact: true }).isDisabled()) throw new Error("open editor still blocks a resolved file");
+    await shot("73-conflict-resolved-while-open");
+    await page.locator(".cf-head").getByRole("button", { name: "Close", exact: true }).click();
+    git("merge", "--abort"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".op-banner", { state: "detached" }); await toolsValidation();
+  });
+  await check("a second validation completes while the first check's terminal sidebar refresh is deferred", async () => {
+    await page.evaluate((root) => {
+      const original = window.fetch;
+      const endpoint = (command) => window.__TAURI_INTERNALS__.convertFileSrc(command, "ipc");
+      const normalized = (value) => value?.replaceAll("\\", "/");
+      const race = window.__validationReviewRace = { armed: false, held: false, original, release: null };
+      // Tauri's invoke property is immutable. Delay its fetch transport just as
+      // the other native IPC-generation regressions in ui-smoke do.
+      window.fetch = async function(input, init) {
+        const response = await original.call(this, input, init);
+        if (String(input) === endpoint("validation_report")) {
+          const value = await response.clone().json();
+          if (value?.command === "echo review-first" && value.phase === "passed") race.armed = true;
+        }
+        if (String(input) === endpoint("repo_extras") && race.armed && !race.held) {
+          const args = JSON.parse(init?.body || "{}");
+          if (normalized(args.repo) === normalized(root)) { race.held = true; await new Promise((resolve) => { race.release = resolve; }); }
+        }
+        return response;
+      };
+    }, root);
+    try {
+      await run("echo review-first"); await page.waitForSelector(".cf-validation-status[data-phase='passed']");
+      await page.waitForFunction(() => window.__validationReviewRace?.release !== null && window.__validationReviewRace?.held);
+      await run("echo review-second");
+      await page.waitForFunction(() => document.querySelector(".cf-validation-ran")?.textContent.includes("echo review-second"));
+      await page.waitForSelector(".cf-validation-status[data-phase='passed']", { timeout: 30000 });
+      if (!(await page.locator(".cf-validation-ran").first().innerText()).includes("echo review-second")) throw new Error("old report replaced the second check");
+      await shot("74-validation-restart-during-refresh");
+    } finally {
+      await page.evaluate(() => { const race = window.__validationReviewRace; race.release?.(); window.fetch = race.original; delete window.__validationReviewRace; });
+    }
+  });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
