@@ -1,4 +1,6 @@
 .branch-review { display: flex; flex-direction: column; gap: 14px; }
+.branch-review-loading { display: flex; align-items: center; gap: 6px; }
+.branch-review-loading > svg { display: block; flex: none; transform-box: border-box; transform-origin: center; }
 .branch-review-heading { display: flex; align-items: flex-end; gap: 12px; }
 .branch-review-heading .field { flex: 1; margin: 0; }
 .branch-review-tips { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }

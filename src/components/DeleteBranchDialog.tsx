@@ -142,7 +142,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
           </label>
           <button type="button" className="btn refresh-branch-review" disabled={busy || loading} onClick={() => void loadPlan(true)}><RefreshCw size={14} /> Refresh review</button>
         </div>
-        {loading && <div className="muted"><Loader2 size={14} className="spin" /> Loading branch history and worktrees…</div>}
+        {loading && <div className="muted branch-review-loading"><Loader2 size={14} className="spin" /><span>Loading branch history and worktrees…</span></div>}
         {ready && plan && <>
           <div className="branch-review-tips">
             <div><span>Local {localDone ? "(deleted)" : remoteOnly ? "(kept)" : ""}</span><b>{plan.proof.localPresent || !remoteOnly ? name : "No matching local branch"}</b><code title={plan.proof.localPresent || !remoteOnly ? plan.proof.localOid : undefined}>{plan.proof.localPresent || !remoteOnly ? shortOid(plan.proof.localOid) : "—"}</code>
