@@ -1,4 +1,5 @@
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
+import { branchManagerSmoke } from "./branch-manager-smoke.mjs";
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
 //   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
@@ -355,7 +356,7 @@ try {
   });
 
   await check("typing into a dialog keeps every character", async () => {
-    await page.click(".tb-btn:has-text('Branch')");
+    await page.getByRole("button", { name: "Branch", exact: true }).click();
     const input = page.locator(".modal input.input");
     await input.waitFor();
     await page.waitForTimeout(200);
@@ -1874,6 +1875,7 @@ try {
   await page.reload();
   await page.locator(".topbar .repo-current > b").filter({ hasText: workspaceActive }).waitFor();
   await repositoryWorkspaceSmoke({ page, check, shot, work });
+  await branchManagerSmoke({ page, check, shot, work });
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;

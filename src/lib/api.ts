@@ -70,6 +70,8 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  branchManagerSnapshot: (repo: string, base: string | null) => call<import("./types").BranchManagerSnapshot>("branch_manager_snapshot", { repo, base }),
+  branchManagerCompare: (repo: string, base: string, tip: string) => call<{ ahead: number; behind: number }>("branch_manager_compare", { repo, base, tip }),
   syncPrepare: (repo: string) => call<SyncPlan>("sync_prepare", { repo }),
   syncExecute: (repo: string, plan: SyncPlan, receive: boolean, send: boolean) => call<SyncResult>("sync_execute", { repo, plan, receive, send, expectedState: plan.stateToken }),
   validationStart: (repo: string, command: string, expectedState: string, timeoutSeconds: number) => call<ValidationReport>("validation_start", { repo, command, expectedState, timeoutSeconds }),

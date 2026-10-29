@@ -701,3 +701,12 @@ export interface SyncResult {
   checkpoint: RecoverySummary;
   warnings: string[];
 }
+export interface ManagedBranch {
+  fullRef: string; name: string; oid: string; local: boolean; current: boolean;
+  upstream: string | null; ahead: number; behind: number; gone: boolean;
+  time: number; author: string; subject: string; merged: boolean | null;
+  protectionNames: string[]; mappingKnown: boolean;
+}
+export interface BranchManagerSnapshot {
+  branches: ManagedBranch[]; worktrees: Worktree[]; baseRef: string | null; baseOid: string | null;
+}

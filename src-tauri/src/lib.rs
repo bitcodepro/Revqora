@@ -1,4 +1,12 @@
 #[tauri::command]
+async fn branch_manager_snapshot(repo: String, base: Option<String>) -> git::runner::GitResult<git::branch_manager::Snapshot> {
+    blocking(move || git::branch_manager::snapshot(&p(&repo), base.as_deref())).await
+}
+#[tauri::command]
+async fn branch_manager_compare(repo: String, base: String, tip: String) -> git::runner::GitResult<git::branch_manager::Distance> {
+    blocking(move || git::branch_manager::compare(&p(&repo), &base, &tip)).await
+}
+#[tauri::command]
 async fn sync_prepare(repo: String, expected_state: Option<String>, app: AppHandle) -> git::runner::GitResult<git::sync::SyncPlan> {
     mutating(repo.clone(), expected_state, app, "sync_prepare", None, move || git::sync::prepare(&p(&repo))).await
 }
@@ -1569,6 +1577,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            branch_manager_snapshot,
+            branch_manager_compare,
             sync_prepare,
             sync_execute,
             operation_log_health,
