@@ -483,6 +483,21 @@ try {
     await page.locator(".ctx-item", { hasText: "Merge hotfix/greeting into main" }).click();
     await page.click(".modal button:has-text('Start merge')");
     await page.waitForSelector(".op-banner");
+    const previousViewport = page.viewportSize();
+    await page.setViewportSize({ width: 1028, height: 760 });
+    const banner = await page.locator(".op-banner").evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        titleWidth: element.querySelector(".op-title").getBoundingClientRect().width,
+        clipped: [...element.querySelectorAll("button")].filter((button) => {
+          const rect = button.getBoundingClientRect();
+          return rect.left < bounds.left || rect.right > bounds.right || rect.right > window.innerWidth;
+        }).map((button) => button.textContent.trim()),
+      };
+    });
+    if (banner.clipped.length || banner.titleWidth < 160) throw new Error(`narrow operation banner clips controls or hides its title: ${JSON.stringify(banner)}`);
+    await shot("05-narrow-operation-banner");
+    if (previousViewport) await page.setViewportSize(previousViewport);
     if (git("rev-parse", "HEAD") !== before) throw new Error("HEAD moved before confirmation");
     await shot("05-merge-conflict");
   });

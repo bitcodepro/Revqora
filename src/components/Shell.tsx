@@ -270,11 +270,11 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
   return (
     <div className={`op-banner ${ok && st.kind !== "bisect" ? "ok" : ""}`}>
       <div className="op-icon">{icon}</div>
-      <div style={{ minWidth: 0, flex: 1 }}>
+      <div className="op-copy">
         <div className="op-title ellipsis">{title}</div>
         <div className="op-sub">{sub}</div>
       </div>
-      <div className="hstack" style={{ gap: 6, flex: "none" }}>
+      <div className="hstack op-actions">
         <fieldset disabled={(tab.pendingMutations ?? 0) > 0} style={{ display: "contents", border: 0, padding: 0, margin: 0 }}>{actions}</fieldset>
       </div>
     </div>
