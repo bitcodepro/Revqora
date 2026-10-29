@@ -108,7 +108,7 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
       await page.waitForFunction(() => window.__branchManagerRace.returned);
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       if (await manager().locator(".bm-detail > small.mono").innerText() !== newBase.slice(0,8)) throw new Error("Old response replaced the refreshed base");
-      const beforeResize = await page.evaluate(() => ({ width:innerWidth, height:innerHeight }));
+      const beforeResize = await page.evaluate(async () => ({ width:innerWidth, height:innerHeight, dpr:devicePixelRatio, native:await window.__TAURI_INTERNALS__.invoke("plugin:window|inner_size",{}) }));
       await withViewport(page, {width:1000,height:720}, async () => {
       const frame = await manager().boundingBox(), detail = await manager().locator(".bm-detail").boundingBox(), list = await manager().locator(".bm-list").boundingBox();
       if (!frame || !detail || !list) throw new Error("Manager layout is missing");
@@ -117,13 +117,13 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
       if (frame.width <= 780 ? detail.y < list.y + list.height - 1 : detail.x < list.x + list.width - 1) throw new Error("Manager layout did not adapt to its available width");
       await shot("80-branch-manager-narrow");
       });
-      const afterResize = await page.evaluate(() => ({ width:innerWidth, height:innerHeight, right:document.querySelector(".app").getBoundingClientRect().right }));
-      if (afterResize.width !== beforeResize.width || afterResize.height !== beforeResize.height || Math.abs(afterResize.right - beforeResize.width) > 1) throw new Error("Narrow test left unused native window space");
-      const native = await page.evaluate(async () => ({
-        size: await window.__TAURI_INTERNALS__.invoke("plugin:window|inner_size",{}),
-        scale: await window.__TAURI_INTERNALS__.invoke("plugin:window|scale_factor",{}),
-      }));
-      if (Math.abs(afterResize.width - native.size.width / native.scale) > 1 || Math.abs(afterResize.height - native.size.height / native.scale) > 1) throw new Error("Restored page does not fill the native window");
+      const afterResize = await page.evaluate(() => ({ width:innerWidth, height:innerHeight, dpr:devicePixelRatio, right:document.querySelector(".app").getBoundingClientRect().right }));
+      if (afterResize.width !== beforeResize.width || afterResize.height !== beforeResize.height || Math.abs(afterResize.dpr - beforeResize.dpr) > .001 || Math.abs(afterResize.right - beforeResize.width) > 1) throw new Error(`Narrow test did not restore its native viewport: ${JSON.stringify({before:beforeResize,after:afterResize})}`);
+      // WebView's forced scale/zoom can differ from the window monitor's DPI.
+      // Preserve both measured coordinate systems rather than dividing CSS
+      // dimensions by Tauri's unrelated monitor scale.
+      const native = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("plugin:window|inner_size",{}));
+      if (Math.abs(native.width - beforeResize.native.width) > 1 || Math.abs(native.height - beforeResize.native.height) > 1) throw new Error(`Native bounds changed during viewport emulation: ${JSON.stringify({before:beforeResize,after:afterResize,native})}`);
       await shot("81-branch-manager-restored");
     } finally {
       await page.evaluate(() => { const race = window.__branchManagerRace; race.release?.(); window.fetch = race.original; delete window.__branchManagerRace; });

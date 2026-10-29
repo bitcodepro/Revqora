@@ -12,12 +12,15 @@ import { chromium } from "playwright-core";
  * Otherwise a narrow emulated page remains inside a much wider native window.
  */
 export async function withViewport(page, size, run) {
-  const previous = page.viewportSize() ?? await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  const previous = await page.evaluate(() => ({ width:innerWidth, height:innerHeight, deviceScaleFactor:devicePixelRatio, screenWidth:screen.width, screenHeight:screen.height }));
   try {
     await page.setViewportSize(size);
     return await run();
   } finally {
-    await page.setViewportSize(previous);
+    await page.setViewportSize({ width:previous.width, height:previous.height });
+    const session = await page.context().newCDPSession(page);
+    try { await session.send("Emulation.setDeviceMetricsOverride", { ...previous, mobile:false }); }
+    finally { await session.detach(); }
   }
 }
 
