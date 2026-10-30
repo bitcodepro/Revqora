@@ -170,7 +170,7 @@ fn is_bitbucket(f: &ForgeInfo) -> bool {
 /// Git helper lookups are scoped to this repository, URL path and username; never cached by host.
 fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
     let (host, path) = parse_remote(url).ok_or_else(|| GitError::new("Unsupported credential URL").kind("auth"))?;
-    let username = url::Url::parse(url).ok().map(|u| u.username().to_owned()).unwrap_or_default();
+    let username = url::Url::parse(url).ok().filter(|u| matches!(u.scheme(), "http" | "https")).map(|u| u.username().to_owned()).unwrap_or_default();
     let git_path = url::Url::parse(url)
         .ok()
         .map(|u| percent_encoding::percent_decode_str(u.path().trim_start_matches('/')).decode_utf8_lossy().into_owned())
@@ -764,6 +764,37 @@ mod connection_tests {
 #[cfg(test)]
 mod credential_scope_tests {
     use super::*;
+    #[test]
+    fn ssh_transport_users_do_not_constrain_https_account_matching() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path();
+        runner::run(repo, ["init", "-q"]).unwrap();
+        runner::run(repo, ["config", "credential.helper", ""]).unwrap();
+        runner::run(repo, ["config", "credential.username", "alice"]).unwrap();
+        // Match the complete query, not just the requested host.
+        let helper = r#"!f() {
+username=; protocol=; host=; path=;
+while IFS='=' read -r key value; do
+  case "$key" in username) username="$value";; protocol) protocol="$value";; host) host="$value";; path) path="$value";; esac
+done
+if [ "$1" = get ] && [ "$username" = alice ] && [ "$protocol" = https ] && [ "$host" = credential-scope.invalid ] && [ "$path" = team/repo.git ]; then
+  printf '%s\n' 'username=alice' 'password=fixture-token-alice'
+fi
+}; f"#;
+        runner::run(repo, ["config", "--add", "credential.helper", helper]).unwrap();
+        for url in [
+            "git@credential-scope.invalid:team/repo.git",
+            "ssh://git@credential-scope.invalid/team/repo.git",
+            "ssh://another-transport-user@credential-scope.invalid:2222/team/repo.git",
+            "https://alice@credential-scope.invalid/team/repo.git",
+        ] {
+            let c = token(repo, url).unwrap();
+            assert_eq!(c.username, "alice");
+            assert_eq!(c.token, "fixture-token-alice");
+        }
+        assert!(token(repo, "https://bob@credential-scope.invalid/team/repo.git").is_err(), "an explicit HTTPS identity must still constrain the helper");
+        assert!(!repo.join(".git/index").exists());
+    }
     #[test]
     fn git_credentials_are_read_per_repository_without_a_host_cache_or_index_write() {
         let t = tempfile::tempdir().unwrap();
