@@ -91,6 +91,7 @@ export function TopBar() {
       {root && !overview && (
         <div className="toolbar">
           <SyncButton roots={[root]} />
+          <button className="tb-btn" aria-label="Open worktree manager" title="Worktree manager" onClick={() => openOverlay({ kind: "worktrees", root })}><FolderGit2 size={15} />Worktrees</button>
           <button className="tb-btn" aria-label="Open branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root })}><GitBranch size={15} />Branches</button>
           <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes">
             <RefreshCw size={15} /> Fetch
@@ -527,6 +528,7 @@ export function CommandPalette() {
         { id: "deleted", label: "Recently deleted branches…", group: "Branch", icon: <Undo2 size={15} />, run: () => repoToolsDialog(root, "deleted") },
         { id: "patch", label: "Apply patch file…", group: "Repository", icon: <Plus size={15} />, run: () => applyPatchFile(root) },
         { id: "browse", label: "Browse files (HEAD)", group: "Repository", icon: <FolderOpen size={15} />, run: () => openOverlay({ kind: "tree", root, rev: "HEAD" }) },
+        { id: "worktree-manager", label: "Worktree manager…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => openOverlay({ kind: "worktrees", root }) },
         { id: "worktree", label: "New worktree…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => XA.addWorktree(root) },
         { id: "submodule", label: "Add submodule…", group: "Repository", icon: <Plus size={15} />, run: () => XA.addSubmodule(root) },
         { id: "submodules", label: "Update submodules", group: "Repository", icon: <RefreshCw size={15} />, run: () => XA.updateSubmodules(root) },

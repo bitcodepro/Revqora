@@ -14,8 +14,8 @@ cross-cutting work and does not consume a feature stage.
 | 7 | Conflict Studio: Base panel, navigation, user-selected validation commands | Merged (#14) |
 | 8 | Repository favorites, project groups, workspaces and explicit Sync | Merged (#15) |
 | 9 | Advanced Branch Manager | Merged (#16) |
-| 10 | Reviewed bulk branch cleanup | Implemented; review pending |
-| 11 | Worktree Manager | Planned |
+| 10 | Reviewed bulk branch cleanup | Merged (#17) |
+| 11 | Worktree Manager | Implemented; review pending |
 | 12 | Accounts and forge integrations | Planned |
 | 13 | PR Center: browse, create, edit, templates and diffs | Planned |
 | 14 | PR Center: comments, threads and review submissions | Planned |
@@ -67,3 +67,35 @@ Bulk cleanup remains stage 10; forge-side protections and PR status are later st
 - This is not a cross-server transaction. Working files are kept. Counts use
   physical commit ancestry, not replace refs; squash integration is not proof of
   retained history. Forge PR status/server policy discovery belongs to later stages.
+
+## Stage 11 — Worktree Manager
+
+- Dedicated, virtualized workspace from the toolbar, sidebar and command palette.
+  Branch, path, HEAD, staged/untracked/ignored state, ahead/behind, active operation,
+  main/current identity, lock reason and missing/prunable registration details.
+- Search, All / Changed / Locked / Missing / Detached filters, keyboard navigation,
+  deterministic sorting and per-repository preferences. Refresh on external events,
+  window focus and a visible ten-second poll; stale responses cannot replace new data.
+- Open another worktree as a repository tab without checking out the original branch.
+- Preview existing/new-branch or detached creation. New/detached starts are immutable
+  commit IDs. Existing branches must be free, direct local refs; occupied branches,
+  aliases, existing destinations and overlapping worktree folders are rejected.
+  Parent/registration/state changes invalidate the preview. Git errors may leave a
+  partial creation; the UI requires a fresh review and never automatically retries.
+- Explicit lock/unlock with a reason; locked missing folders are excluded from cleanup.
+- Removal verifies main/current/locked state, exact registration/Git identity and
+  target/source state. Complete recovery includes working files, ignored paths,
+  assume-unchanged/skip-worktree content/absence, empty folders and the raw index.
+  A full snapshot is bounded to 100 MiB / 20,000 paths; the worktree stays if capture
+  cannot complete. Nested repositories/submodules, directory links and active Git
+  operations are blocked. Revqora's own executable/profile cannot be removed.
+- Preview/select at most 50 missing registrations. Explicit exclusions survive review
+  refresh. Scoped native removal (without force) affects only reviewed missing paths,
+  with HEAD recovery pins saved first; branches stay. Reappeared folders and external
+  registrations invalidate review. Execution stops after a failure and distinguishes
+  removed, kept/not-attempted and unknown results with the saved checkpoint.
+- These are optimistic preconditions, not a lock against external IDE/CLI writers.
+  Existing Git hooks run normally. Forge PR/agent status belongs to stages 12–16.
+- All previous 86 native scenarios remain; nine isolated worktree scenarios cover
+  creation modes, source staging, open/current/main restrictions, lock consent,
+  complete recovery, identity replacement, stale async previews and scoped cleanup.

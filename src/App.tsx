@@ -1,3 +1,4 @@
+import { WorktreeManager } from "./components/WorktreeManager";
 import { finishWorkspaceStartup, startWorkspaceTracking } from "./lib/repositoryWorkspaces";
 import { useLibrary } from "./lib/repositoryLibrary";
 import { useEffect, useRef, useState } from "react";
@@ -176,6 +177,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
         {tab.conflictPath && <ConflictEditor key={`${root}:${tab.conflictPath}`} root={root} path={tab.conflictPath} onClose={() => patch(root, { conflictPath: null })} />}
         {overlay?.kind === "blame" && <BlameView root={root} path={overlay.path} rev={overlay.rev} line={overlay.line} />}
         {overlay?.kind === "branches" && <BranchManager key={root} root={root} />}
+        {overlay?.kind === "worktrees" && <WorktreeManager key={root} root={root} />}
         {overlay?.kind === "stash" && <StashView key={overlay.index} root={root} index={overlay.index} />}
         {overlay?.kind === "tree" && <TreeBrowser key={overlay.rev} root={root} rev={overlay.rev} />}
         {overlay?.kind === "rebase" && <RebaseView key={overlay.oldest} root={root} oldest={overlay.oldest} />}

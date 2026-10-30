@@ -484,6 +484,8 @@ export interface Submodule {
 }
 
 export interface Worktree {
+  lockReason?: string | null;
+  pruneReason?: string | null;
   path: string;
   head: string | null;
   branch: string | null;
@@ -715,3 +717,17 @@ export interface ManagedBranch {
 export interface BranchManagerSnapshot {
   branches: ManagedBranch[]; worktrees: Worktree[]; baseRef: string | null; baseOid: string | null;
 }
+
+export interface ManagedWorktree extends Worktree {
+  isMain: boolean; exists: boolean; changedFiles: number | null; staged: number | null; untracked: number | null;
+  ignored: number | null; operation: string | null; ahead: number | null; behind: number | null; error: string | null;
+}
+export interface WorktreeManagerSnapshot { worktrees: ManagedWorktree[]; registryToken: string; stateToken: string }
+export interface WorktreeCreateRequest { path: string; mode: "existing" | "new" | "detached"; branch: string; start: string }
+export interface WorktreeCreationReview { request: WorktreeCreateRequest; path: string; startOid: string; registryToken: string; parentToken: string; stateToken: string }
+export interface WorktreeCreated { path: string; head: string | null; warning: string | null }
+export interface WorktreeProof { path: string; registryToken: string; targetState: string; contentsToken: string; stateToken: string }
+export interface WorktreeRemovalReview { target: ManagedWorktree; proof: WorktreeProof; files: number; bytes: number; requiresForce: boolean; stateToken: string }
+export interface WorktreeRemoval { path: string; removed: boolean | null; checkpoint: RecoverySummary; warning: string | null }
+export interface WorktreePruneReview { entries: { path: string; head: string | null }[]; registryToken: string; stateToken: string; remaining: number }
+export interface WorktreePruneResult { removed: string[]; kept: string[]; unknown: string[]; checkpoint: RecoverySummary; warning: string | null }

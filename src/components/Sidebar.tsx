@@ -386,7 +386,8 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
           extras?.worktrees.length ?? 0,
           <FolderGit2 size={12} />,
           <>
-            <button className="icon-btn sm" title="Prune missing worktrees" onClick={() => A.act(root, () => api.worktreePrune(root), { success: "Worktrees pruned" })}>
+            <button className="icon-btn sm" title="Worktree manager" onClick={() => openOverlay({ kind: "worktrees", root })}><FolderGit2 size={13} /></button>
+            <button className="icon-btn sm" title="Prune missing worktrees" onClick={() => X.pruneWorktrees(root)}>
               <Eraser size={12} />
             </button>
             <button className="icon-btn sm" title="New worktree" onClick={() => X.addWorktree(root)}>
@@ -406,7 +407,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
                   contextMenu(e, [
                     { label: "Open in a new tab", icon: <FolderGit2 size={14} />, disabled: w.isCurrent, onClick: () => A.openRepoPath(w.path) },
                     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(w.path) },
-                    { label: w.locked ? "Unlock" : "Lock", icon: <Lock size={14} />, disabled: w.isCurrent, onClick: () => A.act(root, () => api.worktreeLock(root, w.path, !w.locked)) },
+                    { label: w.locked ? "Unlock" : "Lock", icon: <Lock size={14} />, disabled: w.isCurrent, onClick: () => X.lockWorktree(root, w.path, !w.locked) },
                     { separator: true },
                     { label: "Remove worktree…", icon: <Trash2 size={14} />, danger: true, disabled: w.isCurrent || w.locked, onClick: () => X.removeWorktree(root, w.path) },
                   ])

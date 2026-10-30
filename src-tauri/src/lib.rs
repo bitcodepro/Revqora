@@ -1135,50 +1135,75 @@ async fn submodule_sync(app: AppHandle, expected_state: Option<String>, repo: St
 }
 
 #[tauri::command]
+async fn worktree_manager_snapshot(repo: String) -> GitResult<git::worktree_manager::Snapshot> {
+    blocking(move || git::worktree_manager::snapshot(&p(&repo))).await
+}
+#[tauri::command]
+async fn worktree_create_review(repo: String, request: git::worktree_manager::CreateRequest) -> GitResult<git::worktree_manager::CreationReview> {
+    blocking(move || git::worktree_manager::creation_review(&p(&repo), request)).await
+}
+#[tauri::command]
+async fn worktree_remove_review(repo: String, path: String) -> GitResult<git::worktree_manager::RemovalReview> {
+    blocking(move || git::worktree_manager::removal_review(&p(&repo), &path)).await
+}
+#[tauri::command]
+async fn worktree_prune_review(repo: String) -> GitResult<git::worktree_manager::PruneReview> {
+    blocking(move || git::worktree_manager::prune_review(&p(&repo))).await
+}
+#[tauri::command]
 async fn worktree_add(
     app: AppHandle,
-    expected_state: Option<String>,
     repo: String,
-    path: String,
-    branch: Option<String>,
-    new_branch: Option<String>,
-    start: Option<String>,
-) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "worktree_add", None, move || {
-        extras::worktree_add(&p(&repo), &path, branch.as_deref(), new_branch.as_deref(), start.as_deref())
-    })
-    .await
+    expected_state: String,
+    review: git::worktree_manager::CreationReview,
+) -> GitResult<git::worktree_manager::Created> {
+    if expected_state.is_empty() || expected_state != review.state_token {
+        return Err(GitError::new("Prepare a worktree creation review first."));
+    }
+    mutating(repo.clone(), Some(expected_state), app, "worktree_add", None, move || git::worktree_manager::create(&p(&repo), &review)).await
 }
-
 #[tauri::command]
 async fn worktree_remove(
     app: AppHandle,
-    expected_state: Option<String>,
-    expected_target_state: Option<String>,
     repo: String,
+    expected_state: String,
+    proof: git::worktree_manager::Proof,
+    allow_dirty: bool,
+) -> GitResult<git::worktree_manager::Removal> {
+    if expected_state.is_empty() || expected_state != proof.state_token {
+        return Err(GitError::new("Prepare a worktree removal review first."));
+    }
+    mutating(repo.clone(), Some(expected_state), app, "worktree_remove", None, move || git::worktree_manager::remove(&p(&repo), &proof, allow_dirty)).await
+}
+#[tauri::command]
+async fn worktree_lock(
+    app: AppHandle,
+    repo: String,
+    expected_state: String,
     path: String,
-    force: bool,
+    registry_token: String,
+    lock: bool,
+    reason: String,
 ) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "worktree_remove", None, move || {
-        if let Some(expected) = &expected_target_state {
-            if status::status(&p(&path))?.state_token.as_deref() != Some(expected.as_str()) {
-                return Err(GitError::new("The worktree changed while the confirmation was open. Review it before removing it.").kind("stale-operation"));
-            }
-        }
-        recovery::automatic_expected(&p(&path), "worktree_remove", true, true, expected_target_state.as_deref())?;
-        extras::worktree_remove(&p(&repo), &path, force)
+    if expected_state.is_empty() || registry_token.is_empty() {
+        return Err(GitError::new("Refresh the worktree inventory first."));
+    }
+    mutating(repo.clone(), Some(expected_state), app, "worktree_lock", None, move || {
+        git::worktree_manager::lock(&p(&repo), &path, &registry_token, lock, &reason)
     })
     .await
 }
-
 #[tauri::command]
-async fn worktree_lock(app: AppHandle, expected_state: Option<String>, repo: String, path: String, lock: bool) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "worktree_lock", None, move || extras::worktree_lock(&p(&repo), &path, lock)).await
-}
-
-#[tauri::command]
-async fn worktree_prune(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "worktree_prune", None, move || extras::worktree_prune(&p(&repo))).await
+async fn worktree_prune(
+    app: AppHandle,
+    repo: String,
+    expected_state: String,
+    review: git::worktree_manager::PruneReview,
+) -> GitResult<git::worktree_manager::PruneResult> {
+    if expected_state.is_empty() || expected_state != review.state_token {
+        return Err(GitError::new("Review missing worktree registrations first."));
+    }
+    mutating(repo.clone(), Some(expected_state), app, "worktree_prune", None, move || git::worktree_manager::prune(&p(&repo), &review, |_| {})).await
 }
 
 #[tauri::command]
@@ -1756,6 +1781,10 @@ pub fn run() {
             submodule_update,
             submodule_add,
             submodule_sync,
+            worktree_manager_snapshot,
+            worktree_create_review,
+            worktree_remove_review,
+            worktree_prune_review,
             worktree_add,
             worktree_remove,
             worktree_lock,

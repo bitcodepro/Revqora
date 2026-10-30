@@ -177,7 +177,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [core, workspace, cleanup]
+        suite: [core, workspace, cleanup, worktrees]
     env:
       REVQORA_TEST_TMP: ${{ github.workspace }}/.ci-temp
       TEMP: ${{ github.workspace }}/.ci-temp
