@@ -74,7 +74,7 @@ fn commit_oid(root: &Path, reference: &str) -> GitResult<String> {
 
 fn count(root: &Path, base: Option<&str>, tip: &str) -> GitResult<u64> {
     let range = base.map(|base| format!("{base}..{tip}")).unwrap_or_else(|| tip.into());
-    runner::run(root, ["rev-list", "--count", &range])?.trim().parse().map_err(|_| GitError::new("Git returned an invalid commit count."))
+    super::history::run(root, ["rev-list", "--count", &range])?.trim().parse().map_err(|_| GitError::new("Git returned an invalid commit count."))
 }
 
 fn integration(root: &Path, base: Option<&str>, tip: &str, outside: u64) -> GitResult<String> {
@@ -256,7 +256,7 @@ pub fn plan(
     Ok(plan)
 }
 
-fn validate(root: &Path, proof: &DeletionProof, local: bool) -> GitResult<()> {
+pub(super) fn validate(root: &Path, proof: &DeletionProof, local: bool) -> GitResult<()> {
     runner::run(root, ["check-ref-format", "--branch", &proof.name])?;
     if !valid_oid(&proof.local_oid) {
         return Err(stale("A complete reviewed local SHA is required."));
@@ -265,6 +265,13 @@ fn validate(root: &Path, proof: &DeletionProof, local: bool) -> GitResult<()> {
     let reference = format!("refs/heads/{}", proof.name);
     let now = runner::exec(root, ["rev-parse", "--verify", &format!("{reference}^{{commit}}")])?;
     if local {
+        let symbolic = runner::exec(root, ["symbolic-ref", "-q", &reference])?;
+        if symbolic.ok() {
+            return Err(stale("Select a direct local branch, not a symbolic reference."));
+        }
+        if symbolic.code != 1 {
+            return Err(runner::to_error("git symbolic-ref", &symbolic));
+        }
         if proof.remote_only {
             return Err(stale("Remote-only review cannot delete a local branch."));
         }
@@ -289,7 +296,7 @@ fn validate(root: &Path, proof: &DeletionProof, local: bool) -> GitResult<()> {
     Ok(())
 }
 
-fn require_retained(root: &Path, proof: &DeletionProof, local: bool, remote: bool, force: bool) -> GitResult<()> {
+pub(super) fn require_retained(root: &Path, proof: &DeletionProof, local: bool, remote: bool, force: bool) -> GitResult<()> {
     if force {
         return Ok(());
     }

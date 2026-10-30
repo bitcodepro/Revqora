@@ -1,3 +1,4 @@
+import type { BranchCleanupRequest, BranchCleanupSelection, BranchCleanupReview, BranchCleanupReport } from "./types";
 import type { SyncPlan, SyncResult } from "./types";
 import type { RebaseItem, StudioReview, StudioReport, StudioComparison, ValidationReport } from "./types";
 import type { IgnoredFiles, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
@@ -150,6 +151,8 @@ export const api = {
   checkout: (repo: string, target: string, kind: "local" | "remote" | "commit") => call<string>("checkout", { repo, target, kind }),
   branchCreate: (repo: string, name: string, start: string | null, checkout: boolean, expectedState?: string | null) => call<void>("branch_create", { repo, name, start, checkout, expectedState }),
   branchRename: (repo: string, old: string, newName: string, expectedState?: string | null) => call<void>("branch_rename", { repo, old, new: newName, expectedState }),
+  branchCleanupReview: (repo: string, requests: BranchCleanupRequest[], base: string, protectionRules: string[]) => call<BranchCleanupReview>("branch_cleanup_review", { repo, requests, base, protectionRules }),
+  branchCleanupExecute: (repo: string, selections: BranchCleanupSelection[], protectionRules: string[], expectedState: string, opId: string) => call<BranchCleanupReport>("branch_cleanup_execute", { repo, selections, protectionRules, expectedState, opId }),
   branchDeletePlan: (repo: string, name: string, base: string | undefined, target: RemoteBranchTarget | null, savedLocalOid?: string, remoteOnly = false) => call<DeletionPlan>("branch_delete_plan", { repo, name, base, target, savedLocalOid, remoteOnly }),
   branchDeleteReviewed: (repo: string, review: DeletionProof, includeRemote: boolean, force: boolean, expectedState: string, protectionRules?: string[]) => call<DeletionResult>("branch_delete_reviewed", { repo, review, includeRemote, force, expectedState, protectionRules }),
   branchDeleteRemoteReviewed: (repo: string, review: DeletionProof, force: boolean, opId: string, expectedState?: string, protectionRules?: string[]) => call<DeletionResult>("branch_delete_remote_reviewed", { repo, review, force, opId, expectedState, protectionRules }),

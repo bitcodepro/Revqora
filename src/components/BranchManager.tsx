@@ -3,15 +3,18 @@ import { GitBranch, RefreshCw, ShieldCheck, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import * as A from "../lib/actions";
 import { useRepos } from "../lib/store";
-import { closeOverlay, copyText, openOverlay, toast } from "../lib/ui";
+import { closeOverlay, copyText, openOverlay, showDialog, toast } from "../lib/ui";
 import { branchFilters, branchWorktrees, isProtected, loadBranchPreferences, preferencesKey, restoreBranchPreferences, selectBranches, type BranchPreferences } from "../lib/branchManager";
 import type { BranchManagerSnapshot } from "../lib/types";
 import { relativeTime, shortOid } from "../lib/format";
 import { jumpToCommit } from "./GraphView";
+import { BranchCleanup } from "./BranchCleanup";
+import type { BranchCleanupRequest } from "../lib/types";
 import { renameRemoteBranch } from "./RemoteRename";
 
 const ROW = 56;
 export function BranchManager({ root }: { root: string }) {
+  const [checked, setChecked] = useState<Record<string, BranchCleanupRequest>>({});
   const [prefs, setPrefs] = useState(() => loadBranchPreferences(root));
   const [snapshot, setSnapshot] = useState<BranchManagerSnapshot | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -79,6 +82,16 @@ export function BranchManager({ root }: { root: string }) {
     try { await run(); } catch (e) { toast.error(e); }
     await refresh();
   };
+  const checkBranch = (b: BranchManagerSnapshot["branches"][number], value: boolean) => setChecked(old => {
+    const next = { ...old };
+    if (value && Object.keys(next).length < 50) next[b.fullRef] = { reference: b.fullRef, oid: b.oid, mode: b.local ? "local" : "remote" };
+    else if (!value) delete next[b.fullRef];
+    return next;
+  });
+  const cleanupReview = async () => {
+    await showDialog<void>(close => <BranchCleanup root={root} initial={Object.values(checked)} rules={prefs.protections} bases={(snapshot?.branches ?? []).filter(b => b.local).map(b => ({ reference: b.fullRef, name: b.name }))} initialBase={snapshot?.baseRef?.startsWith("refs/heads/") ? snapshot.baseRef : (snapshot?.branches.find(b => b.local && b.current)?.fullRef ?? "")} onClose={() => close()} />);
+    setChecked({}); await refresh();
+  };
   const start = Math.max(0, Math.floor(scroll / ROW) - 5);
   const end = Math.min(rows.length, Math.ceil((scroll + height) / ROW) + 5);
   const choose = (index: number) => {
@@ -108,6 +121,12 @@ export function BranchManager({ root }: { root: string }) {
     <nav className="bm-filters" aria-label="Branch filters">{branchFilters.map(f => <button className={`btn ${prefs.filter === f ? "active" : ""}`} aria-pressed={prefs.filter === f} key={f} onClick={() => update({ filter: f })}>{f}</button>)}
       <label>Stale after <input className="input" type="number" min={1} max={3650} aria-label="Stale branch days" value={prefs.staleDays} onChange={e => update({ staleDays: Number(e.target.value) })} /> days</label>
     </nav>
+    <div className="bm-bulk">
+      <button className="btn" disabled={loading || pending || !rows.length} onClick={() => setChecked(Object.fromEntries(rows.slice(0, 50).map(b => [b.fullRef, { reference: b.fullRef, oid: b.oid, mode: b.local ? "local" : "remote" }])))}>Select shown (up to 50)</button>
+      <span>{Object.keys(checked).length} selected · {Object.keys(checked).filter(ref => !rows.some(b => b.fullRef === ref)).length} hidden by filter</span>
+      <button className="btn" disabled={!Object.keys(checked).length} onClick={() => setChecked({})}>Clear selection</button>
+      <button className="btn danger" disabled={loading || pending || !Object.keys(checked).length || !!error} onClick={() => void cleanupReview()}>Review cleanup…</button>
+    </div>
     {error && <div className="bm-error" role="alert">{error} <button className="btn" onClick={() => void refresh()}>Retry</button></div>}
     <div className="bm-body" aria-busy={loading}>
       <div className="bm-list">
@@ -118,7 +137,7 @@ export function BranchManager({ root }: { root: string }) {
         }}>
           <div style={{ height: start * ROW }} />
           {rows.slice(start, end).map((b, i) => <div className={`bm-row ${b.fullRef === selected ? "selected" : ""}`} id={`bm-row-${start + i}`} key={b.fullRef} role="option" aria-selected={b.fullRef === selected} data-branch-ref={b.fullRef} onClick={() => setSelected(b.fullRef)}>
-            <div title={b.fullRef}><b>{b.name}</b><small>{b.local ? "Local" : "Remote"}{b.current ? " · HEAD" : ""}{branchWorktrees(b, snapshot?.worktrees ?? []).length ? " · Worktree" : ""}{isProtected(b, prefs.protections) ? " · Protected" : ""}</small></div>
+            <div title={b.fullRef} className="bm-name"><input type="checkbox" aria-label={`Select ${b.fullRef} for cleanup`} checked={!!checked[b.fullRef]} disabled={loading || pending || (!checked[b.fullRef] && Object.keys(checked).length >= 50)} onClick={e => e.stopPropagation()} onChange={e => checkBranch(b, e.target.checked)} /><div><b>{b.name}</b><small>{b.local ? "Local" : "Remote"}{b.current ? " · HEAD" : ""}{branchWorktrees(b, snapshot?.worktrees ?? []).length ? " · Worktree" : ""}{isProtected(b, prefs.protections) ? " · Protected" : ""}</small></div></div>
             <div title={b.upstream ?? "No upstream"}><span>{b.upstream?.replace(/^refs\/(remotes|heads)\//, "") ?? "—"}</span><small>{b.gone ? "Upstream missing" : b.upstream ? `↑${b.ahead} ↓${b.behind}` : "No upstream"}</small></div>
             <div title={b.time > 0 ? new Date(b.time * 1000).toLocaleString() : ""}><span>{b.author || "—"}</span><small>{b.time > 0 ? relativeTime(b.time) : "Unknown date"}</small></div>
             <div title={b.subject}><span>{b.subject}</span><small className="mono">{shortOid(b.oid)}</small></div>

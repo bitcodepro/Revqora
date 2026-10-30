@@ -1,3 +1,4 @@
+import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
 import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manager-smoke.mjs";
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
@@ -1881,6 +1882,7 @@ try {
   await repositoryWorkspaceSmoke({ page, check, shot, work });
   await branchManagerSmoke({ page, check, shot, work });
   await branchManagerProtectionSmoke({ page, check, shot, work });
+  await branchCleanupSmoke({ page, check, shot, work });
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;

@@ -164,7 +164,7 @@
 .welcome-inner { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); }
 .branch-manager { display: flex; flex-direction: column; min-width: 0; container-type: inline-size; }
 .branch-manager .cf-head { flex-wrap: wrap; flex-shrink: 0; height: auto; min-height: 52px; padding-top: 8px; padding-bottom: 8px; }
-.bm-toolbar, .bm-filters { display: flex; align-items: center; gap: 8px; padding: 10px 14px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+.bm-toolbar, .bm-filters, .bm-bulk { display: flex; align-items: center; gap: 8px; padding: 10px 14px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
 .bm-toolbar > input { flex: 1; min-width: 180px; }
 .bm-toolbar label, .bm-filters label { display: flex; gap: 6px; align-items: center; color: var(--text-faint); white-space: nowrap; }
 .bm-toolbar select { max-width: 240px; }
@@ -199,3 +199,20 @@
 @media (max-width: 760px) { .bm-body { flex-direction: column; } .bm-detail { width: auto; max-height: 40%; border-left: 0; border-top: 1px solid var(--border); } .bm-list { min-height: 130px; } }
 @container (max-width: 1000px) { .bm-row { grid-template-columns: minmax(140px, 1fr) minmax(110px, .8fr) minmax(100px, .7fr); } .bm-row > :nth-child(4) { display: none; } }
 @container (max-width: 780px) { .bm-body { flex-direction: column; } .bm-detail { width: auto; max-height: 40%; border-left: 0; border-top: 1px solid var(--border); } .bm-list { min-height: 130px; } }
+
+.bm-bulk { flex-shrink: 0; }
+.bm-bulk > span { color: var(--text-faint); font-size: 12px; }
+.bm-name { display: flex; align-items: center; gap: 9px; }
+.bm-name > input { flex: none; margin: 0; }
+.bm-name > div { min-width: 0; }
+.bc-loading { display: flex; align-items: center; gap: 8px; padding: 12px 0; }
+.bc-loading svg { flex: none; display: block; transform-box: border-box; transform-origin: center; }
+.bc-item { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 10px 0; overflow-wrap: anywhere; }
+.bc-item-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.bc-item-head label { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 150px; }
+.bc-item-head select { width: auto; max-width: 100%; }
+.bc-tips { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.bc-consent { display: flex; align-items: start; gap: 8px; margin-top: 12px; color: var(--text-faint); }
+.bc-consent input { flex: none; margin-top: 3px; }
+.bc-error { color: var(--red); white-space: pre-wrap; }
+.bc-item .btn { margin: 3px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }

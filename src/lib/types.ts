@@ -646,6 +646,11 @@ export interface DeletionPlan {
   worktrees: { path: string; current: boolean; dirty: boolean | null; changedFiles: number | null; operation: string | null; error: string | null }[];
   currentChanges: number; stateToken: string;
 }
+export type BranchCleanupMode = "local" | "remote" | "both";
+export interface BranchCleanupRequest { reference: string; oid: string; mode: BranchCleanupMode; }
+export interface BranchCleanupSelection { proof: DeletionProof; mode: BranchCleanupMode; force: boolean; }
+export interface BranchCleanupReview { items: { request: BranchCleanupRequest; plan: DeletionPlan | null; error: string | null; forceRequired: boolean }[]; stateToken: string; }
+export interface BranchCleanupReport { status: "done" | "stopped"; preflightFailed: boolean; items: { name: string; localDeleted: boolean; remoteDeleted: boolean; status: "deleted" | "partial" | "failed" | "skipped"; message: string | null; checkpoints: RecoverySummary[] }[]; }
 export interface DeletionResult { checkpoint: RecoverySummary; warning: string | null }
 
 export interface IgnoredFiles { paths: string[]; truncated: boolean; }
