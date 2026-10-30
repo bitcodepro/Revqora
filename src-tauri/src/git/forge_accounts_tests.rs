@@ -33,7 +33,7 @@ impl Http {
                         // on Windows/macOS. A partial request must wait for its headers.
                         stream.set_nonblocking(false).unwrap();
                         stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-                        let mut reader = BufReader::new(stream.try_clone().unwrap());
+                        let mut reader = BufReader::new(&mut stream);
                         let mut line = String::new();
                         if reader.read_line(&mut line).is_err() {
                             continue;
@@ -51,8 +51,10 @@ impl Http {
                             }
                         }
                         capture.lock().push((path.clone(), auth.clone()));
+                        drop(reader);
                         let reply = response(&path, &auth);
                         let _ = stream.write_all(reply.as_bytes());
+                        let _ = stream.shutdown(std::net::Shutdown::Write);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(5)),
                     Err(_) => break,
