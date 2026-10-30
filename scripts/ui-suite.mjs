@@ -1,3 +1,4 @@
+import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
 import { worktreeManagerSmoke } from "./worktree-manager-smoke.mjs";
 // Independent tail suites use a fresh process/profile/repository set on each CI runner.
 import fs from "node:fs";
@@ -22,7 +23,8 @@ const check=async(name,run)=>{
 try{
   app=await launch({exe:path.resolve(arg("--exe")),profile:path.join(work,"profile"),port:0});
   const page=app.page;page.setDefaultTimeout(60000);
-  page.on("pageerror",e=>errors.push(String(e)));page.on("console",m=>m.type()==="error"&&errors.push(m.text()));
+  const watch=p=>{p.setDefaultTimeout(60000);p.on("pageerror",e=>errors.push(String(e)));p.on("console",m=>m.type()==="error"&&errors.push(m.text()));};watch(page);
+  const restart=async()=>{await app.close();app=await launch({exe:path.resolve(arg("--exe")),profile:path.join(work,"profile"),port:0});watch(app.page);return app.page;};
   await smokeTimings.measure("stage","fresh profile setup",async()=>{
     await page.getByRole("button",{name:"Skip",exact:true}).click();
     await page.waitForSelector(".modal",{state:"detached"});
@@ -35,7 +37,7 @@ try{
     await branchManagerSmoke({page,check,shot,work});
     await branchManagerProtectionSmoke({page,check,shot,work});
   }else if(suite==="cleanup") await branchCleanupSmoke({page,check,shot,work});
-  else await worktreeManagerSmoke({page,check,shot,work});
+  else {await worktreeManagerSmoke({page,check,shot,work});await forgeAccountsSmoke({page,check,shot,work,profile:path.join(work,"profile"),restart});}
   assertSmokeCoverage(suite,completed);
   if(errors.length)throw new Error(errors.join(" | "));
 }catch(e){console.error(e);process.exitCode=1;await app?.page.screenshot({path:path.join(out,"failure.png")}).catch(()=>{});}

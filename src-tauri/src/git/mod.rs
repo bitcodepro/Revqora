@@ -7,6 +7,7 @@ pub mod conflicts;
 pub mod diff;
 pub mod extras;
 pub mod forge;
+pub mod forge_accounts;
 pub mod graph;
 pub mod inspect;
 pub mod layers;

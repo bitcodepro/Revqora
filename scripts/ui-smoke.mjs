@@ -1,3 +1,4 @@
+import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
 import { worktreeManagerSmoke } from "./worktree-manager-smoke.mjs";
 import { smokeTimings, assertSmokeCoverage } from "./ci-timing.mjs";
 import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
@@ -1900,6 +1901,7 @@ try {
     await branchManagerProtectionSmoke({ page, check, shot, work });
     await branchCleanupSmoke({ page, check, shot, work });
     await worktreeManagerSmoke({ page, check, shot, work });
+    await forgeAccountsSmoke({page,check,shot,work,profile:smokeProfile,restart:async()=>{await close();const next=await launch({exe,profile:smokeProfile,port:0});page=next.page;close=next.close;child=next.child;attachPage();return page;}});
   }
   assertSmokeCoverage(suite, step);
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));

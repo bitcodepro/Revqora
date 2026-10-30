@@ -1,3 +1,4 @@
+import {forgeAccountsDialog} from "./ForgeAccounts";
 import { SyncButton } from "./SyncRepositories";
 import { RepositoryLibraryButton, WorkspacePicker } from "./RepositoryLibrary";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -27,6 +28,7 @@ import {
   RefreshCw,
   Search,
   Settings2,
+  UserRound,
   SkipForward,
   Sun,
   SquareTerminal,
@@ -138,6 +140,7 @@ export function TopBar() {
       <button className="icon-btn" title={dark ? "Light theme" : "Dark theme"} onClick={() => setS({ theme: dark ? "light" : "dark" })}>
         {dark ? <Sun size={16} /> : <Moon size={16} />}
       </button>
+      <button className="icon-btn" title="Accounts and API connections" onClick={() => forgeAccountsDialog(root ?? null)}><UserRound size={16}/></button>
       <button className="icon-btn" title="Settings" onClick={() => settingsDialog(root ?? null)}>
         <Settings2 size={16} />
       </button>
@@ -501,6 +504,7 @@ export function CommandPalette() {
       { id: "open", label: "Open repository…", group: "Repository", icon: <FolderOpen size={15} />, run: () => A.openRepoDialog() },
       { id: "clone", label: "Clone repository…", group: "Repository", icon: <Download size={15} />, run: () => A.cloneRepo() },
       { id: "init", label: "New repository…", group: "Repository", icon: <Plus size={15} />, run: () => A.initRepoDialog() },
+      {id:"forge-accounts",label:"Accounts and API connections",group:"App",icon:<UserRound size={15}/>,run:()=>forgeAccountsDialog(tab?.root??null)},
       { id: "settings", label: "Settings", group: "App", icon: <Settings2 size={15} />, run: () => settingsDialog(tab?.root ?? null) },
       { id: "operation-log", label: "Operation log…", group: "App", icon: <History size={15} />, run: () => operationLogDialog(tab?.root ?? null) },
       ...(tab ? [{ id: "recovery-center", label: "Undo Center…", group: "Repository", icon: <ShieldCheck size={15} />, run: () => recoveryDialog(tab.root) }] : []),

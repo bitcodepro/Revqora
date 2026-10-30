@@ -32,6 +32,10 @@ notify = "8"
 tempfile = "3"
 ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
+ring = "0.17"
+url = "2"
+zeroize = "1"
+percent-encoding = "2"
 flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }

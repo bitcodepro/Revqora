@@ -1364,6 +1364,44 @@ async fn save_text_file(path: String, content: String) -> GitResult<()> {
     blocking(move || Ok(std::fs::write(&path, content)?)).await
 }
 
+// Global API account state is portable, file-locked and revision guarded; it does not mutate Git.
+#[tauri::command]
+async fn forge_accounts_snapshot() -> GitResult<git::forge_accounts::Snapshot> {
+    blocking(|| git::forge_accounts::manager()?.snapshot()).await
+}
+#[tauri::command]
+async fn forge_account_add(input: git::forge_accounts::Add, expected: String) -> GitResult<git::forge_accounts::Snapshot> {
+    blocking(move || git::forge_accounts::manager()?.add(input, &expected)).await
+}
+#[tauri::command]
+async fn forge_account_remove(id: String, expected: String) -> GitResult<git::forge_accounts::Snapshot> {
+    blocking(move || git::forge_accounts::manager()?.remove(&id, &expected)).await
+}
+#[tauri::command]
+async fn forge_account_test(id: String) -> GitResult<String> {
+    blocking(move || git::forge_accounts::manager()?.test(&id)).await
+}
+#[tauri::command]
+async fn forge_vault_password(password: String, expected: String, unlock: bool) -> GitResult<git::forge_accounts::Snapshot> {
+    blocking(move || git::forge_accounts::manager()?.vault(password, &expected, unlock)).await
+}
+#[tauri::command]
+async fn forge_vault_lock() -> GitResult<git::forge_accounts::Snapshot> {
+    blocking(|| git::forge_accounts::manager()?.lock()).await
+}
+#[tauri::command]
+async fn forge_vault_reset(expected: String) -> GitResult<git::forge_accounts::Snapshot> {
+    blocking(move || git::forge_accounts::manager()?.reset_vault(&expected)).await
+}
+#[tauri::command]
+async fn forge_connections(repo: String) -> GitResult<git::forge_accounts::Connections> {
+    blocking(move || git::forge_accounts::connections(&p(&repo))).await
+}
+#[tauri::command]
+async fn forge_connection_select(repo: String, selection: git::forge_accounts::Selection, expected: String) -> GitResult<git::forge_accounts::Connections> {
+    blocking(move || git::forge_accounts::select(&p(&repo), selection, &expected)).await
+}
+
 // ───────────────────────────── GitHub / GitLab ─────────────────────────────
 
 use git::forge;
@@ -1386,13 +1424,31 @@ async fn pull_requests(repo: String) -> GitResult<PullRequests> {
 }
 
 #[tauri::command]
-async fn pull_request_create(repo: String, title: String, body: String, head: String, base: String, draft: bool) -> GitResult<forge::PullRequest> {
-    blocking(move || forge::create(&p(&repo), &title, &body, &head, &base, draft)).await
+async fn pull_request_create(
+    repo: String,
+    title: String,
+    body: String,
+    head: String,
+    base: String,
+    draft: bool,
+    expected_connection: String,
+) -> GitResult<forge::PullRequest> {
+    blocking(move || forge::create(&p(&repo), &title, &body, &head, &base, draft, &expected_connection)).await
 }
 
 #[tauri::command]
-async fn pull_request_checkout(app: AppHandle, expected_state: Option<String>, repo: String, number: u64) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "pull_request_checkout", None, move || forge::checkout(&p(&repo), number)).await
+async fn pull_request_checkout(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    number: u64,
+    expected_connection: String,
+    expected_head: String,
+) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "pull_request_checkout", None, move || {
+        forge::checkout(&p(&repo), number, &expected_connection, &expected_head)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1756,6 +1812,15 @@ pub fn run() {
             layer_commit,
             repo_extras,
             repo_size,
+            forge_accounts_snapshot,
+            forge_account_add,
+            forge_account_remove,
+            forge_account_test,
+            forge_vault_password,
+            forge_vault_lock,
+            forge_vault_reset,
+            forge_connections,
+            forge_connection_select,
             forge_info,
             pull_requests,
             pull_request_create,
