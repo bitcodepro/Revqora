@@ -84,8 +84,10 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
   });
   await check("a replaced worktree marker cannot redirect a reviewed removal to an unrelated repository",async()=>{
     const p=add("wm-identity"),foreign=path.join(work,"wm-foreign");git(root,"clone","-q",root,foreign);const marker=path.join(p,".git"),saved=fs.readFileSync(marker);await refresh();await select(p);await page.getByRole("button",{name:"Review removal…",exact:true}).click();await page.waitForSelector('[data-worktree-review="remove"]');
-    try{fs.writeFileSync(marker,`gitdir: ${path.join(foreign,".git")}\n`);await modal().getByRole("button",{name:"Remove worktree",exact:true}).click();await modal().getByRole("alert").waitFor();if(!fs.existsSync(p)||git(foreign,"rev-parse","HEAD")!==initialHead)throw new Error("Replaced marker redirected deletion");}
-    finally{fs.writeFileSync(marker,saved);}await closeModal("Cancel");await page.waitForSelector(".wm-body[aria-busy=false]");
+    // Git marks .git hidden on Windows; opening an existing hidden file with w/CREATE_ALWAYS fails EPERM.
+    const replaceMarker=data=>{const fd=fs.openSync(marker,"r+");try{fs.ftruncateSync(fd,0);fs.writeFileSync(fd,data);}finally{fs.closeSync(fd);}};
+    try{replaceMarker(`gitdir: ${path.join(foreign,".git")}\n`);await modal().getByRole("button",{name:"Remove worktree",exact:true}).click();await modal().getByRole("alert").waitFor();if(!fs.existsSync(p)||git(foreign,"rev-parse","HEAD")!==initialHead)throw new Error("Replaced marker redirected deletion");}
+    finally{replaceMarker(saved);}await closeModal("Cancel");await page.waitForSelector(".wm-body[aria-busy=false]");
   });
   await check("an edited pending creation discards its old response and external source changes require a fresh confirmation",async()=>{
     await page.locator(".worktree-manager").getByRole("button",{name:"New worktree",exact:true}).click();await modal().getByRole("button",{name:"New branch",exact:true}).click();await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill("wm-stale-old");const p=path.join(work,"wm-stale-new");await modal().getByRole("textbox",{name:"Worktree folder",exact:true}).fill(p);
