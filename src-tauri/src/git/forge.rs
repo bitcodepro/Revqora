@@ -171,6 +171,11 @@ fn is_bitbucket(f: &ForgeInfo) -> bool {
 fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
     let (host, path) = parse_remote(url).ok_or_else(|| GitError::new("Unsupported credential URL").kind("auth"))?;
     let username = url::Url::parse(url).ok().filter(|u| matches!(u.scheme(), "http" | "https")).map(|u| u.username().to_owned()).unwrap_or_default();
+    let username =
+        percent_encoding::percent_decode_str(&username).decode_utf8().map_err(|_| GitError::new("Invalid credential username").kind("auth"))?.into_owned();
+    if username.chars().any(char::is_control) {
+        return Err(GitError::new("Invalid credential username").kind("auth"));
+    }
     let git_path = url::Url::parse(url)
         .ok()
         .map(|u| percent_encoding::percent_decode_str(u.path().trim_start_matches('/')).decode_utf8_lossy().into_owned())
@@ -787,12 +792,14 @@ fi
             "ssh://git@credential-scope.invalid/team/repo.git",
             "ssh://another-transport-user@credential-scope.invalid:2222/team/repo.git",
             "https://alice@credential-scope.invalid/team/repo.git",
+            "https://%61lice@credential-scope.invalid/team/repo.git",
         ] {
             let c = token(repo, url).unwrap();
             assert_eq!(c.username, "alice");
             assert_eq!(c.token, "fixture-token-alice");
         }
         assert!(token(repo, "https://bob@credential-scope.invalid/team/repo.git").is_err(), "an explicit HTTPS identity must still constrain the helper");
+        assert!(token(repo, "https://alice%0Apassword=injected@credential-scope.invalid/team/repo.git").is_err());
         assert!(!repo.join(".git/index").exists());
     }
     #[test]
