@@ -10,6 +10,19 @@ export function isApplicationUrl(value) {
   } catch { return false; }
 }
 
+// Self-contained: Playwright serializes this function into the native document.
+export function applicationDocumentState() {
+  const state = {
+    url: location.href, origin: location.origin, readyState: document.readyState,
+    rootRendered: !!document.querySelector("#root")?.childElementCount,
+    bridgeReady: typeof window.__TAURI_INTERNALS__?.invoke === "function",
+    storageReadable: false, storageError: null,
+  };
+  try { window.localStorage.getItem("revqora.settings"); state.storageReadable = true; }
+  catch (e) { state.storageError = `${e.name}: ${e.message}`.slice(0, 512); }
+  return state;
+}
+
 export async function waitForApplicationPage(browser, { timeoutMs = 30000, pollMs = 100, observe = () => {} } = {}) {
   const deadline = Date.now() + timeoutMs;
   const diagnostics = new Map();
@@ -17,17 +30,7 @@ export async function waitForApplicationPage(browser, { timeoutMs = 30000, pollM
     for (const page of browser.contexts().flatMap(context => context.pages())) {
       let state;
       try {
-        state = await page.evaluate(() => {
-          const state = {
-            url: location.href, origin: location.origin, readyState: document.readyState,
-            rootRendered: !!document.querySelector("#root")?.childElementCount,
-            bridgeReady: typeof window.__TAURI_INTERNALS__?.invoke === "function",
-            storageReadable: false, storageError: null,
-          };
-          try { localStorage.getItem("revqora.settings"); state.storageReadable = true; }
-          catch (e) { state.storageError = `${e.name}: ${e.message}`.slice(0, 512); }
-          return state;
-        });
+        state = await page.evaluate(applicationDocumentState);
       } catch (e) { state = { url: page.url(), error: String(e.message ?? e).slice(0, 512) }; }
       const previous = diagnostics.get(state.url);
       if (JSON.stringify(previous) !== JSON.stringify(state)) observe(state);

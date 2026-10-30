@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isApplicationUrl, waitForApplicationPage } from "./ui-readiness.mjs";
+import vm from "node:vm";
+import { applicationDocumentState, isApplicationUrl, waitForApplicationPage } from "./ui-readiness.mjs";
 
 const ready = (patch = {}) => ({ url: "http://tauri.localhost/", origin: "http://tauri.localhost", readyState: "complete", rootRendered: true, bridgeReady: true, storageReadable: true, storageError: null, ...patch });
 const page = (states) => {
@@ -9,6 +10,32 @@ const page = (states) => {
 };
 const browser = (...pages) => ({ contexts: () => [{ pages: () => pages }] });
 const options = { timeoutMs: 2000, pollMs: 1 };
+
+const documentContext = () => ({
+  location: { href: "http://tauri.localhost/", origin: "http://tauri.localhost" },
+  document: { readyState: "complete", querySelector: () => ({ childElementCount: 1 }) },
+  window: { __TAURI_INTERNALS__: { invoke() {} } },
+});
+test("the serialized native-document probe catches a denied localStorage getter", () => {
+  const context = documentContext();
+  Object.defineProperty(context.window, "localStorage", { get() { const error = new Error("Access is denied for this document"); error.name = "SecurityError"; throw error; } });
+  const state = vm.runInNewContext(`(${applicationDocumentState.toString()})()`, context);
+  assert.equal(state.origin, "http://tauri.localhost");
+  assert.equal(state.rootRendered, true);
+  assert.equal(state.bridgeReady, true);
+  assert.equal(state.storageReadable, false);
+  assert.equal(state.storageError, "SecurityError: Access is denied for this document");
+});
+test("the serialized probe reads the store without changing preferences or logging their values", () => {
+  let reads = 0;
+  const context = documentContext();
+  context.window.localStorage = { getItem(key) { assert.equal(key, "revqora.settings"); reads++; return "private preferences"; } };
+  const state = vm.runInNewContext(`(${applicationDocumentState.toString()})()`, context);
+  assert.equal(reads, 1);
+  assert.equal(state.storageReadable, true);
+  assert.equal(state.storageError, null);
+  assert.doesNotMatch(JSON.stringify(state), /private preferences/);
+});
 
 test("app readiness rejects opaque, error and unrelated documents", () => {
   for (const url of ["about:blank", "data:text/html,hi", "chrome-error://chromewebdata/", "https://example.com/", "http://tauri.localhost.evil/", "http://localhost:9999"]) assert.equal(isApplicationUrl(url), false, url);
