@@ -7,6 +7,7 @@ import { ALL, useRepos } from "../lib/store";
 import { endBusy, startBusy } from "../lib/ui";
 import { recoveryDialog } from "./RecoveryCenter";
 import { Modal } from "./Modal";
+import { selectedCleanupItems } from "../lib/branchCleanup";
 
 export function BranchCleanup({ root, initial, bases, initialBase, rules, onClose }: {
   root: string; initial: BranchCleanupRequest[]; bases: { reference: string; name: string }[];
@@ -15,8 +16,8 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
   const [requests, setRequests] = useState(initial);
   const [base, setBase] = useState(initialBase);
   const [review, setReview] = useState<BranchCleanupReview | null>(null);
-  const [included, setIncluded] = useState<Set<number>>(new Set());
-  const [forced, setForced] = useState<Set<number>>(new Set());
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [forced, setForced] = useState<Set<string>>(new Set());
   const [report, setReport] = useState<BranchCleanupReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -25,20 +26,22 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
   const generation = useRef(0);
   const load = useCallback(async () => {
     const id = ++generation.current;
-    setLoading(true); setReview(null); setIncluded(new Set()); setForced(new Set()); setError(""); setReport(null); setConsumed(false);
+    setLoading(true); setReview(null); setForced(new Set()); setError(""); setReport(null); setConsumed(false);
     try {
       const next = await api.branchCleanupReview(root, requests, base, rules);
       if (id !== generation.current) return;
-      setReview(next); setIncluded(new Set(next.items.flatMap((x, i) => x.plan && !x.error ? [i] : [])));
+      setReview(next);
     } catch (e) { if (id === generation.current) setError(errorMessage(e)); }
     finally { if (id === generation.current) setLoading(false); }
   }, [root, requests, base, rules]);
   useEffect(() => { void load(); return () => { generation.current++; }; }, [load]);
   const close = () => { if (!busy) onClose(); };
-  const toggle = (old: Set<number>, i: number, value: boolean) => { const next = new Set(old); if (value) next.add(i); else next.delete(i); return next; };
-  const missingConsent = !!review?.items.some((item, i) => included.has(i) && item.forceRequired && !forced.has(i));
+  const toggle = (old: Set<string>, reference: string, value: boolean) => { const next = new Set(old); if (value) next.add(reference); else next.delete(reference); return next; };
+  const selected = selectedCleanupItems(review, excluded);
+  const included = new Set(selected.map(item => item.request.reference));
+  const missingConsent = selected.some(item => item.forceRequired && !forced.has(item.request.reference));
   const batchBlocker = (() => {
-    const active = review?.items.filter((_, i) => included.has(i)) ?? [];
+    const active = selected;
     const locals = new Set(active.filter(x => x.request.mode !== "remote").map(x => `refs/heads/${x.plan?.proof.name}`));
     const servers = new Set<string>();
     for (const item of active) {
@@ -58,8 +61,8 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
     setBusy(true); setConsumed(true); setError("");
     const id = newOpId(); startBusy(id, "Reviewing and deleting selected branches");
     try {
-      const selected = review.items.flatMap((x, i) => included.has(i) && x.plan ? [{ proof: x.plan.proof, mode: x.request.mode, force: forced.has(i) }] : []);
-      setReport(await api.branchCleanupExecute(root, selected, rules, review.stateToken, id));
+      const selections = selected.map(x => ({ proof: x.plan.proof, mode: x.request.mode, force: forced.has(x.request.reference) }));
+      setReport(await api.branchCleanupExecute(root, selections, rules, review.stateToken, id));
     } catch (e) { setError(errorMessage(e)); }
     finally { endBusy(id); setBusy(false); await useRepos.getState().refresh(root, ALL); }
   };
@@ -81,7 +84,7 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
       {!consumed && requests.map((request, i) => {
         const item = review?.items[i]; const p = item?.plan;
         return <article className="bc-item" key={request.reference} data-cleanup-ref={request.reference}>
-          <div className="bc-item-head"><label><input type="checkbox" aria-label={`Include ${request.reference}`} checked={included.has(i)} disabled={loading || busy || !p || !!item?.error} onChange={e => setIncluded(s => toggle(s, i, e.target.checked))} /><b>{request.reference.replace(/^refs\/(heads|remotes)\//, "")}</b></label>
+          <div className="bc-item-head"><label><input type="checkbox" aria-label={`Include ${request.reference}`} checked={included.has(request.reference)} disabled={loading || busy || !p || !!item?.error} onChange={e => setExcluded(s => toggle(s, request.reference, !e.target.checked))} /><b>{request.reference.replace(/^refs\/(heads|remotes)\//, "")}</b></label>
             <select className="input" aria-label={`Deletion scope for ${request.reference}`} value={request.mode} disabled={loading || busy || request.reference.startsWith("refs/remotes/")} onChange={e => setRequests(all => all.map((r, n) => n === i ? { ...r, mode: e.target.value as BranchCleanupMode } : r))}>
               <option value="local">Local only</option><option value="remote">Remote only (keep local)</option><option value="both">Local + remote</option>
             </select>
@@ -94,7 +97,7 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
             {p.proof.target && <small>↑{p.localOnly ?? "—"} local-only · ↓{p.remoteOnly ?? "—"} remote-only commits</small>}
             {!!p.currentChanges && <p className="muted">{p.currentChanges} working-copy changes stay in their worktree.</p>}
             {!!p.worktrees.length && <p className="muted">Local worktrees kept: {p.worktrees.map(w => `${w.path}${w.dirty ? " (modified)" : ""}`).join(", ")}</p>}
-            {item?.forceRequired && <label className="bc-consent"><input type="checkbox" aria-label={`Allow unmerged deletion for ${request.reference}`} checked={forced.has(i)} disabled={busy || !included.has(i)} onChange={e => setForced(s => toggle(s, i, e.target.checked))} />Delete these exact tips despite commits outside the base. Squash/rebase integration does not guarantee original history is retained.</label>}
+            {item?.forceRequired && <label className="bc-consent"><input type="checkbox" aria-label={`Allow unmerged deletion for ${request.reference}`} checked={forced.has(request.reference)} disabled={busy || !included.has(request.reference)} onChange={e => setForced(s => toggle(s, request.reference, e.target.checked))} />Delete these exact tips despite commits outside the base. Squash/rebase integration does not guarantee original history is retained.</label>}
           </>}
         </article>;
       })}

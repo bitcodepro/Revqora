@@ -14,6 +14,7 @@ const env = { ...process.env, PATH: `${cargoBin}${path.delimiter}${process.env.P
 const tauriDir = path.join(root, "src-tauri");
 
 const steps = [
+  ["UI startup helper tests (no native window)", "node", ["--test", "scripts/ui-readiness.test.mjs"], root],
   ["Rust format", "cargo", ["fmt", "--check"], tauriDir],
   ["Rust lint (clippy, warnings are errors)", "cargo", ["clippy", "--all-targets", ...features, "--", "-D", "warnings"], tauriDir],
   ["Rust unit + git workflow tests", "cargo", ["test", ...features], tauriDir],

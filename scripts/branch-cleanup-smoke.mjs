@@ -39,6 +39,29 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     await page.getByRole("button",{name:"Close branch manager",exact:true}).click();
   };
   const exists=(root,name)=>!!git(root,"for-each-ref","--format=%(objectname)",`refs/heads/${name}`);
+  await check("excluded cleanup branches stay excluded after scope, base and review refresh changes",async()=>{
+    const {root,server,tip}=await fixture("exclusions");
+    git(root,"branch","keep-base");
+    git(root,"checkout","-qb","bulk-risk");fs.writeFileSync(path.join(root,"new.txt"),"unique\n");git(root,"add",".");git(root,"commit","-qm","Unmerged history for consent reset");git(root,"checkout","main");
+    await page.getByRole("button",{name:"Refresh branches",exact:true}).click();await page.waitForSelector(".bm-body[aria-busy=false]");
+    for(const name of ["bulk-clean-a","bulk-clean-b","bulk-risk"]){await search(name);await select(`refs/heads/${name}`);}
+    await openReview();
+    const a=page.getByRole("checkbox",{name:"Include refs/heads/bulk-clean-a",exact:true});
+    const consent=page.getByRole("checkbox",{name:"Allow unmerged deletion for refs/heads/bulk-risk",exact:true});
+    await a.uncheck();await consent.check();
+    const assertKept=async()=>{
+      if(await a.isChecked())throw new Error("Explicitly excluded A was re-included");
+      if(await consent.isChecked())throw new Error("Force consent survived a fresh review");
+      if(!await page.getByRole("button",{name:"Delete 2 selected",exact:true}).isDisabled())throw new Error("Fresh unmerged review skipped renewed consent");
+    };
+    await scope("refs/heads/bulk-clean-b","both");await assertKept();await consent.check();
+    await page.getByRole("combobox",{name:"Cleanup comparison base",exact:true}).selectOption("refs/heads/keep-base");await page.waitForSelector(".branch-cleanup[aria-busy=false]",{timeout:180000});await assertKept();await consent.check();
+    await page.getByRole("button",{name:"Refresh review",exact:true}).click();await page.waitForSelector(".branch-cleanup[aria-busy=false]",{timeout:180000});await assertKept();
+    await page.getByRole("checkbox",{name:"Include refs/heads/bulk-risk",exact:true}).uncheck();
+    await shot("88-bulk-cleanup-exclusions");await run(1);
+    if(!exists(root,"bulk-clean-a")||!exists(server,"bulk-clean-a")||git(root,"rev-parse","bulk-clean-a")!==tip||!exists(root,"bulk-risk")||exists(root,"bulk-clean-b")||exists(server,"bulk-clean-b"))throw new Error("Cleanup deleted an explicitly kept branch or retained the selected destination");
+    await close();
+  });
   await check("bulk cleanup selects a filter, keeps hidden selections and deletes reviewed mixed scopes with recovery",async()=>{
     const {root,server,tip}=await fixture("mixed");
     fs.writeFileSync(path.join(root,"file.txt"),"manual changes kept\n");const index=fs.readFileSync(path.join(root,".git/index"));

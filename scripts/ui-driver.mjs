@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
+import { waitForApplicationPage } from "./ui-readiness.mjs";
 
 /** CDP-attached native pages have no Playwright viewport until first emulation.
  * Always restore the actual initial client area, even when viewportSize() is null.
@@ -132,16 +133,19 @@ export async function launch({ exe, args = [], port = 9333, profile, visible = p
     throw new Error(`Could not connect to the WebView over CDP: ${state}\n${connectionError}${windowState ? `\n${windowState}` : ""}${stderr ? `\n${stderr}` : ""}`);
   }
   let page;
-  for (let i = 0; i < 40 && !page; i++) {
-    page = browser.contexts().flatMap((c) => c.pages())[0];
-    if (!page) await new Promise((r) => setTimeout(r, 250));
+  try {
+    page = await waitForApplicationPage(browser, { observe: state => console.log(`UI document: ${JSON.stringify(state)}`) });
+  } catch (e) {
+    // Only terminate the process tree spawned by this launcher.
+    if (child.exitCode === null && child.signalCode === null) {
+      if (process.platform === "win32" && child.pid) {
+        try { execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
+        catch { child.kill(); }
+      } else child.kill();
+    }
+    await browser.close().catch(() => {});
+    throw e;
   }
-  if (!page) {
-    await browser.close();
-    child.kill();
-    throw new Error("No page found");
-  }
-  await page.waitForLoadState("domcontentloaded");
   return {
     page,
     browser,
