@@ -29,6 +29,9 @@ impl Http {
             while !done.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // Accepted sockets can inherit the listener's nonblocking mode
+                        // on Windows/macOS. A partial request must wait for its headers.
+                        stream.set_nonblocking(false).unwrap();
                         stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
                         let mut reader = BufReader::new(stream.try_clone().unwrap());
                         let mut line = String::new();
@@ -74,6 +77,24 @@ impl Drop for Http {
 }
 fn response(code: u16, body: &str) -> String {
     format!("HTTP/1.1 {code} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+}
+
+#[test]
+fn http_fixture_waits_for_fragmented_request_headers() {
+    use std::net::TcpStream;
+    let h = Http::identities();
+    let mut client = TcpStream::connect(h.url.strip_prefix("http://").unwrap()).unwrap();
+    client.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    client.write_all(b"GET /api/v3/us").unwrap();
+    let mut byte = [0];
+    let e = client.read(&mut byte).expect_err("fixture must keep an incomplete request open");
+    assert!(matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut));
+    client.write_all(b"er HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token-one\r\n\r\n").unwrap();
+    client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let mut reply = String::new();
+    client.read_to_string(&mut reply).unwrap();
+    assert!(reply.starts_with("HTTP/1.1 200"));
+    assert_eq!(h.seen.lock().as_slice(), &[("/api/v3/user".into(), "Bearer token-one".into())]);
 }
 fn input(server: &Http, kind: &str, token: &str, persist: bool) -> Add {
     Add {
