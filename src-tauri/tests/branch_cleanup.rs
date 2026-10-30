@@ -1,6 +1,6 @@
 use revqora_lib::git::{
     branch_cleanup::{self, Mode, Request, Selection},
-    branch_deletion, branch_review, operations, recovery, runner,
+    branch_deletion, branch_review, operations, recovery, runner, status,
 };
 use std::{fs, path::PathBuf};
 struct Fixture {
@@ -110,13 +110,44 @@ fn changed_server_or_local_sha_blocks_whole_batch_even_with_force() {
     let server = f.server();
     let mut second = f.selection("two", Mode::Both);
     second.force = true;
-    let next = f.next();
-    f.git(&["push", "-q", server.to_str().unwrap(), &format!("{next}:refs/heads/two")]);
-    let r = f.execute(&[f.selection("one", Mode::Local), second], &[]);
+    let before = status::status(&f.root).unwrap().state_token.unwrap();
+    let previous = f.oid("two");
+    let next = runner::run(
+        &server,
+        [
+            "-c",
+            "user.name=Peer",
+            "-c",
+            "user.email=peer@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit-tree",
+            &f.oid("HEAD^{tree}"),
+            "-p",
+            &previous,
+            "-m",
+            "Unseen server tip",
+        ],
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    runner::run(&server, ["update-ref", "refs/heads/two", &next, &previous]).unwrap();
+    assert_eq!(status::status(&f.root).unwrap().state_token.as_deref(), Some(before.as_str()));
+    let r = operations::run(
+        &f.root,
+        "branch_cleanup_execute",
+        Some(&before),
+        |_, _| {},
+        || branch_cleanup::execute(&f.root, &[f.selection("one", Mode::Local), second], &[], |_| {}),
+    )
+    .unwrap();
     assert!(r.preflight_failed);
+    assert!(r.items[1].message.as_ref().unwrap().contains("push server tip differs"));
     assert!(f.exists("one") && f.exists("two"));
     let second = f.selection("two", Mode::Local);
-    f.git(&["update-ref", "refs/heads/two", &next]);
+    let local_next = f.next();
+    f.git(&["update-ref", "refs/heads/two", &local_next]);
     let r = f.execute(&[f.selection("one", Mode::Local), second], &[]);
     assert!(r.preflight_failed);
     assert!(f.exists("one"));

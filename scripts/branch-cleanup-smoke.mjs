@@ -32,7 +32,13 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
   };
   const run=async count=>{
     await page.getByRole("button",{name:`Delete ${count} selected`,exact:true}).click();
-    await page.getByRole("heading",{name:"Branch cleanup results",exact:true}).waitFor({timeout:180000});
+    await page.waitForFunction(()=>{
+      const root=document.querySelector(".branch-cleanup");
+      return root?.getAttribute("aria-busy")==="false" && (document.querySelector(".modal-head h3")?.textContent==="Branch cleanup results" || !!root.querySelector(':scope > .bc-error[role="alert"]'));
+    },null,{timeout:180000});
+    const error=page.locator('.branch-cleanup > .bc-error[role="alert"]');
+    if(await error.count())throw new Error(`Cleanup failed before producing a report: ${await error.innerText()}`);
+    await page.getByRole("heading",{name:"Branch cleanup results",exact:true}).waitFor();
   };
   const close=async()=>{
     await page.locator(".modal").getByRole("button",{name:"Close",exact:true}).click();
@@ -101,9 +107,15 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     await close();
   });
   await check("a server tip changed after bulk review prevents every selected deletion",async()=>{
-    const {root,server}=await fixture("stale");
+    const {root,server,invoke}=await fixture("stale");
     await search("bulk-clean-a");await select("refs/heads/bulk-clean-a");await search("bulk-clean-b");await select("refs/heads/bulk-clean-b");await openReview();await scope("refs/heads/bulk-clean-b","both");
-    const next=git(root,"commit-tree",git(root,"rev-parse","HEAD^{tree}"),"-p","HEAD","-m","Server changed after review");git(root,"push","-q",server,`${next}:refs/heads/bulk-clean-b`);
+    const before=await invoke("status",{repo:root});
+    const previous=git(server,"rev-parse","refs/heads/bulk-clean-b");
+    // A URL push from root can also update its tracking cache. Simulate another
+    // actor directly on the bare server so only the SERVER SHA changes.
+    const next=git(server,"-c","user.name=Peer","-c","user.email=peer@example.invalid","-c","commit.gpgsign=false","commit-tree",git(server,"rev-parse",`${previous}^{tree}`),"-p",previous,"-m","Server changed after review");
+    git(server,"update-ref","refs/heads/bulk-clean-b",next,previous);
+    if((await invoke("status",{repo:root})).stateToken!==before.stateToken)throw new Error("Server-only fixture changed the local repository state");
     await run(2);await page.getByRole("alert").filter({hasText:"Preflight failed"}).waitFor();
     if(!exists(root,"bulk-clean-a")||!exists(root,"bulk-clean-b")||git(server,"rev-parse","bulk-clean-b")!==next)throw new Error("Failed preflight mutated a selected ref");
     await shot("86-bulk-cleanup-stale");await close();
