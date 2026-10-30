@@ -10,7 +10,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProfile, launch, withViewport, openSubmenu } from "./ui-driver.mjs";
+import { createProfile, launch, withViewport, openCommitAction } from "./ui-driver.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -1653,11 +1653,14 @@ try {
     await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".grow:has-text('fixup! Autosquash target')");
     // Semantic text matching normalizes rendered whitespace; the exact Git
     // identity is checked in the plan before any history rewrite is started.
-    await page.locator(".graph-scroll .grow").filter({ has: page.getByText("Autosquash target", { exact: true }) }).locator(".g-graph").click({ button: "right" });
+    const commit = page.locator(".graph-scroll .grow").filter({ has: page.getByText("Autosquash target", { exact: true }) });
     const rebase = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
-    await until(async () => { if (await rebase.isVisible()) return true; await page.mouse.move(8, 8); await page.locator(".ctx-item", { hasText: /^Edit history$/ }).hover(); return rebase.isVisible(); }, "rebase submenu did not open", 10000);
-    await rebase.click(); await page.waitForSelector(".rebase-row"); await page.getByRole("button", { name: "Autosquash fixups", exact: true }).click();
-    const rows = page.locator(".rebase-row"); if (!(await rows.first().innerText()).includes(targetOid.slice(0, 7))) throw new Error("autosquash plan starts from the wrong commit");
+    await openCommitAction(page, () => commit.locator(".g-graph").click({ button: "right", timeout: 1500 }), targetOid, page.locator(".ctx-item", { hasText: /^Edit history$/ }), rebase);
+    await page.waitForSelector(".rebase-row");
+    const rows = page.locator(".rebase-row");
+    const firstOid = (await rows.first().locator(".mono").first().innerText()).trim();
+    if (git5("rev-parse", "--verify", `${firstOid}^{commit}`) !== targetOid) throw new Error("autosquash plan starts from the wrong commit");
+    await page.getByRole("button", { name: "Autosquash fixups", exact: true }).click();
     if (await rows.count() !== 3 || !(await rows.nth(1).getAttribute("class")).includes("fixup") || !(await rows.nth(1).innerText()).includes("fixup! Autosquash target")) throw new Error("autosquash preview did not reorder fixups");
     await shot("56-autosquash-plan"); await reviewStudio(); await page.locator(".cf-head").getByRole("button", { name: "Start rebase", exact: true }).click();
 
@@ -1734,8 +1737,8 @@ try {
     // open the commit menu without bypassing Playwright's actionability checks.
     const commit = page.locator(".graph-scroll .grow").filter({ has: page.getByText(subject, { exact: true }) });
     const item = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
-    await openSubmenu(page, () => commit.locator(".g-graph").click({ button: "right", timeout: 1500 }), page.locator(".ctx-item", { hasText: /^Edit history$/ }), item);
-    await item.click(); await page.waitForSelector(".rebase-row");
+    await openCommitAction(page, () => commit.locator(".g-graph").click({ button: "right", timeout: 1500 }), expectedOid, page.locator(".ctx-item", { hasText: /^Edit history$/ }), item);
+    await page.waitForSelector(".rebase-row");
     const firstOid = (await page.locator(".rebase-row").first().locator(".mono").first().innerText()).trim();
     if (studioGit("rev-parse", "--verify", `${firstOid}^{commit}`) !== expectedOid) throw new Error("Studio opened a plan for the wrong commit");
   };

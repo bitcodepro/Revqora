@@ -41,6 +41,37 @@ export async function openSubmenu(page, openRoot, parent, child) {
   throw new Error(`Context submenu did not open: ${lastError?.message ?? "not visible"}`);
 }
 
+/** A graph refresh can move virtual rows between actionability checks and the
+ * native context-menu event. Inspect the menu's own SHA before choosing an
+ * action; retry only menu opening, never a history mutation or a wrong plan.
+ */
+export async function openCommitAction(page, openRoot, expectedOid, parent, child) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(expectedOid)) throw new Error("A full expected commit SHA is required");
+  const copy = page.locator(".ctx-item").filter({ has: page.getByText("Copy", { exact: true }) });
+  const fullHash = page.locator(".ctx-item").filter({ has: page.getByText("Full hash", { exact: true }) });
+  const deadline = Date.now() + 15000;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      await openSubmenu(page, openRoot, copy, fullHash);
+      const actual = (await fullHash.locator(".hint").innerText({ timeout: 1500 })).trim();
+      if (actual !== expectedOid.slice(0, 8)) throw new Error(`Context menu belongs to ${actual}, expected ${expectedOid.slice(0, 8)}`);
+      // Keep this verified root menu. If native blur closes it, start over and
+      // verify the new menu too, rather than silently reopening another row.
+      await page.mouse.move(8, 8);
+      await parent.hover({ timeout: 1500 });
+      await child.waitFor({ state: "visible", timeout: 1500 });
+      await child.click({ timeout: 1500 });
+      return;
+    } catch (e) {
+      lastError = e;
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(120);
+    }
+  }
+  throw new Error(`Could not open action for the expected commit: ${lastError?.message ?? "menu unavailable"}`);
+}
+
 export function createProfile(prefix = "revqora-webview-") {
   const base = path.resolve(process.env.REVQORA_TEST_TMP || os.tmpdir());
   fs.mkdirSync(base, { recursive: true });
