@@ -29,7 +29,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(jobs["build-and-test"]["strategy"]["matrix"]["os"]), 3)
         matrix = self.package["jobs"]["package"]["strategy"]["matrix"]["include"]
         self.assertEqual({row["rid"] for row in matrix}, {"win-x64", "linux-x64", "linux-arm64", "osx-arm64", "osx-x64"})
-        self.assertIn("windows-native-build", jobs["version"]["needs"])
+        self.assertEqual(jobs["version"]["needs"], "release-tooling")
         self.assertIn("windows-smoke", jobs["release"]["needs"])
         self.assertNotIn("emulator-tests", jobs)
 
@@ -55,7 +55,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertLessEqual(int(job["timeout-minutes"]), 30)
             self.assertIn("github.workspace", job["env"]["REVQORA_TEST_TMP"])
         # Packages may build alongside native tests, but publishing requires both.
-        self.assertNotIn("windows-smoke", jobs["version"]["needs"])
+        self.assertEqual(jobs["version"]["needs"], "release-tooling")
         self.assertIn("windows-smoke", jobs["release"]["needs"])
         self.assertIn("verify-packages", jobs["release"]["needs"])
 
@@ -84,8 +84,10 @@ class WorkflowTests(unittest.TestCase):
                     self.assertNotIn("ui-automation", str(job))
                     self.assertNotIn("REVQORA_VERIFY_UI_AUTOMATION", str(job))
                 for step in job.get("steps", []):
-                    if step.get("uses", "").startswith("actions/cache@"):
-                        self.assertEqual(set(step["with"]["path"].strip().splitlines()), {"~/.cargo/registry", "~/.cargo/git"})
+                    self.assertFalse(step.get("uses", "").startswith("actions/cache@"))
+                    if step.get("uses", "").startswith("actions/setup-node@"):
+                        self.assertEqual(step["with"]["package-manager-cache"], "false")
+                        self.assertNotIn("cache", step["with"])
         feature = next(step for step in self.ci["jobs"]["build-and-test"]["steps"] if step.get("name") == "Lint and test the Windows automation feature")
         self.assertEqual(feature["if"], "runner.os == 'Windows'")
         self.assertIn("cargo clippy", feature["run"])
