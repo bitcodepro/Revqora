@@ -1,3 +1,4 @@
+import { smokeTimings, assertSmokeCoverage } from "./ci-timing.mjs";
 import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
 import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manager-smoke.mjs";
@@ -5,7 +6,7 @@ import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manag
 //   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
 // verifies the resulting git state with the git CLI. Screenshots go to --out.
-import { execFileSync } from "node:child_process";
+import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -19,6 +20,8 @@ const arg = (name, def) => {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : def;
 };
+const suite = process.env.REVQORA_SMOKE_SUITE || "all";
+if (!["all", "core"].includes(suite)) throw new Error("Use ui-suite.mjs for independent workspace/cleanup suites");
 const exe = arg("--exe", path.join(projectRoot, "src-tauri/target/release/revqora.exe"));
 const work = createProfile("revqora-smoke-");
 const out = arg("--out", process.env.REVQORA_SMOKE_OUT || path.join(work, "shots"));
@@ -57,7 +60,8 @@ attachPage();
 async function check(name, fn) {
   step++;
   try {
-    await fn();
+    console.log(`start ${step}. ${name}`);
+    await smokeTimings.measure("scenario", `${step}. ${name}`, fn);
     results.push(`ok   ${step}. ${name}`);
     console.log(results.at(-1));
   } catch (e) {
@@ -67,7 +71,7 @@ async function check(name, fn) {
     throw e;
   }
 }
-const shot = (n) => page.screenshot({ path: path.join(out, `${n}.png`) });
+const shot = (n) => smokeTimings.measure("activity", "screenshots", () => page.screenshot({ path: path.join(out, `${n}.png`) }));
 // Poll the actual result; guarded Git transactions include checkpointing and refresh.
 const until = async (fn, msg, ms = 30000) => {
   const t = Date.now();
@@ -1291,7 +1295,9 @@ try {
   });
 
   await check("dark theme renders", async () => {
-    if (await page.locator(".commit-box input").inputValue().catch(() => "")) throw new Error("commit message from the aborted merge was left behind");
+    await page.click(".view-tab:has-text('Changes')");
+    await page.locator(".commit-box .summary-wrap input").waitFor();
+    if (await page.locator(".commit-box .summary-wrap input").inputValue()) throw new Error("commit message from the aborted merge was left behind");
     await page.evaluate(() => (document.documentElement.dataset.theme = "dark"));
     await page.click(".view-tab:has-text('History')");
     await page.locator(".grow", { hasText: "Merge branch 'hotfix/greeting'" }).first().click();
@@ -1882,10 +1888,13 @@ try {
   await page.evaluate((preferences) => { for (const [key, value] of Object.entries(preferences)) if (value !== null) localStorage.setItem(key, value); }, workspacePreferences);
   await page.reload();
   await page.locator(".topbar .repo-current > b").filter({ hasText: workspaceActive }).waitFor();
-  await repositoryWorkspaceSmoke({ page, check, shot, work });
-  await branchManagerSmoke({ page, check, shot, work });
-  await branchManagerProtectionSmoke({ page, check, shot, work });
-  await branchCleanupSmoke({ page, check, shot, work });
+  if (suite === "all") {
+    await repositoryWorkspaceSmoke({ page, check, shot, work });
+    await branchManagerSmoke({ page, check, shot, work });
+    await branchManagerProtectionSmoke({ page, check, shot, work });
+    await branchCleanupSmoke({ page, check, shot, work });
+  }
+  assertSmokeCoverage(suite, step);
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;
@@ -1893,6 +1902,7 @@ try {
 } finally {
   await close();
   feed.close();
+  smokeTimings.finish();
   console.log(results.join("\n"));
   console.log(`screenshots: ${out}`);
   if (errors.length) console.log("console errors:\n" + errors.join("\n"));

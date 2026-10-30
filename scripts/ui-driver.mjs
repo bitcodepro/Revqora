@@ -1,3 +1,4 @@
+import { smokeTimings } from "./ci-timing.mjs";
 // Launches the built app with WebView2 remote debugging and connects Playwright to it.
 // Usage (as a module): const { page, close } = await launch({ exe, args, port, profile });
 import { execFileSync, spawn } from "node:child_process";
@@ -81,7 +82,11 @@ export function createProfile(prefix = "revqora-webview-") {
 
 // The window stays off-screen unless the caller passes visible, the command line has
 // --visible, or REVQORA_SMOKE_VISIBLE=1 is set.
-export async function launch({ exe, args = [], port = 9333, profile, transportOnly = false, visible = process.argv.includes("--visible") || process.env.REVQORA_SMOKE_VISIBLE === "1" }) {
+export async function launch(options) {
+  return smokeTimings.measure("activity", "app launch", () => launchApp(options));
+}
+
+async function launchApp({ exe, args = [], port = 9333, profile, transportOnly = false, visible = process.argv.includes("--visible") || process.env.REVQORA_SMOKE_VISIBLE === "1" }) {
   if (port === 0) {
     const reservation = net.createServer();
     await new Promise((resolve, reject) => { reservation.once("error", reject); reservation.listen(0, "127.0.0.1", resolve); });
@@ -160,7 +165,7 @@ export async function launch({ exe, args = [], port = 9333, profile, transportOn
     page,
     browser,
     child,
-    close: async () => {
+    close: async () => smokeTimings.measure("activity", "app shutdown", async () => {
       if (child.exitCode === null && child.signalCode === null && child.pid) {
         await new Promise((resolve) => {
           const timeout = setTimeout(resolve, 5000);
@@ -179,6 +184,6 @@ export async function launch({ exe, args = [], port = 9333, profile, transportOn
       try {
         await browser.close();
       } catch {}
-    },
+    }),
   };
 }
