@@ -1,4 +1,31 @@
 #[tauri::command]
+async fn branch_cleanup_review(
+    repo: String,
+    requests: Vec<git::branch_cleanup::Request>,
+    base: String,
+    protection_rules: Vec<String>,
+) -> GitResult<git::branch_cleanup::Review> {
+    blocking(move || git::branch_cleanup::review(&p(&repo), requests, &base, &protection_rules)).await
+}
+#[tauri::command]
+async fn branch_cleanup_execute(
+    app: AppHandle,
+    repo: String,
+    selections: Vec<git::branch_cleanup::Selection>,
+    protection_rules: Vec<String>,
+    expected_state: String,
+    op_id: String,
+) -> GitResult<git::branch_cleanup::Report> {
+    if expected_state.is_empty() {
+        return Err(GitError::new("Prepare a branch cleanup review first."));
+    }
+    mutating(repo.clone(), Some(expected_state), app.clone(), "branch_cleanup_execute", Some(op_id.clone()), move || {
+        git::branch_cleanup::execute(&p(&repo), &selections, &protection_rules, progress(&app, &op_id))
+    })
+    .await
+}
+
+#[tauri::command]
 async fn branch_manager_snapshot(repo: String, base: Option<String>) -> git::runner::GitResult<git::branch_manager::Snapshot> {
     blocking(move || git::branch_manager::snapshot(&p(&repo), base.as_deref())).await
 }
@@ -1579,6 +1606,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            branch_cleanup_review,
+            branch_cleanup_execute,
             branch_manager_snapshot,
             branch_manager_compare,
             sync_prepare,

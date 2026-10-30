@@ -1,15 +1,17 @@
+import { smokeTimings, assertSmokeCoverage } from "./ci-timing.mjs";
+import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
 import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manager-smoke.mjs";
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
 //   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
 // verifies the resulting git state with the git CLI. Screenshots go to --out.
-import { execFileSync } from "node:child_process";
+import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProfile, launch, withViewport, openSubmenu } from "./ui-driver.mjs";
+import { createProfile, launch, withViewport, openCommitAction } from "./ui-driver.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -18,6 +20,8 @@ const arg = (name, def) => {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : def;
 };
+const suite = process.env.REVQORA_SMOKE_SUITE || "all";
+if (!["all", "core"].includes(suite)) throw new Error("Use ui-suite.mjs for independent workspace/cleanup suites");
 const exe = arg("--exe", path.join(projectRoot, "src-tauri/target/release/revqora.exe"));
 const work = createProfile("revqora-smoke-");
 const out = arg("--out", process.env.REVQORA_SMOKE_OUT || path.join(work, "shots"));
@@ -56,7 +60,8 @@ attachPage();
 async function check(name, fn) {
   step++;
   try {
-    await fn();
+    console.log(`start ${step}. ${name}`);
+    await smokeTimings.measure("scenario", `${step}. ${name}`, fn);
     results.push(`ok   ${step}. ${name}`);
     console.log(results.at(-1));
   } catch (e) {
@@ -66,7 +71,7 @@ async function check(name, fn) {
     throw e;
   }
 }
-const shot = (n) => page.screenshot({ path: path.join(out, `${n}.png`) });
+const shot = (n) => smokeTimings.measure("activity", "screenshots", () => page.screenshot({ path: path.join(out, `${n}.png`) }));
 // Poll the actual result; guarded Git transactions include checkpointing and refresh.
 const until = async (fn, msg, ms = 30000) => {
   const t = Date.now();
@@ -1290,7 +1295,9 @@ try {
   });
 
   await check("dark theme renders", async () => {
-    if (await page.locator(".commit-box input").inputValue().catch(() => "")) throw new Error("commit message from the aborted merge was left behind");
+    await page.click(".view-tab:has-text('Changes')");
+    await page.locator(".commit-box .summary-wrap input").waitFor();
+    if (await page.locator(".commit-box .summary-wrap input").inputValue()) throw new Error("commit message from the aborted merge was left behind");
     await page.evaluate(() => (document.documentElement.dataset.theme = "dark"));
     await page.click(".view-tab:has-text('History')");
     await page.locator(".grow", { hasText: "Merge branch 'hotfix/greeting'" }).first().click();
@@ -1652,11 +1659,14 @@ try {
     await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".grow:has-text('fixup! Autosquash target')");
     // Semantic text matching normalizes rendered whitespace; the exact Git
     // identity is checked in the plan before any history rewrite is started.
-    await page.locator(".graph-scroll .grow").filter({ has: page.getByText("Autosquash target", { exact: true }) }).locator(".g-graph").click({ button: "right" });
+    const commit = page.locator(".graph-scroll .grow").filter({ has: page.getByText("Autosquash target", { exact: true }) });
     const rebase = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
-    await until(async () => { if (await rebase.isVisible()) return true; await page.mouse.move(8, 8); await page.locator(".ctx-item", { hasText: /^Edit history$/ }).hover(); return rebase.isVisible(); }, "rebase submenu did not open", 10000);
-    await rebase.click(); await page.waitForSelector(".rebase-row"); await page.getByRole("button", { name: "Autosquash fixups", exact: true }).click();
-    const rows = page.locator(".rebase-row"); if (!(await rows.first().innerText()).includes(targetOid.slice(0, 7))) throw new Error("autosquash plan starts from the wrong commit");
+    await openCommitAction(page, () => commit.locator(".g-graph").click({ button: "right", timeout: 1500 }), targetOid, page.locator(".ctx-item", { hasText: /^Edit history$/ }), rebase);
+    await page.waitForSelector(".rebase-row");
+    const rows = page.locator(".rebase-row");
+    const firstOid = (await rows.first().locator(".mono").first().innerText()).trim();
+    if (git5("rev-parse", "--verify", `${firstOid}^{commit}`) !== targetOid) throw new Error("autosquash plan starts from the wrong commit");
+    await page.getByRole("button", { name: "Autosquash fixups", exact: true }).click();
     if (await rows.count() !== 3 || !(await rows.nth(1).getAttribute("class")).includes("fixup") || !(await rows.nth(1).innerText()).includes("fixup! Autosquash target")) throw new Error("autosquash preview did not reorder fixups");
     await shot("56-autosquash-plan"); await reviewStudio(); await page.locator(".cf-head").getByRole("button", { name: "Start rebase", exact: true }).click();
 
@@ -1733,8 +1743,8 @@ try {
     // open the commit menu without bypassing Playwright's actionability checks.
     const commit = page.locator(".graph-scroll .grow").filter({ has: page.getByText(subject, { exact: true }) });
     const item = page.locator(".ctx-item", { hasText: "Interactive rebase from here" });
-    await openSubmenu(page, () => commit.locator(".g-graph").click({ button: "right", timeout: 1500 }), page.locator(".ctx-item", { hasText: /^Edit history$/ }), item);
-    await item.click(); await page.waitForSelector(".rebase-row");
+    await openCommitAction(page, () => commit.locator(".g-graph").click({ button: "right", timeout: 1500 }), expectedOid, page.locator(".ctx-item", { hasText: /^Edit history$/ }), item);
+    await page.waitForSelector(".rebase-row");
     const firstOid = (await page.locator(".rebase-row").first().locator(".mono").first().innerText()).trim();
     if (studioGit("rev-parse", "--verify", `${firstOid}^{commit}`) !== expectedOid) throw new Error("Studio opened a plan for the wrong commit");
   };
@@ -1878,9 +1888,13 @@ try {
   await page.evaluate((preferences) => { for (const [key, value] of Object.entries(preferences)) if (value !== null) localStorage.setItem(key, value); }, workspacePreferences);
   await page.reload();
   await page.locator(".topbar .repo-current > b").filter({ hasText: workspaceActive }).waitFor();
-  await repositoryWorkspaceSmoke({ page, check, shot, work });
-  await branchManagerSmoke({ page, check, shot, work });
-  await branchManagerProtectionSmoke({ page, check, shot, work });
+  if (suite === "all") {
+    await repositoryWorkspaceSmoke({ page, check, shot, work });
+    await branchManagerSmoke({ page, check, shot, work });
+    await branchManagerProtectionSmoke({ page, check, shot, work });
+    await branchCleanupSmoke({ page, check, shot, work });
+  }
+  assertSmokeCoverage(suite, step);
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
   failed = true;
@@ -1888,6 +1902,7 @@ try {
 } finally {
   await close();
   feed.close();
+  smokeTimings.finish();
   console.log(results.join("\n"));
   console.log(`screenshots: ${out}`);
   if (errors.length) console.log("console errors:\n" + errors.join("\n"));

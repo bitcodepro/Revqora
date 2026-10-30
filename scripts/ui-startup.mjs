@@ -8,9 +8,9 @@ if (index < 0 || !process.argv[index + 1]) throw new Error("Pass --exe with the 
 const profile = createProfile("revqora-startup-");
 let close;
 try {
-  ({ close } = await launch({ exe: path.resolve(process.argv[index + 1]), profile, port: 0 }));
+  ({ close } = await launch({ exe: path.resolve(process.argv[index + 1]), profile, port: 0, transportOnly: true }));
 } finally {
   await close?.();
   if (!process.argv.includes("--keep")) fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
 }
-console.log("Native WebView2 startup and CDP connection passed.");
+console.log("Native WebView2/CDP transport startup passed. Application document/storage readiness is checked by the full UI suite.");

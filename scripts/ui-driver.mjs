@@ -1,3 +1,4 @@
+import { smokeTimings } from "./ci-timing.mjs";
 // Launches the built app with WebView2 remote debugging and connects Playwright to it.
 // Usage (as a module): const { page, close } = await launch({ exe, args, port, profile });
 import { execFileSync, spawn } from "node:child_process";
@@ -6,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
+import { waitForApplicationPage } from "./ui-readiness.mjs";
 
 /** CDP-attached native pages have no Playwright viewport until first emulation.
  * Always restore the actual initial client area, even when viewportSize() is null.
@@ -41,6 +43,37 @@ export async function openSubmenu(page, openRoot, parent, child) {
   throw new Error(`Context submenu did not open: ${lastError?.message ?? "not visible"}`);
 }
 
+/** A graph refresh can move virtual rows between actionability checks and the
+ * native context-menu event. Inspect the menu's own SHA before choosing an
+ * action; retry only menu opening, never a history mutation or a wrong plan.
+ */
+export async function openCommitAction(page, openRoot, expectedOid, parent, child) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(expectedOid)) throw new Error("A full expected commit SHA is required");
+  const copy = page.locator(".ctx-item").filter({ has: page.getByText("Copy", { exact: true }) });
+  const fullHash = page.locator(".ctx-item").filter({ has: page.getByText("Full hash", { exact: true }) });
+  const deadline = Date.now() + 15000;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      await openSubmenu(page, openRoot, copy, fullHash);
+      const actual = (await fullHash.locator(".hint").innerText({ timeout: 1500 })).trim();
+      if (actual !== expectedOid.slice(0, 8)) throw new Error(`Context menu belongs to ${actual}, expected ${expectedOid.slice(0, 8)}`);
+      // Keep this verified root menu. If native blur closes it, start over and
+      // verify the new menu too, rather than silently reopening another row.
+      await page.mouse.move(8, 8);
+      await parent.hover({ timeout: 1500 });
+      await child.waitFor({ state: "visible", timeout: 1500 });
+      await child.click({ timeout: 1500 });
+      return;
+    } catch (e) {
+      lastError = e;
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(120);
+    }
+  }
+  throw new Error(`Could not open action for the expected commit: ${lastError?.message ?? "menu unavailable"}`);
+}
+
 export function createProfile(prefix = "revqora-webview-") {
   const base = path.resolve(process.env.REVQORA_TEST_TMP || os.tmpdir());
   fs.mkdirSync(base, { recursive: true });
@@ -49,7 +82,11 @@ export function createProfile(prefix = "revqora-webview-") {
 
 // The window stays off-screen unless the caller passes visible, the command line has
 // --visible, or REVQORA_SMOKE_VISIBLE=1 is set.
-export async function launch({ exe, args = [], port = 9333, profile, visible = process.argv.includes("--visible") || process.env.REVQORA_SMOKE_VISIBLE === "1" }) {
+export async function launch(options) {
+  return smokeTimings.measure("activity", "app launch", () => launchApp(options));
+}
+
+async function launchApp({ exe, args = [], port = 9333, profile, transportOnly = false, visible = process.argv.includes("--visible") || process.env.REVQORA_SMOKE_VISIBLE === "1" }) {
   if (port === 0) {
     const reservation = net.createServer();
     await new Promise((resolve, reject) => { reservation.once("error", reject); reservation.listen(0, "127.0.0.1", resolve); });
@@ -101,21 +138,34 @@ export async function launch({ exe, args = [], port = 9333, profile, visible = p
     throw new Error(`Could not connect to the WebView over CDP: ${state}\n${connectionError}${windowState ? `\n${windowState}` : ""}${stderr ? `\n${stderr}` : ""}`);
   }
   let page;
-  for (let i = 0; i < 40 && !page; i++) {
-    page = browser.contexts().flatMap((c) => c.pages())[0];
-    if (!page) await new Promise((r) => setTimeout(r, 250));
+  try {
+    if (transportOnly) {
+      // The CI transport probe runs a debug host BEFORE building/serving the
+      // frontend. It tests WebView/CDP only and must never read app storage.
+      for (let i = 0; i < 40 && !page; i++) {
+        page = browser.contexts().flatMap(context => context.pages())[0];
+        if (!page) await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      if (!page) throw new Error("No CDP page found for transport probe");
+    } else {
+      page = await waitForApplicationPage(browser, { observe: state => console.log(`UI document: ${JSON.stringify(state)}`) });
+    }
+  } catch (e) {
+    // Only terminate the process tree spawned by this launcher.
+    if (child.exitCode === null && child.signalCode === null) {
+      if (process.platform === "win32" && child.pid) {
+        try { execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
+        catch { child.kill(); }
+      } else child.kill();
+    }
+    await browser.close().catch(() => {});
+    throw e;
   }
-  if (!page) {
-    await browser.close();
-    child.kill();
-    throw new Error("No page found");
-  }
-  await page.waitForLoadState("domcontentloaded");
   return {
     page,
     browser,
     child,
-    close: async () => {
+    close: async () => smokeTimings.measure("activity", "app shutdown", async () => {
       if (child.exitCode === null && child.signalCode === null && child.pid) {
         await new Promise((resolve) => {
           const timeout = setTimeout(resolve, 5000);
@@ -134,6 +184,6 @@ export async function launch({ exe, args = [], port = 9333, profile, visible = p
       try {
         await browser.close();
       } catch {}
-    },
+    }),
   };
 }

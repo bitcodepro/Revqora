@@ -13,8 +13,8 @@ cross-cutting work and does not consume a feature stage.
 | 6 | Rebase Studio: affected refs, force-push implications, result comparison, recovery | Merged (#12, #13) |
 | 7 | Conflict Studio: Base panel, navigation, user-selected validation commands | Merged (#14) |
 | 8 | Repository favorites, project groups, workspaces and explicit Sync | Merged (#15) |
-| 9 | Advanced Branch Manager | Implemented; review pending |
-| 10 | Reviewed bulk branch cleanup | Planned |
+| 9 | Advanced Branch Manager | Merged (#16) |
+| 10 | Reviewed bulk branch cleanup | Implemented; review pending |
 | 11 | Worktree Manager | Planned |
 | 12 | Accounts and forge integrations | Planned |
 | 13 | PR Center: browse, create, edit, templates and diffs | Planned |
@@ -49,3 +49,21 @@ to every stage. Application data remains portable beside the executable.
   Remote counts describe cached tracking references until an explicit/background Fetch.
 
 Bulk cleanup remains stage 10; forge-side protections and PR status are later stages.
+
+## Stage 10 — Reviewed bulk branch cleanup
+
+- Select individual rows or up to 50 branches from the current manager filter.
+  Selection retains the inventory SHA; hidden selections are counted explicitly.
+- Per-row local-only, remote-only (keep local), or combined deletion. Ambiguous
+  mappings require individual review; a server destination cannot appear twice.
+- One review shows exact tips, divergence, commits outside a surviving local base,
+  worktrees and protection failures; risky rows require individual force consent.
+- A single repository writer turn checks the complete batch before its first
+  mutation, including actual server tips and protections on every destination.
+  Each row is revalidated before execution; local CAS and remote SHA leases remain.
+- Reference recovery checkpoints precede deletions. Results distinguish complete,
+  partial, failed and skipped rows and link their checkpoints in Undo Center.
+  The sequence stops on failure; a partial batch is never automatically retried.
+- This is not a cross-server transaction. Working files are kept. Counts use
+  physical commit ancestry, not replace refs; squash integration is not proof of
+  retained history. Forge PR status/server policy discovery belongs to later stages.
