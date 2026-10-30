@@ -81,7 +81,7 @@ export function createProfile(prefix = "revqora-webview-") {
 
 // The window stays off-screen unless the caller passes visible, the command line has
 // --visible, or REVQORA_SMOKE_VISIBLE=1 is set.
-export async function launch({ exe, args = [], port = 9333, profile, visible = process.argv.includes("--visible") || process.env.REVQORA_SMOKE_VISIBLE === "1" }) {
+export async function launch({ exe, args = [], port = 9333, profile, transportOnly = false, visible = process.argv.includes("--visible") || process.env.REVQORA_SMOKE_VISIBLE === "1" }) {
   if (port === 0) {
     const reservation = net.createServer();
     await new Promise((resolve, reject) => { reservation.once("error", reject); reservation.listen(0, "127.0.0.1", resolve); });
@@ -134,7 +134,17 @@ export async function launch({ exe, args = [], port = 9333, profile, visible = p
   }
   let page;
   try {
-    page = await waitForApplicationPage(browser, { observe: state => console.log(`UI document: ${JSON.stringify(state)}`) });
+    if (transportOnly) {
+      // The CI transport probe runs a debug host BEFORE building/serving the
+      // frontend. It tests WebView/CDP only and must never read app storage.
+      for (let i = 0; i < 40 && !page; i++) {
+        page = browser.contexts().flatMap(context => context.pages())[0];
+        if (!page) await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      if (!page) throw new Error("No CDP page found for transport probe");
+    } else {
+      page = await waitForApplicationPage(browser, { observe: state => console.log(`UI document: ${JSON.stringify(state)}`) });
+    }
   } catch (e) {
     // Only terminate the process tree spawned by this launcher.
     if (child.exitCode === null && child.signalCode === null) {
