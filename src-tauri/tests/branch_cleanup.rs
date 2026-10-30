@@ -153,6 +153,52 @@ fn changed_server_or_local_sha_blocks_whole_batch_even_with_force() {
     assert!(f.exists("one"));
 }
 #[test]
+fn fetched_tracking_update_rejects_outer_state_before_batch_preflight() {
+    let f = Fixture::new();
+    let server = f.server();
+    let selections = [f.selection("one", Mode::Local), f.selection("two", Mode::Both)];
+    let expected = status::status(&f.root).unwrap().state_token.unwrap();
+    let one = f.oid("one");
+    let two = f.oid("two");
+    let index = fs::read(f.root.join(".git/index")).unwrap();
+    let next = runner::run(
+        &server,
+        [
+            "-c",
+            "user.name=Peer",
+            "-c",
+            "user.email=peer@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit-tree",
+            &f.oid("HEAD^{tree}"),
+            "-p",
+            &two,
+            "-m",
+            "Peer tip before fetch",
+        ],
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    runner::run(&server, ["update-ref", "refs/heads/two", &next, &two]).unwrap();
+    assert_eq!(status::status(&f.root).unwrap().state_token.as_deref(), Some(expected.as_str()));
+    assert_eq!(f.oid("refs/remotes/origin/two"), two);
+    f.git(&["fetch", "-q", "origin"]);
+    assert_eq!(f.oid("refs/remotes/origin/two"), next);
+    assert_ne!(status::status(&f.root).unwrap().state_token.as_deref(), Some(expected.as_str()));
+    let refs_after_fetch = f.git(&["show-ref"]);
+    let result = operations::run(&f.root, "branch_cleanup_execute", Some(&expected), |_, _| {}, || branch_cleanup::execute(&f.root, &selections, &[], |_| {}));
+    assert_eq!(result.err().unwrap().kind, "stale-operation");
+    assert_eq!(f.git(&["show-ref"]), refs_after_fetch);
+    assert_eq!(f.oid("one"), one);
+    assert_eq!(f.oid("two"), two);
+    assert_eq!(runner::run(&server, ["rev-parse", "one"]).unwrap().trim(), one);
+    assert_eq!(runner::run(&server, ["rev-parse", "two"]).unwrap().trim(), next);
+    assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+}
+
+#[test]
 fn duplicate_server_target_and_selected_base_are_rejected_without_side_effects() {
     let f = Fixture::new();
     f.server();

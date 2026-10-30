@@ -5,6 +5,15 @@ import { fileURLToPath } from "node:url";
 import { createProfile, launch } from "./ui-driver.mjs";
 
 export async function branchCleanupSmoke({ page, check, shot, work }) {
+  // Each process/profile restart can have its own timer. These fixtures mutate
+  // server refs deliberately; timer fetching must not race their frozen reviews.
+  // The separate stale-local scenario below tests an explicit Fetch invalidation.
+  const timerBefore=await page.evaluate(()=>JSON.parse(localStorage.getItem("revqora.settings")).state.autoFetchMinutes);
+  await page.getByTitle("Settings",{exact:true}).click();
+  await page.locator(".modal label:has-text('Auto fetch') + .seg").getByRole("button",{name:"Off",exact:true}).click();
+  await page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
+  if(await page.evaluate(()=>JSON.parse(localStorage.getItem("revqora.settings")).state.autoFetchMinutes)!==0)throw new Error("Cleanup fixtures require timer auto-fetch to be off");
+  console.log(`Cleanup fixture auto-fetch minutes: ${timerBefore} -> 0`);
   const git=(root,...args)=>execFileSync("git",["-C",root,...args],{encoding:"utf8",windowsHide:true}).trim();
   const fixture=async suffix=>{
     const name=`stage10-${suffix}`,root=path.join(work,name),server=path.join(work,`${name}.git`);
@@ -30,13 +39,19 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     await page.getByRole("combobox",{name:`Deletion scope for ${ref}`,exact:true}).selectOption(mode);
     await page.waitForSelector(".branch-cleanup[aria-busy=false]",{timeout:180000});
   };
-  const run=async count=>{
+  const run=async(count,{expectStale=false}={})=>{
     await page.getByRole("button",{name:`Delete ${count} selected`,exact:true}).click();
     await page.waitForFunction(()=>{
       const root=document.querySelector(".branch-cleanup");
       return root?.getAttribute("aria-busy")==="false" && (document.querySelector(".modal-head h3")?.textContent==="Branch cleanup results" || !!root.querySelector(':scope > .bc-error[role="alert"]'));
     },null,{timeout:180000});
     const error=page.locator('.branch-cleanup > .bc-error[role="alert"]');
+    if(expectStale){
+      if(!await error.count() || !(await error.innerText()).includes("The repository changed since this action was prepared"))throw new Error("Expected the outer stale-operation rejection");
+      if(await page.getByRole("heading",{name:"Branch cleanup results",exact:true}).count() || await page.locator("[data-cleanup-status]").count())throw new Error("Outer rejection incorrectly rendered a batch report");
+      if(await page.getByRole("button",{name:/^Delete \d+ selected$/}).count())throw new Error("Stale confirmation remained reusable");
+      return;
+    }
     if(await error.count())throw new Error(`Cleanup failed before producing a report: ${await error.innerText()}`);
     await page.getByRole("heading",{name:"Branch cleanup results",exact:true}).waitFor();
   };
@@ -110,6 +125,10 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     const {root,server,invoke}=await fixture("stale");
     await search("bulk-clean-a");await select("refs/heads/bulk-clean-a");await search("bulk-clean-b");await select("refs/heads/bulk-clean-b");await openReview();await scope("refs/heads/bulk-clean-b","both");
     const before=await invoke("status",{repo:root});
+    const trackingBefore=git(root,"rev-parse","refs/remotes/origin/bulk-clean-b");
+    const indexBefore=fs.readFileSync(path.join(root,".git/index"));
+    const aBefore=git(root,"rev-parse","refs/heads/bulk-clean-a");
+    const bBefore=git(root,"rev-parse","refs/heads/bulk-clean-b");
     const previous=git(server,"rev-parse","refs/heads/bulk-clean-b");
     // A URL push from root can also update its tracking cache. Simulate another
     // actor directly on the bare server so only the SERVER SHA changes.
@@ -117,8 +136,23 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     git(server,"update-ref","refs/heads/bulk-clean-b",next,previous);
     if((await invoke("status",{repo:root})).stateToken!==before.stateToken)throw new Error("Server-only fixture changed the local repository state");
     await run(2);await page.getByRole("alert").filter({hasText:"Preflight failed"}).waitFor();
-    if(!exists(root,"bulk-clean-a")||!exists(root,"bulk-clean-b")||git(server,"rev-parse","bulk-clean-b")!==next)throw new Error("Failed preflight mutated a selected ref");
+    if(git(root,"rev-parse","refs/heads/bulk-clean-a")!==aBefore || git(root,"rev-parse","refs/heads/bulk-clean-b")!==bBefore || git(root,"rev-parse","refs/remotes/origin/bulk-clean-b")!==trackingBefore || git(server,"rev-parse","refs/heads/bulk-clean-a")!==aBefore || git(server,"rev-parse","refs/heads/bulk-clean-b")!==next || !fs.readFileSync(path.join(root,".git/index")).equals(indexBefore))throw new Error("Failed preflight changed the reviewed local state or server tips");
     await shot("86-bulk-cleanup-stale");await close();
+  });
+  await check("a fetched tracking update rejects the whole stale confirmation before batch preflight",async()=>{
+    const {root,server,invoke}=await fixture("stale-local");
+    await search("bulk-clean-a");await select("refs/heads/bulk-clean-a");await search("bulk-clean-b");await select("refs/heads/bulk-clean-b");await openReview();await scope("refs/heads/bulk-clean-b","both");
+    const before=await invoke("status",{repo:root});
+    const aBefore=git(root,"rev-parse","refs/heads/bulk-clean-a"),bBefore=git(root,"rev-parse","refs/heads/bulk-clean-b");
+    const indexBefore=fs.readFileSync(path.join(root,".git/index"));
+    const next=git(server,"-c","user.name=Peer","-c","user.email=peer@example.invalid","-c","commit.gpgsign=false","commit-tree",git(server,"rev-parse",`${bBefore}^{tree}`),"-p",bBefore,"-m","Peer update before fetch");
+    git(server,"update-ref","refs/heads/bulk-clean-b",next,bBefore);
+    if((await invoke("status",{repo:root})).stateToken!==before.stateToken)throw new Error("Server-only update invalidated the local confirmation");
+    git(root,"fetch","-q","origin");
+    if(git(root,"rev-parse","refs/remotes/origin/bulk-clean-b")!==next || (await invoke("status",{repo:root})).stateToken===before.stateToken)throw new Error("Fetch did not invalidate the reviewed tracking ref/state token");
+    await run(2,{expectStale:true});
+    if(git(root,"rev-parse","refs/heads/bulk-clean-a")!==aBefore || git(root,"rev-parse","refs/heads/bulk-clean-b")!==bBefore || git(root,"rev-parse","refs/remotes/origin/bulk-clean-b")!==next || git(server,"rev-parse","refs/heads/bulk-clean-a")!==aBefore || git(server,"rev-parse","refs/heads/bulk-clean-b")!==next || !fs.readFileSync(path.join(root,".git/index")).equals(indexBefore))throw new Error("Outer stale-operation rejection changed local/server refs or staging");
+    await shot("89-bulk-cleanup-stale-local");await close();
   });
   await check("bulk server rejection reports partial local removal, saved checkpoints and skipped remaining rows",async()=>{
     const {root,server}=await fixture("partial");
