@@ -139,6 +139,28 @@ fn registry(root: &Path) -> GitResult<Registry> {
     }
     Ok(Registry { rows, token: format!("{:x}", h.finalize()) })
 }
+// A missing/offline leaf cannot be canonicalized, but its existing parent can.
+// This also matches macOS /var -> /private/var without changing the registered
+// path used by Git. Inaccessible parents and dangling links remain unresolved.
+fn physical_path(path: &Path) -> Option<PathBuf> {
+    let mut parent = path;
+    let mut suffix = Vec::new();
+    loop {
+        match fs::canonicalize(parent) {
+            Ok(mut resolved) => {
+                for component in suffix.iter().rev() {
+                    resolved.push(component);
+                }
+                return Some(resolved);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                suffix.push(parent.file_name()?.to_owned());
+                parent = parent.parent()?;
+            }
+            Err(_) => return None,
+        }
+    }
+}
 fn find<'a>(r: &'a Registry, input: &str) -> GitResult<(usize, &'a Worktree)> {
     let p = absolute(input)?;
     r.rows
@@ -146,7 +168,7 @@ fn find<'a>(r: &'a Registry, input: &str) -> GitResult<(usize, &'a Worktree)> {
         .enumerate()
         .find(|(_, w)| key(Path::new(&w.path)) == key(&p))
         .or_else(|| {
-            fs::canonicalize(&p).ok().and_then(|p| r.rows.iter().enumerate().find(|(_, w)| fs::canonicalize(&w.path).is_ok_and(|q| key(&q) == key(&p))))
+            physical_path(&p).and_then(|p| r.rows.iter().enumerate().find(|(_, w)| physical_path(Path::new(&w.path)).is_some_and(|q| key(&q) == key(&p))))
         })
         .ok_or_else(|| fail("This folder is not a registered worktree of the selected repository."))
 }

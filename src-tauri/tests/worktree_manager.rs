@@ -383,6 +383,28 @@ fn remove_directory_link(link: &Path) {
 }
 
 #[test]
+fn a_missing_worktree_can_be_locked_and_unlocked_through_an_existing_parent_alias() {
+    let f = Fixture::new();
+    let wt = f.add("topic");
+    let kept = f.add("kept");
+    let alias = f.path("parent-alias");
+    directory_link(f.temp.path(), &alias);
+    let via = alias.join("topic");
+    f.remove_folder(&wt);
+    let snapshot = wm::snapshot(&f.root).unwrap();
+    wm::lock(&f.root, via.to_str().unwrap(), &snapshot.registry_token, true, "Offline through alias").unwrap();
+    let snapshot = wm::snapshot(&f.root).unwrap();
+    let locked = snapshot.worktrees.iter().find(|w| w.worktree.branch.as_deref() == Some("topic")).unwrap();
+    assert!(locked.worktree.locked && !locked.exists);
+    assert_eq!(locked.worktree.lock_reason.as_deref(), Some("Offline through alias"));
+    assert!(!snapshot.worktrees.iter().find(|w| w.worktree.branch.as_deref() == Some("kept")).unwrap().worktree.locked);
+    wm::lock(&f.root, via.to_str().unwrap(), &snapshot.registry_token, false, "").unwrap();
+    assert_eq!(wm::prune_review(&f.root).unwrap().entries.len(), 1);
+    assert!(kept.exists() && !wt.exists());
+    remove_directory_link(&alias);
+}
+
+#[test]
 fn directory_links_cannot_redirect_removal_and_retargeted_creation_parents_are_stale() {
     let f = Fixture::new();
     let wt = f.add("topic");

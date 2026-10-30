@@ -25,7 +25,7 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
   const closeModal=async label=>{await modal().getByRole("button",{name:label,exact:true}).click();};
   const until=async(fn,message,timeout=60000)=>{const end=Date.now()+timeout;while(Date.now()<end){if(await fn())return;await page.waitForTimeout(100);}throw new Error(message);};
   const create=async(mode,branch,p)=>{
-    await page.getByRole("button",{name:"New worktree",exact:true}).click();
+    await page.locator(".worktree-manager").getByRole("button",{name:"New worktree",exact:true}).click();
     await modal().getByRole("button",{name:mode,exact:true}).click();
     if(mode==="Existing branch")await modal().getByRole("combobox",{name:"Worktree branch",exact:true}).selectOption(branch);
     if(mode==="New branch")await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill(branch);
@@ -43,7 +43,7 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
   });
   await check("new worktree creation reviews an exact commit, invalidates edited plans and keeps source staging and edits",async()=>{
     fs.writeFileSync(path.join(root,"file.txt"),"source staged\n");git(root,"add","file.txt");fs.writeFileSync(path.join(root,"file.txt"),"source unstaged\r\n");const index=fs.readFileSync(path.join(root,".git/index"));await refresh();
-    const p=path.join(work,"wm-created");await page.getByRole("button",{name:"New worktree",exact:true}).click();await modal().getByRole("button",{name:"New branch",exact:true}).click();
+    const p=path.join(work,"wm-created");await page.locator(".worktree-manager").getByRole("button",{name:"New worktree",exact:true}).click();await modal().getByRole("button",{name:"New branch",exact:true}).click();
     await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill("created-old");await modal().getByRole("textbox",{name:"Worktree folder",exact:true}).fill(p);
     await modal().getByRole("button",{name:"Review creation",exact:true}).click();await page.waitForSelector('[data-worktree-review="create"]');
     if(!(await page.locator('[data-worktree-review="create"]').innerText()).includes(initialHead))throw new Error("Creation omitted exact start SHA");
@@ -88,7 +88,7 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
     finally{fs.writeFileSync(marker,saved);}await closeModal("Cancel");await page.waitForSelector(".wm-body[aria-busy=false]");
   });
   await check("an edited pending creation discards its old response and external source changes require a fresh confirmation",async()=>{
-    await page.getByRole("button",{name:"New worktree",exact:true}).click();await modal().getByRole("button",{name:"New branch",exact:true}).click();await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill("wm-stale-old");const p=path.join(work,"wm-stale-new");await modal().getByRole("textbox",{name:"Worktree folder",exact:true}).fill(p);
+    await page.locator(".worktree-manager").getByRole("button",{name:"New worktree",exact:true}).click();await modal().getByRole("button",{name:"New branch",exact:true}).click();await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill("wm-stale-old");const p=path.join(work,"wm-stale-new");await modal().getByRole("textbox",{name:"Worktree folder",exact:true}).fill(p);
     await page.evaluate(()=>{const original=window.fetch,base=window.__TAURI_INTERNALS__.convertFileSrc("","ipc");window.__wmFetch=original;window.__wmDelayed=false;window.__wmRelease=null;window.fetch=async function(input,init){const response=await original.call(this,input,init);if(String(input)===base+"worktree_create_review"&&!window.__wmDelayed){window.__wmDelayed=true;await new Promise(resolve=>{window.__wmRelease=resolve;});}return response;};});
     try{await modal().getByRole("button",{name:"Review creation",exact:true}).click();await page.waitForFunction(()=>typeof window.__wmRelease==="function");await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill("wm-stale-final");
       await page.evaluate(async()=>{window.__wmRelease();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
