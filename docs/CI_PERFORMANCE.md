@@ -53,16 +53,41 @@ assertions remain; they do not account for the multi-minute bottleneck.
    and recovery, protection/consent, server-only stale preflight, fetched local
    staleness and partial server rejection. Coverage checks reject missing or
    extra scenario counts. Fail-fast is disabled across the native matrix.
-5. Production package builds can run alongside native tests, followed by the
+5. Read-only version selection waits only for release-tooling tests, so all five
+   production packages build alongside quick/native verification, followed by the
    existing downloaded-package verifier. Production packages still omit the
    automation feature. Publishing requires the complete native matrix, all
    quick checks and verified packages.
 
-Only Cargo registry/git downloads are cached, keyed by OS, architecture and
-Cargo.lock. Compiled executables, application data and recovery payloads are
-never cached. The overall 45-minute timeout was not increased: the build job has
+Download caches are disabled after a measured cache-service egress failure
+(see below). npm/crates are fetched normally. The built native ZIP is reused only
+inside the same workflow, with its exact SHA-256. Application data and recovery
+payloads are never cached. The overall 45-minute timeout was not increased: the build job has
 25 minutes and each native suite has 30 minutes. This separates budgets and
 removes repeated/serial work; it does not establish a measured speedup by itself.
+
+## First measured optimized run
+
+Run [41061754285](https://github.com/bitcodepro/Revqora/actions/runs/41061754285)
+at `7b5f6f9` passed every check, all 86 native scenarios and all five downloaded
+archive/checksum pairs. The complete Windows build/native gate took 30m16s from
+its first job start, compared with cancellation at about 45m after case 80 in the
+baseline. Core execution took 998.56s; workspace 166.72s; cleanup 182.77s.
+The fixed dark-theme case took 3.09s. Core's five launches totalled 6.08s,
+69 screenshots 10.18s and 410 CLI verification commands 43.72s. The largest cases
+were branch deletion 239.34s, 20 repositories 112.14s and deletion recovery 57.49s.
+
+The entire workflow, including packages, took 45m30s. This is distinct from the
+Windows gate. Intel macOS setup-node took 10m02s: Node was already in the runner's
+tool cache, but npm-cache restoration emitted `Egress is over the account limit`
+and the step continued only later. Compilation itself then took 11m21s. Package
+jobs also waited for the 22m33s Windows quick/feature job before starting.
+
+The follow-up disables optional npm/Cargo download caches rather than relying on
+an unavailable cache service, and starts read-only version selection/package
+builds alongside the required quick/native checks. Neither change bypasses any
+publication gate or modifies a test assertion. Successful final-head CI is still
+required; this first run does not establish the follow-up's achieved runtime.
 
 ## Measurements on new runs
 
