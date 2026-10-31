@@ -214,7 +214,15 @@ pub(crate) fn base64(input: &[u8]) -> String {
     out
 }
 
-fn request(repo: &Path, f: &ForgeInfo, method: &str, path: &str, body: Option<Value>) -> GitResult<Value> {
+pub(super) fn request(repo: &Path, f: &ForgeInfo, method: &str, path: &str, body: Option<Value>) -> GitResult<Value> {
+    authorized(repo, f, |credential| super::forge_accounts::request_json(&f.kind, &f.api, credential, method, path, body.clone()))
+}
+
+pub(super) fn raw_request(repo: &Path, f: &ForgeInfo, path: &str, accept: &str, limit: u64, redirect: bool) -> GitResult<super::forge_accounts::ApiContent> {
+    authorized(repo, f, |credential| super::forge_accounts::request_content(&f.kind, &f.api, credential, "GET", path, None, accept, limit, redirect))
+}
+
+fn authorized<T>(repo: &Path, f: &ForgeInfo, send: impl Fn(&super::forge_accounts::Credential) -> GitResult<T>) -> GitResult<T> {
     let context = super::forge_accounts::context(repo)?.ok_or_else(|| GitError::new("Configure an API connection first."))?;
     if context.info != *f {
         return Err(GitError::new("The API connection changed. Refresh before trying again.").kind("stale-operation"));
@@ -224,14 +232,14 @@ fn request(repo: &Path, f: &ForgeInfo, method: &str, path: &str, body: Option<Va
         Some(c) => c,
         None => token(repo, &context.git_url)?,
     };
-    let result = super::forge_accounts::request_json(&f.kind, &f.api, &credential, method, path, body.clone());
+    let result = send(&credential);
     if is_bitbucket(f)
         && !explicit
         && !credential.username.is_empty()
         && matches!(&result,Err(e) if e.kind=="auth"&&e.message=="Token rejected. Reconnect this account.")
     {
         credential.mode = "basic".into();
-        return super::forge_accounts::request_json(&f.kind, &f.api, &credential, method, path, body);
+        return send(&credential);
     }
     result
 }
@@ -255,7 +263,7 @@ fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
 }
 
-fn gh_pr(v: &Value) -> PullRequest {
+pub(super) fn gh_pr(v: &Value) -> PullRequest {
     PullRequest {
         number: v.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
         title: s(v, "title"),
@@ -270,7 +278,7 @@ fn gh_pr(v: &Value) -> PullRequest {
     }
 }
 
-fn gl_mr(v: &Value) -> PullRequest {
+pub(super) fn gl_mr(v: &Value) -> PullRequest {
     PullRequest {
         number: v.get("iid").and_then(|n| n.as_u64()).unwrap_or(0),
         title: s(v, "title"),
@@ -336,15 +344,15 @@ pub fn iso_from_millis(ms: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
-fn project_path(s: &str) -> String {
+pub(super) fn project_path(s: &str) -> String {
     s.split('/').map(enc).collect::<Vec<_>>().join("/")
 }
 
-fn azure_repo(f: &ForgeInfo) -> String {
+pub(super) fn azure_repo(f: &ForgeInfo) -> String {
     let (p, r) = f.project.split_once('/').unwrap_or((&f.project, ""));
     format!("/{}/_apis/git/repositories/{}", enc(p), enc(r))
 }
-fn azure_pr(v: &Value, f: &ForgeInfo) -> PullRequest {
+pub(super) fn azure_pr(v: &Value, f: &ForgeInfo) -> PullRequest {
     let number = v.get("pullRequestId").and_then(Value::as_u64).unwrap_or(0);
     PullRequest {
         number,
@@ -360,7 +368,7 @@ fn azure_pr(v: &Value, f: &ForgeInfo) -> PullRequest {
     }
 }
 
-fn server_repo(f: &ForgeInfo) -> String {
+pub(super) fn server_repo(f: &ForgeInfo) -> String {
     let (key, slug) = f.project.split_once('/').unwrap_or((&f.project, ""));
     format!("/rest/api/1.0/projects/{}/repos/{}", enc(key), enc(slug))
 }
@@ -386,7 +394,7 @@ pub fn list(repo: &Path) -> GitResult<(ForgeInfo, Vec<PullRequest>)> {
     Ok((f, prs))
 }
 
-fn reviewed_connection(repo: &Path, expected: &str) -> GitResult<ForgeInfo> {
+pub(super) fn reviewed_connection(repo: &Path, expected: &str) -> GitResult<ForgeInfo> {
     let f = detect(repo)?.ok_or_else(|| GitError::new("Configure an API connection first."))?;
     if expected.is_empty() || f.connection_revision.as_deref() != Some(expected) {
         return Err(GitError::new("The API account or remote changed. Reload the pull request view before continuing.").kind("stale-operation"));
@@ -565,9 +573,16 @@ pub fn checks(repo: &Path, sha: &str) -> GitResult<Vec<Check>> {
         return Err(GitError::new("Choose a complete commit ID for CI checks."));
     }
     let Some(f) = detect(repo)? else { return Ok(Vec::new()) };
+    checks_for(repo, &f, sha)
+}
+
+pub(super) fn checks_for(repo: &Path, f: &ForgeInfo, sha: &str) -> GitResult<Vec<Check>> {
+    if !matches!(sha.len(), 40 | 64) || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(GitError::new("Choose a complete commit ID for CI checks."));
+    }
     let mut out = Vec::new();
     if f.kind == "azure" {
-        let v = request(repo, &f, "GET", &format!("{}/commits/{}/statuses?api-version=7.1", azure_repo(&f), enc(sha)), None)?;
+        let v = request(repo, f, "GET", &format!("{}/commits/{}/statuses?api-version=7.1", azure_repo(f), enc(sha)), None)?;
         for st in v.get("value").and_then(Value::as_array).cloned().unwrap_or_default() {
             out.push(Check {
                 name: st.pointer("/context/name").and_then(Value::as_str).unwrap_or("Status").into(),
@@ -576,19 +591,19 @@ pub fn checks(repo: &Path, sha: &str) -> GitResult<Vec<Check>> {
             });
         }
     } else if f.kind == "github" {
-        let runs = request(repo, &f, "GET", &format!("/repos/{}/commits/{sha}/check-runs?per_page=100", project_path(&f.project)), None)?;
+        let runs = request(repo, f, "GET", &format!("/repos/{}/commits/{sha}/check-runs?per_page=100", project_path(&f.project)), None)?;
         for r in runs.get("check_runs").and_then(|a| a.as_array()).cloned().unwrap_or_default() {
             let st = if s(&r, "status") == "completed" { norm_state(&s(&r, "conclusion")) } else { "pending".into() };
             out.push(Check { name: s(&r, "name"), state: st, url: Some(s(&r, "html_url")).filter(|u| !u.is_empty()) });
         }
-        let status = request(repo, &f, "GET", &format!("/repos/{}/commits/{sha}/status", project_path(&f.project)), None)?;
+        let status = request(repo, f, "GET", &format!("/repos/{}/commits/{sha}/status", project_path(&f.project)), None)?;
         for st in status.get("statuses").and_then(|a| a.as_array()).cloned().unwrap_or_default() {
             out.push(Check { name: s(&st, "context"), state: norm_state(&s(&st, "state")), url: Some(s(&st, "target_url")).filter(|u| !u.is_empty()) });
         }
-    } else if is_bitbucket(&f) {
-        out = bitbucket_statuses(&f, sha, |path| request(repo, &f, "GET", path, None))?;
+    } else if is_bitbucket(f) {
+        out = bitbucket_statuses(f, sha, |path| request(repo, f, "GET", path, None))?;
     } else {
-        let v = request(repo, &f, "GET", &format!("/projects/{}/repository/commits/{sha}/statuses", enc(&f.project)), None)?;
+        let v = request(repo, f, "GET", &format!("/projects/{}/repository/commits/{sha}/statuses", enc(&f.project)), None)?;
         for st in v.as_array().cloned().unwrap_or_default() {
             out.push(Check { name: s(&st, "name"), state: norm_state(&s(&st, "status")), url: Some(s(&st, "target_url")).filter(|u| !u.is_empty()) });
         }

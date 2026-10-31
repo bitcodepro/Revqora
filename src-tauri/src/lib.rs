@@ -1424,6 +1424,59 @@ async fn pull_requests(repo: String) -> GitResult<PullRequests> {
 }
 
 #[tauri::command]
+async fn pr_page(repo: String, state: String, cursor: Option<String>) -> GitResult<git::pr_center::Page> {
+    blocking(move || git::pr_center::page(&p(&repo), &state, cursor.as_deref())).await
+}
+#[tauri::command]
+async fn pr_detail(repo: String, number: u64, expected_connection: String) -> GitResult<git::pr_center::Detail> {
+    blocking(move || git::pr_center::detail(&p(&repo), number, &expected_connection)).await
+}
+#[tauri::command]
+async fn pr_checks(repo: String, number: u64, expected_connection: String, expected_revision: String) -> GitResult<Vec<forge::Check>> {
+    blocking(move || git::pr_center::checks(&p(&repo), number, &expected_connection, &expected_revision)).await
+}
+#[tauri::command]
+async fn pr_create(
+    repo: String,
+    title: String,
+    body: String,
+    head: String,
+    base: String,
+    draft: bool,
+    expected_connection: String,
+) -> GitResult<forge::PullRequest> {
+    blocking(move || {
+        git::operations::access(&p(&repo), true, |_, _| {}, || git::pr_center::create(&p(&repo), &title, &body, &head, &base, draft, &expected_connection))
+    })
+    .await
+}
+#[tauri::command]
+async fn pr_edit(
+    repo: String,
+    number: u64,
+    expected_connection: String,
+    expected_revision: String,
+    edit: git::pr_center::Edit,
+) -> GitResult<git::pr_center::EditResult> {
+    blocking(move || {
+        git::operations::access(&p(&repo), true, |_, _| {}, || git::pr_center::edit(&p(&repo), number, &expected_connection, &expected_revision, edit))
+    })
+    .await
+}
+#[tauri::command]
+async fn pr_templates(repo: String, expected_connection: String) -> GitResult<git::pr_center::Templates> {
+    blocking(move || git::pr_center::templates(&p(&repo), &expected_connection)).await
+}
+#[tauri::command]
+async fn pr_files(repo: String, number: u64, expected_connection: String, expected_revision: String, offset: u32) -> GitResult<git::pr_center::Files> {
+    blocking(move || git::pr_center::files(&p(&repo), number, &expected_connection, &expected_revision, offset)).await
+}
+#[tauri::command]
+async fn pr_file(repo: String, number: u64, expected_connection: String, expected_revision: String, file_id: String) -> GitResult<git::pr_center::FileView> {
+    blocking(move || git::pr_center::file(&p(&repo), number, &expected_connection, &expected_revision, &file_id)).await
+}
+
+#[tauri::command]
 async fn pull_request_create(
     repo: String,
     title: String,
@@ -1823,6 +1876,14 @@ pub fn run() {
             forge_connection_select,
             forge_info,
             pull_requests,
+            pr_page,
+            pr_detail,
+            pr_checks,
+            pr_create,
+            pr_edit,
+            pr_templates,
+            pr_files,
+            pr_file,
             pull_request_create,
             pull_request_checkout,
             commit_checks,

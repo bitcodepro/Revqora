@@ -619,6 +619,17 @@ export interface PullRequest {
   headSha: string;
 }
 
+export type PrState = "open" | "closed" | "merged" | "all";
+export interface PrPage { forge: ForgeInfo; items: PullRequest[]; nextCursor: string | null }
+export interface PrDetail { pull: PullRequest; body: string; updated: string; baseSha: string; diffBaseSha: string; revision: string; fileCount: number | null }
+export interface PrEdit { title: string; body: string; base: string }
+export interface PrEditResult { detail: PrDetail; notice: string | null }
+export interface PrTemplate { path: string; body: string }
+export interface PrTemplates { items: PrTemplate[]; notice: string | null }
+export interface PrFile { id: string; path: string; oldPath: string | null; status: string; binary: boolean; additions: number | null; deletions: number | null }
+export interface PrFiles { items: PrFile[]; nextOffset: number | null; notice: string | null }
+export interface PrFileView { diff: FileDiff | null; notice: string | null }
+
 export interface Check {
   name: string;
   state: "success" | "failure" | "pending" | "neutral" | "skipped" | "cancelled";
