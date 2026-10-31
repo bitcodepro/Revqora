@@ -758,3 +758,12 @@ export interface ForgeAccountsSnapshot {revision:string;accounts:ForgeAccount[];
 export interface ForgeAccountInput {id:string|null;kind:ForgeAccountKind;server:string;username:string;token:string;authMode:string;persist:boolean}
 export interface ForgeConnectionSelection {allowSshAlias?:boolean;remote:string;fingerprint:string;accountId:string|null}
 export interface ForgeConnections {revision:string;activeRemote:string|null;remotes:{isSsh:boolean;allowSshAlias:boolean;name:string;host:string;project:string;fingerprint:string;accountId:string|null;forge:ForgeInfo|null;error:string|null}[]}
+
+export interface PrMergeMethod { id: string; label: string; explanation: string }
+export interface PrMergeRule { label: string; state: string; required: boolean }
+export interface PrMergePlan { revision: string; detailRevision: string; sourceSha: string; targetSha: string; actor: string; actorId: string; methods: PrMergeMethod[]; checks: Check[]; rules: PrMergeRule[]; blockers: string[]; notices: string[]; queueState: string | null; merged: boolean }
+export interface PrMergeInput { planRevision: string; method: string; message: string }
+export interface PrMergeResult { state: "merged" | "queued" | "accepted"; commit: string | null; message: string }
+export interface PrCleanupInput { local: boolean; remote: boolean; force: boolean; protectionRules: string[]; reviewToken: string }
+export interface PrCleanupReview { token: string; plan: DeletionPlan; local: boolean; remote: boolean; sourceSha: string; notices: string[] }
+export interface PrCleanupResult { state: "done" | "partial"; localDeleted: boolean; remoteDeleted: boolean; checkpoint: RecoverySummary | null; warning: string | null }
