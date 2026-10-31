@@ -32,13 +32,17 @@ export async function prMergeSmoke({page,check,shot,root,pulls,fixture,git,index
   if(!await consent().isChecked()||await button(action).isDisabled())throw Error("CI link regression needs an eligible, consented merge confirmation");
   const before=state.writes.length;
   await page.evaluate(()=>{
-   const original=window.__TAURI_INTERNALS__.invoke,probe={original,opens:[],mergeCalls:0,submits:0};
+   // Tauri deliberately makes invoke non-writable. Intercept its fetch transport.
+   const original=window.fetch,url=command=>window.__TAURI_INTERNALS__.convertFileSrc(command,"ipc"),probe={original,opens:[],mergeCalls:0,submits:0,health:0};
+   const openUrl=url("open_path"),mergeUrl=url("pr_merge_submit"),healthUrl=url("forge_info");
    probe.listener=e=>{if(e.target.matches("form.modal"))probe.submits++;};
    document.addEventListener("submit",probe.listener,true);
    window.__revqoraCiLogProbe=probe;
-   window.__TAURI_INTERNALS__.invoke=async(command,args,...rest)=>{if(command==="open_path"){probe.opens.push(args.path);return;}if(command==="pr_merge_submit")probe.mergeCalls++;return original(command,args,...rest);};
+   window.fetch=async(input,init)=>{const target=typeof input==="string"?input:input.url??String(input);if(target===openUrl){probe.opens.push(JSON.parse(init.body).path);return new Response("null",{headers:{"Content-Type":"application/json","Tauri-Response":"ok"}});}if(target===mergeUrl)probe.mergeCalls++;if(target===healthUrl)probe.health++;return Reflect.apply(original,window,[input,init]);};
   });
   try{
+   await page.evaluate(repo=>window.__TAURI_INTERNALS__.invoke("forge_info",{repo}),root);
+   if(!await page.evaluate(()=>window.__revqoraCiLogProbe.health))throw Error("IPC fetch transport was not observed; refuse to open an external URL without interception");
    const link=page.locator(".modal .pr-merge-checks").getByRole("button",{name:"Open Successful build",exact:true});
    for(const [i,activate]of [()=>link.click(),()=>link.press("Enter")].entries()){
     await activate();await page.waitForFunction(n=>window.__revqoraCiLogProbe.opens.length===n,i+1);
@@ -46,7 +50,7 @@ export async function prMergeSmoke({page,check,shot,root,pulls,fixture,git,index
     if(observed.opens.some(u=>u!=="https://ci.example.invalid/build/42")||observed.mergeCalls||observed.submits||state.writes.length!==before)throw Error(`Opening CI logs submitted ${action}: ${JSON.stringify(observed)}`);
     if(await button(action).isDisabled()||!await consent().isChecked())throw Error("Opening logs changed the merge confirmation state");
    }
-  }finally{await page.evaluate(()=>{const p=window.__revqoraCiLogProbe;document.removeEventListener("submit",p.listener,true);window.__TAURI_INTERNALS__.invoke=p.original;delete window.__revqoraCiLogProbe;});}
+  }finally{await page.evaluate(()=>{const p=window.__revqoraCiLogProbe;document.removeEventListener("submit",p.listener,true);window.fetch=p.original;delete window.__revqoraCiLogProbe;});}
  };
  await check("merge readiness loads later CI pages and keeps a failing build blocked",async()=>{
   state.late=true;await open(41);await page.getByText(/1 reported CI checks are pending/).waitFor();await start();await consent().check();if(!await button("Confirm merge").isDisabled())throw Error("A failing check on page two did not block merge");await button("Close and keep message").click();state.late=false;await page.getByRole("button",{name:"Refresh merge readiness",exact:true}).click();await page.waitForSelector('.pr-merge-panel[aria-busy="false"]');await shot("121-merge-readiness");
