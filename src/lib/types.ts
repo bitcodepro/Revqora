@@ -596,7 +596,9 @@ export interface CommitHelpers {
 }
 
 export interface ForgeInfo {
-  kind: "github" | "gitlab" | "bitbucket" | "bitbucket-server";
+  connectionRevision: string | null;
+  accountLogin: string | null;
+  kind: "github" | "gitlab" | "azure" | "bitbucket" | "bitbucket-server";
   host: string;
   project: string;
   remote: string;
@@ -731,3 +733,10 @@ export interface WorktreeRemovalReview { target: ManagedWorktree; proof: Worktre
 export interface WorktreeRemoval { path: string; removed: boolean | null; checkpoint: RecoverySummary; warning: string | null }
 export interface WorktreePruneReview { entries: { path: string; head: string | null }[]; registryToken: string; stateToken: string; remaining: number }
 export interface WorktreePruneResult { removed: string[]; kept: string[]; unknown: string[]; checkpoint: RecoverySummary; warning: string | null }
+
+export type ForgeAccountKind="github"|"gitlab"|"azure"|"bitbucket";
+export interface ForgeAccount {id:string;kind:ForgeAccountKind;server:string;login:string;userId:string;name:string;authMode:string;authUsername:string;storage:"session"|"encrypted";status:"available"|"locked"|"reconnect"}
+export interface ForgeAccountsSnapshot {revision:string;accounts:ForgeAccount[];vaultConfigured:boolean;vaultUnlocked:boolean}
+export interface ForgeAccountInput {id:string|null;kind:ForgeAccountKind;server:string;username:string;token:string;authMode:string;persist:boolean}
+export interface ForgeConnectionSelection {allowSshAlias?:boolean;remote:string;fingerprint:string;accountId:string|null}
+export interface ForgeConnections {revision:string;activeRemote:string|null;remotes:{isSsh:boolean;allowSshAlias:boolean;name:string;host:string;project:string;fingerprint:string;accountId:string|null;forge:ForgeInfo|null;error:string|null}[]}

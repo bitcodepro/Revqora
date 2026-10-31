@@ -1,3 +1,4 @@
+import {forgeAccountsDialog} from "./ForgeAccounts";
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useUpdate } from "../lib/update";
 import { SHORTCUTS, bindingFor, comboFromEvent, prettyCombo } from "../lib/shortcuts";
@@ -778,6 +779,7 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
           </label>
         </div>
       </div>
+      <div className="section-title">API accounts</div><button className="btn" type="button" onClick={()=>{close();void forgeAccountsDialog(root);}}>Accounts and API connections…</button>
       <div className="section-title">Behaviour</div>
       <div className="settings-grid">
         <label>Pull</label>

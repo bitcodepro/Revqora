@@ -1,13 +1,10 @@
 //! Pull / merge requests and CI status for GitHub and GitLab remotes.
 //!
-//! The access token comes from git's own credential helper (`git credential fill`), i.e. the
-//! sign-in the user already did for pushing; Revqora keeps it in memory only.
+//! API accounts are selected per remote. Git credential fallback is scoped to each lookup;
+//! managed tokens are session-only or stored in the encrypted portable vault.
 
-use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
 
-use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -16,7 +13,7 @@ use super::runner::{self, GitError, GitResult};
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ForgeInfo {
-    /// "github" | "gitlab"
+    /// GitHub, GitLab, Azure DevOps and Bitbucket integrations.
     pub kind: String,
     pub host: String,
     /// "owner/repo" (GitLab: full project path, may contain groups)
@@ -24,6 +21,8 @@ pub struct ForgeInfo {
     pub remote: String,
     pub web_url: String,
     pub api: String,
+    pub connection_revision: Option<String>,
+    pub account_login: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,42 +49,98 @@ pub struct Check {
     pub url: Option<String>,
 }
 
-/// Parses https / ssh remote URLs into (host, path without .git).
-pub fn parse_remote(url: &str) -> Option<(String, String)> {
-    let u = url.trim();
-    let (host, path) = if let Some(rest) = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://")) {
-        let rest = rest.split_once('@').map(|(_, r)| r).unwrap_or(rest);
-        rest.split_once('/')?
-    } else if let Some(rest) = u.strip_prefix("ssh://") {
-        let rest = rest.split_once('@').map(|(_, r)| r).unwrap_or(rest);
-        let (h, p) = rest.split_once('/')?;
-        (h.split(':').next().unwrap_or(h), p)
-    } else if let Some((user_host, p)) = u.split_once(':') {
-        // "C:/path" is a Windows drive, not scp-style "host:path".
+/// Parse network remotes without returning embedded credentials or query data.
+pub fn parse_remote(value: &str) -> Option<(String, String)> {
+    let value = value.trim();
+    let (host, path, encoded) = if value.contains("://") {
+        let u = url::Url::parse(value).ok()?;
+        if !["https", "http", "ssh"].contains(&u.scheme()) || u.query().is_some() || u.fragment().is_some() {
+            return None;
+        }
+        let host = if u.scheme() != "ssh" {
+            u.port().map(|p| format!("{}:{p}", u.host_str().unwrap_or(""))).unwrap_or_else(|| u.host_str().unwrap_or("").into())
+        } else {
+            u.host_str()?.to_owned()
+        };
+        (host, u.path().to_owned(), true)
+    } else {
+        let (user_host, p) = value.split_once(':')?;
         if user_host.contains('/') || p.starts_with("//") || user_host.len() == 1 {
             return None;
         }
-        (user_host.split_once('@').map(|(_, h)| h).unwrap_or(user_host), p)
-    } else {
-        return None;
+        (user_host.rsplit('@').next()?.into(), p.into(), false)
     };
-    let path = path.trim_end_matches('/').trim_end_matches(".git").to_string();
-    (!host.is_empty() && path.contains('/')).then(|| (host.to_lowercase(), path))
+    if host.is_empty() || host.chars().any(char::is_control) {
+        return None;
+    }
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let segments = path
+        .split('/')
+        .map(|s| {
+            let v = if encoded { percent_encoding::percent_decode_str(s).decode_utf8().ok()?.into_owned() } else { s.to_owned() };
+            (!v.is_empty() && v != "." && v != ".." && !v.contains(['/', '\\']) && !v.chars().any(char::is_control)).then_some(v)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (segments.len() >= 2).then(|| (host.to_ascii_lowercase(), segments.join("/")))
 }
 
 pub fn detect(repo: &Path) -> GitResult<Option<ForgeInfo>> {
-    let remotes = super::refs::remotes(repo)?;
-    let pick = remotes.iter().find(|r| r.name == "origin").or_else(|| remotes.first());
-    let Some(r) = pick else { return Ok(None) };
-    Ok(forge_for(&r.fetch_url, &r.name))
+    Ok(super::forge_accounts::context(repo)?.map(|c| c.info))
+}
+
+/// Azure's HTTPS, legacy visualstudio.com and v3 SSH forms share one project/repository.
+pub fn azure_project(url: &str, server: &str) -> Option<String> {
+    let (host, path) = parse_remote(url)?;
+    let base = url::Url::parse(server).ok()?;
+    let (host_expected, prefix) = (base.host_str()?, base.path().trim_matches('/'));
+    if host == "ssh.dev.azure.com" {
+        let p = path.strip_prefix("v3/")?;
+        let (org, repo) = p.split_once('/')?;
+        return (host_expected == "dev.azure.com" && org == prefix && repo.split('/').count() == 2).then(|| repo.to_owned());
+    }
+    let rest = if host.ends_with(".visualstudio.com") {
+        if host_expected != "dev.azure.com" || host.strip_suffix(".visualstudio.com")? != prefix {
+            return None;
+        }
+        if path.split('/').count() == 4 {
+            path.strip_prefix("DefaultCollection/")?.to_owned()
+        } else {
+            path
+        }
+    } else {
+        if host != base.port().map(|p| format!("{host_expected}:{p}")).unwrap_or_else(|| host_expected.into()) {
+            return None;
+        }
+        if prefix.is_empty() {
+            path
+        } else {
+            path.strip_prefix(&format!("{prefix}/"))?.to_owned()
+        }
+    };
+    let p: Vec<_> = rest.split('/').collect();
+    (p.len() == 3 && p[1] == "_git").then(|| format!("{}/{}", p[0], p[2]))
 }
 
 /// Works out the forge and its API from a remote URL.
 pub fn forge_for(url: &str, remote: &str) -> Option<ForgeInfo> {
     let (host, project) = parse_remote(url)?;
     let info = |kind: &str, project: String, web_url: String, api: String| {
-        Some(ForgeInfo { kind: kind.into(), host: host.clone(), project, remote: remote.into(), web_url, api })
+        Some(ForgeInfo { kind: kind.into(), host: host.clone(), project, remote: remote.into(), web_url, api, connection_revision: None, account_login: None })
     };
+    if host == "dev.azure.com" || host == "ssh.dev.azure.com" || host.ends_with(".visualstudio.com") {
+        let org = if host == "ssh.dev.azure.com" {
+            project.strip_prefix("v3/")?.split('/').next()?
+        } else if host == "dev.azure.com" {
+            project.split('/').next()?
+        } else {
+            host.strip_suffix(".visualstudio.com")?
+        };
+        let server = format!("https://dev.azure.com/{org}");
+        let project = azure_project(url, &server)?;
+        let (p, r) = project.split_once('/')?;
+        return info("azure", project.clone(), format!("{server}/{}/_git/{}", enc(p), enc(r)), server);
+    }
     if host == "github.com" {
         info("github", project.clone(), format!("https://{host}/{project}"), "https://api.github.com".into())
     } else if host.contains("github") {
@@ -112,40 +167,42 @@ fn is_bitbucket(f: &ForgeInfo) -> bool {
     f.kind.starts_with("bitbucket")
 }
 
-/// (username, password or token) from git's credential helper, per host.
-type Credentials = (String, String);
-static TOKENS: Mutex<Option<HashMap<String, Credentials>>> = Mutex::new(None);
-
-fn token(repo: &Path, host: &str) -> GitResult<Credentials> {
-    if let Some(t) = TOKENS.lock().as_ref().and_then(|m| m.get(host).cloned()) {
-        return Ok(t);
+/// Git helper lookups are scoped to this repository, URL path and username; never cached by host.
+fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
+    let (host, path) = parse_remote(url).ok_or_else(|| GitError::new("Unsupported credential URL").kind("auth"))?;
+    let username = url::Url::parse(url).ok().filter(|u| matches!(u.scheme(), "http" | "https")).map(|u| u.username().to_owned()).unwrap_or_default();
+    let username =
+        percent_encoding::percent_decode_str(&username).decode_utf8().map_err(|_| GitError::new("Invalid credential username").kind("auth"))?.into_owned();
+    if username.chars().any(char::is_control) {
+        return Err(GitError::new("Invalid credential username").kind("auth"));
     }
-    let input = format!("protocol=https\nhost={host}\n\n");
-    let out = runner::exec_full(repo, ["credential", "fill"], &[], Some(input.as_bytes()))?;
+    let git_path = url::Url::parse(url)
+        .ok()
+        .map(|u| percent_encoding::percent_decode_str(u.path().trim_start_matches('/')).decode_utf8_lossy().into_owned())
+        .unwrap_or_else(|| url.split_once(':').map(|(_, p)| p.into()).unwrap_or(path));
+    let user = if username.is_empty() { String::new() } else { format!("username={username}\n") };
+    let input = format!("protocol=https\nhost={host}\npath={git_path}\n{user}\n");
+    let out = crate::journal::suspend(|| {
+        runner::exec_full(
+            repo,
+            ["-c", "credential.useHttpPath=true", "-c", "credential.interactive=false", "-c", "core.askPass=", "credential", "fill"],
+            &[("GIT_ASKPASS", ""), ("GCM_INTERACTIVE", "never"), ("GIT_TERMINAL_PROMPT", "0")],
+            Some(input.as_bytes()),
+        )
+    })?;
     if !out.ok() {
-        return Err(GitError::new(format!("No credentials for {host}. Push or fetch once so git can sign you in, then try again.")).kind("auth"));
+        return Err(GitError::new("No Git credential is available for this remote. Add an API account or sign in with Git first.").kind("auth"));
     }
-    let text = out.text();
-    let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|s| s.to_string())).unwrap_or_default();
-    let (user, pass) = (field("username="), field("password="));
+    let text = zeroize::Zeroizing::new(out.text());
+    let field = |key: &str| text.lines().find_map(|l| l.strip_prefix(key)).unwrap_or("").to_owned();
+    let pass = field("password=");
     if pass.is_empty() {
-        return Err(GitError::new(format!("Git returned no token for {host}.")).kind("auth"));
+        return Err(GitError::new("Git returned no API credential. Add an API account.").kind("auth"));
     }
-    TOKENS.lock().get_or_insert_with(HashMap::new).insert(host.to_string(), (user.clone(), pass.clone()));
-    Ok((user, pass))
+    Ok(super::forge_accounts::Credential { username: field("username="), token: pass, mode: "bearer".into() })
 }
 
-fn forget(host: &str) {
-    if let Some(m) = TOKENS.lock().as_mut() {
-        m.remove(host);
-    }
-}
-
-fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).user_agent("Revqora").build()
-}
-
-fn base64(input: &[u8]) -> String {
+pub(crate) fn base64(input: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for c in input.chunks(3) {
@@ -158,40 +215,28 @@ fn base64(input: &[u8]) -> String {
 }
 
 fn request(repo: &Path, f: &ForgeInfo, method: &str, path: &str, body: Option<Value>) -> GitResult<Value> {
-    let (user, tok) = token(repo, &f.host)?;
-    let url = format!("{}{}", f.api, path);
-    let send = |auth: String| {
-        let mut req = agent().request(method, &url).set("Authorization", &auth);
-        if f.kind == "github" {
-            req = req.set("Accept", "application/vnd.github+json");
-        }
-        match &body {
-            Some(b) => req.send_json(b.clone()),
-            None => req.call(),
-        }
-        .map_err(Box::new)
+    let context = super::forge_accounts::context(repo)?.ok_or_else(|| GitError::new("Configure an API connection first."))?;
+    if context.info != *f {
+        return Err(GitError::new("The API connection changed. Refresh before trying again.").kind("stale-operation"));
+    }
+    let explicit = context.credential.is_some();
+    let mut credential = match context.credential {
+        Some(c) => c,
+        None => token(repo, &context.git_url)?,
     };
-    let mut res = send(format!("Bearer {tok}"));
-    // Bitbucket app passwords and Server passwords use Basic auth; OAuth / access tokens use Bearer.
-    if is_bitbucket(f) && !user.is_empty() && matches!(&res, Err(e) if matches!(**e, ureq::Error::Status(401, _))) {
-        res = send(format!("Basic {}", base64(format!("{user}:{tok}").as_bytes())));
+    let result = super::forge_accounts::request_json(&f.kind, &f.api, &credential, method, path, body.clone());
+    if is_bitbucket(f)
+        && !explicit
+        && !credential.username.is_empty()
+        && matches!(&result,Err(e) if e.kind=="auth"&&e.message=="Token rejected. Reconnect this account.")
+    {
+        credential.mode = "basic".into();
+        return super::forge_accounts::request_json(&f.kind, &f.api, &credential, method, path, body);
     }
-    match res.map_err(|e| *e) {
-        Ok(r) => r.into_json::<Value>().map_err(|e| GitError::new(format!("Unexpected response: {e}"))),
-        Err(ureq::Error::Status(code, r)) => {
-            let text = r.into_string().unwrap_or_default();
-            let msg = serde_json::from_str::<Value>(&text).ok().and_then(|v| error_message(&v)).unwrap_or(text);
-            if code == 401 {
-                forget(&f.host);
-                return Err(GitError::new(format!("{} rejected the token: {msg}", f.host)).kind("auth"));
-            }
-            Err(GitError::new(format!("{} returned {code}: {msg}", f.host)))
-        }
-        Err(e) => Err(GitError::new(format!("Network error: {e}"))),
-    }
+    result
 }
 
-fn enc(s: &str) -> String {
+pub(crate) fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
@@ -201,6 +246,7 @@ fn enc(s: &str) -> String {
 }
 
 /// GitHub / GitLab `message`, Bitbucket Cloud `error.message`, Bitbucket Server `errors[0].message`.
+#[cfg(test)]
 fn error_message(v: &Value) -> Option<String> {
     v.get("message").or_else(|| v.pointer("/error/message")).or_else(|| v.pointer("/errors/0/message")).and_then(|m| m.as_str()).map(String::from)
 }
@@ -290,6 +336,30 @@ pub fn iso_from_millis(ms: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
+fn project_path(s: &str) -> String {
+    s.split('/').map(enc).collect::<Vec<_>>().join("/")
+}
+
+fn azure_repo(f: &ForgeInfo) -> String {
+    let (p, r) = f.project.split_once('/').unwrap_or((&f.project, ""));
+    format!("/{}/_apis/git/repositories/{}", enc(p), enc(r))
+}
+fn azure_pr(v: &Value, f: &ForgeInfo) -> PullRequest {
+    let number = v.get("pullRequestId").and_then(Value::as_u64).unwrap_or(0);
+    PullRequest {
+        number,
+        title: s(v, "title"),
+        author: p(v, "/createdBy/displayName"),
+        head: s(v, "sourceRefName").strip_prefix("refs/heads/").unwrap_or(&s(v, "sourceRefName")).into(),
+        base: s(v, "targetRefName").strip_prefix("refs/heads/").unwrap_or(&s(v, "targetRefName")).into(),
+        url: format!("{}/pullrequest/{number}", f.web_url),
+        draft: v.get("isDraft").and_then(Value::as_bool).unwrap_or(false),
+        state: s(v, "status"),
+        created: s(v, "creationDate"),
+        head_sha: p(v, "/lastMergeSourceCommit/commitId"),
+    }
+}
+
 fn server_repo(f: &ForgeInfo) -> String {
     let (key, slug) = f.project.split_once('/').unwrap_or((&f.project, ""));
     format!("/rest/api/1.0/projects/{}/repos/{}", enc(key), enc(slug))
@@ -297,11 +367,14 @@ fn server_repo(f: &ForgeInfo) -> String {
 
 pub fn list(repo: &Path) -> GitResult<(ForgeInfo, Vec<PullRequest>)> {
     let f = detect(repo)?.ok_or_else(|| GitError::new("The remote is not on GitHub, GitLab or Bitbucket."))?;
-    let prs = if f.kind == "github" {
-        let v = request(repo, &f, "GET", &format!("/repos/{}/pulls?state=open&per_page=100", f.project), None)?;
+    let prs = if f.kind == "azure" {
+        let v = request(repo, &f, "GET", &format!("{}/pullrequests?searchCriteria.status=active&$top=100&api-version=7.1", azure_repo(&f)), None)?;
+        v.get("value").and_then(Value::as_array).map(|a| a.iter().map(|v| azure_pr(v, &f)).collect()).unwrap_or_default()
+    } else if f.kind == "github" {
+        let v = request(repo, &f, "GET", &format!("/repos/{}/pulls?state=open&per_page=100", project_path(&f.project)), None)?;
         v.as_array().map(|a| a.iter().map(gh_pr).collect()).unwrap_or_default()
     } else if f.kind == "bitbucket" {
-        let v = request(repo, &f, "GET", &format!("/repositories/{}/pullrequests?state=OPEN&pagelen=50", f.project), None)?;
+        let v = request(repo, &f, "GET", &format!("/repositories/{}/pullrequests?state=OPEN&pagelen=50", project_path(&f.project)), None)?;
         v.get("values").and_then(|a| a.as_array()).map(|a| a.iter().map(bb_pr).collect()).unwrap_or_default()
     } else if f.kind == "bitbucket-server" {
         let v = request(repo, &f, "GET", &format!("{}/pull-requests?state=OPEN&limit=100", server_repo(&f)), None)?;
@@ -313,14 +386,34 @@ pub fn list(repo: &Path) -> GitResult<(ForgeInfo, Vec<PullRequest>)> {
     Ok((f, prs))
 }
 
-pub fn create(repo: &Path, title: &str, body: &str, head: &str, base: &str, draft: bool) -> GitResult<PullRequest> {
-    let f = detect(repo)?.ok_or_else(|| GitError::new("The remote is not on GitHub, GitLab or Bitbucket."))?;
+fn reviewed_connection(repo: &Path, expected: &str) -> GitResult<ForgeInfo> {
+    let f = detect(repo)?.ok_or_else(|| GitError::new("Configure an API connection first."))?;
+    if expected.is_empty() || f.connection_revision.as_deref() != Some(expected) {
+        return Err(GitError::new("The API account or remote changed. Reload the pull request view before continuing.").kind("stale-operation"));
+    }
+    Ok(f)
+}
+
+pub fn create(repo: &Path, title: &str, body: &str, head: &str, base: &str, draft: bool, expected_connection: &str) -> GitResult<PullRequest> {
+    let f = reviewed_connection(repo, expected_connection)?;
+    if f.kind == "azure" {
+        let v = request(
+            repo,
+            &f,
+            "POST",
+            &format!("{}/pullrequests?api-version=7.1", azure_repo(&f)),
+            Some(
+                serde_json::json!({"title":title,"description":body,"sourceRefName":format!("refs/heads/{head}"),"targetRefName":format!("refs/heads/{base}"),"isDraft":draft}),
+            ),
+        )?;
+        return Ok(azure_pr(&v, &f));
+    }
     if f.kind == "bitbucket" {
         let v = request(
             repo,
             &f,
             "POST",
-            &format!("/repositories/{}/pullrequests", f.project),
+            &format!("/repositories/{}/pullrequests", project_path(&f.project)),
             Some(
                 serde_json::json!({ "title": title, "description": body, "draft": draft, "source": { "branch": { "name": head } }, "destination": { "branch": { "name": base } } }),
             ),
@@ -348,7 +441,7 @@ pub fn create(repo: &Path, title: &str, body: &str, head: &str, base: &str, draf
             repo,
             &f,
             "POST",
-            &format!("/repos/{}/pulls", f.project),
+            &format!("/repos/{}/pulls", project_path(&f.project)),
             Some(serde_json::json!({ "title": title, "body": body, "head": head, "base": base, "draft": draft })),
         )?;
         Ok(gh_pr(&v))
@@ -365,33 +458,98 @@ pub fn create(repo: &Path, title: &str, body: &str, head: &str, base: &str, draf
     }
 }
 
-/// Fetches a PR / MR head into a local `pr/<n>` branch and checks it out.
-pub fn checkout(repo: &Path, number: u64) -> GitResult<String> {
-    let f = detect(repo)?.ok_or_else(|| GitError::new("The remote is not on GitHub, GitLab or Bitbucket."))?;
-    let local = format!("pr/{number}");
-    if f.kind == "bitbucket" {
-        // Bitbucket Cloud has no pull request refs: fetch the source branch, from the fork if needed.
-        let v = request(repo, &f, "GET", &format!("/repositories/{}/pullrequests/{number}", f.project), None)?;
-        let branch = p(&v, "/source/branch/name");
-        let from = p(&v, "/source/repository/full_name");
-        let remote = if from.is_empty() || from.eq_ignore_ascii_case(&f.project) { f.remote.clone() } else { format!("https://bitbucket.org/{from}.git") };
-        runner::run(repo, ["fetch", &remote, &format!("+refs/heads/{branch}:refs/heads/{local}")])?;
-        runner::run(repo, ["switch", &local])?;
-        return Ok(local);
+/// Check out the reviewed source commit on a SHA-specific branch. Existing history is never forced.
+pub fn checkout(repo: &Path, number: u64, expected_connection: &str, expected_head: &str) -> GitResult<String> {
+    if !matches!(expected_head.len(), 40 | 64) || !expected_head.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(GitError::new("Reload the PR to review its complete source commit before checkout."));
     }
-    let src = match f.kind.as_str() {
-        "github" => format!("pull/{number}/head"),
+    let f = reviewed_connection(repo, expected_connection)?;
+    let mut remote = f.remote.clone();
+    let source = match f.kind.as_str() {
+        "azure" => {
+            let v = request(repo, &f, "GET", &format!("{}/pullrequests/{number}?api-version=7.1", azure_repo(&f)), None)?;
+            if p(&v, "/lastMergeSourceCommit/commitId") != expected_head {
+                return Err(GitError::new("The PR source changed. Refresh before checkout.").kind("stale-operation"));
+            }
+            expected_head.to_owned()
+        }
+        "bitbucket" => {
+            let v = request(repo, &f, "GET", &format!("/repositories/{}/pullrequests/{number}", project_path(&f.project)), None)?;
+            if p(&v, "/source/commit/hash") != expected_head {
+                return Err(GitError::new("The PR source changed. Refresh before checkout.").kind("stale-operation"));
+            }
+            let branch = p(&v, "/source/branch/name");
+            if !runner::exec(repo, ["check-ref-format", &format!("refs/heads/{branch}")])?.ok() {
+                return Err(GitError::new("The server returned an invalid source branch."));
+            }
+            let from = p(&v, "/source/repository/full_name");
+            if !from.is_empty() && !from.eq_ignore_ascii_case(&f.project) {
+                if from.split('/').count() != 2 || from.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+                    return Err(GitError::new("Invalid fork repository path."));
+                }
+                remote = format!("https://bitbucket.org/{}.git", project_path(&from));
+            }
+            format!("refs/heads/{branch}")
+        }
+        "github" => format!("refs/pull/{number}/head"),
         "bitbucket-server" => format!("refs/pull-requests/{number}/from"),
-        _ => format!("merge-requests/{number}/head"),
+        _ => format!("refs/merge-requests/{number}/head"),
     };
-    runner::run(repo, ["fetch", &f.remote, &format!("+{src}:refs/heads/{local}")])?;
-    runner::run(repo, ["switch", &local])?;
-    Ok(local)
+    reviewed_connection(repo, expected_connection)?;
+    fetch_pr_branch(repo, &remote, &source, number, expected_head)
+}
+fn fetch_pr_branch(repo: &Path, remote: &str, source: &str, number: u64, expected_head: &str) -> GitResult<String> {
+    use ring::rand::SecureRandom;
+    let mut nonce = [0u8; 16];
+    ring::rand::SystemRandom::new().fill(&mut nonce).map_err(|_| GitError::new("Secure random source unavailable."))?;
+    let slot = format!("refs/revqora/recovery/pr-fetch/{}", nonce.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    if runner::exec(repo, ["show-ref", "--verify", "--quiet", &slot])?.ok() {
+        return Err(GitError::new("Temporary PR reference already exists; no checkout was attempted."));
+    }
+    let result = (|| {
+        runner::run(
+            repo,
+            [
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--refmap=",
+                "--no-recurse-submodules",
+                "--no-auto-maintenance",
+                "--",
+                remote,
+                &format!("{source}:{slot}"),
+            ],
+        )?;
+        let actual = runner::run(repo, ["rev-parse", "--verify", &format!("{slot}^{{commit}}")])?.trim().to_owned();
+        if actual != expected_head {
+            return Err(GitError::new("The PR source changed while fetching. Refresh before checkout; existing branches were kept.").kind("stale-operation"));
+        }
+        let local = format!("pr/{number}-{}", &expected_head[..12]);
+        let reference = format!("refs/heads/{local}");
+        if runner::exec(repo, ["show-ref", "--verify", "--quiet", &reference])?.ok() {
+            if runner::exec(repo, ["symbolic-ref", "-q", &reference])?.ok() || runner::run(repo, ["rev-parse", "--verify", &reference])?.trim() != expected_head
+            {
+                return Err(GitError::new("The PR branch already contains different history or is an alias. It was kept."));
+            }
+        } else {
+            runner::run(repo, ["branch", "--", &local, expected_head])?;
+        }
+        runner::run(repo, ["switch", "--", &local])?;
+        Ok(local)
+    })();
+    // Remove only this operation's private pin, using its observed object ID.
+    if let Ok(out) = runner::run(repo, ["rev-parse", "--verify", &slot]) {
+        let oid = out.trim();
+        let _ = runner::exec(repo, ["update-ref", "-d", &slot, oid]);
+    }
+    result
 }
 
 fn norm_state(s: &str) -> String {
     match s {
-        "success" | "passed" | "successful" => "success",
+        "success" | "passed" | "successful" | "succeeded" => "success",
+        "notApplicable" | "notapplicable" => "neutral",
         "failure" | "failed" | "error" | "timed_out" | "action_required" => "failure",
         "stopped" => "cancelled",
         "neutral" => "neutral",
@@ -403,15 +561,27 @@ fn norm_state(s: &str) -> String {
 }
 
 pub fn checks(repo: &Path, sha: &str) -> GitResult<Vec<Check>> {
+    if !matches!(sha.len(), 40 | 64) || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(GitError::new("Choose a complete commit ID for CI checks."));
+    }
     let Some(f) = detect(repo)? else { return Ok(Vec::new()) };
     let mut out = Vec::new();
-    if f.kind == "github" {
-        let runs = request(repo, &f, "GET", &format!("/repos/{}/commits/{sha}/check-runs?per_page=100", f.project), None)?;
+    if f.kind == "azure" {
+        let v = request(repo, &f, "GET", &format!("{}/commits/{}/statuses?api-version=7.1", azure_repo(&f), enc(sha)), None)?;
+        for st in v.get("value").and_then(Value::as_array).cloned().unwrap_or_default() {
+            out.push(Check {
+                name: st.pointer("/context/name").and_then(Value::as_str).unwrap_or("Status").into(),
+                state: norm_state(&s(&st, "state")),
+                url: Some(s(&st, "targetUrl")).filter(|s| !s.is_empty()),
+            });
+        }
+    } else if f.kind == "github" {
+        let runs = request(repo, &f, "GET", &format!("/repos/{}/commits/{sha}/check-runs?per_page=100", project_path(&f.project)), None)?;
         for r in runs.get("check_runs").and_then(|a| a.as_array()).cloned().unwrap_or_default() {
             let st = if s(&r, "status") == "completed" { norm_state(&s(&r, "conclusion")) } else { "pending".into() };
             out.push(Check { name: s(&r, "name"), state: st, url: Some(s(&r, "html_url")).filter(|u| !u.is_empty()) });
         }
-        let status = request(repo, &f, "GET", &format!("/repos/{}/commits/{sha}/status", f.project), None)?;
+        let status = request(repo, &f, "GET", &format!("/repos/{}/commits/{sha}/status", project_path(&f.project)), None)?;
         for st in status.get("statuses").and_then(|a| a.as_array()).cloned().unwrap_or_default() {
             out.push(Check { name: s(&st, "context"), state: norm_state(&s(&st, "state")), url: Some(s(&st, "target_url")).filter(|u| !u.is_empty()) });
         }
@@ -431,7 +601,7 @@ pub fn checks(repo: &Path, sha: &str) -> GitResult<Vec<Check>> {
 pub fn bitbucket_statuses(f: &ForgeInfo, sha: &str, mut get: impl FnMut(&str) -> GitResult<Value>) -> GitResult<Vec<Check>> {
     let cloud = f.kind == "bitbucket";
     let first = if cloud {
-        format!("/repositories/{}/commit/{sha}/statuses?pagelen=100", f.project)
+        format!("/repositories/{}/commit/{}/statuses?pagelen=100", project_path(&f.project), enc(sha))
     } else {
         format!("/rest/build-status/1.0/commits/{sha}?limit=100")
     };
@@ -543,6 +713,8 @@ mod tests {
         assert_eq!(error_message(&serde_json::json!({ "error": { "message": "bad" } })).as_deref(), Some("bad"));
         assert_eq!(error_message(&serde_json::json!({ "errors": [{ "message": "nope" }] })).as_deref(), Some("nope"));
         assert_eq!(norm_state("successful"), "success");
+        assert_eq!(norm_state("succeeded"), "success");
+        assert_eq!(norm_state("notApplicable"), "neutral");
     }
 
     #[test]
@@ -553,5 +725,168 @@ mod tests {
         assert_eq!(parse_remote("https://user@gitlab.com/g/p"), Some(("gitlab.com".into(), "g/p".into())));
         assert_eq!(parse_remote("C:/local/path"), None);
         assert_eq!(parse_remote("../origin.git"), None);
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+    #[test]
+    fn azure_url_forms_preserve_organization_and_encode_project_and_repository() {
+        for url in [
+            "https://dev.azure.com/org/Team%20Space/_git/My%20Repo.git",
+            "https://org.visualstudio.com/DefaultCollection/Team%20Space/_git/My%20Repo.git",
+            "git@ssh.dev.azure.com:v3/org/Team Space/My Repo",
+        ] {
+            let f = forge_for(url, "upstream").unwrap();
+            assert_eq!(f.kind, "azure");
+            assert_eq!(f.project, "Team Space/My Repo");
+            assert_eq!(azure_repo(&f), "/Team%20Space/_apis/git/repositories/My%20Repo");
+        }
+        assert_eq!(
+            azure_project("https://org.visualstudio.com/DefaultCollection/_git/Repo.git", "https://dev.azure.com/org").as_deref(),
+            Some("DefaultCollection/Repo")
+        );
+        assert!(azure_project("git@ssh.dev.azure.com:v3/other/Team/Repo", "https://dev.azure.com/org").is_none());
+        assert_eq!(azure_project("https://server.example/collection/Team/_git/Repo.git", "https://server.example/collection").as_deref(), Some("Team/Repo"));
+    }
+    #[test]
+    fn encoded_names_and_azure_prs_do_not_confuse_path_fragments_or_merge_heads() {
+        let (_, p) = parse_remote("https://github.com/team/repo%23name.git").unwrap();
+        assert_eq!(project_path(&p), "team/repo%23name");
+        assert!(parse_remote("https://github.com/team/repo%2Fother.git").is_none());
+        assert!(parse_remote("https://github.com/team/repo?token=secret").is_none());
+        let f = forge_for("https://dev.azure.com/org/Team/_git/Repo.git", "origin").unwrap();
+        let v = serde_json::json!({"pullRequestId":7,"title":"Test","createdBy":{"displayName":"Alex"},"sourceRefName":"refs/heads/topic","targetRefName":"refs/heads/main","lastMergeSourceCommit":{"commitId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"isDraft":false,"status":"active"});
+        let p = azure_pr(&v, &f);
+        assert_eq!(p.head, "topic");
+        assert_eq!(p.base, "main");
+        assert_eq!(p.head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(p.url, "https://dev.azure.com/org/Team/_git/Repo/pullrequest/7");
+    }
+}
+
+#[cfg(test)]
+mod credential_scope_tests {
+    use super::*;
+    #[test]
+    fn ssh_transport_users_do_not_constrain_https_account_matching() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path();
+        runner::run(repo, ["init", "-q"]).unwrap();
+        runner::run(repo, ["config", "credential.helper", ""]).unwrap();
+        runner::run(repo, ["config", "credential.username", "alice"]).unwrap();
+        // Match the complete query, not just the requested host.
+        let helper = r#"!f() {
+username=; protocol=; host=; path=;
+while IFS='=' read -r key value; do
+  case "$key" in username) username="$value";; protocol) protocol="$value";; host) host="$value";; path) path="$value";; esac
+done
+if [ "$1" = get ] && [ "$username" = alice ] && [ "$protocol" = https ] && [ "$host" = credential-scope.invalid ] && [ "$path" = team/repo.git ]; then
+  printf '%s\n' 'username=alice' 'password=fixture-token-alice'
+fi
+}; f"#;
+        runner::run(repo, ["config", "--add", "credential.helper", helper]).unwrap();
+        for url in [
+            "git@credential-scope.invalid:team/repo.git",
+            "ssh://git@credential-scope.invalid/team/repo.git",
+            "ssh://another-transport-user@credential-scope.invalid:2222/team/repo.git",
+            "https://alice@credential-scope.invalid/team/repo.git",
+            "https://%61lice@credential-scope.invalid/team/repo.git",
+        ] {
+            let c = token(repo, url).unwrap();
+            assert_eq!(c.username, "alice");
+            assert_eq!(c.token, "fixture-token-alice");
+        }
+        assert!(token(repo, "https://bob@credential-scope.invalid/team/repo.git").is_err(), "an explicit HTTPS identity must still constrain the helper");
+        assert!(token(repo, "https://alice%0Apassword=injected@credential-scope.invalid/team/repo.git").is_err());
+        assert!(!repo.join(".git/index").exists());
+    }
+    #[test]
+    fn git_credentials_are_read_per_repository_without_a_host_cache_or_index_write() {
+        let t = tempfile::tempdir().unwrap();
+        let setup = |name: &str, user: &str, password: &str| {
+            let p = t.path().join(name);
+            std::fs::create_dir(&p).unwrap();
+            runner::run(&p, ["init", "-q"]).unwrap();
+            let helper = format!("!f() {{ printf '%s\n' 'username={user}' 'password={password}'; }}; f");
+            runner::run(&p, ["config", "credential.helper", ""]).unwrap();
+            runner::run(&p, ["config", "--add", "credential.helper", &helper]).unwrap();
+            p
+        };
+        let a = setup("first", "first", "fixture-token-one");
+        let b = setup("second", "second", "fixture-token-two");
+        for (repo, user, password) in [(&a, "first", "fixture-token-one"), (&b, "second", "fixture-token-two"), (&a, "first", "fixture-token-one")] {
+            let c = super::super::operations::read(repo, || token(repo, "https://credential-scope.invalid/team/repo.git")).unwrap();
+            assert_eq!(c.username, user);
+            assert_eq!(c.token, password);
+            assert!(!repo.join(".git/index").exists());
+        }
+    }
+}
+
+#[cfg(test)]
+mod checkout_tests {
+    use super::*;
+    fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, String) {
+        let t = tempfile::tempdir().unwrap();
+        let source = t.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let hooks = t.path().join("no-hooks").to_string_lossy().into_owned();
+        runner::run(&source, ["init", "-qb", "main"]).unwrap();
+        for (k, v) in [("user.name", "Test"), ("user.email", "test@example.invalid"), ("commit.gpgsign", "false"), ("core.hooksPath", hooks.as_str())] {
+            runner::run(&source, ["config", k, v]).unwrap();
+        }
+        std::fs::write(source.join("file.txt"), "base\n").unwrap();
+        runner::run(&source, ["add", "."]).unwrap();
+        runner::run(&source, ["commit", "-qm", "Base"]).unwrap();
+        let base = runner::run(&source, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        runner::run(&source, ["update-ref", "refs/pull/7/head", &base]).unwrap();
+        let local = t.path().join("local");
+        runner::run(t.path(), ["-c", &format!("core.hooksPath={hooks}"), "clone", "-q", source.to_str().unwrap(), local.to_str().unwrap()]).unwrap();
+        for (k, v) in [("user.name", "Test"), ("user.email", "test@example.invalid"), ("commit.gpgsign", "false"), ("core.hooksPath", hooks.as_str())] {
+            runner::run(&local, ["config", k, v]).unwrap();
+        }
+        (t, source, local, base)
+    }
+    fn no_pins(root: &Path) {
+        assert!(runner::run(root, ["for-each-ref", "refs/revqora/recovery/pr-fetch/"]).unwrap().is_empty());
+    }
+    #[test]
+    fn source_checkout_preserves_existing_pr_history_and_working_changes() {
+        let (_t, _source, local, base) = fixture();
+        std::fs::write(local.join("file.txt"), "local edit\n").unwrap();
+        let branch = fetch_pr_branch(&local, "origin", "refs/pull/7/head", 7, &base).unwrap();
+        assert_eq!(runner::run(&local, ["rev-parse", "HEAD"]).unwrap().trim(), base);
+        assert_eq!(std::fs::read(local.join("file.txt")).unwrap(), b"local edit\n");
+        assert!(runner::exec(&local, ["diff", "--cached", "--exit-code"]).unwrap().ok());
+        no_pins(&local);
+        runner::run(&local, ["add", "file.txt"]).unwrap();
+        runner::run(&local, ["commit", "-qm", "User PR work"]).unwrap();
+        let user = runner::run(&local, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        runner::run(&local, ["switch", "main"]).unwrap();
+        assert!(fetch_pr_branch(&local, "origin", "refs/pull/7/head", 7, &base).is_err());
+        assert_eq!(runner::run(&local, ["rev-parse", &format!("refs/heads/{branch}")]).unwrap().trim(), user);
+        assert_eq!(runner::run(&local, ["rev-parse", "HEAD"]).unwrap().trim(), base);
+        no_pins(&local);
+    }
+    #[test]
+    fn changed_pr_heads_and_symbolic_branch_aliases_are_rejected_without_forcing_refs() {
+        let (_t, source, local, base) = fixture();
+        std::fs::write(source.join("new.txt"), "PR change\n").unwrap();
+        runner::run(&source, ["add", "."]).unwrap();
+        runner::run(&source, ["commit", "-qm", "New source"]).unwrap();
+        let tip = runner::run(&source, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        runner::run(&source, ["update-ref", "refs/pull/7/head", &tip]).unwrap();
+        assert_eq!(fetch_pr_branch(&local, "origin", "refs/pull/7/head", 7, &base).err().unwrap().kind, "stale-operation");
+        assert_eq!(runner::run(&local, ["rev-parse", "HEAD"]).unwrap().trim(), base);
+        no_pins(&local);
+        runner::run(&local, ["branch", "kept", &tip]).unwrap();
+        let alias = format!("refs/heads/pr/7-{}", &tip[..12]);
+        runner::run(&local, ["symbolic-ref", &alias, "refs/heads/kept"]).unwrap();
+        assert!(fetch_pr_branch(&local, "origin", "refs/pull/7/head", 7, &tip).is_err());
+        assert_eq!(runner::run(&local, ["symbolic-ref", &alias]).unwrap().trim(), "refs/heads/kept");
+        assert_eq!(runner::run(&local, ["rev-parse", "refs/heads/kept"]).unwrap().trim(), tip);
+        no_pins(&local);
     }
 }

@@ -15,8 +15,8 @@ cross-cutting work and does not consume a feature stage.
 | 8 | Repository favorites, project groups, workspaces and explicit Sync | Merged (#15) |
 | 9 | Advanced Branch Manager | Merged (#16) |
 | 10 | Reviewed bulk branch cleanup | Merged (#17) |
-| 11 | Worktree Manager | Implemented; review pending |
-| 12 | Accounts and forge integrations | Planned |
+| 11 | Worktree Manager | Merged (#19) |
+| 12 | Accounts and forge integrations | Implemented; review pending |
 | 13 | PR Center: browse, create, edit, templates and diffs | Planned |
 | 14 | PR Center: comments, threads and review submissions | Planned |
 | 15 | PR Center: CI, server protections, merge and branch cleanup | Planned |
@@ -99,3 +99,37 @@ Bulk cleanup remains stage 10; forge-side protections and PR status are later st
 - All previous 86 native scenarios remain; nine isolated worktree scenarios cover
   creation modes, source staging, open/current/main restrictions, lock consent,
   complete recovery, identity replacement, stale async previews and scoped cleanup.
+
+## Stage 12 — Accounts and forge integrations
+
+- Global API account manager from the toolbar, settings, command palette and PR view.
+  Multiple verified identities on GitHub (including Enterprise), GitLab (including
+  installation prefixes), Azure DevOps organizations/collections and Bitbucket Cloud.
+- Explicit token authentication: GitHub PAT, GitLab personal token, Azure PAT, Bitbucket
+  API token/email or OAuth access token. Browser OAuth registration/sign-in is not
+  implemented; Bitbucket Server retains the existing Git-credential integration.
+- Tokens are session-only by default. Optional AES-256-GCM encrypted records use a
+  password-derived PBKDF2-HMAC-SHA256 key, random salt/nonces and authenticated profile
+  metadata. The password/key is never saved. Vault and settings stay in data/accounts
+  beside the executable. Restart starts locked; lock clears active session credentials.
+  Password rotation and explicit forget/reconnect preserve account metadata.
+- Per-common-repository, per-remote account bindings and an explicit active API remote.
+  Remote URL changes, removed/locked/expired accounts and stale settings fail closed;
+  HTTPS API accounts must match the remote origin; an SSH host alias requires an
+  explicit API mapping. They never silently substitute another account or fall back to a Git credential.
+  API requests do not follow redirects, forward raw server error bodies, or share a
+  host-only token cache. HTTPS is required outside literal loopback IPs (local services).
+- Existing PR/checks use the selected identity and remote. Azure gains basic PR list,
+  create, source-commit checkout and commit-status support. Repository/namespace path
+  components are encoded for the API. PR writes/checkout retain the observed API
+  connection revision, including actual remote URL, and reject changed selections.
+  Checkout verifies the reviewed PR source SHA, uses a temporary private ref and a
+  SHA-specific branch, and never force-updates an existing PR branch or alias.
+- Git Fetch/Push still use native Git credential helpers and SSH-agent configuration.
+  API identity and commit author are separate, explicitly described in the UI.
+- Seven new native scenarios extend the existing worktrees shard to reuse its native
+  process/profile and avoid another runner. All previous 95 remain (102 total), including
+  actual restart, selected-account routing, encrypted persistence, stale confirmations,
+  failed identity replacement, redirect refusal and unchanged files/index/HEAD.
+
+Stages 13–15 expand the PR Center; eight planned stages remain after stage 12.

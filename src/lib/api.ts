@@ -71,6 +71,15 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  forgeAccounts:()=>call<import("./types").ForgeAccountsSnapshot>("forge_accounts_snapshot"),
+  forgeAccountAdd:(input:import("./types").ForgeAccountInput,expected:string)=>call<import("./types").ForgeAccountsSnapshot>("forge_account_add",{input,expected}),
+  forgeAccountRemove:(id:string,expected:string)=>call<import("./types").ForgeAccountsSnapshot>("forge_account_remove",{id,expected}),
+  forgeAccountTest:(id:string)=>call<string>("forge_account_test",{id}),
+  forgeVaultPassword:(password:string,expected:string,unlock:boolean)=>call<import("./types").ForgeAccountsSnapshot>("forge_vault_password",{password,expected,unlock}),
+  forgeVaultLock:()=>call<import("./types").ForgeAccountsSnapshot>("forge_vault_lock"),
+  forgeVaultReset:(expected:string)=>call<import("./types").ForgeAccountsSnapshot>("forge_vault_reset",{expected}),
+  forgeConnections:(repo:string)=>call<import("./types").ForgeConnections>("forge_connections",{repo}),
+  forgeConnectionSelect:(repo:string,selection:import("./types").ForgeConnectionSelection,expected:string)=>call<import("./types").ForgeConnections>("forge_connection_select",{repo,selection,expected}),
   branchManagerSnapshot: (repo: string, base: string | null) => call<import("./types").BranchManagerSnapshot>("branch_manager_snapshot", { repo, base }),
   branchManagerCompare: (repo: string, base: string, tip: string) => call<{ ahead: number; behind: number }>("branch_manager_compare", { repo, base, tip }),
   syncPrepare: (repo: string) => call<SyncPlan>("sync_prepare", { repo }),
@@ -259,9 +268,9 @@ export const api = {
   saveTextFile: (path: string, content: string) => call<void>("save_text_file", { path, content }),
   forgeInfo: (repo: string) => call<ForgeInfo | null>("forge_info", { repo }),
   pullRequests: (repo: string) => call<{ forge: ForgeInfo; items: PullRequest[] }>("pull_requests", { repo }),
-  pullRequestCreate: (repo: string, title: string, body: string, head: string, base: string, draft: boolean) =>
-    call<PullRequest>("pull_request_create", { repo, title, body, head, base, draft }),
-  pullRequestCheckout: (repo: string, number: number) => call<string>("pull_request_checkout", { repo, number }),
+  pullRequestCreate: (repo: string, title: string, body: string, head: string, base: string, draft: boolean, expectedConnection: string) =>
+    call<PullRequest>("pull_request_create", { repo, title, body, head, base, draft, expectedConnection }),
+  pullRequestCheckout: (repo: string, number: number, expectedConnection: string,expectedHead:string) => call<string>("pull_request_checkout", { repo, number, expectedConnection,expectedHead }),
   commitChecks: (repo: string, sha: string) => call<Check[]>("commit_checks", { repo, sha }),
   watchRepo: (repo: string) => call<void>("watch_repo", { repo }),
   unwatchRepo: (repo: string) => call<void>("unwatch_repo", { repo }),

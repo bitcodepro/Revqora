@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import {forgeAccountsDialog} from "./ForgeAccounts";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, CircleDashed, ExternalLink, GitPullRequest, GitPullRequestCreate, Loader2, RefreshCw, XCircle, MinusCircle, GitCompareArrows, Download } from "lucide-react";
-import { api, errorMessage, isGitError } from "../lib/api";
+import { api, errorMessage } from "../lib/api";
 import { getTab, useRepos, type RepoTab } from "../lib/store";
 import { openOverlay, showDialog, toast } from "../lib/ui";
 import * as A from "../lib/actions";
@@ -8,7 +9,7 @@ import type { Check, ForgeInfo, PullRequest } from "../lib/types";
 import { relativeTime } from "../lib/format";
 import { Modal } from "./Modal";
 
-const FORGE_NAMES: Record<string, string> = { github: "GitHub", gitlab: "GitLab", bitbucket: "Bitbucket", "bitbucket-server": "Bitbucket Server" };
+const FORGE_NAMES: Record<string, string> = { github: "GitHub", azure:"Azure DevOps", gitlab: "GitLab", bitbucket: "Bitbucket", "bitbucket-server": "Bitbucket Server" };
 
 export function CheckIcon({ state, size = 14 }: { state: Check["state"]; size?: number }) {
   switch (state) {
@@ -59,36 +60,26 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
   const [sel, setSel] = useState<PullRequest | null>(null);
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [checksError,setChecksError]=useState<string|null>(null);
 
-  const load = async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const r = await api.pullRequests(root);
-      setForge(r.forge);
-      setItems(r.items);
-      setSel((s) => (s ? r.items.find((x) => x.number === s.number) ?? null : r.items[0] ?? null));
-    } catch (e) {
-      setErr(errorMessage(e));
-      if (!isGitError(e) || e.kind !== "auth") setItems([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [root]);
+  const generation=useRef(0);
+  const load=useCallback(async()=>{const id=++generation.current;setLoading(true);setErr(null);setItems(null);setSel(null);setChecks(null);setForge(null);
+    try{const r=await api.pullRequests(root);if(id!==generation.current)return;setForge(r.forge);setItems(r.items);setSel(r.items[0]??null);}
+    catch(e){if(id===generation.current){setErr(errorMessage(e));setItems([]);}}
+    finally{if(id===generation.current)setLoading(false);}
+  },[root]);
+  useEffect(()=>{void load();const update=()=>void load();window.addEventListener("revqora:forge-accounts",update);return()=>{generation.current++;window.removeEventListener("revqora:forge-accounts",update);};},[load]);
 
   useEffect(() => {
+    setChecksError(null);
     if (!sel?.headSha) return setChecks(null);
     let alive = true;
     setChecks(null);
-    api.commitChecks(root, sel.headSha).then((c) => alive && setChecks(c), () => alive && setChecks([]));
+    api.commitChecks(root, sel.headSha).then((c) => alive && setChecks(c), e => {if(alive){setChecks([]);setChecksError(errorMessage(e));}});
     return () => {
       alive = false;
     };
-  }, [root, sel?.headSha]);
+  }, [root, sel?.headSha,forge?.connectionRevision]);
 
   return (
     <div style={{ flex: 1, display: "grid", gridTemplateColumns: "minmax(320px, 44%) minmax(0,1fr)", minHeight: 0 }}>
@@ -97,11 +88,11 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
           <GitPullRequest size={16} style={{ color: "var(--accent)" }} />
           <b className="ellipsis">{forge ? `${forge.project}` : "Pull requests"}</b>
           {forge && <span className="pill">{FORGE_NAMES[forge.kind] ?? forge.kind}</span>}
-          <div className="spacer" />
+          <span className="faint ellipsis" title={forge?.accountLogin??"Git credential helper"}>{forge?.remote} · {forge?.accountLogin??"Git credentials"}</span><div className="spacer" /><button className="btn sm" onClick={()=>forgeAccountsDialog(root)}>Accounts…</button>
           <button className="icon-btn" title="Refresh" onClick={load}>
             {loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
           </button>
-          <button className="btn sm primary" onClick={() => createPullRequest(root, forge).then((pr) => pr && load())}>
+          <button className="btn sm primary" disabled={loading||!forge?.connectionRevision} onClick={() => createPullRequest(root, forge).then((pr) => pr && load())}>
             <GitPullRequestCreate size={13} /> New
           </button>
         </div>
@@ -170,7 +161,7 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
               <button
                 className="btn"
                 onClick={() =>
-                  A.act(root, () => api.pullRequestCheckout(root, sel.number), { success: (b) => `Checked out ${b}`, busy: `Fetching #${sel.number}` })
+                  A.act(root, () => api.pullRequestCheckout(root, sel.number,forge?.connectionRevision??"",sel.headSha), { success: (b) => `Checked out ${b}`, busy: `Fetching #${sel.number}` })
                 }
               >
                 <Download size={14} /> Check out
@@ -192,7 +183,7 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
               <div className="section-title" style={{ marginBottom: 8 }}>
                 Checks
               </div>
-              {checks === null ? <Loader2 size={16} className="spin faint" /> : <ChecksList checks={checks} />}
+              {checksError?<div className="callout warn" role="alert">{checksError}</div>:checks === null ? <Loader2 size={16} className="spin faint" /> : <ChecksList checks={checks} />}
             </div>
           </div>
         )}
@@ -202,6 +193,9 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
 }
 
 export async function createPullRequest(root: string, forge: ForgeInfo | null): Promise<PullRequest | null> {
+  try{forge=forge??await api.forgeInfo(root);}catch(e){toast.error(e,"Could not prepare the API connection");return null;}
+  if(!forge?.connectionRevision){toast.warning("Configure an API connection first");return null;}
+  const connectionRevision=forge.connectionRevision;
   const tab = getTab(root);
   const head = tab?.info?.head.branch;
   if (!head) {
@@ -217,38 +211,41 @@ export async function createPullRequest(root: string, forge: ForgeInfo | null): 
   const remoteBranches = getTab(root)?.refs?.remote.filter((b) => b.remote === remote).map((b) => b.name.slice(remote.length + 1)) ?? [];
   const base = ["main", "master", "develop"].find((b) => remoteBranches.includes(b) && b !== head) ?? remoteBranches.find((b) => b !== head) ?? "main";
   const subject = await api.lastMessage(root).catch(() => "");
-  return showDialog<PullRequest | null>((close) => <CreatePrBody root={root} head={head} base={base} branches={remoteBranches} subject={subject} close={close} />);
+  return showDialog<PullRequest | null>((close) => <CreatePrBody connectionLabel={`${forge.host}/${forge.project} · ${forge.accountLogin??"Git credentials"}`} connectionRevision={connectionRevision} root={root} head={head} base={base} branches={remoteBranches} subject={subject} close={close} />);
 }
 
-function CreatePrBody({ root, head, base: initialBase, branches, subject, close }: { root: string; head: string; base: string; branches: string[]; subject: string; close: (v: PullRequest | null) => void }) {
+function CreatePrBody({ connectionLabel,connectionRevision, root, head, base: initialBase, branches, subject, close }: { connectionLabel:string;connectionRevision:string; root: string; head: string; base: string; branches: string[]; subject: string; close: (v: PullRequest | null) => void }) {
   const [title, setTitle] = useState(subject.split("\n")[0] ?? "");
   const [body, setBody] = useState(subject.split("\n").slice(1).join("\n").trim());
   const [base, setBase] = useState(initialBase);
   const [draft, setDraft] = useState(false);
   const [busy, setBusy] = useState(false);
+  const submitting=useRef(false);
   const submit = async () => {
-    if (!title.trim()) return;
+    if (submitting.current||!title.trim()) return;
+    submitting.current=true;
     setBusy(true);
     try {
-      const pr = await api.pullRequestCreate(root, title.trim(), body, head, base, draft);
+      const pr = await api.pullRequestCreate(root, title.trim(), body, head, base, draft,connectionRevision);
       toast.success(`Opened #${pr.number}`, pr.url);
       close(pr);
     } catch (e) {
       toast.error(e, "Could not open the pull request");
     } finally {
-      setBusy(false);
+      submitting.current=false;setBusy(false);
     }
   };
   return (
     <Modal
       title="New pull request"
+      subtitle={connectionLabel}
       icon={<GitPullRequestCreate size={18} />}
       wide
-      onClose={() => close(null)}
+      onClose={() => {if(!submitting.current)close(null);}}
       onSubmit={submit}
       footer={
         <>
-          <button type="button" className="btn" onClick={() => close(null)}>
+          <button type="button" className="btn" disabled={busy} onClick={() => close(null)}>
             Cancel
           </button>
           <button type="submit" className="btn primary" disabled={!title.trim() || busy}>
@@ -262,7 +259,7 @@ function CreatePrBody({ root, head, base: initialBase, branches, subject, close 
           <span className="rn">{head}</span>
         </span>
         <span className="faint">into</span>
-        <select className="select" style={{ width: 200 }} value={base} onChange={(e) => setBase(e.target.value)}>
+        <select className="select" style={{ width: 200 }} disabled={busy} value={base} onChange={(e) => setBase(e.target.value)}>
           {[base, ...branches.filter((b) => b !== base && b !== head)].map((b) => (
             <option key={b}>{b}</option>
           ))}
@@ -270,14 +267,14 @@ function CreatePrBody({ root, head, base: initialBase, branches, subject, close 
       </div>
       <div className="field">
         <label>Title</label>
-        <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <input className="input" disabled={busy} value={title} onChange={(e) => setTitle(e.target.value)} />
       </div>
       <div className="field">
         <label>Description</label>
-        <textarea className="textarea" rows={7} value={body} onChange={(e) => setBody(e.target.value)} />
+        <textarea className="textarea" disabled={busy} rows={7} value={body} onChange={(e) => setBody(e.target.value)} />
       </div>
       <label className="check">
-        <input type="checkbox" checked={draft} onChange={(e) => setDraft(e.target.checked)} /> Open as draft
+        <input type="checkbox" disabled={busy} checked={draft} onChange={(e) => setDraft(e.target.checked)} /> Open as draft
       </label>
     </Modal>
   );

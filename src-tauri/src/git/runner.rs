@@ -126,8 +126,14 @@ where
 /// True for git invocations that never modify the working tree, the index or refs.
 pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
     let a: Vec<String> = args.iter().map(|s| s.as_ref().to_string_lossy().into_owned()).collect();
+    let mut prefix = 0;
+    while a.get(prefix).is_some_and(|v| v == "-c") && a.get(prefix + 1).is_some() {
+        prefix += 2;
+    }
+    let a = &a[prefix..];
     let has = |flag: &str| a.iter().any(|x| x == flag);
     match a.first().map(|s| s.as_str()).unwrap_or("") {
+        "credential" => a.len() == 2 && a.get(1).is_some_and(|s| s == "fill"),
         "status" | "diff" | "log" | "show" | "rev-parse" | "cat-file" | "for-each-ref" | "ls-files" | "ls-tree" | "range-diff" | "rev-list" | "merge-base"
         | "blame" | "symbolic-ref" | "diff-tree" | "diff-index" | "reflog" | "show-ref" | "check-ref-format" | "version" | "--version" | "ls-remote"
         | "describe" | "count-objects" | "name-rev" | "grep" | "check-ignore" => true,
@@ -425,6 +431,9 @@ mod tests {
         assert!(is_read_only(&["status", "--porcelain=v2"]));
         assert!(is_read_only(&["stash", "list"]));
         assert!(is_read_only(&["config", "--get", "user.name"]));
+        assert!(is_read_only(&["-c", "credential.interactive=false", "credential", "fill"]));
+        assert!(!is_read_only(&["credential", "approve"]));
+        assert!(!is_read_only(&["-c", "advice.detachedHead=false", "reset", "--hard"]));
         assert!(!is_read_only(&["fetch", "--all"]));
         assert!(!is_read_only(&["push", "origin"]));
         assert!(is_read_only(&["commit-tree", "HEAD^{tree}"]));
