@@ -156,6 +156,9 @@ Stages 13–15 expand the PR Center; eight planned stages remain after stage 12.
   reported. Azure compares immutable merge-base/source blobs, using portable temp
   files without touching HEAD, staging or working files. Oversized previews explain
   the limit and can be opened on the server or reviewed in a local checkout.
+  Azure explicitly warns that this content-only preview does not compare Git file
+  modes or object types (executable permissions, symlinks and submodules), including
+  when identical blob contents produce no text changes.
 - No automatic API write retries. An unreadable write response requires checking
   the server before a manual retry; partial field application stays visible in the
   editor. Browser actions use canonical provider URLs and HTTP(S)-only check links.

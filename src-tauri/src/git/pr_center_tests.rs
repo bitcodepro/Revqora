@@ -217,7 +217,17 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
     use super::super::forge_accounts::{self as accounts, Add, Selection};
     use std::fs;
     let manager = accounts::manager().unwrap();
-    for kind in ["github", "gitlab", "bitbucket", "azure"] {
+    for fixture in ["github", "gitlab", "bitbucket", "azure", "azure-mode-only"] {
+        let mode_only = fixture == "azure-mode-only";
+        let kind = if mode_only { "azure" } else { fixture };
+        // A mode-only pair has different tree-entry modes but the same blob.
+        // Azure's Items response exposes that blob; modes belong to Trees.
+        let before_entry = json!({"relativePath":"new.txt","mode":"100644","objectType":"blob","objectId":"d".repeat(40)});
+        let after_entry = json!({"relativePath":"new.txt","mode":if mode_only{"100755"}else{"100644"},"objectType":"blob","objectId":if mode_only{"d".repeat(40)}else{"e".repeat(40)}});
+        if mode_only {
+            assert_eq!(before_entry["objectId"], after_entry["objectId"]);
+            assert_ne!(before_entry["mode"], after_entry["mode"]);
+        }
         let state = Arc::new(Mutex::new(metadata(kind, "Before", "Description", "main", 1)));
         let current = state.clone();
         let h = Http::new(move |r| {
@@ -233,7 +243,12 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
                 );
             }
             if r.path.contains("/items?") {
-                return (200, json_headers, json!({"objectId":if r.path.contains(&"c".repeat(40)){"d".repeat(40)}else{"e".repeat(40)}}).to_string());
+                let entry = if r.path.contains(&"c".repeat(40)) { &before_entry } else { &after_entry };
+                return (200, json_headers, json!({"objectId":entry["objectId"],"gitObjectType":"blob"}).to_string());
+            }
+            if r.path.contains("/trees/") {
+                let entry = if r.path.contains(&"c".repeat(40)) { &before_entry } else { &after_entry };
+                return (200, json_headers, json!({"treeEntries":[entry]}).to_string());
             }
             if r.path.contains("/blobs/") {
                 return (
@@ -335,7 +350,22 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
         let files = files(repo, 7, &connection, &d.revision, 0).unwrap();
         assert_eq!(files.items.len(), 1, "{kind}");
         let v = file(repo, 7, &connection, &d.revision, &files.items[0].id).unwrap();
-        assert!(v.diff.is_some(), "{kind}");
+        if kind == "azure" {
+            assert!(files.notice.as_deref().unwrap().contains("file modes"));
+            assert!(v.notice.as_deref().unwrap().contains("symlinks"));
+            assert_eq!(v.notice, files.notice);
+        } else {
+            assert!(files.notice.is_none());
+            assert!(v.notice.is_none());
+        }
+        let rendered = v.diff.unwrap();
+        if mode_only {
+            assert!(rendered.empty);
+            assert!(rendered.hunks.is_empty());
+        } else {
+            assert!(!rendered.hunks.is_empty(), "{fixture}");
+            assert!(rendered.hunks.iter().flat_map(|h| &h.lines).any(|l| l.text == "after"), "{fixture}");
+        }
         let saved =
             edit(repo, 7, &connection, &d.revision, Edit { title: "Updated".into(), body: "Long description 😀\n".into(), base: "develop".into() }).unwrap();
         assert_eq!(saved.detail.pull.title, "Updated");

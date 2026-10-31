@@ -19,6 +19,7 @@ use std::{
 const PAGE: usize = 50;
 const PATCH_LIMIT: u64 = 8 * 1024 * 1024;
 const BLOB_LIMIT: u64 = 1024 * 1024;
+const AZURE_METADATA_NOTICE: &str = "Azure preview compares file contents only. Git file modes and object types, including executable permissions, symlinks and submodules, are not compared. Review those changes on the server or in a local checkout; identical contents do not mean the file is unchanged.";
 fn fail(message: &str) -> GitError {
     GitError::new(message).kind("pr-center")
 }
@@ -784,7 +785,7 @@ fn azure_bundle(repo: &Path, f: &ForgeInfo, d: &Detail, snapshot: String, key: S
         });
     }
     let next = if v.get("allChangesIncluded").and_then(Value::as_bool) == Some(true) || rows.is_empty() { None } else { Some(offset + rows.len() as u32) };
-    Ok(Bundle { key, snapshot, files, next, notice: None, cost: rows.len() * 2048, created: Instant::now() })
+    Ok(Bundle { key, snapshot, files, next, notice: Some(AZURE_METADATA_NOTICE.into()), cost: rows.len() * 2048, created: Instant::now() })
 }
 pub fn files(repo: &Path, n: u64, connection: &str, revision: &str, offset: u32) -> GitResult<Files> {
     number(n)?;
@@ -857,7 +858,7 @@ fn azure_diff(repo: &Path, f: &ForgeInfo, e: &Entry) -> GitResult<FileView> {
                 is_deleted: e.meta.status == "D",
                 ..Default::default()
             }),
-            notice: None,
+            notice: Some(AZURE_METADATA_NOTICE.into()),
         });
     }
     let temp = crate::portable::temp_dir()?;
@@ -897,7 +898,7 @@ fn azure_diff(repo: &Path, f: &ForgeInfo, e: &Entry) -> GitResult<FileView> {
     view.is_new = e.meta.status == "A";
     view.is_deleted = e.meta.status == "D";
     view.hash = e.meta.id.clone();
-    Ok(FileView { diff: Some(view), notice: None })
+    Ok(FileView { diff: Some(view), notice: Some(AZURE_METADATA_NOTICE.into()) })
 }
 pub fn file(repo: &Path, n: u64, connection: &str, revision: &str, id: &str) -> GitResult<FileView> {
     number(n)?;

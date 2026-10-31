@@ -311,6 +311,8 @@
 .pr-diff>.diff {flex:1;min-width:0;min-height:0}
 .pr-notice {padding:9px 12px;background:var(--accent-soft);color:var(--text-faint);line-height:1.55;overflow-wrap:anywhere;font-size:var(--fs-xs);flex-shrink:0}
 .pr-diff>.callout {margin:8px;overflow-wrap:anywhere}
+.pr-diff>.pr-notice {color:var(--text);border-bottom:1px solid var(--border)}
+.pr-diff>.pr-notice>b {display:block;margin-bottom:4px}
 .pr-editor {border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:13px;min-width:0}
 .pr-editor .input,.pr-editor .textarea {width:100%;min-width:0}
 .pr-editor .textarea {min-height:180px;max-height:45vh;line-height:1.6;resize:vertical;white-space:pre-wrap;overflow-wrap:break-word}
