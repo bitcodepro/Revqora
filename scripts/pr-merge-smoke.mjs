@@ -8,7 +8,7 @@ export function createPrMergeFixture({pulls}){
   if(url.pathname==="/api/v3/repos/team/repo"){send({id:10,archived:false,permissions:{push:true},default_branch:"main",allow_merge_commit:true,allow_squash_merge:true,allow_rebase_merge:true});return true;}
   if(url.pathname.includes("/rules/branches/")){send(state.queue?[{type:"merge_queue"}]:[{type:"pull_request",parameters:{allowed_merge_methods:state.allow}}]);return true;}
   if(url.pathname.includes("/branches/")){send({protected:false});return true;}
-  if(url.pathname.endsWith("/check-runs")){const second=url.searchParams.get("page")==="2";send({check_runs:state.late?(second?[{name:"Late required build",status:"completed",conclusion:"failure"}]:Array.from({length:100},(_,i)=>({name:`Build ${i}`,status:"completed",conclusion:"success"}))):[]});return true;}
+  if(url.pathname.endsWith("/check-runs")){const second=url.searchParams.get("page")==="2";send({check_runs:state.late?(second?[{name:"Late required build",status:"completed",conclusion:"failure"}]:Array.from({length:100},(_,i)=>({name:`Build ${i}`,status:"completed",conclusion:"success"}))):[{name:"Successful build",status:"completed",conclusion:"success",html_url:"https://ci.example.invalid/build/42"}]});return true;}
   const query=entry.body?.query??"",v=entry.body?.variables??{};
   if(url.pathname!=="/api/graphql"||!query.includes("RevqoraMerge")&&!query.includes("RevqoraEnqueue"))return false;
   if(query.startsWith("query")){const p=pulls.get(v.number);send({data:{repository:{pullRequest:{id:`PR${p.number}`,headRefOid:p.head.sha,baseRefOid:p.base.sha,mergeable:"MERGEABLE",mergeStateStatus:state.queue?"BLOCKED":"CLEAN",reviewDecision:"APPROVED",mergeQueueEntry:state.queued.has(p.number)?{id:`Q${p.number}`,state:"QUEUED",position:1}:null,baseRef:{branchProtectionRule:null}}}}});return true;}
@@ -27,6 +27,27 @@ export async function prMergeSmoke({page,check,shot,root,pulls,fixture,git,index
  const start=async()=>{await page.locator(".pr-detail-actions").getByRole("button",{name:"Merge…",exact:true}).click();await modalReady();};
  const reload=async()=>{await page.getByRole("button",{name:"Reload request",exact:true}).click();await page.waitForSelector('[data-pr-detail]');};
  const sent=async()=>{await page.waitForSelector('[data-pr-merge-dialog]',{state:"detached"});await page.waitForSelector('[data-pr-detail][aria-busy="false"]');};
+ const logsDoNotSubmit=async(action)=>{
+  // Consent and an enabled action are essential: an ineligible PR would hide the defect.
+  if(!await consent().isChecked()||await button(action).isDisabled())throw Error("CI link regression needs an eligible, consented merge confirmation");
+  const before=state.writes.length;
+  await page.evaluate(()=>{
+   const original=window.__TAURI_INTERNALS__.invoke,probe={original,opens:[],mergeCalls:0,submits:0};
+   probe.listener=e=>{if(e.target.matches("form.modal"))probe.submits++;};
+   document.addEventListener("submit",probe.listener,true);
+   window.__revqoraCiLogProbe=probe;
+   window.__TAURI_INTERNALS__.invoke=async(command,args,...rest)=>{if(command==="open_path"){probe.opens.push(args.path);return;}if(command==="pr_merge_submit")probe.mergeCalls++;return original(command,args,...rest);};
+  });
+  try{
+   const link=page.locator(".modal .pr-merge-checks").getByRole("button",{name:"Open Successful build",exact:true});
+   for(const [i,activate]of [()=>link.click(),()=>link.press("Enter")].entries()){
+    await activate();await page.waitForFunction(n=>window.__revqoraCiLogProbe.opens.length===n,i+1);
+    const observed=await page.evaluate(()=>{const p=window.__revqoraCiLogProbe;return{opens:p.opens,mergeCalls:p.mergeCalls,submits:p.submits};});
+    if(observed.opens.some(u=>u!=="https://ci.example.invalid/build/42")||observed.mergeCalls||observed.submits||state.writes.length!==before)throw Error(`Opening CI logs submitted ${action}: ${JSON.stringify(observed)}`);
+    if(await button(action).isDisabled()||!await consent().isChecked())throw Error("Opening logs changed the merge confirmation state");
+   }
+  }finally{await page.evaluate(()=>{const p=window.__revqoraCiLogProbe;document.removeEventListener("submit",p.listener,true);window.__TAURI_INTERNALS__.invoke=p.original;delete window.__revqoraCiLogProbe;});}
+ };
  await check("merge readiness loads later CI pages and keeps a failing build blocked",async()=>{
   state.late=true;await open(41);await page.getByText(/1 reported CI checks are pending/).waitFor();await start();await consent().check();if(!await button("Confirm merge").isDisabled())throw Error("A failing check on page two did not block merge");await button("Close and keep message").click();state.late=false;await page.getByRole("button",{name:"Refresh merge readiness",exact:true}).click();await page.waitForSelector('.pr-merge-panel[aria-busy="false"]');await shot("121-merge-readiness");
  });
@@ -40,10 +61,10 @@ export async function prMergeSmoke({page,check,shot,root,pulls,fixture,git,index
   await start();await consent().check();state.failNext=true;const before=state.writes.length;await button("Confirm merge").click();await page.getByRole("checkbox",{name:"I checked the previous merge result on the server",exact:true}).waitFor();await button("Close and keep message").click();await start();if(!await button("Confirm merge").isDisabled()||state.writes.length!==before+1)throw Error("Reopening allowed an unchecked merge retry");await page.getByRole("checkbox",{name:"I checked the previous merge result on the server",exact:true}).check();await button("Mark merge result as checked without resending").click();if(state.writes.length!==before+1||await consent().isChecked())throw Error("Acknowledgement resent a merge or retained consent");await button("Close and keep message").click();
  });
  await check("required merge queues submit only an enqueue with the reviewed source and never claim merged",async()=>{
-  state.queue=true;await open(42);await start();const options=await page.getByRole("combobox",{name:"Merge method",exact:true}).locator("option").allTextContents();if(options.length!==1||!options[0].includes("queue"))throw Error("Direct merge was offered for a queue-only branch");await consent().check();await button("Add to merge queue").click();await sent();await page.locator(".pr-merge-panel").getByText(/QUEUED/).waitFor();if(await page.locator(".pr-detail-actions").getByRole("button",{name:"Source cleanup…",exact:true}).count())throw Error("Queued PR enabled cleanup");const write=state.writes.at(-1);if(write.body.variables.head!==pulls.get(42).head.sha||!write.body.query.includes("jump:false"))throw Error("Queue source lease or ordinary priority was lost");state.queue=false;
+  state.queue=true;await open(42);await start();const options=await page.getByRole("combobox",{name:"Merge method",exact:true}).locator("option").allTextContents();if(options.length!==1||!options[0].includes("queue"))throw Error("Direct merge was offered for a queue-only branch");await consent().check();await logsDoNotSubmit("Add to merge queue");await button("Add to merge queue").click();await sent();await page.locator(".pr-merge-panel").getByText(/QUEUED/).waitFor();if(await page.locator(".pr-detail-actions").getByRole("button",{name:"Source cleanup…",exact:true}).count())throw Error("Queued PR enabled cleanup");const write=state.writes.at(-1);if(write.body.variables.head!==pulls.get(42).head.sha||!write.body.query.includes("jump:false"))throw Error("Queue source lease or ordinary priority was lost");state.queue=false;
  });
  await check("explicit squash merging uses the reviewed head and refreshes the merged PR without changing local Git",async()=>{
-  await open(43);await start();await page.getByRole("combobox",{name:"Merge method",exact:true}).selectOption("squash");await page.getByRole("textbox",{name:"Merge message",exact:true}).fill("Reviewed squash message 😀");await consent().check();await button("Confirm merge").click();await sent();await page.locator(".pr-detail-actions").getByRole("button",{name:"Source cleanup…",exact:true}).waitFor();const write=state.writes.at(-1);if(write.body.variables.method!=="SQUASH"||write.body.variables.head!==pulls.get(43).head.sha||write.body.variables.body!=="Reviewed squash message 😀")throw Error("Merge did not preserve its reviewed method, head and message");await shot("122-pr-merged");
+  await open(43);await start();await page.getByRole("combobox",{name:"Merge method",exact:true}).selectOption("squash");await page.getByRole("textbox",{name:"Merge message",exact:true}).fill("Reviewed squash message 😀");await consent().check();await logsDoNotSubmit("Confirm merge");await button("Confirm merge").click();await sent();await page.locator(".pr-detail-actions").getByRole("button",{name:"Source cleanup…",exact:true}).waitFor();const write=state.writes.at(-1);if(write.body.variables.method!=="SQUASH"||write.body.variables.head!==pulls.get(43).head.sha||write.body.variables.body!=="Reviewed squash message 😀")throw Error("Merge did not preserve its reviewed method, head and message");await shot("122-pr-merged");
  });
  await check("post-merge cleanup keeps destination/default branches and fork source branches",async()=>{
   const p=pulls.get(43);p.head.ref="main";await reload();await page.locator(".pr-detail-actions").getByRole("button",{name:"Source cleanup…",exact:true}).click();await page.locator(".modal").getByRole("alert").filter({hasText:/destination and default branch/}).waitFor();if(!await button("Delete selected source branches").isDisabled())throw Error("Default branch cleanup was enabled");await button("Close").click();p.head.ref="topic";p.head.repo.id=11;await reload();await page.locator(".pr-detail-actions").getByRole("button",{name:"Source cleanup…",exact:true}).click();await page.locator(".modal").getByRole("alert").filter({hasText:/Fork branches are kept/}).waitFor();await button("Close").click();
