@@ -19,6 +19,7 @@ pub mod more;
 pub mod operations;
 pub mod ops;
 pub mod pr_center;
+pub mod pr_merge;
 pub mod pr_reviews;
 pub mod recovery;
 pub mod refs;

@@ -256,6 +256,20 @@ pub(super) fn write_api(repo: &Path, f: &ForgeInfo, method: &str, path: &str, bo
     .map(|_| ())
 }
 
+pub(super) fn write_response(
+    repo: &Path,
+    f: &ForgeInfo,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    actor: &str,
+) -> GitResult<super::forge_accounts::ApiContent> {
+    authorized(repo, f, |c| {
+        check_actor(f, c, actor)?;
+        super::forge_accounts::request_content(&f.kind, &f.api, c, method, path, body.clone(), "application/json", 4 * 1024 * 1024, false)
+    })
+}
+
 fn check_actor(f: &ForgeInfo, c: &super::forge_accounts::Credential, expected: &str) -> GitResult<()> {
     if f.kind == "bitbucket-server" {
         return if expected == "git-credentials" { Ok(()) } else { Err(GitError::new("Unverified review identity.").kind("stale-operation")) };

@@ -580,6 +580,8 @@ pub fn request_json(kind: &str, base: &str, c: &Credential, method: &str, path: 
 pub(super) struct ApiContent {
     pub status: u16,
     pub location: Option<String>,
+    pub link: Option<String>,
+    pub next_page: Option<String>,
     pub bytes: Zeroizing<Vec<u8>>,
 }
 
@@ -652,15 +654,17 @@ pub(super) fn request_content(
     };
     let status = response.status();
     let location = response.header("location").map(str::to_owned);
+    let link = response.header("link").map(str::to_owned);
+    let next_page = response.header("x-next-page").map(str::to_owned);
     let mut bytes = Zeroizing::new(Vec::new());
     if (300..400).contains(&status) {
-        return Ok(ApiContent { status, location, bytes });
+        return Ok(ApiContent { status, location, link, next_page, bytes });
     }
     response.into_reader().take(limit + 1).read_to_end(&mut bytes).map_err(|_| fail("Could not read the API response."))?;
     if bytes.len() as u64 > limit {
         return Err(fail("API response exceeds the display size limit."));
     }
-    Ok(ApiContent { status, location, bytes })
+    Ok(ApiContent { status, location, link, next_page, bytes })
 }
 
 static MANAGER: OnceLock<Manager> = OnceLock::new();

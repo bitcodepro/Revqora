@@ -1424,6 +1424,47 @@ async fn pull_requests(repo: String) -> GitResult<PullRequests> {
 }
 
 #[tauri::command]
+async fn pr_merge_plan(repo: String, number: u64, expected_connection: String, expected_revision: String) -> GitResult<git::pr_merge::Plan> {
+    blocking(move || git::pr_merge::plan(&p(&repo), number, &expected_connection, &expected_revision)).await
+}
+#[tauri::command]
+async fn pr_merge_submit(
+    app: AppHandle,
+    repo: String,
+    number: u64,
+    expected_connection: String,
+    expected_revision: String,
+    input: git::pr_merge::MergeInput,
+) -> GitResult<git::pr_merge::MergeResult> {
+    mutating(repo.clone(), None, app, "pr_merge_submit", None, move || git::pr_merge::merge(&p(&repo), number, &expected_connection, &expected_revision, input))
+        .await
+}
+#[tauri::command]
+async fn pr_cleanup_plan(
+    repo: String,
+    number: u64,
+    expected_connection: String,
+    expected_revision: String,
+    input: git::pr_merge::CleanupInput,
+) -> GitResult<git::pr_merge::CleanupReview> {
+    blocking(move || git::pr_merge::cleanup_plan(&p(&repo), number, &expected_connection, &expected_revision, &input)).await
+}
+#[tauri::command]
+async fn pr_cleanup_submit(
+    app: AppHandle,
+    repo: String,
+    number: u64,
+    expected_connection: String,
+    expected_revision: String,
+    input: git::pr_merge::CleanupInput,
+) -> GitResult<git::pr_merge::CleanupResult> {
+    mutating(repo.clone(), None, app, "pr_cleanup_submit", None, move || {
+        git::pr_merge::cleanup_act(&p(&repo), number, &expected_connection, &expected_revision, input)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn pr_review_capabilities(repo: String, number: u64, expected_connection: String, expected_revision: String) -> GitResult<git::pr_reviews::Capabilities> {
     blocking(move || git::pr_reviews::capabilities(&p(&repo), number, &expected_connection, &expected_revision)).await
 }
@@ -1908,6 +1949,10 @@ pub fn run() {
             forge_connection_select,
             forge_info,
             pull_requests,
+            pr_merge_plan,
+            pr_merge_submit,
+            pr_cleanup_plan,
+            pr_cleanup_submit,
             pr_review_capabilities,
             pr_review_page,
             pr_review_thread,

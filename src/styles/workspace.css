@@ -338,3 +338,21 @@
 .pr-editor-branches>svg {align-self:center;margin-top:18px}
 .pr-template-row {display:flex;gap:8px;min-width:0}.pr-template-row>.select {flex:1;min-width:0}
 @media(max-width:900px){.pr-detail-heading{padding:10px;gap:8px}.pr-detail-actions .spacer{display:none}.pr-center-head{padding:8px}.pr-branch-line .ref{max-width:100%}.pr-editor-branches{gap:6px}.pr-title-line h2{font-size:var(--fs)} }
+
+/* Forge merge readiness and separately reviewed post-merge cleanup. */
+.pr-merge-panel { border:1px solid var(--border); border-radius:8px; padding:12px; min-width:0; }
+.pr-merge-panel > header { display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px; }
+.pr-merge-readiness,.pr-merge-dialog,.pr-cleanup-dialog { display:flex;flex-direction:column;gap:10px;min-width:0; }
+.pr-merge-snapshot { display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px; }
+.pr-merge-rules { max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:6px; }
+.pr-merge-rules > div { display:flex;gap:8px;flex-wrap:wrap;padding:7px 9px;border-bottom:1px solid var(--border);font-size:12px;overflow-wrap:anywhere; }
+.pr-merge-rules > div > span { flex:1;min-width:100px; }
+.pr-merge-checks { max-height:300px;overflow:auto; }
+.pr-merge-checks > div { display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12px;min-width:0; }
+.pr-merge-notice { margin:0;font-size:12px;line-height:1.5;overflow-wrap:anywhere; }
+.pr-merge-dialog .callout,.pr-cleanup-dialog .callout { overflow-wrap:anywhere; }
+.pr-merge-dialog .check,.pr-cleanup-dialog .check { align-items:flex-start; }
+
+.pr-merge-checks .check-success { color:var(--green); }
+.pr-merge-checks .check-failure,.pr-merge-checks .check-cancelled { color:var(--red); }
+.pr-merge-checks .check-pending { color:var(--amber); }

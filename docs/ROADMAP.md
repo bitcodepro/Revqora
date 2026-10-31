@@ -18,8 +18,8 @@ cross-cutting work and does not consume a feature stage.
 | 11 | Worktree Manager | Merged (#19) |
 | 12 | Accounts and forge integrations | Merged (#20) |
 | 13 | PR Center: browse, create, edit, templates and diffs | Merged (#21) |
-| 14 | PR Center: comments, threads and review submissions | Implemented; review pending |
-| 15 | PR Center: CI, server protections, merge and branch cleanup | Planned |
+| 14 | PR Center: comments, threads and review submissions | Merged (#22) |
+| 15 | PR Center: CI, server protections, merge and branch cleanup | Implemented; review pending |
 | 16 | Agent Workspace | Planned |
 | 17 | Workflow Builder | Planned |
 | 18 | Automated PR Workflow | Planned |
@@ -207,3 +207,53 @@ merge and cleanup. Seven planned stages remain after stage 13.
   writes, exact anchors and unchanged Git HEAD/index/working files.
 
 Stage 15 adds CI/protection-aware merging and branch cleanup. Six stages remain after 14.
+## Stage 15 — CI/protection-aware merging and separate source cleanup
+
+- Live merge readiness in PR Overview, with explicit refresh and a visible ten-second
+  poll. Loaded CI states, server requirements, required review decisions, actor and
+  immutable source/observed target IDs remain distinct. Unknown/incomplete policy or
+  check responses never look like a green empty result. CI follows pagination headers,
+  includes later-page failures and has explicit complete-preview size/page limits.
+- GitHub: classic protection summaries, applicable branch rulesets, review decision and
+  server merge state. Repository/ruleset-enabled merge, squash and rebase methods are
+  filtered for linear history. Required merge queues expose only Add to merge queue,
+  with ordinary priority and the expected source SHA. Queued is never shown as merged.
+- GitLab: current user's merge eligibility and detailed merge status (pipelines,
+  approvals, discussions and other server requirements); project merge and squash
+  settings determine available actions. Commit statuses and the MR pipeline are shown.
+  The client does not reconfigure project merge settings or schedule auto-merge.
+- Azure: blocking policy evaluations and permitted merge strategies, merge-conflict
+  status and commit CI. Completion pins lastMergeSourceCommit; policy bypass, work-item
+  transitions and automatic source deletion are disabled. Rebase strategies explicitly
+  explain that Azure rewrites the source. Accepted completion remains pending until the
+  PR is confirmed completed. Existing auto-complete is displayed instead of resubmitted.
+- Bitbucket Server: merge vetoes, configured built-in strategies, paged builds and a
+  version-conditional merge. Native Git credentials and server permissions remain final.
+  Bitbucket Cloud's API has no expected-source-SHA merge lease: checks remain visible,
+  but merging directs users to Bitbucket instead of silently merging a newer source.
+- A separate merge confirmation reviews the source, destination and selected method;
+  an optional message persists locally. Every write re-fetches the full review proof,
+  checks the same credential identity used for sending and pins the expected source
+  SHA (or Bitbucket Server version). Policy bypass is never requested. These checks do
+  not atomically freeze a destination branch against other server writers.
+- A durable pending-result marker is saved before IPC, scoped to repository/API actor/PR
+  across source updates. Closing/reopening cannot silently retry an uncertain request.
+  Checking a result does not resend it. Queue/async acceptance is distinct from success;
+  no local Git work or branch cleanup follows automatically.
+- Source cleanup is a separate explicit review, available only for a server-confirmed
+  merged PR in the same repository. Fork sources, default/destination branches, changed
+  local/server tips, occupied local branches, ambiguous fetch mappings and separate push
+  destinations are kept. Local Branch Manager protection rules apply to every deletion.
+  GitHub/GitLab source protection is also inspected; native server authorization remains
+  final for all providers. No automatic API branch deletion is bundled with merge.
+- Choose local-only, remote-only or both. Deletion reuses existing comparison/force
+  consent, reference recovery checkpoints, local CAS and remote exact-SHA leases.
+  Squash integration is never treated as full commit reachability. A remote failure
+  after local deletion reports partial completion and retains the deleted SHA checkpoint.
+  No failed cleanup is retried automatically. Files and the index are preserved.
+- Eight additional native scenarios extend the existing worktrees shard (128 total;
+  all prior 120 remain). Headless renderer checks use mocked IPC; Rust loopback contracts
+  separately exercise real provider HTTP requests and Git cleanup/lease failures.
+
+Five planned stages remain after stage 15: Agent Workspace, Workflow Builder,
+Automated PR Workflow, semantic diff/history tools and stacked branches.
