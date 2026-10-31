@@ -15,7 +15,7 @@ cross-cutting work and does not consume a feature stage.
 | 8 | Repository favorites, project groups, workspaces and explicit Sync | Merged (#15) |
 | 9 | Advanced Branch Manager | Merged (#16) |
 | 10 | Reviewed bulk branch cleanup | Merged (#17) |
-| 11 | Worktree Manager | Implemented; review pending |
+| 11 | Worktree Manager | Merged (#19) |
 | 12 | Accounts and forge integrations | Implemented; review pending |
 | 13 | PR Center: browse, create, edit, templates and diffs | Planned |
 | 14 | PR Center: comments, threads and review submissions | Planned |
