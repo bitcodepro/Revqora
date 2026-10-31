@@ -46,6 +46,7 @@ interface Props {
   images?: ImageSides;
   /** API patches have provider-selected context, not local Git diff options. */
   sourceOptions?: boolean;
+  onComment?: (side: "LEFT" | "RIGHT", line: number) => void;
 }
 
 /** Diff options from the settings (context / whole file / whitespace) for backend calls. */
@@ -137,7 +138,7 @@ function renderCode(text: string, toks: Tok[] | undefined, spans: Span[] | undef
 
 type FlatRow = { kind: "hunk"; h: number } | { kind: "line"; h: number; l: number };
 
-export function DiffView({ diff, loading, error, mode, path, badge, actions, canStash = false, onApply, emptyText, root, images, sourceOptions = true }: Props) {
+export function DiffView({ diff, loading, error, mode, path, badge, actions, canStash = false, onApply, emptyText, root, images, sourceOptions = true, onComment }: Props) {
   const s = useSettings();
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [anchor, setAnchor] = useState<{ h: number; l: number } | null>(null);
@@ -380,12 +381,8 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     const hit = hitSet.has(k) ? (curHit && curHit.h === hi && curHit.l === li ? "search-cur" : "search-hit") : "";
     return (
       <div key={k} data-line={k} className={`dl ${cls} ${sel.has(k) ? "sel" : ""} ${selectable ? "selectable" : ""} ${hit}`} style={style}>
-        <span className="ln" onMouseDown={(e) => toggle(hi, li, e.shiftKey)}>
-          {l.oldNo ?? ""}
-        </span>
-        <span className="ln" onMouseDown={(e) => toggle(hi, li, e.shiftKey)}>
-          {l.newNo ?? ""}
-        </span>
+        {onComment && l.oldNo !== null ? <button className="ln review-line" title={`Comment on old line ${l.oldNo}`} aria-label={`Comment on old line ${l.oldNo}`} onClick={()=>onComment("LEFT",l.oldNo!)}>{l.oldNo}</button> : <span className="ln" onMouseDown={e=>toggle(hi,li,e.shiftKey)}>{l.oldNo??""}</span>}
+        {onComment && l.newNo !== null ? <button className="ln review-line" title={`Comment on new line ${l.newNo}`} aria-label={`Comment on new line ${l.newNo}`} onClick={()=>onComment("RIGHT",l.newNo!)}>{l.newNo}</button> : <span className="ln" onMouseDown={e=>toggle(hi,li,e.shiftKey)}>{l.newNo??""}</span>}
         <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
         <span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, hl?.[hi]?.[li], words?.[hi]?.get(li), l.kind)}</span>
       </div>
@@ -554,7 +551,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
             {hunkHeader(h, hi)}
             {!collapsed.has(hi) &&
               (s.diffMode === "split" ? (
-                <SplitHunk hunk={h} hi={hi} toks={hl?.[hi]} words={words?.[hi]} sel={sel} onToggle={toggle} interactive={interactive} hits={hitSet} />
+                <SplitHunk hunk={h} hi={hi} toks={hl?.[hi]} words={words?.[hi]} sel={sel} onToggle={toggle} interactive={interactive} hits={hitSet} onComment={onComment} />
               ) : (
                 h.lines.map((_, li) => lineRow(hi, li))
               ))}
@@ -635,6 +632,7 @@ function SplitHunk({
   onToggle,
   interactive,
   hits,
+  onComment,
 }: {
   hunk: DiffHunk;
   hi: number;
@@ -644,6 +642,7 @@ function SplitHunk({
   onToggle: (h: number, l: number, shift: boolean) => void;
   interactive: boolean;
   hits: Set<string>;
+  onComment?: Props["onComment"];
 }) {
   // Build rows of [left index | null, right index | null].
   const rows: [number | null, number | null][] = [];
@@ -674,9 +673,7 @@ function SplitHunk({
         className={`half ${cls} ${sel.has(k) ? "sel" : ""} ${hits.has(k) ? "search-hit" : ""}`}
         style={sel.has(k) ? { boxShadow: "inset 3px 0 0 var(--accent)" } : undefined}
       >
-        <span className="ln" style={{ cursor: interactive && cls ? "pointer" : undefined }} onMouseDown={(e) => onToggle(hi, idx, e.shiftKey)}>
-          {no ?? ""}
-        </span>
+        {onComment && no !== null ? <button className="ln review-line" title={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} aria-label={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} onClick={()=>onComment(side === "l" ? "LEFT" : "RIGHT",no)}>{no}</button> : <span className="ln" style={{ cursor: interactive && cls ? "pointer" : undefined }} onMouseDown={e=>onToggle(hi,idx,e.shiftKey)}>{no??""}</span>}
         <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
         <span className="code-viewport"><span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, toks?.[idx], words?.get(idx), l.kind)}</span></span>
       </div>

@@ -8,6 +8,8 @@ pub mod diff;
 pub mod extras;
 pub mod forge;
 pub mod forge_accounts;
+#[cfg(test)]
+pub(crate) mod forge_test_http;
 pub mod graph;
 pub mod inspect;
 pub mod layers;
@@ -17,6 +19,7 @@ pub mod more;
 pub mod operations;
 pub mod ops;
 pub mod pr_center;
+pub mod pr_reviews;
 pub mod recovery;
 pub mod refs;
 pub mod repo;

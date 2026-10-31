@@ -26,10 +26,10 @@ fn fail(message: &str) -> GitError {
 fn stale() -> GitError {
     GitError::new("The pull request changed. Refresh it before continuing; your edit was not sent.").kind("stale-operation")
 }
-fn hash(value: impl AsRef<[u8]>) -> String {
+pub(super) fn hash(value: impl AsRef<[u8]>) -> String {
     format!("{:x}", Sha256::digest(value.as_ref()))
 }
-fn text(v: &Value, path: &str) -> String {
+pub(super) fn text(v: &Value, path: &str) -> String {
     v.pointer(path).and_then(Value::as_str).unwrap_or("").into()
 }
 fn oid(s: &str) -> bool {
@@ -43,7 +43,7 @@ fn number(n: u64) -> GitResult<()> {
     }
 }
 
-fn endpoint(f: &ForgeInfo) -> String {
+pub(super) fn endpoint(f: &ForgeInfo) -> String {
     match f.kind.as_str() {
         "github" => format!("/repos/{}/pulls", forge::project_path(&f.project)),
         "gitlab" => format!("/projects/{}/merge_requests", forge::enc(&f.project)),
@@ -256,7 +256,7 @@ fn detail_value(f: &ForgeInfo, v: &Value) -> GitResult<Detail> {
     );
     Ok(Detail { pull, body, updated, base_sha, diff_base_sha, revision, file_count: count })
 }
-fn load_detail(repo: &Path, f: &ForgeInfo, n: u64) -> GitResult<(Detail, Value)> {
+pub(super) fn load_detail(repo: &Path, f: &ForgeInfo, n: u64) -> GitResult<(Detail, Value)> {
     number(n)?;
     let v = forge::request(repo, f, "GET", &item_endpoint(f, n), None)?;
     let d = detail_value(f, &v)?;
@@ -336,7 +336,7 @@ pub fn create(repo: &Path, title: &str, body: &str, head: &str, base: &str, draf
     .into();
     Ok(p)
 }
-fn uncertain(e: GitError) -> GitError {
+pub(super) fn uncertain(e: GitError) -> GitError {
     if matches!(e.kind.as_str(), "forge-network" | "forge-account" | "forge-server") {
         GitError::new("The server may have saved the request, but its result could not be read. Check the PR on the server before retrying.")
             .kind("forge-write-uncertain")

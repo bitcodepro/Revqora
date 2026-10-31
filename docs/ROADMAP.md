@@ -17,8 +17,8 @@ cross-cutting work and does not consume a feature stage.
 | 10 | Reviewed bulk branch cleanup | Merged (#17) |
 | 11 | Worktree Manager | Merged (#19) |
 | 12 | Accounts and forge integrations | Merged (#20) |
-| 13 | PR Center: browse, create, edit, templates and diffs | Implemented; review pending |
-| 14 | PR Center: comments, threads and review submissions | Planned |
+| 13 | PR Center: browse, create, edit, templates and diffs | Merged (#21) |
+| 14 | PR Center: comments, threads and review submissions | Implemented; review pending |
 | 15 | PR Center: CI, server protections, merge and branch cleanup | Planned |
 | 16 | Agent Workspace | Planned |
 | 17 | Workflow Builder | Planned |
@@ -169,3 +169,41 @@ Stages 13–15 expand the PR Center; eight planned stages remain after stage 12.
 
 Stages 14 and 15 add review conversations/submissions, then server checks/protections,
 merge and cleanup. Seven planned stages remain after stage 13.
+
+## Stage 14 — PR discussions and published reviews
+
+- Dedicated Discussions view with pagination, loaded-text search, resolved/unresolved/
+  outdated filters and readable plain-text comments. GitHub PR comments and review
+  history are separate feeds; other providers show their current approval/vote state.
+- Inline comments from old/new line numbers in unified and split diffs. Native code
+  verifies the cached PR snapshot, actual path, side and displayed line before posting.
+  GitHub pins commit_id; GitLab uses base/start/head SHAs. Azure additionally verifies
+  source, target and common commits against the latest iteration and resolves the file's
+  changeTrackingId before attaching a line. Unmappable anchors fail without publishing.
+- Replies, resolve and reopen use a fresh discussion proof and current capabilities.
+  GitHub global thread IDs are checked against repository and PR membership. Long
+  GitHub threads can load their remaining replies; explicit size limits never look like
+  a complete empty conversation. Bitbucket replies are collected from loaded pages.
+- Explicit Comment / Approve / Request Changes submission. GitHub forbids self-review;
+  GitLab approval eligibility comes from its approval API; server authorization remains
+  final for token scopes and policies. Identity checks and writes share one credential,
+  including native Git-helper fallback. Stale PRs/accounts/threads reject before writes.
+- Provider semantics are visible: GitHub can submit summary and vote together. Other
+  providers publish votes separately from comments. Azure Request Changes means waiting
+  for author (vote -5), not rejection. GitLab Request Changes is not exposed by this REST
+  integration; Bitbucket Server voting needs a verified API identity and remains on the
+  server. Unsupported actions are disabled instead of being posted as fake reviews.
+- Portable local drafts are scoped to repository, API identity, PR, source and target.
+  Closing keeps text, success clears that draft, failures retain it. Drafts from earlier
+  source commits require explicit restoration. The bounded store never evicts drafts
+  silently. No review action is sent automatically or retried after an uncertain result.
+- After publication the PR context refreshes before enabling further actions. Review
+  writes are serialized per repository and never stage, commit, fetch or change files.
+  Checks are optimistic where providers have no atomic lease; permissions may still
+  change or a source may move during a server request.
+- Ten additional native scenarios reuse the existing worktrees shard (120 total,
+  retaining the previous 110). Loopback contract tests exercise real Rust HTTP requests
+  for the four managed providers, permission/identity failures, stale and uncertain
+  writes, exact anchors and unchanged Git HEAD/index/working files.
+
+Stage 15 adds CI/protection-aware merging and branch cleanup. Six stages remain after 14.
