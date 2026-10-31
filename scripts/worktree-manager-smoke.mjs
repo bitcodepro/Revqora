@@ -61,8 +61,15 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
       await page.getByRole("button",{name:"Close worktree manager",exact:true}).click();await page.getByRole("button",{name:"Open branch manager",exact:true}).click();await page.waitForSelector(".branch-manager");
       await page.evaluate(async()=>{window.__wmOpenRelease();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
       await page.locator(".topbar .repo-current > b").filter({hasText:"wm-existing"}).waitFor();
-      if(!await page.locator(".branch-manager").isVisible())throw new Error("A delayed worktree open dismissed the newer Branch Manager");
+      // Existing store.open activates the new repository. Overlays render only
+      // for their repository: return to the original tab to verify retention,
+      // rather than mistaking that visibility filter for unconditional dismissal.
+      await page.evaluate(p=>window.__TAURI_INTERNALS__.invoke("plugin:event|emit",{event:"open-paths",payload:[p]}),root);
+      await page.locator(".topbar .repo-current > b").filter({hasText:"stage11-main"}).waitFor();
+      await page.locator(".branch-manager").waitFor({state:"visible"});
       await page.getByRole("button",{name:"Close branch manager",exact:true}).click();
+      await page.evaluate(p=>window.__TAURI_INTERNALS__.invoke("plugin:event|emit",{event:"open-paths",payload:[p]}),p);
+      await page.locator(".topbar .repo-current > b").filter({hasText:"wm-existing"}).waitFor();
     }finally{await page.evaluate(()=>{window.__wmOpenRelease?.();window.fetch=window.__wmOpenFetch;delete window.__wmOpenRelease;delete window.__wmOpenFetch;});}
     await open();await select(root);
     if(!await page.getByRole("button",{name:"Review removal…",exact:true}).isDisabled())throw new Error("Main worktree removal enabled from a linked worktree");
