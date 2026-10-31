@@ -223,7 +223,8 @@ fn execute(root: &Path, command: &str, timeout: Duration, job: &Arc<Job>) -> Git
     })();
     tree.terminate();
     let _ = child.wait();
-    thread::sleep(Duration::from_millis(60));
+    // Producers have stopped, but a reader may not have been scheduled yet.
+    // Ask it to drain queued pipe bytes rather than cutting it off after a sleep.
     stop.store(true, Ordering::Release);
     let _ = out.join();
     let _ = err.join();
@@ -263,10 +264,20 @@ impl<T: Read + std::os::fd::AsRawFd + Send + 'static> Pipe for T {}
 fn reader(mut pipe: impl Pipe, job: Arc<Job>, stderr: bool, stop: Arc<AtomicBool>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut buf = [0; 8192];
-        while !stop.load(Ordering::Acquire) {
+        let mut drained = 0;
+        loop {
+            let stopping = stop.load(Ordering::Acquire);
+            // Escaped descendants must not keep a finished check alive by writing
+            // forever. This still preserves every byte within the display limit.
+            if stopping && drained > OUTPUT_LIMIT {
+                break;
+            }
             match available(&pipe) {
                 Ok(true) => {}
                 Ok(false) => {
+                    if stopping {
+                        break;
+                    }
                     thread::sleep(Duration::from_millis(15));
                     continue;
                 }
@@ -275,6 +286,9 @@ fn reader(mut pipe: impl Pipe, job: Arc<Job>, stderr: bool, stop: Arc<AtomicBool
             match pipe.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    if stopping {
+                        drained += n;
+                    }
                     let kept = {
                         let mut output = job.output.lock();
                         let dest = if stderr { &mut output.1 } else { &mut output.0 };
@@ -286,7 +300,13 @@ fn reader(mut pipe: impl Pipe, job: Arc<Job>, stderr: bool, stop: Arc<AtomicBool
                         job.report.lock().truncated = true;
                     }
                 }
-                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => thread::sleep(Duration::from_millis(15)),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stopping {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(15));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
         }
@@ -401,5 +421,59 @@ mod process_tree {
             }
             Ok((child, tree))
         }
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+    #[test]
+    fn readers_scheduled_after_process_exit_still_capture_buffered_output() {
+        #[cfg(windows)]
+        let mut command = {
+            use std::os::windows::process::CommandExt;
+            let mut c = Command::new("cmd.exe");
+            c.creation_flags(0x08000000);
+            c.args(["/D", "/C", "echo buffered-stdout && echo buffered-stderr >&2"]);
+            c
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut c = Command::new("/bin/sh");
+            c.args(["-c", "printf buffered-stdout; printf buffered-stderr >&2"]);
+            c
+        };
+        let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        assert!(child.wait().unwrap().success());
+        let job = Arc::new(Job {
+            report: Mutex::new(Report {
+                id: String::new(),
+                repository_root: String::new(),
+                command: String::new(),
+                phase: "running".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                truncated: false,
+                exit_code: None,
+                elapsed_ms: 0,
+                before_state: None,
+                after_state: None,
+                error: None,
+            }),
+            output: Mutex::new((vec![], vec![])),
+            cancel: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+            started: Instant::now(),
+        });
+        // Deterministically emulate a scheduler that runs the worker only after
+        // execute has reaped the process and signalled its readers to finish.
+        let stop = Arc::new(AtomicBool::new(true));
+        let out = reader(child.stdout.take().unwrap(), job.clone(), false, stop.clone());
+        let err = reader(child.stderr.take().unwrap(), job.clone(), true, stop);
+        out.join().unwrap();
+        err.join().unwrap();
+        let output = job.output.lock();
+        assert!(String::from_utf8_lossy(&output.0).contains("buffered-stdout"));
+        assert!(String::from_utf8_lossy(&output.1).contains("buffered-stderr"));
     }
 }
