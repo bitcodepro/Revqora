@@ -392,20 +392,32 @@ fn create_expected_refs(
                 Some(value) => Some(value.to_owned()),
                 None => status::status(root)?.state_token,
             };
-            create_locked(root, command, label, workspace, ignored, observed.as_deref(), references)
+            create_locked(root, command, label, workspace, ignored, observed.as_deref(), Capture { references, paths: &[] })
         },
     )
 }
 
-fn create_locked(
-    root: &Path,
-    command: &str,
-    label: &str,
-    workspace: bool,
-    ignored: bool,
-    expected: Option<&str>,
-    references: &[SavedRef],
-) -> GitResult<Summary> {
+struct Capture<'a> {
+    references: &'a [SavedRef],
+    paths: &'a [String],
+}
+
+/// Complete, bounded workspace capture for worktree removal, including files
+/// hidden by assume-unchanged/skip-worktree and ordinary clean tracked files.
+pub fn complete_workspace(root: &Path, command: &str, label: &str, expected: &str, paths: &[String]) -> GitResult<Summary> {
+    crate::journal::suspend(|| {
+        operations::access(root, true, |_, _| {}, || create_locked(root, command, label, true, true, Some(expected), Capture { references: &[], paths }))
+    })
+    .map_err(|e| {
+        if e.kind == "stale-operation" {
+            e
+        } else {
+            fail(format!("Complete recovery checkpoint could not be saved: {}. The worktree was kept.", e.message)).kind("checkpoint-failed")
+        }
+    })
+}
+
+fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignored: bool, expected: Option<&str>, capture: Capture<'_>) -> GitResult<Summary> {
     // Capture is a mutation: pinning objects must never occur in a read path.
     let _lock = lock(root)?;
     let root = fs::canonicalize(repo::discover(root)?)?;
@@ -465,7 +477,7 @@ fn create_locked(
         sparse_cone: false,
         sparse_patterns: None,
     };
-    for reference in references {
+    for reference in capture.references {
         if !oid(&reference.oid) || !runner::exec(&root, ["cat-file", "-e", &format!("{}^{{commit}}", reference.oid)])?.ok() {
             return Err(fail("A reviewed recovery reference is unavailable."));
         }
@@ -500,7 +512,7 @@ fn create_locked(
         if cp.sparse && gd.join("info/sparse-checkout").is_file() {
             cp.sparse_patterns = Some(fs::read_to_string(gd.join("info/sparse-checkout"))?);
         }
-        let mut paths = BTreeSet::new();
+        let mut paths: BTreeSet<String> = capture.paths.iter().cloned().collect();
         for file in &before.files {
             paths.insert(file.path.clone());
             if let Some(old) = &file.orig_path {

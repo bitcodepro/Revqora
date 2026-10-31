@@ -98,6 +98,8 @@ pub struct Worktree {
     pub bare: bool,
     pub locked: bool,
     pub prunable: bool,
+    pub lock_reason: Option<String>,
+    pub prune_reason: Option<String>,
     pub is_current: bool,
 }
 
@@ -116,8 +118,18 @@ pub fn parse_worktrees(raw: &str, current: &Path) -> Vec<Worktree> {
     raw.split(&format!("{separator}{separator}"))
         .filter(|b| !b.trim().is_empty())
         .filter_map(|block| {
-            let mut w =
-                Worktree { path: String::new(), head: None, branch: None, detached: false, bare: false, locked: false, prunable: false, is_current: false };
+            let mut w = Worktree {
+                path: String::new(),
+                head: None,
+                branch: None,
+                detached: false,
+                bare: false,
+                locked: false,
+                prunable: false,
+                lock_reason: None,
+                prune_reason: None,
+                is_current: false,
+            };
             for l in block.split(separator) {
                 if let Some(p) = l.strip_prefix("worktree ") {
                     w.path = repo::normalize(PathBuf::from(p)).to_string_lossy().into_owned();
@@ -125,15 +137,17 @@ pub fn parse_worktrees(raw: &str, current: &Path) -> Vec<Worktree> {
                 } else if let Some(h) = l.strip_prefix("HEAD ") {
                     w.head = Some(h.to_string());
                 } else if let Some(b) = l.strip_prefix("branch ") {
-                    w.branch = Some(b.trim_start_matches("refs/heads/").to_string());
+                    w.branch = Some(b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
                 } else if l == "detached" {
                     w.detached = true;
                 } else if l == "bare" {
                     w.bare = true;
                 } else if l.starts_with("locked") {
                     w.locked = true;
+                    w.lock_reason = l.strip_prefix("locked ").map(str::to_owned);
                 } else if l.starts_with("prunable") {
                     w.prunable = true;
+                    w.prune_reason = l.strip_prefix("prunable ").map(str::to_owned);
                 }
             }
             (!w.path.is_empty()).then_some(w)

@@ -46,7 +46,7 @@ class WorkflowTests(unittest.TestCase):
         smoke = jobs["windows-smoke"]
         self.assertEqual(smoke["needs"], "windows-native-build")
         self.assertEqual(smoke["strategy"]["fail-fast"], "false")
-        self.assertEqual(set(smoke["strategy"]["matrix"]["suite"]), {"core", "workspace", "cleanup"})
+        self.assertEqual(set(smoke["strategy"]["matrix"]["suite"]), {"core", "workspace", "cleanup", "worktrees"})
         self.assertNotIn("npm run verify", str(smoke))
         self.assertIn("SHA-256 mismatch", str(smoke))
         self.assertIn("needs.windows-native-build.outputs.sha256", str(smoke))

@@ -1,3 +1,4 @@
+import { worktreeManagerSmoke } from "./worktree-manager-smoke.mjs";
 import { smokeTimings, assertSmokeCoverage } from "./ci-timing.mjs";
 import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
@@ -705,8 +706,13 @@ try {
     await page.fill(".palette input", "New worktree");
     await page.keyboard.press("Enter");
     await page.waitForSelector(".modal:has-text('New worktree')");
-    await page.click(".modal button:has-text('Create worktree')");
+    const sourceHead = git("rev-parse", "HEAD"), sourceIndex = fs.readFileSync(path.join(repo, ".git", "index")), sourceFiles = git("status", "--porcelain");
+    await page.getByRole("textbox", { name: "Worktree folder", exact: true }).fill(path.join(work,"env","palette-worktree"));
+    await page.getByRole("button", { name: "Review creation", exact: true }).click();
+    await page.waitForSelector('[data-worktree-review="create"]');
+    await page.getByRole("button", { name: "Create worktree", exact: true }).click();
     await until(() => git("worktree", "list").split("\n").length === 2, "worktree not created");
+    if (git("rev-parse","HEAD") !== sourceHead || git("status","--porcelain") !== sourceFiles || !sourceIndex.equals(fs.readFileSync(path.join(repo,".git","index")))) throw new Error("creating another worktree changed source files, branch or staging");
     await page.waitForSelector(".modal", { state: "detached" });
   });
 
@@ -1893,6 +1899,7 @@ try {
     await branchManagerSmoke({ page, check, shot, work });
     await branchManagerProtectionSmoke({ page, check, shot, work });
     await branchCleanupSmoke({ page, check, shot, work });
+    await worktreeManagerSmoke({ page, check, shot, work });
   }
   assertSmokeCoverage(suite, step);
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));

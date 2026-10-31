@@ -54,6 +54,7 @@ interface Dialog {
 
 export type Overlay =
   | { kind: "branches"; root: string }
+  | { kind: "worktrees"; root: string }
   | { kind: "blame"; root: string; path: string; rev: string | null; line?: number }
   | { kind: "compare"; root: string; from: string; to: string; direct?: boolean }
   | { kind: "rebase"; root: string; base: string | null; oldest: string }
@@ -68,6 +69,7 @@ interface UiState {
   repositoryOperations: RepositoryOperation[];
   paletteOpen: boolean;
   overlay: Overlay | null;
+  overlayRevision: number;
   repositoryOverview: boolean;
   toast: (t: Omit<Toast, "id">, ttl?: number) => void;
   dismissToast: (id: number) => void;
@@ -87,6 +89,7 @@ export const useUi = create<UiState>()((set, get) => ({
   repositoryOperations: [],
   paletteOpen: false,
   overlay: null,
+  overlayRevision: 0,
   repositoryOverview: false,
   toast: (t, ttl) => {
     const id = ++toastId;
@@ -163,9 +166,22 @@ export async function copyText(text: string, what = "Copied") {
 }
 
 export function openOverlay(o: Overlay) {
-  useUi.setState({ overlay: o });
+  useUi.setState(s => ({ overlay: o, overlayRevision: s.overlayRevision + 1 }));
 }
 
 export function closeOverlay() {
-  useUi.setState({ overlay: null });
+  useUi.setState(s => ({ overlay: null, overlayRevision: s.overlayRevision + 1 }));
+}
+
+export interface OverlayOwner { overlay: Overlay; revision: number }
+
+/** Capture the originating navigation, including close/reopen of the same object. */
+export function captureOverlay(kind: Overlay["kind"], root: string): OverlayOwner | undefined {
+  const { overlay, overlayRevision } = useUi.getState();
+  return overlay?.kind === kind && overlay.root === root ? { overlay, revision: overlayRevision } : undefined;
+}
+
+export function closeOwnedOverlay(owner: OverlayOwner) {
+  useUi.setState(s => s.overlay === owner.overlay && s.overlayRevision === owner.revision
+    ? { overlay: null, overlayRevision: s.overlayRevision + 1 } : s);
 }

@@ -33,3 +33,5 @@ pub mod validation;
 
 pub mod branch_manager;
 pub mod history;
+
+pub mod worktree_manager;

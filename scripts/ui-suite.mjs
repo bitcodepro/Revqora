@@ -1,3 +1,4 @@
+import { worktreeManagerSmoke } from "./worktree-manager-smoke.mjs";
 // Independent tail suites use a fresh process/profile/repository set on each CI runner.
 import fs from "node:fs";
 import path from "node:path";
@@ -9,7 +10,7 @@ import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
 
 const arg=name=>process.argv[process.argv.indexOf(name)+1];
 const suite=process.env.REVQORA_SMOKE_SUITE;
-if(!["workspace","cleanup"].includes(suite)||!process.argv.includes("--exe"))throw new Error("Set REVQORA_SMOKE_SUITE=workspace|cleanup and pass --exe");
+if(!["workspace","cleanup","worktrees"].includes(suite)||!process.argv.includes("--exe"))throw new Error("Set REVQORA_SMOKE_SUITE=workspace|cleanup|worktrees and pass --exe");
 const work=createProfile(`revqora-${suite}-`),out=process.env.REVQORA_SMOKE_OUT||path.join(work,"shots");fs.mkdirSync(out,{recursive:true});
 const errors=[];let app,step=SMOKE_SUITES[suite].offset,completed=0;
 const shot=name=>smokeTimings.measure("activity","screenshots",()=>app.page.screenshot({path:path.join(out,`${name}.png`)}));
@@ -33,7 +34,8 @@ try{
     await repositoryWorkspaceSmoke({page,check,shot,work});
     await branchManagerSmoke({page,check,shot,work});
     await branchManagerProtectionSmoke({page,check,shot,work});
-  }else await branchCleanupSmoke({page,check,shot,work});
+  }else if(suite==="cleanup") await branchCleanupSmoke({page,check,shot,work});
+  else await worktreeManagerSmoke({page,check,shot,work});
   assertSmokeCoverage(suite,completed);
   if(errors.length)throw new Error(errors.join(" | "));
 }catch(e){console.error(e);process.exitCode=1;await app?.page.screenshot({path:path.join(out,"failure.png")}).catch(()=>{});}
