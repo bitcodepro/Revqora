@@ -245,7 +245,8 @@ fn bb_thread(v: &Value) -> Thread {
         resolved: Some(v.get("resolution").is_some_and(|v| !v.is_null())),
         can_reply: !boolean(v, "/deleted"),
         can_resolve: !boolean(v, "/deleted"),
-        complete: true,
+        // The comment endpoint returns only the root, never the full reply collection.
+        complete: false,
         comments: vec![bb_comment(v)],
     }
 }

@@ -5,6 +5,20 @@ use super::super::{
 };
 use super::*;
 #[test]
+fn bitbucket_root_reads_are_explicitly_partial_and_preserve_fresh_resolution() {
+    let mut v = discussion("bitbucket");
+    let root = bb_thread(&v);
+    assert!(!root.complete);
+    assert_eq!(root.comments.len(), 1);
+    v["resolution"] = json!({"type":"comment_resolution"});
+    v["content"]["raw"] = json!("Edited root");
+    let refreshed = bb_thread(&v);
+    assert!(!refreshed.complete);
+    assert_eq!(refreshed.resolved, Some(true));
+    assert_eq!(refreshed.comments[0].body, "Edited root");
+    assert_ne!(root.revision, refreshed.revision);
+}
+#[test]
 fn github_comment_ids_preserve_64_bit_ids_and_gitlab_marks_older_source_discussions() {
     let mut github = discussion("github");
     github["comments"]["nodes"][0]["fullDatabaseId"] = json!("6543478096");
