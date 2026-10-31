@@ -1,4 +1,5 @@
 import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
+import {prCenterSmoke} from "./pr-center-smoke.mjs";
 import { worktreeManagerSmoke } from "./worktree-manager-smoke.mjs";
 // Independent tail suites use a fresh process/profile/repository set on each CI runner.
 import fs from "node:fs";
@@ -37,7 +38,7 @@ try{
     await branchManagerSmoke({page,check,shot,work});
     await branchManagerProtectionSmoke({page,check,shot,work});
   }else if(suite==="cleanup") await branchCleanupSmoke({page,check,shot,work});
-  else {await worktreeManagerSmoke({page,check,shot,work});await forgeAccountsSmoke({page,check,shot,work,profile:path.join(work,"profile"),restart});}
+  else {await worktreeManagerSmoke({page,check,shot,work});await forgeAccountsSmoke({page,check,shot,work,profile:path.join(work,"profile"),restart});await prCenterSmoke({page:app.page,check,shot,work});}
   assertSmokeCoverage(suite,completed);
   if(errors.length)throw new Error(errors.join(" | "));
 }catch(e){console.error(e);process.exitCode=1;await app?.page.screenshot({path:path.join(out,"failure.png")}).catch(()=>{});}

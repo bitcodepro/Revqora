@@ -89,7 +89,11 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
   const [forgeKind, setForgeKind] = useState<string | null>(null);
   const remotesKey = tab.refs?.remotes.map((r) => r.fetchUrl).join("|") ?? "";
   useEffect(() => {
-    api.forgeInfo(root).then((f) => setForgeKind(f?.kind ?? null), () => setForgeKind(null));
+    let generation = 0;
+    const refresh = () => { const id = ++generation; api.forgeInfo(root).then(f => { if (id === generation) setForgeKind(f?.kind ?? null); }, () => { if (id === generation) setForgeKind(null); }); };
+    refresh();
+    window.addEventListener("revqora:forge-accounts", refresh);
+    return () => { generation++; window.removeEventListener("revqora:forge-accounts", refresh); };
   }, [root, remotesKey]);
   const conflicts = tab.status?.conflictCount ?? 0;
 

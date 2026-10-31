@@ -16,8 +16,8 @@ cross-cutting work and does not consume a feature stage.
 | 9 | Advanced Branch Manager | Merged (#16) |
 | 10 | Reviewed bulk branch cleanup | Merged (#17) |
 | 11 | Worktree Manager | Merged (#19) |
-| 12 | Accounts and forge integrations | Implemented; review pending |
-| 13 | PR Center: browse, create, edit, templates and diffs | Planned |
+| 12 | Accounts and forge integrations | Merged (#20) |
+| 13 | PR Center: browse, create, edit, templates and diffs | Implemented; review pending |
 | 14 | PR Center: comments, threads and review submissions | Planned |
 | 15 | PR Center: CI, server protections, merge and branch cleanup | Planned |
 | 16 | Agent Workspace | Planned |
@@ -133,3 +133,36 @@ Bulk cleanup remains stage 10; forge-side protections and PR status are later st
   failed identity replacement, redirect refusal and unchanged files/index/HEAD.
 
 Stages 13–15 expand the PR Center; eight planned stages remain after stage 12.
+
+## Stage 13 — Pull Request Center
+
+- Paged request list with Open / Closed / Merged / All states, loaded-page search,
+  direct opening by number, keyboard navigation and virtualized rows. The selected
+  API remote/account is visible; switching identities discards obsolete UI responses.
+- Separate description and Files views. Long descriptions expand into a scrollable
+  reader and remain plain text; provider HTML cannot run or load tracking images.
+  Request and file panels collapse/resize with per-repository persistent preferences.
+- Create a normal or draft PR from an already published branch; no implicit Push.
+  Edit title, multiline description and target branch using a fresh server snapshot.
+  Concurrent edits/changed API selections reject before sending a metadata write.
+  These are optimistic checks, not atomic multi-provider transactions. Bitbucket
+  Server additionally uses its server PR version. Permissions remain server-enforced.
+- Committed local templates from provider-specific locations. Linked, binary and
+  oversized templates are excluded; replacement of a nonempty description needs
+  confirmation. Uncommitted template text never silently becomes a PR description.
+- Read-only unified/split diffs with line wrapping and horizontal scroll, rename,
+  binary and mode-only changes. GitHub/GitLab/Bitbucket raw patches are bounded and
+  cached in memory against observed commit IDs; incomplete hunks/server limits are
+  reported. Azure compares immutable merge-base/source blobs, using portable temp
+  files without touching HEAD, staging or working files. Oversized previews explain
+  the limit and can be opened on the server or reviewed in a local checkout.
+- No automatic API write retries. An unreadable write response requires checking
+  the server before a manual retry; partial field application stays visible in the
+  editor. Browser actions use canonical provider URLs and HTTP(S)-only check links.
+- Eight native scenarios extend the existing worktrees runner (110 total, all
+  previous 102 retained). Real loopback HTTP contracts cover the four managed
+  providers; legacy Bitbucket Server remains on Git credentials. Live public-service
+  credentials are not required by automated tests.
+
+Stages 14 and 15 add review conversations/submissions, then server checks/protections,
+merge and cleanup. Seven planned stages remain after stage 13.

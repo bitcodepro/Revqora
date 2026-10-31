@@ -44,6 +44,8 @@ interface Props {
   /** Repository root and blob locations used to preview binary images. */
   root?: string;
   images?: ImageSides;
+  /** API patches have provider-selected context, not local Git diff options. */
+  sourceOptions?: boolean;
 }
 
 /** Diff options from the settings (context / whole file / whitespace) for backend calls. */
@@ -135,7 +137,7 @@ function renderCode(text: string, toks: Tok[] | undefined, spans: Span[] | undef
 
 type FlatRow = { kind: "hunk"; h: number } | { kind: "line"; h: number; l: number };
 
-export function DiffView({ diff, loading, error, mode, path, badge, actions, canStash = false, onApply, emptyText, root, images }: Props) {
+export function DiffView({ diff, loading, error, mode, path, badge, actions, canStash = false, onApply, emptyText, root, images, sourceOptions = true }: Props) {
   const s = useSettings();
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [anchor, setAnchor] = useState<{ h: number; l: number } | null>(null);
@@ -441,12 +443,13 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
           <Columns2 size={13} />
         </button>
       </div>
-      <button className={`icon-btn ${s.diffFullFile ? "active" : ""}`} title="Show the whole file" onClick={() => s.set({ diffFullFile: !s.diffFullFile })}>
+      {sourceOptions && <><button className={`icon-btn ${s.diffFullFile ? "active" : ""}`} title="Show the whole file" onClick={() => s.set({ diffFullFile: !s.diffFullFile })}>
         <Maximize2 size={14} />
       </button>
       <button className={`icon-btn ${s.ignoreWhitespace ? "active" : ""}`} title="Ignore whitespace" onClick={() => s.set({ ignoreWhitespace: !s.ignoreWhitespace })}>
         <Space size={15} />
       </button>
+      </>}
       <button className={`btn sm diff-wrap ${s.wrapDiff ? "active" : ""}`} title="Wrap lines" aria-pressed={s.wrapDiff} onClick={() => s.set({ wrapDiff: !s.wrapDiff })}>
         <WrapText size={15} /> Wrap lines
       </button>
@@ -527,7 +530,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       </div>
     );
   } else if (diff.hunks.length === 0) {
-    body = <div className="empty">{diff.oldMode !== diff.newMode ? "Only the file mode changed." : s.ignoreWhitespace ? "Only whitespace changed." : "No textual changes."}</div>;
+    body = <div className="empty">{diff.oldMode !== diff.newMode ? "Only the file mode changed." : sourceOptions && s.ignoreWhitespace ? "Only whitespace changed." : "No textual changes."}</div>;
   } else if (virtual) {
     // Very long diffs: fixed-height rows, only the visible window is rendered.
     const first = Math.max(0, Math.floor(scroll / rowH) - 30);

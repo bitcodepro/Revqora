@@ -573,6 +573,28 @@ fn verify(server: &Server, c: &Credential) -> GitResult<Identity> {
     Ok(Identity { login, user_id: id, name })
 }
 pub fn request_json(kind: &str, base: &str, c: &Credential, method: &str, path: &str, body: Option<Value>) -> GitResult<Value> {
+    let response = request_content(kind, base, c, method, path, body, "application/json", LIMIT, false)?;
+    serde_json::from_slice(&response.bytes).map_err(|_| fail("The server returned an invalid JSON response."))
+}
+
+pub(super) struct ApiContent {
+    pub status: u16,
+    pub location: Option<String>,
+    pub bytes: Zeroizing<Vec<u8>>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn request_content(
+    kind: &str,
+    base: &str,
+    c: &Credential,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    accept: &str,
+    limit: u64,
+    redirect_response: bool,
+) -> GitResult<ApiContent> {
     if !path.starts_with('/') || path.starts_with("//") || path.contains(['\r', '\n', '\\']) {
         return Err(fail("Invalid API request path."));
     }
@@ -595,14 +617,15 @@ pub fn request_json(kind: &str, base: &str, c: &Credential, method: &str, path: 
         req = req.set("Authorization", &auth);
     }
     if kind == "github" {
-        req = req.set("Accept", "application/vnd.github+json").set("X-GitHub-Api-Version", "2022-11-28");
+        req = req.set("X-GitHub-Api-Version", "2022-11-28");
     }
+    req = req.set("Accept", if kind == "github" && accept == "application/json" { "application/vnd.github+json" } else { accept });
     let response = match body {
         Some(v) => req.send_json(v),
         None => req.call(),
     };
     let response = match response {
-        Ok(r) if (200..300).contains(&r.status()) => r,
+        Ok(r) if (200..300).contains(&r.status()) || redirect_response && matches!(r.status(), 301 | 302 | 303 | 307 | 308) => r,
         Ok(r) => return Err(fail(format!("API returned {}. Redirects are not followed with credentials.", r.status()))),
         Err(ureq::Error::Status(code, r))
             if code == 429
@@ -617,16 +640,27 @@ pub fn request_json(kind: &str, base: &str, c: &Credential, method: &str, path: 
                 429 => "API rate limit reached. Wait and try again.".into(),
                 _ => format!("API request failed with HTTP {code}."),
             })
-            .kind(if code == 401 || code == 403 { "auth" } else { "forge-http" }))
+            .kind(if code == 401 || code == 403 {
+                "auth"
+            } else if code >= 500 || code == 408 {
+                "forge-server"
+            } else {
+                "forge-http"
+            }))
         }
         Err(_) => return Err(fail("API connection failed. Check the server URL, network, proxy and TLS certificate.").kind("forge-network")),
     };
+    let status = response.status();
+    let location = response.header("location").map(str::to_owned);
     let mut bytes = Zeroizing::new(Vec::new());
-    response.into_reader().take(LIMIT + 1).read_to_end(&mut bytes).map_err(|_| fail("Could not read the API response."))?;
-    if bytes.len() as u64 > LIMIT {
-        return Err(fail("API response exceeds 4 MiB."));
+    if (300..400).contains(&status) {
+        return Ok(ApiContent { status, location, bytes });
     }
-    serde_json::from_slice(&bytes).map_err(|_| fail("The server returned an invalid JSON response."))
+    response.into_reader().take(limit + 1).read_to_end(&mut bytes).map_err(|_| fail("Could not read the API response."))?;
+    if bytes.len() as u64 > limit {
+        return Err(fail("API response exceeds the display size limit."));
+    }
+    Ok(ApiContent { status, location, bytes })
 }
 
 static MANAGER: OnceLock<Manager> = OnceLock::new();
