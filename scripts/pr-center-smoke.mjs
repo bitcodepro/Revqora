@@ -1,3 +1,4 @@
+import {createPrReviewFixture,prReviewSmoke} from "./pr-review-smoke.mjs";
 // The native UI and Rust HTTP client talk only to this loopback forge.
 import http from "node:http";
 import fs from "node:fs";
@@ -16,11 +17,12 @@ export async function prCenterSmoke({page,check,shot,work}) {
     "diff --git a/long.txt b/long.txt\nnew file mode 100644\n--- /dev/null\n+++ b/long.txt\n@@ -0,0 +1 @@\n+"+"long-line-".repeat(120)+"\n"+
     "diff --git a/asset.bin b/asset.bin\nBinary files a/asset.bin and b/asset.bin differ\n"+
     "diff --git a/mode.txt b/mode.txt\nold mode 100644\nnew mode 100755\n";
-  let hold=null;
+  let hold=null;const reviewFixture=createPrReviewFixture({pulls,a});
   const server=http.createServer(async(req,res)=>{
     let body="";for await(const chunk of req)body+=chunk;const url=new URL(req.url,"http://fixture"),entry={method:req.method,path:req.url,body:body?JSON.parse(body):null};requests.push(entry);
     if(req.headers.authorization!==`Bearer ${token}`){res.writeHead(401);res.end("{}");return;}
     const send=data=>{res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify(data));};
+    if(reviewFixture.handle(req,res,url,entry))return;
     if(url.pathname==="/api/v3/user")return send({id:13,login:"pr-tester",name:"PR Tester"});
     if(url.pathname.includes("check-runs"))return send({check_runs:[]});if(url.pathname.endsWith("/status"))return send({statuses:[]});
     const n=Number(url.pathname.match(/\/pulls\/(\d+)$/)?.[1]);
@@ -74,5 +76,6 @@ export async function prCenterSmoke({page,check,shot,work}) {
       await page.getByRole("button",{name:"Hide PR files",exact:true}).click();await page.getByRole("button",{name:"Hide pull request list",exact:true}).click();await page.getByRole("button",{name:"History",exact:true}).click();await page.getByRole("button",{name:"Pull requests",exact:true}).click();await page.waitForSelector(".pr-center.pr-list-hidden .pr-files.pr-files-hidden");await page.getByRole("button",{name:"Show pull request list",exact:true}).click();await page.getByRole("button",{name:"Show files",exact:true}).click();await page.waitForFunction(()=>parseFloat(document.querySelector(".pr-files").style.getPropertyValue("--pr-files-width"))>220);
       if(git("rev-parse","HEAD")!==head||!index.equals(fs.readFileSync(path.join(root,".git/index")))||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="Keep this local work\n"||requests.some(r=>/info\/refs|git-receive-pack/.test(r.path)))throw Error("PR Center modified or pushed working files/index/HEAD");await shot("108-pr-panels");
     });
+    await prReviewSmoke({page,check,shot,root,invoke,pulls,requests,fixture:reviewFixture,a,git,index,head});
   } finally {server.closeAllConnections();await new Promise(r=>server.close(r));}
 }

@@ -313,6 +313,23 @@
 .pr-diff>.callout {margin:8px;overflow-wrap:anywhere}
 .pr-diff>.pr-notice {color:var(--text);border-bottom:1px solid var(--border)}
 .pr-diff>.pr-notice>b {display:block;margin-bottom:4px}
+.pr-reviews {display:flex;flex:1;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.review-toolbar {display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--border)}
+.review-toolbar>.input {flex:1;min-width:150px}.review-toolbar>.select {max-width:180px}
+.review-thread-list {overflow:auto;padding:14px;min-height:0;display:flex;flex-direction:column;gap:12px}
+.review-thread {border:1px solid var(--border);border-radius:8px;flex-shrink:0;min-width:0;background:var(--bg)}
+.review-thread>header {display:flex;align-items:center;gap:8px;padding:10px 12px;min-width:0;flex-wrap:wrap}
+.review-thread>header>b {min-width:100px;flex:1}.review-comments {padding:0 14px 12px}
+.review-comment {border-top:1px solid var(--border-soft);padding:12px 0;min-width:0}
+.review-comment>div {display:flex;align-items:center;gap:8px;flex-wrap:wrap}.review-comment small {color:var(--text-faint);margin-left:auto}
+.review-comment p,.review-context p {white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65;margin:8px 0 0}
+.review-comments>footer {display:flex;gap:8px;margin-top:8px}
+.review-composer {display:flex;flex-direction:column;gap:12px;min-width:0}.review-composer .textarea {width:100%;min-height:180px;max-height:40vh;resize:vertical;line-height:1.6}
+.review-context {padding:12px;background:var(--bg-hover);border:1px solid var(--border);border-radius:6px;max-height:200px;overflow:auto}
+.review-context>div {padding:8px 0;border-bottom:1px solid var(--border-soft)}.review-context>small {display:block;color:var(--text-faint);margin-top:6px}
+.review-choices {display:flex;gap:10px;flex-wrap:wrap}.review-permissions {line-height:1.6;overflow-wrap:anywhere}
+.diff .review-line {font:inherit;background:transparent;border:0;border-radius:0;cursor:crosshair;color:var(--text-faint);padding-top:0;padding-bottom:0}
+.diff .review-line:hover,.diff .review-line:focus-visible {background:var(--accent);color:var(--bg);outline:1px solid var(--accent)}
 .pr-editor {border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:13px;min-width:0}
 .pr-editor .input,.pr-editor .textarea {width:100%;min-width:0}
 .pr-editor .textarea {min-height:180px;max-height:45vh;line-height:1.6;resize:vertical;white-space:pre-wrap;overflow-wrap:break-word}

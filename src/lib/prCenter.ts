@@ -1,11 +1,11 @@
 import type { PullRequest, PrState } from "./types";
 import { repositoryKey } from "./repositoryLibrary";
-export interface PrPreferences { state: PrState; section: "overview" | "files"; listOpen: boolean; filesOpen: boolean; listWidth: number; filesWidth: number }
+export interface PrPreferences { state: PrState; section: "overview" | "files" | "discussions"; listOpen: boolean; filesOpen: boolean; listWidth: number; filesWidth: number }
 export const prPreferencesKey = (root: string) => `revqora:pr-center:${repositoryKey(root)}`;
 export function restorePrPreferences(value: unknown): PrPreferences {
   const p = value && typeof value === "object" && !Array.isArray(value) ? value as Partial<PrPreferences> : {};
   const width = (n: unknown, min: number, max: number, fallback: number) => typeof n === "number" && Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
-  return { state: ["open", "closed", "merged", "all"].includes(p.state ?? "") ? p.state! : "open", section: p.section === "files" ? "files" : "overview", listOpen: typeof p.listOpen === "boolean" ? p.listOpen : true, filesOpen: typeof p.filesOpen === "boolean" ? p.filesOpen : true, listWidth: width(p.listWidth, 200, 520, 280), filesWidth: width(p.filesWidth, 160, 480, 220) };
+  return { state: ["open", "closed", "merged", "all"].includes(p.state ?? "") ? p.state! : "open", section: p.section === "files" || p.section === "discussions" ? p.section : "overview", listOpen: typeof p.listOpen === "boolean" ? p.listOpen : true, filesOpen: typeof p.filesOpen === "boolean" ? p.filesOpen : true, listWidth: width(p.listWidth, 200, 520, 280), filesWidth: width(p.filesWidth, 160, 480, 220) };
 }
 export function loadPrPreferences(root: string): PrPreferences { try { return restorePrPreferences(JSON.parse(localStorage.getItem(prPreferencesKey(root)) ?? "null")); } catch { return restorePrPreferences(null); } }
 export function appendPullRequests(before: PullRequest[], page: PullRequest[]): PullRequest[] { const items = new Map(before.map(p => [p.number, p])); for (const p of page) items.set(p.number, p); return [...items.values()]; }

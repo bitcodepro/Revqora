@@ -629,6 +629,13 @@ export interface PrTemplates { items: PrTemplate[]; notice: string | null }
 export interface PrFile { id: string; path: string; oldPath: string | null; status: string; binary: boolean; additions: number | null; deletions: number | null }
 export interface PrFiles { items: PrFile[]; nextOffset: number | null; notice: string | null }
 export interface PrFileView { diff: FileDiff | null; notice: string | null }
+export interface PrReviewCapabilities { actor: string; actorId: string; comment: boolean; approve: boolean; requestChanges: boolean; inline: boolean; reason: string; summaryWithVote: boolean }
+export interface PrReviewComment { id: string; author: string; body: string; created: string; state: string }
+export interface PrThread { id: string; revision: string; path: string | null; side: string; line: number | null; outdated: boolean; resolved: boolean | null; canReply: boolean; canResolve: boolean; complete: boolean; comments: PrReviewComment[] }
+export type PrReviewKind = "comment" | "reply" | "resolve" | "reopen" | "approve" | "request_changes";
+export interface PrReviewAnchor { fileId: string; side: "LEFT" | "RIGHT"; line: number }
+export interface PrReviewAction { kind: PrReviewKind; body: string; expectedActor: string; thread: string | null; threadRevision: string | null; anchor: PrReviewAnchor | null }
+export interface PrReviewPage { items: PrThread[]; nextCursor: string | null; notice: string | null }
 
 export interface Check {
   name: string;
