@@ -53,8 +53,18 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
     if(git(p,"branch","--show-current")!=="created-topic"||git(p,"rev-parse","HEAD")!==initialHead||fs.readFileSync(path.join(p,"file.txt"),"utf8")!=="base file.txt\n"||!index.equals(fs.readFileSync(path.join(root,".git/index")))||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="source unstaged\r\n")throw new Error("Creation moved source edits/staging or used the wrong commit");
   });
   await check("existing and detached worktrees open as independent tabs without checking out the original branch",async()=>{
-    git(root,"branch","available");await refresh();const p=path.join(work,"wm-existing");await create("Existing branch","available",p);await select(p);await page.locator(".wm-detail").getByRole("button",{name:"Open worktree",exact:true}).click();
-    await page.locator(".topbar .repo-current > b").filter({hasText:"wm-existing"}).waitFor();await open();await select(root);
+    git(root,"branch","available");await refresh();const p=path.join(work,"wm-existing");await create("Existing branch","available",p);await select(p);
+    // Hold the real repo_open response, then navigate while the store is awaiting it.
+    await page.evaluate(()=>{const original=window.fetch,base=window.__TAURI_INTERNALS__.convertFileSrc("","ipc");window.__wmOpenFetch=original;window.__wmOpenRelease=null;let held=false;window.fetch=async function(input,init){const response=await original.call(this,input,init);if(String(input)===base+"repo_open"&&!held){held=true;await new Promise(resolve=>{window.__wmOpenRelease=resolve;});}return response;};});
+    try{
+      await page.locator(".wm-detail").getByRole("button",{name:"Open worktree",exact:true}).click();await page.waitForFunction(()=>typeof window.__wmOpenRelease==="function");
+      await page.getByRole("button",{name:"Close worktree manager",exact:true}).click();await page.getByRole("button",{name:"Open branch manager",exact:true}).click();await page.waitForSelector(".branch-manager");
+      await page.evaluate(async()=>{window.__wmOpenRelease();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+      await page.locator(".topbar .repo-current > b").filter({hasText:"wm-existing"}).waitFor();
+      if(!await page.locator(".branch-manager").isVisible())throw new Error("A delayed worktree open dismissed the newer Branch Manager");
+      await page.getByRole("button",{name:"Close branch manager",exact:true}).click();
+    }finally{await page.evaluate(()=>{window.__wmOpenRelease?.();window.fetch=window.__wmOpenFetch;delete window.__wmOpenRelease;delete window.__wmOpenFetch;});}
+    await open();await select(root);
     if(!await page.getByRole("button",{name:"Review removal…",exact:true}).isDisabled())throw new Error("Main worktree removal enabled from a linked worktree");
     await select(p);if(!await page.getByRole("button",{name:"Review removal…",exact:true}).isDisabled())throw new Error("Current linked worktree removal enabled");
     const d=path.join(work,"wm-created-detached");await create("Detached HEAD","",d);if(git(d,"branch","--show-current")||git(d,"rev-parse","HEAD")!==initialHead)throw new Error("Detached creation attached a branch or changed its commit");

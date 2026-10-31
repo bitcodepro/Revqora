@@ -4,7 +4,8 @@ import { FolderGit2, FolderOpen, Lock, Plus, RefreshCw, Trash2, X } from "lucide
 import { api, errorMessage } from "../lib/api";
 import { basename, shortOid } from "../lib/format";
 import { useRepos } from "../lib/store";
-import { closeOverlay, copyText, showDialog, toast, useUi } from "../lib/ui";
+import { captureOverlay, closeOverlay, copyText, showDialog, toast, useUi } from "../lib/ui";
+import { openWorktree } from "../lib/worktreeNavigation";
 import { repositoryKey } from "../lib/repositoryLibrary";
 import { loadWorktreePreferences, restoreWorktreePreferences, selectWorktrees, worktreeFilters, worktreePreferencesKey, worktreeRemovalBlock, type WorktreePreferences } from "../lib/worktreeManager";
 import type { WorktreeCreationReview, WorktreeManagerSnapshot, WorktreePruneResult, WorktreePruneReview, WorktreeRemoval, WorktreeRemovalReview, WorktreeCreateRequest } from "../lib/types";
@@ -12,7 +13,6 @@ import { Modal } from "./Modal";
 import { recoveryDialog } from "./RecoveryCenter";
 
 const size=(n:number)=>n<1048576?`${(n/1024).toFixed(1)} KiB`:`${(n/1048576).toFixed(1)} MiB`;
-async function openWorktree(path:string){try{await useRepos.getState().open(path);closeOverlay();}catch(e){toast.error(e,"Could not open worktree");}}
 export const worktreeCreateDialog=(root:string)=>showDialog<void>(close=><CreateWorktree root={root} close={()=>close()} />);
 export const worktreeRemoveDialog=(root:string,path:string)=>showDialog<void>(close=><RemoveWorktree root={root} path={path} close={()=>close()} />);
 export const worktreePruneDialog=(root:string)=>showDialog<void>(close=><PruneWorktrees root={root} close={()=>close()} />);
@@ -38,11 +38,11 @@ function CreateWorktree({root,close}:{root:string;close:()=>void}){
     try{const p=await api.worktreeCreationReview(root,request);if(id===generation.current)setReview(p);}catch(e){if(id===generation.current)setError(errorMessage(e));}
     finally{if(id===generation.current)setLoading(false);}
   };
-  const submit=async()=>{if(active.current||!review||loading)return;active.current=true;setBusy(true);setError("");const prepared=review;setReview(null);
+  const submit=async()=>{if(active.current||!review||loading)return;active.current=true;setBusy(true);setError("");const prepared=review,owner=captureOverlay("worktrees",root);setReview(null);
     try{const result=await api.worktreeAdd(root,prepared);await useRepos.getState().refresh(root);
       if(result.warning)toast.warning("Worktree created; review its actual HEAD",result.warning);
       else useUi.getState().toast({kind:"success",title:"Worktree created",detail:result.path,action:{label:"Open worktree",run:()=>void openWorktree(result.path)}});
-      close();if(openCreated)await openWorktree(result.path);
+      close();if(openCreated)await openWorktree(result.path,owner);
     }catch(e){setError(errorMessage(e));await useRepos.getState().refresh(root);}finally{active.current=false;setBusy(false);}
   };
   const dismiss=()=>{if(!active.current)close();};
@@ -200,7 +200,7 @@ export function WorktreeManager({root}:{root:string}){
         <p>{target.ignored??"Unknown"} ignored paths/folders · ↑{target.ahead??0} ↓{target.behind??0}</p>
         {target.operation&&target.operation!=="none"&&<p>Operation: {target.operation}</p>}{target.error&&<p className="wm-error">{target.error}</p>}
         {target.pruneReason&&<p>{target.pruneReason}</p>}{block&&<p className="wm-note">{block}</p>}
-        <div className="wm-actions"><button className="btn primary" disabled={!ready||!target.exists||target.bare||!!target.error||target.isCurrent} onClick={()=>void openWorktree(target.path)}>Open worktree</button>
+        <div className="wm-actions"><button className="btn primary" disabled={!ready||!target.exists||target.bare||!!target.error||target.isCurrent} onClick={()=>void openWorktree(target.path,captureOverlay("worktrees",root))}>Open worktree</button>
           <button className="btn" disabled={!ready||target.isMain||target.bare} onClick={()=>void action(()=>worktreeLockDialog(root,target.path,!target.locked))}>{target.locked?"Unlock…":"Lock…"}</button>
           <button className="btn danger" disabled={!ready||!!block} onClick={()=>void action(()=>worktreeRemoveDialog(root,target.path))}>Review removal…</button></div>
       </>:<p>Select a working folder.</p>}</aside>
