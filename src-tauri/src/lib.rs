@@ -1424,6 +1424,38 @@ async fn pull_requests(repo: String) -> GitResult<PullRequests> {
 }
 
 #[tauri::command]
+async fn pr_review_capabilities(repo: String, number: u64, expected_connection: String, expected_revision: String) -> GitResult<git::pr_reviews::Capabilities> {
+    blocking(move || git::pr_reviews::capabilities(&p(&repo), number, &expected_connection, &expected_revision)).await
+}
+#[tauri::command]
+async fn pr_review_page(
+    repo: String,
+    number: u64,
+    expected_connection: String,
+    expected_revision: String,
+    feed: String,
+    cursor: Option<String>,
+) -> GitResult<git::pr_reviews::Page> {
+    blocking(move || git::pr_reviews::page(&p(&repo), number, &expected_connection, &expected_revision, &feed, cursor.as_deref())).await
+}
+#[tauri::command]
+async fn pr_review_thread(
+    repo: String,
+    number: u64,
+    expected_connection: String,
+    expected_revision: String,
+    thread: String,
+) -> GitResult<git::pr_reviews::Thread> {
+    blocking(move || git::pr_reviews::thread(&p(&repo), number, &expected_connection, &expected_revision, &thread)).await
+}
+#[tauri::command]
+async fn pr_review_act(repo: String, number: u64, expected_connection: String, expected_revision: String, action: git::pr_reviews::Action) -> GitResult<()> {
+    blocking(move || {
+        git::operations::access(&p(&repo), true, |_, _| {}, || git::pr_reviews::act(&p(&repo), number, &expected_connection, &expected_revision, action))
+    })
+    .await
+}
+#[tauri::command]
 async fn pr_page(repo: String, state: String, cursor: Option<String>) -> GitResult<git::pr_center::Page> {
     blocking(move || git::pr_center::page(&p(&repo), &state, cursor.as_deref())).await
 }
@@ -1876,6 +1908,10 @@ pub fn run() {
             forge_connection_select,
             forge_info,
             pull_requests,
+            pr_review_capabilities,
+            pr_review_page,
+            pr_review_thread,
+            pr_review_act,
             pr_page,
             pr_detail,
             pr_checks,

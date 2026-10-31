@@ -222,6 +222,58 @@ pub(super) fn raw_request(repo: &Path, f: &ForgeInfo, path: &str, accept: &str, 
     authorized(repo, f, |credential| super::forge_accounts::request_content(&f.kind, &f.api, credential, "GET", path, None, accept, limit, redirect))
 }
 
+pub(super) fn graphql(repo: &Path, f: &ForgeInfo, query: &str, variables: Value) -> GitResult<Value> {
+    graphql_as(repo, f, query, variables, None)
+}
+pub(super) fn graphql_as(repo: &Path, f: &ForgeInfo, query: &str, variables: Value, actor: Option<&str>) -> GitResult<Value> {
+    if f.kind != "github" {
+        return Err(GitError::new("GraphQL is only configured for GitHub."));
+    }
+    let (base, path) = match f.api.strip_suffix("/api/v3") {
+        Some(base) => (base, "/api/graphql"),
+        None => (f.api.as_str(), "/graphql"),
+    };
+    let v = authorized(repo, f, |c| {
+        if let Some(actor) = actor {
+            check_actor(f, c, actor)?;
+        }
+        super::forge_accounts::request_json("github", base, c, "POST", path, Some(serde_json::json!({"query":query,"variables":variables})))
+    })?;
+    if v.get("errors").and_then(Value::as_array).is_some_and(|e| !e.is_empty()) || v.get("data").is_none_or(Value::is_null) {
+        return Err(
+            GitError::new("GitHub GraphQL rejected the request. Check token permissions and server support; refresh before retrying.").kind("forge-graphql")
+        );
+    }
+    Ok(v["data"].clone())
+}
+
+/// Some writes return 204. An empty success body is not a failed JSON response.
+pub(super) fn write_api(repo: &Path, f: &ForgeInfo, method: &str, path: &str, body: Option<Value>, actor: &str) -> GitResult<()> {
+    authorized(repo, f, |c| {
+        check_actor(f, c, actor)?;
+        super::forge_accounts::request_content(&f.kind, &f.api, c, method, path, body.clone(), "application/json", 4 * 1024 * 1024, false)
+    })
+    .map(|_| ())
+}
+
+fn check_actor(f: &ForgeInfo, c: &super::forge_accounts::Credential, expected: &str) -> GitResult<()> {
+    if f.kind == "bitbucket-server" {
+        return if expected == "git-credentials" { Ok(()) } else { Err(GitError::new("Unverified review identity.").kind("stale-operation")) };
+    }
+    let path = if f.kind == "azure" { "/_apis/connectionData?api-version=7.1-preview.1" } else { "/user" };
+    let v = super::forge_accounts::request_json(&f.kind, &f.api, c, "GET", path, None)?;
+    let key = match f.kind.as_str() {
+        "azure" => "/authenticatedUser/id",
+        "bitbucket" => "/uuid",
+        _ => "/id",
+    };
+    let actual = v.pointer(key).map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string())).unwrap_or_default();
+    if actual.is_empty() || actual != expected {
+        return Err(GitError::new("The review identity changed. Refresh before sending.").kind("stale-operation"));
+    }
+    Ok(())
+}
+
 fn authorized<T>(repo: &Path, f: &ForgeInfo, send: impl Fn(&super::forge_accounts::Credential) -> GitResult<T>) -> GitResult<T> {
     let context = super::forge_accounts::context(repo)?.ok_or_else(|| GitError::new("Configure an API connection first."))?;
     if context.info != *f {
