@@ -2,10 +2,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
+import { assertAgentWorktreeProtection } from "./agent-workspace-fixture.mjs";
 export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
  const root=path.join(work,"stage16-agents"),script=path.join(work,"fixture-agent.cjs");fs.mkdirSync(root);
  const git=(...args)=>execFileSync("git",["-C",root,...args],{encoding:"utf8",windowsHide:true}).trim();
- git("init","-qb","main");for(const[k,v]of[["user.name","Agent Tester"],["user.email","agent@example.invalid"],["commit.gpgsign","false"],["core.hooksPath",".git/hooks"]])git("config",k,v);
+ git("init","-qb","main");for(const[k,v]of[["user.name","Agent Tester"],["user.email","agent@example.invalid"],["commit.gpgsign","false"],["core.quotepath","true"],["core.hooksPath",".git/hooks"]])git("config",k,v);
  fs.writeFileSync(path.join(root,"file.txt"),"original\n");git("add",".");git("commit","-qm","Agent base");fs.writeFileSync(path.join(root,"file.txt"),"Keep uncommitted source\r\n");
  const head=git("rev-parse","HEAD"),index=fs.readFileSync(path.join(root,".git/index"));
  fs.writeFileSync(script,`let prompt='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>prompt+=s);process.stdin.on('end',()=>{console.log('fixture started');console.error('fixture diagnostic');if(prompt.includes('WAIT_FOR_STOP')){setInterval(()=>{},1000);return;}require('fs').writeFileSync('agent.txt',JSON.stringify({prompt,home:process.env.HOME,codex:process.env.CODEX_HOME,temp:process.env.TEMP}));console.log('fixture completed');});`);
@@ -27,7 +28,10 @@ export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
   await check("real offline CLI gets stdin and portable environment, keeps source changes and persists output",async()=>{
    await draft("Offline editing task","Produce reviewed edits");await launch();await until(async()=>{const t=(await tasks())[0];return t?.phase==="completed";},"Agent did not finish");successful=(await tasks())[0];
    const out=JSON.parse(fs.readFileSync(path.join(successful.path,"agent.txt"),"utf8"));if(!out.prompt.includes("Produce reviewed edits")||!out.prompt.includes("Do not commit")||out.home!==successful.profilePath||out.codex!==path.join(successful.profilePath,"codex")||out.temp!==path.join(successful.profilePath,"temp"))throw Error("Wrong stdin/profile environment");
-   if(!successful.stdout.includes("fixture completed")||!successful.stderr.includes("fixture diagnostic")||git("rev-parse",successful.branch)!==head||!git("worktree","list","--porcelain").includes("locked Agent task"))throw Error("Lost output or worktree protection");
+   if(!successful.stdout.includes("fixture completed"))throw Error("Agent stdout is missing the completion marker");
+   if(!successful.stderr.includes("fixture diagnostic"))throw Error("Agent stderr is missing the diagnostic marker");
+   if(git("rev-parse",successful.branch)!==head)throw Error("Agent branch changed unexpectedly");
+   assertAgentWorktreeProtection(git,successful,head);
    await until(async()=>await page.locator('.agent-phase').innerText()==="completed","UI did not show completion");await shot("130-agent-workspace");unchanged();
   });
   await check("a stale reviewed agent launch fails before creating its worktree or executing code",async()=>{
