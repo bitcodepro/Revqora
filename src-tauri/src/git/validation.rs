@@ -313,6 +313,15 @@ fn reader(mut pipe: impl Pipe, job: Arc<Job>, stderr: bool, stop: Arc<AtomicBool
     })
 }
 
+// Never format Command's Debug representation: it contains arguments/env, which
+// can include prompts and credentials. Capture the io::Error before any cleanup.
+fn process_error(operation: &str, cmd: &Command, error: std::io::Error) -> GitError {
+    let mut result = GitError::from(error).kind("process-launch");
+    result.message = format!("process_tree::{operation} [program={:?}, cwd={:?}]: {}", cmd.get_program(), cmd.get_current_dir(), result.message);
+    result.details.insert(0, format!("operation={operation}"));
+    result
+}
+
 #[cfg(unix)]
 pub(super) mod process_tree {
     use super::*;
@@ -327,9 +336,9 @@ pub(super) mod process_tree {
             }
         }
     }
-    pub fn spawn(cmd: &mut Command) -> std::io::Result<(Child, Tree)> {
+    pub fn spawn(cmd: &mut Command) -> GitResult<(Child, Tree)> {
         cmd.process_group(0);
-        let child = cmd.spawn()?;
+        let child = cmd.spawn().map_err(|e| process_error("Command::spawn", cmd, e))?;
         let tree = Tree(child.id(), AtomicBool::new(false));
         Ok((child, tree))
     }
@@ -353,6 +362,14 @@ pub(super) mod process_tree {
         System::{Diagnostics::ToolHelp::*, JobObjects::*, Threading::*},
     };
     pub struct Tree(HANDLE);
+    struct OwnedHandle(HANDLE);
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
     impl Tree {
         pub fn terminate(&self) {
             unsafe {
@@ -370,49 +387,67 @@ pub(super) mod process_tree {
     pub fn exited(child: &mut Child) -> std::io::Result<bool> {
         Ok(child.try_wait()?.is_some())
     }
-    pub fn spawn(cmd: &mut Command) -> std::io::Result<(Child, Tree)> {
+    pub fn spawn(cmd: &mut Command) -> GitResult<(Child, Tree)> {
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if job.is_null() {
-                return Err(std::io::Error::last_os_error());
+                let error = std::io::Error::last_os_error();
+                return Err(process_error("CreateJobObjectW", cmd, error));
             }
             let tree = Tree(job);
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
             if SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits as *const _ as _, std::mem::size_of_val(&limits) as u32) == 0 {
-                return Err(std::io::Error::last_os_error());
+                let error = std::io::Error::last_os_error();
+                return Err(process_error("SetInformationJobObject", cmd, error));
             }
             // Assign before any user code can create descendants.
-            let mut child = cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED).spawn()?;
+            let mut child = cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED).spawn().map_err(|e| process_error("Command::spawn", cmd, e))?;
             let resumed = (|| {
                 if AssignProcessToJobObject(job, child.as_raw_handle()) == 0 {
-                    return Err(std::io::Error::last_os_error());
+                    let error = std::io::Error::last_os_error();
+                    return Err(process_error("AssignProcessToJobObject", cmd, error));
                 }
                 let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
                 if snap == INVALID_HANDLE_VALUE {
-                    return Err(std::io::Error::last_os_error());
+                    let error = std::io::Error::last_os_error();
+                    return Err(process_error("CreateToolhelp32Snapshot", cmd, error));
                 }
+                let snap = OwnedHandle(snap);
                 let mut entry: THREADENTRY32 = std::mem::zeroed();
                 entry.dwSize = std::mem::size_of_val(&entry) as u32;
-                let mut found = false;
-                let mut next = Thread32First(snap, &mut entry);
+                let mut next = Thread32First(snap.0, &mut entry);
+                if next == 0 {
+                    let error = std::io::Error::last_os_error();
+                    return Err(process_error("Thread32First", cmd, error));
+                }
                 while next != 0 {
                     if entry.th32OwnerProcessID == child.id() {
                         let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
-                        if !thread.is_null() {
-                            found = ResumeThread(thread) != u32::MAX;
-                            CloseHandle(thread);
+                        if thread.is_null() {
+                            let error = std::io::Error::last_os_error();
+                            return Err(process_error("OpenThread", cmd, error));
                         }
-                        break;
+                        let thread = OwnedHandle(thread);
+                        if ResumeThread(thread.0) == u32::MAX {
+                            let error = std::io::Error::last_os_error();
+                            return Err(process_error("ResumeThread", cmd, error));
+                        }
+                        return Ok(());
                     }
-                    next = Thread32Next(snap, &mut entry);
+                    next = Thread32Next(snap.0, &mut entry);
+                    if next == 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.raw_os_error() != Some(windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES as i32) {
+                            return Err(process_error("Thread32Next", cmd, error));
+                        }
+                    }
                 }
-                CloseHandle(snap);
-                if found {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::other("Could not resume the validation process."))
-                }
+                Err(process_error(
+                    "Thread32Next: no thread owned by suspended child",
+                    cmd,
+                    std::io::Error::other("Suspended child thread was not found in the snapshot."),
+                ))
             })();
             if let Err(e) = resumed {
                 let _ = child.kill();
@@ -427,6 +462,37 @@ pub(super) mod process_tree {
 #[cfg(test)]
 mod output_tests {
     use super::*;
+    #[test]
+    fn process_error_preserves_captured_os_code_and_does_not_log_command_secrets() {
+        let mut command = Command::new("fixture-program.exe");
+        command.current_dir("fixture-cwd").arg("SECRET_PROMPT_SENTINEL").env("TOKEN", "SECRET_TOKEN_SENTINEL");
+        let captured = std::io::Error::from_raw_os_error(5);
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::Foundation::SetLastError(87);
+        }
+        let error = process_error("ResumeThread", &command, captured);
+        let serialized = serde_json::to_string(&error).unwrap();
+        assert!(error.details.iter().any(|d| d == "os_error=5"));
+        assert!(error.message.contains("ResumeThread") && error.message.contains("fixture-cwd") && error.message.contains("fixture-program.exe"));
+        assert!(!serialized.contains("SECRET_") && !serialized.contains("TOKEN"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn spawning_a_directory_reports_the_failing_command_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = Command::new(dir.path());
+        let error = match process_tree::spawn(&mut command) {
+            Ok((mut child, tree)) => {
+                tree.terminate();
+                let _ = child.wait();
+                panic!("A directory cannot be launched")
+            }
+            Err(error) => error,
+        };
+        assert!(error.message.contains("Command::spawn"), "{} {:?}", error.message, error.details);
+        assert!(error.details.iter().any(|d| d == "os_error=5"), "{} {:?}", error.message, error.details);
+    }
     #[test]
     fn readers_scheduled_after_process_exit_still_capture_buffered_output() {
         #[cfg(windows)]

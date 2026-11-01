@@ -183,12 +183,47 @@ fn request(code: &str) -> Request {
 fn wait(root: &Path, id: &str) -> Task {
     let until = Instant::now() + Duration::from_secs(30);
     loop {
-        let t = list(root).unwrap().into_iter().find(|t| t.id == id).unwrap();
+        let rows = list(root).unwrap_or_else(|error| {
+            let local = jobs().lock().get(&operations::repository_key(root)).cloned();
+            let diagnostic = local.map(|job| {
+                let t = snapshot(&job);
+                failure_snapshot(root, &t, Path::new(&t.path))
+            });
+            panic!("Task history inspection failed: {} {:?}; task={diagnostic:?}", error.message, error.details)
+        });
+        let t = rows.into_iter().find(|t| t.id == id).unwrap();
         if !active(&t.phase) && jobs().lock().get(&operations::repository_key(root)).is_none_or(|j| j.done.load(Ordering::Acquire)) {
             return t;
         }
-        assert!(Instant::now() < until, "task timeout: {} {:?}", t.phase, t.error);
+        assert!(Instant::now() < until, "task timeout: {}", failure_snapshot(root, &t, Path::new(&t.path)));
         thread::sleep(Duration::from_millis(30));
+    }
+}
+fn failure_snapshot(root: &Path, task: &Task, expected: &Path) -> serde_json::Value {
+    // This helper is test-only. Whitelist fields; do not Debug/serialize Task,
+    // Request or Command (which contain prompts, arguments and environment).
+    let record = store(root).map(|dir| dir.join(format!("{}.json", task.id)));
+    let done = jobs().lock().get(&operations::repository_key(root)).is_none_or(|j| j.done.load(Ordering::Acquire));
+    let registration = if done {
+        crate::git::extras::worktrees(root)
+            .ok()
+            .map(|rows| rows.iter().any(|w| fs::canonicalize(&w.path).ok() == fs::canonicalize(&task.path).ok() && Path::new(&task.path).is_dir()))
+    } else {
+        None
+    };
+    serde_json::json!({
+        "id":task.id,"phase":task.phase,"exitCode":task.exit_code,"error":task.error,
+        "stdout":task.stdout.chars().take(4096).collect::<String>(),"stderr":task.stderr.chars().take(4096).collect::<String>(),"outputTruncated":task.truncated,
+        "expectedPath":expected,"actualPath":task.path,"expectedPathState":path_probe(expected),"actualPathState":path_probe(Path::new(&task.path)),
+        "gitMarkerState":path_probe(&Path::new(&task.path).join(".git")),"registrationPresent":registration,"workerFinished":done,
+        "recordPath":record.as_ref().ok(),"recordState":record.as_ref().ok().map(|p|path_probe(p)),"recordInspectionError":record.as_ref().err().map(|e|e.message.as_str()),
+    })
+}
+fn path_probe(path: &Path) -> serde_json::Value {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => serde_json::json!({"exists":true,"directory":meta.is_dir(),"bytes":meta.len()}),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({"exists":false}),
+        Err(error) => serde_json::json!({"exists":null,"osError":error.raw_os_error(),"error":error.to_string()}),
     }
 }
 fn cleanup(root: &Path, t: &Task) {
@@ -331,6 +366,9 @@ fn interrupted_history_requires_explicit_process_stop_acknowledgement() {
 
 #[test]
 fn explicit_worktree_destination_is_reviewed_and_nested_locations_are_rejected() {
+    explicit_destination_case();
+}
+fn explicit_destination_case() {
     let r = repo();
     let parent = tempfile::tempdir().unwrap();
     let target = parent.path().join("task-copy");
@@ -340,10 +378,42 @@ fn explicit_worktree_destination_is_reviewed_and_nested_locations_are_rejected()
     assert_eq!(Path::new(&p.creation.request.path), target);
     let t = start(r.path().to_owned(), p, true).unwrap();
     let t = wait(r.path(), &t.id);
-    assert_eq!(t.phase, "completed", "{:?}", t.error);
+    assert_eq!(t.phase, "completed", "{}", failure_snapshot(r.path(), &t, &target));
     assert!(target.exists());
     cleanup(r.path(), &t);
     let mut req = request("echo never");
     req.worktree_path = Some(r.path().join("nested-copy").to_string_lossy().into_owned());
     assert!(prepare(r.path(), req).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn explicit_worktree_destinations_parallel_keep_diagnostic_failures() {
+    let barrier = Arc::new(std::sync::Barrier::new(4));
+    let workers: Vec<_> = (0..4)
+        .map(|_| {
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                explicit_destination_case();
+            })
+        })
+        .collect();
+    let results: Vec<_> = workers.into_iter().map(|w| w.join()).collect();
+    assert!(results.iter().all(Result::is_ok), "A parallel explicit-destination case failed; see its whitelisted task snapshot above");
+}
+
+#[test]
+fn agent_operation_context_preserves_os_code_without_exposing_prompt_data() {
+    let root = repo();
+    let job = output_job(root.path());
+    job.task.lock().prompt = "PRIVATE_PROMPT_SENTINEL".into();
+    job.task.lock().args = vec!["PRIVATE_TOKEN_SENTINEL".into()];
+    let error = context_error("stdin.clone_handle", Path::new("safe-file"), GitError::from(std::io::Error::from_raw_os_error(5)));
+    job.task.lock().error = Some(error.message.clone());
+    assert!(error.message.contains("stdin.clone_handle") && error.message.contains("os_error=5"));
+    let snapshot = failure_snapshot(root.path(), &snapshot(&job), &root.path().join("expected"));
+    let encoded = serde_json::to_string(&snapshot).unwrap();
+    assert!(!encoded.contains("PRIVATE_"));
+    assert_eq!(snapshot["recordState"]["exists"], false);
 }

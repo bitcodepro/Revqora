@@ -79,6 +79,24 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --features ui-automation
           exit $LASTEXITCODE
 
+      - name: Diagnose Windows agent launch in both configurations
+        if: runner.os == 'Windows' && !cancelled()
+        env:
+          REVQORA_TEST_TMP: ${{ github.workspace }}/.ci-temp/agent-windows-diagnostics
+          TEMP: ${{ github.workspace }}/.ci-temp/agent-windows-diagnostics
+          TMP: ${{ github.workspace }}/.ci-temp/agent-windows-diagnostics
+          TMPDIR: ${{ github.workspace }}/.ci-temp/agent-windows-diagnostics
+        run: node scripts/agent-windows-diagnostics.mjs --out ci-results/agent-windows-diagnostics
+
+      - name: Retain Windows agent diagnostic evidence
+        if: runner.os == 'Windows' && !cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-agent-diagnostics
+          path: ci-results/agent-windows-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
+
   windows-native-build:
     name: Build Windows native smoke executable once
     runs-on: windows-2025

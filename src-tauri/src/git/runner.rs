@@ -39,7 +39,13 @@ impl GitError {
 
 impl From<std::io::Error> for GitError {
     fn from(e: std::io::Error) -> Self {
-        GitError::new(format!("I/O error: {e}"))
+        // Keep native OS codes separate from `code`, which is a Git exit code.
+        let mut result = GitError::new(format!("I/O error: {e}"));
+        result.details.push(format!("io_kind={:?}", e.kind()));
+        if let Some(code) = e.raw_os_error() {
+            result.details.push(format!("os_error={code}"));
+        }
+        result
     }
 }
 
@@ -405,6 +411,14 @@ pub fn version_at_least(major: u32, minor: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::is_read_only;
+
+    #[test]
+    fn native_os_error_survives_conversion_without_becoming_a_git_exit_code() {
+        let error = super::GitError::from(std::io::Error::from_raw_os_error(5));
+        assert!(error.details.iter().any(|d| d == "os_error=5"));
+        assert_eq!(error.code, None);
+        assert!(serde_json::to_string(&error).unwrap().contains("os_error=5"));
+    }
 
     #[test]
     fn classifies_noninteractive_credential_failures() {

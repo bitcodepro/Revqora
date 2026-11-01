@@ -36,6 +36,20 @@ const MAX_TASKS: usize = 100;
 fn fail(s: impl Into<String>) -> GitError {
     GitError::new(s).kind("agent-workspace")
 }
+fn context_error(operation: &str, path: &Path, mut error: GitError) -> GitError {
+    let os = error.details.iter().find(|d| d.starts_with("os_error=")).map(String::as_str).unwrap_or("os_error=none");
+    // Paths use escaped Debug formatting. Never include the prompt, arguments,
+    // environment or Command::Debug in error context.
+    error.message = format!("agent::{operation} [path={path:?}; {os}]: {}", error.message);
+    error.details.insert(0, format!("operation={operation}; path={path:?}"));
+    error
+}
+fn step<T>(operation: &str, path: &Path, result: GitResult<T>) -> GitResult<T> {
+    result.map_err(|e| context_error(operation, path, e))
+}
+fn io_step<T>(operation: &str, path: &Path, result: std::io::Result<T>) -> GitResult<T> {
+    step(operation, path, result.map_err(GitError::from))
+}
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
@@ -100,7 +114,7 @@ fn valid_id(id: &str) -> bool {
 }
 fn direct(path: &Path) -> GitResult<()> {
     for part in path.ancestors() {
-        let m = fs::symlink_metadata(part)?;
+        let m = io_step("path.inspect", part, fs::symlink_metadata(part))?;
         #[cfg(windows)]
         let linked = {
             use std::os::windows::fs::MetadataExt;
@@ -119,12 +133,12 @@ fn folder(path: PathBuf) -> GitResult<PathBuf> {
     if let Some(parent) = path.parent() {
         direct(parent)?;
     }
-    fs::create_dir_all(&path)?;
+    io_step("directory.create", &path, fs::create_dir_all(&path))?;
     direct(&path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+        io_step("directory.permissions", &path, fs::set_permissions(&path, fs::Permissions::from_mode(0o700)))?;
     }
     Ok(path)
 }
@@ -172,11 +186,11 @@ fn executable(request: &Request) -> GitResult<String> {
     if p.extension().is_none_or(|s| !s.eq_ignore_ascii_case("exe")) {
         return Err(fail("Select a native .exe. For an npm CLI, select node.exe and put the CLI's absolute .js path first in Arguments; .cmd/.bat wrappers are not executed."));
     }
-    let mut file = File::open(p)?;
+    let mut file = io_step("executable.open", p, File::open(p))?;
     let mut h = Sha256::new();
     let mut b = [0; 65536];
     loop {
-        let n = file.read(&mut b)?;
+        let n = io_step("executable.read", p, file.read(&mut b))?;
         if n == 0 {
             break;
         }
@@ -242,16 +256,16 @@ fn read_record(path: &Path) -> GitResult<Task> {
 }
 fn save(dir: &Path, t: &Task) -> GitResult<()> {
     // Validate completely before replacing an existing readable record.
-    let bytes = encode_record(t)?;
+    let bytes = step("state.encode", dir, encode_record(t))?;
     direct(dir)?;
     let dest = dir.join(format!("{}.json", t.id));
     if dest.exists() {
         direct(&dest)?;
     }
-    let mut f = tempfile::NamedTempFile::new_in(dir)?;
-    f.write_all(&bytes)?;
-    f.as_file().sync_all()?;
-    f.persist(dest).map_err(|e| e.error)?;
+    let mut f = io_step("state.create_temporary", dir, tempfile::NamedTempFile::new_in(dir))?;
+    io_step("state.write", &dest, f.write_all(&bytes))?;
+    io_step("state.sync", &dest, f.as_file().sync_all())?;
+    io_step("state.persist", &dest, f.persist(&dest).map_err(|e| e.error))?;
     Ok(())
 }
 pub fn list(root: &Path) -> GitResult<Vec<Task>> {
@@ -340,10 +354,10 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
         error: None,
     };
     // Atomically publish a complete, durable no-retry marker before touching Git.
-    let mut initial = tempfile::NamedTempFile::new_in(&dir)?;
-    initial.write_all(&encode_record(&t)?)?;
-    initial.as_file().sync_all()?;
-    initial.persist_noclobber(record).map_err(|_| fail("This task was already submitted. Refresh history; do not launch it again."))?;
+    let mut initial = io_step("state.create_initial", &record, tempfile::NamedTempFile::new_in(&dir))?;
+    io_step("state.write_initial", &record, initial.write_all(&encode_record(&t)?))?;
+    io_step("state.sync_initial", &record, initial.as_file().sync_all())?;
+    initial.persist_noclobber(&record).map_err(|e| context_error("state.publish_initial", &record, GitError::from(e.error)))?;
     let job = Arc::new(Job {
         task: Mutex::new(t.clone()),
         output: Mutex::new((vec![], vec![])),
@@ -368,20 +382,31 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
                     job.task.lock().phase = "cancelled".into();
                     return Ok(());
                 }
-                if executable(&plan.request)? != plan.executable_hash {
+                if step("executable.verify", Path::new(&plan.request.executable), executable(&plan.request))? != plan.executable_hash {
                     return Err(fail("The reviewed executable changed before launch."));
                 }
-                let created = wm::create(&root, &plan.creation)?;
+                let created = step("worktree.create", Path::new(&plan.creation.path), wm::create(&root, &plan.creation))?;
                 if let Some(warning) = created.warning {
-                    return Err(fail(warning));
+                    return Err(context_error("worktree.verify_head", Path::new(&created.path), fail(warning)));
                 }
-                let inventory = wm::snapshot(&root)?;
-                wm::lock(&root, &created.path, &inventory.registry_token, true, &format!("Agent task {} — unlock in Worktree Manager after review", plan.id))?;
+                let inventory = step("worktree.inspect", Path::new(&created.path), wm::snapshot(&root))?;
+                step(
+                    "worktree.lock",
+                    Path::new(&created.path),
+                    wm::lock(
+                        &root,
+                        &created.path,
+                        &inventory.registry_token,
+                        true,
+                        &format!("Agent task {} — unlock in Worktree Manager after review", plan.id),
+                    ),
+                )?;
                 job.task.lock().phase = "running".into();
-                save(&dir, &snapshot(&job))?;
+                step("state.save_running", &record, save(&dir, &snapshot(&job)))?;
                 execute(&plan, &job, &dir)
             },
-        );
+        )
+        .map_err(|e| context_error("repository.transaction", &root, e));
         {
             let mut t = job.task.lock();
             if let Err(e) = &outcome {
@@ -405,7 +430,12 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
             l.finish(&result);
         }
         if let Err(e) = save(&dir, &snapshot(&job)) {
-            job.task.lock().error = Some(format!("Cannot persist final task result: {}", e.message));
+            let message = context_error("state.save_final", &record, e).message;
+            let mut task = job.task.lock();
+            task.error = Some(match task.error.take() {
+                Some(primary) => format!("{primary}\nFinal state persistence also failed: {message}"),
+                None => message,
+            });
         }
         drop(session);
         job.done.store(true, Ordering::Release);
@@ -530,15 +560,16 @@ fn execute(plan: &Plan, job: &Arc<Job>, dir: &Path) -> GitResult<()> {
     let data = folder(home.join("local"))?;
     // File-backed stdin cannot block the launcher if the CLI ignores its input,
     // or leave an input-writer thread behind an escaped Unix descendant.
-    let mut input = tempfile::NamedTempFile::new_in(&temp)?;
+    let mut input = io_step("stdin.create", &temp, tempfile::NamedTempFile::new_in(&temp))?;
+    let input_path = input.path().to_owned();
     let prompt=format!("Work only in this task's working directory. Leave changes uncommitted for human review. Do not commit, push, merge, change refs or delete worktrees.\n\n{}",plan.request.prompt);
-    input.write_all(prompt.as_bytes())?;
-    input.flush()?;
-    input.rewind()?;
+    io_step("stdin.write", &input_path, input.write_all(prompt.as_bytes()))?;
+    io_step("stdin.flush", &input_path, input.flush())?;
+    io_step("stdin.rewind", &input_path, input.rewind())?;
     let mut cmd = Command::new(&plan.request.executable);
     cmd.args(&plan.request.args)
         .current_dir(&plan.creation.path)
-        .stdin(Stdio::from(input.as_file().try_clone()?))
+        .stdin(Stdio::from(io_step("stdin.clone_handle", &input_path, input.as_file().try_clone())?))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("HOME", home)
@@ -563,7 +594,8 @@ fn execute(plan: &Plan, job: &Arc<Job>, dir: &Path) -> GitResult<()> {
             cmd.env_remove(name);
         }
     }
-    let (mut child, tree) = process_tree::spawn(&mut cmd)?;
+    let worktree = Path::new(&plan.creation.path);
+    let (mut child, tree) = step("process.spawn", worktree, process_tree::spawn(&mut cmd))?;
     let end = Arc::new(AtomicBool::new(false));
     let out = reader(child.stdout.take().unwrap(), job.clone(), false, end.clone());
     let err = reader(child.stderr.take().unwrap(), job.clone(), true, end.clone());
@@ -575,16 +607,16 @@ fn execute(plan: &Plan, job: &Arc<Job>, dir: &Path) -> GitResult<()> {
                 job.task.lock().phase = if job.cancel.load(Ordering::Acquire) { "cancelled" } else { "timed-out" }.into();
                 break;
             }
-            if process_tree::exited(&mut child)? {
+            if io_step("process.poll", worktree, process_tree::exited(&mut child))? {
                 tree.terminate();
-                let status = child.wait()?;
+                let status = io_step("process.wait", worktree, child.wait())?;
                 let mut t = job.task.lock();
                 t.exit_code = status.code();
                 t.phase = if status.success() { "completed" } else { "failed" }.into();
                 break;
             }
             if saved.elapsed() > Duration::from_secs(1) {
-                save(dir, &snapshot(job))?;
+                step("state.save_periodic", &dir.join(format!("{}.json", plan.id)), save(dir, &snapshot(job)))?;
                 saved = Instant::now();
             }
             thread::sleep(Duration::from_millis(35));
@@ -592,11 +624,18 @@ fn execute(plan: &Plan, job: &Arc<Job>, dir: &Path) -> GitResult<()> {
         Ok(())
     })();
     tree.terminate();
-    let _ = child.wait();
+    let cleanup = io_step("process.wait_after_terminate", worktree, child.wait()).map(|_| ());
     end.store(true, Ordering::Release);
     let _ = out.join();
     let _ = err.join();
-    outcome
+    match (outcome, cleanup) {
+        (Err(mut primary), Err(secondary)) => {
+            primary.message.push_str(&format!("\nCleanup also failed: {}", secondary.message));
+            Err(primary)
+        }
+        (Err(primary), _) => Err(primary),
+        (Ok(()), result) => result,
+    }
 }
 
 #[cfg(test)]
