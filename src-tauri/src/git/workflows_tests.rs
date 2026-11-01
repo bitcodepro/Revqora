@@ -299,3 +299,53 @@ fn dangling_symbolic_destination_is_rejected_without_updating_its_target() {
     assert_eq!(runner::run(r.path(), ["symbolic-ref", "refs/heads/alias"]).unwrap().trim(), "refs/heads/missing");
     assert!(!runner::exec(r.path(), ["show-ref", "--verify", "--quiet", "refs/heads/missing"]).unwrap().ok());
 }
+
+#[test]
+fn workflow_history_is_atomic_with_open_readers() {
+    let r = repo();
+    let command="node -e \"const fs=require('fs');process.stdout.write('ready');const t=setInterval(()=>{if(fs.existsSync('.workflow-release')){clearInterval(t);process.stdout.write('done');}},10)\"";
+    let mut command = step("command", command, "");
+    command.timeout_seconds = 30;
+    let run = start(r.path(), vec![command]);
+    let proof = review(r.path(), &run.id).unwrap();
+    execute(r.path().into(), proof, true).unwrap();
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let current = get(r.path(), &run.id).unwrap();
+        if current.results[0].stdout.contains("ready") {
+            break;
+        }
+        assert!(!matches!(current.phase.as_str(), "failed" | "uncertain" | "completed"), "Command ended before its ready marker: {current:?}");
+        if std::time::Instant::now() >= until {
+            let _ = stop(r.path(), &run.id);
+            panic!("Command did not become ready: {current:?}");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    let record = path(r.path(), &run.id).unwrap();
+    let mut running_reader = File::open(&record).unwrap();
+    fs::write(r.path().join(".workflow-release"), "continue").unwrap();
+    let completed = wait(r.path(), &run.id);
+    assert_eq!(completed.phase, "completed", "Reader prevented the final save after the command already ran: {completed:?}");
+    assert_eq!(completed.results[0].exit_code, Some(0));
+    assert!(completed.results[0].stdout.contains("done"));
+    let old: Run = serde_json::from_reader(&mut running_reader).unwrap();
+    assert_eq!(old.phase, "running");
+    assert_eq!(get(r.path(), &run.id).unwrap().phase, "completed");
+    assert_eq!(runs(r.path()).unwrap()[0].cursor, 1);
+}
+
+#[test]
+fn workflow_catalog_is_atomic_with_open_readers() {
+    let r = repo();
+    let (c, _) = recipe(r.path(), vec![step("checkClean", "", "")]);
+    let path = dir(r.path()).unwrap().join("definitions.json");
+    let mut reader = File::open(&path).unwrap();
+    let mut changed = c.definitions[0].clone();
+    changed.name = "Updated recipe".into();
+    let next = save_definition(r.path(), changed, &c.revision).expect("A catalogue reader must not prevent an atomic edit");
+    let old: Vec<Definition> = serde_json::from_reader(&mut reader).unwrap();
+    assert_eq!(old[0].name, "Fixture workflow");
+    assert_eq!(next.definitions[0].name, "Updated recipe");
+    assert_eq!(catalog(r.path()).unwrap().revision, next.revision);
+}

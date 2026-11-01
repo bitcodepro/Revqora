@@ -265,10 +265,10 @@ fn save(dir: &Path, t: &Task) -> GitResult<()> {
     if dest.exists() {
         direct(&dest)?;
     }
-    let mut f = io_step("state.create_temporary", dir, tempfile::NamedTempFile::new_in(dir))?;
+    let mut f = io_step("state.create_temporary", dir, super::atomic_file::new_in(dir))?;
     io_step("state.write", &dest, f.write_all(&bytes))?;
     io_step("state.sync", &dest, f.as_file().sync_all())?;
-    io_step("state.persist", &dest, f.persist(&dest).map_err(|e| e.error))?;
+    io_step("state.persist", &dest, super::atomic_file::replace(f, &dest))?;
     Ok(())
 }
 pub fn list(root: &Path) -> GitResult<Vec<Task>> {

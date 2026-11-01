@@ -46,3 +46,5 @@ pub mod worktree_manager;
 pub mod workflows;
 
 pub(super) mod session_lease;
+
+pub(super) mod atomic_file;

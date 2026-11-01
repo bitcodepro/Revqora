@@ -473,3 +473,31 @@ fn acknowledging_a_finished_cleanup_error_clears_the_old_live_snapshot() {
     forget(r.path(), &task.id).unwrap();
     assert!(list(r.path()).unwrap().is_empty());
 }
+
+#[test]
+fn agent_history_is_atomic_with_open_readers() {
+    let r = repo();
+    let dir = store(r.path()).unwrap();
+    let mut task = snapshot(&output_job(r.path()));
+    task.phase = "queued".into();
+    save(&dir, &task).unwrap();
+    let path = dir.join(format!("{}.json", task.id));
+    let mut queued = File::open(&path).unwrap();
+    task.phase = "running".into();
+    save(&dir, &task).expect("A history reader must not prevent recording running before process launch");
+    let mut running = File::open(&path).unwrap();
+    task.phase = "completed".into();
+    task.stdout = "finished output\n".into();
+    task.exit_code = Some(0);
+    save(&dir, &task).expect("A history reader must not lose an already completed task's final state");
+    let old_queued: Task = serde_json::from_reader(&mut queued).unwrap();
+    let old_running: Task = serde_json::from_reader(&mut running).unwrap();
+    assert_eq!(old_queued.phase, "queued");
+    assert_eq!(old_running.phase, "running");
+    let latest = read_record(&path).unwrap();
+    assert_eq!(latest.phase, "completed");
+    assert_eq!(latest.stdout, task.stdout);
+    assert_eq!(list(r.path()).unwrap()[0].exit_code, Some(0));
+    forget(r.path(), &task.id).unwrap();
+    assert!(list(r.path()).unwrap().is_empty());
+}

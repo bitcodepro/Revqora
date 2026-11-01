@@ -112,10 +112,14 @@ fn write<T: Serialize>(path: &Path, value: &T) -> GitResult<()> {
     if path.exists() {
         direct(path)?;
     }
-    let mut f = tempfile::NamedTempFile::new_in(parent)?;
+    let mut f = super::atomic_file::new_in(parent)?;
     f.write_all(&b.0)?;
     f.as_file().sync_all()?;
-    f.persist(path).map_err(|e| e.error)?;
+    super::atomic_file::replace(f, path).map_err(|e| {
+        let mut error = GitError::from(e);
+        error.message = format!("workflow::state.replace [path={path:?}]: {}", error.message);
+        error
+    })?;
     Ok(())
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
