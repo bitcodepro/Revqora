@@ -145,6 +145,22 @@ fn folder(path: PathBuf) -> GitResult<PathBuf> {
 fn store(root: &Path) -> GitResult<PathBuf> {
     folder(storage::common(root)?.join("agents"))
 }
+fn default_worktree(root: &Path, id: &str) -> GitResult<PathBuf> {
+    // Task IDs are globally random; do not duplicate the 64-character repository
+    // storage key in checkout paths. Git for Windows also limits worktree paths
+    // in code that core.longpaths does not cover. Existing tasks keep their path.
+    let parent = folder(crate::portable::runtime_dir()?.join("agents"))?;
+    let pool = folder(parent.join("worktrees"))?;
+    let repository = storage::common(root)?;
+    let key = repository
+        .file_name()
+        .and_then(|v| v.to_str())
+        .filter(|v| v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| fail("Invalid portable repository storage key."))?;
+    // Isolate the reviewed parent's mtime across repositories. The full task ID
+    // still prevents name collisions; no records are stored under this short key.
+    Ok(folder(pool.join(&key[..16]))?.join(id))
+}
 fn lease(dir: &Path) -> GitResult<SessionLease> {
     let p = dir.join("session.lock");
     if p.exists() {
@@ -206,17 +222,12 @@ pub fn prepare(root: &Path, request: Request) -> GitResult<Plan> {
     let mut random = [0; 16];
     SystemRandom::new().fill(&mut random).map_err(|_| fail("Cannot generate a unique task ID."))?;
     let id = random.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let dir = store(root)?;
-    let worktrees = folder(dir.join("worktrees"))?;
-    let creation = wm::creation_review(
-        root,
-        wm::CreateRequest {
-            path: request.worktree_path.clone().filter(|p| !p.trim().is_empty()).unwrap_or_else(|| worktrees.join(&id).to_string_lossy().into_owned()),
-            mode: wm::CreateMode::New,
-            branch: format!("agent/{id}"),
-            start: request.base.clone(),
-        },
-    )?;
+    let worktree = match request.worktree_path.clone().filter(|p| !p.trim().is_empty()) {
+        Some(path) => path,
+        None => default_worktree(root, &id)?.to_string_lossy().into_owned(),
+    };
+    let creation =
+        wm::creation_review(root, wm::CreateRequest { path: worktree, mode: wm::CreateMode::New, branch: format!("agent/{id}"), start: request.base.clone() })?;
     Ok(Plan { id, profile_path: profile(&request.provider)?.to_string_lossy().into_owned(), request, executable_hash: hash, creation })
 }
 fn snapshot(job: &Job) -> Task {
@@ -269,6 +280,19 @@ fn save(dir: &Path, t: &Task) -> GitResult<()> {
     io_step("state.write", &dest, f.write_all(&bytes))?;
     io_step("state.sync", &dest, f.as_file().sync_all())?;
     io_step("state.persist", &dest, super::atomic_file::replace(f, &dest))?;
+    Ok(())
+}
+fn publish_initial(dir: &Path, task: &Task) -> GitResult<()> {
+    direct(dir)?;
+    // tempfile publishes through Win32 directly. Canonicalize the parent so
+    // both paths have the verbatim prefix required for long portable profiles;
+    // keep the final filename unresolved and preserve no-clobber publication.
+    let dir = io_step("state.resolve_initial_directory", dir, fs::canonicalize(dir))?;
+    let record = dir.join(format!("{}.json", task.id));
+    let mut initial = io_step("state.create_initial", &record, super::atomic_file::new_in(&dir))?;
+    io_step("state.write_initial", &record, initial.write_all(&encode_record(task)?))?;
+    io_step("state.sync_initial", &record, initial.as_file().sync_all())?;
+    initial.persist_noclobber(&record).map_err(|e| context_error("state.publish_initial", &record, GitError::from(e.error)))?;
     Ok(())
 }
 pub fn list(root: &Path) -> GitResult<Vec<Task>> {
@@ -328,12 +352,10 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
     if history.len() >= MAX_TASKS {
         return Err(fail("Keep at most 100 tasks. Forget a finished history record first; its worktree will be kept."));
     }
-    let expected_path = plan
-        .request
-        .worktree_path
-        .clone()
-        .filter(|p| !p.trim().is_empty())
-        .unwrap_or_else(|| dir.join("worktrees").join(&plan.id).to_string_lossy().into_owned());
+    let expected_path = match plan.request.worktree_path.clone().filter(|p| !p.trim().is_empty()) {
+        Some(path) => path,
+        None => default_worktree(&root, &plan.id)?.to_string_lossy().into_owned(),
+    };
     if plan.creation.request.path != expected_path
         || plan.creation.request.branch != format!("agent/{}", plan.id)
         || plan.creation.request.mode != wm::CreateMode::New
@@ -342,7 +364,6 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
     {
         return Err(fail("The task worktree does not match the reviewed plan."));
     }
-    let record = dir.join(format!("{}.json", plan.id));
     let t = Task {
         id: plan.id.clone(),
         title: plan.request.title.clone(),
@@ -364,11 +385,9 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
         exit_code: None,
         error: None,
     };
-    // Atomically publish a complete, durable no-retry marker before touching Git.
-    let mut initial = io_step("state.create_initial", &record, tempfile::NamedTempFile::new_in(&dir))?;
-    io_step("state.write_initial", &record, initial.write_all(&encode_record(&t)?))?;
-    io_step("state.sync_initial", &record, initial.as_file().sync_all())?;
-    initial.persist_noclobber(&record).map_err(|e| context_error("state.publish_initial", &record, GitError::from(e.error)))?;
+    // Publish a durable no-retry marker before touching Git.
+    publish_initial(&dir, &t)?;
+    let record = dir.join(format!("{}.json", t.id));
     let job = Arc::new(Job {
         task: Mutex::new(t.clone()),
         output: Mutex::new((vec![], vec![])),
