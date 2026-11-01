@@ -11,7 +11,7 @@ use super::runner::{self, GitError, GitResult};
 use super::{repo, status};
 
 use super::history::{exec, run};
-fn require_actual_history(root: &Path) -> GitResult<()> {
+pub(super) fn require_actual_history(root: &Path) -> GitResult<()> {
     // Query the actual configured path before our per-command null override.
     let grafts = runner::run(root, ["rev-parse", "--git-path", "info/grafts"])?;
     if !run(root, ["for-each-ref", "--format=%(refname)", "refs/replace/"])?.trim().is_empty()
@@ -81,7 +81,7 @@ fn upstream(root: &Path, branch: &str) -> GitResult<RemoteBranchTarget> {
 }
 /// An ephemeral command-scoped remote has no fetch mappings. Git must not
 /// opportunistically update configured refs before our checks (Git 2.56+).
-fn transport(root: &Path, url: &str) -> GitResult<(Vec<String>, String)> {
+pub(super) fn transport(root: &Path, url: &str) -> GitResult<(Vec<String>, String)> {
     static IDS: AtomicU64 = AtomicU64::new(0);
     let name = format!("revqora-sync-{}-{}", std::process::id(), IDS.fetch_add(1, Ordering::Relaxed));
     if run(root, ["remote"])?.lines().any(|n| n == name) || exec(root, ["config", "--get-all", &format!("remotes.{name}")])?.code != 1 {

@@ -1,3 +1,4 @@
+import { WorkflowBuilder } from "./components/WorkflowBuilder";
 import { AgentWorkspace } from "./components/AgentWorkspace";
 import { WorktreeManager } from "./components/WorktreeManager";
 import { finishWorkspaceStartup, startWorkspaceTracking } from "./lib/repositoryWorkspaces";
@@ -183,6 +184,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
         {overlay?.kind === "blame" && <BlameView root={root} path={overlay.path} rev={overlay.rev} line={overlay.line} />}
         {overlay?.kind === "branches" && <BranchManager key={root} root={root} />}
         {overlay?.kind === "worktrees" && <WorktreeManager key={root} root={root} />}
+        {overlay?.kind === "workflows" && <WorkflowBuilder root={root} />}
         {overlay?.kind === "agents" && <AgentWorkspace key={root} root={root} />}
         {overlay?.kind === "stash" && <StashView key={overlay.index} root={root} index={overlay.index} />}
         {overlay?.kind === "tree" && <TreeBrowser key={overlay.rev} root={root} rev={overlay.rev} />}

@@ -53,6 +53,7 @@ interface Dialog {
 }
 
 export type Overlay =
+  | { kind: "workflows"; root: string }
   | { kind: "agents"; root: string }
   | { kind: "branches"; root: string }
   | { kind: "worktrees"; root: string }

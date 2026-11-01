@@ -1,4 +1,63 @@
 #[tauri::command]
+async fn workflow_catalog(repo: String) -> GitResult<git::workflows::Catalog> {
+    blocking(move || git::workflows::catalog(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn workflow_save(repo: String, definition: git::workflows::Definition, expected_revision: String) -> GitResult<git::workflows::Catalog> {
+    blocking(move || git::workflows::save_definition(&p(&repo), definition, &expected_revision)).await
+}
+
+#[tauri::command]
+async fn workflow_delete(repo: String, id: String, expected_revision: String) -> GitResult<git::workflows::Catalog> {
+    blocking(move || git::workflows::delete_definition(&p(&repo), &id, &expected_revision)).await
+}
+
+#[tauri::command]
+async fn workflow_runs(repo: String) -> GitResult<Vec<git::workflows::Summary>> {
+    blocking(move || git::workflows::runs(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn workflow_run(repo: String, id: String) -> GitResult<git::workflows::Run> {
+    blocking(move || git::workflows::get(&p(&repo), &id)).await
+}
+
+#[tauri::command]
+async fn workflow_begin(
+    repo: String,
+    definition_id: String,
+    expected_revision: String,
+    parameters: git::workflows::Parameters,
+) -> GitResult<git::workflows::Run> {
+    blocking(move || git::workflows::begin(&p(&repo), &definition_id, &expected_revision, parameters)).await
+}
+
+#[tauri::command]
+async fn workflow_review(repo: String, id: String) -> GitResult<git::workflows::Review> {
+    blocking(move || git::workflows::review(&p(&repo), &id)).await
+}
+
+#[tauri::command]
+async fn workflow_execute(repo: String, review: git::workflows::Review, consent: bool) -> GitResult<git::workflows::Run> {
+    blocking(move || git::workflows::execute(p(&repo), review, consent)).await
+}
+
+#[tauri::command]
+async fn workflow_stop(repo: String, id: String) -> GitResult<git::workflows::Run> {
+    blocking(move || git::workflows::stop(&p(&repo), &id)).await
+}
+
+#[tauri::command]
+async fn workflow_acknowledge(repo: String, id: String, checked: bool) -> GitResult<git::workflows::Run> {
+    blocking(move || git::workflows::acknowledge(&p(&repo), &id, checked)).await
+}
+
+#[tauri::command]
+async fn workflow_forget(repo: String, id: String) -> GitResult<()> {
+    blocking(move || git::workflows::forget(&p(&repo), &id)).await
+}
+#[tauri::command]
 async fn branch_cleanup_review(
     repo: String,
     requests: Vec<git::branch_cleanup::Request>,
@@ -1936,6 +1995,17 @@ pub fn run() {
             rebase_studio_capture,
             interactive_rebase,
             conflict_info,
+            workflow_catalog,
+            workflow_save,
+            workflow_delete,
+            workflow_runs,
+            workflow_run,
+            workflow_begin,
+            workflow_review,
+            workflow_execute,
+            workflow_stop,
+            workflow_acknowledge,
+            workflow_forget,
             agent_prepare,
             agent_start,
             agent_tasks,
@@ -2049,6 +2119,7 @@ pub fn run() {
         .expect("error while building Revqora")
         .run(|_, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                git::workflows::cancel_all();
                 git::validation::cancel_all();
                 git::agents::cancel_all();
             }
