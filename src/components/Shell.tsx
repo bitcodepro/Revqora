@@ -42,6 +42,7 @@ import {
   Wrench,
   ShieldCheck,
   Bot,
+  Workflow,
 } from "lucide-react";
 import { useRepos, type RepoTab } from "../lib/store";
 import { resolvedTheme, useSettings } from "../lib/settings";
@@ -125,6 +126,7 @@ export function TopBar() {
             <History size={16} />
           </button>
           <button type="button" className="icon-btn" title="Undo Center" aria-label="Undo Center" onClick={() => void recoveryDialog(root)}><ShieldCheck size={16} /></button>
+        <button type="button" className="btn sm" title="Workflow Builder" aria-label="Workflow Builder" disabled={!root} onClick={()=>root&&openOverlay({kind:"workflows",root})}><Workflow size={14}/><span>Workflows</span></button>
           <button type="button" className="icon-btn" title="Agent Workspace" aria-label="Agent Workspace" onClick={() => openOverlay({ kind: "agents", root })}><Bot size={16} /></button>
           <button className="icon-btn" title="Open terminal here" onClick={() => api.openTerminal(root)}>
             <SquareTerminal size={16} />
@@ -535,7 +537,8 @@ export function CommandPalette() {
         { id: "patch", label: "Apply patch file…", group: "Repository", icon: <Plus size={15} />, run: () => applyPatchFile(root) },
         { id: "browse", label: "Browse files (HEAD)", group: "Repository", icon: <FolderOpen size={15} />, run: () => openOverlay({ kind: "tree", root, rev: "HEAD" }) },
         { id: "worktree-manager", label: "Worktree manager…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => openOverlay({ kind: "worktrees", root }) },
-        { id: "agent-workspace", label: "Agent Workspace…", group: "Repository", icon: <Bot size={15} />, run: () => openOverlay({ kind: "agents", root }) },
+        { id: "workflow-builder", label: "Workflow Builder", group: "Repository", icon: <Workflow size={16}/>, run: () => root && openOverlay({kind:"workflows",root}) },
+      { id: "agent-workspace", label: "Agent Workspace…", group: "Repository", icon: <Bot size={15} />, run: () => openOverlay({ kind: "agents", root }) },
         { id: "worktree", label: "New worktree…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => XA.addWorktree(root) },
         { id: "submodule", label: "Add submodule…", group: "Repository", icon: <Plus size={15} />, run: () => XA.addSubmodule(root) },
         { id: "submodules", label: "Update submodules", group: "Repository", icon: <RefreshCw size={15} />, run: () => XA.updateSubmodules(root) },

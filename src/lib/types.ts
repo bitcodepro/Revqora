@@ -770,3 +770,13 @@ export interface PrCleanupResult { state: "done" | "partial"; localDeleted: bool
 export interface AgentRequest { title: string; provider: "codex" | "claude" | "custom"; executable: string; args: string[]; prompt: string; base: string; worktreePath?: string; timeoutSeconds: number }
 export interface AgentPlan { id: string; request: AgentRequest; executableHash: string; profilePath: string; creation: WorktreeCreationReview }
 export interface AgentTask { id: string; title: string; prompt: string; provider: string; repository: string; path: string; branch: string; baseOid: string; executable: string; args: string[]; profilePath: string; phase: string; createdAt: number; elapsedMs: number; stdout: string; stderr: string; truncated: boolean; exitCode: number | null; error: string | null }
+
+// Explicitly reviewed, durable workflow sequences.
+export interface WorkflowStep { kind:"checkClean"|"checkBranch"|"branch"|"cherryPick"|"command"|"publish"|"pr"; label:string;value:string;extra:string;body:string;timeoutSeconds:number;when:"always"|"clean"|"dirty";onFalse:"stop"|"skip" }
+export interface WorkflowDefinition {id:string;name:string;steps:WorkflowStep[]}
+export interface WorkflowCatalog {revision:string;definitions:WorkflowDefinition[]}
+export interface WorkflowParameters {branch:string;base:string}
+export interface WorkflowResult {phase:string;message:string;stdout:string;stderr:string;truncated:boolean;exitCode:number|null}
+export interface WorkflowRun {id:string;repository:string;definition:WorkflowDefinition;parameters:WorkflowParameters;phase:string;cursor:number;createdAt:number;results:WorkflowResult[];error:string|null}
+export interface WorkflowSummary {id:string;name:string;phase:string;cursor:number;total:number;createdAt:number}
+export interface WorkflowReview {runId:string;cursor:number;runRevision:string;stateToken:string;branch:string|null;head:string|null;step:WorkflowStep;resolved:string[];connection:string;remoteFingerprint:string;remoteHead:string|null;skip:boolean;conditionMet:boolean;consentRequired:boolean;explanation:string}

@@ -1,5 +1,6 @@
 // Real native account UI against loopback API fixtures; no external service receives credentials.
 import http from "node:http";
+import { openRepository } from "./ui-readiness.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
@@ -34,7 +35,7 @@ export async function forgeAccountsSmoke({page,check,shot,work,profile,restart})
   const account=async login=>(await invoke("forge_accounts_snapshot")).accounts.find(p=>p.login===login);
   const storageFile=path.join(profile,"revqora-data","accounts","accounts.json");
   try{
-    await invoke("plugin:event|emit",{event:"open-paths",payload:[root]});await page.locator(".topbar .repo-current > b").filter({hasText:"stage12-accounts"}).waitFor();
+    await openRepository(page,root);
     await check("API account verification returns metadata and keeps session tokens out of settings and disk",async()=>{
       await open();await add(tokens[0],"first-user");const snapshot=await invoke("forge_accounts_snapshot");if(snapshot.accounts.length!==1||snapshot.accounts[0].status!=="available"||snapshot.accounts[0].storage!=="session")throw Error("Session account not available");
       const local=await page.evaluate(()=>JSON.stringify({...localStorage}));if(local.includes(tokens[0])||JSON.stringify(snapshot).includes(tokens[0])||fs.readFileSync(storageFile,"utf8").includes(tokens[0]))throw Error("Session token leaked into public settings");await shot("100-api-accounts");
@@ -66,7 +67,7 @@ export async function forgeAccountsSmoke({page,check,shot,work,profile,restart})
       await modal().getByRole("textbox",{name:"API server URL",exact:true}).fill(`${url}/redirect`);await modal().getByLabel("API access token",{exact:true}).fill(tokens[0]);await button("Verify and save account").click();await modal().getByRole("alert").waitFor();await ready();if(requests.some(r=>r.destination)||(await invoke("forge_accounts_snapshot")).accounts.length!==2)throw Error("Redirect forwarded credentials or saved a false identity");await button("Cancel account").click();
     });
     await check("real app restart retains encrypted metadata and remote selection but restores neither vault keys nor session tokens",async()=>{
-      await button("Close").click();page=await restart();page.setDefaultTimeout(60000);await page.locator(".topbar .repo-current > b").filter({hasText:"stage12-accounts"}).waitFor();await open();
+      await button("Close").click();page=await restart();page.setDefaultTimeout(60000);await openRepository(page,root);await open();
       const s=await invoke("forge_accounts_snapshot");if(s.vaultUnlocked||s.accounts.find(p=>p.login==="first-user")?.status!=="locked"||s.accounts.find(p=>p.login==="second-user")?.status!=="reconnect")throw Error("Restart restored secret keys or lost encrypted account metadata");
       if((await invoke("forge_connections",{repo:root})).remotes[0]?.accountId!==(await account("first-user")).id)throw Error("Restart lost the explicit account binding");
       await modal().getByLabel("Vault password",{exact:true}).fill(vaultPassword);await button("Unlock vault").click();await ready();if((await invoke("pull_requests",{repo:root})).items[0]?.author!=="first-user")throw Error("Persistent encrypted token could not reconnect after restarting");await shot("103-vault-after-restart");

@@ -71,6 +71,17 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  workflowCatalog: (repo: string) => call<import("./types").WorkflowCatalog>("workflow_catalog", {repo}),
+  workflowSave: (repo: string, definition: import("./types").WorkflowDefinition, expectedRevision: string) => call<import("./types").WorkflowCatalog>("workflow_save", {repo,definition,expectedRevision}),
+  workflowDelete: (repo: string, id: string, expectedRevision: string) => call<import("./types").WorkflowCatalog>("workflow_delete", {repo,id,expectedRevision}),
+  workflowRuns: (repo: string) => call<import("./types").WorkflowSummary[]>("workflow_runs", {repo}),
+  workflowRun: (repo: string, id: string) => call<import("./types").WorkflowRun>("workflow_run", {repo,id}),
+  workflowBegin: (repo: string, definitionId: string, expectedRevision: string, parameters: import("./types").WorkflowParameters) => call<import("./types").WorkflowRun>("workflow_begin", {repo,definitionId,expectedRevision,parameters}),
+  workflowReview: (repo: string, id: string) => call<import("./types").WorkflowReview>("workflow_review", {repo,id}),
+  workflowExecute: (repo: string, review: import("./types").WorkflowReview, consent: boolean) => call<import("./types").WorkflowRun>("workflow_execute", {repo,review,consent}),
+  workflowStop: (repo: string, id: string) => call<import("./types").WorkflowRun>("workflow_stop", {repo,id}),
+  workflowAcknowledge: (repo: string, id: string, checked: boolean) => call<import("./types").WorkflowRun>("workflow_acknowledge", {repo,id,checked}),
+  workflowForget: (repo: string, id: string) => call<void>("workflow_forget", {repo,id}),
   agentPrepare: (repo: string, request: import("./types").AgentRequest) => call<import("./types").AgentPlan>("agent_prepare", { repo, request }),
   agentStart: (repo: string, plan: import("./types").AgentPlan, consent: boolean) => call<import("./types").AgentTask>("agent_start", { repo, plan, consent }),
   agentTasks: (repo: string) => call<import("./types").AgentTask[]>("agent_tasks", { repo }),

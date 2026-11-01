@@ -20,8 +20,8 @@ cross-cutting work and does not consume a feature stage.
 | 13 | PR Center: browse, create, edit, templates and diffs | Merged (#21) |
 | 14 | PR Center: comments, threads and review submissions | Merged (#22) |
 | 15 | PR Center: CI, server protections, merge and branch cleanup | Merged (#23) |
-| 16 | Agent Workspace | Implemented; review pending |
-| 17 | Workflow Builder | Planned |
+| 16 | Agent Workspace | Merged (#24) |
+| 17 | Workflow Builder | Implemented; review pending |
 | 18 | Automated PR Workflow | Planned |
 | 19 | Semantic diff and history tools | Planned |
 | 20 | Stacked branches | Planned |
@@ -302,3 +302,56 @@ Automated PR Workflow, semantic diff/history tools and stacked branches.
 
 Four stages remain after stage 16: Workflow Builder, Automated PR Workflow,
 semantic diff/history tools and stacked branches.
+
+## Stage 17 — Workflow Builder
+
+- Toolbar and command-palette workspace with saved recipes, run history and step
+  progress. Typed visual editor supports reordering, labels, conditions and
+  per-command timeouts. Up to 50 recipes, 16 steps per recipe and 50 retained runs;
+  explicit deletion/forgetting never removes branches, files, PRs or recovery data.
+- Steps: require clean Git-visible files; require a branch; create/check out a new
+  branch from an exact commit; cherry-pick exact non-merge commits; run a literal
+  shell test/build command; publish an exact commit; create an ordinary PR using
+  the selected API connection. No implicit merge, cleanup or force-history rewrite.
+- New runs freeze a copy of the recipe and parameters. The user reviews each next
+  step; every command, Git mutation and publication needs its own consent. No
+  background rule runs a later step. Checks do not require mutation consent.
+- Only whole structured Git fields expand the branch/base parameters. Commands and
+  PR title/description remain literal. Arbitrary shell commands can change files,
+  call services and execute tools; they are not a sandbox. Never put secrets in
+  recipes: commands and their output are retained locally beside the executable.
+- Conditions inspect current Git-visible clean/dirty status; false conditions stop
+  or explicitly record a skip. Ignored files are outside the clean check. Branch
+  checkout uses --no-overwrite-ignore; occupied/existing branch names are not reused.
+  Cherry-pick conflicts stop with recovery retained; resolve/abort in existing tools.
+- Publication checks physical history, rejects replace refs/grafts, requires one
+  identical fetch/push URL and uses isolated command-scoped transport. It publishes
+  the exact reviewed OID to one heads ref with an exact server-ref lease, disabling
+  tag following and submodule pushes. No tracking configuration is changed. Fetch
+  missing destination history with the individual Git tools before reviewing again.
+- PR creation requires the current source commit already published on the selected
+  remote and binds the API identity. It reuses provider validation and ordinary PR
+  creation; no merge, policy bypass or branch cleanup follows. Server permissions
+  remain final. Source observation and PR creation are optimistic where the provider
+  cannot atomically pin the source; a concurrent server writer can still advance it.
+- Per-common-repository execution uses the existing operation queue, plus a portable
+  run lock across windows sharing this data folder. Poll/stop bypass the writer gate.
+  Commands use the existing cancellable validation process tree and recovery snapshot;
+  output in run history is bounded to 8 KiB per stream per step, with visible truncation.
+- A durable running marker consumes the step before dispatch. Failed or interrupted
+  actions are never retried automatically, including lost IPC responses and restarts.
+  Unknown remote results or worker interruptions require checking Git/server state and
+  explicit acknowledgement before another run. Acknowledgement abandons the record;
+  it does not undo changes or claim success. Stop cancels command process trees; Git
+  and HTTP steps stop after the current action, without unsafe partial interruption.
+- Definitions use revision-conditional writes. Native JSON readers/writers share an
+  8 MiB serialized limit, including escaped output; records/settings/logs/temp stay in
+  portable data. An external IDE/CLI does not participate in the app operation queue.
+- Six native scenarios extend the worktrees shard (139 total, retaining the prior 133).
+  Headless React checks exercise the editor/reviews with mocked IPC and real offline
+  commands; real Rust/Git tests separately check stale/replay guards, conflicts,
+  ignored-file preservation, conditional non-execution, cancellation and publication.
+
+Three stages remain: Automated PR Workflow, semantic diff/history tools and stacked
+branches. Automated agent-review/CI rules belong to stage 18; no such automation is
+silently enabled by a saved recipe.
