@@ -11,6 +11,9 @@ mod checks;
 mod cleanup;
 mod providers;
 pub use cleanup::{cleanup_act, cleanup_plan, CleanupInput, CleanupResult, CleanupReview};
+pub(super) fn same_repository_source(f: &ForgeInfo, raw: &Value) -> bool {
+    cleanup::source_repo(f, raw)
+}
 fn error(s: &str) -> GitError {
     GitError::new(s).kind("pr-merge")
 }

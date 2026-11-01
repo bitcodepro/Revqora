@@ -92,8 +92,11 @@ Screenshots use a generated demo repository (`scripts/make-demo-repo.sh`); all n
 **Review workflows and dependent branches**
 - PR follow-up recipes connect review feedback to an explicitly approved installed
   CLI in a new worktree, literal tests, reviewed commit/publication, GitHub re-review
-  requests and existing policy-checked merge/cleanup. Optional automatic validation
-  pauses before every Git/server write; interrupted actions never replay.
+  requests and existing policy-checked merge/cleanup. Agent follow-up currently
+  requires a source branch in the selected repository; publication targets that PR,
+  and later CI/review/merge steps require its exact clean agent commit. Optional
+  automatic validation pauses before built-in Git/server steps; user commands keep
+  their own permissions. Interrupted actions never replay.
 - Semantic summaries group C#, TypeScript/TSX and strict JSON changes beside the
   original diff. History Explorer searches literal changed code across available
   branches/tags or compares named function/class bodies and JSON subtrees through

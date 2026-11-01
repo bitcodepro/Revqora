@@ -33,7 +33,7 @@ fn same(v: &Value, a: &str, b: &str) -> bool {
     let a = ident(v, a);
     !a.is_empty() && a == ident(v, b)
 }
-fn source_repo(f: &ForgeInfo, v: &Value) -> bool {
+pub(super) fn source_repo(f: &ForgeInfo, v: &Value) -> bool {
     match f.kind.as_str() {
         "github" => same(v, "/head/repo/id", "/base/repo/id") && text(v, "/base/repo/full_name").eq_ignore_ascii_case(&f.project),
         "gitlab" => same(v, "/source_project_id", "/target_project_id"),

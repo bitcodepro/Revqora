@@ -98,7 +98,14 @@ pub(super) fn build_review_with(root: &Path, r: &Run, previous: Option<&Review>)
             return Ok(out);
         }
         match step.kind.as_str() {
-            "prAgent" | "prChecks" | "prRequestReview" | "prMerge" | "prCleanup" => pull_requests::review(root, &step, &mut out, previous)?,
+            "prAgent" | "prChecks" | "prRequestReview" | "prMerge" | "prCleanup" => {
+                if r.workspace.is_some() && step.kind != "prAgent" && !clean {
+                    return Err(fail(
+                        "Commit or stash Git-visible edits in the agent working copy before checking published CI, requesting review, merging or cleaning up.",
+                    ));
+                }
+                pull_requests::review(root, r, &step, &mut out, previous)?;
+            }
             "commit" => {
                 if step.value.trim().is_empty() || clean {
                     return Err(fail("Enter a commit message and review changed files before committing."));
@@ -159,6 +166,7 @@ pub(super) fn build_review_with(root: &Path, r: &Run, previous: Option<&Review>)
                 out.explanation=format!("Run this literal shell command in the working directory ({} second timeout). It can change files or access services; it is not a sandbox. A recovery checkpoint precedes execution.",step.timeout_seconds);
             }
             "publish" => {
+                pull_requests::publication(root, r, &step)?;
                 sync::require_actual_history(root)?;
                 branch(root, &step.extra)?;
                 let head = st.oid.as_ref().ok_or_else(|| fail("No commit to publish."))?;

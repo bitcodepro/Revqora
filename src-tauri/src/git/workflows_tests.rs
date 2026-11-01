@@ -378,6 +378,8 @@ fn pr_agent_tests_and_commit_use_the_isolated_working_copy_and_review_requests_c
     let server_feedback = feedback_changed.clone();
     let deny = Arc::new(AtomicBool::new(false));
     let server_deny = deny.clone();
+    let forked = Arc::new(AtomicBool::new(false));
+    let server_forked = forked.clone();
     let http = Http::new(move |req| {
         let headers = "Content-Type: application/json\r\n".to_owned();
         let path = req.path.split('?').next().unwrap();
@@ -391,6 +393,9 @@ fn pr_agent_tests_and_commit_use_the_isolated_working_copy_and_review_requests_c
             let mut v = metadata("github", "Fixture follow-up", "", "main", 1);
             v["head"]["sha"] = json!(*server_head.lock());
             v["base"]["sha"] = json!(*server_head.lock());
+            v["head"]["repo"] =
+                if server_forked.load(Ordering::Acquire) { json!({"id":20,"full_name":"other/repo"}) } else { json!({"id":10,"full_name":"team/repo"}) };
+            v["base"]["repo"] = json!({"id":10,"full_name":"team/repo"});
             return (200, headers, v.to_string());
         }
         if path.ends_with("/api/graphql") {
@@ -454,7 +459,14 @@ fn pr_agent_tests_and_commit_use_the_isolated_working_copy_and_review_requests_c
         (fs::canonicalize("/bin/sh").unwrap().to_string_lossy().into_owned(), vec!["-c", "printf 'review fixed' > agent-fix.txt; echo 'agent done'"]);
     agent.body=json!({"provider":"custom","executable":executable,"argsText":serde_json::to_string(&args).unwrap(),"prompt":"Fix only actionable feedback","worktreePath":null}).to_string();
     agent.timeout_seconds = 30;
-    let run = start(root, vec![agent, step("command", "echo checked > validation-proof.txt", ""), step("commit", "fix: apply reviewed changes", "")]);
+    let run = start(
+        root,
+        vec![agent, step("command", "echo checked > validation-proof.txt", ""), step("commit", "fix: apply reviewed changes", ""), step("prChecks", "7", "")],
+    );
+    forked.store(true, Ordering::Release);
+    assert!(review(root, &run.id).unwrap_err().message.contains("source branch in the selected repository"));
+    assert!(crate::git::agents::list(root).unwrap().is_empty(), "A fork cannot inherit the template's push destination");
+    forked.store(false, Ordering::Release);
     let proof = review(root, &run.id).unwrap();
     assert!(proof.resolved[3].contains("Fix the parser issue"));
     feedback_changed.store(true, Ordering::Release);
@@ -469,14 +481,26 @@ fn pr_agent_tests_and_commit_use_the_isolated_working_copy_and_review_requests_c
     let copy = PathBuf::from(after.workspace.clone().unwrap());
     assert!(!root.join("agent-fix.txt").exists());
     assert!(copy.join("agent-fix.txt").exists());
+    let mut dirty_check = after.clone();
+    dirty_check.definition.steps[dirty_check.cursor] = step("prChecks", "7", "");
+    assert!(build_review(&copy, &dirty_check).unwrap_err().message.contains("Commit or stash"));
     // Continuing from the new tab must still find the same durable run and use its copy.
     let after = next(&copy, &after);
     assert!(copy.join("validation-proof.txt").exists());
     assert!(!root.join("validation-proof.txt").exists());
-    let finished = next(root, &after);
-    assert_eq!(finished.phase, "completed", "{finished:?}");
+    let committed = next(root, &after);
+    assert_eq!(committed.phase, "ready", "{committed:?}");
     assert_eq!(runner::run(root, ["rev-parse", "main"]).unwrap().trim(), source_head);
     assert!(crate::git::status::status(&copy).unwrap().files.is_empty());
+    let mut wrong_destination = committed.clone();
+    wrong_destination.definition.steps[wrong_destination.cursor] = step("publish", "origin", "unrelated-topic");
+    assert!(build_review(&copy, &wrong_destination).unwrap_err().message.contains("selected PR source branch origin/topic"));
+    // Green checks still refer to the old source until publication is reflected
+    // by the authoritative PR API. They cannot authorize merging the old code.
+    assert!(review(root, &committed.id).unwrap_err().message.contains("PR source does not match"));
+    *served.lock() = runner::run(&copy, ["rev-parse", "HEAD"]).unwrap().trim().into();
+    let finished = next(root, &committed);
+    assert_eq!(finished.phase, "completed", "{finished:?}");
     let request = start(root, vec![step("prRequestReview", "7", "reviewer")]);
     let proof = review(root, &request.id).unwrap();
     deny.store(true, Ordering::Release);

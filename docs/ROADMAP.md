@@ -374,6 +374,12 @@ silently enabled by a saved recipe.
   copy, accessible from either the original tab or that copy. Actual CLI logs,
   exit status and durable agent history are retained. An interrupted/missing agent
   result stops with uncertainty; no command or Git action is replayed after restart.
+- Built-in PR agents require a source branch in the selected repository. Fork or
+  unknown source repositories stop before agent preparation; their existing manual
+  Git/PR tools remain available. Agent publication must target the selected API
+  remote and the same PR source branch. Following CI/re-review/merge/cleanup steps
+  require that PR number and a Git-visible clean agent copy whose HEAD matches the
+  server source. Green checks on the old source cannot approve unpublished fixes.
 - Optional automatic validation runs only displayed check/command/CI steps while
   the workspace is open and the user has enabled it. Closing stops new dispatch;
   an already started step retains existing stop controls. This is not a background

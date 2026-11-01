@@ -18,11 +18,41 @@ fn number(s: &Step) -> GitResult<u64> {
 }
 fn selected(root: &Path, s: &Step) -> GitResult<(forge::ForgeInfo, pr_center::Detail)> {
     let f = forge::detect(root)?.ok_or_else(|| fail("Choose a PR API connection first."))?;
-    let d = pr_center::detail(root, number(s)?, f.connection_revision.as_deref().unwrap_or_default())?;
+    let f = forge::reviewed_connection(root, f.connection_revision.as_deref().unwrap_or_default())?;
+    let (d, raw) = pr_center::load_detail(root, &f, number(s)?)?;
     if d.pull.state != "open" && s.kind != "prCleanup" {
         return Err(fail("PR follow-up requires an open pull request."));
     }
+    if s.kind == "prAgent" && !pr_merge::same_repository_source(&f, &raw) {
+        return Err(fail("PR agent workflows currently require a source branch in the selected repository. Fork or unknown source repositories need the separate Git/PR tools; no agent was launched."));
+    }
     Ok((f, d))
+}
+fn active_agent(r: &Run) -> GitResult<&Step> {
+    r.definition
+        .steps
+        .iter()
+        .enumerate()
+        .take(r.cursor)
+        .rev()
+        .find(|(i, s)| {
+            s.kind == "prAgent" && r.results.get(*i).is_some_and(|row| row.phase == "completed" && row.workspace.as_deref() == r.workspace.as_deref())
+        })
+        .map(|(_, s)| s)
+        .ok_or_else(|| fail("The agent working copy has no matching completed PR step. Inspect its history before continuing."))
+}
+pub(super) fn publication(root: &Path, r: &Run, s: &Step) -> GitResult<()> {
+    if r.workspace.is_none() {
+        return Ok(());
+    }
+    let (f, d) = selected(root, active_agent(r)?)?;
+    if s.value != f.remote || s.extra != d.pull.head {
+        return Err(fail(format!(
+            "Publish this agent's changes only to the selected PR source branch {}/{}. Update the recipe before creating a new run.",
+            f.remote, d.pull.head
+        )));
+    }
+    Ok(())
 }
 fn feedback(root: &Path, f: &forge::ForgeInfo, d: &pr_center::Detail) -> GitResult<String> {
     let mut text = format!("PR #{}: {}\nSource commit: {}\n", d.pull.number, d.pull.title, d.pull.head_sha);
@@ -70,8 +100,16 @@ fn reviewers(s: &Step) -> GitResult<Vec<String>> {
     }
     Ok(names)
 }
-pub(super) fn review(root: &Path, s: &Step, p: &mut Review, old: Option<&Review>) -> GitResult<()> {
+pub(super) fn review(root: &Path, r: &Run, s: &Step, p: &mut Review, old: Option<&Review>) -> GitResult<()> {
     let (f, d) = selected(root, s)?;
+    if r.workspace.is_some() && s.kind != "prAgent" {
+        if number(s)? != number(active_agent(r)?)? {
+            return Err(fail("Follow-up checks, reviews and merge must use the PR that produced this agent working copy."));
+        }
+        if p.head.as_deref() != Some(d.pull.head_sha.as_str()) {
+            return Err(fail("The PR source does not match the agent working copy's current commit. Publish that exact commit to the PR source and refresh before checking CI, requesting review, merging or cleaning up."));
+        }
+    }
     p.connection = f.connection_revision.clone().ok_or_else(|| fail("Refresh the API connection."))?;
     p.remote_fingerprint = d.revision.clone();
     p.resolved = vec![d.pull.head_sha.clone(), d.base_sha.clone()];
@@ -94,7 +132,7 @@ pub(super) fn review(root: &Path, s: &Step, p: &mut Review, old: Option<&Review>
                 }
                 None => agents::prepare(root, request)?,
             };
-            p.explanation = format!("Send the displayed feedback to {} in a new isolated working copy at {}. Source {}. No commit, publication or merge is included. Later test/commit steps use this working copy.", plan.request.provider, plan.creation.path, d.pull.head_sha);
+            p.explanation = format!("Send the displayed feedback to {} in a new isolated working copy at {}. PR source {} → {} at {}. No commit, publication or merge is included. Later test/commit steps use this working copy.", plan.request.provider, plan.creation.path, d.pull.head, d.pull.base, d.pull.head_sha);
             p.resolved.push(serde_json::to_string(&plan).map_err(|e| fail(e.to_string()))?);
         }
         "prChecks" => p.explanation = format!("Wait up to {} seconds for all reported CI checks on exact source {} to succeed. Missing, neutral, skipped, failed or cancelled checks do not pass. A changed PR stops this wait. Required-review and branch-policy checks remain enforced separately by the merge step.", s.timeout_seconds, d.pull.head_sha),
@@ -108,7 +146,7 @@ pub(super) fn review(root: &Path, s: &Step, p: &mut Review, old: Option<&Review>
         "prMerge" => {
             let plan = pr_merge::plan(root, number(s)?, &p.connection, &d.revision)?;
             if !plan.blockers.is_empty() || !plan.methods.iter().any(|m| m.id == s.extra) { return Err(fail(format!("Merge is blocked or method unavailable: {}", plan.blockers.join("; ")))); }
-            p.explanation = format!("Merge PR #{} using {} as {}. Fresh CI, reviewer, branch-policy and source checks are enforced again at dispatch. No bypass or source deletion.", d.pull.number, s.extra, plan.actor);
+            p.explanation = format!("Merge PR #{}: {} → {}, source {}, using {} as {}. Fresh CI, reviewer, branch-policy and source checks are enforced again at dispatch. No bypass or source deletion.", d.pull.number, d.pull.head, d.pull.base, d.pull.head_sha, s.extra, plan.actor);
             p.resolved.push(plan.revision);
         }
         "prCleanup" => {
