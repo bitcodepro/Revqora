@@ -16,7 +16,7 @@ function NewTask({root,onCreated,close}:{root:string;onCreated:(t:AgentTask)=>vo
   const [worktreePath,setWorktreePath]=useState("");
   const [plan,setPlan]=useState<AgentPlan|null>(null),[consent,setConsent]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(""),[uncertain,setUncertain]=useState(false);
   const inflight=useRef(false),version=useRef(0),alive=useRef(true);
-  useEffect(()=>()=>{alive.current=false;version.current++;},[]);
+  useEffect(()=>{alive.current=true;return()=>{alive.current=false;version.current++;};},[]);
   const invalidate=()=>{version.current++;setPlan(null);setConsent(false);setError("");};
   const prepare=async()=>{
     if(inflight.current)return;inflight.current=true;const v=++version.current;setBusy(true);setError("");

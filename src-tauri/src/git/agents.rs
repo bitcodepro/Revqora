@@ -28,6 +28,10 @@ use std::{
 };
 
 const OUTPUT_LIMIT: usize = 128 * 1024;
+// JSON can expand each raw control byte to six bytes (or invalid UTF-8 to
+// three). Two bounded output streams alone can legitimately exceed 1 MiB.
+// Every writer and reader uses the same serialized-byte budget.
+const RECORD_LIMIT: usize = 4 * 1024 * 1024;
 const MAX_TASKS: usize = 100;
 fn fail(s: impl Into<String>) -> GitError {
     GitError::new(s).kind("agent-workspace")
@@ -208,14 +212,44 @@ fn snapshot(job: &Job) -> Task {
     }
     t
 }
+fn encode_record(t: &Task) -> GitResult<Vec<u8>> {
+    struct Bounded(Vec<u8>);
+    impl Write for Bounded {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > RECORD_LIMIT.saturating_sub(self.0.len()) {
+                return Err(std::io::Error::other("Agent history exceeds its serialized byte budget."));
+            }
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut output = Bounded(Vec::new());
+    serde_json::to_writer(&mut output, t).map_err(|e| fail(e.to_string()))?;
+    Ok(output.0)
+}
+fn read_record(path: &Path) -> GitResult<Task> {
+    direct(path)?;
+    // Bound the actual read as well: metadata can become stale before open/read.
+    let mut bytes = Vec::new();
+    File::open(path)?.take(RECORD_LIMIT as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > RECORD_LIMIT {
+        return Err(fail("An agent record exceeds the serialized history limit."));
+    }
+    serde_json::from_slice(&bytes).map_err(|e| fail(format!("Cannot read agent history: {e}")))
+}
 fn save(dir: &Path, t: &Task) -> GitResult<()> {
+    // Validate completely before replacing an existing readable record.
+    let bytes = encode_record(t)?;
     direct(dir)?;
     let dest = dir.join(format!("{}.json", t.id));
     if dest.exists() {
         direct(&dest)?;
     }
     let mut f = tempfile::NamedTempFile::new_in(dir)?;
-    serde_json::to_writer(&mut f, t).map_err(|e| fail(e.to_string()))?;
+    f.write_all(&bytes)?;
     f.as_file().sync_all()?;
     f.persist(dest).map_err(|e| e.error)?;
     Ok(())
@@ -236,10 +270,7 @@ pub fn list(root: &Path) -> GitResult<Vec<Task>> {
             continue;
         }
         direct(&p)?;
-        if e.metadata()?.len() > 1024 * 1024 {
-            return Err(fail("An agent record is unexpectedly large."));
-        }
-        let mut t: Task = serde_json::from_slice(&fs::read(&p)?).map_err(|e| fail(format!("Cannot read agent history: {e}")))?;
+        let mut t = read_record(&p)?;
         if t.id != id {
             return Err(fail("Agent history identity does not match its file."));
         }
@@ -310,7 +341,7 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
     };
     // Atomically publish a complete, durable no-retry marker before touching Git.
     let mut initial = tempfile::NamedTempFile::new_in(&dir)?;
-    serde_json::to_writer(&mut initial, &t).map_err(|e| fail(e.to_string()))?;
+    initial.write_all(&encode_record(&t)?)?;
     initial.as_file().sync_all()?;
     initial.persist_noclobber(record).map_err(|_| fail("This task was already submitted. Refresh history; do not launch it again."))?;
     let job = Arc::new(Job {
@@ -438,47 +469,56 @@ pub fn cancel_all() {
     }
 }
 fn reader(mut pipe: impl Pipe, job: Arc<Job>, stderr: bool, stop: Arc<AtomicBool>) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let mut b = [0; 8192];
-        let mut drained = 0;
-        loop {
-            let ending = stop.load(Ordering::Acquire);
-            if ending && drained > OUTPUT_LIMIT {
-                break;
-            }
-            match available(&pipe) {
-                Ok(true) => {}
-                Ok(false) => {
-                    if ending {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(15));
-                    continue;
-                }
-                Err(_) => break,
-            }
-            match pipe.read(&mut b) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if ending {
-                        drained += n;
-                    }
-                    let kept = {
-                        let mut o = job.output.lock();
-                        let v = if stderr { &mut o.1 } else { &mut o.0 };
-                        let n = n.min(OUTPUT_LIMIT.saturating_sub(v.len()));
-                        v.extend_from_slice(&b[..n]);
-                        n
-                    };
-                    if kept < n {
-                        job.task.lock().truncated = true;
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(15)),
-                Err(_) => break,
-            }
+    thread::spawn(move || collect_output(&mut pipe, available, &job, stderr, &stop))
+}
+fn collect_output<R: Read>(pipe: &mut R, mut ready: impl FnMut(&R) -> std::io::Result<bool>, job: &Job, stderr: bool, stop: &AtomicBool) {
+    let mut b = [0; 8192];
+    let mut drained = 0;
+    loop {
+        let ending = stop.load(Ordering::Acquire);
+        if ending && drained > OUTPUT_LIMIT {
+            break;
         }
-    })
+        match ready(pipe) {
+            Ok(true) => {}
+            Ok(false) => {
+                if ending {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(15));
+                continue;
+            }
+            Err(_) => break,
+        }
+        match pipe.read(&mut b) {
+            Ok(0) => break,
+            Ok(n) => {
+                if ending {
+                    drained += n;
+                }
+                let kept = {
+                    let mut o = job.output.lock();
+                    let v = if stderr { &mut o.1 } else { &mut o.0 };
+                    let n = n.min(OUTPUT_LIMIT.saturating_sub(v.len()));
+                    v.extend_from_slice(&b[..n]);
+                    n
+                };
+                if kept < n {
+                    job.task.lock().truncated = true;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // A detached descendant can keep the write end open forever.
+                // Drain only bytes already queued; never wait for its EOF.
+                if ending {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(15));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
 }
 fn execute(plan: &Plan, job: &Arc<Job>, dir: &Path) -> GitResult<()> {
     let home = Path::new(&plan.profile_path);

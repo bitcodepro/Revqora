@@ -1,5 +1,155 @@
 use super::*;
 use crate::git::runner;
+fn output_job(root: &Path) -> Job {
+    Job {
+        task: Mutex::new(Task {
+            id: "a".repeat(32),
+            title: "Output fixture".into(),
+            prompt: "Fixture".into(),
+            provider: "custom".into(),
+            repository: root.to_string_lossy().into_owned(),
+            path: root.join("retained-copy").to_string_lossy().into_owned(),
+            branch: "fixture".into(),
+            base_oid: "b".repeat(40),
+            executable: String::new(),
+            args: vec![],
+            profile_path: String::new(),
+            phase: "completed".into(),
+            created_at: 1,
+            elapsed_ms: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            truncated: false,
+            exit_code: Some(0),
+            error: None,
+        }),
+        output: Mutex::new((vec![], vec![])),
+        cancel: AtomicBool::new(false),
+        done: AtomicBool::new(true),
+        clock: Instant::now(),
+    }
+}
+
+#[test]
+fn stopped_reader_drains_buffered_bytes_but_does_not_wait_for_an_open_pipe() {
+    // This exercises the Unix WouldBlock path on every platform. A second read
+    // deliberately panics, so a regression fails promptly instead of hanging CI.
+    struct OpenPipe(bool);
+    impl Read for OpenPipe {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            assert!(!self.0, "Reader waited again after stop + WouldBlock");
+            self.0 = true;
+            Err(std::io::ErrorKind::WouldBlock.into())
+        }
+    }
+    let job = output_job(Path::new("unused"));
+    let stop = AtomicBool::new(true);
+    collect_output(&mut OpenPipe(false), |_| Ok(true), &job, false, &stop);
+    collect_output(&mut std::io::Cursor::new(b"buffered after exit"), |_| Ok(true), &job, false, &stop);
+    assert_eq!(snapshot(&job).stdout, "buffered after exit");
+    struct InfinitePipe;
+    impl Read for InfinitePipe {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            bytes.fill(b'x');
+            Ok(bytes.len())
+        }
+    }
+    collect_output(&mut InfinitePipe, |_| Ok(true), &job, true, &stop);
+    assert_eq!(snapshot(&job).stderr.len(), OUTPUT_LIMIT);
+    assert!(snapshot(&job).truncated);
+}
+
+#[test]
+fn escaped_control_and_invalid_output_history_remains_readable_deletable_and_launchable() {
+    let r = repo();
+    let dir = store(r.path()).unwrap();
+    let job = output_job(r.path());
+    for (out, err) in [(0, 0), (1, 255)] {
+        *job.output.lock() = (vec![out; OUTPUT_LIMIT], vec![err; OUTPUT_LIMIT]);
+        let task = snapshot(&job);
+        save(&dir, &task).unwrap();
+        let path = dir.join(format!("{}.json", task.id));
+        assert!(fs::metadata(&path).unwrap().len() > 1024 * 1024, "Fixture must exceed the old read limit");
+        assert!(fs::metadata(&path).unwrap().len() <= RECORD_LIMIT as u64);
+        let loaded = list(r.path()).unwrap().remove(0);
+        assert_eq!(loaded.stdout, task.stdout);
+        assert_eq!(loaded.stderr, task.stderr);
+        let before = fs::read(&path).unwrap();
+        let mut oversized = task.clone();
+        oversized.stdout = "x".repeat(RECORD_LIMIT + 1);
+        assert!(save(&dir, &oversized).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before, "Rejected serialization must preserve the previous valid record");
+        forget(r.path(), &task.id).unwrap();
+        assert!(list(r.path()).unwrap().is_empty());
+    }
+    // A large, valid previous record must not poison start's history preflight.
+    save(&dir, &snapshot(&job)).unwrap();
+    let task = start(r.path().to_owned(), prepare(r.path(), request("echo history-is-readable")).unwrap(), true).unwrap();
+    let task = wait(r.path(), &task.id);
+    assert_eq!(task.phase, "completed", "{:?}", task.error);
+    forget(r.path(), &snapshot(&job).id).unwrap();
+    cleanup(r.path(), &task);
+}
+
+#[cfg(unix)]
+#[test]
+fn detached_descendant_holding_output_cannot_keep_the_agent_queue_locked() {
+    struct Escaped(i32);
+    impl Drop for Escaped {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(self.0, libc::SIGKILL);
+            }
+        }
+    }
+    let node = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|p| p.join("node"))
+        .find(|p| p.is_file())
+        .expect("Node is required by the project test setup");
+    let node = fs::canonicalize(node).unwrap();
+    for mode in ["completed", "cancelled", "timed-out"] {
+        let r = repo();
+        let fixture = tempfile::tempdir().unwrap();
+        let script = fixture.path().join("agent.cjs");
+        let pid_file = fixture.path().join("escaped.pid");
+        fs::write(&script, "const fs=require('fs'),{spawn}=require('child_process');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore',1,2]});fs.writeFileSync(process.argv[2],String(child.pid));child.unref();if(process.argv[3]!=='completed')setInterval(()=>{},1000);").unwrap();
+        let mut req = request("unused");
+        req.executable = node.to_string_lossy().into_owned();
+        req.args = vec![script.to_string_lossy().into_owned(), pid_file.to_string_lossy().into_owned(), mode.into()];
+        req.timeout_seconds = if mode == "timed-out" { 2 } else { 120 };
+        let task = start(r.path().to_owned(), prepare(r.path(), req).unwrap(), true).unwrap();
+        let until = Instant::now() + Duration::from_secs(60);
+        while !pid_file.exists() {
+            assert!(Instant::now() < until, "Fixture did not spawn");
+            thread::sleep(Duration::from_millis(15));
+        }
+        let pid = loop {
+            if let Ok(pid) = fs::read_to_string(&pid_file).unwrap().parse::<i32>() {
+                break pid;
+            }
+            assert!(Instant::now() < until);
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert!(pid > 1, "Invalid fixture process ID");
+        let escaped = Escaped(pid);
+        if mode == "cancelled" {
+            stop(r.path(), &task.id).unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !jobs().lock().get(&operations::repository_key(r.path())).unwrap().done.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "An inherited open output pipe blocked job completion");
+            thread::sleep(Duration::from_millis(15));
+        }
+        let task = list(r.path()).unwrap().into_iter().find(|t| t.id == task.id).unwrap();
+        assert_eq!(task.phase, mode, "{:?}", task.error);
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "Detached descendant must still hold the output channel during this assertion");
+        let lease = lease(&store(r.path()).unwrap()).expect("Agent did not release its session lease");
+        drop(lease);
+        operations::run(r.path(), "agent-queue-probe", None, |_, _| {}, || Ok(())).unwrap();
+        drop(escaped);
+        cleanup(r.path(), &task);
+    }
+}
 fn repo() -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     let r = d.path();

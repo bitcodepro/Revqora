@@ -21,7 +21,8 @@ export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
  await page.locator(".topbar .repo-current > b").filter({hasText:"stage16-agents"}).waitFor();
  try {
   await check("agent launch reviews exact paths and requires explicit consent; cancelled review never runs",async()=>{
-   await open();await draft("Cancelled task","do not run");if(!await button("Start agent").isDisabled())throw Error("Unconsented launch enabled");await shot("129-agent-launch-review");await button("Edit task").click();if(await page.locator('[data-agent-review]').count())throw Error("Editing retained launch proof");await button("Close").click();if((await tasks()).length)throw Error("Review created a task or process");unchanged();
+   await open();await draft("Cancelled task","do not run");if(!await button("Start agent").isDisabled())throw Error("Unconsented launch enabled");await shot("129-agent-launch-review");await button("Edit task").click();if(await page.locator('[data-agent-review]').count())throw Error("Editing retained launch proof");
+   await modal().getByRole("textbox",{name:"Agent executable",exact:true}).fill(path.join(work,"missing-agent-executable.exe"));await button("Review launch").click();await modal().getByRole("alert").waitFor();if(await button("Review launch").isDisabled())throw Error("Failed preparation stayed busy");await button("Close").click();if((await tasks()).length)throw Error("Review created a task or process");unchanged();
   });
   await check("real offline CLI gets stdin and portable environment, keeps source changes and persists output",async()=>{
    await draft("Offline editing task","Produce reviewed edits");await launch();await until(async()=>{const t=(await tasks())[0];return t?.phase==="completed";},"Agent did not finish");successful=(await tasks())[0];
