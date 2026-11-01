@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
-import { assertAgentWorktreeProtection, openAgentRepository } from "./agent-workspace-fixture.mjs";
+import { assertAgentWorktreeProtection, openAgentRepository, assertAgentDraft } from "./agent-workspace-fixture.mjs";
 export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
  const root=path.join(work,"stage16-agents"),script=path.join(work,"fixture-agent.cjs"),launchTrace=path.join(work,"fixture-launches.jsonl");fs.mkdirSync(root);
  const git=(...args)=>execFileSync("git",["-C",root,...args],{encoding:"utf8",windowsHide:true}).trim();
@@ -14,7 +14,7 @@ export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
  const modal=()=>page.locator(".modal").last(),button=name=>modal().getByRole("button",{name,exact:true});
  const open=async()=>{await page.getByRole("button",{name:"Agent Workspace",exact:true}).click();await page.waitForSelector('.agent-workspace');await page.getByRole("button",{name:"New task",exact:true}).waitFor();};
  const tasks=()=>invoke("agent_tasks"),until=async(fn,msg)=>{const end=Date.now()+60000;while(Date.now()<end){if(await fn())return;await page.waitForTimeout(100);}throw Error(msg);};
- const draft=async(title,prompt)=>{await page.getByRole("button",{name:"New task",exact:true}).click();await modal().getByRole("textbox",{name:"Task title",exact:true}).fill(title);await modal().getByRole("combobox",{name:"Agent provider",exact:true}).selectOption("custom");await modal().getByRole("textbox",{name:"Agent executable",exact:true}).fill(process.execPath);await modal().getByRole("textbox",{name:"Agent arguments",exact:true}).fill(JSON.stringify([script]));await modal().getByRole("textbox",{name:"Agent prompt",exact:true}).fill(prompt);await button("Review launch").click();await page.waitForSelector('[data-agent-review]');};
+ const draft=async(title,prompt)=>{await page.getByRole("button",{name:"New task",exact:true}).click();await modal().getByRole("textbox",{name:"Task title",exact:true}).fill(title);await modal().getByRole("combobox",{name:"Agent provider",exact:true}).selectOption("custom");await modal().getByRole("textbox",{name:"Agent executable",exact:true}).fill(process.execPath);await modal().getByRole("textbox",{name:"Agent arguments",exact:true}).fill(JSON.stringify([script]));await modal().getByRole("textbox",{name:"Agent prompt",exact:true}).fill(prompt);await assertAgentDraft(modal(),{title,executable:process.execPath,args:[script],prompt});await button("Review launch").click();await page.waitForSelector('[data-agent-review]');};
  const launch=async()=>{await modal().getByRole("checkbox",{name:"Allow agent execution",exact:true}).check();await button("Start agent").click();await page.waitForSelector('.modal',{state:"detached"});};
  const unchanged=()=>{if(git("rev-parse","HEAD")!==head||!fs.readFileSync(path.join(root,".git/index")).equals(index)||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="Keep uncommitted source\r\n")throw Error("Agent workflow changed original HEAD/index/files");};
  let successful;
