@@ -42,3 +42,5 @@ pub mod branch_manager;
 pub mod history;
 
 pub mod worktree_manager;
+
+pub(super) mod session_lease;
