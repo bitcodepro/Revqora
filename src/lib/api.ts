@@ -71,6 +71,12 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  agentPrepare: (repo: string, request: import("./types").AgentRequest) => call<import("./types").AgentPlan>("agent_prepare", { repo, request }),
+  agentStart: (repo: string, plan: import("./types").AgentPlan, consent: boolean) => call<import("./types").AgentTask>("agent_start", { repo, plan, consent }),
+  agentTasks: (repo: string) => call<import("./types").AgentTask[]>("agent_tasks", { repo }),
+  agentStop: (repo: string, id: string) => call<void>("agent_stop", { repo, id }),
+  agentForget: (repo: string, id: string) => call<void>("agent_forget", { repo, id }),
+  agentAcknowledge: (repo: string, id: string, stopped: boolean) => call<void>("agent_acknowledge", { repo, id, stopped }),
   forgeAccounts:()=>call<import("./types").ForgeAccountsSnapshot>("forge_accounts_snapshot"),
   forgeAccountAdd:(input:import("./types").ForgeAccountInput,expected:string)=>call<import("./types").ForgeAccountsSnapshot>("forge_account_add",{input,expected}),
   forgeAccountRemove:(id:string,expected:string)=>call<import("./types").ForgeAccountsSnapshot>("forge_account_remove",{id,expected}),

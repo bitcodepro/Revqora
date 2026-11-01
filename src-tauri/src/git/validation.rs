@@ -232,7 +232,7 @@ fn execute(root: &Path, command: &str, timeout: Duration, job: &Arc<Job>) -> Git
 }
 
 #[cfg(unix)]
-fn available<T: std::os::fd::AsRawFd>(pipe: &T) -> std::io::Result<bool> {
+pub(super) fn available<T: std::os::fd::AsRawFd>(pipe: &T) -> std::io::Result<bool> {
     unsafe {
         let fd = pipe.as_raw_fd();
         let flags = libc::fcntl(fd, libc::F_GETFL);
@@ -243,7 +243,7 @@ fn available<T: std::os::fd::AsRawFd>(pipe: &T) -> std::io::Result<bool> {
     Ok(true)
 }
 #[cfg(windows)]
-fn available<T: std::os::windows::io::AsRawHandle>(pipe: &T) -> std::io::Result<bool> {
+pub(super) fn available<T: std::os::windows::io::AsRawHandle>(pipe: &T) -> std::io::Result<bool> {
     let mut bytes = 0;
     let ok = unsafe {
         windows_sys::Win32::System::Pipes::PeekNamedPipe(pipe.as_raw_handle(), std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut bytes, std::ptr::null_mut())
@@ -254,11 +254,11 @@ fn available<T: std::os::windows::io::AsRawHandle>(pipe: &T) -> std::io::Result<
     Ok(bytes > 0)
 }
 #[cfg(windows)]
-trait Pipe: Read + std::os::windows::io::AsRawHandle + Send + 'static {}
+pub(super) trait Pipe: Read + std::os::windows::io::AsRawHandle + Send + 'static {}
 #[cfg(windows)]
 impl<T: Read + std::os::windows::io::AsRawHandle + Send + 'static> Pipe for T {}
 #[cfg(unix)]
-trait Pipe: Read + std::os::fd::AsRawFd + Send + 'static {}
+pub(super) trait Pipe: Read + std::os::fd::AsRawFd + Send + 'static {}
 #[cfg(unix)]
 impl<T: Read + std::os::fd::AsRawFd + Send + 'static> Pipe for T {}
 fn reader(mut pipe: impl Pipe, job: Arc<Job>, stderr: bool, stop: Arc<AtomicBool>) -> thread::JoinHandle<()> {
@@ -314,7 +314,7 @@ fn reader(mut pipe: impl Pipe, job: Arc<Job>, stderr: bool, stop: Arc<AtomicBool
 }
 
 #[cfg(unix)]
-mod process_tree {
+pub(super) mod process_tree {
     use super::*;
     use std::os::unix::process::CommandExt;
     pub struct Tree(u32, AtomicBool);
@@ -345,7 +345,7 @@ mod process_tree {
 }
 
 #[cfg(windows)]
-mod process_tree {
+pub(super) mod process_tree {
     use super::*;
     use std::os::windows::{io::AsRawHandle, process::CommandExt};
     use windows_sys::Win32::{

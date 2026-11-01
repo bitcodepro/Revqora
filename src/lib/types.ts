@@ -767,3 +767,6 @@ export interface PrMergeResult { state: "merged" | "queued" | "accepted"; commit
 export interface PrCleanupInput { local: boolean; remote: boolean; force: boolean; protectionRules: string[]; reviewToken: string }
 export interface PrCleanupReview { token: string; plan: DeletionPlan; local: boolean; remote: boolean; sourceSha: string; notices: string[] }
 export interface PrCleanupResult { state: "done" | "partial"; localDeleted: boolean; remoteDeleted: boolean; checkpoint: RecoverySummary | null; warning: string | null }
+export interface AgentRequest { title: string; provider: "codex" | "claude" | "custom"; executable: string; args: string[]; prompt: string; base: string; worktreePath?: string; timeoutSeconds: number }
+export interface AgentPlan { id: string; request: AgentRequest; executableHash: string; profilePath: string; creation: WorktreeCreationReview }
+export interface AgentTask { id: string; title: string; prompt: string; provider: string; repository: string; path: string; branch: string; baseOid: string; executable: string; args: string[]; profilePath: string; phase: string; createdAt: number; elapsedMs: number; stdout: string; stderr: string; truncated: boolean; exitCode: number | null; error: string | null }
