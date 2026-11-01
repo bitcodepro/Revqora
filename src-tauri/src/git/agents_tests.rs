@@ -143,7 +143,14 @@ fn detached_descendant_holding_output_cannot_keep_the_agent_queue_locked() {
         let task = list(r.path()).unwrap().into_iter().find(|t| t.id == task.id).unwrap();
         assert_eq!(task.phase, mode, "{:?}", task.error);
         assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "Detached descendant must still hold the output channel during this assertion");
-        let lease = lease(&store(r.path()).unwrap()).expect("Agent did not release its session lease");
+        let lease = lease(&store(r.path()).unwrap()).unwrap_or_else(|error| {
+            panic!(
+                "Agent did not release its session lease; mode={mode}; error={} {:?}; task={}",
+                error.message,
+                error.details,
+                failure_snapshot(r.path(), &task, Path::new(&task.path))
+            )
+        });
         drop(lease);
         operations::run(r.path(), "agent-queue-probe", None, |_, _| {}, || Ok(())).unwrap();
         drop(escaped);
@@ -359,7 +366,14 @@ fn interrupted_history_requires_explicit_process_stop_acknowledgement() {
     assert!(start(r.path().to_owned(), next, true).is_err());
     assert!(forget(r.path(), &t.id).is_err());
     assert!(acknowledge(r.path(), &t.id, false).is_err());
-    acknowledge(r.path(), &t.id, true).unwrap();
+    acknowledge(r.path(), &t.id, true).unwrap_or_else(|error| {
+        panic!(
+            "Interrupted task acknowledgement failed; error={} {:?}; task={}",
+            error.message,
+            error.details,
+            failure_snapshot(r.path(), &t, Path::new(&t.path))
+        )
+    });
     assert_eq!(list(r.path()).unwrap()[0].phase, "abandoned");
     cleanup(r.path(), &t);
 }
@@ -416,4 +430,46 @@ fn agent_operation_context_preserves_os_code_without_exposing_prompt_data() {
     let encoded = serde_json::to_string(&snapshot).unwrap();
     assert!(!encoded.contains("PRIVATE_"));
     assert_eq!(snapshot["recordState"]["exists"], false);
+}
+
+#[test]
+fn process_exit_does_not_report_session_completion_before_cleanup_and_unlock() {
+    let r = repo();
+    let dir = store(r.path()).unwrap();
+    let job = Arc::new(output_job(r.path()));
+    job.done.store(false, Ordering::Release);
+    save(&dir, &snapshot(&job)).unwrap();
+    let owner = lease(&dir).unwrap();
+    jobs().lock().insert(operations::repository_key(r.path()), job.clone());
+    let id = job.task.lock().id.clone();
+    assert_eq!(list(r.path()).unwrap()[0].phase, "running");
+    assert!(forget(r.path(), &id).is_err());
+    owner.release().unwrap();
+    assert_eq!(list(r.path()).unwrap()[0].phase, "running", "Final journal cleanup is still active");
+    job.done.store(true, Ordering::Release);
+    assert_eq!(list(r.path()).unwrap()[0].phase, "completed");
+    lease(&dir).unwrap().release().unwrap();
+    forget(r.path(), &id).unwrap();
+    jobs().lock().remove(&operations::repository_key(r.path()));
+}
+
+#[test]
+fn acknowledging_a_finished_cleanup_error_clears_the_old_live_snapshot() {
+    let r = repo();
+    let dir = store(r.path()).unwrap();
+    let job = Arc::new(output_job(r.path()));
+    {
+        let mut task = job.task.lock();
+        task.phase = "interrupted".into();
+        task.error = Some("Fixture cleanup failure".into());
+    }
+    let task = snapshot(&job);
+    save(&dir, &task).unwrap();
+    jobs().lock().insert(operations::repository_key(r.path()), job);
+    assert!(acknowledge(r.path(), &task.id, false).is_err());
+    acknowledge(r.path(), &task.id, true).unwrap();
+    assert_eq!(list(r.path()).unwrap()[0].phase, "abandoned");
+    assert!(!jobs().lock().contains_key(&operations::repository_key(r.path())));
+    forget(r.path(), &task.id).unwrap();
+    assert!(list(r.path()).unwrap().is_empty());
 }

@@ -1,11 +1,11 @@
 //! Saved, explicitly reviewed workflows. Each step has a durable no-replay marker.
 //! No automatic rollback, retry, merge or resumption after an uncertain result.
+use super::session_lease::SessionLease;
 use super::{
     operations,
     runner::{GitError, GitResult},
     storage, validation,
 };
-use fs2::FileExt;
 use parking_lot::Mutex;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
@@ -68,16 +68,19 @@ fn dir(root: &Path) -> GitResult<PathBuf> {
     direct(&d)?;
     Ok(d)
 }
-fn lock(dir: &Path, name: &str) -> GitResult<File> {
+fn lock(dir: &Path, name: &str) -> GitResult<SessionLease> {
     let p = dir.join(name);
     match fs::symlink_metadata(&p) {
         Ok(_) => direct(&p)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    let f = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(p)?;
-    f.try_lock_exclusive().map_err(|_| fail("A workflow operation is active in another request or window. Refresh its status."))?;
-    Ok(f)
+    let f = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&p)?;
+    SessionLease::acquire(f).map_err(|e| {
+        let mut error = GitError::from(e).kind("workflow");
+        error.message = format!("Cannot acquire workflow lease [path={p:?}]: {}. Another request or window may still be active.", error.message);
+        error
+    })
 }
 fn read<T: serde::de::DeserializeOwned>(path: &Path) -> GitResult<T> {
     direct(path)?;
@@ -284,6 +287,12 @@ fn path(root: &Path, id: &str) -> GitResult<PathBuf> {
     }
     Ok(dir(root)?.join(format!("run-{id}.json")))
 }
+fn ensure_finished(root: &Path) -> GitResult<()> {
+    if jobs().lock().get(&operations::repository_key(root)).is_some_and(|j| !j.finished.load(Ordering::Acquire)) {
+        return Err(fail("The previous workflow step is still finishing. Refresh its result before continuing."));
+    }
+    Ok(())
+}
 fn active(s: &str) -> bool {
     matches!(s, "ready" | "running" | "stopping" | "interrupted" | "external" | "uncertain")
 }
@@ -295,7 +304,11 @@ pub fn get(root: &Path, id: &str) -> GitResult<Run> {
         return Err(fail("Workflow record identity or progress is invalid."));
     }
     if let Some(job) = jobs().lock().get(&operations::repository_key(root)).filter(|j| j.run.lock().id == id) {
-        return Ok(job.run.lock().clone());
+        let mut live = job.run.lock().clone();
+        if !job.finished.load(Ordering::Acquire) {
+            live.phase = if job.cancel.load(Ordering::Acquire) { "stopping" } else { "running" }.into();
+        }
+        return Ok(live);
     }
     if matches!(r.phase.as_str(), "running" | "stopping") {
         // The worker may have persisted completion and removed its live entry
@@ -336,6 +349,7 @@ pub fn runs(root: &Path) -> GitResult<Vec<Summary>> {
 pub fn begin(root: &Path, definition_id: &str, expected: &str, parameters: Parameters) -> GitResult<Run> {
     let d = dir(root)?;
     let _lock = lock(&d, "run.lock")?;
+    ensure_finished(root)?;
     let existing = runs(root)?;
     if existing.iter().any(|r| active(&r.phase)) {
         return Err(fail("Finish, stop or acknowledge the existing workflow before starting another."));
@@ -379,6 +393,7 @@ pub fn review(root: &Path, id: &str) -> GitResult<Review> {
 pub fn execute(root: PathBuf, prepared: Review, consent: bool) -> GitResult<Run> {
     let p = path(&root, &prepared.run_id)?;
     let lease = lock(p.parent().unwrap(), "run.lock")?;
+    ensure_finished(&root)?;
     let mut r = get(&root, &prepared.run_id)?;
     if fs::canonicalize(&root)?.to_string_lossy() != r.repository {
         return Err(fail("Open the original workflow working directory."));
@@ -436,15 +451,35 @@ pub fn execute(root: PathBuf, prepared: Review, consent: bool) -> GitResult<Run>
             log.finish(&outcome.map(|_| ()));
         }
         let final_state = job.run.lock().clone();
-        if let Err(error) = write(&p, &final_state) {
+        let saved = write(&p, &final_state);
+        if let Err(error) = &saved {
             let mut state = job.run.lock();
             state.phase = "uncertain".into();
             state.error = Some(format!("Could not persist the step result: {}. Inspect Git/server state before another workflow.", error.message));
-        } else {
-            jobs().lock().remove(&operations::repository_key(&root));
+        }
+        let released = lease.release();
+        if let Err(error) = &released {
+            let mut state = job.run.lock();
+            state.phase = "uncertain".into();
+            let message = format!(
+                "Could not release workflow lease [path={:?}]: {error}. Inspect the result before another workflow.",
+                p.parent().unwrap().join("run.lock")
+            );
+            state.error = Some(match state.error.take() {
+                Some(old) => format!("{old}\n{message}"),
+                None => message,
+            });
+            drop(state);
+            let _ = write(&p, &job.run.lock().clone());
         }
         job.finished.store(true, Ordering::Release);
-        drop(lease);
+        if saved.is_ok() && released.is_ok() {
+            let mut all = jobs().lock();
+            let key = operations::repository_key(&root);
+            if all.get(&key).is_some_and(|current| Arc::ptr_eq(current, &job)) {
+                all.remove(&key);
+            }
+        }
     });
     if let Err(error) = spawned {
         jobs().lock().remove(&key);
@@ -455,15 +490,17 @@ pub fn execute(root: PathBuf, prepared: Review, consent: bool) -> GitResult<Run>
 pub fn stop(root: &Path, id: &str) -> GitResult<Run> {
     let job = jobs().lock().get(&operations::repository_key(root)).cloned();
     if let Some(job) = job.filter(|j| j.run.lock().id == id && !j.finished.load(Ordering::Acquire)) {
-        job.cancel.store(true, Ordering::Release);
         let mut r = job.run.lock();
-        if matches!(r.phase.as_str(), "running" | "stopping") {
-            r.phase = "stopping".into();
+        if !matches!(r.phase.as_str(), "running" | "stopping") {
+            return Err(fail("The step is finishing. Refresh before stopping the waiting run; no later step runs automatically."));
         }
+        job.cancel.store(true, Ordering::Release);
+        r.phase = "stopping".into();
         return Ok(r.clone());
     }
     let p = path(root, id)?;
     let _lease = lock(p.parent().unwrap(), "run.lock")?;
+    ensure_finished(root)?;
     let mut r = get(root, id)?;
     if r.phase != "ready" {
         return Err(fail("This run is not waiting. Inspect an unknown result instead of replaying it."));

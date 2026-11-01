@@ -4,11 +4,11 @@
 use super::{
     operations,
     runner::{GitError, GitResult},
+    session_lease::SessionLease,
     storage,
     validation::{available, process_tree, Pipe},
     worktree_manager as wm,
 };
-use fs2::FileExt;
 use parking_lot::Mutex;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
@@ -145,14 +145,17 @@ fn folder(path: PathBuf) -> GitResult<PathBuf> {
 fn store(root: &Path) -> GitResult<PathBuf> {
     folder(storage::common(root)?.join("agents"))
 }
-fn lease(dir: &Path) -> GitResult<File> {
+fn lease(dir: &Path) -> GitResult<SessionLease> {
     let p = dir.join("session.lock");
     if p.exists() {
         direct(&p)?;
     }
-    let f = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(p)?;
-    f.try_lock_exclusive().map_err(|_| fail("An agent session is already active for this repository, possibly in another Revqora window."))?;
-    Ok(f)
+    let f = io_step("session.open", &p, OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&p))?;
+    SessionLease::acquire(f).map_err(|error| {
+        let mut error = GitError::from(error).kind("agent-workspace");
+        error.message = format!("Cannot acquire the agent session lease; another session may still be active. {}", error.message);
+        context_error("session.lock", &p, error)
+    })
 }
 fn profile(provider: &str) -> GitResult<PathBuf> {
     let parent = folder(crate::portable::runtime_dir()?.join("agents"))?;
@@ -271,7 +274,15 @@ fn save(dir: &Path, t: &Task) -> GitResult<()> {
 pub fn list(root: &Path) -> GitResult<Vec<Task>> {
     let dir = store(root)?;
     let job = jobs().lock().get(&operations::repository_key(root)).cloned();
-    let live = job.as_ref().map(|j| snapshot(j));
+    let live = job.as_ref().map(|j| {
+        let mut task = snapshot(j);
+        // Process exit is not session completion: readers, final persistence and
+        // lease release must finish before the UI enables another task.
+        if !j.done.load(Ordering::Acquire) && !active(&task.phase) {
+            task.phase = if j.cancel.load(Ordering::Acquire) { "stopping" } else { "running" }.into();
+        }
+        task
+    });
     // A held lease means another process may still be running. Never claim that
     // a persisted queued/running job was stopped merely because this app restarted.
     let idle = lease(&dir).ok();
@@ -418,9 +429,22 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
             }
             t.elapsed_ms = job.clock.elapsed().as_millis() as u64;
         }
-        if let Some(l) = log {
+        if let Some(l) = &log {
             l.after(&root);
-            let result = outcome.and_then(|_| {
+        }
+        let saved = save(&dir, &snapshot(&job)).map_err(|e| context_error("state.save_final", &record, e));
+        if let Err(e) = &saved {
+            completion_error(&job, e);
+        }
+        // Closing alone can leave flock held by an unrelated child's pre-exec
+        // descriptor copy. Unlock explicitly before publishing done=true.
+        let released = session.release().map_err(|e| context_error("session.release", &dir.join("session.lock"), GitError::from(e)));
+        if let Err(e) = &released {
+            completion_error(&job, e);
+            let _ = save(&dir, &snapshot(&job));
+        }
+        if let Some(l) = log {
+            let result = outcome.and(saved).and(released).and_then(|_| {
                 if job.task.lock().phase == "completed" {
                     Ok(())
                 } else {
@@ -429,18 +453,17 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
             });
             l.finish(&result);
         }
-        if let Err(e) = save(&dir, &snapshot(&job)) {
-            let message = context_error("state.save_final", &record, e).message;
-            let mut task = job.task.lock();
-            task.error = Some(match task.error.take() {
-                Some(primary) => format!("{primary}\nFinal state persistence also failed: {message}"),
-                None => message,
-            });
-        }
-        drop(session);
         job.done.store(true, Ordering::Release);
     });
     Ok(t)
+}
+fn completion_error(job: &Job, error: &GitError) {
+    let mut task = job.task.lock();
+    task.phase = "interrupted".into();
+    task.error = Some(match task.error.take() {
+        Some(primary) => format!("{primary}\nCompletion cleanup also failed: {}", error.message),
+        None => error.message.clone(),
+    });
 }
 pub fn stop(root: &Path, id: &str) -> GitResult<()> {
     let job = jobs()
@@ -486,7 +509,16 @@ pub fn acknowledge(root: &Path, id: &str, stopped: bool) -> GitResult<()> {
     }
     task.phase = "abandoned".into();
     task.error = Some("Completion is unknown. The user confirmed that the interrupted task's processes have stopped; changes were kept.".into());
-    save(&dir, &task)
+    save(&dir, &task)?;
+    // A cleanup/persistence error can leave a finished in-process snapshot,
+    // not only a record recovered after restart. Do not overlay it on the newly
+    // acknowledged durable state forever.
+    let mut all = jobs().lock();
+    let key = operations::repository_key(root);
+    if all.get(&key).is_some_and(|j| j.done.load(Ordering::Acquire) && j.task.lock().id == id) {
+        all.remove(&key);
+    }
+    Ok(())
 }
 pub fn cancel_all() {
     let all: Vec<_> = jobs().lock().values().cloned().collect();

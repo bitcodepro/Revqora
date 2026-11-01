@@ -15,6 +15,7 @@ export function applicationDocumentState() {
   const state = {
     url: location.href, origin: location.origin, readyState: document.readyState,
     rootRendered: !!document.querySelector("#root")?.childElementCount,
+    startup: document.querySelector("[data-app-startup]")?.getAttribute("data-app-startup") ?? null,
     bridgeReady: typeof window.__TAURI_INTERNALS__?.invoke === "function",
     storageReadable: false, storageError: null,
   };
@@ -37,7 +38,7 @@ export async function waitForApplicationPage(browser, { timeoutMs = 30000, pollM
       diagnostics.set(state.url, state);
       if (diagnostics.size > 8) diagnostics.delete(diagnostics.keys().next().value);
       if (isApplicationUrl(state.url) && ["interactive", "complete"].includes(state.readyState)
-          && state.rootRendered && state.bridgeReady && state.storageReadable) return page;
+          && state.rootRendered && state.bridgeReady && state.storageReadable && state.startup === "ready") return page;
     }
     await new Promise(resolve => setTimeout(resolve, pollMs));
   }
