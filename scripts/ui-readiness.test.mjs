@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import vm from "node:vm";
 import { applicationDocumentState, isApplicationUrl, waitForApplicationPage } from "./ui-readiness.mjs";
 
-const ready = (patch = {}) => ({ url: "http://tauri.localhost/", origin: "http://tauri.localhost", readyState: "complete", rootRendered: true, bridgeReady: true, storageReadable: true, storageError: null, ...patch });
+const ready = (patch = {}) => ({ url: "http://tauri.localhost/", origin: "http://tauri.localhost", readyState: "complete", rootRendered: true, startup: "ready", bridgeReady: true, storageReadable: true, storageError: null, ...patch });
 const page = (states) => {
   let index = 0;
   return { url: () => states[Math.min(index, states.length - 1)].url, evaluate: async () => states[Math.min(index++, states.length - 1)] };
@@ -13,7 +13,7 @@ const options = { timeoutMs: 2000, pollMs: 1 };
 
 const documentContext = () => ({
   location: { href: "http://tauri.localhost/", origin: "http://tauri.localhost" },
-  document: { readyState: "complete", querySelector: () => ({ childElementCount: 1 }) },
+  document: { readyState: "complete", querySelector: selector => selector === "#root" ? { childElementCount: 1 } : { getAttribute: () => "ready" } },
   window: { __TAURI_INTERNALS__: { invoke() {} } },
 });
 test("the serialized native-document probe catches a denied localStorage getter", () => {
@@ -67,4 +67,13 @@ test("retains real application storage failures in bounded startup diagnostics",
     assert.match(error.message, /"rootRendered":true/);
     return true;
   });
+});
+
+test("a rendered application with readable storage is not ready before restoration and listener registration", async () => {
+ const native=page([ready({startup:"restoring"}),ready({startup:"connecting"}),ready()]);const observed=[];
+ assert.equal(await waitForApplicationPage(browser(native),{...options,observe:s=>observed.push(s.startup)}),native);
+ assert.deepEqual(observed,["restoring","connecting","ready"]);
+});
+test("a missing readiness marker fails visibly instead of accepting a partially mounted app", async () => {
+ const native=page([ready({startup:null})]);await assert.rejects(waitForApplicationPage(browser(native),{timeoutMs:50,pollMs:1}),/"startup":null/);
 });

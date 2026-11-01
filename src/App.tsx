@@ -1,3 +1,4 @@
+import { createStartupBarrier, type StartupPhase } from "./lib/startupReady";
 import { AgentWorkspace } from "./components/AgentWorkspace";
 import { WorktreeManager } from "./components/WorktreeManager";
 import { finishWorkspaceStartup, startWorkspaceTracking } from "./lib/repositoryWorkspaces";
@@ -10,7 +11,7 @@ import { Columns3, FilePlus2, GitBranch, GitCommitHorizontal, GitGraph, GitPullR
 import { PullRequestsView } from "./components/PullRequests";
 import { useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
-import { openOverlay, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
+import { openOverlay, toast, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
 import { actionFor, comboFromEvent } from "./lib/shortcuts";
 import { settingsDialog } from "./components/dialogs";
 import { repoToolsDialog } from "./components/RepoTools";
@@ -224,6 +225,9 @@ export default function App() {
   const busy = useUi((s) => s.busy.length > 0 || s.repositoryOperations.length > 0) || pending;
   const [dropping, setDropping] = useState(false);
   const restored = useRef(false);
+  const [startupPhase, setStartupPhase] = useState<StartupPhase>("restoring");
+  const startup = useRef<ReturnType<typeof createStartupBarrier> | null>(null);
+  if (!startup.current) startup.current = createStartupBarrier(setStartupPhase, error => toast.error(error, "Could not register repository opening"));
   const overview = useUi((s) => s.repositoryOverview);
   const historyMode = useSettings((s) => s.historyMode);
   const layoutMode = workspaceMode(overview ? "overview" : tab?.view, historyMode);
@@ -257,7 +261,7 @@ export default function App() {
       }
       useRepos.getState().activate(want ?? useRepos.getState().order[0] ?? null);
       finishWorkspaceStartup();
-    })();
+    })().then(() => startup.current!.restored(), error => toast.error(error, "Could not restore repository session"));
   }, []);
 
   // Backend events.
@@ -281,7 +285,7 @@ export default function App() {
         }
       }
     }));
-    unsubs.push(listen<string[]>("open-paths", (e) => e.payload.forEach((p) => A.openRepoPath(p))));
+    const disposeOpenPaths = startup.current!.listener(listen<string[]>("open-paths", (e) => e.payload.forEach((p) => A.openRepoPath(p))));
     unsubs.push(
       getCurrentWebview().onDragDropEvent((e) => {
         if (e.payload.type === "over" || e.payload.type === "enter") setDropping(true);
@@ -293,6 +297,7 @@ export default function App() {
       }),
     );
     return () => {
+      disposeOpenPaths();
       unsubs.forEach((u) => u.then((f) => f()));
     };
   }, []);
@@ -391,7 +396,7 @@ export default function App() {
   }, []);
 
   return (
-    <WorkspaceLayoutContext.Provider value={layoutMode}><div className="app">
+    <WorkspaceLayoutContext.Provider value={layoutMode}><div className="app" data-app-startup={startupPhase} aria-busy={startupPhase !== "ready"}>
       <TopBar />
       {busy && <div className="progress-bar" />}
       <div className="app-body">

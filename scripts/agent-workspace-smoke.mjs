@@ -2,24 +2,23 @@
 import fs from "node:fs";
 import path from "node:path";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
-import { assertAgentWorktreeProtection } from "./agent-workspace-fixture.mjs";
+import { assertAgentWorktreeProtection, openAgentRepository, assertAgentDraft } from "./agent-workspace-fixture.mjs";
 export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
- const root=path.join(work,"stage16-agents"),script=path.join(work,"fixture-agent.cjs");fs.mkdirSync(root);
+ const root=path.join(work,"stage16-agents"),script=path.join(work,"fixture-agent.cjs"),launchTrace=path.join(work,"fixture-launches.jsonl");fs.mkdirSync(root);
  const git=(...args)=>execFileSync("git",["-C",root,...args],{encoding:"utf8",windowsHide:true}).trim();
  git("init","-qb","main");for(const[k,v]of[["user.name","Agent Tester"],["user.email","agent@example.invalid"],["commit.gpgsign","false"],["core.quotepath","true"],["core.hooksPath",".git/hooks"]])git("config",k,v);
  fs.writeFileSync(path.join(root,"file.txt"),"original\n");git("add",".");git("commit","-qm","Agent base");fs.writeFileSync(path.join(root,"file.txt"),"Keep uncommitted source\r\n");
  const head=git("rev-parse","HEAD"),index=fs.readFileSync(path.join(root,".git/index"));
- fs.writeFileSync(script,`let prompt='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>prompt+=s);process.stdin.on('end',()=>{console.log('fixture started');console.error('fixture diagnostic');if(prompt.includes('WAIT_FOR_STOP')){setInterval(()=>{},1000);return;}require('fs').writeFileSync('agent.txt',JSON.stringify({prompt,home:process.env.HOME,codex:process.env.CODEX_HOME,temp:process.env.TEMP}));console.log('fixture completed');});`);
+ fs.writeFileSync(script,`require('fs').appendFileSync(${JSON.stringify(launchTrace)},JSON.stringify({cwd:process.cwd()})+'\\n');let prompt='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>prompt+=s);process.stdin.on('end',()=>{console.log('fixture started');console.error('fixture diagnostic');if(prompt.includes('WAIT_FOR_STOP')){setInterval(()=>{},1000);return;}require('fs').writeFileSync('agent.txt',JSON.stringify({prompt,home:process.env.HOME,codex:process.env.CODEX_HOME,temp:process.env.TEMP}));console.log('fixture completed');});`);
  const invoke=(command,args={})=>page.evaluate(({command,args})=>window.__TAURI_INTERNALS__.invoke(command,args),{command,args:{repo:root,...args}});
  const modal=()=>page.locator(".modal").last(),button=name=>modal().getByRole("button",{name,exact:true});
  const open=async()=>{await page.getByRole("button",{name:"Agent Workspace",exact:true}).click();await page.waitForSelector('.agent-workspace');await page.getByRole("button",{name:"New task",exact:true}).waitFor();};
  const tasks=()=>invoke("agent_tasks"),until=async(fn,msg)=>{const end=Date.now()+60000;while(Date.now()<end){if(await fn())return;await page.waitForTimeout(100);}throw Error(msg);};
- const draft=async(title,prompt)=>{await page.getByRole("button",{name:"New task",exact:true}).click();await modal().getByRole("textbox",{name:"Task title",exact:true}).fill(title);await modal().getByRole("combobox",{name:"Agent provider",exact:true}).selectOption("custom");await modal().getByRole("textbox",{name:"Agent executable",exact:true}).fill(process.execPath);await modal().getByRole("textbox",{name:"Agent arguments",exact:true}).fill(JSON.stringify([script]));await modal().getByRole("textbox",{name:"Agent prompt",exact:true}).fill(prompt);await button("Review launch").click();await page.waitForSelector('[data-agent-review]');};
+ const draft=async(title,prompt)=>{await page.getByRole("button",{name:"New task",exact:true}).click();await modal().getByRole("textbox",{name:"Task title",exact:true}).fill(title);await modal().getByRole("combobox",{name:"Agent provider",exact:true}).selectOption("custom");await modal().getByRole("textbox",{name:"Agent executable",exact:true}).fill(process.execPath);await modal().getByRole("textbox",{name:"Agent arguments",exact:true}).fill(JSON.stringify([script]));await modal().getByRole("textbox",{name:"Agent prompt",exact:true}).fill(prompt);await assertAgentDraft(modal(),{title,executable:process.execPath,args:[script],prompt});await button("Review launch").click();await page.waitForSelector('[data-agent-review]');};
  const launch=async()=>{await modal().getByRole("checkbox",{name:"Allow agent execution",exact:true}).check();await button("Start agent").click();await page.waitForSelector('.modal',{state:"detached"});};
  const unchanged=()=>{if(git("rev-parse","HEAD")!==head||!fs.readFileSync(path.join(root,".git/index")).equals(index)||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="Keep uncommitted source\r\n")throw Error("Agent workflow changed original HEAD/index/files");};
  let successful;
- await page.evaluate(p=>window.__TAURI_INTERNALS__.invoke("plugin:event|emit",{event:"open-paths",payload:[p]}),root);
- await page.locator(".topbar .repo-current > b").filter({hasText:"stage16-agents"}).waitFor();
+ await openAgentRepository(page,root);
  try {
   await check("agent launch reviews exact paths and requires explicit consent; cancelled review never runs",async()=>{
    await open();await draft("Cancelled task","do not run");if(!await button("Start agent").isDisabled())throw Error("Unconsented launch enabled");await shot("129-agent-launch-review");await button("Edit task").click();if(await page.locator('[data-agent-review]').count())throw Error("Editing retained launch proof");
@@ -41,7 +40,9 @@ export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
    await draft("Cancellable task","WAIT_FOR_STOP");await launch();await until(async()=>(await tasks()).find(t=>t.title==="Cancellable task")?.stdout.includes("fixture started"),"Agent did not start");await page.getByRole("button",{name:"Stop process tree",exact:true}).click();await until(async()=>(await tasks()).find(t=>t.title==="Cancellable task")?.phase==="cancelled","Stop did not finish");unchanged();
   });
   await check("task history and logs survive closing the workspace and app restart without replaying jobs",async()=>{
-   await page.getByRole("button",{name:"Close Agent Workspace",exact:true}).click();page=await restart();await page.locator(".topbar .repo-current > b").filter({hasText:"stage16-agents"}).waitFor();await open();await until(async()=>(await tasks()).length===3,"History missing after restart");const t=(await tasks()).find(t=>t.id===successful.id);if(t?.phase!=="completed"||!t.stdout.includes("fixture completed")||t.prompt!=="Produce reviewed edits")throw Error("Restart lost task record/log");
+   const before=fs.readFileSync(launchTrace,"utf8");if(before.trim().split("\n").length!==2)throw Error("Expected exactly successful and cancellable fixture launches");
+   await page.getByRole("button",{name:"Close Agent Workspace",exact:true}).click();page=await restart();await openAgentRepository(page,root);await open();await until(async()=>(await tasks()).length===3,"History missing after restart");const t=(await tasks()).find(t=>t.id===successful.id);if(t?.phase!=="completed"||!t.stdout.includes("fixture completed")||t.prompt!=="Produce reviewed edits")throw Error("Restart lost task record/log");
+   if(fs.readFileSync(launchTrace,"utf8")!==before)throw Error("App restart replayed an agent process");
    await invoke("agent_forget",{id:t.id});if(!fs.existsSync(path.join(t.path,"agent.txt")))throw Error("Forgetting history removed files");unchanged();
   });
  } finally {

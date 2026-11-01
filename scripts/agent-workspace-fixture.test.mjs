@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { assertAgentWorktreeProtection } from "./agent-workspace-fixture.mjs";
+import { assertAgentWorktreeProtection, openAgentRepository, assertAgentDraft, repositoryIsActive } from "./agent-workspace-fixture.mjs";
 
 test("agent worktree assertions preserve Git quoting and identify the exact locked task", t => {
   const base = path.resolve(process.env.REVQORA_TEST_TMP || os.tmpdir());
@@ -45,4 +45,27 @@ test("agent worktree assertions preserve Git quoting and identify the exact lock
     if (!resolved.startsWith(parent + path.sep)) throw Error("Unowned worktree fixture cleanup target");
     fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
+});
+
+test("agent launch preflight rejects redirected input before any preview or launch", async () => {
+  const expected={title:"Offline task",executable:"fixture-node.exe",args:["fixture.cjs"],prompt:"Fixture prompt"};
+  const controls={"Task title":expected.title,"Agent provider":"custom","Agent executable":expected.executable,"Agent arguments":JSON.stringify(expected.args),"Agent prompt":expected.prompt};
+  const dialog={getByRole:(_role,{name})=>({inputValue:async()=>controls[name]})};
+  await assertAgentDraft(dialog,expected);
+  controls["Task title"]=expected.executable;controls["Agent executable"]="";
+  await assert.rejects(assertAgentDraft(dialog,expected),/Task title.*no launch was prepared/);
+  controls["Task title"]=expected.title;
+  await assert.rejects(assertAgentDraft(dialog,expected),/Agent executable.*no launch was prepared/);
+});
+
+test("history restart waits for readiness, then sends one open and waits for exact identity without reconstructing records", async () => {
+ const calls=[];let release;const ready=new Promise(resolve=>release=resolve);const root=path.resolve("fixture","stage16-agents");
+ const page={evaluate:async(fn,arg)=>{const prior=globalThis.window;globalThis.window={__TAURI_INTERNALS__:{invoke:async(command,args)=>calls.push([command,args])}};try{await fn(arg);}finally{globalThis.window=prior;}},waitForFunction:async(fn,arg)=>{assert.equal(fn,repositoryIsActive);calls.push(["identity",arg.expected]);},locator:selector=>selector.includes("data-app-startup")?{waitFor:async()=>{calls.push(["wait-ready"]);await ready;}}:{filter:filter=>({waitFor:async()=>calls.push([selector,filter])})}};
+ const opening=openAgentRepository(page,root);await Promise.resolve();assert.deepEqual(calls,[["wait-ready"]],"No event can be emitted before ready");release();await opening;
+ assert.deepEqual(calls,[["wait-ready"],["plugin:event|emit",{event:"open-paths",payload:[root]}],["identity",root],[".topbar .repo-current > b",{hasText:"stage16-agents"}]]);
+});
+
+test("repository acknowledgement rejects a different directory with the same basename and handles native Windows paths", () => {
+ const previous=globalThis.document;let actual="D:/other/stage16-agents";globalThis.document={querySelector:()=>({getAttribute:()=>actual})};
+ try{assert.equal(repositoryIsActive({expected:"D:/fixture/stage16-agents",windows:true}),false);actual="\\\\?\\D:\\fixture\\stage16-agents";assert.equal(repositoryIsActive({expected:"d:/fixture/stage16-agents",windows:true}),true);actual="/fixture/Case";assert.equal(repositoryIsActive({expected:"/fixture/case",windows:false}),false);}finally{globalThis.document=previous;}
 });

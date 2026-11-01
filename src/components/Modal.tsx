@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { scheduleDialogFocus } from "../lib/dialogFocus";
 
 interface ModalProps {
   title: ReactNode;
@@ -30,14 +31,10 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
     };
     window.addEventListener("keydown", onKey, true);
     // Focus the first input once, when the dialog opens, for keyboard-first use.
-    const t = setTimeout(() => {
-      const el = ref.current?.querySelector<HTMLElement>("input:not([type=checkbox]):not([type=radio]), textarea, select, button.primary");
-      el?.focus();
-      if (el instanceof HTMLInputElement) el.select();
-    }, 30);
+    const cancelFocus = scheduleDialogFocus(() => ref.current);
     return () => {
       window.removeEventListener("keydown", onKey, true);
-      clearTimeout(t);
+      cancelFocus();
     };
   }, []);
   return (
