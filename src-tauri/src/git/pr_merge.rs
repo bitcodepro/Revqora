@@ -86,6 +86,12 @@ struct Prepared {
 pub fn plan(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Plan> {
     prepare(repo, n, connection, revision).map(|p| p.plan)
 }
+pub fn verified_checks(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Vec<forge::Check>> {
+    let (f, d, _) = scoped(repo, n, connection, revision)?;
+    let checks = checks::load(repo, &f, &d)?;
+    scoped(repo, n, connection, revision)?;
+    Ok(checks)
+}
 fn prepare(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Prepared> {
     let (f, d, v) = scoped(repo, n, connection, revision)?;
     let (actor, actor_id) = providers::actor(repo, &f)?;

@@ -71,7 +71,7 @@ Screenshots use a generated demo repository (`scripts/make-demo-repo.sh`); all n
 - Readable hook failures with "Retry" and "Commit without hooks".
 
 **GitHub, GitLab & Bitbucket**
-- Pull / merge requests: list, create (pushes the branch first), check out, compare, open in the browser; CI checks per PR and per commit. Works with GitHub (and Enterprise), GitLab, Bitbucket Cloud and Bitbucket Server / Data Center. The token comes from git's credential manager (OAuth, personal access tokens and Bitbucket app passwords).
+- Pull / merge requests: list, create from an already published branch, check out, compare, open in the browser; CI checks per PR and per commit. Works with GitHub (and Enterprise), GitLab, Bitbucket Cloud and Bitbucket Server / Data Center. The token comes from git's credential manager (OAuth, personal access tokens and Bitbucket app passwords).
 
 **Self-contained git and credentials**
 - Uses the Git already installed on the computer (shows a download link if it is missing); credentials go through its own credential manager.
@@ -88,9 +88,24 @@ Screenshots use a generated demo repository (`scripts/make-demo-repo.sh`); all n
 - Everything it remembers (recent repositories, open tabs, settings, window size) is kept only in a `data` folder next to the exe; nothing is stored in `%APPDATA%` or `%LOCALAPPDATA%`. Move or copy the folder as a whole; updates keep `data`. The app folder must be writable. On macOS and Linux only the window size goes there; the web view keeps its storage in the system location.
 - Updates itself: checks GitHub Releases at startup (and every few hours); when a new version is out, an **Update** chip appears in the status bar. One click downloads the package for your platform, verifies its SHA-256 checksum and replaces the files in place, then "Restart to update" finishes it. Skip a version or turn checks off in Settings.
 
+
+**Review workflows and dependent branches**
+- PR follow-up recipes connect review feedback to an explicitly approved installed
+  CLI in a new worktree, literal tests, reviewed commit/publication, GitHub re-review
+  requests and existing policy-checked merge/cleanup. Optional automatic validation
+  pauses before every Git/server write; interrupted actions never replay.
+- Semantic summaries group C#, TypeScript/TSX and strict JSON changes beside the
+  original diff. History Explorer searches literal changed code across available
+  branches/tags or compares named function/class bodies and JSON subtrees through
+  file history, with links to the actual commits (including body-only edits).
+- Branch Stacks track dependent branches and PR targets, preview one-layer rebases,
+  save recovery and retain original boundaries through parent rewrites/squash merge.
+  No bulk force push or implicit source deletion. See [the detailed roadmap](docs/ROADMAP.md)
+  for provider, parsing and recovery limits.
+
 ## Requirements
 
-- Git 2.30+ installed (2.40+ for reordering/removing stage layers) — on Windows https://git-scm.com/download/win.
+- Git 2.30+ installed (2.40+ for stage layers, stacked-branch restacking and advanced history tools) — on Windows https://git-scm.com/download/win.
 - Set `REVQORA_GIT` to force a specific git executable.
 - Windows 10/11 (WebView2), macOS or Linux.
 

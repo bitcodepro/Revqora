@@ -48,6 +48,9 @@ fn server_head(root: &Path, url: &str, branch: &str) -> GitResult<Option<String>
     Ok(Some(oid.to_owned()))
 }
 pub(super) fn build_review(root: &Path, r: &Run) -> GitResult<Review> {
+    build_review_with(root, r, None)
+}
+pub(super) fn build_review_with(root: &Path, r: &Run, previous: Option<&Review>) -> GitResult<Review> {
     let (mut out, state) = operations::inspect(root, || {
         let info = repo::info(root)?;
         let st = status::status(root)?;
@@ -57,7 +60,7 @@ pub(super) fn build_review(root: &Path, r: &Run) -> GitResult<Review> {
         let mut step = r.definition.steps.get(r.cursor).cloned().ok_or_else(|| fail("No pending step."))?;
         // Commands and PR text are literal. Only whole structured Git fields
         // expand parameters, so branch text never becomes shell interpolation.
-        if step.kind != "command" && step.kind != "pr" {
+        if matches!(step.kind.as_str(), "checkBranch" | "branch" | "cherryPick" | "publish") {
             step.value = expand(r, &step.value);
         }
         step.extra = expand(r, &step.extra);
@@ -68,6 +71,7 @@ pub(super) fn build_review(root: &Path, r: &Run) -> GitResult<Review> {
             _ => true,
         };
         let mut out = Review {
+            working_directory: r.workspace.clone().unwrap_or_else(|| r.repository.clone()),
             run_id: r.id.clone(),
             cursor: r.cursor,
             run_revision: digest(r)?,
@@ -81,7 +85,7 @@ pub(super) fn build_review(root: &Path, r: &Run) -> GitResult<Review> {
             remote_head: None,
             skip: !applies && step.on_false == "skip",
             condition_met: applies,
-            consent_required: !matches!(step.kind.as_str(), "checkClean" | "checkBranch") && applies,
+            consent_required: !matches!(step.kind.as_str(), "checkClean" | "checkBranch" | "prChecks") && applies,
             explanation: String::new(),
         };
         if !applies {
@@ -94,6 +98,14 @@ pub(super) fn build_review(root: &Path, r: &Run) -> GitResult<Review> {
             return Ok(out);
         }
         match step.kind.as_str() {
+            "prAgent" | "prChecks" | "prRequestReview" | "prMerge" | "prCleanup" => pull_requests::review(root, &step, &mut out, previous)?,
+            "commit" => {
+                if step.value.trim().is_empty() || clean {
+                    return Err(fail("Enter a commit message and review changed files before committing."));
+                }
+                out.resolved = st.files.iter().map(|f| f.path.clone()).collect();
+                out.explanation = format!("Stage all {} Git-visible changed files in this working copy and create a commit. Hooks and configured signing remain enabled. Review the diff first; ignored files are excluded.", st.files.len());
+            }
             "checkClean" => {
                 out.explanation =
                     "Verify that staging, working files and untracked files have no Git-visible changes. Ignored files are outside this check.".into()
@@ -195,6 +207,12 @@ pub(super) fn execute_action(root: &Path, original: &Run, prepared: &Review, job
     let mut reviewed = original.clone();
     reviewed.phase = "ready".into();
     reviewed.results[reviewed.cursor].phase = "pending".into();
+    if matches!(prepared.step.kind.as_str(), "prAgent" | "prChecks") && prepared.condition_met {
+        if build_review_with(root, &reviewed, Some(prepared))? != *prepared {
+            return Err(stale());
+        }
+        return pull_requests::execute_waiting(root, prepared, job);
+    }
     if prepared.step.kind == "command" && prepared.condition_met {
         if build_review(root, &reviewed)? != *prepared {
             return Err(stale());
@@ -226,6 +244,7 @@ pub(super) fn execute_action(root: &Path, original: &Run, prepared: &Review, job
                     return Err(fail(format!("Command {} (exit {:?}): {}", current.phase, current.exit_code, current.error.unwrap_or_default())));
                 }
                 return Ok(ResultRow {
+                    workspace: None,
                     phase: "completed".into(),
                     message: "Command passed. Review any working-file changes before the next step.".into(),
                     stdout,
@@ -246,7 +265,7 @@ pub(super) fn execute_action(root: &Path, original: &Run, prepared: &Review, job
             if job.cancel.load(Ordering::Acquire) {
                 return Err(fail("Workflow stopped before the action."));
             }
-            let fresh = build_review(root, &reviewed)?;
+            let fresh = build_review_with(root, &reviewed, Some(prepared))?;
             if fresh != *prepared {
                 return Err(stale());
             }
@@ -264,6 +283,12 @@ pub(super) fn execute_action(root: &Path, original: &Run, prepared: &Review, job
             }
             let s = &prepared.step;
             let message = match s.kind.as_str() {
+                "prRequestReview" | "prMerge" | "prCleanup" => pull_requests::execute_remote(root, prepared)?,
+                "commit" => {
+                    recovery::create(root, "workflow_commit", "Before staging and committing workflow edits", false, false)?;
+                    runner::run(root, ["add", "-A", "--", "."])?;
+                    ops::commit(root, &s.value, &ops::CommitOptions::default())?
+                }
                 "checkClean" => {
                     if !st.files.is_empty() {
                         return Err(fail("Git-visible changes are present."));

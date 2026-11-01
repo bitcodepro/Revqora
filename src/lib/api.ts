@@ -71,6 +71,20 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  symbolHistory:(repo:string,path:string,query:string,anchor:string|null,offset:number)=>call<import("./types").SymbolHistoryPage>("symbol_history",{repo,path,query,anchor,offset}),
+  stackSnapshot:(repo:string)=>call<import("./types").StackSnapshot>("stack_snapshot",{repo}),
+  stackCreate:(repo:string,name:string,base:string,expectedRevision:string)=>call<import("./types").StackCatalog>("stack_create",{repo,name,base,expectedRevision}),
+  stackAppend:(repo:string,id:string,name:string,existing:boolean,expectedRevision:string,expectedState:string)=>call<import("./types").StackCatalog>("stack_append",{repo,id,name,existing,expectedRevision,expectedState}),
+  stackForget:(repo:string,id:string,expectedRevision:string)=>call<import("./types").StackCatalog>("stack_forget",{repo,id,expectedRevision}),
+  stackReview:(repo:string,id:string,index:number,protectionRules:string[])=>call<import("./types").StackPlan>("stack_review",{repo,id,index,protectionRules}),
+  stackRestack:(repo:string,plan:import("./types").StackPlan,consent:boolean,publishedConsent:boolean)=>call<import("./types").StackOutcome>("stack_restack",{repo,plan,consent,publishedConsent}),
+  stackFinalize:(repo:string,id:string,index:number,expectedRevision:string,expectedState:string,consent:boolean)=>call<import("./types").StackCatalog>("stack_finalize",{repo,id,index,expectedRevision,expectedState,consent}),
+  stackLinkPull:(repo:string,id:string,index:number,number:number,expectedRevision:string)=>call<import("./types").StackCatalog>("stack_link_pull",{repo,id,index,number,expectedRevision}),
+  stackRetire:(repo:string,id:string,expectedRevision:string,connection:string,revision:string,consent:boolean)=>call<import("./types").StackCatalog>("stack_retire",{repo,id,expectedRevision,connection,revision,consent}),
+  stackRetarget:(repo:string,id:string,index:number,expectedRevision:string,connection:string,revision:string,consent:boolean)=>call<import("./types").PrEditResult>("stack_retarget",{repo,id,index,expectedRevision,connection,revision,consent}),
+
+  semanticDiff: (repo:string,path:string,old:BlobSpec|null,newSpec:BlobSpec|null)=>call<import("./types").SemanticComparison>("semantic_diff",{repo,path,old,new:newSpec}),
+  codeHistory:(repo:string,query:string,path:string|null,offset:number)=>call<import("./types").CodeHistoryPage>("code_history",{repo,query,path,offset}),
   workflowCatalog: (repo: string) => call<import("./types").WorkflowCatalog>("workflow_catalog", {repo}),
   workflowSave: (repo: string, definition: import("./types").WorkflowDefinition, expectedRevision: string) => call<import("./types").WorkflowCatalog>("workflow_save", {repo,definition,expectedRevision}),
   workflowDelete: (repo: string, id: string, expectedRevision: string) => call<import("./types").WorkflowCatalog>("workflow_delete", {repo,id,expectedRevision}),

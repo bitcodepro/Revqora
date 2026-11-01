@@ -23,6 +23,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 mod actions;
+mod pull_requests;
 use actions::{build_review, execute_action};
 const LIMIT: usize = 8 * 1024 * 1024;
 pub(super) fn fail(s: impl Into<String>) -> GitError {
@@ -34,7 +35,7 @@ fn stale() -> GitError {
 pub(super) fn digest<T: Serialize>(v: &T) -> GitResult<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(v).map_err(|e| fail(e.to_string()))?)))
 }
-fn id() -> GitResult<String> {
+pub(super) fn id() -> GitResult<String> {
     let mut b = [0; 16];
     SystemRandom::new().fill(&mut b).map_err(|_| fail("Cannot generate a workflow ID."))?;
     Ok(b.iter().map(|v| format!("{v:02x}")).collect())
@@ -68,7 +69,7 @@ fn dir(root: &Path) -> GitResult<PathBuf> {
     direct(&d)?;
     Ok(d)
 }
-fn lock(dir: &Path, name: &str) -> GitResult<SessionLease> {
+pub(super) fn lock(dir: &Path, name: &str) -> GitResult<SessionLease> {
     let p = dir.join(name);
     match fs::symlink_metadata(&p) {
         Ok(_) => direct(&p)?,
@@ -82,7 +83,7 @@ fn lock(dir: &Path, name: &str) -> GitResult<SessionLease> {
         error
     })
 }
-fn read<T: serde::de::DeserializeOwned>(path: &Path) -> GitResult<T> {
+pub(super) fn read<T: serde::de::DeserializeOwned>(path: &Path) -> GitResult<T> {
     direct(path)?;
     let mut b = Vec::new();
     File::open(path)?.take(LIMIT as u64 + 1).read_to_end(&mut b)?;
@@ -91,7 +92,7 @@ fn read<T: serde::de::DeserializeOwned>(path: &Path) -> GitResult<T> {
     }
     serde_json::from_slice(&b).map_err(|e| fail(format!("Cannot read workflow data: {e}")))
 }
-fn write<T: Serialize>(path: &Path, value: &T) -> GitResult<()> {
+pub(super) fn write<T: Serialize>(path: &Path, value: &T) -> GitResult<()> {
     struct Bounded(Vec<u8>);
     impl Write for Bounded {
         fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
@@ -152,8 +153,22 @@ fn validate(d: &Definition) -> GitResult<()> {
         return Err(fail("Name a workflow and include between 1 and 16 steps."));
     }
     for s in &d.steps {
-        if !matches!(s.kind.as_str(), "checkClean" | "checkBranch" | "branch" | "cherryPick" | "command" | "publish" | "pr")
-            || !matches!(s.when.as_str(), "always" | "clean" | "dirty")
+        if !matches!(
+            s.kind.as_str(),
+            "checkClean"
+                | "checkBranch"
+                | "branch"
+                | "cherryPick"
+                | "command"
+                | "publish"
+                | "pr"
+                | "commit"
+                | "prAgent"
+                | "prChecks"
+                | "prRequestReview"
+                | "prMerge"
+                | "prCleanup"
+        ) || !matches!(s.when.as_str(), "always" | "clean" | "dirty")
             || !matches!(s.on_false.as_str(), "stop" | "skip")
             || s.label.len() > 200
             || s.value.len() > 8192
@@ -222,6 +237,8 @@ pub struct Parameters {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResultRow {
+    #[serde(default)]
+    pub workspace: Option<String>,
     pub phase: String,
     pub message: String,
     pub stdout: String,
@@ -231,12 +248,22 @@ pub struct ResultRow {
 }
 impl ResultRow {
     fn pending() -> Self {
-        Self { phase: "pending".into(), message: String::new(), stdout: String::new(), stderr: String::new(), truncated: false, exit_code: None }
+        Self {
+            workspace: None,
+            phase: "pending".into(),
+            message: String::new(),
+            stdout: String::new(),
+            stderr: String::new(),
+            truncated: false,
+            exit_code: None,
+        }
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Run {
+    #[serde(default)]
+    pub workspace: Option<String>,
     pub id: String,
     pub repository: String,
     pub definition: Definition,
@@ -260,6 +287,7 @@ pub struct Summary {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Review {
+    pub working_directory: String,
     pub run_id: String,
     pub cursor: usize,
     pub run_revision: String,
@@ -371,6 +399,7 @@ pub fn begin(root: &Path, definition_id: &str, expected: &str, parameters: Param
         return Err(fail("Invalid workflow parameters."));
     }
     let r = Run {
+        workspace: None,
         id: id()?,
         repository: fs::canonicalize(root)?.to_string_lossy().into_owned(),
         results: definition.steps.iter().map(|_| ResultRow::pending()).collect(),
@@ -389,17 +418,31 @@ pub fn review(root: &Path, id: &str) -> GitResult<Review> {
     if r.phase != "ready" {
         return Err(fail("Only a waiting step can be reviewed. Running, failed and unknown actions are never replayed."));
     }
-    if fs::canonicalize(root)?.to_string_lossy() != r.repository {
+    if !owns_working_copy(root, &r)? {
         return Err(fail("Open the workflow's original working directory before continuing."));
     }
-    build_review(root, &r)
+    build_review(&working_root(root, &r)?, &r)
+}
+fn working_root(root: &Path, r: &Run) -> GitResult<PathBuf> {
+    let path = r.workspace.as_deref().map(PathBuf::from).unwrap_or_else(|| root.to_owned());
+    if operations::repository_key(&path) != operations::repository_key(root) {
+        return Err(fail("The workflow working copy no longer belongs to its original repository."));
+    }
+    if fs::canonicalize(&super::repo::info(&path)?.root)? != fs::canonicalize(&path)? {
+        return Err(fail("The workflow requires its registered working-copy root, not a nested directory."));
+    }
+    Ok(path)
+}
+fn owns_working_copy(root: &Path, r: &Run) -> GitResult<bool> {
+    let actual = fs::canonicalize(root)?;
+    Ok(actual.to_string_lossy() == r.repository || r.workspace.as_ref().is_some_and(|p| fs::canonicalize(p).is_ok_and(|p| p == actual)))
 }
 pub fn execute(root: PathBuf, prepared: Review, consent: bool) -> GitResult<Run> {
     let p = path(&root, &prepared.run_id)?;
     let lease = lock(p.parent().unwrap(), "run.lock")?;
     ensure_finished(&root)?;
     let mut r = get(&root, &prepared.run_id)?;
-    if fs::canonicalize(&root)?.to_string_lossy() != r.repository {
+    if !owns_working_copy(&root, &r)? {
         return Err(fail("Open the original workflow working directory."));
     }
     if r.phase != "ready" || digest(&r)? != prepared.run_revision || prepared.consent_required && !consent {
@@ -416,13 +459,16 @@ pub fn execute(root: PathBuf, prepared: Review, consent: bool) -> GitResult<Run>
     let key = operations::repository_key(&root);
     let spawned = thread::Builder::new().name("revqora-workflow".into()).spawn(move || {
         let log = crate::journal::begin(&root, "workflow_step");
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute_action(&root, &r, &prepared, &job)))
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute_action(&working_root(&root, &r)?, &r, &prepared, &job)))
             .unwrap_or_else(|_| Err(fail("Workflow worker stopped unexpectedly. Check Git/server state before another run.").kind("workflow-write-uncertain")));
         {
             let mut state = job.run.lock();
             let index = state.cursor;
             match &outcome {
                 Ok(result) => {
+                    if let Some(path) = &result.workspace {
+                        state.workspace = Some(path.clone());
+                    }
                     state.results[index] = result.clone();
                     state.cursor += 1;
                     state.phase = if job.cancel.load(Ordering::Acquire) {

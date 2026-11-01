@@ -44,7 +44,7 @@ export const smokeTimings = createTimings({ file:process.env.REVQORA_SMOKE_OUT ?
 // Only the executable name is recorded. Arguments can contain credentials.
 export const timedExecFileSync = (file, args, options) => smokeTimings.measureSync("process", path.basename(file), () => execFileSync(file,args,options));
 
-export const SMOKE_SUITES = Object.freeze({ core:{offset:0,count:71}, workspace:{offset:71,count:9}, cleanup:{offset:80,count:6}, worktrees:{offset:86,count:53} });
+export const SMOKE_SUITES = Object.freeze({ core:{offset:0,count:71}, workspace:{offset:71,count:9}, cleanup:{offset:80,count:6}, worktrees:{offset:86,count:66} });
 export function assertSmokeCoverage(suite, completed) {
   const expected=suite==="all"?Object.values(SMOKE_SUITES).reduce((sum,s)=>sum+s.count,0):SMOKE_SUITES[suite]?.count;
   if (completed!==expected) throw new Error(`Incomplete ${suite} coverage: ${completed} scenarios, expected ${expected}`);

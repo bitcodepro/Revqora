@@ -133,8 +133,14 @@ where
 pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
     let a: Vec<String> = args.iter().map(|s| s.as_ref().to_string_lossy().into_owned()).collect();
     let mut prefix = 0;
-    while a.get(prefix).is_some_and(|v| v == "-c") && a.get(prefix + 1).is_some() {
-        prefix += 2;
+    loop {
+        if a.get(prefix).is_some_and(|v| v == "-c") && a.get(prefix + 1).is_some() {
+            prefix += 2;
+        } else if a.get(prefix).is_some_and(|v| v == "--literal-pathspecs") {
+            prefix += 1;
+        } else {
+            break;
+        }
     }
     let a = &a[prefix..];
     let has = |flag: &str| a.iter().any(|x| x == flag);
@@ -443,6 +449,9 @@ mod tests {
     #[test]
     fn classifies_read_only_commands() {
         assert!(is_read_only(&["status", "--porcelain=v2"]));
+        assert!(is_read_only(&["--literal-pathspecs", "log", "--", "file"]));
+        assert!(is_read_only(&["--literal-pathspecs", "-c", "core.quotePath=false", "ls-tree", "HEAD"]));
+        assert!(!is_read_only(&["-c", "advice.detachedHead=false", "--literal-pathspecs", "reset", "--hard"]));
         assert!(is_read_only(&["stash", "list"]));
         assert!(is_read_only(&["config", "--get", "user.name"]));
         assert!(is_read_only(&["-c", "credential.interactive=false", "credential", "fill"]));
