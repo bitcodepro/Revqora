@@ -1,3 +1,4 @@
+import { futureStagesSmoke } from "./future-stages-smoke.mjs";
 import {workflowSmoke} from "./workflow-smoke.mjs";
 import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
 import {prCenterSmoke} from "./pr-center-smoke.mjs";
@@ -1891,23 +1892,30 @@ try {
     ["revqora.settings", "revqora.repositories"].map((key) => [key, localStorage.getItem(key)]),
   ));
   await close();
-  ({ page, close, child } = await launch({ exe, args: [], profile: path.join(work, "workspace-profile"), port: 0 }));
+  const workspaceProfile = path.join(work, "workspace-profile");
+  ({ page, close, child } = await launch({ exe, args: [], profile: workspaceProfile, port: 0 }));
   attachPage();
   // Wait for the empty startup's own settings write before installing fixtures.
   await page.waitForFunction(() => localStorage.getItem("revqora.settings") !== null);
   await page.evaluate((preferences) => { for (const [key, value] of Object.entries(preferences)) if (value !== null) localStorage.setItem(key, value); }, workspacePreferences);
   await page.reload();
   await page.locator(".topbar .repo-current > b").filter({ hasText: workspaceActive }).waitFor();
+  const restartWorkspace = async () => {
+    await close();
+    ({page,close,child} = await launch({exe,profile:workspaceProfile,port:0}));
+    attachPage();return page;
+  };
   if (suite === "all") {
     await repositoryWorkspaceSmoke({ page, check, shot, work });
     await branchManagerSmoke({ page, check, shot, work });
     await branchManagerProtectionSmoke({ page, check, shot, work });
     await branchCleanupSmoke({ page, check, shot, work });
     await worktreeManagerSmoke({ page, check, shot, work });
-    await forgeAccountsSmoke({page,check,shot,work,profile:smokeProfile,restart:async()=>{await close();const next=await launch({exe,profile:smokeProfile,port:0});page=next.page;close=next.close;child=next.child;attachPage();return page;}});
+    await forgeAccountsSmoke({page,check,shot,work,profile:workspaceProfile,restart:restartWorkspace});
     await prCenterSmoke({page,check,shot,work});
-    await agentWorkspaceSmoke({page,check,shot,work,restart:async()=>{await close();const next=await launch({exe,profile:smokeProfile,port:0});page=next.page;close=next.close;child=next.child;attachPage();return page;}});
-    await workflowSmoke({page,check,shot,work,restart:async()=>{await close();const next=await launch({exe,profile:smokeProfile,port:0});page=next.page;close=next.close;child=next.child;attachPage();return page;}});
+    await agentWorkspaceSmoke({page,check,shot,work,restart:restartWorkspace});
+    await workflowSmoke({page,check,shot,work,restart:restartWorkspace});
+    await futureStagesSmoke({page,check,shot,work,restart:restartWorkspace});
   }
   assertSmokeCoverage(suite, step);
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));

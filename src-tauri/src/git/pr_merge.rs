@@ -11,6 +11,9 @@ mod checks;
 mod cleanup;
 mod providers;
 pub use cleanup::{cleanup_act, cleanup_plan, CleanupInput, CleanupResult, CleanupReview};
+pub(super) fn same_repository_source(f: &ForgeInfo, raw: &Value) -> bool {
+    cleanup::source_repo(f, raw)
+}
 fn error(s: &str) -> GitError {
     GitError::new(s).kind("pr-merge")
 }
@@ -85,6 +88,12 @@ struct Prepared {
 }
 pub fn plan(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Plan> {
     prepare(repo, n, connection, revision).map(|p| p.plan)
+}
+pub fn verified_checks(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Vec<forge::Check>> {
+    let (f, d, _) = scoped(repo, n, connection, revision)?;
+    let checks = checks::load(repo, &f, &d)?;
+    scoped(repo, n, connection, revision)?;
+    Ok(checks)
 }
 fn prepare(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Prepared> {
     let (f, d, v) = scoped(repo, n, connection, revision)?;

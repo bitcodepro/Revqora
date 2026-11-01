@@ -1,3 +1,4 @@
+import { futureStagesSmoke } from "./future-stages-smoke.mjs";
 import {workflowSmoke} from "./workflow-smoke.mjs";
 import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
 import {prCenterSmoke} from "./pr-center-smoke.mjs";
@@ -40,7 +41,7 @@ try{
     await branchManagerSmoke({page,check,shot,work});
     await branchManagerProtectionSmoke({page,check,shot,work});
   }else if(suite==="cleanup") await branchCleanupSmoke({page,check,shot,work});
-  else {await worktreeManagerSmoke({page,check,shot,work});await forgeAccountsSmoke({page,check,shot,work,profile:path.join(work,"profile"),restart});await prCenterSmoke({page:app.page,check,shot,work});await agentWorkspaceSmoke({page:app.page,check,shot,work,restart});await workflowSmoke({page:app.page,check,shot,work,restart});}
+  else {await worktreeManagerSmoke({page,check,shot,work});await forgeAccountsSmoke({page,check,shot,work,profile:path.join(work,"profile"),restart});await prCenterSmoke({page:app.page,check,shot,work});await agentWorkspaceSmoke({page:app.page,check,shot,work,restart});await workflowSmoke({page:app.page,check,shot,work,restart});await futureStagesSmoke({page:app.page,check,shot,work,restart});}
   assertSmokeCoverage(suite,completed);
   if(errors.length)throw new Error(errors.join(" | "));
 }catch(e){console.error(e);process.exitCode=1;await app?.page.screenshot({path:path.join(out,"failure.png")}).catch(()=>{});}

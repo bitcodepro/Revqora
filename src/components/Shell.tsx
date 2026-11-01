@@ -1,4 +1,5 @@
 import {forgeAccountsDialog} from "./ForgeAccounts";
+import { aboutDialog } from "./AboutDialog";
 import { SyncButton } from "./SyncRepositories";
 import { RepositoryLibraryButton, WorkspacePicker } from "./RepositoryLibrary";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -21,6 +22,7 @@ import {
   GitMerge,
   GitPullRequestArrow,
   History,
+  Info,
   Moon,
   LayoutGrid,
   PanelLeft,
@@ -126,7 +128,7 @@ export function TopBar() {
             <History size={16} />
           </button>
           <button type="button" className="icon-btn" title="Undo Center" aria-label="Undo Center" onClick={() => void recoveryDialog(root)}><ShieldCheck size={16} /></button>
-        <button type="button" className="btn sm" title="Workflow Builder" aria-label="Workflow Builder" disabled={!root} onClick={()=>root&&openOverlay({kind:"workflows",root})}><Workflow size={14}/><span>Workflows</span></button>
+        <button type="button" className="btn sm" aria-label="Branch Stacks" title="Branch Stacks" onClick={()=>openOverlay({kind:"stacks",root})}><GitBranch size={15}/>Stacks</button><button type="button" className="icon-btn" title="History Explorer" aria-label="History Explorer" onClick={()=>openOverlay({kind:"historyExplorer",root})}><Search size={16}/></button><button type="button" className="btn sm" title="Workflow Builder" aria-label="Workflow Builder" disabled={!root} onClick={()=>root&&openOverlay({kind:"workflows",root})}><Workflow size={14}/><span>Workflows</span></button>
           <button type="button" className="icon-btn" title="Agent Workspace" aria-label="Agent Workspace" onClick={() => openOverlay({ kind: "agents", root })}><Bot size={16} /></button>
           <button className="icon-btn" title="Open terminal here" onClick={() => api.openTerminal(root)}>
             <SquareTerminal size={16} />
@@ -510,6 +512,7 @@ export function CommandPalette() {
       { id: "init", label: "New repository…", group: "Repository", icon: <Plus size={15} />, run: () => A.initRepoDialog() },
       {id:"forge-accounts",label:"Accounts and API connections",group:"App",icon:<UserRound size={15}/>,run:()=>forgeAccountsDialog(tab?.root??null)},
       { id: "settings", label: "Settings", group: "App", icon: <Settings2 size={15} />, run: () => settingsDialog(tab?.root ?? null) },
+      { id: "about", label: "About Revqora", group: "App", icon: <Info size={15} />, run: () => aboutDialog() },
       { id: "operation-log", label: "Operation log…", group: "App", icon: <History size={15} />, run: () => operationLogDialog(tab?.root ?? null) },
       ...(tab ? [{ id: "recovery-center", label: "Undo Center…", group: "Repository", icon: <ShieldCheck size={15} />, run: () => recoveryDialog(tab.root) }] : []),
       {
@@ -537,6 +540,8 @@ export function CommandPalette() {
         { id: "patch", label: "Apply patch file…", group: "Repository", icon: <Plus size={15} />, run: () => applyPatchFile(root) },
         { id: "browse", label: "Browse files (HEAD)", group: "Repository", icon: <FolderOpen size={15} />, run: () => openOverlay({ kind: "tree", root, rev: "HEAD" }) },
         { id: "worktree-manager", label: "Worktree manager…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => openOverlay({ kind: "worktrees", root }) },
+        {id:"branch-stacks",label:"Branch Stacks…",group:"Branch",icon:<GitBranch size={16}/>,run:()=>openOverlay({kind:"stacks",root})},
+        { id:"history-explorer",label:"History Explorer: search changed code…",group:"Repository",icon:<Search size={16}/>,run:()=>openOverlay({kind:"historyExplorer",root}) },
         { id: "workflow-builder", label: "Workflow Builder", group: "Repository", icon: <Workflow size={16}/>, run: () => root && openOverlay({kind:"workflows",root}) },
       { id: "agent-workspace", label: "Agent Workspace…", group: "Repository", icon: <Bot size={15} />, run: () => openOverlay({ kind: "agents", root }) },
         { id: "worktree", label: "New worktree…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => XA.addWorktree(root) },

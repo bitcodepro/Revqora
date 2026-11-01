@@ -501,3 +501,53 @@ fn agent_history_is_atomic_with_open_readers() {
     forget(r.path(), &task.id).unwrap();
     assert!(list(r.path()).unwrap().is_empty());
 }
+
+#[cfg(windows)]
+#[test]
+fn long_portable_paths_publish_initial_state_without_clobbering_and_allow_reader_snapshots() {
+    use std::os::windows::{ffi::OsStrExt, fs::MetadataExt};
+    let root = tempfile::tempdir().unwrap();
+    let mut long = root.path().to_path_buf();
+    while long.as_os_str().encode_wide().count() < 300 {
+        long.push("long_portable_directory_0123456789");
+    }
+    fs::create_dir_all(&long).unwrap();
+    folder(long.clone()).unwrap();
+    let mut task = snapshot(&output_job(root.path()));
+    task.phase = "queued".into();
+    publish_initial(&long, &task).expect("Initial agent history must support a long portable profile");
+    let path = long.join(format!("{}.json", task.id));
+    let initial = fs::read(&path).unwrap();
+    assert_eq!(fs::metadata(&path).unwrap().file_attributes() & 0x100, 0);
+    assert!(publish_initial(&long, &task).is_err(), "Initial publication must never replace another record with the same id");
+    assert_eq!(fs::read(&path).unwrap(), initial);
+    let mut reader = File::open(&path).unwrap();
+    task.phase = "running".into();
+    save(&long, &task).unwrap();
+    let previous: Task = serde_json::from_reader(&mut reader).unwrap();
+    assert_eq!(previous.phase, "queued");
+    assert_eq!(read_record(&path).unwrap().phase, "running");
+    assert_eq!(fs::read_dir(&long).unwrap().count(), 1);
+}
+
+#[test]
+fn default_agent_worktree_uses_portable_pool_without_changing_repository_configuration() {
+    let r = repo();
+    runner::run(r.path(), ["config", "core.longpaths", "false"]).unwrap();
+    let original_config = fs::read(r.path().join(".git/config")).unwrap();
+    let original_head = runner::run(r.path(), ["rev-parse", "HEAD"]).unwrap();
+    let plan = prepare(r.path(), request("echo portable-copy")).unwrap();
+    let target = PathBuf::from(&plan.creation.request.path);
+    assert!(target.starts_with(crate::portable::runtime_dir().unwrap().join("agents/worktrees")));
+    assert_eq!(target.file_name().unwrap(), plan.id.as_str());
+    assert_eq!(target.parent().unwrap().file_name().unwrap().len(), 16);
+    assert!(!target.starts_with(store(r.path()).unwrap()));
+    let task = start(r.path().to_owned(), plan, true).unwrap();
+    let task = wait(r.path(), &task.id);
+    assert_eq!(task.phase, "completed", "{}", failure_snapshot(r.path(), &task, &target));
+    assert!(task.stdout.contains("portable-copy"));
+    assert!(runner::run(&target, ["status", "--porcelain"]).unwrap().is_empty());
+    assert_eq!(runner::run(r.path(), ["rev-parse", "HEAD"]).unwrap(), original_head);
+    assert_eq!(fs::read(r.path().join(".git/config")).unwrap(), original_config);
+    cleanup(r.path(), &task);
+}

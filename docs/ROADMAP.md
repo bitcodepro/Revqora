@@ -21,10 +21,10 @@ cross-cutting work and does not consume a feature stage.
 | 14 | PR Center: comments, threads and review submissions | Merged (#22) |
 | 15 | PR Center: CI, server protections, merge and branch cleanup | Merged (#23) |
 | 16 | Agent Workspace | Merged (#24) |
-| 17 | Workflow Builder | Implemented; review pending |
-| 18 | Automated PR Workflow | Planned |
-| 19 | Semantic diff and history tools | Planned |
-| 20 | Stacked branches | Planned |
+| 17 | Workflow Builder | Merged (#26) |
+| 18 | Automated PR Workflow | Implemented; verification/review pending |
+| 19 | Semantic diff and history tools | Implemented; verification/review pending |
+| 20 | Stacked branches | Implemented; verification/review pending |
 
 Performance, compatibility, external-Git changes and data-safety regressions apply
 to every stage. Application data remains portable beside the executable.
@@ -355,3 +355,120 @@ semantic diff/history tools and stacked branches.
 Three stages remain: Automated PR Workflow, semantic diff/history tools and stacked
 branches. Automated agent-review/CI rules belong to stage 18; no such automation is
 silently enabled by a saved recipe.
+
+
+## Stage 18 — Automated PR Workflow
+
+- PR Center opens a follow-up recipe for the selected PR/source/remote. A structured
+  editor configures an installed CLI, literal argument array, instructions, new
+  worktree path, validation commands, commit message, reviewers and merge method.
+- The agent review captures the exact source SHA and complete, bounded actionable
+  discussion snapshot. It shows the complete prompt, executable, args and working
+  copy before explicit code/service consent. Changed feedback/source/account or
+  executable invalidates dispatch. Missing source objects require a normal Fetch.
+- Feedback capture supports complete GitHub threads/comments/reviews and GitLab/
+  Azure discussion feeds. Incomplete feeds (including the current Bitbucket preview)
+  stop rather than silently omit feedback. Named re-review requests currently use
+  GitHub; other services retain the existing provider review UI.
+- Agent completion redirects subsequent workflow steps to its isolated working
+  copy, accessible from either the original tab or that copy. Actual CLI logs,
+  exit status and durable agent history are retained. An interrupted/missing agent
+  result stops with uncertainty; no command or Git action is replayed after restart.
+- Built-in PR agents require a source branch in the selected repository. Fork or
+  unknown source repositories stop before agent preparation; their existing manual
+  Git/PR tools remain available. Agent publication must target the selected API
+  remote and the same PR source branch. Following CI/re-review/merge/cleanup steps
+  require that PR number and a Git-visible clean agent copy whose HEAD matches the
+  server source. Green checks on the old source cannot approve unpublished fixes.
+- Optional automatic validation runs only displayed check/command/CI steps while
+  the workspace is open and the user has enabled it. Closing stops new dispatch;
+  an already started step retains existing stop controls. This is not a background
+  scheduler. Built-in agent, Git and server steps remain separately reviewed.
+- Stage-and-commit captures recovery first and includes all Git-visible edits in
+  the effective working copy. Hooks/signing remain enabled. Literal validation
+  commands are arbitrary code; edits they make are shown for commit review.
+- CI waiting pins PR/source/account state and reuses the merge engine's complete,
+  bounded provider pagination. Missing checks wait; failed, cancelled, skipped or
+  neutral checks never count as green. Timeouts/cancellation do not run later steps.
+- Review requests, policy-checked merge/queue submission and optional post-merge
+  cleanup reuse durable no-replay dispatch. Merge never bypasses permissions or
+  protection/reviewer checks; queued/accepted is not presented as already merged.
+  Cleanup is separately reviewed, requires server-confirmed merge, exact refs and
+  recovery, and must include current Branch Manager protection patterns. Partial
+  remote results require inspection/acknowledgement, not automatic retry.
+- Providers without atomic source leases retain their documented concurrent-write
+  limits. CLI worktrees separate files, not OS permissions; agents can still run
+  tools outside Revqora. No claim of sandbox enforcement or unconditional Undo.
+
+## Stage 19 — Semantic diff and history tools
+
+- On-demand syntax-aware summaries supplement local commit, working/index, range
+  and stash text diffs. Embedded Tree-sitter grammars parse C#, TypeScript/TSX and
+  strict JSON locally. Nothing is sent to AI or a remote service for this view.
+- Code changes are grouped by named declarations (including overload signatures),
+  with added/removed/changed/moved entries, original line positions and bounded
+  before/after previews. JSON uses escaped JSON pointers, array indices and exact
+  number tokens; duplicate keys and invalid syntax are refused rather than guessed.
+- The original diff, mode/rename metadata and all ordinary diff controls remain
+  visible. Syntax grouping is not compiler/type/binding analysis or proof of equal
+  behavior. Comments, formatting and unclassified changes require the text view;
+  unavailable/partial summaries say so explicitly. Provider patches alone do not
+  enable summaries without complete local file snapshots.
+- Parsing is bounded (512 KiB per side, 500 ms parsing callback budget, structural
+  depth/count limits, first 500 summary rows, 2 KiB previews per side). Refreshing a
+  working-file diff invalidates its old summary. Oversized/binary/invalid UTF-8 files
+  keep their ordinary text/binary diff rather than showing a false empty summary.
+- History Explorer searches literal case-sensitive code in added/deleted lines
+  across local branches, remote-tracking refs, tags and HEAD, optionally scoped to
+  a literal repository path. It opens the actual matching commit in existing review.
+  Git pickaxe search uses argument arrays, no external diff/textconv, and never
+  writes the index. Merge commits compare with their first parent. Search is not
+  semantic reference resolution or a remote PR/task-description index.
+- Symbol-body history additionally compares parsed declaration bodies or JSON
+  subtrees in a selected source file, finding body-only edits even when the name
+  line did not change. It scans 25 first-parent file revisions per page, pins the
+  HEAD commit for pagination and reports unreadable/unsupported versions with
+  commit IDs rather than claiming complete results. JSON pointers distinguish an empty
+  property (/) from the whole-document selector ($). It follows the current file
+  path; existing File history handles renames. Overloads/scopes use declaration
+  identities, not compiler resolution or tracking across symbol renames.
+
+## Stage 20 — Stacked branches
+
+- Dedicated toolbar/palette workspace tracks up to 20 local linear chains, each
+  with 16 layers. Create a layer at its exact reviewed parent or adopt a branch
+  containing that parent; store the boundary explicitly. Names are distinct across
+  chains, bases cannot also be layers, and symbolic/case aliases are refused.
+- New refs use create-only CAS with --no-deref; creating a layer neither checks it
+  out nor carries working changes away. Metadata uses shared bounded atomic JSON,
+  portable leases and revision-conditional writes; forgetting tracking keeps refs.
+- Restack from bottom to top, one checked-out layer per confirmation. Preview shows
+  its exact old tip/boundary/new parent, own commit count and publication exposure.
+  Checkpoints precede rebase; physical history, dirty/hidden index edits, duplicate
+  worktree checkout, ignored-file collisions, protection rules and stale state are
+  checked before dispatch. Merge-containing ranges need the existing explicit
+  Rebase Studio instead of an inferred linear rewrite.
+- Rebase uses an exact --onto boundary, disables update-refs/autosquash/autostash/
+  fork-point inference and retains empty/reapplied commits. Other local/remote
+  refs are kept; publication/force push is a separate existing review. Configured
+  hooks/signing still run. External Git tools do not participate in the app queue.
+- Durable pending intent records old tip, new parent and recovery checkpoint before
+  Git starts. Conflicts stop. After existing conflict controls or external Git finish
+  or abort, explicit result acknowledgement records the outcome without rerunning
+  rebase. Unknown saves/restarts retain pending state and never guess completion.
+- Each layer can create an ordinary PR targeting its immediate parent or link an
+  existing PR with matching exact source. Links bind the API connection; changed
+  remote/account requires explicit relinking. Refresh reads current server status.
+  Retargeting a child PR is a separate optimistic metadata confirmation.
+- Retiring a merged bottom layer requires a server merge receipt reachable from
+  the updated local base, including after squash merge. The next layer retains
+  its old source boundary for an exact --onto rebase. Removed tracking never
+  deletes that local branch or PR; source cleanup stays separately reviewed.
+- Thirteen additional native scenarios extend all previous 139 (152 total). Real
+  offline CLI/Git/loopback tests cover agent follow-up, failed request no-replay,
+  complete CI gates, JSON precision, syntax grouping, read-only history, restack
+  boundaries, stale/protected/ignored cases, paused recovery and squash retirement.
+
+The original 20-stage plan is covered by this implementation sequence. Further
+languages/providers, a background automation service and non-linear stack graphs
+are separate product extensions, not silently enabled behavior.

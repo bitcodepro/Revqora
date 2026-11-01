@@ -20,10 +20,15 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
   const [forced, setForced] = useState<Set<string>>(new Set());
   const [report, setReport] = useState<BranchCleanupReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reviewedInput, setReviewedInput] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [consumed, setConsumed] = useState(false);
   const generation = useRef(0);
+  const input = JSON.stringify([root, requests, base, rules]);
+  // A changed selection invalidates the old proof during rendering, before
+  // the effect starts the next request and clears its force consents.
+  const pending = loading || reviewedInput !== input;
   const load = useCallback(async () => {
     const id = ++generation.current;
     setLoading(true); setReview(null); setForced(new Set()); setError(""); setReport(null); setConsumed(false);
@@ -32,8 +37,8 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
       if (id !== generation.current) return;
       setReview(next);
     } catch (e) { if (id === generation.current) setError(errorMessage(e)); }
-    finally { if (id === generation.current) setLoading(false); }
-  }, [root, requests, base, rules]);
+    finally { if (id === generation.current) { setReviewedInput(input); setLoading(false); } }
+  }, [root, requests, base, rules, input]);
   useEffect(() => { void load(); return () => { generation.current++; }; }, [load]);
   const close = () => { if (!busy) onClose(); };
   const toggle = (old: Set<string>, reference: string, value: boolean) => { const next = new Set(old); if (value) next.add(reference); else next.delete(reference); return next; };
@@ -57,7 +62,7 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
     return "";
   })();
   const run = async () => {
-    if (!review || loading || busy || consumed || !included.size || missingConsent || batchBlocker) return;
+    if (!review || pending || busy || consumed || !included.size || missingConsent || batchBlocker) return;
     setBusy(true); setConsumed(true); setError("");
     const id = newOpId(); startBusy(id, "Reviewing and deleting selected branches");
     try {
@@ -69,23 +74,23 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
   const results = report?.items;
   return <Modal title={report ? "Branch cleanup results" : "Review branch cleanup"} subtitle={basename(root)} icon={<Trash2 size={18} />} tone="danger" wide onClose={close} onSubmit={() => void run()}
     footer={<><button type="button" className="btn" disabled={busy} onClick={close}>{consumed ? "Close" : "Cancel"}</button>
-      {!consumed && <button type="button" className="btn" disabled={loading || busy} onClick={() => void load()}>Refresh review</button>}
-      {!consumed && <button type="submit" className="btn danger primary" disabled={loading || busy || !review || !included.size || missingConsent || !!batchBlocker}>Delete {included.size} selected</button>}</>}>
-    <div className="branch-cleanup" aria-busy={loading || busy}>
+      {!consumed && <button type="button" className="btn" disabled={pending || busy} onClick={() => void load()}>Refresh review</button>}
+      {!consumed && <button type="submit" className="btn danger primary" disabled={pending || busy || !review || !included.size || missingConsent || !!batchBlocker}>Delete {included.size} selected</button>}</>}>
+    <div className="branch-cleanup" aria-busy={pending || busy} data-cleanup-base={!pending && review ? base : undefined}>
       {!consumed && <>
         <label className="field">Compare against a surviving local branch
-          <select className="input" aria-label="Cleanup comparison base" value={base} disabled={loading || busy} onChange={e => setBase(e.target.value)}>
+          <select className="input" aria-label="Cleanup comparison base" value={base} disabled={pending || busy} onChange={e => setBase(e.target.value)}>
             <option value="">No comparison target (explicit consent required)</option>{bases.map(b => <option key={b.reference} value={b.reference}>{b.name}</option>)}
           </select>
         </label>
         <p className="muted">Choose a deletion scope for each row. Remote means the actual push-server branch, not just its local cache. Cached tips must still match the server at execution.</p>
       </>}
-      {loading && <div className="bc-loading"><Loader2 className="spin" size={16} /><span>Reviewing history, protection and worktrees…</span></div>}
+      {pending && <div className="bc-loading"><Loader2 className="spin" size={16} /><span>Reviewing history, protection and worktrees…</span></div>}
       {!consumed && requests.map((request, i) => {
         const item = review?.items[i]; const p = item?.plan;
         return <article className="bc-item" key={request.reference} data-cleanup-ref={request.reference}>
-          <div className="bc-item-head"><label><input type="checkbox" aria-label={`Include ${request.reference}`} checked={included.has(request.reference)} disabled={loading || busy || !p || !!item?.error} onChange={e => setExcluded(s => toggle(s, request.reference, !e.target.checked))} /><b>{request.reference.replace(/^refs\/(heads|remotes)\//, "")}</b></label>
-            <select className="input" aria-label={`Deletion scope for ${request.reference}`} value={request.mode} disabled={loading || busy || request.reference.startsWith("refs/remotes/")} onChange={e => setRequests(all => all.map((r, n) => n === i ? { ...r, mode: e.target.value as BranchCleanupMode } : r))}>
+          <div className="bc-item-head"><label><input type="checkbox" aria-label={`Include ${request.reference}`} checked={included.has(request.reference)} disabled={pending || busy || !p || !!item?.error} onChange={e => setExcluded(s => toggle(s, request.reference, !e.target.checked))} /><b>{request.reference.replace(/^refs\/(heads|remotes)\//, "")}</b></label>
+            <select className="input" aria-label={`Deletion scope for ${request.reference}`} value={request.mode} disabled={pending || busy || request.reference.startsWith("refs/remotes/")} onChange={e => setRequests(all => all.map((r, n) => n === i ? { ...r, mode: e.target.value as BranchCleanupMode } : r))}>
               <option value="local">Local only</option><option value="remote">Remote only (keep local)</option><option value="both">Local + remote</option>
             </select>
           </div>
@@ -97,7 +102,7 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
             {p.proof.target && <small>↑{p.localOnly ?? "—"} local-only · ↓{p.remoteOnly ?? "—"} remote-only commits</small>}
             {!!p.currentChanges && <p className="muted">{p.currentChanges} working-copy changes stay in their worktree.</p>}
             {!!p.worktrees.length && <p className="muted">Local worktrees kept: {p.worktrees.map(w => `${w.path}${w.dirty ? " (modified)" : ""}`).join(", ")}</p>}
-            {item?.forceRequired && <label className="bc-consent"><input type="checkbox" aria-label={`Allow unmerged deletion for ${request.reference}`} checked={forced.has(request.reference)} disabled={busy || !included.has(request.reference)} onChange={e => setForced(s => toggle(s, request.reference, e.target.checked))} />Delete these exact tips despite commits outside the base. Squash/rebase integration does not guarantee original history is retained.</label>}
+            {item?.forceRequired && <label className="bc-consent"><input type="checkbox" aria-label={`Allow unmerged deletion for ${request.reference}`} checked={forced.has(request.reference)} disabled={pending || busy || !included.has(request.reference)} onChange={e => setForced(s => toggle(s, request.reference, e.target.checked))} />Delete these exact tips despite commits outside the base. Squash/rebase integration does not guarantee original history is retained.</label>}
           </>}
         </article>;
       })}

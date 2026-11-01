@@ -1,4 +1,101 @@
 #[tauri::command]
+async fn symbol_history(repo: String, path: String, query: String, anchor: Option<String>, offset: usize) -> GitResult<git::semantic::SymbolHistoryPage> {
+    blocking(move || git::semantic::symbol_history(&p(&repo), &path, &query, anchor.as_deref(), offset)).await
+}
+#[tauri::command]
+async fn stack_snapshot(repo: String) -> GitResult<git::stacks::Snapshot> {
+    blocking(move || git::stacks::snapshot(&p(&repo))).await
+}
+#[tauri::command]
+async fn stack_create(repo: String, name: String, base: String, expected_revision: String) -> GitResult<git::stacks::Catalog> {
+    blocking(move || git::stacks::create(&p(&repo), &name, &base, &expected_revision)).await
+}
+#[tauri::command]
+async fn stack_forget(repo: String, id: String, expected_revision: String) -> GitResult<git::stacks::Catalog> {
+    blocking(move || git::stacks::forget(&p(&repo), &id, &expected_revision)).await
+}
+#[tauri::command]
+async fn stack_review(repo: String, id: String, index: usize, protection_rules: Vec<String>) -> GitResult<git::stacks::Plan> {
+    blocking(move || git::stacks::review(&p(&repo), &id, index, &protection_rules)).await
+}
+#[tauri::command]
+async fn stack_link_pull(repo: String, id: String, index: usize, number: u64, expected_revision: String) -> GitResult<git::stacks::Catalog> {
+    blocking(move || git::stacks::link_pull(&p(&repo), &id, index, number, &expected_revision)).await
+}
+#[tauri::command]
+async fn stack_retire(
+    repo: String,
+    id: String,
+    expected_revision: String,
+    connection: String,
+    revision: String,
+    consent: bool,
+) -> GitResult<git::stacks::Catalog> {
+    blocking(move || git::stacks::retire_bottom(&p(&repo), &id, &expected_revision, &connection, &revision, consent)).await
+}
+#[tauri::command]
+async fn stack_retarget(
+    repo: String,
+    id: String,
+    index: usize,
+    expected_revision: String,
+    connection: String,
+    revision: String,
+    consent: bool,
+) -> GitResult<git::pr_center::EditResult> {
+    blocking(move || git::stacks::retarget_pull(&p(&repo), &id, index, &expected_revision, &connection, &revision, consent)).await
+}
+#[tauri::command]
+async fn stack_append(
+    app: AppHandle,
+    repo: String,
+    id: String,
+    name: String,
+    existing: bool,
+    expected_revision: String,
+    expected_state: String,
+) -> GitResult<git::stacks::Catalog> {
+    mutating(repo.clone(), Some(expected_state.clone()), app, "stack_append", None, move || {
+        git::stacks::append(&p(&repo), &id, &name, existing, &expected_revision, &expected_state)
+    })
+    .await
+}
+#[tauri::command]
+async fn stack_restack(app: AppHandle, repo: String, plan: git::stacks::Plan, consent: bool, published_consent: bool) -> GitResult<git::stacks::Outcome> {
+    mutating(repo.clone(), Some(plan.state_token.clone()), app, "stack_restack", None, move || {
+        git::stacks::restack(&p(&repo), &plan, consent, published_consent)
+    })
+    .await
+}
+#[tauri::command]
+async fn stack_finalize(
+    app: AppHandle,
+    repo: String,
+    id: String,
+    index: usize,
+    expected_revision: String,
+    expected_state: String,
+    consent: bool,
+) -> GitResult<git::stacks::Catalog> {
+    mutating(repo.clone(), Some(expected_state.clone()), app, "stack_finalize", None, move || {
+        git::stacks::finalize(&p(&repo), &id, index, &expected_revision, &expected_state, consent)
+    })
+    .await
+}
+#[tauri::command]
+async fn semantic_diff(
+    repo: String,
+    path: String,
+    old: Option<git::inspect::BlobSpec>,
+    new: Option<git::inspect::BlobSpec>,
+) -> GitResult<git::semantic::Comparison> {
+    blocking(move || git::operations::access(&p(&repo), false, |_, _| {}, || git::semantic::compare(&p(&repo), &path, old, new))).await
+}
+#[tauri::command]
+async fn code_history(repo: String, query: String, path: Option<String>, offset: usize) -> GitResult<git::semantic::HistoryPage> {
+    blocking(move || git::operations::access(&p(&repo), false, |_, _| {}, || git::semantic::search(&p(&repo), &query, path.as_deref(), offset))).await
+}
+#[tauri::command]
 async fn workflow_catalog(repo: String) -> GitResult<git::workflows::Catalog> {
     blocking(move || git::workflows::catalog(&p(&repo))).await
 }
@@ -1995,6 +2092,19 @@ pub fn run() {
             rebase_studio_capture,
             interactive_rebase,
             conflict_info,
+            semantic_diff,
+            code_history,
+            symbol_history,
+            stack_snapshot,
+            stack_create,
+            stack_forget,
+            stack_review,
+            stack_link_pull,
+            stack_retire,
+            stack_retarget,
+            stack_append,
+            stack_restack,
+            stack_finalize,
             workflow_catalog,
             workflow_save,
             workflow_delete,
