@@ -1,3 +1,5 @@
+import path from "node:path";
+
 // Native WebView CDP can expose an initial document before the app navigation.
 // Keep URL/origin/storage failures visible; never disable browser security or
 // treat an inaccessible application store as an empty set of preferences.
@@ -43,4 +45,27 @@ export async function waitForApplicationPage(browser, { timeoutMs = 30000, pollM
     await new Promise(resolve => setTimeout(resolve, pollMs));
   }
   throw new Error(`Revqora document/storage did not become ready: ${JSON.stringify([...diagnostics.values()])}`);
+}
+
+// Forced taskkill /F is a crash, not a settings-flush barrier. Account/task state is native
+// portable data: open its repository explicitly without recreating any records.
+export async function openRepository(page, root) {
+  await page.locator('[data-app-startup="ready"]').waitFor();
+  await page.evaluate(p => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [p] }), root);
+  await page.waitForFunction(repositoryIsActive, { expected: root, windows: process.platform === "win32" });
+  await page.locator(".topbar .repo-current > b").filter({ hasText: path.basename(root) }).waitFor();
+}
+
+// Serialized into the native document: confirm identity, not a matching basename
+// from an old tab. The header title comes from the active repository's root.
+export function repositoryIsActive({ expected, windows }) {
+  const actual = document.querySelector(".topbar .repo-current")?.getAttribute("title");
+  const normalize = value => {
+    let path = value.replaceAll("\\", "/");
+    if (path.startsWith("//?/UNC/")) path = "//" + path.slice(8);
+    else if (path.startsWith("//?/")) path = path.slice(4);
+    path = path.replace(/\/+$/, "");
+    return windows ? path.toLowerCase() : path;
+  };
+  return typeof actual === "string" && normalize(actual) === normalize(expected);
 }

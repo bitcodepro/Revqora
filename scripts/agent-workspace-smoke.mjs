@@ -2,7 +2,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
-import { assertAgentWorktreeProtection, openAgentRepository, assertAgentDraft } from "./agent-workspace-fixture.mjs";
+import { assertAgentWorktreeProtection, assertAgentDraft } from "./agent-workspace-fixture.mjs";
+import { openRepository } from "./ui-readiness.mjs";
 export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
  const root=path.join(work,"stage16-agents"),script=path.join(work,"fixture-agent.cjs"),launchTrace=path.join(work,"fixture-launches.jsonl");fs.mkdirSync(root);
  const git=(...args)=>execFileSync("git",["-C",root,...args],{encoding:"utf8",windowsHide:true}).trim();
@@ -18,7 +19,7 @@ export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
  const launch=async()=>{await modal().getByRole("checkbox",{name:"Allow agent execution",exact:true}).check();await button("Start agent").click();await page.waitForSelector('.modal',{state:"detached"});};
  const unchanged=()=>{if(git("rev-parse","HEAD")!==head||!fs.readFileSync(path.join(root,".git/index")).equals(index)||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="Keep uncommitted source\r\n")throw Error("Agent workflow changed original HEAD/index/files");};
  let successful;
- await openAgentRepository(page,root);
+ await openRepository(page,root);
  try {
   await check("agent launch reviews exact paths and requires explicit consent; cancelled review never runs",async()=>{
    await open();await draft("Cancelled task","do not run");if(!await button("Start agent").isDisabled())throw Error("Unconsented launch enabled");await shot("129-agent-launch-review");await button("Edit task").click();if(await page.locator('[data-agent-review]').count())throw Error("Editing retained launch proof");
@@ -41,7 +42,7 @@ export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
   });
   await check("task history and logs survive closing the workspace and app restart without replaying jobs",async()=>{
    const before=fs.readFileSync(launchTrace,"utf8");if(before.trim().split("\n").length!==2)throw Error("Expected exactly successful and cancellable fixture launches");
-   await page.getByRole("button",{name:"Close Agent Workspace",exact:true}).click();page=await restart();await openAgentRepository(page,root);await open();await until(async()=>(await tasks()).length===3,"History missing after restart");const t=(await tasks()).find(t=>t.id===successful.id);if(t?.phase!=="completed"||!t.stdout.includes("fixture completed")||t.prompt!=="Produce reviewed edits")throw Error("Restart lost task record/log");
+   await page.getByRole("button",{name:"Close Agent Workspace",exact:true}).click();page=await restart();await openRepository(page,root);await open();await until(async()=>(await tasks()).length===3,"History missing after restart");const t=(await tasks()).find(t=>t.id===successful.id);if(t?.phase!=="completed"||!t.stdout.includes("fixture completed")||t.prompt!=="Produce reviewed edits")throw Error("Restart lost task record/log");
    if(fs.readFileSync(launchTrace,"utf8")!==before)throw Error("App restart replayed an agent process");
    await invoke("agent_forget",{id:t.id});if(!fs.existsSync(path.join(t.path,"agent.txt")))throw Error("Forgetting history removed files");unchanged();
   });

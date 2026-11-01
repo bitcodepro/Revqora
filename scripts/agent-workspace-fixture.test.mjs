@@ -4,7 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { assertAgentWorktreeProtection, openAgentRepository, assertAgentDraft, repositoryIsActive } from "./agent-workspace-fixture.mjs";
+import { assertAgentWorktreeProtection, assertAgentDraft } from "./agent-workspace-fixture.mjs";
+
+import { openRepository, repositoryIsActive } from "./ui-readiness.mjs";
 
 test("agent worktree assertions preserve Git quoting and identify the exact locked task", t => {
   const base = path.resolve(process.env.REVQORA_TEST_TMP || os.tmpdir());
@@ -58,11 +60,11 @@ test("agent launch preflight rejects redirected input before any preview or laun
   await assert.rejects(assertAgentDraft(dialog,expected),/Agent executable.*no launch was prepared/);
 });
 
-test("history restart waits for readiness, then sends one open and waits for exact identity without reconstructing records", async () => {
- const calls=[];let release;const ready=new Promise(resolve=>release=resolve);const root=path.resolve("fixture","stage16-agents");
+for (const repository of ["stage16-agents", "stage12-accounts"]) test(`${repository}: restart waits for readiness, then sends one open and waits for exact identity without reconstructing records`, async () => {
+ const calls=[];let release;const ready=new Promise(resolve=>release=resolve);const root=path.resolve("fixture",repository);
  const page={evaluate:async(fn,arg)=>{const prior=globalThis.window;globalThis.window={__TAURI_INTERNALS__:{invoke:async(command,args)=>calls.push([command,args])}};try{await fn(arg);}finally{globalThis.window=prior;}},waitForFunction:async(fn,arg)=>{assert.equal(fn,repositoryIsActive);calls.push(["identity",arg.expected]);},locator:selector=>selector.includes("data-app-startup")?{waitFor:async()=>{calls.push(["wait-ready"]);await ready;}}:{filter:filter=>({waitFor:async()=>calls.push([selector,filter])})}};
- const opening=openAgentRepository(page,root);await Promise.resolve();assert.deepEqual(calls,[["wait-ready"]],"No event can be emitted before ready");release();await opening;
- assert.deepEqual(calls,[["wait-ready"],["plugin:event|emit",{event:"open-paths",payload:[root]}],["identity",root],[".topbar .repo-current > b",{hasText:"stage16-agents"}]]);
+ const opening=openRepository(page,root);await Promise.resolve();assert.deepEqual(calls,[["wait-ready"]],"No event can be emitted before ready");release();await opening;
+ assert.deepEqual(calls,[["wait-ready"],["plugin:event|emit",{event:"open-paths",payload:[root]}],["identity",root],[".topbar .repo-current > b",{hasText:repository}]]);
 });
 
 test("repository acknowledgement rejects a different directory with the same basename and handles native Windows paths", () => {
