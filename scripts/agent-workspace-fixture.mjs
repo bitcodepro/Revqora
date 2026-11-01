@@ -4,8 +4,24 @@ import path from "node:path";
 // Forced taskkill /F is a crash, not a settings-flush barrier. History is native
 // portable data: open its repository explicitly without recreating any records.
 export async function openAgentRepository(page, root) {
+  await page.locator('[data-app-startup="ready"]').waitFor();
   await page.evaluate(p => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [p] }), root);
+  await page.waitForFunction(repositoryIsActive, { expected: root, windows: process.platform === "win32" });
   await page.locator(".topbar .repo-current > b").filter({ hasText: path.basename(root) }).waitFor();
+}
+
+// Serialized into the native document: confirm identity, not a matching basename
+// from an old tab. The header title comes from the active repository's root.
+export function repositoryIsActive({ expected, windows }) {
+  const actual = document.querySelector(".topbar .repo-current")?.getAttribute("title");
+  const normalize = value => {
+    let path = value.replaceAll("\\", "/");
+    if (path.startsWith("//?/UNC/")) path = "//" + path.slice(8);
+    else if (path.startsWith("//?/")) path = path.slice(4);
+    path = path.replace(/\/+$/, "");
+    return windows ? path.toLowerCase() : path;
+  };
+  return typeof actual === "string" && normalize(actual) === normalize(expected);
 }
 
 // Check the real controls before preparing a launch, never silently refill a
