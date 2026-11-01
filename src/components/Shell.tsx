@@ -1,4 +1,5 @@
 import {forgeAccountsDialog} from "./ForgeAccounts";
+import { aboutDialog } from "./AboutDialog";
 import { SyncButton } from "./SyncRepositories";
 import { RepositoryLibraryButton, WorkspacePicker } from "./RepositoryLibrary";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -21,6 +22,7 @@ import {
   GitMerge,
   GitPullRequestArrow,
   History,
+  Info,
   Moon,
   LayoutGrid,
   PanelLeft,
@@ -510,6 +512,7 @@ export function CommandPalette() {
       { id: "init", label: "New repository…", group: "Repository", icon: <Plus size={15} />, run: () => A.initRepoDialog() },
       {id:"forge-accounts",label:"Accounts and API connections",group:"App",icon:<UserRound size={15}/>,run:()=>forgeAccountsDialog(tab?.root??null)},
       { id: "settings", label: "Settings", group: "App", icon: <Settings2 size={15} />, run: () => settingsDialog(tab?.root ?? null) },
+      { id: "about", label: "About Revqora", group: "App", icon: <Info size={15} />, run: () => aboutDialog() },
       { id: "operation-log", label: "Operation log…", group: "App", icon: <History size={15} />, run: () => operationLogDialog(tab?.root ?? null) },
       ...(tab ? [{ id: "recovery-center", label: "Undo Center…", group: "Repository", icon: <ShieldCheck size={15} />, run: () => recoveryDialog(tab.root) }] : []),
       {
