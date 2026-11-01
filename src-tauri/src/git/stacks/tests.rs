@@ -221,9 +221,16 @@ fn merged_bottom_layer_requires_the_actual_merge_receipt_and_preserves_a_squashe
     runner::run(r, ["switch", "second"]).unwrap();
     commit(r, "second.txt", "second work");
     runner::run(r, ["switch", "-c", "server-merged", "main"]).unwrap();
-    commit(r, "first.txt", "first work");
+    fs::write(r.join("first.txt"), "first work").unwrap();
+    runner::run(r, ["add", "."]).unwrap();
+    // Identical content/parent/message and second-resolution timestamps can
+    // reproduce the original commit on fast runners. A squash receipt must
+    // have the same tree but a distinct identity regardless of wall-clock time.
+    runner::run(r, ["commit", "-qm", "Squash merge first layer"]).unwrap();
     let merged = heads(r).unwrap()["server-merged"].clone();
     runner::run(r, ["switch", "main"]).unwrap();
+    assert_ne!(first, merged);
+    assert_eq!(runner::run(r, ["rev-parse", &format!("{first}^{{tree}}")]).unwrap(), runner::run(r, ["rev-parse", &format!("{merged}^{{tree}}")]).unwrap());
     assert!(!ancestor(r, &first, &merged).unwrap());
     let is_merged = Arc::new(AtomicBool::new(false));
     let state = is_merged.clone();

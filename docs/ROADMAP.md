@@ -377,7 +377,7 @@ silently enabled by a saved recipe.
 - Optional automatic validation runs only displayed check/command/CI steps while
   the workspace is open and the user has enabled it. Closing stops new dispatch;
   an already started step retains existing stop controls. This is not a background
-  scheduler. Agent launch and every Git/server write remain separately reviewed.
+  scheduler. Built-in agent, Git and server steps remain separately reviewed.
 - Stage-and-commit captures recovery first and includes all Git-visible edits in
   the effective working copy. Hooks/signing remain enabled. Literal validation
   commands are arbitrary code; edits they make are shown for commit review.
