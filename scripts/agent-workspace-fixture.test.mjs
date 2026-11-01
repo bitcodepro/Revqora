@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { assertAgentWorktreeProtection, openAgentRepository } from "./agent-workspace-fixture.mjs";
+import { assertAgentWorktreeProtection, openAgentRepository, assertAgentDraft } from "./agent-workspace-fixture.mjs";
 
 test("agent worktree assertions preserve Git quoting and identify the exact locked task", t => {
   const base = path.resolve(process.env.REVQORA_TEST_TMP || os.tmpdir());
@@ -45,6 +45,17 @@ test("agent worktree assertions preserve Git quoting and identify the exact lock
     if (!resolved.startsWith(parent + path.sep)) throw Error("Unowned worktree fixture cleanup target");
     fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
+});
+
+test("agent launch preflight rejects redirected input before any preview or launch", async () => {
+  const expected={title:"Offline task",executable:"fixture-node.exe",args:["fixture.cjs"],prompt:"Fixture prompt"};
+  const controls={"Task title":expected.title,"Agent provider":"custom","Agent executable":expected.executable,"Agent arguments":JSON.stringify(expected.args),"Agent prompt":expected.prompt};
+  const dialog={getByRole:(_role,{name})=>({inputValue:async()=>controls[name]})};
+  await assertAgentDraft(dialog,expected);
+  controls["Task title"]=expected.executable;controls["Agent executable"]="";
+  await assert.rejects(assertAgentDraft(dialog,expected),/Task title.*no launch was prepared/);
+  controls["Task title"]=expected.title;
+  await assert.rejects(assertAgentDraft(dialog,expected),/Agent executable.*no launch was prepared/);
 });
 
 test("history restart opens only its repository, without reconstructing persisted tasks", async () => {

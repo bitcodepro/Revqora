@@ -8,6 +8,22 @@ export async function openAgentRepository(page, root) {
   await page.locator(".topbar .repo-current > b").filter({ hasText: path.basename(root) }).waitFor();
 }
 
+// Check the real controls before preparing a launch, never silently refill a
+// wrong field or wait for a preview that cannot be produced from this form.
+export async function assertAgentDraft(dialog, expected) {
+  for (const [name, value, role] of [
+    ["Task title", expected.title, "textbox"],
+    ["Agent provider", "custom", "combobox"],
+    ["Agent executable", expected.executable, "textbox"],
+    ["Agent arguments", JSON.stringify(expected.args), "textbox"],
+    ["Agent prompt", expected.prompt, "textbox"],
+  ]) {
+    if (await dialog.getByRole(role, { name, exact: true }).inputValue() !== value) {
+      throw Error(`Agent form field ${JSON.stringify(name)} does not contain the intended fixture value; no launch was prepared.`);
+    }
+  }
+}
+
 const physical = value => {
   const resolved = fs.realpathSync.native(path.resolve(value));
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
