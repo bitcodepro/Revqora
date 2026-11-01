@@ -60,6 +60,32 @@ pub mod portable;
 pub mod update;
 
 #[tauri::command]
+async fn agent_prepare(repo: String, request: git::agents::Request) -> GitResult<git::agents::Plan> {
+    blocking(move || git::agents::prepare(&p(&repo), request)).await
+}
+#[tauri::command]
+async fn agent_start(repo: String, plan: git::agents::Plan, consent: bool) -> GitResult<git::agents::Task> {
+    // The worker owns its writer transaction and journal. Poll/stop bypass it.
+    blocking(move || git::agents::start(p(&repo), plan, consent)).await
+}
+#[tauri::command]
+async fn agent_tasks(repo: String) -> GitResult<Vec<git::agents::Task>> {
+    blocking(move || git::agents::list(&p(&repo))).await
+}
+#[tauri::command]
+async fn agent_stop(repo: String, id: String) -> GitResult<()> {
+    blocking(move || git::agents::stop(&p(&repo), &id)).await
+}
+#[tauri::command]
+async fn agent_forget(repo: String, id: String) -> GitResult<()> {
+    blocking(move || git::agents::forget(&p(&repo), &id)).await
+}
+#[tauri::command]
+async fn agent_acknowledge(repo: String, id: String, stopped: bool) -> GitResult<()> {
+    blocking(move || git::agents::acknowledge(&p(&repo), &id, stopped)).await
+}
+
+#[tauri::command]
 async fn validation_start(repo: String, command: String, expected_state: String, timeout_seconds: u64) -> git::runner::GitResult<git::validation::Report> {
     // Returns immediately; polling and cancellation must not wait for the writer queue.
     blocking(move || git::validation::start(PathBuf::from(repo), command, expected_state, timeout_seconds)).await
@@ -1910,6 +1936,12 @@ pub fn run() {
             rebase_studio_capture,
             interactive_rebase,
             conflict_info,
+            agent_prepare,
+            agent_start,
+            agent_tasks,
+            agent_stop,
+            agent_forget,
+            agent_acknowledge,
             validation_start,
             validation_report,
             validation_cancel,
@@ -2018,6 +2050,7 @@ pub fn run() {
         .run(|_, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 git::validation::cancel_all();
+                git::agents::cancel_all();
             }
         });
 }

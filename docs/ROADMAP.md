@@ -19,8 +19,8 @@ cross-cutting work and does not consume a feature stage.
 | 12 | Accounts and forge integrations | Merged (#20) |
 | 13 | PR Center: browse, create, edit, templates and diffs | Merged (#21) |
 | 14 | PR Center: comments, threads and review submissions | Merged (#22) |
-| 15 | PR Center: CI, server protections, merge and branch cleanup | Implemented; review pending |
-| 16 | Agent Workspace | Planned |
+| 15 | PR Center: CI, server protections, merge and branch cleanup | Merged (#23) |
+| 16 | Agent Workspace | Implemented; review pending |
 | 17 | Workflow Builder | Planned |
 | 18 | Automated PR Workflow | Planned |
 | 19 | Semantic diff and history tools | Planned |
@@ -257,3 +257,48 @@ Stage 15 adds CI/protection-aware merging and branch cleanup. Six stages remain 
 
 Five planned stages remain after stage 15: Agent Workspace, Workflow Builder,
 Automated PR Workflow, semantic diff/history tools and stacked branches.
+
+## Stage 16 — Agent Workspace
+
+- Dedicated task screen from the toolbar and command palette. Codex CLI and Claude
+  Code argument presets, plus a custom stdin-driven CLI. The user selects a native
+  executable and literal JSON argument array; no shell interpolation, downloading,
+  hidden installation, implicit authentication or automatic task submission.
+- Review title, full prompt, command, exact starting commit, unique new branch,
+  worktree, portable CLI profile and timeout before explicit code/service consent.
+  Changed executable/state/registration invalidates launch. A durable task ID prevents
+  replay, including after a lost IPC response or closing/reopening the confirmation.
+- Newly registered and locked worktrees default beside the executable, with an
+  explicit alternative working-copy folder (e.g. when the app is inside this repo). CLI home,
+  Codex/Claude config, XDG config/cache/data and temporary-directory variables point
+  into portable profiles. Existing user credentials are not copied. Authenticate the
+  installed CLI in that profile; provider subscriptions/login remain external.
+- Live bounded stdout/stderr, elapsed time, exit code, cancellation, four-hour maximum
+  timeout, portable persisted prompt/history/logs and operation-journal entries. Logs
+  are checkpointed during execution. Process groups on Unix / Windows Job Objects
+  terminate descendants on stop, timeout and normal completion. Poll and stop bypass
+  the Git queue. Up to 100 history records; explicit forgetting retains all Git files.
+- One agent per common repository, including linked worktrees and windows sharing
+  this portable data directory;
+  independent repositories can run concurrently. The app's common repository writer
+  transaction remains held until the process tree stops, so other app reads/writes
+  for that repository wait. An external IDE/CLI does not participate in that queue.
+- After completion open the worktree and inspect changes using existing diff/commit
+  tools. Worktree Manager handles explicit unlock/recovery-aware removal. No implicit
+  commit, push, merge, branch deletion, worktree deletion or automatic retries.
+- A worktree is working-file separation, not an OS security sandbox. CLI permissions,
+  repository hooks/configuration and external tools can still affect shared Git refs
+  or other files. The agent receives an instruction to leave edits uncommitted; this
+  is not enforcement. CLI failures/auth problems remain visible rather than bypassing
+  permissions. Executable fingerprints do not freeze scripts/config/models it loads.
+- Unknown records after an unexpected app exit remain interrupted; Revqora cannot
+  guarantee a Unix child was killed after a crash. New tasks and history deletion stay
+  blocked until the user explicitly confirms those processes have stopped. Results
+  remain unknown, never silently completed or replayed.
+- Real offline CLI/Git tests cover source HEAD/index/file preservation, replay/stale
+  rejection, portable environment, bounded output, cancellation, timeout and restart
+  acknowledgement. Five new native UI scenarios retain the previous 128 (133 total)
+  in the existing runner. No real AI account is required for automated verification.
+
+Four stages remain after stage 16: Workflow Builder, Automated PR Workflow,
+semantic diff/history tools and stacked branches.

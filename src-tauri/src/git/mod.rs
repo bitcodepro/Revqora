@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod branch_cleanup;
 pub mod branch_deletion;
 pub mod branch_protection;
