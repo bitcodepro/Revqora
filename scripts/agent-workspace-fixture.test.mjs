@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { assertAgentWorktreeProtection } from "./agent-workspace-fixture.mjs";
+import { assertAgentWorktreeProtection, openAgentRepository } from "./agent-workspace-fixture.mjs";
 
 test("agent worktree assertions preserve Git quoting and identify the exact locked task", t => {
   const base = path.resolve(process.env.REVQORA_TEST_TMP || os.tmpdir());
@@ -45,4 +45,10 @@ test("agent worktree assertions preserve Git quoting and identify the exact lock
     if (!resolved.startsWith(parent + path.sep)) throw Error("Unowned worktree fixture cleanup target");
     fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
+});
+
+test("history restart opens only its repository, without reconstructing persisted tasks", async () => {
+ const calls=[]; const page={ evaluate:async(fn,arg)=>{ const prior=globalThis.window;globalThis.window={__TAURI_INTERNALS__:{invoke:async(...args)=>calls.push(args)}};try{await fn(arg);}finally{globalThis.window=prior;}},locator:selector=>({filter:filter=>({waitFor:async()=>calls.push([selector,filter])})}) };
+ await openAgentRepository(page,path.resolve("fixture","stage16-agents"));
+ assert.deepEqual(calls,[["plugin:event|emit",{event:"open-paths",payload:[path.resolve("fixture","stage16-agents")]}],[".topbar .repo-current > b",{hasText:"stage16-agents"}]]);
 });

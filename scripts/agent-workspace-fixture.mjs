@@ -1,6 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 
+// Forced taskkill /F is a crash, not a settings-flush barrier. History is native
+// portable data: open its repository explicitly without recreating any records.
+export async function openAgentRepository(page, root) {
+  await page.evaluate(p => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [p] }), root);
+  await page.locator(".topbar .repo-current > b").filter({ hasText: path.basename(root) }).waitFor();
+}
+
 const physical = value => {
   const resolved = fs.realpathSync.native(path.resolve(value));
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
