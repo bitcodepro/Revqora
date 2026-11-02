@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
+import { installWorkflowReviewGate } from "./ipc-response-gate.mjs";
 
 export async function workflowConsentSmoke({page,check,shot,root}) {
  const git=(...args)=>execFileSync("git",["-C",root,...args],{encoding:"utf8",windowsHide:true}).trim();
@@ -41,21 +42,17 @@ export async function workflowConsentSmoke({page,check,shot,root}) {
   const marker=away?"cancelled-away-command.txt":"cancelled-same-command.txt";
   const run=await recipe(away?"Cancel after switching back":"Cancel same selected run",[step("command",`echo forbidden > ${marker}`)]);
   const row={id:run.id,name:run.definition.name};await selectRun(row);
-  await page.evaluate(id=>{
-   const bridge=window.__TAURI_INTERNALS__,original=bridge.invoke.bind(bridge);
-   const gate=window.__workflowReviewGate={original,held:false,release:null,reviews:0,executions:0};
-   bridge.invoke=(command,args,options)=>{
-    if(command==="workflow_execute"&&args?.review?.runId===id)gate.executions++;
-    if(command==="workflow_review"&&args?.id===id){
-     gate.reviews++;
-     if(gate.reviews===1)return original(command,args,options).then(proof=>new Promise(resolve=>{gate.release=()=>resolve(proof);gate.held=true;}));
-    }
-    return original(command,args,options);
-   };
-  },run.id);
+  const installation=await page.evaluate(installWorkflowReviewGate,run.id);
   try {
+   if(!installation.installed||installation.probes!==1||installation.probeResponses!==1)throw Error("Workflow response gate did not install and pass its native probe");
    await page.getByRole("checkbox",{name:"Automatic workflow validation",exact:true}).check();
-   await page.waitForFunction(()=>window.__workflowReviewGate.held);
+   await page.waitForFunction(()=>{
+    const gate=window.__workflowReviewGate;
+    if(!gate?.installed)throw Error("Workflow response gate disappeared before review");
+    return gate.held||!!gate.error;
+   });
+   const preparation=await page.evaluate(()=>({held:window.__workflowReviewGate.held,error:window.__workflowReviewGate.error}));
+   if(preparation.error||!preparation.held)throw Error(preparation.error||"The native review response was not held");
    if(away){await history().getByRole("button").filter({hasText:skipped.name}).click();await selected(skipped.id);}
    await history().getByRole("button").filter({hasText:row.name}).click();await selected(run.id);
    if(await page.getByRole("checkbox",{name:"Automatic workflow validation",exact:true}).isChecked())throw Error("History selection did not disable automatic validation");
@@ -67,8 +64,14 @@ export async function workflowConsentSmoke({page,check,shot,root}) {
    const current=await invoke("workflow_run",{id:run.id});
    if(calls.reviews!==1||calls.executions!==0||current.phase!=="ready"||current.cursor!==0||current.results[0].phase!=="pending"||fs.existsSync(path.join(root,marker)))throw Error("Cancelled automatic review dispatched a command: "+JSON.stringify(calls));
    unchanged();await shot(away?"156-auto-cancel-away-back":"155-auto-cancel-same-run");
+  } catch(error) {
+   const diagnostic=await page.evaluate(()=>{
+    const gate=window.__workflowReviewGate;
+    return gate?{installed:gate.installed,phase:gate.phase,held:gate.held,probes:gate.probes,probeResponses:gate.probeResponses,reviews:gate.reviews,executions:gate.executions,error:gate.error}:null;
+   });
+   throw Error(`${error.message}; workflow response gate: ${JSON.stringify(diagnostic)}`);
   } finally {
-   await page.evaluate(()=>{const gate=window.__workflowReviewGate;if(gate){gate.release?.();window.__TAURI_INTERNALS__.invoke=gate.original;delete window.__workflowReviewGate;}});
+   await page.evaluate(()=>window.__workflowReviewGate?.restore());
   }
   await page.getByRole("button",{name:"Stop workflow",exact:true}).click();
   await until(async()=>(await invoke("workflow_run",{id:run.id})).phase==="cancelled","Unexecuted workflow did not stop");
