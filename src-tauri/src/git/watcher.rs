@@ -38,6 +38,10 @@ fn classify(root: &Path, git_dir: &Path, p: &Path) -> Option<bool> {
             return None;
         }
     }
+    if rel.file_name().is_some_and(|name| name == ".gitattributes") {
+        // Attributes can change the interpretation of immutable commit diffs too.
+        return Some(true);
+    }
     Some(false)
 }
 
@@ -121,7 +125,9 @@ where
                 break;
             }
             match rx.recv_timeout(Duration::from_millis(120)) {
-                Ok(Ok(ev)) => {
+                // File reads must not cause feedback refreshes. Still reach the
+                // debounce flush below when access events arrive continuously.
+                Ok(Ok(ev)) if !matches!(ev.kind, notify::EventKind::Access(_)) => {
                     for p in &ev.paths {
                         match classify_owned(&root, &git_dir, &ignored, p) {
                             Some(true) => pending_git = true,
@@ -133,7 +139,7 @@ where
                         first = Some(Instant::now());
                     }
                 }
-                Ok(Err(_)) => {}
+                Ok(_) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -181,6 +187,9 @@ mod tests {
         let root = Path::new("/r");
         let gd = Path::new("/r/.git");
         assert_eq!(classify(root, gd, Path::new("/r/.git/HEAD")), Some(true));
+        assert_eq!(classify(root, gd, gd), Some(true));
+        assert_eq!(classify(root, gd, Path::new("/r/node_modules/pkg/.gitattributes")), None);
+        assert_eq!(classify(root, gd, Path::new("/r/src/.gitattributes")), Some(true));
         assert_eq!(classify(root, gd, Path::new("/r/.git/refs/heads/main")), Some(true));
         assert_eq!(classify(root, gd, Path::new("/r/.git/index")), Some(false));
         assert_eq!(classify(root, gd, Path::new("/r/.git/refs/worktree/revqora/layers")), Some(false));

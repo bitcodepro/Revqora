@@ -2,7 +2,7 @@
 //! External Git/IDE processes do not take this lock: optimistic state checks and Git's
 //! own lock files remain necessary. This is deliberately not a recovery/checkpoint store.
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -187,18 +187,25 @@ pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl Fn
     })
 }
 
-fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<()> {
+fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<[u8; 32]> {
+    // One content read supplies both the repository guard and the path's display token.
+    let mut content = Sha256::new();
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            hash.update(b"symlink");
+            content.update(b"symlink");
             let target = fs::read_link(path)?;
             let bytes = target.as_os_str().as_encoded_bytes();
-            hash.update((bytes.len() as u64).to_le_bytes());
-            hash.update(bytes);
+            content.update((bytes.len() as u64).to_le_bytes());
+            content.update(bytes);
         }
         Ok(meta) if meta.is_file() => {
-            hash.update(b"file");
-            hash.update(meta.len().to_le_bytes());
+            content.update(b"file");
+            content.update(meta.len().to_le_bytes());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                content.update((meta.permissions().mode() & 0o111).to_le_bytes());
+            }
             let mut file = fs::File::open(path)?;
             let mut buf = [0; 64 * 1024];
             loop {
@@ -206,33 +213,44 @@ fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<()> {
                 if len == 0 {
                     break;
                 }
-                hash.update(&buf[..len]);
+                content.update(&buf[..len]);
             }
         }
         Ok(_) => {
-            hash.update(b"directory");
+            content.update(b"directory");
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            hash.update(b"missing");
+            content.update(b"missing");
         }
         Err(e) => return Err(e.into()),
     }
-    hash.update([0]);
-    Ok(())
+    let digest = content.finalize().into();
+    hash.update(digest);
+    Ok(digest)
 }
 
 /// No write-tree, index refresh or snapshots. Hash changed files, not the entire repo.
-pub fn state_token(repo: &Path, raw_status: &str, files: &[super::status::FileStatus]) -> GitResult<String> {
+pub fn state_token(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus]) -> GitResult<String> {
     let mut hash = Sha256::new();
     hash.update(raw_status.as_bytes());
     let gd = super::repo::git_dir(repo)?;
     let common = repository_key(repo);
-    for p in [gd.join("HEAD"), common.join("config")] {
-        hash_file(&mut hash, &p)?;
-    }
+    hash_file(&mut hash, &gd.join("HEAD"))?;
+    let config = hash_file(&mut hash, &common.join("config"))?;
+    let info_attributes = hash_file(&mut hash, &common.join("info/attributes"))?;
     // Cache-tree/stat extensions and packed-ref layout can change without changing
     // what the user staged. Compare semantic index entries and resolved refs instead.
-    hash.update(runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?);
+    let index = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
+    hash.update(&index);
+    // Git falls back to indexed .gitattributes when the worktree copy is absent.
+    let mut indexed_attributes: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
+    for entry in String::from_utf8_lossy(&index).split('\0') {
+        if let Some((_, name)) = entry.split_once('\t') {
+            if Path::new(name).file_name().is_some_and(|name| name == ".gitattributes") {
+                indexed_attributes.entry(repo.join(name)).or_default().extend_from_slice(entry.as_bytes());
+            }
+        }
+    }
     // Recovery pins are app metadata, not changes to the user's prepared Git
     // state. A rejected action may save a checkpoint before offering force
     // consent. Recovery itself verifies each pin independently with exact OIDs.
@@ -258,9 +276,38 @@ pub fn state_token(repo: &Path, raw_status: &str, files: &[super::status::FileSt
         hash_file(&mut hash, &gd.join(name))?;
     }
     hash_file(&mut hash, &super::storage::dir(repo)?.join("squash-target"))?;
+    let mut attributes = BTreeMap::new();
     for file in files {
         hash.update(file.path.as_bytes());
-        hash_file(&mut hash, &repo.join(&file.path))?;
+        let content = hash_file(&mut hash, &repo.join(&file.path))?;
+        let mut display = Sha256::new();
+        // The porcelain seed includes index/base OIDs, modes and submodule state:
+        // editing an already-MM file or staging different bytes must still refresh it.
+        display.update(file.diff_token.as_bytes());
+        display.update(content);
+        display.update(config);
+        display.update(info_attributes);
+        for name in [Some(file.path.as_str()), file.orig_path.as_deref()].into_iter().flatten() {
+            let path = repo.join(name);
+            for parent in path.parent().into_iter().flat_map(Path::ancestors).take_while(|p| p.starts_with(repo)) {
+                let path = parent.join(".gitattributes");
+                let digest = match attributes.get(&path) {
+                    Some(digest) => *digest,
+                    None => {
+                        let mut attribute = Sha256::new();
+                        attribute.update(hash_file(&mut hash, &path)?);
+                        if let Some(indexed) = indexed_attributes.get(&path) {
+                            attribute.update(indexed);
+                        }
+                        let digest: [u8; 32] = attribute.finalize().into();
+                        attributes.insert(path, digest);
+                        digest
+                    }
+                };
+                display.update(digest);
+            }
+        }
+        file.diff_token = format!("{:x}", display.finalize());
     }
     Ok(format!("{:x}", hash.finalize()))
 }

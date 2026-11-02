@@ -1,5 +1,5 @@
 import { repositoryFiles } from "./RepositoryFiles";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
   ArrowDown,
@@ -218,7 +218,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const { mode, layout: { changesListWidth: width }, setLayout: setSettings } = useWorkspaceLayout();
   const opts = useDiffOpts();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [diffResult, setDiffResult] = useState<{ key: string; loading: boolean; value?: FileDiff; error?: string } | null>(null);
+  const [diffResult, setDiffResult] = useState<{ key: string; view: string; loading: boolean; value?: FileDiff; error?: string } | null>(null);
   const diffRequest = useRef(0);
   const currentDiffKey = useRef<string | null>(null);
   const [w, setW] = useState(width);
@@ -232,12 +232,21 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const staged = files.filter((f) => !f.conflict && f.index !== ".");
   const layers = tab.layers?.active ? tab.layers : null;
   const sel = tab.changeSel;
+  const kind = sel?.kind;
+  const path = sel?.path;
+  const untracked = sel?.kind === "unstaged" && sel.untracked;
   const selectedLayer = sel?.kind === "layer" ? layers?.layers[sel.layer] : null;
-  const diffKey = JSON.stringify([root, sel, opts, tab.status?.stateToken, layers?.stagedBase, selectedLayer?.fromTree, selectedLayer?.toTree]);
-  const currentDiff = diffResult?.key === diffKey ? diffResult : null;
+  const fromTree = selectedLayer?.fromTree;
+  const toTree = selectedLayer?.toTree;
+  const file = files.find((f) => f.path === path);
+  const viewKey = JSON.stringify([root, sel, opts]);
+  const diffKey = JSON.stringify([viewKey, kind === "layer" ? null : file?.diffToken ?? tab.status?.stateToken, layers?.stagedBase, fromTree, toTree, tab.diffRefreshVersion]);
+  // Keep the same file readable during revalidation. Its line actions remain
+  // unavailable until the new response is current; another file never reuses it.
+  const currentDiff = diffResult?.view === viewKey ? diffResult : null;
   const diff = currentDiff?.value ?? null;
-  const diffErr = currentDiff?.error ?? null;
-  const diffLoading = !!sel && sel.kind !== "conflict" && (!currentDiff || currentDiff.loading);
+  const diffErr = currentDiff?.key === diffKey ? currentDiff.error ?? null : null;
+  const diffLoading = !!sel && sel.kind !== "conflict" && (currentDiff?.key !== diffKey || currentDiff.loading);
   // Hide data/actions for a different selection immediately. Only requests for
   // the committed file, side, options and repository state may publish results.
   useLayoutEffect(() => {
@@ -279,44 +288,28 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
     if (currentDiffKey.current !== diffKey) return;
     const request = ++diffRequest.current;
     const accepts = () => request === diffRequest.current && currentDiffKey.current === diffKey;
-    if (!sel || sel.kind === "conflict" || (sel.kind === "layer" && !layers?.layers[sel.layer])) {
-      setDiffResult({ key: diffKey, loading: false });
+    if (!path || !kind || kind === "conflict" || (kind === "layer" && (!fromTree || !toTree))) {
+      setDiffResult({ key: diffKey, view: viewKey, loading: false });
       return;
     }
-    setDiffResult((previous) => ({ key: diffKey, loading: true, value: previous?.key === diffKey ? previous.value : undefined }));
+    setDiffResult((previous) => ({ key: diffKey, view: viewKey, loading: true, value: previous?.view === viewKey ? previous.value : undefined }));
     try {
       let d: FileDiff;
-      if (sel.kind === "unstaged") d = await api.workingDiff(root, sel.path, "unstaged", sel.untracked, opts);
-      else if (sel.kind === "staged") d = await api.workingDiff(root, sel.path, "staged", false, opts);
-      else {
-        const l = layers?.layers[sel.layer];
-        if (!l) return;
-        d = await api.revDiff(root, l.fromTree, l.toTree, sel.path, opts);
-      }
-      if (accepts()) setDiffResult({ key: diffKey, loading: false, value: d });
+      if (kind === "unstaged") d = await api.workingDiff(root, path, "unstaged", untracked, opts);
+      else if (kind === "staged") d = await api.workingDiff(root, path, "staged", false, opts);
+      else d = await api.revDiff(root, fromTree!, toTree!, path, opts);
+      if (accepts()) setDiffResult({ key: diffKey, view: viewKey, loading: false, value: d });
     } catch (e) {
-      if (accepts()) setDiffResult({ key: diffKey, loading: false, error: errorMessage(e) });
+      if (accepts()) setDiffResult({ key: diffKey, view: viewKey, loading: false, error: errorMessage(e) });
     }
-  }, [root, sel, opts, layers, diffKey]);
+  }, [root, path, kind, untracked, opts, fromTree, toTree, diffKey, viewKey]);
 
-  // Reload the diff when the selection or the repository state changes.
-  const statusKey = useMemo(() => JSON.stringify(tab.status?.files.map((f) => f.path + f.index + f.worktree)) + (tab.layers?.stagedBase ?? ""), [tab.status, tab.layers]);
-  const watchTick = useRef(0);
+  // The selected path's content/index/attributes determine background reloads.
+  // A repository-wide WAL write or a new LayersState object must not reload it.
   useEffect(() => {
     void loadDiff();
     return () => { diffRequest.current++; };
-  }, [loadDiff, statusKey]);
-  useEffect(() => {
-    const onChange = (e: Event) => {
-      const d = (e as CustomEvent).detail as { repo: string };
-      if (d.repo === root) {
-        watchTick.current++;
-        loadDiff();
-      }
-    };
-    window.addEventListener("revqora:worktree", onChange);
-    return () => window.removeEventListener("revqora:worktree", onChange);
-  }, [root, loadDiff]);
+  }, [loadDiff]);
 
   const select = (s: ChangeSel) => patch(root, { changeSel: s });
 
@@ -722,7 +715,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
           mode={diffMode}
           path={sel?.path ?? ""}
           actions={diffActions}
-          onApply={onApply}
+          onApply={diffLoading ? undefined : onApply}
           canStash={!diffLoading && sel?.kind === "unstaged" && !sel.untracked && !files.find((f) => f.path === sel.path)?.submodule && !opts.ignoreWhitespace && !!diff && !diff.binary && !diff.isNew && !diff.isDeleted && !diff.truncated && diff.oldPath === null && diff.oldMode === diff.newMode}
           root={root}
           images={

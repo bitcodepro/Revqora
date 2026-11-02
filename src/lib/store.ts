@@ -29,6 +29,7 @@ export interface RepoTab {
   layers: LayersState | null;
   graph: GraphSummary | null;
   graphVersion: number;
+  diffRefreshVersion: number;
   graphLoading: boolean;
   graphHasWorktree: boolean;
   branchFilter: string | null;
@@ -45,6 +46,8 @@ export interface RepoTab {
 }
 
 export interface Parts {
+  /** Filesystem observation, rather than an explicit refresh/action. */
+  background?: boolean;
   info?: boolean;
   status?: boolean;
   refs?: boolean;
@@ -78,6 +81,7 @@ function emptyTab(root: string): RepoTab {
     layers: null,
     graph: null,
     graphVersion: 0,
+    diffRefreshVersion: 0,
     graphLoading: false,
     graphHasWorktree: false,
     branchFilter: null,
@@ -125,6 +129,7 @@ function updateSquashMerged(root: string) {
 
 function merge(a: Parts | undefined, b: Parts): Parts {
   return {
+    background: a ? !!a.background && !!b.background : b.background,
     info: a?.info || b.info,
     status: a?.status || b.status,
     refs: a?.refs || b.refs,
@@ -213,7 +218,13 @@ export const useRepos = create<RepoStore>()((set, get) => ({
   },
 
   refresh: async (root, parts = ALL) => {
-    invalidatePreview(root);
+    // Ordinary working-file activity does not change immutable commit previews.
+    // Metadata/attribute events and explicit refreshes still invalidate them.
+    if (!parts.background || parts.info || parts.refs || parts.graph) invalidatePreview(root);
+    if (!parts.background) {
+      const tab = get().tabs[root];
+      if (tab) get().patch(root, { diffRefreshVersion: tab.diffRefreshVersion + 1 });
+    }
     if (inflight.has(root)) {
       pending.set(root, merge(pending.get(root), parts));
       return inflight.get(root);

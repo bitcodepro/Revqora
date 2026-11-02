@@ -1,4 +1,5 @@
 import { futureStagesSmoke } from "./future-stages-smoke.mjs";
+import { liveDiffSmoke } from "./live-diff-smoke.mjs";
 import {workflowSmoke} from "./workflow-smoke.mjs";
 import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
 import {prCenterSmoke} from "./pr-center-smoke.mjs";
@@ -139,7 +140,7 @@ try {
     await chip.waitFor({ state: "detached" });
   });
 
-  await check("portable profile writes do not trigger repository refresh storms", async () => {
+  await check("portable profile writes are ignored and unrelated WAL activity keeps the selected diff", async () => {
     const listener = await page.evaluate(async () => {
       window.__profileSignals = [];
       return window.__TAURI_INTERNALS__.invoke("plugin:event|listen", { event: "repo-changed", target: { kind: "Any" }, handler: window.__TAURI_INTERNALS__.transformCallback((e) => window.__profileSignals.push(e.payload)) });
@@ -152,6 +153,7 @@ try {
       if (await page.evaluate(() => window.__profileSignals.some((e) => e.worktree))) throw new Error("portable profile writes caused a repository refresh");
       fs.writeFileSync(userFile, "User changes must still be watched\n");
       await page.waitForFunction(() => window.__profileSignals.some((e) => e.worktree), null, { timeout: 10000 });
+      await liveDiffSmoke({page,root:repo,file:userFile,noise:path.join(repo,"watcher.sqlite-wal")});
     } finally {
       await page.evaluate(async (eventId) => { window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener("repo-changed", eventId); await window.__TAURI_INTERNALS__.invoke("plugin:event|unlisten", { event: "repo-changed", eventId }); }, listener);
       fs.rmSync(userFile, { force: true });

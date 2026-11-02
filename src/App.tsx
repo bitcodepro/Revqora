@@ -277,7 +277,7 @@ export default function App() {
       listen<{ repo: string; git: boolean; worktree: boolean }>("repo-changed", (e) => {
         const { repo, git } = e.payload;
         if (!useRepos.getState().tabs[repo]) return;
-        useRepos.getState().refresh(repo, git ? { info: true, status: true, refs: true, layers: true, graph: true } : { status: true, layers: true });
+        useRepos.getState().refresh(repo, git ? { background: true, info: true, status: true, refs: true, layers: true, graph: true } : { background: true, status: true, layers: true });
         window.dispatchEvent(new CustomEvent("revqora:worktree", { detail: { repo } }));
       }),
     );
