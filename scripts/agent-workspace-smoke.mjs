@@ -4,7 +4,8 @@ import path from "node:path";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 import { assertAgentWorktreeProtection, assertAgentDraft } from "./agent-workspace-fixture.mjs";
 import { openRepository } from "./ui-readiness.mjs";
-export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
+export async function agentWorkspaceSmoke({page,check,shot,work,restart,deferCleanup}) {
+ if(typeof deferCleanup!=="function")throw Error("Agent fixtures require cleanup after native app shutdown");
  const root=path.join(work,"stage16-agents"),script=path.join(work,"fixture-agent.cjs"),launchTrace=path.join(work,"fixture-launches.jsonl");fs.mkdirSync(root);
  const git=(...args)=>execFileSync("git",["-C",root,...args],{encoding:"utf8",windowsHide:true}).trim();
  git("init","-qb","main");for(const[k,v]of[["user.name","Agent Tester"],["user.email","agent@example.invalid"],["commit.gpgsign","false"],["core.quotepath","true"],["core.hooksPath",".git/hooks"]])git("config",k,v);
@@ -51,8 +52,16 @@ export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
    await invoke("agent_forget",{id:t.id});if(!fs.existsSync(path.join(t.path,"agent.txt")))throw Error("Forgetting history removed files");unchanged();
   });
  } finally {
-  // Only these fixture worktrees may be removed. Never clean an app/user directory.
+  // Open changes leaves a real tab/watcher, possibly restored by restart. Stop
+  // agents while IPC is alive, but remove worktrees only after the host exits.
   const known=await tasks().catch(()=>[]);if(successful&&!known.some(t=>t.id===successful.id))known.push(successful);
-  for(const t of known){if(!/^[0-9a-f]{32}$/.test(t.id)||path.basename(t.path)!==t.id||t.repository!==root)throw Error("Unowned agent cleanup target");if(["running","queued","stopping"].includes(t.phase)){await invoke("agent_stop",{id:t.id});await until(async()=>(await tasks()).find(x=>x.id===t.id)?.phase==="cancelled","Cleanup could not stop fixture");}if(fs.existsSync(t.path)){git("worktree","unlock",t.path);git("worktree","remove","--force",t.path);}}
+  const assertOwned=t=>{if(!/^[0-9a-f]{32}$/.test(t.id)||path.basename(t.path)!==t.id||t.repository!==root)throw Error("Unowned agent cleanup target");if(fs.existsSync(t.path)){const rel=path.relative(fs.realpathSync.native(work),fs.realpathSync.native(t.path));if(!rel||rel===".."||rel.startsWith(".."+path.sep)||path.isAbsolute(rel))throw Error("Agent cleanup target is outside the fixture directory");}};
+  for(const t of known)assertOwned(t);
+  deferCleanup(()=>{
+   for(const t of known){assertOwned(t);if(fs.existsSync(t.path)){git("worktree","unlock",t.path);git("worktree","remove","--force",t.path);if(fs.existsSync(t.path))throw Error(`Agent fixture worktree survived removal: ${t.path}`);}}
+   const registered=git("worktree","list","--porcelain","-z").split("\0").filter(field=>field.startsWith("worktree ")).map(field=>path.resolve(field.slice(9)));
+   if(known.some(t=>registered.includes(path.resolve(t.path))))throw Error("Removed agent fixture remains registered");
+  });
+  for(const t of known){if(["running","queued","stopping"].includes(t.phase)){await invoke("agent_stop",{id:t.id});await until(async()=>(await tasks()).find(x=>x.id===t.id)?.phase==="cancelled","Cleanup could not stop fixture");}}
  }
 }

@@ -173,24 +173,25 @@ async function launchApp({ exe, args = [], port = 9333, profile, transportOnly =
     browser,
     child,
     close: async () => smokeTimings.measure("activity", "app shutdown", async () => {
-      if (child.exitCode === null && child.signalCode === null && child.pid) {
-        await new Promise((resolve) => {
-          const timeout = setTimeout(resolve, 5000);
-          timeout.unref();
-          child.once("exit", () => { clearTimeout(timeout); resolve(); });
-          if (process.platform === "win32") {
-            // This PID belongs to the app spawned above. Its WebView2 children
-            // must exit too before a disposable profile can be removed.
-            try { execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
-            catch { child.kill(); }
-          } else child.kill();
-        });
-      }
-      // Stop the host first: otherwise WebView2 can recreate its browser/profile
-      // between closing the CDP connection and terminating the application.
       try {
-        await browser.close();
-      } catch {}
+        if (child.exitCode === null && child.signalCode === null && child.pid) {
+          await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error(`Native host ${child.pid} did not exit; fixture cleanup is unsafe`)), 5000);
+            timeout.unref();
+            child.once("exit", () => { clearTimeout(timeout); resolve(); });
+            if (process.platform === "win32") {
+              // This PID belongs to the app spawned above. Its WebView2 children
+              // must exit too before a disposable profile can be removed.
+              try { execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
+              catch { child.kill(); }
+            } else child.kill();
+          });
+        }
+      } finally {
+        // Stop the host first: otherwise WebView2 can recreate its browser/profile
+        // between closing the CDP connection and terminating the application.
+        try { await browser.close(); } catch {}
+      }
     }),
   };
 }
