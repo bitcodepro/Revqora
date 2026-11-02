@@ -28,6 +28,10 @@ parking_lot = "0.12"
 rusqlite = { version = "0.41", default-features = false, features = ["bundled"] }
 fs2 = "0.4"
 regex = "1"
+tree-sitter = "0.26.13"
+tree-sitter-c-sharp = "0.23.5"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-json = "0.24.8"
 notify = "8"
 tempfile = "3"
 ureq = { version = "2", features = ["json"] }

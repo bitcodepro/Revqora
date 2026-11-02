@@ -349,3 +349,183 @@ fn workflow_catalog_is_atomic_with_open_readers() {
     assert_eq!(next.definitions[0].name, "Updated recipe");
     assert_eq!(catalog(r.path()).unwrap().revision, next.revision);
 }
+
+#[test]
+fn automated_ci_gate_never_treats_missing_partial_or_non_success_results_as_green() {
+    let check = |state: &str| crate::git::forge::Check { name: "check".into(), state: state.into(), url: None };
+    assert!(!pull_requests::checks_pass(&[]).unwrap());
+    assert!(!pull_requests::checks_pass(&[check("success"), check("pending")]).unwrap());
+    for state in ["failure", "cancelled", "neutral", "skipped", "unknown"] {
+        assert!(pull_requests::checks_pass(&[check("success"), check(state)]).is_err());
+    }
+    assert!(pull_requests::checks_pass(&[check("success")]).unwrap());
+}
+
+#[test]
+fn pr_agent_tests_and_commit_use_the_isolated_working_copy_and_review_requests_cannot_replay() {
+    use crate::git::{
+        forge, forge_accounts as accounts,
+        forge_test_http::{metadata, Http, SERIAL},
+    };
+    use serde_json::json;
+    let _serial = SERIAL.lock();
+    let source = repo();
+    let root = source.path();
+    let source_head = runner::run(root, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+    let served = Arc::new(Mutex::new(source_head.clone()));
+    let server_head = served.clone();
+    let feedback_changed = Arc::new(AtomicBool::new(false));
+    let server_feedback = feedback_changed.clone();
+    let deny = Arc::new(AtomicBool::new(false));
+    let server_deny = deny.clone();
+    let forked = Arc::new(AtomicBool::new(false));
+    let server_forked = forked.clone();
+    let http = Http::new(move |req| {
+        let headers = "Content-Type: application/json\r\n".to_owned();
+        let path = req.path.split('?').next().unwrap();
+        if path.ends_with("/user") {
+            return (200, headers, json!({"id":18,"login":"workflow-reviewer","name":"Fixture"}).to_string());
+        }
+        if path.ends_with("/repos/team/repo") {
+            return (200, headers, json!({"archived":false,"permissions":{"push":true}}).to_string());
+        }
+        if path.ends_with("/pulls/7") {
+            let mut v = metadata("github", "Fixture follow-up", "", "main", 1);
+            v["head"]["sha"] = json!(*server_head.lock());
+            v["base"]["sha"] = json!(*server_head.lock());
+            v["head"]["repo"] =
+                if server_forked.load(Ordering::Acquire) { json!({"id":20,"full_name":"other/repo"}) } else { json!({"id":10,"full_name":"team/repo"}) };
+            v["base"]["repo"] = json!({"id":10,"full_name":"team/repo"});
+            return (200, headers, v.to_string());
+        }
+        if path.ends_with("/api/graphql") {
+            let text = if server_feedback.load(Ordering::Acquire) { "Changed feedback" } else { "Fix the parser issue" };
+            return(200,headers,json!({"data":{"repository":{"pullRequest":{"headRefOid":*server_head.lock(),"reviewThreads":{"nodes":[{"id":"T18","path":"base.txt","diffSide":"RIGHT","line":1,"isOutdated":false,"isResolved":false,"viewerCanReply":true,"viewerCanResolve":true,"comments":{"nodes":[{"fullDatabaseId":"18","author":{"login":"reviewer"},"body":text,"createdAt":"now","pullRequestReview":{"state":"COMMENTED"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}).to_string());
+        }
+        if path.ends_with("/comments") || path.ends_with("/reviews") {
+            return (200, headers, "[]".into());
+        }
+        if path.ends_with("/requested_reviewers") {
+            if server_deny.load(Ordering::Acquire) {
+                return (500, headers, "{}".into());
+            }
+            return (200, headers, "{}".into());
+        }
+        if path.ends_with("/check-runs") {
+            return (200, headers, json!({"check_runs":[{"name":"build","status":"completed","conclusion":"success"}]}).to_string());
+        }
+        if path.ends_with("/status") {
+            return (200, headers, json!({"statuses":[]}).to_string());
+        }
+        (404, headers, "{}".into())
+    });
+    runner::run(root, ["remote", "add", "origin", &format!("{}/team/repo.git", http.url)]).unwrap();
+    let manager = accounts::manager().unwrap();
+    let snapshot = manager
+        .add(
+            accounts::Add {
+                id: None,
+                kind: "github".into(),
+                server: http.url.clone(),
+                username: String::new(),
+                token: "offline-workflow-token".into(),
+                auth_mode: "token".into(),
+                persist: false,
+            },
+            &manager.snapshot().unwrap().revision,
+        )
+        .unwrap();
+    let account = snapshot.accounts.iter().find(|a| a.profile.server.server == http.url).unwrap().profile.id.clone();
+    let c = accounts::connections(root).unwrap();
+    accounts::select(
+        root,
+        accounts::Selection {
+            remote: "origin".into(),
+            fingerprint: c.remotes[0].fingerprint.clone(),
+            account_id: Some(account.clone()),
+            allow_ssh_alias: false,
+        },
+        &c.revision,
+    )
+    .unwrap();
+    let mut agent = step("prAgent", "7", "");
+    #[cfg(windows)]
+    let (executable, args) = (
+        format!("{}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", std::env::var("SystemRoot").unwrap()),
+        vec!["-NoProfile", "-NonInteractive", "-Command", "Set-Content -LiteralPath agent-fix.txt -Value 'review fixed'; Write-Output 'agent done'"],
+    );
+    #[cfg(unix)]
+    let (executable, args) =
+        (fs::canonicalize("/bin/sh").unwrap().to_string_lossy().into_owned(), vec!["-c", "printf 'review fixed' > agent-fix.txt; echo 'agent done'"]);
+    agent.body=json!({"provider":"custom","executable":executable,"argsText":serde_json::to_string(&args).unwrap(),"prompt":"Fix only actionable feedback","worktreePath":null}).to_string();
+    agent.timeout_seconds = 30;
+    let run = start(
+        root,
+        vec![agent, step("command", "echo checked > validation-proof.txt", ""), step("commit", "fix: apply reviewed changes", ""), step("prChecks", "7", "")],
+    );
+    forked.store(true, Ordering::Release);
+    assert!(review(root, &run.id).unwrap_err().message.contains("source branch in the selected repository"));
+    assert!(crate::git::agents::list(root).unwrap().is_empty(), "A fork cannot inherit the template's push destination");
+    forked.store(false, Ordering::Release);
+    let proof = review(root, &run.id).unwrap();
+    assert!(proof.resolved[3].contains("Fix the parser issue"));
+    feedback_changed.store(true, Ordering::Release);
+    execute(root.into(), proof.clone(), true).unwrap();
+    let stopped = wait(root, &run.id);
+    assert_eq!(stopped.phase, "failed");
+    assert!(crate::git::agents::list(root).unwrap().is_empty());
+    feedback_changed.store(false, Ordering::Release);
+    let run = start(root, stopped.definition.steps.clone());
+    let after = next(root, &run);
+    assert_eq!(after.phase, "ready", "{after:?}");
+    let copy = PathBuf::from(after.workspace.clone().unwrap());
+    assert!(!root.join("agent-fix.txt").exists());
+    assert!(copy.join("agent-fix.txt").exists());
+    let mut dirty_check = after.clone();
+    dirty_check.definition.steps[dirty_check.cursor] = step("prChecks", "7", "");
+    assert!(build_review(&copy, &dirty_check).unwrap_err().message.contains("Commit or stash"));
+    // Continuing from the new tab must still find the same durable run and use its copy.
+    let after = next(&copy, &after);
+    assert!(copy.join("validation-proof.txt").exists());
+    assert!(!root.join("validation-proof.txt").exists());
+    let committed = next(root, &after);
+    assert_eq!(committed.phase, "ready", "{committed:?}");
+    assert_eq!(runner::run(root, ["rev-parse", "main"]).unwrap().trim(), source_head);
+    assert!(crate::git::status::status(&copy).unwrap().files.is_empty());
+    let mut wrong_destination = committed.clone();
+    wrong_destination.definition.steps[wrong_destination.cursor] = step("publish", "origin", "unrelated-topic");
+    assert!(build_review(&copy, &wrong_destination).unwrap_err().message.contains("selected PR source branch origin/topic"));
+    // Green checks still refer to the old source until publication is reflected
+    // by the authoritative PR API. They cannot authorize merging the old code.
+    assert!(review(root, &committed.id).unwrap_err().message.contains("PR source does not match"));
+    *served.lock() = runner::run(&copy, ["rev-parse", "HEAD"]).unwrap().trim().into();
+    let finished = next(root, &committed);
+    assert_eq!(finished.phase, "completed", "{finished:?}");
+    let request = start(root, vec![step("prRequestReview", "7", "reviewer")]);
+    let proof = review(root, &request.id).unwrap();
+    deny.store(true, Ordering::Release);
+    execute(root.into(), proof.clone(), true).unwrap();
+    let outcome = wait(root, &request.id);
+    assert_eq!(outcome.phase, "uncertain", "{outcome:?}");
+    assert!(execute(root.into(), proof, true).is_err());
+    let writes = http.seen.lock().iter().filter(|r| r.path.ends_with("/requested_reviewers") && r.method == "POST").count();
+    assert_eq!(writes, 1);
+    let c = catalog(root).unwrap();
+    assert!(
+        begin(root, &outcome.definition.id, &c.revision, outcome.parameters.clone()).is_err(),
+        "A lost server result must block a new workflow until acknowledged"
+    );
+    if outcome.phase == "uncertain" {
+        acknowledge(root, &outcome.id, true).unwrap();
+    }
+    let waiting = start(root, vec![step("prChecks", "7", "")]);
+    let p = review(root, &waiting.id).unwrap();
+    *served.lock() = "b".repeat(40);
+    execute(root.into(), p, false).unwrap();
+    assert_eq!(wait(root, &waiting.id).phase, "failed");
+    *served.lock() = source_head;
+    let waiting = start(root, vec![step("prChecks", "7", "")]);
+    assert_eq!(next(root, &waiting).phase, "completed");
+    assert!(forge::detect(root).unwrap().is_some());
+    manager.remove(&account, &manager.snapshot().unwrap().revision).unwrap();
+}

@@ -76,7 +76,7 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
       if(!await page.getByRole("button",{name:"Delete 2 selected",exact:true}).isDisabled())throw new Error("Fresh unmerged review skipped renewed consent");
     };
     await scope("refs/heads/bulk-clean-b","both");await assertKept();await consent.check();
-    await page.getByRole("combobox",{name:"Cleanup comparison base",exact:true}).selectOption("refs/heads/keep-base");await page.waitForSelector(".branch-cleanup[aria-busy=false]",{timeout:180000});await assertKept();await consent.check();
+    const comparison=page.getByRole("combobox",{name:"Cleanup comparison base",exact:true});if(await comparison.inputValue()==="refs/heads/keep-base")throw new Error("Consent-reset scenario requires an actual base change");await comparison.selectOption("refs/heads/keep-base");await page.waitForSelector('.branch-cleanup[aria-busy=false][data-cleanup-base="refs/heads/keep-base"]',{timeout:180000});await assertKept();await consent.check();
     await page.getByRole("button",{name:"Refresh review",exact:true}).click();await page.waitForSelector(".branch-cleanup[aria-busy=false]",{timeout:180000});await assertKept();
     await page.getByRole("checkbox",{name:"Include refs/heads/bulk-risk",exact:true}).uncheck();
     await shot("88-bulk-cleanup-exclusions");await run(1);

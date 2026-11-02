@@ -25,6 +25,7 @@ import { wordDiff, type Span } from "../lib/worddiff";
 import { basename, dirname } from "../lib/format";
 import { DIFF_TAB_SIZE, measureDiffLine } from "../lib/diffMetrics";
 import type { LanguageSupport } from "@codemirror/language";
+import { SemanticDiff, supportsSemantic } from "./SemanticDiff";
 import { ImageDiff, isImagePath, type ImageSides } from "./ImageDiff";
 
 export type DiffMode = "unstaged" | "staged" | "readonly" | "pick";
@@ -570,6 +571,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     <div className="diff" style={{ ["--diff-view-width" as string]: `${viewW}px`, ["--split-scroll" as string]: `${splitPan ? horizontal.position : 0}px`, ["--diff-tab-size" as string]: DIFF_TAB_SIZE }} onKeyDown={onKeyDown} tabIndex={-1}>
       {path && head}
       {findBar}
+      {root&&images&&diff&&!diff.binary&&supportsSemantic(path)&&diff.oldMode!=="120000"&&diff.newMode!=="120000"&&<SemanticDiff key={path} root={root} path={path} version={diff} sides={{old:diff.isNew?null:images.old,new:diff.isDeleted?null:images.new}}/>}
       <div ref={bodyRef} className={`diff-body ${s.wrapDiff ? "wrap" : ""}`} onScroll={(e) => {
         const el = e.currentTarget;
         setScroll(el.scrollTop);

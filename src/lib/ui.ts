@@ -53,7 +53,9 @@ interface Dialog {
 }
 
 export type Overlay =
-  | { kind: "workflows"; root: string }
+  | {kind:"historyExplorer";root:string}
+  | {kind:"stacks";root:string}
+  | { kind: "workflows"; root: string; pull?: import("./prWorkflow").PrWorkflowSeed }
   | { kind: "agents"; root: string }
   | { kind: "branches"; root: string }
   | { kind: "worktrees"; root: string }

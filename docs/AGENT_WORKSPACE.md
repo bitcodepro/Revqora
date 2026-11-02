@@ -4,7 +4,12 @@ Open a repository and choose **Agent Workspace** in the toolbar or command palet
 Choose **New task**, an installed executable, its arguments, a starting revision and
 the task. Review the exact commit, new branch/folder and CLI permissions before
 enabling **Start agent**. Nothing is sent to a service before this explicit action.
-The default worktree folder is under portable data. If the app itself is installed
+New tasks use the compact portable `agents/worktrees/<repository-key>/<task-id>`
+pool. History remains in the repository's portable store; existing worktrees stay
+at their recorded paths. This avoids duplicating the full storage key in checkout
+paths, which can hit Git for Windows limits even with `core.longpaths` enabled.
+An explicit worktree path still depends on the installed Git and CLI supporting it.
+If the app itself is installed
 inside the repository you are opening, choose a new **Worktree folder** outside that
 repository; nested worktrees are rejected. This is an explicit working-copy location,
 not relocated internal storage: logs, profiles and history still stay beside the exe.

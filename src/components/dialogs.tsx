@@ -1,4 +1,5 @@
 import {forgeAccountsDialog} from "./ForgeAccounts";
+import { aboutDialog } from "./AboutDialog";
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useUpdate } from "../lib/update";
 import { SHORTCUTS, bindingFor, comboFromEvent, prettyCombo } from "../lib/shortcuts";
@@ -683,9 +684,11 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
       wide
       onClose={() => close()}
       footer={
-        <button type="button" className="btn primary" onClick={() => close()}>
-          Done
-        </button>
+        <>
+          <button type="button" className="btn" onClick={() => { close(); void aboutDialog(); }}><Info size={14} />About Revqora</button>
+          <div className="spacer" />
+          <button type="button" className="btn primary" onClick={() => close()}>Done</button>
+        </>
       }
     >
       <div className="section-title">Appearance</div>

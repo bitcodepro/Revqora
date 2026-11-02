@@ -1,4 +1,6 @@
 import { createStartupBarrier, type StartupPhase } from "./lib/startupReady";
+import { StackManager } from "./components/StackManager";
+import { HistoryExplorer } from "./components/HistoryExplorer";
 import { WorkflowBuilder } from "./components/WorkflowBuilder";
 import { AgentWorkspace } from "./components/AgentWorkspace";
 import { WorktreeManager } from "./components/WorktreeManager";
@@ -185,7 +187,9 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
         {overlay?.kind === "blame" && <BlameView root={root} path={overlay.path} rev={overlay.rev} line={overlay.line} />}
         {overlay?.kind === "branches" && <BranchManager key={root} root={root} />}
         {overlay?.kind === "worktrees" && <WorktreeManager key={root} root={root} />}
-        {overlay?.kind === "workflows" && <WorkflowBuilder root={root} />}
+        {overlay?.kind === "stacks" && <StackManager key={root} root={root}/>}
+        {overlay?.kind === "historyExplorer" && <HistoryExplorer key={root} root={root}/>}
+        {overlay?.kind === "workflows" && <WorkflowBuilder key={root} root={root} pull={overlay.pull} />}
         {overlay?.kind === "agents" && <AgentWorkspace key={root} root={root} />}
         {overlay?.kind === "stash" && <StashView key={overlay.index} root={root} index={overlay.index} />}
         {overlay?.kind === "tree" && <TreeBrowser key={overlay.rev} root={root} rev={overlay.rev} />}

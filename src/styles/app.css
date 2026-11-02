@@ -2653,6 +2653,14 @@ button {
 }
 
 /* ───────────── misc ───────────── */
+.about-identity { display: flex; align-items: center; gap: 14px; }
+.about-identity > svg { color: var(--accent); flex-shrink: 0; }
+.about-identity h4 { margin: 0 0 4px; font-size: 24px; }
+.about-identity p { margin: 0; line-height: 1.6; }
+.about-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 10px 18px; margin: 0; }
+.about-details dt { color: var(--text-dim); }
+.about-details dd { margin: 0; overflow-wrap: anywhere; }
+.about-links { display: flex; flex-wrap: wrap; gap: 8px; }
 .settings-grid {
   display: grid;
   grid-template-columns: 160px 1fr;

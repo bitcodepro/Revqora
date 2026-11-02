@@ -772,11 +772,25 @@ export interface AgentPlan { id: string; request: AgentRequest; executableHash: 
 export interface AgentTask { id: string; title: string; prompt: string; provider: string; repository: string; path: string; branch: string; baseOid: string; executable: string; args: string[]; profilePath: string; phase: string; createdAt: number; elapsedMs: number; stdout: string; stderr: string; truncated: boolean; exitCode: number | null; error: string | null }
 
 // Explicitly reviewed, durable workflow sequences.
-export interface WorkflowStep { kind:"checkClean"|"checkBranch"|"branch"|"cherryPick"|"command"|"publish"|"pr"; label:string;value:string;extra:string;body:string;timeoutSeconds:number;when:"always"|"clean"|"dirty";onFalse:"stop"|"skip" }
+export interface WorkflowStep { kind:"checkClean"|"checkBranch"|"branch"|"cherryPick"|"command"|"publish"|"pr"|"commit"|"prAgent"|"prChecks"|"prRequestReview"|"prMerge"|"prCleanup"; label:string;value:string;extra:string;body:string;timeoutSeconds:number;when:"always"|"clean"|"dirty";onFalse:"stop"|"skip" }
 export interface WorkflowDefinition {id:string;name:string;steps:WorkflowStep[]}
 export interface WorkflowCatalog {revision:string;definitions:WorkflowDefinition[]}
 export interface WorkflowParameters {branch:string;base:string}
 export interface WorkflowResult {phase:string;message:string;stdout:string;stderr:string;truncated:boolean;exitCode:number|null}
-export interface WorkflowRun {id:string;repository:string;definition:WorkflowDefinition;parameters:WorkflowParameters;phase:string;cursor:number;createdAt:number;results:WorkflowResult[];error:string|null}
+export interface WorkflowRun {workspace?:string|null;id:string;repository:string;definition:WorkflowDefinition;parameters:WorkflowParameters;phase:string;cursor:number;createdAt:number;results:WorkflowResult[];error:string|null}
 export interface WorkflowSummary {id:string;name:string;phase:string;cursor:number;total:number;createdAt:number}
-export interface WorkflowReview {runId:string;cursor:number;runRevision:string;stateToken:string;branch:string|null;head:string|null;step:WorkflowStep;resolved:string[];connection:string;remoteFingerprint:string;remoteHead:string|null;skip:boolean;conditionMet:boolean;consentRequired:boolean;explanation:string}
+export interface WorkflowReview {workingDirectory:string;runId:string;cursor:number;runRevision:string;stateToken:string;branch:string|null;head:string|null;step:WorkflowStep;resolved:string[];connection:string;remoteFingerprint:string;remoteHead:string|null;skip:boolean;conditionMet:boolean;consentRequired:boolean;explanation:string}
+
+export interface SemanticSymbol {name:string;kind:string;line:number;preview:string}
+export interface SemanticComparison {language:string;total:number;notice:string;changes:{key:string;state:"added"|"removed"|"changed"|"moved";old:SemanticSymbol|null;new:SemanticSymbol|null}[]}
+export interface CodeHistoryEntry {oid:string;author:string;time:number;subject:string}
+export interface CodeHistoryPage {items:CodeHistoryEntry[];nextOffset:number|null;capped:boolean}
+
+export interface BranchStackEntry {branch:string;boundary:string;pull:number|null;pullConnection?:string|null;pending:{original:string;parentOid:string;checkpoint:string}|null}
+export interface BranchStack {id:string;name:string;base:string;entries:BranchStackEntry[]}
+export interface StackCatalog {revision:string;stacks:BranchStack[]}
+export interface StackSnapshot {catalog:StackCatalog;tips:Record<string,string>;current:string|null;stateToken:string}
+export interface StackPlan {token:string;stackId:string;index:number;revision:string;stateToken:string;branch:string;original:string;boundary:string;parent:string;parentOid:string;commits:number;published:boolean;protectionRules:string[]}
+export interface StackOutcome {phase:string;message:string;checkpoint:string}
+
+export interface SymbolHistoryPage extends CodeHistoryPage {anchor:string;scanned:number;unavailable:number;notices:string[]}
