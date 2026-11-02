@@ -14,12 +14,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: windows-2025, runtime: installed, profile: inside}
-          - {os: windows-2022, runtime: installed, profile: inside}
-          - {os: windows-2025, runtime: detected, profile: inside}
-          - {os: windows-2022, runtime: detected, profile: inside}
-          - {os: windows-2025, runtime: installed, profile: outside}
-          - {os: windows-2022, runtime: installed, profile: outside}
+          - {os: windows-2025, runtime: refreshed, profile: outside}
+          - {os: windows-2022, runtime: refreshed, profile: outside}
     env:
       REVQORA_TEST_TMP: ${{ github.workspace }}/.lab-temp
       TEMP: ${{ github.workspace }}/.lab-temp
@@ -49,6 +45,16 @@ jobs:
           run-id: '41498025218'
           github-token: ${{ github.token }}
           path: lab-package
+      - name: Refresh Evergreen using the signed Microsoft bootstrapper
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:REVQORA_TEST_TMP 'MicrosoftEdgeWebview2Setup.exe'
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $installer
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') { throw 'Microsoft bootstrapper signature validation failed' }
+          $result = Start-Process -FilePath $installer -ArgumentList '/silent','/install' -WindowStyle Hidden -Wait -PassThru
+          "Bootstrapper exit: $($result.ExitCode)"
+          if ($result.ExitCode -notin @(0,3010)) { throw 'Bootstrapper did not complete successfully' }
       - name: Verify immutable source package and choose controlled runtime mode
         shell: pwsh
         run: |

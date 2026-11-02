@@ -34,7 +34,7 @@ const timers=[5000,15000,25000].map(ms=>setTimeout(()=>observations.push(observe
 try {
  const started=Date.now();app=await launch({exe,args:[repo],profile,port:0,visible:process.env.CI==='true',initialStartupDiagnostics:true});report.startup={passed:true,elapsedMs:Date.now()-started};save();
  const invoke=(command,args={})=>app.page.evaluate(({command,args})=>window.__TAURI_INTERNALS__.invoke(command,args),{command,args:{repo,...args}});
- const request={title:'Offline PowerShell comparison',provider:'custom',executable:path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe'),args:['-NoProfile','-NonInteractive','-Command',"Write-Output 'agent-ready'"],prompt:'Offline fixture; do not change files or Git refs.',base:'HEAD',timeoutSeconds:10};
+ const request={title:'Offline PowerShell comparison',provider:'custom',executable:path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe'),args:['-NoProfile','-NonInteractive','-Command',"Write-Output 'agent-ready'"],prompt:'Offline fixture; do not change files or Git refs.',base:'HEAD',worktreePath:path.join(work,'agent-copy'),timeoutSeconds:10};
  const plan=await invoke('agent_prepare',{request});const task=await invoke('agent_start',{plan,consent:true});
  await observe('agent-start');let done;const until=Date.now()+30000;
  while(Date.now()<until){done=(await invoke('agent_tasks')).find(t=>t.id===task.id);if(done&&!['queued','running','stopping'].includes(done.phase))break;await new Promise(r=>setTimeout(r,100));}
