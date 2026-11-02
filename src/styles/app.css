@@ -205,16 +205,29 @@ button {
   }
 }
 .spin {
-  animation: spin 1.4s linear infinite;
+  animation: spin 2.4s linear infinite;
+  transform-box: border-box;
+  transform-origin: center;
 }
-/* Large loading indicator: a soft arc that eases around a faint track. */
+.loading-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.5;
+}
+.loading-status > svg {
+  display: block;
+  flex: none;
+}
+/* A steady, unhurried turn avoids acceleration on every loop. */
 .loader {
   width: 26px;
   height: 26px;
   border-radius: 50%;
   border: 2.5px solid var(--accent-soft);
   border-top-color: var(--accent);
-  animation: loaderSpin 1.1s cubic-bezier(0.55, 0.15, 0.45, 0.85) infinite, fadeIn 0.4s ease 0.15s both;
+  animation: loaderSpin 2.4s linear infinite, fadeIn 0.4s ease 0.15s both;
 }
 @keyframes loaderSpin {
   to {
@@ -480,7 +493,7 @@ button {
   border-radius: 4px;
   background: linear-gradient(90deg, var(--skeleton) 0px, var(--bg-hover-strong) 80px, var(--skeleton) 160px);
   background-size: 400px 100%;
-  animation: shimmer 1.3s infinite linear;
+  animation: shimmer 2.6s infinite linear;
 }
 
 /* ───────────── shell ───────────── */
@@ -728,7 +741,7 @@ button {
   width: 40%;
   background: linear-gradient(90deg, transparent, var(--accent) 50%, transparent);
   border-radius: 2px;
-  animation: progress 1.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  animation: progress 3s cubic-bezier(0.65, 0, 0.35, 1) infinite;
 }
 
 /* ───────────── sidebar ───────────── */
@@ -2918,7 +2931,7 @@ button {
   padding-left: 7px;
   background: var(--accent);
   color: var(--accent-fg);
-  animation: pulse 2s ease-out 2;
+  animation: pulse 3s ease-out 2;
 }
 .update-chip.failed {
   border-color: color-mix(in srgb, var(--red) 55%, transparent);
@@ -2931,7 +2944,7 @@ button {
   border-radius: 50%;
   background: var(--accent);
   color: var(--accent-fg);
-  animation: pulse 2s ease-out 2;
+  animation: pulse 3s ease-out 2;
 }
 .update-ring {
   width: 12px;
@@ -3028,13 +3041,13 @@ button {
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
-  animation: busyBreathe 1.6s ease-in-out infinite;
+  animation: busyBreathe 3.2s ease-in-out infinite;
 }
 @keyframes busyBreathe {
   0%,
   100% {
-    opacity: 0.35;
-    transform: scale(0.8);
+    opacity: 0.55;
+    transform: scale(0.9);
   }
   50% {
     opacity: 1;

@@ -1892,7 +1892,9 @@ fn startup_paths() -> Vec<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    portable::automation_startup("tauri-context-start");
     let context = tauri::generate_context!();
+    portable::automation_startup("tauri-context-ready");
     #[cfg(all(windows, feature = "ui-automation"))]
     let context = {
         let mut context = context;
@@ -1961,7 +1963,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(move |app| {
+            portable::automation_startup("git-locate-start");
             git::locate::configure();
+            portable::automation_startup("git-locate-ready");
             let log_dir = if std::env::var_os("REVQORA_MULTI_INSTANCE").is_some() {
                 portable::webview_dir().map(|p| p.join("revqora-operation-log"))
             } else {
@@ -1969,12 +1973,15 @@ pub fn run() {
             };
             journal::initialize(log_dir.as_deref());
             if let Some(cfg) = app.config().app.windows.iter().find(|w| w.label == "main").cloned() {
+                portable::automation_startup("webview-builder-start");
                 // No Edge form autofill (its dropdown arrow showed up inside text fields).
                 let mut wb = tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.general_autofill_enabled(false);
                 if let Some(dir) = portable::webview_dir() {
                     wb = wb.data_directory(dir);
                 }
+                portable::automation_startup("webview-build-start");
                 let w = wb.build()?;
+                portable::automation_startup("webview-build-ready");
                 if remember_window {
                     portable::restore_window(&w);
                 }
@@ -1992,6 +1999,7 @@ pub fn run() {
             ) {
                 eprintln!("askpass server failed to start: {e}");
             }
+            portable::automation_startup("setup-ready");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

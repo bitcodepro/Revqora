@@ -504,8 +504,8 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     );
   } else if (!diff) {
     body = loading ? (
-      <div className="loading-center">
-        <span className="loader" />
+      <div className="loading-center" role="status" aria-label="Loading file changes">
+        <span className="loader" aria-hidden="true" />
       </div>
     ) : (
       <div className="empty">
@@ -572,7 +572,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       {path && head}
       {findBar}
       {root&&images&&diff&&!diff.binary&&supportsSemantic(path)&&diff.oldMode!=="120000"&&diff.newMode!=="120000"&&<SemanticDiff key={path} root={root} path={path} version={diff} sides={{old:diff.isNew?null:images.old,new:diff.isDeleted?null:images.new}}/>}
-      <div ref={bodyRef} className={`diff-body ${s.wrapDiff ? "wrap" : ""}`} onScroll={(e) => {
+      <div ref={bodyRef} className={`diff-body ${!diff && loading && !error ? "diff-loading" : ""} ${s.wrapDiff ? "wrap" : ""}`} onScroll={(e) => {
         const el = e.currentTarget;
         setScroll(el.scrollTop);
         if (!splitPan) setHorizontal((h) => h.position === el.scrollLeft ? h : { ...h, position: el.scrollLeft });

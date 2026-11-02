@@ -115,6 +115,8 @@
 .diff-body { min-width: 0; min-height: 0; }
 .diff .diff-body .code { tab-size: var(--diff-tab-size, 4); }
 .diff-content { width: max-content; min-width: 100%; }
+.diff-body.diff-loading { display: flex; }
+.diff-loading > .diff-content { display: flex; flex: 1; width: 100%; min-width: 0; }
 .diff-content .hunk { content-visibility: visible; contain-intrinsic-size: none; }
 .diff-body:not(.wrap) .dl { grid-template-columns: 46px 46px 18px minmax(max-content, 1fr); }
 .diff-body.wrap .diff-content { width: 100%; min-width: 0; }

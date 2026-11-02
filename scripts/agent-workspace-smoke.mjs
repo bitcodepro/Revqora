@@ -33,6 +33,10 @@ export async function agentWorkspaceSmoke({page,check,shot,work,restart}) {
    if(git("rev-parse",successful.branch)!==head)throw Error("Agent branch changed unexpectedly");
    assertAgentWorktreeProtection(git,successful,head);
    await until(async()=>await page.locator('.agent-phase').innerText()==="completed","UI did not show completion");await shot("130-agent-workspace");unchanged();
+   await page.getByRole("button",{name:"Open changes",exact:true}).click();
+   await page.locator('.changes .file-row').filter({hasText:"agent.txt"}).waitFor();
+   if(await page.locator('.agent-workspace').count())throw Error("Open changes kept the agent overlay open");
+   await openRepository(page,root);await open();await until(async()=>await page.locator('.agent-phase').innerText()==="completed","Returning to the source lost the completed task");unchanged();
   });
   await check("a stale reviewed agent launch fails before creating its worktree or executing code",async()=>{
    await draft("Stale task","must not run");fs.writeFileSync(path.join(root,"external.txt"),"External IDE edit\n");await launch();await until(async()=>(await tasks()).find(t=>t.title==="Stale task")?.phase==="failed","Stale launch not rejected");const t=(await tasks()).find(t=>t.title==="Stale task");if(fs.existsSync(t.path)||!t.error?.includes("changed"))throw Error("Stale task created a worktree");fs.unlinkSync(path.join(root,"external.txt"));unchanged();

@@ -14,6 +14,29 @@ const WINDOW_FILE: &str = "window.json";
 
 static DATA: OnceLock<Option<PathBuf>> = OnceLock::new();
 
+/// Only isolated Windows automation launches write these fixed startup stages.
+/// Keep the evidence outside WebView's files so a failed browser launch is visible.
+pub fn automation_startup(stage: &str) {
+    #[cfg(all(windows, feature = "ui-automation"))]
+    {
+        use std::io::Write;
+        static START: OnceLock<std::time::Instant> = OnceLock::new();
+        if std::env::var("REVQORA_MULTI_INSTANCE").as_deref() != Ok("1") {
+            return;
+        }
+        let Some(profile) = std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").map(PathBuf::from) else { return };
+        let _ = fs::create_dir_all(&profile);
+        let path = profile.join("revqora-startup.jsonl");
+        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+            let event =
+                serde_json::json!({"pid":std::process::id(),"stage":stage,"elapsedMs":START.get_or_init(std::time::Instant::now).elapsed().as_millis()});
+            let _ = writeln!(file, "{event}");
+        }
+    }
+    #[cfg(not(all(windows, feature = "ui-automation")))]
+    let _ = stage;
+}
+
 /// `<install root>/data` (created on first use). `None` only if the app folder is unknown.
 pub fn data_dir() -> Option<&'static Path> {
     DATA.get_or_init(|| {
