@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import { waitForApplicationPage } from "./ui-readiness.mjs";
-import { retainStartupFailure } from "./ui-startup-diagnostics.mjs";
+import { retainStartupFailure, startupLoggingArguments } from "./ui-startup-diagnostics.mjs";
 
 /** CDP-attached native pages have no Playwright viewport until first emulation.
  * Always restore the actual initial client area, even when viewportSize() is null.
@@ -87,7 +87,7 @@ export async function launch(options) {
   return smokeTimings.measure("activity", "app launch", () => launchApp(options));
 }
 
-async function launchApp({ exe, args = [], port = 9333, profile, transportOnly = false, visible = process.argv.includes("--visible") || process.env.REVQORA_SMOKE_VISIBLE === "1" }) {
+async function launchApp({ exe, args = [], port = 9333, profile, transportOnly = false, initialStartupDiagnostics = false, visible = process.argv.includes("--visible") || process.env.REVQORA_SMOKE_VISIBLE === "1" }) {
   if (port === 0) {
     const reservation = net.createServer();
     await new Promise((resolve, reject) => { reservation.once("error", reject); reservation.listen(0, "127.0.0.1", resolve); });
@@ -109,6 +109,8 @@ async function launchApp({ exe, args = [], port = 9333, profile, transportOnly =
   if (!visible) env.REVQORA_TEST_HIDDEN = "1";
   env.REVQORA_CDP_PORT = String(port);
   if (profile) env.WEBVIEW2_USER_DATA_FOLDER = profile;
+  const captureBrowserLog=transportOnly||initialStartupDiagnostics;
+  if(captureBrowserLog)env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=startupLoggingArguments(profile,true,env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS??"");
   const child = spawn(exe, args, { env, stdio: ["ignore", "ignore", "pipe"] });
   let startupError;
   let stderr = "";
@@ -132,10 +134,11 @@ async function launchApp({ exe, args = [], port = 9333, profile, transportOnly =
     if (process.platform === "win32" && child.pid && child.exitCode === null) {
       try {
         const command = `$p = Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue; $listeners = @(Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object LocalAddress,State,OwningProcess); $children = @(Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${child.pid}' | ForEach-Object { [pscustomobject]@{Name=$_.Name;ExpectedDebugPort=($_.CommandLine -like '*--remote-debugging-port=${port}*');HasUserDataDir=($_.CommandLine -like '*--user-data-dir=*')} }); $policy = Get-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge' -ErrorAction SilentlyContinue; [pscustomobject]@{SessionId=$p.SessionId;WindowTitle=$p.MainWindowTitle;Responding=$p.Responding;Listeners=$listeners;Children=$children;RemoteDebuggingAllowed=$policy.RemoteDebuggingAllowed;DeveloperToolsAvailability=$policy.DeveloperToolsAvailability} | ConvertTo-Json -Compress -Depth 4`;
-        windowState = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { encoding: "utf8", timeout: 5000, windowsHide: true }).trim();
+        const pwsh=path.join(process.env.ProgramFiles??"C:\\Program Files","PowerShell","7","pwsh.exe");
+        windowState = execFileSync(fs.existsSync(pwsh)?pwsh:"powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { encoding: "utf8", timeout: 5000, windowsHide: true }).trim();
       } catch (e) { windowState = `Window diagnostics failed: ${e.code ?? e.name}; signal=${e.signal ?? "none"}; ${String(e.stdout ?? "").slice(-2000)}`; }
     }
-    const evidence=retainStartupFailure({profile,pid:child.pid,port,state,windowState,stderr});
+    const evidence=retainStartupFailure({profile,pid:child.pid,port,state,windowState,stderr,captureBrowserLog});
     if(child.exitCode===null&&child.signalCode===null&&child.pid){
       if(process.platform==="win32"){
         try{execFileSync("taskkill.exe",["/PID",String(child.pid),"/T","/F"],{stdio:"ignore",windowsHide:true});}
@@ -173,24 +176,25 @@ async function launchApp({ exe, args = [], port = 9333, profile, transportOnly =
     browser,
     child,
     close: async () => smokeTimings.measure("activity", "app shutdown", async () => {
-      if (child.exitCode === null && child.signalCode === null && child.pid) {
-        await new Promise((resolve) => {
-          const timeout = setTimeout(resolve, 5000);
-          timeout.unref();
-          child.once("exit", () => { clearTimeout(timeout); resolve(); });
-          if (process.platform === "win32") {
-            // This PID belongs to the app spawned above. Its WebView2 children
-            // must exit too before a disposable profile can be removed.
-            try { execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
-            catch { child.kill(); }
-          } else child.kill();
-        });
-      }
-      // Stop the host first: otherwise WebView2 can recreate its browser/profile
-      // between closing the CDP connection and terminating the application.
       try {
-        await browser.close();
-      } catch {}
+        if (child.exitCode === null && child.signalCode === null && child.pid) {
+          await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error(`Native host ${child.pid} did not exit; fixture cleanup is unsafe`)), 5000);
+            timeout.unref();
+            child.once("exit", () => { clearTimeout(timeout); resolve(); });
+            if (process.platform === "win32") {
+              // This PID belongs to the app spawned above. Its WebView2 children
+              // must exit too before a disposable profile can be removed.
+              try { execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
+              catch { child.kill(); }
+            } else child.kill();
+          });
+        }
+      } finally {
+        // Stop the host first: otherwise WebView2 can recreate its browser/profile
+        // between closing the CDP connection and terminating the application.
+        try { await browser.close(); } catch {}
+      }
     }),
   };
 }

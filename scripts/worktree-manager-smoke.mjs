@@ -2,6 +2,7 @@
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 import fs from "node:fs";
 import path from "node:path";
+import { fillWorktreeFolder, assertWorktreeFolder } from "./worktree-manager-fixture.mjs";
 
 export async function worktreeManagerSmoke({page,check,shot,work}) {
   const root=path.join(work,"stage11-main"),git=(p,...args)=>execFileSync("git",["-C",p,...args],{encoding:"utf8",windowsHide:true,stdio:["ignore","pipe","pipe"]}).trim();
@@ -18,6 +19,12 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
   await page.locator(".topbar .repo-current > b").filter({hasText:"stage11-main"}).waitFor();
   const invoke=(command,args={})=>page.evaluate(({command,args})=>window.__TAURI_INTERNALS__.invoke(command,args),{command,args:{repo:root,...args}});
   const modal=()=>page.locator(".modal").last();
+  const fillFolder=async(destination,name)=>{
+    const current=await page.locator(".topbar .repo-current").getAttribute("title");
+    if(!current)throw Error("Cannot identify repository for the suggested worktree folder");
+    const suggested=`${current.replace(/[\\/][^\\/]+$/,"")}/${current.replace(/\\/g,"/").split("/").pop()}-${name.replace(/[\\/]/g,"-")}`;
+    await fillWorktreeFolder(page,modal(),suggested,destination);
+  };
   const open=async()=>{await page.getByRole("button",{name:"Open worktree manager",exact:true}).click();await page.waitForSelector(".wm-body[aria-busy=false]");};
   const refresh=async()=>{await page.getByRole("button",{name:"Refresh worktrees",exact:true}).click();await page.waitForSelector(".wm-body[aria-busy=false]");};
   const filter=async name=>page.locator(".wm-toolbar .seg").getByRole("button",{name,exact:true}).click();
@@ -29,7 +36,7 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
     await modal().getByRole("button",{name:mode,exact:true}).click();
     if(mode==="Existing branch")await modal().getByRole("combobox",{name:"Worktree branch",exact:true}).selectOption(branch);
     if(mode==="New branch")await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill(branch);
-    await modal().getByRole("textbox",{name:"Worktree folder",exact:true}).fill(p);
+    await fillFolder(p,mode==="Detached HEAD"?"detached":branch);
     await modal().getByRole("button",{name:"Review creation",exact:true}).click();await page.waitForSelector('[data-worktree-review="create"]');
     await modal().getByRole("button",{name:"Create worktree",exact:true}).click();await page.waitForSelector(".modal",{state:"detached",timeout:180000});await page.waitForSelector(".wm-body[aria-busy=false]");
   };
@@ -44,11 +51,11 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
   await check("new worktree creation reviews an exact commit, invalidates edited plans and keeps source staging and edits",async()=>{
     fs.writeFileSync(path.join(root,"file.txt"),"source staged\n");git(root,"add","file.txt");fs.writeFileSync(path.join(root,"file.txt"),"source unstaged\r\n");const index=fs.readFileSync(path.join(root,".git/index"));await refresh();
     const p=path.join(work,"wm-created");await page.locator(".worktree-manager").getByRole("button",{name:"New worktree",exact:true}).click();await modal().getByRole("button",{name:"New branch",exact:true}).click();
-    await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill("created-old");await modal().getByRole("textbox",{name:"Worktree folder",exact:true}).fill(p);
+    await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill("created-old");await fillFolder(p,"created-old");
     await modal().getByRole("button",{name:"Review creation",exact:true}).click();await page.waitForSelector('[data-worktree-review="create"]');
     if(!(await page.locator('[data-worktree-review="create"]').innerText()).includes(initialHead))throw new Error("Creation omitted exact start SHA");
     await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill("created-topic");if(await modal().getByRole("button",{name:"Create worktree",exact:true}).count())throw new Error("An edited creation reused consent");
-    await modal().getByRole("button",{name:"Review creation",exact:true}).click();await page.waitForSelector('[data-worktree-review="create"]');await shot("91-worktree-create-review");
+    await assertWorktreeFolder(modal(),p);await modal().getByRole("button",{name:"Review creation",exact:true}).click();await page.waitForSelector('[data-worktree-review="create"]');await shot("91-worktree-create-review");
     await modal().getByRole("button",{name:"Create worktree",exact:true}).click();await page.waitForSelector(".modal",{state:"detached",timeout:180000});await page.waitForSelector(".wm-body[aria-busy=false]");
     if(git(p,"branch","--show-current")!=="created-topic"||git(p,"rev-parse","HEAD")!==initialHead||fs.readFileSync(path.join(p,"file.txt"),"utf8")!=="base file.txt\n"||!index.equals(fs.readFileSync(path.join(root,".git/index")))||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="source unstaged\r\n")throw new Error("Creation moved source edits/staging or used the wrong commit");
   });
@@ -107,12 +114,12 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
     finally{replaceMarker(saved);}await closeModal("Cancel");await page.waitForSelector(".wm-body[aria-busy=false]");
   });
   await check("an edited pending creation discards its old response and external source changes require a fresh confirmation",async()=>{
-    await page.locator(".worktree-manager").getByRole("button",{name:"New worktree",exact:true}).click();await modal().getByRole("button",{name:"New branch",exact:true}).click();await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill("wm-stale-old");const p=path.join(work,"wm-stale-new");await modal().getByRole("textbox",{name:"Worktree folder",exact:true}).fill(p);
+    await page.locator(".worktree-manager").getByRole("button",{name:"New worktree",exact:true}).click();await modal().getByRole("button",{name:"New branch",exact:true}).click();await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill("wm-stale-old");const p=path.join(work,"wm-stale-new");await fillFolder(p,"wm-stale-old");
     await page.evaluate(()=>{const original=window.fetch,base=window.__TAURI_INTERNALS__.convertFileSrc("","ipc");window.__wmFetch=original;window.__wmDelayed=false;window.__wmRelease=null;window.fetch=async function(input,init){const response=await original.call(this,input,init);if(String(input)===base+"worktree_create_review"&&!window.__wmDelayed){window.__wmDelayed=true;await new Promise(resolve=>{window.__wmRelease=resolve;});}return response;};});
     try{await modal().getByRole("button",{name:"Review creation",exact:true}).click();await page.waitForFunction(()=>typeof window.__wmRelease==="function");await modal().getByRole("textbox",{name:"New worktree branch",exact:true}).fill("wm-stale-final");
       await page.evaluate(async()=>{window.__wmRelease();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
       if(await modal().getByRole("button",{name:"Create worktree",exact:true}).count()||!await modal().getByRole("button",{name:"Review creation",exact:true}).isEnabled())throw new Error("Old preview reappeared or left creation permanently loading");
-      await modal().getByRole("button",{name:"Review creation",exact:true}).click();await page.waitForSelector('[data-worktree-review="create"]');fs.writeFileSync(path.join(root,"file.txt"),"external edit after creation review\n");await modal().getByRole("button",{name:"Create worktree",exact:true}).click();await modal().getByRole("alert").filter({hasText:/repository changed/}).waitFor();if(fs.existsSync(p)||git(root,"for-each-ref","--format=%(refname)","refs/heads/wm-stale-final"))throw new Error("Stale creation changed Git or made a folder");
+      await assertWorktreeFolder(modal(),p);await modal().getByRole("button",{name:"Review creation",exact:true}).click();await page.waitForSelector('[data-worktree-review="create"]');fs.writeFileSync(path.join(root,"file.txt"),"external edit after creation review\n");await modal().getByRole("button",{name:"Create worktree",exact:true}).click();await modal().getByRole("alert").filter({hasText:/repository changed/}).waitFor();if(fs.existsSync(p)||git(root,"for-each-ref","--format=%(refname)","refs/heads/wm-stale-final"))throw new Error("Stale creation changed Git or made a folder");
     }finally{await page.evaluate(()=>{window.__wmRelease?.();window.fetch=window.__wmFetch;delete window.__wmRelease;delete window.__wmFetch;});}await closeModal("Cancel");await page.waitForSelector(".wm-body[aria-busy=false]");
   });
   await check("missing-entry cleanup retains exclusions, rejects reappeared folders and pins exact detached HEADs",async()=>{

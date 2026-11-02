@@ -1,6 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 
+export function startupLoggingArguments(profile, enabled, existing = "") {
+  if(!enabled)return existing;
+  if(!profile||fs.existsSync(profile)&&fs.readdirSync(profile).length)throw Error("Browser startup diagnostics require a new empty test profile");
+  return `${existing} --enable-logging --log-file="${path.join(profile,"revqora-webview.log")}"`.trim();
+}
+
 export function startupTrace(profile,pid) {
   if(!profile)return [];
   let fd;
@@ -16,8 +22,23 @@ export function startupTrace(profile,pid) {
   finally {if(fd!==undefined)fs.closeSync(fd);}
 }
 
-export function retainStartupFailure({profile,pid,port,state,windowState,stderr,out=process.env.REVQORA_SMOKE_OUT}) {
+function browserStartupLog(profile) {
+  if(!profile)return "";
+  let fd;
+  try{
+    fd=fs.openSync(path.join(profile,"revqora-webview.log"),"r");
+    const size=fs.fstatSync(fd).size,buffer=Buffer.alloc(Math.min(size,16384));
+    fs.readSync(fd,buffer,0,buffer.length,Math.max(0,size-buffer.length));
+    return buffer.toString("utf8");
+  }catch{return "";}
+  finally{if(fd!==undefined)fs.closeSync(fd);}
+}
+
+export function retainStartupFailure({profile,pid,port,state,windowState,stderr,captureBrowserLog=false,out=process.env.REVQORA_SMOKE_OUT}) {
   const evidence={pid,port,state,startup:startupTrace(profile,pid),windowState,stderr};
+  // Only an explicitly fresh first launch enables browser logging. Restored
+  // profiles cannot opt in, so their service history is never captured here.
+  if(captureBrowserLog)evidence.browserLog=browserStartupLog(profile);
   if(out) {
     try {
       fs.mkdirSync(out,{recursive:true});

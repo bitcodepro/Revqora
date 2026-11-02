@@ -18,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createProfile, launch, withViewport, openCommitAction } from "./ui-driver.mjs";
+import { shutdownAndCleanup } from "./ui-cleanup.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -49,12 +50,13 @@ process.env.REVQORA_UPDATE_FEED = `http://127.0.0.1:${feed.address().port}/`;
 
 let step = 0;
 const results = [];
+const cleanups = [], deferCleanup = cleanup => cleanups.push(cleanup);
 // Exercise the portable-profile-inside-repo case without adding runtime files
 // to staging/checkpoints. The production watcher must ignore this exact folder.
 const smokeProfile = path.join(repo, ".revqora-smoke-profile");
 fs.mkdirSync(smokeProfile);
 fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n/.revqora-smoke-profile/\n");
-let { page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 });
+let { page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0, initialStartupDiagnostics: true });
 const errors = [];
 const attachPage = () => {
   page.setDefaultTimeout(60000);
@@ -1913,7 +1915,7 @@ try {
     await worktreeManagerSmoke({ page, check, shot, work });
     await forgeAccountsSmoke({page,check,shot,work,profile:workspaceProfile,restart:restartWorkspace});
     await prCenterSmoke({page,check,shot,work});
-    await agentWorkspaceSmoke({page,check,shot,work,restart:restartWorkspace});
+    await agentWorkspaceSmoke({page,check,shot,work,restart:restartWorkspace,deferCleanup});
     await workflowSmoke({page,check,shot,work,restart:restartWorkspace});
     await futureStagesSmoke({page,check,shot,work,restart:restartWorkspace});
   }
@@ -1923,14 +1925,15 @@ try {
   failed = true;
   if (!results.some((r) => r.startsWith("FAIL"))) results.push("FAIL " + e.message);
 } finally {
-  await close();
+  let cleanupSucceeded = false;
+  try { await shutdownAndCleanup(() => close(), cleanups); cleanupSucceeded = true; }
+  catch (e) { failed = true; results.push("FAIL native shutdown/cleanup: " + e.message); console.error(e); }
   feed.close();
   smokeTimings.finish();
   console.log(results.join("\n"));
   console.log(`screenshots: ${out}`);
   if (errors.length) console.log("console errors:\n" + errors.join("\n"));
-  if (!process.argv.includes("--keep")) {
-    // The app may still be shutting down and holding the folder; cleanup is best effort.
+  if (cleanupSucceeded && !process.argv.includes("--keep")) {
     try {
       fs.rmSync(path.join(work, "env"), { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     } catch {
