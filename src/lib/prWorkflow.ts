@@ -30,6 +30,19 @@ export function workflowCleanupSettings(body:string):PrCleanupInput {
  }catch{return fallback;}
 }
 export const automaticConsentKey = (run:WorkflowRun) => JSON.stringify([run.id,run.repository,run.workspace??null,run.definition,run.parameters]);
+export interface WorkflowAgentPreview { executable:string;args:string[];prompt:string;path:string;profilePath:string }
+export function workflowAgentPreview(review:WorkflowReview):WorkflowAgentPreview|null {
+  if(review.step.kind!=="prAgent"||!review.conditionMet)return null;
+  try {
+    const value:unknown=JSON.parse(review.resolved[3]);
+    if(!value||typeof value!=="object"||Array.isArray(value))return null;
+    const plan=value as Record<string,unknown>;
+    if(!plan.request||typeof plan.request!=="object"||Array.isArray(plan.request)||!plan.creation||typeof plan.creation!=="object"||Array.isArray(plan.creation))return null;
+    const request=plan.request as Record<string,unknown>,creation=plan.creation as Record<string,unknown>;
+    if(typeof request.executable!=="string"||!request.executable||!Array.isArray(request.args)||!request.args.every((arg:unknown)=>typeof arg==="string")||typeof request.prompt!=="string"||!request.prompt||typeof creation.path!=="string"||!creation.path||typeof plan.profilePath!=="string"||!plan.profilePath)return null;
+    return {executable:request.executable,args:request.args,prompt:request.prompt,path:creation.path,profilePath:plan.profilePath};
+  }catch{return null;}
+}
 export function automaticReviewMatches(run:WorkflowRun,proof:WorkflowReview):boolean {
  const expected=run.definition.steps[run.cursor];
  if(!expected||!automaticCheck(expected.kind)||proof.step.kind!==expected.kind||proof.runId!==run.id||proof.cursor!==run.cursor||proof.workingDirectory!==(run.workspace??run.repository))return false;

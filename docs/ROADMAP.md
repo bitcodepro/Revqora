@@ -464,7 +464,10 @@ silently enabled by a saved recipe.
   the updated local base, including after squash merge. The next layer retains
   its old source boundary for an exact --onto rebase. Removed tracking never
   deletes that local branch or PR; source cleanup stays separately reviewed.
-- Thirteen additional native scenarios extend all previous 139 (152 total). Real
+- Thirteen stage scenarios and four workflow-consent regressions extend all previous
+  139 (156 total). The regressions cover false PR-agent conditions (skip and stop)
+  and revoking a pending automatic review by selecting the same run or switching
+  away and back. Real
   offline CLI/Git/loopback tests cover agent follow-up, failed request no-replay,
   complete CI gates, JSON precision, syntax grouping, read-only history, restack
   boundaries, stale/protected/ignored cases, paused recovery and squash retirement.

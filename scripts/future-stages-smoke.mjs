@@ -4,6 +4,7 @@ import path from "node:path";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 import { openRepository } from "./ui-readiness.mjs";
 import { withViewport } from "./ui-driver.mjs";
+import { workflowConsentSmoke } from "./workflow-consent-smoke.mjs";
 
 export async function futureStagesSmoke({page,check,shot,work,restart}) {
  const root=path.join(work,"stages18-20");fs.mkdirSync(root);
@@ -68,4 +69,5 @@ export async function futureStagesSmoke({page,check,shot,work,restart}) {
  await check("real restart retains native stack boundaries and stopped workflows without replaying commands or rebases",async()=>{
   const before=await stacks(),refs=git("show-ref");await closeStacks();page=await restart();await openRepository(page,root);await page.getByRole("button",{name:"Branch Stacks",exact:true}).click();await layer("stack/first").waitFor();const after=await stacks();if(JSON.stringify(before.catalog)!==JSON.stringify(after.catalog)||git("show-ref")!==refs||fs.existsSync(path.join(root,"automated-validation.txt")))throw Error("Restart lost stack metadata or replayed work");const runs=await invoke("workflow_runs");if(runs.some(r=>["ready","running","stopping"].includes(r.phase)))throw Error("Stopped workflow became active after restart");await shot("152-stacks-after-restart");await closeStacks();
  });
+ await workflowConsentSmoke({page,check,shot,root});
 }

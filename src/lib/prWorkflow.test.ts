@@ -1,8 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { automaticCheck, automaticConsentKey, automaticReviewMatches, cleanupCoversRules, prWorkflow, workflowAgentSettings, workflowCleanupSettings } from "./prWorkflow";
+import { automaticCheck, automaticConsentKey, automaticReviewMatches, cleanupCoversRules, prWorkflow, workflowAgentPreview, workflowAgentSettings, workflowCleanupSettings } from "./prWorkflow";
 import type { WorkflowRun, WorkflowReview } from "./types";
 import { workflowStep } from "./workflows";
 describe("PR workflow consent boundaries",()=>{
+ const agentReview=(patch:Partial<WorkflowReview>={}):WorkflowReview=>({workingDirectory:"/source",runId:"run",cursor:0,runRevision:"reviewed",stateToken:"state",branch:"topic",head:"head",step:workflowStep("prAgent"),resolved:[],connection:"",remoteFingerprint:"",remoteHead:null,skip:false,conditionMet:true,consentRequired:true,explanation:"",...patch});
+ it.each(["skip","stop"] as const)("false agent condition with %s needs no launch plan",onFalse=>{
+  const review=agentReview({step:{...workflowStep("prAgent"),when:"dirty",onFalse},conditionMet:false,skip:onFalse==="skip",consentRequired:false});
+  expect(workflowAgentPreview(review)).toBeNull();
+ });
+ it("missing or malformed active agent plans cannot become executable previews",()=>{
+  for(const raw of [undefined,"", "null", "{", "[]",'{}',JSON.stringify({request:{executable:"agent",args:[42],prompt:"task"},creation:{path:"/copy"},profilePath:"/profile"})]){
+   expect(workflowAgentPreview(agentReview({resolved:raw===undefined?[]:["","","",raw]}))).toBeNull();
+  }
+ });
+ it("an applicable plan displays the exact executable, arguments, prompt and paths",()=>{
+  const request={executable:"/bin/agent",args:["exec","-"],prompt:"Exact reviewed feedback"},creation={path:"/copy"},profilePath="/profile";
+  const review=agentReview({resolved:["1","source","feedback",JSON.stringify({request,creation,profilePath})]});
+  expect(workflowAgentPreview(review)).toEqual({...request,path:creation.path,profilePath});
+  expect(workflowAgentPreview({...review,step:workflowStep("command")})).toBeNull();
+ });
  it("cleanup fields preserve scope and never coerce text into deletion consent or reuse a review token",()=>{
   expect(workflowCleanupSettings(JSON.stringify({local:true,remote:false,force:"true",protectionRules:["custom/*"],reviewToken:"old"}))).toEqual({local:true,remote:false,force:false,protectionRules:["custom/*"],reviewToken:""});
   expect(workflowCleanupSettings("null").remote).toBe(false);
