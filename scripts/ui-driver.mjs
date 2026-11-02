@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import { waitForApplicationPage } from "./ui-readiness.mjs";
+import { retainStartupFailure } from "./ui-startup-diagnostics.mjs";
 
 /** CDP-attached native pages have no Playwright viewport until first emulation.
  * Always restore the actual initial client area, even when viewportSize() is null.
@@ -132,10 +133,16 @@ async function launchApp({ exe, args = [], port = 9333, profile, transportOnly =
       try {
         const command = `$p = Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue; $listeners = @(Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object LocalAddress,State,OwningProcess); $children = @(Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${child.pid}' | ForEach-Object { [pscustomobject]@{Name=$_.Name;ExpectedDebugPort=($_.CommandLine -like '*--remote-debugging-port=${port}*');HasUserDataDir=($_.CommandLine -like '*--user-data-dir=*')} }); $policy = Get-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge' -ErrorAction SilentlyContinue; [pscustomobject]@{SessionId=$p.SessionId;WindowTitle=$p.MainWindowTitle;Responding=$p.Responding;Listeners=$listeners;Children=$children;RemoteDebuggingAllowed=$policy.RemoteDebuggingAllowed;DeveloperToolsAvailability=$policy.DeveloperToolsAvailability} | ConvertTo-Json -Compress -Depth 4`;
         windowState = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { encoding: "utf8", timeout: 5000, windowsHide: true }).trim();
-      } catch { windowState = "Window diagnostics unavailable"; }
+      } catch (e) { windowState = `Window diagnostics failed: ${e.code ?? e.name}; signal=${e.signal ?? "none"}; ${String(e.stdout ?? "").slice(-2000)}`; }
     }
-    child.kill();
-    throw new Error(`Could not connect to the WebView over CDP: ${state}\n${connectionError}${windowState ? `\n${windowState}` : ""}${stderr ? `\n${stderr}` : ""}`);
+    const evidence=retainStartupFailure({profile,pid:child.pid,port,state,windowState,stderr});
+    if(child.exitCode===null&&child.signalCode===null&&child.pid){
+      if(process.platform==="win32"){
+        try{execFileSync("taskkill.exe",["/PID",String(child.pid),"/T","/F"],{stdio:"ignore",windowsHide:true});}
+        catch{child.kill();}
+      }else child.kill();
+    }
+    throw new Error(`Could not connect to the WebView over CDP: ${state}\n${connectionError}\nStartup evidence: ${JSON.stringify(evidence)}`);
   }
   let page;
   try {

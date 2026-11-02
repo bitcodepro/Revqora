@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-vi.mock("./store", () => ({ useRepos: { getState: () => ({ open }) } }));
+vi.mock("./store", () => ({ useRepos: { getState: () => ({ open, patch }) } }));
 vi.mock("./api", () => ({ errorMessage: (e: unknown) => String(e), isGitError: () => false }));
-const { open } = vi.hoisted(() => ({ open: vi.fn() }));
+const { open, patch } = vi.hoisted(() => ({ open: vi.fn(), patch: vi.fn() }));
 import { openWorktree } from "./worktreeNavigation";
 import { captureOverlay, closeOverlay, openOverlay, toast, useUi, type Overlay } from "./ui";
 
@@ -17,7 +17,7 @@ function manager() {
   return { overlay, owner: captureOverlay("worktrees", root)! };
 }
 
-beforeEach(() => { open.mockReset(); closeOverlay(); });
+beforeEach(() => { open.mockReset(); patch.mockReset(); closeOverlay(); });
 
 describe("worktree opening owns only its originating navigation", () => {
   it("closes its unchanged manager after a successful open", async () => {
@@ -70,6 +70,27 @@ describe("worktree opening owns only its originating navigation", () => {
     const { overlay } = manager(); open.mockResolvedValueOnce(undefined);
     await openWorktree("D:/repos/from-toast");
     expect(useUi.getState().overlay).toBe(overlay);
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("opens agent changes on the canonical repository returned by opening the worktree", async () => {
+    openOverlay({ kind: "agents", root });
+    const owner = captureOverlay("agents", root)!;
+    open.mockResolvedValueOnce("D:/canonical/agent-copy");
+    await openWorktree("D:/alias/agent-copy", owner, "changes");
+    expect(patch).toHaveBeenCalledExactlyOnceWith("D:/canonical/agent-copy", { view: "changes" });
+    expect(useUi.getState().overlay).toBeNull();
+  });
+
+  it("does not change the view for an agent open superseded by newer navigation", async () => {
+    const pending = deferred();
+    openOverlay({ kind: "agents", root });
+    const owner = captureOverlay("agents", root)!;
+    open.mockReturnValueOnce(pending.promise).mockResolvedValueOnce("D:/repos/newer");
+    const older = openWorktree("D:/repos/agent-copy", owner, "changes");
+    await openWorktree("D:/repos/newer");
+    pending.resolve(); await older;
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it("cannot acquire a newer manager with a ticket captured before worktree creation", async () => {

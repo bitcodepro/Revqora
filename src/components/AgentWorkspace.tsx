@@ -77,7 +77,7 @@ export function AgentWorkspace({root}:{root:string}) {
     {task.phase==="interrupted"&&<p>The app ended before recording completion. Process state is unknown; inspect running tools before continuing. Files and the locked worktree were retained.</p>}
     <div className="agent-actions">{["queued","running","stopping"].includes(task.phase)&&<button type="button" className="btn warn" disabled={acting||task.phase==="stopping"} onClick={()=>void action(()=>api.agentStop(root,task.id))}><Square size={13}/>Stop process tree</button>}
     {task.phase==="interrupted"&&<button type="button" className="btn warn" disabled={acting} onClick={()=>void action(()=>acknowledge(task))}>Confirm process stopped…</button>}
-    <button type="button" className="btn primary" disabled={running||acting} onClick={()=>void openWorktree(task.path,captureOverlay("agents",root))}><ExternalLink size={14}/>Open changes</button>
+    <button type="button" className="btn primary" disabled={running||acting} onClick={()=>void openWorktree(task.path,captureOverlay("agents",root),"changes")}><ExternalLink size={14}/>Open changes</button>
     <button type="button" className="btn" disabled={running} onClick={()=>openOverlay({kind:"worktrees",root})}>Worktree Manager</button>
     <button type="button" className="btn" onClick={()=>void api.revealPath(task.profilePath).catch(e=>toast.error(e))}>Agent profile</button>
     <button type="button" className="btn" disabled={running||acting} onClick={()=>void action(()=>forget(task))}>Forget history</button></div>
