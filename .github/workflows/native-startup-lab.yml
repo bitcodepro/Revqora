@@ -1,0 +1,74 @@
+name: Native startup lab (diagnostic only)
+on:
+  push:
+    branches: [diag/native-startup-20261102]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  compare:
+    name: ${{ matrix.os }} / ${{ matrix.runtime }} / ${{ matrix.profile }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-2025, runtime: installed, profile: inside}
+          - {os: windows-2022, runtime: installed, profile: inside}
+          - {os: windows-2025, runtime: detected, profile: inside}
+          - {os: windows-2022, runtime: detected, profile: inside}
+          - {os: windows-2025, runtime: installed, profile: outside}
+          - {os: windows-2022, runtime: installed, profile: outside}
+    env:
+      REVQORA_TEST_TMP: ${{ github.workspace }}/.lab-temp
+      TEMP: ${{ github.workspace }}/.lab-temp
+      TMP: ${{ github.workspace }}/.lab-temp
+      TMPDIR: ${{ github.workspace }}/.lab-temp
+      REVQORA_VERIFY_UI_AUTOMATION: '1'
+      LAB_RUNTIME: ${{ matrix.runtime }}
+      LAB_PROFILE: ${{ matrix.profile }}
+      LAB_SOURCE_SHA: e3e6096a470e259d5da9807a12882605fc115b7b
+      REVQORA_SMOKE_OUT: ${{ github.workspace }}/lab-results
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prepare isolated temp
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:REVQORA_TEST_TMP | Out-Null
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: windows-native-smoke-build
+          run-id: '41498025218'
+          github-token: ${{ github.token }}
+          path: lab-package
+      - name: Verify immutable source package and choose controlled runtime mode
+        shell: pwsh
+        run: |
+          $archive = @(Get-ChildItem lab-package -Filter '*.zip')
+          if ($archive.Count -ne 1) { throw 'Expected exactly one source package' }
+          if ((Get-FileHash $archive[0].FullName).Hash -ne 'CA10D898DB43605E76FBA98AF5BF1B10405E938D0436D666E8AB6A238DE871D3') { throw 'Source archive SHA256 mismatch' }
+          Expand-Archive -LiteralPath $archive[0].FullName -DestinationPath lab-app
+          $roots = @("${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application", "$env:ProgramFiles\Microsoft\EdgeWebView\Application", "$env:LOCALAPPDATA\Microsoft\EdgeWebView\Application")
+          $candidates = @(foreach ($root in $roots) { Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'msedgewebview2.exe') } | Select-Object -ExpandProperty FullName })
+          if (-not $candidates.Count) { throw 'No preinstalled runtime; this case cannot compare it' }
+          $candidate = $candidates[0]
+          "LAB_RUNTIME_CANDIDATE=$candidate" >> $env:GITHUB_ENV
+          $override = if ($env:LAB_RUNTIME -eq 'detected') { $candidate } else { '' }
+          "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER=$override" >> $env:GITHUB_ENV
+      - name: One fixed startup case and direct process baselines (no retries)
+        run: node scripts/native-startup-lab.mjs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: lab-${{ matrix.os }}-${{ matrix.runtime }}-${{ matrix.profile }}
+          path: lab-results
+          if-no-files-found: warn
+          retention-days: 3
