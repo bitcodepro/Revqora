@@ -49,11 +49,19 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-2025, ubuntu-24.04, macos-15]
+    env:
+      REVQORA_TEST_TMP: ${{ github.workspace }}/.ci-temp
+      TEMP: ${{ github.workspace }}/.ci-temp
+      TMP: ${{ github.workspace }}/.ci-temp
+      TMPDIR: ${{ github.workspace }}/.ci-temp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Prepare isolated temporary directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:REVQORA_TEST_TMP | Out-Null
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'

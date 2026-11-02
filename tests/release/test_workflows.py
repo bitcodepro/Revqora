@@ -32,6 +32,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(jobs["version"]["needs"], "release-tooling")
         self.assertIn("windows-smoke", jobs["release"]["needs"])
         self.assertNotIn("emulator-tests", jobs)
+        checks = jobs["build-and-test"]
+        for key in ("TEMP", "TMP", "TMPDIR"):
+            self.assertEqual(checks["env"][key], checks["env"]["REVQORA_TEST_TMP"])
+        self.assertIn("github.workspace", checks["env"]["REVQORA_TEST_TMP"])
+        prepare = next(i for i, step in enumerate(checks["steps"]) if step.get("name") == "Prepare isolated temporary directory")
+        verify = next(i for i, step in enumerate(checks["steps"]) if step.get("run") == "npm run verify:quick")
+        self.assertLess(prepare, verify)
 
     def test_native_build_is_reused_by_all_isolated_suites(self):
         jobs = self.ci["jobs"]

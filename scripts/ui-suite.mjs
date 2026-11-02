@@ -27,7 +27,7 @@ const check=async(name,run)=>{
   catch(e){await shot(`fail-${step}`).catch(()=>{});throw e;}
 };
 try{
-  app=await launch({exe:path.resolve(arg("--exe")),profile:path.join(work,"profile"),port:0});
+  app=await launch({exe:path.resolve(arg("--exe")),profile:path.join(work,"profile"),port:0,initialStartupDiagnostics:true});
   const page=app.page;page.setDefaultTimeout(60000);
   const watch=p=>{p.setDefaultTimeout(60000);p.on("pageerror",e=>errors.push(String(e)));p.on("console",m=>m.type()==="error"&&errors.push(m.text()));};watch(page);
   const restart=async()=>{await app.close();app=await launch({exe:path.resolve(arg("--exe")),profile:path.join(work,"profile"),port:0});watch(app.page);return app.page;};

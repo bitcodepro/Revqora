@@ -56,7 +56,7 @@ const cleanups = [], deferCleanup = cleanup => cleanups.push(cleanup);
 const smokeProfile = path.join(repo, ".revqora-smoke-profile");
 fs.mkdirSync(smokeProfile);
 fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n/.revqora-smoke-profile/\n");
-let { page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0 });
+let { page, close, child } = await launch({ exe, args: [repo], profile: smokeProfile, port: 0, initialStartupDiagnostics: true });
 const errors = [];
 const attachPage = () => {
   page.setDefaultTimeout(60000);

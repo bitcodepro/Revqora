@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {startupTrace,retainStartupFailure} from "./ui-startup-diagnostics.mjs";
+import {startupTrace,retainStartupFailure,startupLoggingArguments} from "./ui-startup-diagnostics.mjs";
 
 test("startup evidence is bounded to this process and fixed diagnostic fields",()=>{
  const root=fs.mkdtempSync(path.join(process.env.REVQORA_TEST_TMP||os.tmpdir(),"startup-evidence-"));
@@ -39,5 +39,18 @@ test("transport browser diagnostics retain only a bounded tail and require expli
   const captured=retainStartupFailure({...options,captureBrowserLog:true});
   assert.equal(Buffer.byteLength(captured.browserLog),16384);assert.ok(captured.browserLog.endsWith("initialization failed"));assert.doesNotMatch(captured.browserLog,/old browser output/);
   fs.unlinkSync(path.join(root,"revqora-webview.log"));assert.equal(retainStartupFailure({...options,captureBrowserLog:true}).browserLog,"");
+ }finally{assert.equal(path.dirname(path.resolve(root)),base);fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test("initial browser logging rejects restored profiles and preserves existing transport arguments",()=>{
+ const base=path.resolve(process.env.REVQORA_TEST_TMP||os.tmpdir()),root=fs.mkdtempSync(path.join(base,"startup-empty-"));
+ try{
+  const existing="--remote-debugging-port=12345";
+  assert.equal(startupLoggingArguments(root,true,existing),`${existing} --enable-logging --log-file="${path.join(root,"revqora-webview.log")}"`);
+  fs.writeFileSync(path.join(root,"restored-state"),"keep");
+  assert.throws(()=>startupLoggingArguments(root,true,existing),/new empty test profile/);
+  assert.throws(()=>startupLoggingArguments(undefined,true,existing),/new empty test profile/);
+  assert.equal(startupLoggingArguments(root,false,existing),existing);
+  assert.equal(fs.readFileSync(path.join(root,"restored-state"),"utf8"),"keep");
  }finally{assert.equal(path.dirname(path.resolve(root)),base);fs.rmSync(root,{recursive:true,force:true});}
 });
