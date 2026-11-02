@@ -167,7 +167,8 @@ fn is_bitbucket(f: &ForgeInfo) -> bool {
     f.kind.starts_with("bitbucket")
 }
 
-/// Git helper lookups are scoped to this repository, URL path and username; never cached by host.
+/// Let Git apply this repository's URL/account matching, including useHttpPath.
+/// Never override its storage scope or cache credentials by host in Revqora.
 fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
     let (host, path) = parse_remote(url).ok_or_else(|| GitError::new("Unsupported credential URL").kind("auth"))?;
     let username = url::Url::parse(url).ok().filter(|u| matches!(u.scheme(), "http" | "https")).map(|u| u.username().to_owned()).unwrap_or_default();
@@ -185,7 +186,7 @@ fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential>
     let out = crate::journal::suspend(|| {
         runner::exec_full(
             repo,
-            ["-c", "credential.useHttpPath=true", "-c", "credential.interactive=false", "-c", "core.askPass=", "credential", "fill"],
+            ["-c", "credential.interactive=false", "-c", "core.askPass=", "credential", "fill"],
             &[("GIT_ASKPASS", ""), ("GCM_INTERACTIVE", "never"), ("GIT_TERMINAL_PROMPT", "0")],
             Some(input.as_bytes()),
         )
@@ -857,6 +858,7 @@ mod credential_scope_tests {
         runner::run(repo, ["init", "-q"]).unwrap();
         runner::run(repo, ["config", "credential.helper", ""]).unwrap();
         runner::run(repo, ["config", "credential.username", "alice"]).unwrap();
+        runner::run(repo, ["config", "credential.useHttpPath", "true"]).unwrap();
         // Match the complete query, not just the requested host.
         let helper = r#"!f() {
 username=; protocol=; host=; path=;
@@ -882,6 +884,50 @@ fi
         assert!(token(repo, "https://bob@credential-scope.invalid/team/repo.git").is_err(), "an explicit HTTPS identity must still constrain the helper");
         assert!(token(repo, "https://alice%0Apassword=injected@credential-scope.invalid/team/repo.git").is_err());
         assert!(!repo.join(".git/index").exists());
+    }
+    #[test]
+    fn api_credentials_follow_the_same_host_path_and_url_configuration_as_git() {
+        let temporary = tempfile::tempdir().unwrap();
+        for scope in ["host", "repository", "url-override"] {
+            let repo = temporary.path().join(scope);
+            std::fs::create_dir(&repo).unwrap();
+            runner::run(&repo, ["init", "-q"]).unwrap();
+            runner::run(&repo, ["config", "credential.helper", ""]).unwrap();
+            runner::run(&repo, ["config", "credential.username", "alice"]).unwrap();
+            runner::run(&repo, ["config", "credential.useHttpPath", if scope == "repository" { "true" } else { "false" }]).unwrap();
+            if scope == "url-override" {
+                runner::run(&repo, ["config", "credential.https://credential-scope.invalid/team.useHttpPath", "true"]).unwrap();
+            }
+            let expected_path = if scope == "host" { "" } else { "team/repo.git" };
+            let helper = format!(
+                r#"!f() {{
+username=; protocol=; host=; path=;
+while IFS='=' read -r key value; do
+  case "$key" in username) username="$value";; protocol) protocol="$value";; host) host="$value";; path) path="$value";; esac
+done
+if [ "$1" = get ] && [ "$username" = alice ] && [ "$protocol" = https ] && [ "$host" = credential-scope.invalid ] && [ "$path" = "{expected_path}" ]; then
+  printf '%s\n' 'username=alice' 'password=fixture-token'
+fi
+}}; f"#
+            );
+            runner::run(&repo, ["config", "--add", "credential.helper", &helper]).unwrap();
+            let config = std::fs::read(repo.join(".git/config")).unwrap();
+            let ordinary = runner::exec_full(
+                &repo,
+                ["-c", "credential.interactive=false", "-c", "core.askPass=", "credential", "fill"],
+                &[("GIT_ASKPASS", ""), ("GCM_INTERACTIVE", "never"), ("GIT_TERMINAL_PROMPT", "0")],
+                Some(b"protocol=https\nhost=credential-scope.invalid\npath=team/repo.git\n\n"),
+            )
+            .unwrap();
+            assert!(ordinary.ok(), "Ordinary Git must find the fixture's {scope} credential");
+            assert!(ordinary.text().lines().any(|line| line == "password=fixture-token"));
+            let credential = token(&repo, "https://credential-scope.invalid/team/repo.git").unwrap();
+            assert_eq!(credential.username, "alice");
+            assert_eq!(credential.token, "fixture-token");
+            assert!(token(&repo, "https://bob@credential-scope.invalid/team/repo.git").is_err(), "Explicit HTTPS identity must remain constrained");
+            assert_eq!(std::fs::read(repo.join(".git/config")).unwrap(), config);
+            assert!(!repo.join(".git/index").exists());
+        }
     }
     #[test]
     fn git_credentials_are_read_per_repository_without_a_host_cache_or_index_write() {
