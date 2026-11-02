@@ -16,8 +16,23 @@ export function startupTrace(profile,pid) {
   finally {if(fd!==undefined)fs.closeSync(fd);}
 }
 
-export function retainStartupFailure({profile,pid,port,state,windowState,stderr,out=process.env.REVQORA_SMOKE_OUT}) {
+function browserStartupLog(profile) {
+  if(!profile)return "";
+  let fd;
+  try{
+    fd=fs.openSync(path.join(profile,"revqora-webview.log"),"r");
+    const size=fs.fstatSync(fd).size,buffer=Buffer.alloc(Math.min(size,16384));
+    fs.readSync(fd,buffer,0,buffer.length,Math.max(0,size-buffer.length));
+    return buffer.toString("utf8");
+  }catch{return "";}
+  finally{if(fd!==undefined)fs.closeSync(fd);}
+}
+
+export function retainStartupFailure({profile,pid,port,state,windowState,stderr,captureBrowserLog=false,out=process.env.REVQORA_SMOKE_OUT}) {
   const evidence={pid,port,state,startup:startupTrace(profile,pid),windowState,stderr};
+  // Only the fresh transport-only profile enables browser logging. Repository
+  // scenarios do not capture browser logs that could contain service requests.
+  if(captureBrowserLog)evidence.browserLog=browserStartupLog(profile);
   if(out) {
     try {
       fs.mkdirSync(out,{recursive:true});

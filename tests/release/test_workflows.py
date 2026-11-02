@@ -42,6 +42,13 @@ class WorkflowTests(unittest.TestCase):
         startup = next(i for i, step in enumerate(steps) if "scripts/ui-startup.mjs" in step.get("run", ""))
         self.assertLess(runtime, startup)
         self.assertLess(compile_at, startup)
+        # Retain the exact binary even when startup fails, while the failed build
+        # job still blocks every native suite through its existing needs edge.
+        upload = next(i for i, step in enumerate(steps) if step.get("with", {}).get("name") == "windows-native-smoke-build")
+        self.assertLess(compile_at, upload)
+        self.assertLess(upload, startup)
+        self.assertNotIn("continue-on-error", steps[startup])
+        self.assertIn("ci-results/startup", steps[startup]["env"]["REVQORA_SMOKE_OUT"])
         self.assertNotIn("cargo build", str(steps))
         smoke = jobs["windows-smoke"]
         self.assertEqual(smoke["needs"], "windows-native-build")
@@ -54,6 +61,8 @@ class WorkflowTests(unittest.TestCase):
         for job in (build, smoke):
             self.assertLessEqual(int(job["timeout-minutes"]), 30)
             self.assertIn("github.workspace", job["env"]["REVQORA_TEST_TMP"])
+            self.assertEqual(job["env"]["WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"], "")
+            self.assertNotIn("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER=$runtime", str(job))
         # Packages may build alongside native tests, but publishing requires both.
         self.assertEqual(jobs["version"]["needs"], "release-tooling")
         self.assertIn("windows-smoke", jobs["release"]["needs"])

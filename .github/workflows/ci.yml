@@ -104,6 +104,9 @@ jobs:
     outputs:
       sha256: ${{ steps.bundle.outputs.sha256 }}
     env:
+      # Let the loader resolve the registered Evergreen installation at launch,
+      # instead of pinning an arbitrary version folder before the long build.
+      WEBVIEW2_BROWSER_EXECUTABLE_FOLDER: ''
       REVQORA_TEST_TMP: ${{ github.workspace }}/.ci-temp
       TEMP: ${{ github.workspace }}/.ci-temp
       TMP: ${{ github.workspace }}/.ci-temp
@@ -147,7 +150,7 @@ jobs:
             $runtime = Find-WebView2 | Select-Object -First 1
           }
           if (-not $runtime) { throw 'WebView2 Runtime executable was not found' }
-          "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER=$runtime" >> $env:GITHUB_ENV
+          "Using installed Evergreen WebView2 (detected at $runtime)"
       - name: Report preparation duration
         shell: pwsh
         run: |
@@ -160,11 +163,6 @@ jobs:
         env:
           REVQORA_VERIFY_UI_AUTOMATION: '1'
           REVQORA_VERIFY_TIMINGS: ${{ github.workspace }}/ci-results/build-timings.json
-      - name: Verify native transport on the already built release executable
-        run: node scripts/ui-startup.mjs --exe release/Revqora/revqora.exe
-        env:
-          REVQORA_VERIFY_UI_AUTOMATION: '1'
-          REVQORA_SMOKE_VISIBLE: '1'
       - name: Bind the native artifact to this build
         id: bundle
         shell: pwsh
@@ -178,6 +176,12 @@ jobs:
           path: release/Revqora-*-win-x64.zip
           if-no-files-found: error
           retention-days: 3
+      - name: Verify native transport on the already built release executable
+        run: node scripts/ui-startup.mjs --exe release/Revqora/revqora.exe
+        env:
+          REVQORA_VERIFY_UI_AUTOMATION: '1'
+          REVQORA_SMOKE_VISIBLE: '1'
+          REVQORA_SMOKE_OUT: ${{ github.workspace }}/ci-results/startup
       - name: Upload build timings
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -197,6 +201,7 @@ jobs:
       matrix:
         suite: [core, workspace, cleanup, worktrees]
     env:
+      WEBVIEW2_BROWSER_EXECUTABLE_FOLDER: ''
       REVQORA_TEST_TMP: ${{ github.workspace }}/.ci-temp
       TEMP: ${{ github.workspace }}/.ci-temp
       TMP: ${{ github.workspace }}/.ci-temp
@@ -241,7 +246,7 @@ jobs:
             $runtime = Find-WebView2 | Select-Object -First 1
           }
           if (-not $runtime) { throw 'WebView2 Runtime executable was not found' }
-          "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER=$runtime" >> $env:GITHUB_ENV
+          "Using installed Evergreen WebView2 (detected at $runtime)"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: windows-native-smoke-build

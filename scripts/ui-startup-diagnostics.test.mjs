@@ -29,3 +29,15 @@ test("missing startup trace and failed artifact writes preserve the primary diag
   assert.equal(fs.readFileSync(out,"utf8"),"keep");
  }finally{assert.equal(path.dirname(path.resolve(root)),path.resolve(process.env.REVQORA_TEST_TMP||os.tmpdir()));fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test("transport browser diagnostics retain only a bounded tail and require explicit opt-in",()=>{
+ const base=path.resolve(process.env.REVQORA_TEST_TMP||os.tmpdir()),root=fs.mkdtempSync(path.join(base,"startup-browser-"));
+ try{
+  fs.writeFileSync(path.join(root,"revqora-webview.log"),"old browser output\n"+"x".repeat(100000)+"\ninitialization failed");
+  const options={profile:root,pid:1,port:1,state:"still running",windowState:"",stderr:"",out:null};
+  assert.equal("browserLog" in retainStartupFailure(options),false);
+  const captured=retainStartupFailure({...options,captureBrowserLog:true});
+  assert.equal(Buffer.byteLength(captured.browserLog),16384);assert.ok(captured.browserLog.endsWith("initialization failed"));assert.doesNotMatch(captured.browserLog,/old browser output/);
+  fs.unlinkSync(path.join(root,"revqora-webview.log"));assert.equal(retainStartupFailure({...options,captureBrowserLog:true}).browserLog,"");
+ }finally{assert.equal(path.dirname(path.resolve(root)),base);fs.rmSync(root,{recursive:true,force:true});}
+});

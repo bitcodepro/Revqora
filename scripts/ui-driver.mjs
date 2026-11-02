@@ -109,6 +109,7 @@ async function launchApp({ exe, args = [], port = 9333, profile, transportOnly =
   if (!visible) env.REVQORA_TEST_HIDDEN = "1";
   env.REVQORA_CDP_PORT = String(port);
   if (profile) env.WEBVIEW2_USER_DATA_FOLDER = profile;
+  if(transportOnly&&profile)env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=`${env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS??""} --enable-logging --log-file="${path.join(profile,"revqora-webview.log")}"`.trim();
   const child = spawn(exe, args, { env, stdio: ["ignore", "ignore", "pipe"] });
   let startupError;
   let stderr = "";
@@ -135,7 +136,7 @@ async function launchApp({ exe, args = [], port = 9333, profile, transportOnly =
         windowState = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { encoding: "utf8", timeout: 5000, windowsHide: true }).trim();
       } catch (e) { windowState = `Window diagnostics failed: ${e.code ?? e.name}; signal=${e.signal ?? "none"}; ${String(e.stdout ?? "").slice(-2000)}`; }
     }
-    const evidence=retainStartupFailure({profile,pid:child.pid,port,state,windowState,stderr});
+    const evidence=retainStartupFailure({profile,pid:child.pid,port,state,windowState,stderr,captureBrowserLog:transportOnly});
     if(child.exitCode===null&&child.signalCode===null&&child.pid){
       if(process.platform==="win32"){
         try{execFileSync("taskkill.exe",["/PID",String(child.pid),"/T","/F"],{stdio:"ignore",windowsHide:true});}
