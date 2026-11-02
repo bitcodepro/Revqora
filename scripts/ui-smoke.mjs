@@ -221,7 +221,7 @@ try {
     } finally { await page.evaluate(() => { window.__signatureRelease?.(); window.fetch = window.__previewFetch; }); }
   });
 
-  await check("a working-tree refresh reloads a cached active commit without changing selection", async () => {
+  await check("background changes retain a cached active commit and explicit Refresh reloads it", async () => {
     const select = async (subject) => {
       await page.locator(".grow:not(.wip)", { hasText: subject }).click();
       await page.waitForSelector(`.commit-subject:has-text('${subject}')`);
@@ -234,16 +234,29 @@ try {
     await page.evaluate(() => {
       const original = window.fetch;
       const base = window.__TAURI_INTERNALS__.convertFileSrc("", "ipc");
-      window.__refreshPreviewFetch = original; window.__refreshPreviewReads = [];
-      window.fetch = function(input, init) {
+      window.__refreshPreviewFetch = original; window.__refreshPreviewReads = []; window.__refreshPreviewObserved = false;
+      window.__refreshPreviewLine = document.querySelector(".details .diff .dl");
+      window.fetch = async function(input, init) {
         const command = String(input).startsWith(base) ? String(input).slice(base.length) : "";
         if (["commit_details", "rev_diff"].includes(command)) window.__refreshPreviewReads.push(command);
-        return original.call(this, input, init);
+        const response = await original.call(this, input, init);
+        if (command === "status") {
+          const status = await response.clone().json();
+          if (status.files?.some((f) => f.path === "preview-refresh-probe.txt")) window.__refreshPreviewObserved = true;
+        }
+        return response;
       };
     });
     const userFile = path.join(repo, "preview-refresh-probe.txt");
     try {
       fs.writeFileSync(userFile, "External editor change\n");
+      // Wait for the actual watcher/status read, then allow its React effects to
+      // run. The absence of a reload must not pass just because no event arrived.
+      await page.waitForFunction(() => window.__refreshPreviewObserved, null, { timeout: 12000 });
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const background = await page.evaluate(() => ({ reads: window.__refreshPreviewReads, retained: window.__refreshPreviewLine === document.querySelector(".details .diff .dl") && window.__refreshPreviewLine.isConnected }));
+      if (background.reads.length || !background.retained) throw new Error(`background observation reloaded the immutable preview: ${JSON.stringify(background)}`);
+      await page.click("button[title='Refresh (F5)']");
       await page.waitForFunction(() => window.__refreshPreviewReads.includes("commit_details") && window.__refreshPreviewReads.includes("rev_diff"), null, { timeout: 12000 });
       await page.waitForSelector(".commit-subject:has-text('Add average helper')");
       await page.waitForSelector(".details .file-row.selected:has-text('app.ts')");
