@@ -56,6 +56,16 @@ export async function prCenterSmoke({page,check,shot,work}) {
     await check("long PR descriptions expand without rendering provider HTML or unsafe browser URLs",async()=>{
       await page.getByRole("button",{name:"Expand description",exact:true}).click();const text=await page.locator(".pr-description-expanded").innerText();if(!text.includes("must-not-load.invalid")||await page.locator(".pr-description-expanded img").count())throw Error("Description was truncated or rendered unsafe HTML");await button("Close").click();
       const d=await invoke("pr_detail",{repo:root,number:1,expectedConnection:(await invoke("forge_info",{repo:root})).connectionRevision});if(!d.pull.url.startsWith(url)||d.pull.url.includes("unsafe"))throw Error("Provider browser URL was trusted");
+      // A server-side close/reopen must update the loaded list row as well as the detail.
+      // Keep the row in place so refreshing a selected PR does not discard the review.
+      const writesBefore=requests.filter(r=>r.method!=="GET"&&!r.path.startsWith("/api/graphql")).length;
+      for(const state of ["closed","open"]){
+        Object.assign(pulls.get(1),{state,updated_at:`external-${state}`});
+        await page.getByRole("button",{name:"Reload request",exact:true}).click();
+        await page.locator(`[data-pr-detail="1"] .pr-state-${state}`).waitFor();
+        await page.locator(`[data-pr-number="1"] .pr-state-${state}`).waitFor();
+      }
+      if(requests.filter(r=>r.method!=="GET"&&!r.path.startsWith("/api/graphql")).length!==writesBefore)throw Error("Metadata refresh wrote to the server");
     });
     await check("create PR uses committed templates with replacement consent and never pushes local Git changes",async()=>{
       await page.getByRole("button",{name:"New",exact:true}).click();await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Created in PR Center");await page.getByLabel("PR source branch",{exact:true}).fill("topic");await page.getByRole("textbox",{name:"PR description",exact:true}).fill("Keep before choosing template");await page.getByRole("combobox",{name:"Pull request template",exact:true}).selectOption(".github/PULL_REQUEST_TEMPLATE/Feature.md");await button("Use template").click();await button("Replace description").waitFor();await page.keyboard.press("Escape");await page.waitForFunction(()=>document.querySelectorAll(".modal").length===1&&document.querySelector("[data-pr-editor=create]"));if(await page.getByRole("textbox",{name:"PR description",exact:true}).inputValue()!=="Keep before choosing template")throw Error("Escape changed the underlying description");await button("Use template").click();await button("Replace description").click();await page.waitForFunction(()=>document.querySelector('[aria-label="PR description"]')?.value.includes("Тест 😀"));

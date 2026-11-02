@@ -58,7 +58,7 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
   const direct = pullRequestNumber(query);
   const refresh = () => { preferred.current = selected; void load(); };
   const created = async () => { const p = await createPullRequest(root, forge); if (p) { preferred.current = p.number; if (prefs.state !== "open") savePreferences({ state: "open" }); else void load(); } };
-  const updated = (p: PullRequest) => setItems(old => old.map(row => row.number === p.number ? p : row));
+  const updated = useCallback((p: PullRequest) => setItems(old => old.map(row => row.number === p.number ? p : row)), []);
   return <section className={`pr-center ${!prefs.listOpen ? "pr-list-hidden" : ""}`} aria-label="Pull Request Center" style={{ "--pr-list-width": `${listWidth}px` } as CSSProperties}>
     {prefs.listOpen && <aside className="pr-list-panel" aria-label="Pull request list">
       <div className="pr-list-heading"><GitPullRequest size={17} /><b>Pull requests</b><span className="pill" data-pr-loaded={items.length}>{items.length}</span><div className="spacer" /><button className="icon-btn" title="Hide pull request list" aria-label="Hide pull request list" onClick={() => savePreferences({ listOpen: false })}><ChevronLeft size={16} /></button></div>
@@ -94,7 +94,7 @@ function RequestDetail({ root, forge, number, prefs, savePreferences, updated }:
 
   const [refreshing,setRefreshing]=useState(false), [reviewEpoch,setReviewEpoch]=useState(0);
   const generation = useRef(0), editing = useRef(false);
-  const load = useCallback(async (quiet = false) => { const id = ++generation.current; setRefreshing(quiet); if(!quiet) { setLoading(true); setDetail(null); } setError(""); try { const d = await api.prDetail(root, number, connection); if (id === generation.current) { setDetail(d); if(quiet) setReviewEpoch(e=>e+1); } } catch (e) { if (id === generation.current) { setError(errorMessage(e)); if(quiet) toast.warning("Sent, but PR refresh failed",errorMessage(e)); } } finally { if (id === generation.current) {setLoading(false);setRefreshing(false);} } }, [root, number, connection]);
+  const load = useCallback(async (quiet = false) => { const id = ++generation.current; setRefreshing(quiet); if(!quiet) { setLoading(true); setDetail(null); } setError(""); try { const d = await api.prDetail(root, number, connection); if (id === generation.current) { setDetail(d); updated(d.pull); if(quiet) setReviewEpoch(e=>e+1); } } catch (e) { if (id === generation.current) { setError(errorMessage(e)); if(quiet) toast.warning("Sent, but PR refresh failed",errorMessage(e)); } } finally { if (id === generation.current) {setLoading(false);setRefreshing(false);} } }, [root, number, connection, updated]);
   useEffect(() => { void load(); return () => { generation.current++; }; }, [load]);
   const edit = async () => { if (!detail || editing.current) return; editing.current = true; const current = generation.current; try { const result = await showDialog<PrEditResult | null>(close => <RequestEditor root={root} forge={forge} initial={detail} close={close} />); if (result && generation.current === current) { setDetail(result.detail); updated(result.detail.pull); } } finally { editing.current = false; } };
   if (loading) return <div className="pr-empty" role="status"><Loader2 size={22} className="spin" />Loading #{number}…</div>;
