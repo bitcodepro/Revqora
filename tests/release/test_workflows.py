@@ -39,6 +39,22 @@ class WorkflowTests(unittest.TestCase):
         prepare = next(i for i, step in enumerate(checks["steps"]) if step.get("name") == "Prepare isolated temporary directory")
         verify = next(i for i, step in enumerate(checks["steps"]) if step.get("run") == "npm run verify:quick")
         self.assertLess(prepare, verify)
+        cli = next(i for i, step in enumerate(checks["steps"]) if step.get("name") == "Verify cold Windows CLI dependency")
+        self.assertEqual(checks["steps"][cli]["if"], "runner.os == 'Windows'")
+        self.assertLess(prepare, cli)
+        self.assertLess(cli, verify)
+
+    def test_mac_arm_checks_and_package_share_a_non_cancelling_resource_queue(self):
+        checks = self.ci["jobs"]["build-and-test"]["concurrency"]
+        packages = self.package["jobs"]["package"]["concurrency"]
+        for gate in (checks, packages):
+            self.assertIn("format('macos-arm-{0}', github.repository)", gate["group"])
+            self.assertEqual(gate["cancel-in-progress"], "false")
+            self.assertEqual(gate["queue"], "max")
+            self.assertIn("github.run_id", gate["group"])
+            self.assertIn("github.run_attempt", gate["group"])
+        self.assertIn("matrix.os == 'macos-15'", checks["group"])
+        self.assertIn("matrix.rid == 'osx-arm64'", packages["group"])
 
     def test_native_build_is_reused_by_all_isolated_suites(self):
         jobs = self.ci["jobs"]
@@ -70,6 +86,9 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("github.workspace", job["env"]["REVQORA_TEST_TMP"])
             self.assertEqual(job["env"]["WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"], "")
             self.assertNotIn("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER=$runtime", str(job))
+            runtime = next(step for step in job["steps"] if step.get("name") == "Ensure WebView2 Runtime")
+            self.assertEqual(runtime["run"], "./scripts/ensure-webview-runtime.ps1")
+            self.assertNotIn("if", runtime)
         # Packages may build alongside native tests, but publishing requires both.
         self.assertEqual(jobs["version"]["needs"], "release-tooling")
         self.assertIn("windows-smoke", jobs["release"]["needs"])

@@ -49,6 +49,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-2025, ubuntu-24.04, macos-15]
+    concurrency:
+      group: ${{ matrix.os == 'macos-15' && format('macos-arm-{0}', github.repository) || format('checks-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.os) }}
+      cancel-in-progress: false
+      queue: max
     env:
       REVQORA_TEST_TMP: ${{ github.workspace }}/.ci-temp
       TEMP: ${{ github.workspace }}/.ci-temp
@@ -74,6 +78,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - run: npm ci
 
+      - name: Verify cold Windows CLI dependency
+        if: runner.os == 'Windows'
+        run: node scripts/windows-cli-readiness.mjs
       - run: npm run verify:quick
 
       # Retain both production and automation-feature Rust checks, outside the
@@ -102,6 +109,14 @@ jobs:
         with:
           name: windows-agent-diagnostics
           path: ci-results/agent-windows-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Retain dependency preparation evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-cli-readiness
+          path: ci-results/windows-cli-readiness.json
           if-no-files-found: warn
           retention-days: 7
 
@@ -140,25 +155,7 @@ jobs:
       - run: npm ci
       - name: Ensure WebView2 Runtime
         shell: pwsh
-        run: |
-          function Find-WebView2 {
-            $roots = @("${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application", "$env:ProgramFiles\Microsoft\EdgeWebView\Application", "$env:LOCALAPPDATA\Microsoft\EdgeWebView\Application")
-            foreach ($root in $roots) {
-              Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
-                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'msedgewebview2.exe') } |
-                Select-Object -ExpandProperty FullName
-            }
-          }
-          $runtime = Find-WebView2 | Select-Object -First 1
-          if (-not $runtime) {
-            $installer = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
-            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $installer -MaximumRetryCount 3 -RetryIntervalSec 3
-            $installed = Start-Process -FilePath $installer -ArgumentList '/silent', '/install' -WindowStyle Hidden -Wait -PassThru
-            if ($installed.ExitCode -notin @(0, 3010)) { throw "WebView2 installer failed: $($installed.ExitCode)" }
-            $runtime = Find-WebView2 | Select-Object -First 1
-          }
-          if (-not $runtime) { throw 'WebView2 Runtime executable was not found' }
-          "Using installed Evergreen WebView2 (detected at $runtime)"
+        run: ./scripts/ensure-webview-runtime.ps1
       - name: Report preparation duration
         shell: pwsh
         run: |
@@ -236,25 +233,7 @@ jobs:
       - run: npm ci
       - name: Ensure WebView2 Runtime
         shell: pwsh
-        run: |
-          function Find-WebView2 {
-            $roots = @("${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application", "$env:ProgramFiles\Microsoft\EdgeWebView\Application", "$env:LOCALAPPDATA\Microsoft\EdgeWebView\Application")
-            foreach ($root in $roots) {
-              Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
-                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'msedgewebview2.exe') } |
-                Select-Object -ExpandProperty FullName
-            }
-          }
-          $runtime = Find-WebView2 | Select-Object -First 1
-          if (-not $runtime) {
-            $installer = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
-            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $installer -MaximumRetryCount 3 -RetryIntervalSec 3
-            $installed = Start-Process -FilePath $installer -ArgumentList '/silent', '/install' -WindowStyle Hidden -Wait -PassThru
-            if ($installed.ExitCode -notin @(0, 3010)) { throw "WebView2 installer failed: $($installed.ExitCode)" }
-            $runtime = Find-WebView2 | Select-Object -First 1
-          }
-          if (-not $runtime) { throw 'WebView2 Runtime executable was not found' }
-          "Using installed Evergreen WebView2 (detected at $runtime)"
+        run: ./scripts/ensure-webview-runtime.ps1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: windows-native-smoke-build
