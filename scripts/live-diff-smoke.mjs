@@ -18,7 +18,7 @@ export async function liveDiffSmoke({page,root,file,noise}) {
     state.observer.observe(document.querySelector(".changes .diff"),{childList:true,subtree:true});
     window.fetch=async function(input,init){
       const response=await original.call(this,input,init);
-      if(String(input)===`${base}status`){const s=await response.clone().json();if(s.files)state.statuses.push(s);}
+      if(String(input)===`${base}status`){const s=await response.clone().json();if(s.files&&s.stateVersion>=(state.statuses.at(-1)?.stateVersion??0))state.statuses.push(s);}
       if(String(input)===`${base}working_diff`){state.reads++;if(state.hold&&!state.held){state.held=true;await gate;}}
       return response;
     };
@@ -61,21 +61,22 @@ export async function sealedLayerAttributesSmoke({page,root}) {
   await page.locator(".layer:not(.open-layer) .file-row.selected").first().waitFor();
   await page.waitForSelector(".changes .diff .dl");
   await page.locator(".changes .diff[aria-busy='false']").waitFor();
-  let monitored=false;
+  let monitored=false,restored=false;
   try {
     fs.writeFileSync(attrs,Buffer.concat([previous??Buffer.alloc(0),Buffer.from("\n*.ts -diff\n")]));
     await page.locator(".changes .diff").getByRole("heading",{name:"Binary file",exact:true}).waitFor();
     await page.waitForFunction(context=>document.querySelector(".changes")?.dataset.diffContext!==context,context);
     if(previous)fs.writeFileSync(attrs,previous);else fs.rmSync(attrs);
+    restored=true;
     await page.waitForSelector(".changes .diff .dl");
     await page.locator(`.changes[data-diff-context="${context}"] .diff[aria-busy="false"]`).waitFor();
     await page.evaluate(()=>{
       const original=window.fetch,base=window.__TAURI_INTERNALS__.convertFileSrc("","ipc");
-      const state=window.__layerNoise={original,reads:0,observed:false,line:document.querySelector(".changes .diff .dl")};
+      const state=window.__layerNoise={original,reads:0,observed:false,present:null,version:0,line:document.querySelector(".changes .diff .dl")};
       window.fetch=async function(input,init){
         const response=await original.call(this,input,init);
         if(String(input)===`${base}rev_diff`)state.reads++;
-        if(String(input)===`${base}status`){const s=await response.clone().json();if(s.files?.some(f=>f.path==="layer-watcher.sqlite-wal"))state.observed=true;}
+        if(String(input)===`${base}status`){const s=await response.clone().json();if(s.files&&s.stateVersion>=state.version){state.version=s.stateVersion;state.present=s.files.some(f=>f.path==="layer-watcher.sqlite-wal");if(state.present)state.observed=true;}}
         return response;
       };
     });monitored=true;
@@ -87,9 +88,16 @@ export async function sealedLayerAttributesSmoke({page,root}) {
     const after=(await invoke("layers_state")).layers.map(l=>[l.fromTree,l.toTree]);
     if(JSON.stringify(before)!==JSON.stringify(after)||!index.equals(fs.readFileSync(path.join(root,".git/index"))))throw Error("Layer interpretation check changed trees or staging");
   } finally {
-    if(monitored)await page.evaluate(()=>{window.fetch=window.__layerNoise.original;delete window.__layerNoise;});
-    if(previous)fs.writeFileSync(attrs,previous);else fs.rmSync(attrs,{force:true});
+    if(!restored){if(previous)fs.writeFileSync(attrs,previous);else fs.rmSync(attrs,{force:true});}
     fs.rmSync(noise,{force:true});
+    if(monitored){
+      try {
+        if(await page.evaluate(()=>window.__layerNoise.observed)){
+          await page.waitForFunction(()=>window.__layerNoise.present===false);
+          await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+        }
+      } finally {await page.evaluate(()=>{window.fetch=window.__layerNoise.original;delete window.__layerNoise;});}
+    }
   }
 }
 
