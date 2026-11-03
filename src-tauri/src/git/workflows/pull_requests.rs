@@ -183,6 +183,11 @@ pub(super) fn execute_waiting(root: &Path, p: &Review, job: &Arc<Job>) -> GitRes
         return Err(fail("Workflow stopped before dispatch."));
     }
     unchanged(root, p)?;
+    // The authoritative API read can be slow. Stop may arrive while it is in
+    // flight; do not create a new task after that cancellation was accepted.
+    if job.cancel.load(Ordering::Acquire) {
+        return Err(fail("Workflow stopped before dispatch."));
+    }
     if p.step.kind == "prChecks" {
         let end = std::time::Instant::now() + Duration::from_secs(p.step.timeout_seconds);
         loop {
@@ -252,8 +257,11 @@ pub(super) fn execute_waiting(root: &Path, p: &Review, job: &Arc<Job>) -> GitRes
         thread::sleep(Duration::from_millis(250));
     }
 }
-pub(super) fn execute_remote(root: &Path, p: &Review) -> GitResult<String> {
+pub(super) fn execute_remote(root: &Path, p: &Review, job: &Arc<Job>) -> GitResult<String> {
     let d = unchanged(root, p)?;
+    if job.cancel.load(Ordering::Acquire) {
+        return Err(fail("Workflow stopped before the server action."));
+    }
     let n = number(&p.step)?;
     match p.step.kind.as_str() {
         "prRequestReview" => {

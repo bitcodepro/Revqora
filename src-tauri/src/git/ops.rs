@@ -222,18 +222,18 @@ pub fn checkout(repo: &Path, target: &str, kind: &str) -> GitResult<String> {
             let local = target.split_once('/').map(|(_, b)| b).unwrap_or(target);
             let exists = runner::exec(repo, ["show-ref", "--verify", "--quiet", &format!("refs/heads/{local}")])?.ok();
             if exists {
-                runner::run(repo, ["switch", local])?;
+                runner::run(repo, ["switch", "--no-overwrite-ignore", local])?;
             } else {
-                runner::run(repo, ["switch", "-c", local, "--track", target])?;
+                runner::run(repo, ["switch", "--no-overwrite-ignore", "-c", local, "--track", target])?;
             }
             Ok(local.to_string())
         }
         "commit" => {
-            runner::run(repo, ["switch", "--detach", target])?;
+            runner::run(repo, ["switch", "--no-overwrite-ignore", "--detach", target])?;
             Ok(target.to_string())
         }
         _ => {
-            runner::run(repo, ["switch", target])?;
+            runner::run(repo, ["switch", "--no-overwrite-ignore", target])?;
             Ok(target.to_string())
         }
     }
@@ -242,7 +242,7 @@ pub fn checkout(repo: &Path, target: &str, kind: &str) -> GitResult<String> {
 pub fn create_branch(repo: &Path, name: &str, start: Option<&str>, checkout: bool) -> GitResult<()> {
     let name = name.trim();
     runner::run(repo, ["check-ref-format", "--branch", name]).map_err(|_| GitError::new(format!("'{name}' is not a valid branch name.")))?;
-    let mut args = if checkout { vec!["switch", "-c", name] } else { vec!["branch", name] };
+    let mut args = if checkout { vec!["switch", "--no-overwrite-ignore", "-c", name] } else { vec!["branch", name] };
     if let Some(s) = start {
         if checkout && s.contains('/') && runner::exec(repo, ["show-ref", "--verify", "--quiet", &format!("refs/remotes/{s}")])?.ok() {
             args.push("--no-track");
@@ -466,11 +466,56 @@ pub fn remote_set_url(repo: &Path, name: &str, url: &str) -> GitResult<()> {
 
 // ───────────────────────────── merge ─────────────────────────────
 
+fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResult<()> {
+    // Some merge-ort versions overwrite ignored collisions even with
+    // --no-overwrite-ignore (unlike switch / the fast-forward checkout path).
+    // Inspect collapsed ignored folders, without scanning their build caches.
+    let ignored = super::workspace_files::ignored(repo)?;
+    if ignored.truncated {
+        return Err(GitError::new("Ignored-file inspection was truncated; no merge was started."));
+    }
+    if ignored.paths.is_empty() {
+        return Ok(());
+    }
+    let target = runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{target}^{{commit}}")])?;
+    let target = target.trim();
+    let paths = match head {
+        Some(head) => runner::run(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", head, target, "--"]),
+        None => runner::run(repo, ["ls-tree", "-r", "-z", "--name-only", target]),
+    }?;
+    let ignore_case = cfg!(windows) || runner::exec(repo, ["config", "--bool", "--get", "core.ignorecase"])?.text().trim() == "true";
+    let normalize = |p: &str| {
+        let p = p.trim_end_matches('/');
+        if ignore_case {
+            p.to_lowercase()
+        } else {
+            p.to_owned()
+        }
+    };
+    let ignored: std::collections::BTreeSet<_> = ignored.paths.iter().map(|p| normalize(p)).collect();
+    for path in paths.split('\0').filter(|p| !p.is_empty()) {
+        let p = normalize(path);
+        let prefix = format!("{p}/");
+        let ancestor = p.match_indices('/').any(|(index, _)| ignored.contains(&p[..index]));
+        let descendant = ignored.range(prefix.clone()..).next().is_some_and(|i| i.starts_with(&prefix));
+        if ignored.contains(&p) || ancestor || descendant {
+            return Err(GitError::new(format!(
+                "Merge may overwrite ignored data at {path}. Move the overlapping ignored file or folder aside before merging."
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Starts a merge but never creates the merge commit: the user reviews and confirms.
 pub fn merge_start(repo: &Path, target: &str, strategy: &str) -> GitResult<OpOutcome> {
     let gd = repo::git_dir(repo)?;
     let before = head_oid(repo);
-    let mut args: Vec<&str> = vec!["merge"];
+    guard_ignored_merge(repo, target, before.as_deref())?;
+    // Branch mergeOptions are defaults, not the user's reviewed mode. In
+    // particular an inherited --squash must not turn a fast-forward into staged
+    // edits, and an inherited --commit must never confirm a merge for the user.
+    let mut args: Vec<&str> = vec!["merge", "--no-squash", "--no-commit", "--no-overwrite-ignore"];
     match strategy {
         "squash" => args.push("--squash"),
         "ff" => {

@@ -364,6 +364,95 @@ fn squash_merge_and_take_side() {
 }
 
 #[test]
+fn explicit_merge_modes_override_branch_merge_options_without_implicit_commits() {
+    for (mode, configured) in [("ff-only", "--squash"), ("ff", "--squash"), ("no-ff", "--squash"), ("squash", "--no-squash --commit")] {
+        let r = Repo::new();
+        r.write("base.txt", "base\n");
+        let before = r.commit_all("base");
+        r.git(&["switch", "-qc", "feature"]);
+        r.write("feature.txt", "feature\n");
+        let target = r.commit_all("feature");
+        r.git(&["switch", "-q", "main"]);
+        r.git(&["config", "branch.main.mergeOptions", configured]);
+        let out = ops::merge_start(r.p(), "feature", mode).unwrap();
+        if matches!(mode, "ff" | "ff-only") {
+            assert_eq!(out.status, "fastForward", "{mode} with {configured}: {out:?}");
+            assert_eq!(r.git(&["rev-parse", "HEAD"]).trim(), target);
+            assert!(status::status(r.p()).unwrap().files.is_empty());
+        } else {
+            assert_eq!(out.status, "pending", "{mode} with {configured}: {out:?}");
+            assert_eq!(r.git(&["rev-parse", "HEAD"]).trim(), before);
+            assert_eq!(repo::info(r.p()).unwrap().state.kind, if mode == "squash" { "squash" } else { "merge" });
+            ops::continue_op(r.p(), if mode == "squash" { "squash" } else { "merge" }, Some("Explicit confirmation")).unwrap();
+            assert_eq!(r.head_blob("feature.txt"), "feature\n");
+        }
+    }
+}
+
+#[test]
+fn checkout_branch_creation_and_merge_preserve_colliding_ignored_files() {
+    for action in ["checkout", "remote", "remote-new", "detach", "branch", "merge"] {
+        let r = Repo::new();
+        r.write(".gitignore", "settings.local\n");
+        let base = r.commit_all("base");
+        r.git(&["switch", "-qc", "feature"]);
+        r.write("settings.local", "versioned defaults\n");
+        r.git(&["add", "-f", "settings.local"]);
+        r.git(&["commit", "-qm", "version settings"]);
+        let target = r.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        r.git(&["remote", "add", "origin", "."]);
+        r.git(&["update-ref", "refs/remotes/origin/feature", &target]);
+        r.git(&["switch", "-q", "main"]);
+        if action == "remote-new" {
+            r.git(&["branch", "-D", "feature"]);
+        }
+        r.write("settings.local", "personal ignored data\n");
+        let result = match action {
+            "checkout" => ops::checkout(r.p(), "feature", "local").map(|_| ()),
+            "remote" | "remote-new" => ops::checkout(r.p(), "origin/feature", "remote").map(|_| ()),
+            "detach" => ops::checkout(r.p(), &target, "commit").map(|_| ()),
+            "branch" => ops::create_branch(r.p(), "new-topic", Some("feature"), true),
+            _ => ops::merge_start(r.p(), "feature", "no-ff").map(|_| ()),
+        };
+        assert!(result.is_err(), "{action} accepted the ignored collision: {result:?}; file={:?}", r.read("settings.local"));
+        assert!(format!("{result:?}").contains("settings.local"), "{action} failed for an unrelated reason: {result:?}");
+        assert_eq!(r.read("settings.local"), "personal ignored data\n", "{action}");
+        assert_eq!(r.git(&["rev-parse", "HEAD"]).trim(), base, "{action}");
+        assert_eq!(r.git(&["branch", "--show-current"]).trim(), "main");
+        assert!(r.git(&["diff", "--cached", "--name-only"]).is_empty());
+        assert!(!runner::exec(r.p(), ["show-ref", "--verify", "--quiet", "refs/heads/new-topic"]).unwrap().ok());
+        if action == "remote-new" {
+            assert!(!runner::exec(r.p(), ["show-ref", "--verify", "--quiet", "refs/heads/feature"]).unwrap().ok());
+        }
+    }
+}
+
+#[test]
+fn merge_checks_ignored_directory_collisions_but_allows_unrelated_cache_folders() {
+    let r = Repo::new();
+    r.write(".gitignore", "cache/\n");
+    let base = r.commit_all("base");
+    r.git(&["switch", "-qc", "feature"]);
+    r.write("cache", "a versioned file replaces the folder\n");
+    r.commit_all("file at cache path");
+    r.git(&["switch", "-q", "main"]);
+    r.write("cache/personal.txt", "keep ignored directory contents\n");
+    let error = ops::merge_start(r.p(), "feature", "no-ff").unwrap_err();
+    assert!(error.message.contains("ignored data at cache"));
+    assert_eq!(r.read("cache/personal.txt"), "keep ignored directory contents\n");
+    assert_eq!(r.git(&["rev-parse", "HEAD"]).trim(), base);
+    assert!(r.git(&["diff", "--cached", "--name-only"]).is_empty());
+    assert!(!r.p().join(".git/MERGE_HEAD").exists());
+    r.git(&["switch", "-qc", "unrelated"]);
+    r.write("ordinary.txt", "reviewed change\n");
+    let target = r.commit_all("unrelated change");
+    r.git(&["switch", "-q", "main"]);
+    assert_eq!(ops::merge_start(r.p(), "unrelated", "ff-only").unwrap().status, "fastForward");
+    assert_eq!(r.git(&["rev-parse", "HEAD"]).trim(), target);
+    assert_eq!(r.read("cache/personal.txt"), "keep ignored directory contents\n");
+}
+
+#[test]
 fn cherry_pick_conflict_then_continue() {
     let r = Repo::new();
     conflict_setup(&r);

@@ -9,7 +9,7 @@ import { showDialog, toast, copyText, openOverlay } from "../lib/ui";
 import * as A from "../lib/actions";
 import type { Check, ForgeInfo, PullRequest, PrDetail, PrEditResult, PrFile, PrFileView, PrState, PrTemplates } from "../lib/types";
 import { relativeTime, shortOid } from "../lib/format";
-import { appendPullRequests, loadPrPreferences, prPreferencesKey, pullRequestNumber, restorePrPreferences, safeWebUrl, searchPullRequests, utf8Length, type PrPreferences } from "../lib/prCenter";
+import { appendPullRequests, loadPrPreferences, prPreferencesKey, pullRequestNumber, restorePrPreferences, safeWebUrl, searchPullRequests, utf8Length, prWriteAttemptKey, prWriteAttemptPending, setPrWriteAttemptPending, type PrPreferences } from "../lib/prCenter";
 import { Modal } from "./Modal";
 import { Splitter } from "./Overlays";
 import { DiffView } from "./DiffView";
@@ -136,7 +136,8 @@ function RequestEditor(props: EditorProps) {
   const branches = getTab(root)?.refs?.remote.filter(b => b.remote === forge.remote).map(b => b.name.slice(forge.remote.length + 1)) ?? [];
   const defaultBase = initial?.pull.base ?? seed?.base ?? ["main", "master", "develop"].find(b => branches.includes(b) && b !== seed?.head) ?? branches.find(b => b !== seed?.head) ?? "main";
   const [snapshot, setSnapshot] = useState(initial ?? null), [title, setTitle] = useState(initial?.pull.title ?? seed?.title ?? ""), [body, setBody] = useState(initial?.body ?? seed?.body ?? ""), [base, setBase] = useState(defaultBase), [head, setHead] = useState(seed?.head ?? initial?.pull.head ?? "");
-  const [draft, setDraft] = useState(false), [templates, setTemplates] = useState<PrTemplates>({ items: [], notice: null }), [template, setTemplate] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState(""), [uncertain, setUncertain] = useState(false), [checked, setChecked] = useState(false);
+  const attemptKey = prWriteAttemptKey(root, connection, initial?.pull.number ?? null);
+  const [draft, setDraft] = useState(false), [templates, setTemplates] = useState<PrTemplates>({ items: [], notice: null }), [template, setTemplate] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState(""), [uncertain, setUncertain] = useState(() => prWriteAttemptPending(attemptKey)), [checked, setChecked] = useState(false);
   const active = useRef(false), saved = useRef<PrEditResult | null>(null), listId = useId();
   const byteLength = utf8Length(body), valid = !!title.trim() && Array.from(title).length <= 256 && byteLength <= 65536 && !!base.trim() && !!head.trim();
   const dirty = title !== (snapshot?.pull.title ?? seed?.title ?? "") || body !== (snapshot?.body ?? seed?.body ?? "") || base !== (snapshot?.pull.base ?? defaultBase) || !initial && (head !== seed?.head || draft);
@@ -144,13 +145,21 @@ function RequestEditor(props: EditorProps) {
   const finish = (r: PrEditResult | PullRequest | null) => { if (props.initial) props.close(r as PrEditResult | null); else props.close(r as PullRequest | null); };
   const dismiss = async () => { if (active.current) return; if (dirty && !await confirmDialog({ title: "Discard unsaved PR edits?", message: "The title, description and branch edits in this window will be discarded.", confirm: "Discard edits", danger: true })) return; finish(saved.current); };
   const applyTemplate = async () => { const t = templates.items.find(t => t.path === template); if (!t || active.current) return; if (body && !await confirmDialog({ title: "Replace the description?", message: "The selected template will replace the current description. Copy the current text first if you want to keep it.", confirm: "Replace description" })) return; setBody(t.body); };
-  const reload = async () => { if (!snapshot || active.current) return; if (dirty && !await confirmDialog({ title: "Reload the server version?", message: "This replaces your current edits with the latest title, description and target branch from the server.", confirm: "Reload server version" })) return; active.current = true; setBusy(true); try { const d = await api.prDetail(root, snapshot.pull.number, connection); setSnapshot(d); setTitle(d.pull.title); setBody(d.body); setBase(d.pull.base); setHead(d.pull.head); setError(""); setNotice(""); setUncertain(false); } catch (e) { setError(errorMessage(e)); } finally { active.current = false; setBusy(false); } };
+  const reload = async () => { if (!snapshot || active.current) return; if (dirty && !await confirmDialog({ title: "Reload the server version?", message: "This replaces your current edits with the latest title, description and target branch from the server.", confirm: "Reload server version" })) return; active.current = true; setBusy(true); try { const d = await api.prDetail(root, snapshot.pull.number, connection); setSnapshot(d); setTitle(d.pull.title); setBody(d.body); setBase(d.pull.base); setHead(d.pull.head); setError(""); setNotice(""); setChecked(false); } catch (e) { setError(errorMessage(e)); } finally { active.current = false; setBusy(false); } };
+  const markChecked = () => { if (active.current || !checked) return; try { setPrWriteAttemptPending(attemptKey, false); setUncertain(false); setChecked(false); setError(""); } catch (e) { setError(errorMessage(e)); } };
   const submit = async () => {
-    if (active.current || !valid || uncertain && !checked) return; active.current = true; setBusy(true); setError(""); setNotice("");
+    if (active.current || !valid) return;
+    const wasPending = prWriteAttemptPending(attemptKey);
+    if ((uncertain || wasPending) && !checked) { setUncertain(true); return; }
+    active.current = true; setBusy(true); setError(""); setNotice("");
+    // Save before IPC; a lost response or remounted editor must require an
+    // explicit server-result check, including when local storage is unavailable.
+    try { setPrWriteAttemptPending(attemptKey, true); } catch (e) { setError(errorMessage(e)); active.current = false; setBusy(false); return; }
+    const clearAttempt = () => { try { setPrWriteAttemptPending(attemptKey, false); setUncertain(false); setChecked(false); } catch (e) { toast.warning("Saved, but the local PR result marker could not be cleared", errorMessage(e)); setUncertain(true); setChecked(false); } };
     try {
-      if (snapshot) { const r = await api.prEdit(root, snapshot.pull.number, connection, snapshot.revision, { title: title.trim(), body, base: base.trim() }); saved.current = r; setSnapshot(r.detail); if (r.notice) { setNotice(r.notice); return; } toast.success(`Updated #${r.detail.pull.number}`); finish(r); }
-      else { const p = await api.prCreate(root, title.trim(), body, head.trim(), base.trim(), draft, connection); toast.success(`Opened #${p.number}`, p.url); finish(p); }
-    } catch (e) { setError(errorMessage(e)); if (isGitError(e) && e.kind === "forge-write-uncertain") { setUncertain(true); setChecked(false); } }
+      if (snapshot) { const r = await api.prEdit(root, snapshot.pull.number, connection, snapshot.revision, { title: title.trim(), body, base: base.trim() }); clearAttempt(); saved.current = r; setSnapshot(r.detail); if (r.notice) { setNotice(r.notice); return; } toast.success(`Updated #${r.detail.pull.number}`); finish(r); }
+      else { const p = await api.prCreate(root, title.trim(), body, head.trim(), base.trim(), draft, connection); clearAttempt(); toast.success(`Opened #${p.number}`, p.url); finish(p); }
+    } catch (e) { setError(errorMessage(e)); let pending = wasPending || !isGitError(e) || e.kind === "forge-write-uncertain"; if (!pending) { try { setPrWriteAttemptPending(attemptKey, false); } catch { pending = true; } } setUncertain(pending); setChecked(false); }
     finally { active.current = false; setBusy(false); }
   };
   return <Modal title={initial ? `Edit #${initial.pull.number}` : "New pull request"} subtitle={`${forge.host}/${forge.project} · ${forge.accountLogin ?? "Git credentials"}`} icon={initial ? <Pencil size={18} /> : <GitPullRequestCreate size={18} />} wide onClose={() => void dismiss()} onSubmit={() => void submit()} footer={<><button type="button" className="btn" disabled={busy} onClick={() => void dismiss()}>Cancel</button><button type="submit" className="btn primary" disabled={busy || !valid || uncertain && !checked}>{busy && <Loader2 size={14} className="spin" />}{initial ? "Save pull request" : "Create pull request"}</button></>}>
@@ -163,7 +172,7 @@ function RequestEditor(props: EditorProps) {
       {!initial && <label className="check"><input type="checkbox" checked={draft} onChange={e => setDraft(e.target.checked)} />Open as draft</label>}
       {error && <div className="callout warn" role="alert">{error}</div>}{notice && <div className="callout warn" role="alert">{notice} Server target: {snapshot?.pull.base}.</div>}
       {initial && <button className="btn sm" type="button" onClick={() => void reload()}>Reload server version</button>}
-      {uncertain && <div className="pr-notice"><button className="btn sm" type="button" onClick={() => browser(snapshot?.pull.url ?? forge.webUrl)}>Check on server</button><label className="check"><input type="checkbox" checked={checked} onChange={e => setChecked(e.target.checked)} />I checked the server result and want to retry</label></div>}
+      {uncertain && <div className="pr-notice"><p>A previous request may already have been saved. Check its result before sending again.</p><button className="btn sm" type="button" onClick={() => browser(snapshot?.pull.url ?? forge.webUrl)}>Check on server</button><label className="check"><input type="checkbox" checked={checked} onChange={e => setChecked(e.target.checked)} />I checked the server result</label><button className="btn sm" type="button" disabled={!checked} onClick={markChecked}>Mark PR result as checked without resending</button></div>}
     </fieldset>
   </Modal>;
 }

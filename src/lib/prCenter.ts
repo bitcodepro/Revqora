@@ -13,3 +13,16 @@ export function searchPullRequests(items: PullRequest[], query: string): PullReq
 export function pullRequestNumber(value: string): number | null { if (!/^#?[1-9]\d*$/.test(value.trim())) return null; const n = Number(value.trim().replace(/^#/, "")); return Number.isSafeInteger(n) ? n : null; }
 export function safeWebUrl(value: string | null | undefined): string | null { if (!value || /[\u0000-\u001f\u007f]/.test(value)) return null; try { const u = new URL(value); return ["https:", "http:"].includes(u.protocol) && !!u.hostname && !u.username && !u.password ? u.href : null; } catch { return null; } }
 export const utf8Length = (value: string) => new TextEncoder().encode(value).length;
+
+const WRITE_ATTEMPT_PREFIX = "revqora:pr-write-attempt:";
+// Deliberately exclude title/body/source/target/revision: editing or reopening
+// the form must not forget that a previous write may already be on the server.
+export const prWriteAttemptKey = (root: string, connection: string, number: number | null) => WRITE_ATTEMPT_PREFIX + JSON.stringify([repositoryKey(root), connection, number]);
+export function prWriteAttemptPending(key: string): boolean {
+  try { return localStorage.getItem(key) !== null; } catch { return true; }
+}
+export function setPrWriteAttemptPending(key: string, pending: boolean): void {
+  if (!pending) { localStorage.removeItem(key); return; }
+  if (!localStorage.getItem(key) && Object.keys(localStorage).filter(k => k.startsWith(WRITE_ATTEMPT_PREFIX)).length >= 32) throw Error("Check pending PR write results on the server before sending more requests.");
+  localStorage.setItem(key, JSON.stringify({ updated: Date.now() }));
+}
