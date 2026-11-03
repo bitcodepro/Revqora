@@ -240,8 +240,8 @@ export const api = {
 
   stashSave: (repo: string, message: string, includeUntracked: boolean, keepIndex: boolean, paths?: string[]) =>
     call<void>("stash_save", { repo, message, includeUntracked, keepIndex, paths }),
-  stashApply: (repo: string, index: number, pop: boolean) => call<OpOutcome>("stash_apply", { repo, index, pop }),
-  stashDrop: (repo: string, index: number, expectedState?: string | null) => call<void>("stash_drop", { repo, index, expectedState }),
+  stashApply: (repo: string, index: number, pop: boolean, oid: string) => call<OpOutcome>("stash_apply", { repo, index, pop, oid }),
+  stashDrop: (repo: string, index: number, oid: string, expectedState?: string | null) => call<void>("stash_drop", { repo, index, oid, expectedState }),
 
   layersState: (repo: string) => call<LayersState>("layers_state", { repo }),
   layerSeal: (repo: string, name?: string | null) => call<void>("layer_seal", { repo, name }),
@@ -287,10 +287,10 @@ export const api = {
   createPatch: (repo: string, oids: string[], file: string) => call<number>("create_patch", { repo, oids, file }),
   applyPatch: (repo: string, file: string) => call<OpOutcome>("apply_patch", { repo, file }),
   checkoutFile: (repo: string, rev: string, path: string) => call<void>("checkout_file", { repo, rev, path }),
-  applyFromCommit: (repo: string, from: string | null, to: string, path: string, selection: [number, number][] | null) =>
-    call<void>("apply_from_commit", { repo, from, to, path, selection }),
-  stashContents: (repo: string, index: number) => call<StashContents>("stash_contents", { repo, index }),
-  stashRestoreFile: (repo: string, index: number, path: string, untracked: boolean) => call<void>("stash_restore_file", { repo, index, path, untracked }),
+  applyFromCommit: (repo: string, from: string | null, to: string, path: string, selection: [number, number][] | null, opts?: DiffOptions, expectedHash?: string) =>
+    call<void>("apply_from_commit", { repo, from, to, path, selection, opts, expectedHash }),
+  stashContents: (repo: string, oid: string) => call<StashContents>("stash_contents", { repo, oid }),
+  stashRestoreFile: (repo: string, oid: string, path: string, untracked: boolean) => call<void>("stash_restore_file", { repo, oid, path, untracked }),
   listTree: (repo: string, rev: string) => call<string[]>("list_tree", { repo, rev }),
   grep: (repo: string, rev: string, query: string, ignoreCase: boolean, regex: boolean) => call<GrepHit[]>("grep", { repo, rev, query, ignoreCase, regex }),
   compareWorktree: (repo: string, from: string) => call<WorktreeComparison>("compare_worktree", { repo, from }),

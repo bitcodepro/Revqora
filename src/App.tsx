@@ -191,7 +191,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
         {overlay?.kind === "historyExplorer" && <HistoryExplorer key={root} root={root}/>}
         {overlay?.kind === "workflows" && <WorkflowBuilder key={root} root={root} pull={overlay.pull} />}
         {overlay?.kind === "agents" && <AgentWorkspace key={root} root={root} />}
-        {overlay?.kind === "stash" && <StashView key={overlay.index} root={root} index={overlay.index} />}
+        {overlay?.kind === "stash" && <StashView key={`${overlay.root}:${overlay.oid}`} root={overlay.root} index={overlay.index} oid={overlay.oid} />}
         {overlay?.kind === "tree" && <TreeBrowser key={overlay.rev} root={root} rev={overlay.rev} />}
         {overlay?.kind === "rebase" && <RebaseView key={overlay.oldest} root={root} oldest={overlay.oldest} />}
         {overlay?.kind === "compare" && <CompareView key={`${overlay.from}..${overlay.to}`} root={root} from={overlay.from} to={overlay.to} direct={overlay.direct} />}
@@ -277,7 +277,7 @@ export default function App() {
       listen<{ repo: string; git: boolean; worktree: boolean }>("repo-changed", (e) => {
         const { repo, git } = e.payload;
         if (!useRepos.getState().tabs[repo]) return;
-        useRepos.getState().refresh(repo, git ? { info: true, status: true, refs: true, layers: true, graph: true } : { status: true, layers: true });
+        useRepos.getState().refresh(repo, git ? { background: true, info: true, status: true, refs: true, layers: true, graph: true } : { background: true, status: true, layers: true });
         window.dispatchEvent(new CustomEvent("revqora:worktree", { detail: { repo } }));
       }),
     );

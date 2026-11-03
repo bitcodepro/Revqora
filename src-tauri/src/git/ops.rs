@@ -222,18 +222,18 @@ pub fn checkout(repo: &Path, target: &str, kind: &str) -> GitResult<String> {
             let local = target.split_once('/').map(|(_, b)| b).unwrap_or(target);
             let exists = runner::exec(repo, ["show-ref", "--verify", "--quiet", &format!("refs/heads/{local}")])?.ok();
             if exists {
-                runner::run(repo, ["switch", local])?;
+                runner::run(repo, ["switch", "--no-overwrite-ignore", local])?;
             } else {
-                runner::run(repo, ["switch", "-c", local, "--track", target])?;
+                runner::run(repo, ["switch", "--no-overwrite-ignore", "-c", local, "--track", target])?;
             }
             Ok(local.to_string())
         }
         "commit" => {
-            runner::run(repo, ["switch", "--detach", target])?;
+            runner::run(repo, ["switch", "--no-overwrite-ignore", "--detach", target])?;
             Ok(target.to_string())
         }
         _ => {
-            runner::run(repo, ["switch", target])?;
+            runner::run(repo, ["switch", "--no-overwrite-ignore", target])?;
             Ok(target.to_string())
         }
     }
@@ -242,7 +242,7 @@ pub fn checkout(repo: &Path, target: &str, kind: &str) -> GitResult<String> {
 pub fn create_branch(repo: &Path, name: &str, start: Option<&str>, checkout: bool) -> GitResult<()> {
     let name = name.trim();
     runner::run(repo, ["check-ref-format", "--branch", name]).map_err(|_| GitError::new(format!("'{name}' is not a valid branch name.")))?;
-    let mut args = if checkout { vec!["switch", "-c", name] } else { vec!["branch", name] };
+    let mut args = if checkout { vec!["switch", "--no-overwrite-ignore", "-c", name] } else { vec!["branch", name] };
     if let Some(s) = start {
         if checkout && s.contains('/') && runner::exec(repo, ["show-ref", "--verify", "--quiet", &format!("refs/remotes/{s}")])?.ok() {
             args.push("--no-track");
@@ -371,8 +371,78 @@ pub fn fetch_background(repo: &Path) -> GitResult<String> {
     runner::run_env(repo, ["fetch", "--all", "--prune", "--tags", "--quiet"], &background_env(ssh_configured), None)
 }
 
-pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<OpOutcome> {
+pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult<OpOutcome> {
     super::recovery::protect_transport(repo, false, None, None, false)?;
+    if mode != "rebase" {
+        // Parse before fetching/merging, including Git's yes/on/1 spellings.
+        // Invalid configuration must fail before a partially completed pull.
+        let recurse = runner::exec(repo, ["config", "--bool", "--get", "submodule.recurse"])?;
+        if !recurse.ok() && recurse.code != 1 {
+            return Err(runner::to_error("git config submodule.recurse", &recurse));
+        }
+        let recurse = recurse.ok() && recurse.text().trim() == "true";
+        // Fetch cannot confirm a merge or overwrite working files. Resolve the
+        // fetched upstream only after it succeeds, then use our reviewed merge
+        // path (including ignored-file protection and explicit commit control).
+        let before = status::status(repo)?;
+        let index_before = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
+        if before.branch.is_none() {
+            return Err(GitError::new("Choose a branch with an upstream before pulling."));
+        }
+        let merges = runner::exec(repo, ["config", "--get-all", &format!("branch.{}.merge", before.branch.as_deref().unwrap())])?;
+        if !merges.ok() || merges.text().lines().filter(|s| !s.is_empty()).count() != 1 {
+            return Err(GitError::new("Configure one upstream for this branch before pulling."));
+        }
+        runner::run_streaming(repo, &["fetch".into(), "--progress".into(), "--write-fetch-head".into()], &[], &mut on_line)?;
+        let after = status::status(repo)?;
+        if before.branch != after.branch
+            || before.oid != after.oid
+            || before.files != after.files
+            || before.diff_context_token != after.diff_context_token
+            || index_before != runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?
+        {
+            return Err(
+                GitError::new("Fetch completed, but the working tree or current branch changed. Review it before pulling again.").kind("stale-operation")
+            );
+        }
+        let raw = std::fs::read_to_string(repo::git_dir(repo)?.join("FETCH_HEAD"))?;
+        let targets: Vec<_> = raw
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.splitn(3, '\t');
+                let oid = fields.next()?;
+                let merge = fields.next()?;
+                (merge.is_empty() && matches!(oid.len(), 40 | 64) && oid.bytes().all(|c| c.is_ascii_hexdigit())).then_some(oid)
+            })
+            .collect();
+        if targets.len() != 1 {
+            return Err(GitError::new("Fetch completed, but no single configured upstream was fetched. Check this branch's remote and upstream settings."));
+        }
+        let mut outcome = merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, mode == "merge")?;
+        if recurse && outcome.status != "conflicts" {
+            // Native `git pull` does this after a successful merge, including
+            // --no-commit. No --init or --force: preserve uninitialized modules
+            // and let checkout reject dirty tracked/untracked collisions.
+            let args = ["submodule", "update", "--recursive", "--checkout"].map(String::from);
+            match runner::run_streaming(repo, &args, &[], &mut on_line) {
+                Ok(output) => {
+                    if !output.trim().is_empty() {
+                        outcome.message.push('\n');
+                        outcome.message.push_str(output.trim());
+                    }
+                }
+                Err(mut error) => {
+                    error.message = format!("Pull integrated the parent repository, but updating submodules failed. Inspect its current state before retrying; the parent update has not been rolled back. {}", error.message);
+                    error.kind = "partial-operation".into();
+                    error.details.push(format!("parent_head_before={}", before.oid.as_deref().unwrap_or("unborn")));
+                    error.details.push(format!("parent_head_after={}", head_oid(repo).as_deref().unwrap_or("unborn")));
+                    error.details.push(format!("parent_outcome={}", outcome.status));
+                    return Err(error);
+                }
+            }
+        }
+        return Ok(outcome);
+    }
     let mut args = vec!["pull".to_string(), "--progress".into()];
     match mode {
         "rebase" => {
@@ -466,11 +536,63 @@ pub fn remote_set_url(repo: &Path, name: &str, url: &str) -> GitResult<()> {
 
 // ───────────────────────────── merge ─────────────────────────────
 
+fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResult<()> {
+    // Some merge-ort versions overwrite ignored collisions even with
+    // --no-overwrite-ignore (unlike switch / the fast-forward checkout path).
+    // Inspect collapsed ignored folders, without scanning their build caches.
+    let ignored = super::workspace_files::ignored(repo)?;
+    if ignored.truncated {
+        return Err(GitError::new("Ignored-file inspection was truncated; no merge was started."));
+    }
+    if ignored.paths.is_empty() {
+        return Ok(());
+    }
+    let target = runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{target}^{{commit}}")])?;
+    let target = target.trim();
+    let paths = match head {
+        Some(head) => runner::run(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", head, target, "--"]),
+        None => runner::run(repo, ["ls-tree", "-r", "-z", "--name-only", target]),
+    }?;
+    let ignore_case = cfg!(windows) || runner::exec(repo, ["config", "--bool", "--get", "core.ignorecase"])?.text().trim() == "true";
+    let normalize = |p: &str| {
+        let p = p.trim_end_matches('/');
+        if ignore_case {
+            p.to_lowercase()
+        } else {
+            p.to_owned()
+        }
+    };
+    let ignored: std::collections::BTreeSet<_> = ignored.paths.iter().map(|p| normalize(p)).collect();
+    for path in paths.split('\0').filter(|p| !p.is_empty()) {
+        let p = normalize(path);
+        let prefix = format!("{p}/");
+        let ancestor = p.match_indices('/').any(|(index, _)| ignored.contains(&p[..index]));
+        let descendant = ignored.range(prefix.clone()..).next().is_some_and(|i| i.starts_with(&prefix));
+        if ignored.contains(&p) || ancestor || descendant {
+            return Err(GitError::new(format!(
+                "Merge may overwrite ignored data at {path}. Move the overlapping ignored file or folder aside before merging."
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Starts a merge but never creates the merge commit: the user reviews and confirms.
 pub fn merge_start(repo: &Path, target: &str, strategy: &str) -> GitResult<OpOutcome> {
+    merge_start_with_autostash(repo, target, strategy, false)
+}
+
+fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autostash: bool) -> GitResult<OpOutcome> {
     let gd = repo::git_dir(repo)?;
     let before = head_oid(repo);
-    let mut args: Vec<&str> = vec!["merge"];
+    guard_ignored_merge(repo, target, before.as_deref())?;
+    // Branch mergeOptions are defaults, not the user's reviewed mode. In
+    // particular an inherited --squash must not turn a fast-forward into staged
+    // edits, and an inherited --commit must never confirm a merge for the user.
+    let mut args: Vec<&str> = vec!["merge", "--no-squash", "--no-commit", "--no-overwrite-ignore"];
+    if autostash {
+        args.push("--autostash");
+    }
     match strategy {
         "squash" => args.push("--squash"),
         "ff" => {
@@ -1007,6 +1129,7 @@ pub fn stash_save(repo: &Path, message: &str, include_untracked: bool, keep_inde
 
 pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<OpOutcome> {
     let name = format!("stash@{{{index}}}");
+    let before = status::status(repo)?.state_token;
     let out = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, "--index", &name])?;
     if out.ok() {
         return Ok(OpOutcome::done(out.text()));
@@ -1015,7 +1138,16 @@ pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<OpOutcome> {
     if !c.is_empty() {
         return Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: "Stash applied with conflicts; it was kept in the list.".into() });
     }
-    // Retry without restoring the index (fails when staged changes conflict).
+    // Git may have already applied tracked edits before an untracked collision
+    // fails. Never replay that partially completed mutation automatically.
+    if status::status(repo)?.state_token != before {
+        return Err(GitError::new(
+            "The repository changed during the failed stash attempt. The stash was kept and was not applied again; inspect the working tree before another action.",
+        )
+        .kind("partial-operation")
+        .details(vec![out.stderr]));
+    }
+    // A different index strategy is safe only if the first attempt changed nothing.
     let out2 = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, &name])?;
     if out2.ok() {
         return Ok(OpOutcome::done(out2.text()));
@@ -1025,6 +1157,24 @@ pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<OpOutcome> {
         return Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: "Stash applied with conflicts; it was kept in the list.".into() });
     }
     Err(runner::to_error("git stash apply", &out2))
+}
+
+pub fn check_stash(repo: &Path, index: u32, expected_oid: &str) -> GitResult<()> {
+    let actual = runner::run(repo, ["rev-parse", "--verify", &format!("stash@{{{index}}}")])?;
+    if actual.trim() != expected_oid {
+        return Err(GitError::new("The stash list changed. Reopen the stash before trying again.").kind("stale-operation"));
+    }
+    Ok(())
+}
+
+pub fn stash_apply_reviewed(repo: &Path, index: u32, expected_oid: &str, pop: bool) -> GitResult<OpOutcome> {
+    check_stash(repo, index, expected_oid)?;
+    stash_apply(repo, index, pop)
+}
+
+pub fn stash_drop_reviewed(repo: &Path, index: u32, expected_oid: &str) -> GitResult<()> {
+    check_stash(repo, index, expected_oid)?;
+    stash_drop(repo, index)
 }
 
 pub fn stash_drop(repo: &Path, index: u32) -> GitResult<()> {

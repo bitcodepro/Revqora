@@ -257,7 +257,7 @@ fn task_uses_separate_worktree_portable_environment_and_keeps_original_changes()
     let t = start(r.path().to_owned(), plan.clone(), true).unwrap();
     assert!(start(r.path().to_owned(), plan.clone(), true).is_err());
     let t = wait(r.path(), &t.id);
-    assert_eq!(t.phase, "completed", "{:?}", t.error);
+    assert_eq!(t.phase, "completed", "{}", failure_snapshot(r.path(), &t, Path::new(&t.path)));
     assert!(t.stdout.contains("agent-done"));
     assert!(t.stderr.contains("diagnostic"));
     assert_eq!(fs::read_to_string(r.path().join("base.txt")).unwrap(), "uncommitted user data\n");

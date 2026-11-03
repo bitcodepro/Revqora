@@ -283,7 +283,7 @@ fn read(root: &Path, spec: &BlobSpec) -> GitResult<String> {
         if size > LIMIT {
             return Err(fail("Syntax previews are limited to 512 KiB per file."));
         }
-        let result = runner::exec(root, ["cat-file", "blob", spec])?;
+        let result = runner::exec_limited(root, ["cat-file", "blob", spec], LIMIT)?;
         if !result.ok() {
             return Err(runner::to_error("read syntax source", &result));
         }

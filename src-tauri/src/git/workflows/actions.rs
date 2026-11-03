@@ -278,6 +278,9 @@ pub(super) fn execute_action(root: &Path, original: &Run, prepared: &Review, job
                 return Err(stale());
             }
             let st = status::status(root)?;
+            if job.cancel.load(Ordering::Acquire) {
+                return Err(fail("Workflow stopped during review; no action was dispatched."));
+            }
             let applies = match prepared.step.when.as_str() {
                 "clean" => st.files.is_empty(),
                 "dirty" => !st.files.is_empty(),
@@ -291,10 +294,13 @@ pub(super) fn execute_action(root: &Path, original: &Run, prepared: &Review, job
             }
             let s = &prepared.step;
             let message = match s.kind.as_str() {
-                "prRequestReview" | "prMerge" | "prCleanup" => pull_requests::execute_remote(root, prepared)?,
+                "prRequestReview" | "prMerge" | "prCleanup" => pull_requests::execute_remote(root, prepared, job)?,
                 "commit" => {
                     recovery::create(root, "workflow_commit", "Before staging and committing workflow edits", false, false)?;
-                    runner::run(root, ["add", "-A", "--", "."])?;
+                    // Use the same preflight as Stage all. A command/agent may
+                    // have created a child repository; never silently commit it
+                    // as an unregistered gitlink or partially stage other edits.
+                    ops::stage_paths(root, &[".".into()])?;
                     ops::commit(root, &s.value, &ops::CommitOptions::default())?
                 }
                 "checkClean" => {

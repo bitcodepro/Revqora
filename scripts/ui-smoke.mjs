@@ -1,4 +1,7 @@
 import { futureStagesSmoke } from "./future-stages-smoke.mjs";
+import { stashSnapshotSmoke } from "./stash-snapshot-smoke.mjs";
+import { treeResponseSmoke } from "./tree-response-smoke.mjs";
+import { liveDiffSmoke, sealedLayerAttributesSmoke, submoduleHeadSmoke } from "./live-diff-smoke.mjs";
 import {workflowSmoke} from "./workflow-smoke.mjs";
 import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
 import {prCenterSmoke} from "./pr-center-smoke.mjs";
@@ -139,7 +142,7 @@ try {
     await chip.waitFor({ state: "detached" });
   });
 
-  await check("portable profile writes do not trigger repository refresh storms", async () => {
+  await check("portable profile writes are ignored and unrelated WAL activity keeps the selected diff", async () => {
     const listener = await page.evaluate(async () => {
       window.__profileSignals = [];
       return window.__TAURI_INTERNALS__.invoke("plugin:event|listen", { event: "repo-changed", target: { kind: "Any" }, handler: window.__TAURI_INTERNALS__.transformCallback((e) => window.__profileSignals.push(e.payload)) });
@@ -152,6 +155,8 @@ try {
       if (await page.evaluate(() => window.__profileSignals.some((e) => e.worktree))) throw new Error("portable profile writes caused a repository refresh");
       fs.writeFileSync(userFile, "User changes must still be watched\n");
       await page.waitForFunction(() => window.__profileSignals.some((e) => e.worktree), null, { timeout: 10000 });
+      await liveDiffSmoke({page,root:repo,file:userFile,noise:path.join(repo,"watcher.sqlite-wal")});
+      await submoduleHeadSmoke({page,work,returnName:/^demo$/});
     } finally {
       await page.evaluate(async (eventId) => { window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener("repo-changed", eventId); await window.__TAURI_INTERNALS__.invoke("plugin:event|unlisten", { event: "repo-changed", eventId }); }, listener);
       fs.rmSync(userFile, { force: true });
@@ -219,7 +224,7 @@ try {
     } finally { await page.evaluate(() => { window.__signatureRelease?.(); window.fetch = window.__previewFetch; }); }
   });
 
-  await check("a working-tree refresh reloads a cached active commit without changing selection", async () => {
+  await check("background changes retain a cached active commit and explicit Refresh reloads it", async () => {
     const select = async (subject) => {
       await page.locator(".grow:not(.wip)", { hasText: subject }).click();
       await page.waitForSelector(`.commit-subject:has-text('${subject}')`);
@@ -232,16 +237,29 @@ try {
     await page.evaluate(() => {
       const original = window.fetch;
       const base = window.__TAURI_INTERNALS__.convertFileSrc("", "ipc");
-      window.__refreshPreviewFetch = original; window.__refreshPreviewReads = [];
-      window.fetch = function(input, init) {
+      window.__refreshPreviewFetch = original; window.__refreshPreviewReads = []; window.__refreshPreviewObserved = false;
+      window.__refreshPreviewLine = document.querySelector(".details .diff .dl");
+      window.fetch = async function(input, init) {
         const command = String(input).startsWith(base) ? String(input).slice(base.length) : "";
         if (["commit_details", "rev_diff"].includes(command)) window.__refreshPreviewReads.push(command);
-        return original.call(this, input, init);
+        const response = await original.call(this, input, init);
+        if (command === "status") {
+          const status = await response.clone().json();
+          if (status.files?.some((f) => f.path === "preview-refresh-probe.txt")) window.__refreshPreviewObserved = true;
+        }
+        return response;
       };
     });
     const userFile = path.join(repo, "preview-refresh-probe.txt");
     try {
       fs.writeFileSync(userFile, "External editor change\n");
+      // Wait for the actual watcher/status read, then allow its React effects to
+      // run. The absence of a reload must not pass just because no event arrived.
+      await page.waitForFunction(() => window.__refreshPreviewObserved, null, { timeout: 12000 });
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const background = await page.evaluate(() => ({ reads: window.__refreshPreviewReads, retained: window.__refreshPreviewLine === document.querySelector(".details .diff .dl") && window.__refreshPreviewLine.isConnected }));
+      if (background.reads.length || !background.retained) throw new Error(`background observation reloaded the immutable preview: ${JSON.stringify(background)}`);
+      await page.click("button[title='Refresh (F5)']");
       await page.waitForFunction(() => window.__refreshPreviewReads.includes("commit_details") && window.__refreshPreviewReads.includes("rev_diff"), null, { timeout: 12000 });
       await page.waitForSelector(".commit-subject:has-text('Add average helper')");
       await page.waitForSelector(".details .file-row.selected:has-text('app.ts')");
@@ -421,6 +439,7 @@ try {
     await page.click("button[title^='Seal what is staged']");
     await page.waitForSelector(".layer:not(.open-layer)");
     await page.waitForSelector(".changes[data-pending='false']");
+    await sealedLayerAttributesSmoke({page,root:repo});
     // Reproduce a real response ordering: refresh's status was read before add,
     // its layer list after add, while add's completion is still in transit.
     // Delay transport responses; do not fabricate repository state or bypass Git.
@@ -488,6 +507,11 @@ try {
     await page.click(".view-tab:has-text('Changes')");
     await page.locator(".changes .file-row", { hasText: "logo.png" }).first().click();
     await page.waitForSelector(".diff img[alt='After']");
+    const oldHash=await page.locator(".changes .diff").getAttribute("data-diff-hash");
+    const replacement=await page.evaluate(()=>{const canvas=document.createElement("canvas");canvas.width=2;canvas.height=1;const ctx=canvas.getContext("2d");ctx.fillStyle="#12ab34";ctx.fillRect(0,0,2,1);return canvas.toDataURL("image/png");});
+    fs.writeFileSync(path.join(repo,"logo.png"),Buffer.from(replacement.split(",")[1],"base64"));
+    await page.waitForFunction(old=>{const diff=document.querySelector(".changes .diff");return diff?.dataset.diffHash!==old&&diff?.getAttribute("aria-busy")==="false";},oldHash);
+    await page.waitForFunction(expected=>{const img=document.querySelector(".changes .diff img[alt='After']");return img?.src===expected&&img.naturalWidth===2;},replacement);
     await shot("09-image-diff");
   });
 
@@ -496,6 +520,7 @@ try {
     await page.click(".modal button:has-text('Stash')");
     await until(() => git("status", "--porcelain") === "", "working tree not clean after stash");
     await until(async () => (await page.locator(".sidebar .sb-item", { hasText: "Change the default port" }).count()) === 1, "stash not listed in the sidebar");
+    await stashSnapshotSmoke({page,root:repo,git,until});
   });
 
   await check("merge with conflict stops before committing", async () => {
@@ -682,6 +707,7 @@ try {
     await page.locator(".conflict-overlay .file-row", { hasText: "src/app.ts" }).first().click();
     await page.waitForSelector(".conflict-overlay .cm-content");
     await shot("15-tree-browser");
+    await treeResponseSmoke(page);
     await page.click(".cf-head button:has-text('Close')");
     await page.waitForSelector(".conflict-overlay", { state: "detached" });
   });
@@ -1486,7 +1512,8 @@ try {
     const stashOid = git("rev-parse", "stash@{0}");
     const stash = await page.evaluate(async (root) => {
       const invoke = window.__TAURI_INTERNALS__.invoke;
-      await invoke("stash_drop", { repo: root, index: 0 });
+      const oid = (await invoke("refs_snapshot", {repo:root})).stashes[0].oid;
+      await invoke("stash_drop", { repo: root, index: 0, oid });
       const catalog = await invoke("recovery_list", { repo: root });
       const cp = catalog.checkpoints.find((cp) => cp.command === "stash_drop");
       return invoke("recovery_detail", { repo: root, id: cp.id });

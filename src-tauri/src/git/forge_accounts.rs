@@ -336,10 +336,12 @@ impl Manager {
         if bytes.len() as u64 > LIMIT {
             return Err(fail("Account settings exceed the size limit."));
         }
-        let mut temp = tempfile::NamedTempFile::new_in(&self.root)?;
+        let directory = fs::canonicalize(&self.root)?;
+        let mut temp = super::atomic_file::new_in(&directory)?;
         temp.write_all(&bytes)?;
         temp.as_file().sync_all()?;
-        temp.persist(self.root.join("accounts.json")).map_err(|_| fail("Could not save account settings. Previous settings were kept."))?;
+        super::atomic_file::replace(temp, &directory.join("accounts.json"))
+            .map_err(|_| fail("Could not save account settings. Previous settings were kept."))?;
         next.stamp = stamp(&doc)?;
         *current = next;
         Ok(())

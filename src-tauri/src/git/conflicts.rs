@@ -7,6 +7,32 @@ use serde::Serialize;
 use super::repo;
 use super::runner::{self, GitError, GitResult};
 
+fn checked_path(repo: &Path, path: &str, allow_leaf_link: bool) -> GitResult<std::path::PathBuf> {
+    use std::{fs, path::Component};
+    let path = Path::new(path);
+    if path.as_os_str().is_empty()
+        || path.components().any(|c| !matches!(c, Component::Normal(_)) || c.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git"))
+    {
+        return Err(GitError::new("Choose a file inside this working copy."));
+    }
+    let mut current = repo.canonicalize()?;
+    let parts: Vec<_> = path.components().collect();
+    for (index, part) in parts.iter().enumerate() {
+        current.push(part.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(meta) => {
+                let leaf = index + 1 == parts.len();
+                if meta.file_type().is_symlink() && (!leaf || !allow_leaf_link) || !leaf && !meta.is_dir() || leaf && meta.is_dir() {
+                    return Err(GitError::new("The conflict path traverses a link or is not a regular file. Resolve linked files with Git's whole-side action or the external Git tools."));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(current)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConflictSide {
@@ -82,7 +108,7 @@ fn labels(repo: &Path) -> (String, String) {
 }
 
 pub fn info(repo: &Path, path: &str) -> GitResult<ConflictInfo> {
-    let raw = runner::run(repo, ["ls-files", "-u", "-z", "--", path])?;
+    let raw = runner::run_env(repo, ["ls-files", "-u", "-z", "--", path], &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
     let mut stages: [Option<String>; 4] = [None, None, None, None];
     for rec in runner::split_nul(&raw) {
         // "<mode> <oid> <stage>\t<path>"
@@ -112,8 +138,8 @@ pub fn info(repo: &Path, path: &str) -> GitResult<ConflictInfo> {
         _ => "DD",
     }
     .to_string();
-    let working_path = repo.join(path);
-    let working_raw = std::fs::read(&working_path).ok();
+    let working_path = checked_path(repo, path, true)?;
+    let working_raw = if std::fs::symlink_metadata(&working_path).is_ok_and(|m| m.file_type().is_symlink()) { None } else { std::fs::read(&working_path).ok() };
     let working = working_raw.as_ref().filter(|w| !is_binary(w)).map(|w| String::from_utf8_lossy(w).into_owned());
     let working_has_markers = working.as_deref().map(has_markers).unwrap_or(false);
     let eol_crlf = [&ours_raw, &theirs_raw, &base_raw].iter().any(|d| d.windows(2).any(|w| w == b"\r\n"));
@@ -160,53 +186,67 @@ pub fn merge_file(ours: &[u8], base: &[u8], theirs: &[u8]) -> GitResult<(String,
 
 /// Writes the resolved content and marks the file as resolved.
 pub fn save_resolution(repo: &Path, path: &str, content: &str, stage: bool) -> GitResult<()> {
-    let full = repo.join(path);
+    let full = checked_path(repo, path, false)?;
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&full, content.as_bytes())?;
+    use std::io::Write;
+    let mut temporary = super::atomic_file::new_in(full.parent().ok_or_else(|| GitError::new("Invalid conflict path."))?)?;
+    temporary.write_all(content.as_bytes())?;
+    if let Ok(meta) = std::fs::metadata(&full) {
+        temporary.as_file().set_permissions(meta.permissions())?;
+    }
+    temporary.as_file().sync_all()?;
+    super::atomic_file::replace(temporary, &full)?;
     if stage {
-        runner::run(repo, ["add", "--", path])?;
+        runner::run_env(repo, ["add", "--", path], &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
     }
     Ok(())
 }
 
 /// Resolves by taking one side as a whole ("ours" | "theirs" | "base" | "delete").
 pub fn take_side(repo: &Path, path: &str, which: &str) -> GitResult<()> {
+    checked_path(repo, path, true)?;
     let info = info(repo, path)?;
     let pick = match which {
         "ours" => Some(&info.ours),
         "theirs" => Some(&info.theirs),
         "base" => Some(&info.base),
-        _ => None,
+        "delete" => None,
+        _ => return Err(GitError::new("Choose ours, theirs, base or delete.")),
     };
     match pick {
         Some(s) if s.exists => {
-            let oid = s.oid.clone().unwrap_or_default();
-            let data = runner::run_bytes(repo, ["cat-file", "blob", &oid])?;
-            let full = repo.join(path);
-            if let Some(parent) = full.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&full, data)?;
-            runner::run(repo, ["add", "--", path])?;
+            // Git restores the selected index stage with its real mode and
+            // unlinks a leaf symlink rather than writing through its target.
+            let stage = match which {
+                "base" => "--stage=1",
+                "ours" => "--stage=2",
+                _ => "--stage=3",
+            };
+            runner::run_env(repo, ["checkout-index", "--force", stage, "--", path], &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
+            runner::run_env(repo, ["add", "--", path], &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
         }
         _ => {
-            runner::run(repo, ["rm", "--quiet", "--force", "--", path])?;
+            runner::run_env(repo, ["rm", "--quiet", "--force", "--", path], &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
         }
     }
     Ok(())
 }
 
 pub fn mark_resolved(repo: &Path, paths: &[String]) -> GitResult<()> {
+    for path in paths {
+        checked_path(repo, path, true)?;
+    }
     let mut args = vec!["add".to_string(), "--".to_string()];
     args.extend(paths.iter().cloned());
-    runner::run(repo, &args)?;
+    runner::run_env(repo, &args, &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
     Ok(())
 }
 
 /// Restores the conflicted state of a file (undo a resolution).
 pub fn unresolve(repo: &Path, path: &str) -> GitResult<()> {
-    runner::run(repo, ["checkout", "-m", "--", path])?;
+    checked_path(repo, path, true)?;
+    runner::run_env(repo, ["checkout", "-m", "--", path], &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
     Ok(())
 }

@@ -312,8 +312,8 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
           error={diffErr}
           mode="pick"
           onApply={async (selection) => {
-            if (!file) return;
-            await A.act(root, () => api.applyFromCommit(root, d.diffBase, d.oid, file, selection), { success: "Selected lines applied to the working tree", refresh: { status: true, layers: true } });
+            if (!file || !diff || diffLoading || diffErr) return;
+            await A.act(root, () => api.applyFromCommit(root, d.diffBase, d.oid, file, selection, diffOpts, diff.hash), { success: "Selected lines applied to the working tree", refresh: { status: true, layers: true } });
           }}
           path={file ?? ""}
           root={root}

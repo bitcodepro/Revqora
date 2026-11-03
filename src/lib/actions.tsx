@@ -202,18 +202,22 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
   const opId = newOpId();
   startBusy(opId, "Pulling");
   let diverged = false;
+  let outcome: OpOutcome | undefined;
   try {
-    const out = await api.pull(root, mode, opId);
-    if (out.status !== "done") handleOutcome(root, out, "Pull");
-    else toast.success("Pulled");
+    outcome = await api.pull(root, mode, opId);
   } catch (e) {
     const msg = errorMessage(e).toLowerCase();
-    if (mode === "ff-only" && (msg.includes("not possible to fast-forward") || msg.includes("diverg"))) diverged = true;
+    if (isGitError(e) && e.kind === "partial-operation") toast.error(e, "Pull partially completed — review the repository and submodules");
+    else if (mode === "ff-only" && (msg.includes("not possible to fast-forward") || msg.includes("diverg"))) diverged = true;
     else if (isGitError(e) && e.kind === "auth") toast.error(e, "Authentication failed — check your credentials or SSH key");
     else toast.error(e, "Pull failed");
   } finally {
     endBusy(opId);
     await useRepos.getState().refresh(root, ALL);
+  }
+  if (outcome) {
+    if (["done", "upToDate", "fastForward"].includes(outcome.status)) toast.success("Pulled", outcome.message);
+    else handleOutcome(root, outcome, "Pull");
   }
   if (diverged) {
     const how = await showDialog<"merge" | "rebase" | null>((close) => (
@@ -456,17 +460,19 @@ export async function stash(root: string) {
   await act(root, () => api.stashSave(root, r.message, r.untracked, r.keepIndex), { success: "Changes stashed" });
 }
 
-export async function stashApply(root: string, index: number, pop: boolean) {
-  const out = await act(root, () => api.stashApply(root, index, pop));
+export async function stashApply(root: string, index: number, pop: boolean, oid = getTab(root)?.refs?.stashes.find(s => s.index === index)?.oid) {
+  if (!oid) return toast.warning("Stash unavailable", "Refresh the stash list before trying again.");
+  const out = await act(root, () => api.stashApply(root, index, pop, oid));
   if (out?.status === "conflicts") handleOutcome(root, out, "Stash");
   else if (out) toast.success(pop ? "Stash popped" : "Stash applied");
 }
 
-export async function stashDrop(root: string, index: number) {
+export async function stashDrop(root: string, index: number, oid = getTab(root)?.refs?.stashes.find(s => s.index === index)?.oid) {
+  if (!oid) return toast.warning("Stash unavailable", "Refresh the stash list before trying again.");
   const expectedState = await prepareOperation(root);
   if (!expectedState) return;
   const ok = await confirmDialog({ title: "Delete this stash?", confirm: "Delete", danger: true });
-  if (ok) await act(root, () => api.stashDrop(root, index, expectedState), { success: "Stash deleted" });
+  if (ok) await act(root, () => api.stashDrop(root, index, oid, expectedState), { success: "Stash deleted" });
 }
 
 // ───────────── in-progress operations ─────────────

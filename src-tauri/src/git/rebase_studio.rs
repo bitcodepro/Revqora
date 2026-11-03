@@ -348,8 +348,7 @@ fn transaction_lock(root: &Path, expected: Option<&str>) -> GitResult<File> {
     Ok(file)
 }
 fn save(root: &Path, report: &Report) -> GitResult<()> {
-    // tempfile persists with raw Win32 APIs. Canonicalization supplies the
-    // extended-length prefix for both paths, including atomic replacements.
+    // Use the shared replacement path so an open reader retains the old report.
     let dir = fs::canonicalize(directory(root)?)?;
     let path = dir.join("last.json");
     if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink() || !m.is_file()) {
@@ -359,10 +358,10 @@ fn save(root: &Path, report: &Report) -> GitResult<()> {
     if bytes.len() as u64 > MAX_RECORD {
         return Err(fail("Rebase Studio record exceeds 8 MiB."));
     }
-    let mut temp = tempfile::NamedTempFile::new_in(&dir)?;
+    let mut temp = super::atomic_file::new_in(&dir)?;
     temp.write_all(&bytes)?;
     temp.as_file().sync_all()?;
-    temp.persist(&path).map_err(|e| fail(e.error.to_string()))?;
+    super::atomic_file::replace(temp, &path)?;
     Ok(())
 }
 fn load(root: &Path) -> GitResult<Option<Report>> {

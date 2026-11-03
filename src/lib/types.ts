@@ -78,6 +78,7 @@ export interface RepoInfo {
 }
 
 export interface FileStatus {
+  diffToken?: string;
   path: string;
   origPath: string | null;
   index: string;
@@ -89,6 +90,7 @@ export interface FileStatus {
 
 export interface StatusSummary {
   stateToken?: string | null;
+  diffContextToken?: string | null;
   stateVersion?: number;
   branch: string | null;
   oid: string | null;

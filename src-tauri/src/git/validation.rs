@@ -20,6 +20,27 @@ use std::{
 };
 
 const OUTPUT_LIMIT: usize = 128 * 1024;
+
+#[derive(Debug, PartialEq)]
+pub(super) enum ProcessState {
+    Exited,
+    Cancelled,
+    TimedOut,
+    Running,
+}
+
+/// A delayed worker poll must not turn an already-exited process into a timeout.
+pub(super) fn poll_process(child: &mut Child, cancelled: bool, timed_out: bool) -> std::io::Result<ProcessState> {
+    Ok(if process_tree::exited(child)? {
+        ProcessState::Exited
+    } else if cancelled {
+        ProcessState::Cancelled
+    } else if timed_out {
+        ProcessState::TimedOut
+    } else {
+        ProcessState::Running
+    })
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
@@ -201,14 +222,15 @@ fn execute(root: &Path, command: &str, timeout: Duration, job: &Arc<Job>) -> Git
         loop {
             let cancelled = job.cancel.load(Ordering::Acquire);
             let timed_out = started.elapsed() >= timeout;
-            if cancelled || timed_out {
+            let state = poll_process(&mut child, cancelled, timed_out)?;
+            if matches!(state, ProcessState::Cancelled | ProcessState::TimedOut) {
                 tree.terminate();
                 let _ = child.wait();
                 let mut r = job.report.lock();
-                r.phase = if cancelled { "cancelled" } else { "timed-out" }.into();
+                r.phase = if state == ProcessState::Cancelled { "cancelled" } else { "timed-out" }.into();
                 break;
             }
-            if process_tree::exited(&mut child)? {
+            if state == ProcessState::Exited {
                 // Stop background descendants before releasing the repository queue.
                 tree.terminate();
                 let status = child.wait()?;
@@ -462,6 +484,53 @@ pub(super) mod process_tree {
 #[cfg(test)]
 mod output_tests {
     use super::*;
+    #[test]
+    fn completed_process_wins_over_a_late_timeout_or_cancel_poll() {
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = Command::new("cmd.exe");
+            c.args(["/D", "/C", "exit 0"]);
+            c
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut c = Command::new("/bin/sh");
+            c.args(["-c", "exit 0"]);
+            c
+        };
+        let (mut child, tree) = process_tree::spawn(&mut command).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !process_tree::exited(&mut child).unwrap() {
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        assert_eq!(poll_process(&mut child, true, true).unwrap(), ProcessState::Exited);
+        tree.terminate();
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn running_process_still_honors_cancellation_and_deadline() {
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = Command::new("cmd.exe");
+            c.args(["/D", "/C", "set /p line="]);
+            c
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut c = Command::new("/bin/sh");
+            c.args(["-c", "read line"]);
+            c
+        };
+        command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+        let (mut child, tree) = process_tree::spawn(&mut command).unwrap();
+        assert_eq!(poll_process(&mut child, false, false).unwrap(), ProcessState::Running);
+        assert_eq!(poll_process(&mut child, false, true).unwrap(), ProcessState::TimedOut);
+        assert_eq!(poll_process(&mut child, true, true).unwrap(), ProcessState::Cancelled);
+        tree.terminate();
+        child.wait().unwrap();
+    }
     #[test]
     fn process_error_preserves_captured_os_code_and_does_not_log_command_secrets() {
         let mut command = Command::new("fixture-program.exe");

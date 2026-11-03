@@ -1,6 +1,7 @@
 //! Read-only inspection: blame, comparing two revisions, raw file contents (image diffs).
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -53,7 +54,7 @@ pub fn parse_blame(raw: &str) -> (Vec<BlameLine>, HashMap<String, BlameCommit>) 
         }
         let mut parts = l.split(' ');
         let first = parts.next().unwrap_or("");
-        if first.len() == 40 && first.chars().all(|c| c.is_ascii_hexdigit()) {
+        if matches!(first.len(), 40 | 64) && first.bytes().all(|c| c.is_ascii_hexdigit()) {
             let orig = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
             let fin = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
             commits.entry(first.to_string()).or_insert_with(|| BlameCommit {
@@ -204,12 +205,16 @@ pub fn blob(repo: &Path, spec: &BlobSpec) -> GitResult<Option<BlobData>> {
         // Stay inside the repository.
         let canon_root = repo.canonicalize()?;
         match full.canonicalize() {
-            Ok(c) if c.starts_with(&canon_root) => (std::fs::read(&c)?, p.clone()),
+            Ok(c) if c.starts_with(&canon_root) => {
+                let mut data = Vec::new();
+                std::fs::File::open(c)?.take(MAX_BLOB as u64 + 1).read_to_end(&mut data)?;
+                (data, p.clone())
+            }
             Ok(_) => return Err(GitError::new("Path is outside the repository.")),
             Err(_) => return Ok(None),
         }
     } else if let Some(r) = &spec.rev {
-        let out = runner::exec(repo, ["cat-file", "blob", r])?;
+        let out = runner::exec_limited(repo, ["cat-file", "blob", r], MAX_BLOB)?;
         if !out.ok() {
             return Ok(None);
         }

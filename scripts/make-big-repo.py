@@ -14,7 +14,8 @@ target = Path(sys.argv[1])
 commits = int(sys.argv[2]) if len(sys.argv) > 2 else 60000
 branches = int(sys.argv[3]) if len(sys.argv) > 3 else 40
 random.seed(7)
-target.mkdir(parents=True, exist_ok=True)
+# Refuse existing paths before Git init/import/checkout can alter user work.
+target.mkdir(parents=True, exist_ok=False)
 subprocess.run(["git", "init", "-q", "-b", "main", str(target)], check=True)
 
 authors = ["Alex Rivera <alex@example.com>", "Sam Chen <sam@example.com>", "Jordan Blake <jordan@example.com>", "Taylor Morgan <taylor@example.com>", "Casey Brooks <casey@example.com>"]

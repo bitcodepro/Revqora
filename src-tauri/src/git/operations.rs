@@ -2,7 +2,7 @@
 //! External Git/IDE processes do not take this lock: optimistic state checks and Git's
 //! own lock files remain necessary. This is deliberately not a recovery/checkpoint store.
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -187,18 +187,25 @@ pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl Fn
     })
 }
 
-fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<()> {
+fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<[u8; 32]> {
+    // One content read supplies both the repository guard and the path's display token.
+    let mut content = Sha256::new();
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            hash.update(b"symlink");
+            content.update(b"symlink");
             let target = fs::read_link(path)?;
             let bytes = target.as_os_str().as_encoded_bytes();
-            hash.update((bytes.len() as u64).to_le_bytes());
-            hash.update(bytes);
+            content.update((bytes.len() as u64).to_le_bytes());
+            content.update(bytes);
         }
         Ok(meta) if meta.is_file() => {
-            hash.update(b"file");
-            hash.update(meta.len().to_le_bytes());
+            content.update(b"file");
+            content.update(meta.len().to_le_bytes());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                content.update((meta.permissions().mode() & 0o111).to_le_bytes());
+            }
             let mut file = fs::File::open(path)?;
             let mut buf = [0; 64 * 1024];
             loop {
@@ -206,33 +213,174 @@ fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<()> {
                 if len == 0 {
                     break;
                 }
-                hash.update(&buf[..len]);
+                content.update(&buf[..len]);
             }
         }
         Ok(_) => {
-            hash.update(b"directory");
+            content.update(b"directory");
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            hash.update(b"missing");
+            content.update(b"missing");
         }
         Err(e) => return Err(e.into()),
     }
-    hash.update([0]);
-    Ok(())
+    let digest = content.finalize().into();
+    hash.update(digest);
+    Ok(digest)
 }
 
-/// No write-tree, index refresh or snapshots. Hash changed files, not the entire repo.
-pub fn state_token(repo: &Path, raw_status: &str, files: &[super::status::FileStatus]) -> GitResult<String> {
+fn hash_attribute(hash: &mut Sha256, path: &Path, indexed: Option<&[u8]>) -> GitResult<[u8; 32]> {
+    let mut attribute = Sha256::new();
+    attribute.update(hash_file(hash, path)?);
+    if let Some(indexed) = indexed {
+        attribute.update(indexed);
+    }
+    Ok(attribute.finalize().into())
+}
+
+pub struct StateTokens {
+    pub state: String,
+    pub diff_context: String,
+}
+
+pub(super) fn external_attribute_files(repo: &Path) -> GitResult<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    if runner::version_at_least(2, 42) {
+        // Git resolves configured paths, ~/ and its platform-specific defaults.
+        // Query only these variables: `var -l` also exposes arbitrary config.
+        for name in ["GIT_ATTR_GLOBAL", "GIT_ATTR_SYSTEM"] {
+            let out = runner::exec(repo, ["var", name])?;
+            if out.ok() {
+                let value = out.text();
+                let value = value.strip_suffix('\n').unwrap_or(&value).trim_end_matches('\r');
+                if !value.is_empty() {
+                    paths.push(repo.join(value));
+                }
+            } else if out.code != 1 {
+                return Err(runner::to_error("Resolve Git attributes file", &out));
+            }
+        }
+    } else {
+        let out = runner::exec(repo, ["config", "--null", "--path", "--get", "core.attributesFile"])?;
+        if out.ok() {
+            let path = out.text();
+            let path = path.trim_end_matches('\0');
+            if !path.is_empty() {
+                paths.push(repo.join(path));
+            }
+        } else if out.code == 1 {
+            let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+            let config =
+                std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()).map(PathBuf::from).or_else(|| home.map(|p| PathBuf::from(p).join(".config")));
+            if let Some(config) = config {
+                paths.push(config.join("git/attributes"));
+            }
+        } else {
+            return Err(runner::to_error("Resolve configured attributes file", &out));
+        }
+    }
+    Ok(paths)
+}
+
+fn hash_external_attributes(hash: &mut Sha256, repo: &Path) -> GitResult<[u8; 32]> {
+    let mut attributes = Sha256::new();
+    for path in external_attribute_files(repo)? {
+        let name = path.as_os_str().as_encoded_bytes();
+        attributes.update((name.len() as u64).to_le_bytes());
+        attributes.update(name);
+        attributes.update(hash_file(hash, &path)?);
+        // Unlike worktree .gitattributes, a configured global file can be a
+        // symlink; its target's contents also affect Git's interpretation.
+        if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            match fs::canonicalize(&path) {
+                Ok(target) => {
+                    attributes.update(hash_file(hash, &target)?);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    let digest = attributes.finalize().into();
+    hash.update(digest);
+    Ok(digest)
+}
+
+fn submodule_fingerprint(module: &Path) -> GitResult<[u8; 32]> {
+    let mut hash = Sha256::new();
+    let mut pending = vec![module.to_owned()];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut attributes = std::collections::BTreeSet::new();
+    while let Some(root) = pending.pop() {
+        if !seen.insert(canonical(&root)) {
+            return Err(GitError::new("A cyclic submodule worktree cannot be inspected.").kind("submodule-cycle"));
+        }
+        if !root.join(".git").exists() {
+            hash.update(b"uninitialized\0");
+            continue;
+        }
+        // Explicit Git dir prevents fallback to the parent after deinitializing.
+        // --branch captures the actual checked-out OID, including detached HEAD.
+        let out = runner::exec_full(
+            &root,
+            ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=no", "--ignore-submodules=none"],
+            &[("GIT_DIR", ".git")],
+            None,
+        )?;
+        if !out.ok() {
+            return Err(runner::to_error("git status submodule", &out));
+        }
+        hash.update(&out.stdout);
+        let common = repository_key(&root);
+        hash_file(&mut hash, &common.join("config"))?;
+        hash_file(&mut hash, &common.join("info/attributes"))?;
+        hash_external_attributes(&mut hash, &root)?;
+        // Inline submodule diffs can change while HEAD and dirty flags stay the
+        // same. Stream tracked dirty contents instead of materializing a patch.
+        for file in super::status::parse(&out.text()).files {
+            if file.untracked {
+                continue; // Git's inline diff does not display untracked contents.
+            }
+            let path = root.join(&file.path);
+            hash_file(&mut hash, &path)?;
+            for parent in path.parent().into_iter().flat_map(Path::ancestors).take_while(|p| p.starts_with(&root)) {
+                let attr = parent.join(".gitattributes");
+                if attributes.insert(attr.clone()) {
+                    hash_file(&mut hash, &attr)?;
+                }
+            }
+            if file.submodule {
+                pending.push(path);
+            }
+        }
+    }
+    Ok(hash.finalize().into())
+}
+
+/// No write-tree, index refresh or snapshots. Hash changed files and Git attributes,
+/// not the entire worktree. The display context never substitutes for the full guard.
+pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus]) -> GitResult<StateTokens> {
     let mut hash = Sha256::new();
     hash.update(raw_status.as_bytes());
     let gd = super::repo::git_dir(repo)?;
     let common = repository_key(repo);
-    for p in [gd.join("HEAD"), common.join("config")] {
-        hash_file(&mut hash, &p)?;
-    }
+    hash_file(&mut hash, &gd.join("HEAD"))?;
+    let config = hash_file(&mut hash, &common.join("config"))?;
+    let info_attributes = hash_file(&mut hash, &common.join("info/attributes"))?;
+    let external_attributes = hash_external_attributes(&mut hash, repo)?;
     // Cache-tree/stat extensions and packed-ref layout can change without changing
     // what the user staged. Compare semantic index entries and resolved refs instead.
-    hash.update(runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?);
+    let index = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
+    hash.update(&index);
+    // Git falls back to indexed .gitattributes when the worktree copy is absent.
+    let mut indexed_attributes: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
+    for entry in String::from_utf8_lossy(&index).split('\0') {
+        if let Some((_, name)) = entry.split_once('\t') {
+            if Path::new(name).file_name().is_some_and(|name| name == ".gitattributes") {
+                indexed_attributes.entry(repo.join(name)).or_default().extend_from_slice(entry.as_bytes());
+            }
+        }
+    }
     // Recovery pins are app metadata, not changes to the user's prepared Git
     // state. A rejected action may save a checkpoint before offering force
     // consent. Recovery itself verifies each pin independently with exact OIDs.
@@ -253,14 +401,73 @@ pub fn state_token(repo: &Path, raw_status: &str, files: &[super::status::FileSt
         "rebase-merge/done",
         "rebase-apply/next",
         "sequencer/todo",
-        "logs/refs/stash",
     ] {
         hash_file(&mut hash, &gd.join(name))?;
     }
+    // Stashes and their reflog are shared, including entries below refs/stash.
+    // Removing a middle entry changes stash@{n} without changing the top OID.
+    hash_file(&mut hash, &common.join("logs/refs/stash"))?;
     hash_file(&mut hash, &super::storage::dir(repo)?.join("squash-target"))?;
+    let mut attributes = BTreeMap::new();
+    // Indexed attributes may affect a sealed layer even if later layers cancel
+    // that file's net index change and it is absent from the ordinary status list.
+    for path in indexed_attributes
+        .keys()
+        .cloned()
+        .chain(files.iter().filter(|f| Path::new(&f.path).file_name().is_some_and(|name| name == ".gitattributes")).map(|f| repo.join(&f.path)))
+    {
+        if let std::collections::btree_map::Entry::Vacant(entry) = attributes.entry(path) {
+            let path = entry.key();
+            let digest = hash_attribute(&mut hash, path, indexed_attributes.get(path).map(Vec::as_slice))?;
+            entry.insert(digest);
+        }
+    }
     for file in files {
         hash.update(file.path.as_bytes());
-        hash_file(&mut hash, &repo.join(&file.path))?;
+        let content = hash_file(&mut hash, &repo.join(&file.path))?;
+        let mut display = Sha256::new();
+        // The porcelain seed includes index/base OIDs, modes and submodule state:
+        // editing an already-MM file or staging different bytes must still refresh it.
+        display.update(file.diff_token.as_bytes());
+        display.update(content);
+        display.update(config);
+        display.update(info_attributes);
+        display.update(external_attributes);
+        if file.submodule {
+            let module = submodule_fingerprint(&repo.join(&file.path))?;
+            hash.update(module);
+            display.update(module);
+        }
+        for name in [Some(file.path.as_str()), file.orig_path.as_deref()].into_iter().flatten() {
+            let path = repo.join(name);
+            for parent in path.parent().into_iter().flat_map(Path::ancestors).take_while(|p| p.starts_with(repo)) {
+                let path = parent.join(".gitattributes");
+                let digest = match attributes.get(&path) {
+                    Some(digest) => *digest,
+                    None => {
+                        let digest = hash_attribute(&mut hash, &path, indexed_attributes.get(&path).map(Vec::as_slice))?;
+                        attributes.insert(path, digest);
+                        digest
+                    }
+                };
+                display.update(digest);
+            }
+        }
+        file.diff_token = format!("{:x}", display.finalize());
     }
-    Ok(format!("{:x}", hash.finalize()))
+    let mut context = Sha256::new();
+    context.update(config);
+    context.update(info_attributes);
+    context.update(external_attributes);
+    for (path, digest) in attributes {
+        // Missing candidates discovered because an unrelated file appeared must
+        // not change the interpretation generation (e.g. a new SQLite WAL).
+        if indexed_attributes.contains_key(&path) || path.exists() {
+            let name = path.as_os_str().as_encoded_bytes();
+            context.update((name.len() as u64).to_le_bytes());
+            context.update(name);
+            context.update(digest);
+        }
+    }
+    Ok(StateTokens { state: format!("{:x}", hash.finalize()), diff_context: format!("{:x}", context.finalize()) })
 }

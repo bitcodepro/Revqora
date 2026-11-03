@@ -18,7 +18,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
     "diff --git a/long.txt b/long.txt\nnew file mode 100644\n--- /dev/null\n+++ b/long.txt\n@@ -0,0 +1 @@\n+"+"long-line-".repeat(120)+"\n"+
     "diff --git a/asset.bin b/asset.bin\nBinary files a/asset.bin and b/asset.bin differ\n"+
     "diff --git a/mode.txt b/mode.txt\nold mode 100644\nnew mode 100755\n";
-  let hold=null;const mergeFixture=createPrMergeFixture({pulls});const reviewFixture=createPrReviewFixture({pulls,a});
+  let hold=null,nextCreated=100,loseCreateResponse=false,loseEditResponse=false;const mergeFixture=createPrMergeFixture({pulls});const reviewFixture=createPrReviewFixture({pulls,a});
   const server=http.createServer(async(req,res)=>{
     let body="";for await(const chunk of req)body+=chunk;const url=new URL(req.url,"http://fixture"),entry={method:req.method,path:req.url,body:body?JSON.parse(body):null};requests.push(entry);
     if(req.headers.authorization!==`Bearer ${token}`){res.writeHead(401);res.end("{}");return;}
@@ -31,11 +31,11 @@ export async function prCenterSmoke({page,check,shot,work}) {
     if(n){if(hold?.number===n&&req.method==="GET"&&!req.headers.accept?.includes("diff")){const h=hold;hold=null;h.started();await h.promise;}
       const p=pulls.get(n);if(!p){res.writeHead(404);res.end("{}");return;}
       if(req.headers.accept?.includes("diff")){res.writeHead(200,{"content-type":"text/plain"});res.end(patch);return;}
-      if(req.method==="PATCH"){Object.assign(p,entry.body,{base:{...p.base,ref:entry.body.base},updated_at:`edited-${requests.length}`});}
+      if(req.method==="PATCH"){Object.assign(p,entry.body,{base:{...p.base,ref:entry.body.base},updated_at:`edited-${requests.length}`});if(loseEditResponse){loseEditResponse=false;res.writeHead(503);res.end("{}");return;}}
       return send(p);
     }
     if(url.pathname.endsWith("/pulls")){
-      if(req.method==="POST"){const n=100;const p={...pulls.get(1),...entry.body,number:n,head:{ref:entry.body.head,sha:a},base:{ref:entry.body.base,sha:b},updated_at:"created"};pulls.set(n,p);return send(p);}
+      if(req.method==="POST"){const n=nextCreated++;const p={...pulls.get(1),...entry.body,number:n,head:{ref:entry.body.head,sha:a},base:{ref:entry.body.base,sha:b},updated_at:"created"};pulls.set(n,p);if(loseCreateResponse){loseCreateResponse=false;res.writeHead(503);res.end("{}");return;}return send(p);}
       const state=url.searchParams.get("state"),rows=[...pulls.values()].filter(p=>state==="all"||p.state===state),offset=(Number(url.searchParams.get("page")||1)-1)*50;return send(rows.slice(offset,offset+50));
     }
     res.writeHead(404);res.end("{}");
@@ -48,6 +48,14 @@ export async function prCenterSmoke({page,check,shot,work}) {
   try {
     const snapshot=await invoke("forge_accounts_snapshot");const added=await invoke("forge_account_add",{input:{id:null,kind:"github",server:url,username:"",token,authMode:"token",persist:false},expected:snapshot.revision});const account=added.accounts.find(p=>p.server===url);
     const connections=await invoke("forge_connections",{repo:root});await invoke("forge_connection_select",{repo:root,selection:{remote:"origin",fingerprint:connections.remotes[0].fingerprint,accountId:account.id,allowSshAlias:false},expected:connections.revision});
+    const reconnect=async n=>{
+      const before=(await invoke("forge_info",{repo:root})).connectionRevision;
+      const current=await invoke("forge_connections",{repo:root});
+      await invoke("forge_connection_select",{repo:root,selection:{remote:"origin",fingerprint:current.remotes[0].fingerprint,accountId:account.id,allowSshAlias:false},expected:current.revision});
+      if((await invoke("forge_info",{repo:root})).connectionRevision===before)throw Error("The real account revision did not change");
+      await page.evaluate(()=>window.dispatchEvent(new Event("revqora:forge-accounts")));
+      await detail(1);await openNumber(n);
+    };
     await invoke("plugin:event|emit",{event:"open-paths",payload:[root]});await page.locator(".topbar .repo-current > b").filter({hasText:"stage13-pr-center"}).waitFor();await page.getByRole("button",{name:"Pull requests",exact:true}).click();await detail(1);
     await check("PR Center pages, searches and filters server requests and opens a number directly",async()=>{
       await page.locator("[data-pr-loaded='50']").waitFor();await page.getByRole("button",{name:"Load more requests",exact:true}).click();await page.locator("[data-pr-loaded='52']").waitFor();await openNumber(52);
@@ -70,9 +78,46 @@ export async function prCenterSmoke({page,check,shot,work}) {
     await check("create PR uses committed templates with replacement consent and never pushes local Git changes",async()=>{
       await page.getByRole("button",{name:"New",exact:true}).click();await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Created in PR Center");await page.getByLabel("PR source branch",{exact:true}).fill("topic");await page.getByRole("textbox",{name:"PR description",exact:true}).fill("Keep before choosing template");await page.getByRole("combobox",{name:"Pull request template",exact:true}).selectOption(".github/PULL_REQUEST_TEMPLATE/Feature.md");await button("Use template").click();await button("Replace description").waitFor();await page.keyboard.press("Escape");await page.waitForFunction(()=>document.querySelectorAll(".modal").length===1&&document.querySelector("[data-pr-editor=create]"));if(await page.getByRole("textbox",{name:"PR description",exact:true}).inputValue()!=="Keep before choosing template")throw Error("Escape changed the underlying description");await button("Use template").click();await button("Replace description").click();await page.waitForFunction(()=>document.querySelector('[aria-label="PR description"]')?.value.includes("Тест 😀"));
       await button("Create pull request").click();await page.waitForSelector("[data-pr-editor]",{state:"detached"});await detail(100);const write=requests.find(r=>r.method==="POST"&&r.path.includes("/pulls"));if(!write||write.body.draft!==false||!write.body.body.includes("Тест 😀"))throw Error("Template or ordinary PR creation lost");
+      // The server commits the write, but a gateway loses its response. Closing
+      // and changing the form must not permit an unacknowledged duplicate.
+      await page.getByRole("button",{name:"New",exact:true}).click();
+      await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Created despite a lost response");
+      await page.getByLabel("PR source branch",{exact:true}).fill("topic");
+      loseCreateResponse=true;await button("Create pull request").click();
+      await page.locator(".modal").getByRole("alert").filter({hasText:/server may have saved/i}).waitFor();
+      if(pulls.get(101)?.title!=="Created despite a lost response")throw Error("Lost response fixture did not actually save the PR");
+      const before=requests.filter(r=>r.method==="POST"&&r.path.endsWith("/pulls")).length;
+      await button("Cancel").click();await button("Discard edits").click();
+      await reconnect(100);
+      await page.getByRole("button",{name:"New",exact:true}).click();
+      await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Changed form must retain the guard");
+      await page.getByLabel("PR source branch",{exact:true}).fill("different-topic");
+      if(!await button("Create pull request").isDisabled())throw Error("Reopening the PR editor lost the uncertain-write guard");
+      await page.getByRole("textbox",{name:"PR title",exact:true}).press("Enter");
+      if(requests.filter(r=>r.method==="POST"&&r.path.endsWith("/pulls")).length!==before)throw Error("A duplicate PR write escaped via form submission");
+      await page.getByRole("checkbox",{name:"I checked the server result",exact:true}).check();
+      await button("Mark PR result as checked without resending").click();
+      if(await button("Create pull request").isDisabled()||requests.filter(r=>r.method==="POST"&&r.path.endsWith("/pulls")).length!==before)throw Error("Acknowledgement resent the write or did not clear its guard");
+      await button("Cancel").click();await button("Discard edits").click();
     });
     await check("edit PR saves title, multiline description and destination without modifying the source",async()=>{
       await page.getByRole("button",{name:"Edit PR",exact:true}).click();if(!await page.getByLabel("PR source branch",{exact:true}).isDisabled())throw Error("Edit source must be immutable");await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Edited PR title");await page.getByRole("textbox",{name:"PR description",exact:true}).fill("Edited description\n"+"Readable long message. ".repeat(100));await page.getByLabel("PR target branch",{exact:true}).fill("develop");await button("Save pull request").click();await page.waitForSelector("[data-pr-editor]",{state:"detached"});await page.getByRole("heading",{name:"Edited PR title",exact:true}).waitFor();if(pulls.get(100).base.ref!=="develop")throw Error("Retarget was not saved");await shot("106-pr-description");
+      await page.getByRole("button",{name:"Edit PR",exact:true}).click();
+      await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Edit saved despite a lost response");
+      loseEditResponse=true;await button("Save pull request").click();
+      await page.locator(".modal").getByRole("alert").filter({hasText:/server may have saved/i}).waitFor();
+      const before=requests.filter(r=>r.method==="PATCH").length;
+      if(pulls.get(100).title!=="Edit saved despite a lost response")throw Error("Lost edit fixture did not save");
+      await button("Cancel").click();await button("Discard edits").click();
+      await reconnect(100);
+      await page.getByRole("button",{name:"Edit PR",exact:true}).click();
+      if(!await button("Save pull request").isDisabled())throw Error("Reopening an edit lost its pending write");
+      await button("Reload server version").click();
+      await page.waitForFunction(()=>document.querySelector('[aria-label="PR title"]')?.value==="Edit saved despite a lost response");
+      if(!await button("Save pull request").isDisabled())throw Error("Reloading metadata silently acknowledged a write");
+      await page.getByRole("checkbox",{name:"I checked the server result",exact:true}).check();
+      await button("Mark PR result as checked without resending").click();await button("Cancel").click();
+      if(requests.filter(r=>r.method==="PATCH").length!==before)throw Error("Checking the result resent an edit");
     });
     await check("stale PR edits retain typed text and send no write before an explicit refresh",async()=>{
       await page.getByRole("button",{name:"Edit PR",exact:true}).click();await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Preserved stale draft");pulls.get(100).updated_at="changed-by-reviewer";const before=requests.filter(r=>r.method==="PATCH").length;await button("Save pull request").click();await page.locator(".modal").getByRole("alert").filter({hasText:/pull request changed/i}).waitFor();if(await page.getByRole("textbox",{name:"PR title",exact:true}).inputValue()!=="Preserved stale draft"||requests.filter(r=>r.method==="PATCH").length!==before)throw Error("Stale edit was sent or draft was lost");await button("Cancel").click();await button("Discard edits").click();await page.waitForSelector("[data-pr-editor]",{state:"detached"});await page.getByRole("button",{name:"Reload request",exact:true}).click();await detail(100);

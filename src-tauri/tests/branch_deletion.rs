@@ -81,6 +81,21 @@ fn custom_upstream_mapping_deletes_only_the_intended_server_ref() {
 }
 
 #[test]
+fn replacement_objects_cannot_authorize_unconfirmed_remote_deletion() {
+    let r = Repo::new();
+    let outside = r.git(&["commit-tree", &r.git(&["rev-parse", "HEAD^{tree}"]), "-m", "unmerged root"]);
+    r.git(&["update-ref", "refs/heads/topic", &outside]);
+    r.git(&["push", "-q", "--force", "origin", "topic"]);
+    r.git(&["replace", "--graft", "HEAD", &outside]);
+    assert!(runner::exec(r.p(), ["merge-base", "--is-ancestor", &outside, "HEAD"]).unwrap().ok(), "Fixture must make replacement ancestry report merged");
+    let target = branch_deletion::targets(r.p(), "topic").unwrap().remove(0);
+    let error = branch_deletion::delete_remote(r.p(), &target, false, |_| {}).unwrap_err();
+    assert_eq!(error.kind, "not-merged");
+    assert!(r.remote_exists("topic"));
+    assert_eq!(r.git(&["rev-parse", "origin/topic"]), outside);
+}
+
+#[test]
 fn exact_and_wildcard_inverse_mappings_work_without_upstream() {
     for spec in ["+refs/heads/topic:refs/remotes/origin/renamed", "+refs/heads/*:refs/remotes/origin/prefix-*"] {
         let r = Repo::new();

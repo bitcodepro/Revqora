@@ -146,9 +146,16 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
     let has = |flag: &str| a.iter().any(|x| x == flag);
     match a.first().map(|s| s.as_str()).unwrap_or("") {
         "credential" => a.len() == 2 && a.get(1).is_some_and(|s| s == "fill"),
+        "var" => true,
+        "symbolic-ref" => {
+            let operands: Vec<_> =
+                a[1..].iter().filter(|s| !matches!(s.as_str(), "-q" | "--quiet" | "--short" | "--recurse" | "--no-recurse" | "--")).collect();
+            operands.len() == 1 && !operands[0].starts_with('-')
+        }
+        "reflog" => a.len() == 1 || a.get(1).is_some_and(|s| matches!(s.as_str(), "show" | "list" | "exists") || s.starts_with('-')),
         "status" | "diff" | "log" | "show" | "rev-parse" | "cat-file" | "for-each-ref" | "ls-files" | "ls-tree" | "range-diff" | "rev-list" | "merge-base"
-        | "blame" | "symbolic-ref" | "diff-tree" | "diff-index" | "reflog" | "show-ref" | "check-ref-format" | "version" | "--version" | "ls-remote"
-        | "describe" | "count-objects" | "name-rev" | "grep" | "check-ignore" => true,
+        | "blame" | "diff-tree" | "diff-index" | "show-ref" | "check-ref-format" | "version" | "--version" | "ls-remote" | "describe" | "count-objects"
+        | "name-rev" | "grep" | "check-ignore" => true,
         // Immutable object creation is safe concurrently; it does not modify refs,
         // the index or the working tree. An enclosing mutation still holds its gate.
         "hash-object" | "commit-tree" | "merge-tree" | "mktree" => true,
@@ -165,6 +172,37 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
 }
 
 pub fn exec_full<I, S>(repo: &Path, args: I, env: &[(&str, &str)], input: Option<&[u8]>) -> GitResult<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    exec_capture(repo, args, env, input, None)
+}
+
+/// Bound captured output while draining both pipes and reaping the Git process.
+pub fn exec_limited<I, S>(repo: &Path, args: I, limit: usize) -> GitResult<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    exec_capture(repo, args, &[], None, Some(limit))
+}
+
+fn capture_bytes(mut pipe: impl Read, limit: Option<usize>) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    match limit {
+        Some(limit) => {
+            Read::by_ref(&mut pipe).take(limit.saturating_add(1) as u64).read_to_end(&mut bytes)?;
+            std::io::copy(&mut pipe, &mut std::io::sink())?;
+        }
+        None => {
+            pipe.read_to_end(&mut bytes)?;
+        }
+    }
+    Ok(bytes)
+}
+
+fn exec_capture<I, S>(repo: &Path, args: I, env: &[(&str, &str)], input: Option<&[u8]>, limit: Option<usize>) -> GitResult<Output>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -202,19 +240,20 @@ where
                         let _ = stdin.write_all(&data);
                     })
                 });
-                let mut stderr_pipe = child.stderr.take().expect("stderr piped");
-                let err_thread = std::thread::spawn(move || {
-                    let mut buf = Vec::new();
-                    let _ = stderr_pipe.read_to_end(&mut buf);
-                    buf
-                });
-                let mut stdout = Vec::new();
-                child.stdout.take().expect("stdout piped").read_to_end(&mut stdout)?;
-                let status = child.wait()?;
+                let stderr_pipe = child.stderr.take().expect("stderr piped");
+                let err_thread = std::thread::spawn(move || capture_bytes(stderr_pipe, limit.map(|_| 128 * 1024)));
+                let stdout = capture_bytes(child.stdout.take().expect("stdout piped"), limit);
+                let status = child.wait();
                 if let Some(w) = writer {
                     let _ = w.join();
                 }
-                let stderr = String::from_utf8_lossy(&err_thread.join().unwrap_or_default()).into_owned();
+                let stderr = err_thread.join().unwrap_or_else(|_| Err(std::io::Error::other("Git stderr reader failed")))?;
+                let stdout = stdout?;
+                let status = status?;
+                if limit.is_some_and(|limit| stdout.len() > limit) {
+                    return Err(GitError::new("Git output exceeds the preview size limit.").kind("output-limit"));
+                }
+                let stderr = String::from_utf8_lossy(&stderr).into_owned();
                 Ok(Output { stdout, stderr, code: status.code().unwrap_or(-1) })
             })();
             if let Some(trace) = capture.as_mut() {
@@ -417,6 +456,14 @@ pub fn version_at_least(major: u32, minor: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::is_read_only;
+
+    #[test]
+    fn bounded_capture_drains_the_pipe_without_retaining_the_full_payload() {
+        let mut input = std::io::Cursor::new(vec![b'x'; 1024 * 1024]);
+        let captured = super::capture_bytes(&mut input, Some(1024)).unwrap();
+        assert_eq!(captured.len(), 1025);
+        assert_eq!(input.position(), 1024 * 1024);
+    }
 
     #[test]
     fn native_os_error_survives_conversion_without_becoming_a_git_exit_code() {

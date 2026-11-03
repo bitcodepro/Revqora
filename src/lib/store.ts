@@ -29,6 +29,7 @@ export interface RepoTab {
   layers: LayersState | null;
   graph: GraphSummary | null;
   graphVersion: number;
+  diffRefreshVersion: number;
   graphLoading: boolean;
   graphHasWorktree: boolean;
   branchFilter: string | null;
@@ -45,6 +46,8 @@ export interface RepoTab {
 }
 
 export interface Parts {
+  /** Filesystem observation, rather than an explicit refresh/action. */
+  background?: boolean;
   info?: boolean;
   status?: boolean;
   refs?: boolean;
@@ -78,6 +81,7 @@ function emptyTab(root: string): RepoTab {
     layers: null,
     graph: null,
     graphVersion: 0,
+    diffRefreshVersion: 0,
     graphLoading: false,
     graphHasWorktree: false,
     branchFilter: null,
@@ -125,6 +129,7 @@ function updateSquashMerged(root: string) {
 
 function merge(a: Parts | undefined, b: Parts): Parts {
   return {
+    background: a ? !!a.background && !!b.background : b.background,
     info: a?.info || b.info,
     status: a?.status || b.status,
     refs: a?.refs || b.refs,
@@ -209,11 +214,22 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       p = { ...p };
       delete p.status;
     }
+    if (p.status?.diffContextToken && p.status.diffContextToken !== t.status?.diffContextToken) {
+      // An index-only .gitattributes edit can arrive as an ordinary status event.
+      // Invalidate interpretation independently from unrelated worktree content.
+      invalidatePreview(root);
+    }
     set({ tabs: { ...get().tabs, [root]: { ...t, ...p } } });
   },
 
   refresh: async (root, parts = ALL) => {
-    invalidatePreview(root);
+    // Ordinary working-file activity does not change immutable commit previews.
+    // Metadata/attribute events and explicit refreshes still invalidate them.
+    if (!parts.background || parts.info || parts.refs || parts.graph) invalidatePreview(root);
+    if (!parts.background) {
+      const tab = get().tabs[root];
+      if (tab) get().patch(root, { diffRefreshVersion: tab.diffRefreshVersion + 1 });
+    }
     if (inflight.has(root)) {
       pending.set(root, merge(pending.get(root), parts));
       return inflight.get(root);
@@ -240,7 +256,15 @@ setOperationHooks({
     const tab = useRepos.getState().tabs[root];
     if (tab) useRepos.getState().patch(root, { pendingMutations: Math.max(0, tab.pendingMutations + delta) });
   },
-  observed: (root) => useRepos.getState().tabs[root]?.status?.stateToken ?? null,
+  observed: (root) => {
+    const tab = useRepos.getState().tabs[root];
+    const status = tab?.status, head = tab?.info?.head;
+    // Status can finish before repo_info during an external checkout. A token
+    // for the new branch is not a coherent displayed precondition while its
+    // heading is still old. Let operationClient re-read and reject that mismatch.
+    if (head && status && (head.branch !== status.branch || head.oid !== status.oid)) return null;
+    return status?.stateToken ?? null;
+  },
   observedHead: (root) => useRepos.getState().tabs[root]?.info?.head ?? null,
   refreshed: (root, status, info) => {
     if (useRepos.getState().tabs[root]) useRepos.getState().patch(root, { status, info });
@@ -284,7 +308,25 @@ async function refreshOnce(root: string, parts: Parts) {
   if (graphP && parts.graph) await graphP;
 }
 
+const graphRequests = new Map<string, number>();
+const graphQueues = new Map<string, Promise<void>>();
+
+// The backend has one graph-row cache per repository. Serialize builds so an
+// older filter cannot finish last and replace the cache behind a newer view.
 export async function loadGraph(root: string, includeWorktree?: boolean) {
+  const request = (graphRequests.get(root) ?? 0) + 1;
+  graphRequests.set(root, request);
+  const previous = graphQueues.get(root);
+  const job = (async () => {
+    if (previous) await previous.catch(() => {});
+    if (graphRequests.get(root) !== request) return;
+    await loadGraphOnce(root, includeWorktree, () => graphRequests.get(root) === request);
+  })();
+  graphQueues.set(root, job);
+  try { await job; } finally { if (graphQueues.get(root) === job) graphQueues.delete(root); }
+}
+
+async function loadGraphOnce(root: string, includeWorktree: boolean | undefined, current: () => boolean) {
   const store = useRepos.getState();
   const tab = store.tabs[root];
   if (!tab) return;
@@ -294,16 +336,19 @@ export async function loadGraph(root: string, includeWorktree?: boolean) {
     // First paint: the newest commits without the full ordered walk, then the whole history.
     if (!tab.graph) {
       const quick = await api.graphLoad(root, tab.branchFilter, dirty, 2000, true).catch(() => null);
+      if (!current()) return;
       const t0 = useRepos.getState().tabs[root];
       if (quick && t0 && !t0.graph) useRepos.getState().patch(root, { graph: quick, graphVersion: t0.graphVersion + 1, graphHasWorktree: dirty });
     }
     const summary = await api.graphLoad(root, tab.branchFilter, dirty, useRepos.getState().tabs[root]?.graphLimit ?? tab.graphLimit);
+    if (!current()) return;
     const t = useRepos.getState().tabs[root];
     if (!t) return;
     let selected = t.selected;
     if (selected === WORKTREE && !dirty) selected = null;
     useRepos.getState().patch(root, { graph: summary, graphVersion: t.graphVersion + 1, graphLoading: false, graphHasWorktree: dirty, selected });
   } catch (e) {
+    if (!current()) return;
     useRepos.getState().patch(root, { graphLoading: false, error: errorMessage(e) });
   }
 }

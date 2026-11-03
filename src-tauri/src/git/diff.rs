@@ -7,7 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use super::runner::{self, GitError, GitResult};
 
-pub const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+/// Resolve the empty tree in this repository's object format without writing an
+/// object or refreshing the index. SHA-1's well-known constant is not a SHA-256 ID.
+pub fn empty_tree(repo: &Path) -> GitResult<String> {
+    Ok(runner::run_env(repo, ["hash-object", "-t", "tree", "--stdin"], &[], Some(&[]))?.trim().to_owned())
+}
 const MAX_DISPLAY_LINES: usize = 20_000;
 
 #[derive(Debug, Clone)]
@@ -380,10 +384,13 @@ pub fn working_diff(repo: &Path, path: &str, side: WorkSide, base: Option<&str>,
 }
 
 /// Diff of a path between two revisions (`from` may be None for a root commit).
-pub fn rev_diff(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &DiffOptions) -> GitResult<FileDiff> {
+pub fn rev_raw(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &DiffOptions) -> GitResult<Vec<u8>> {
     let mut args = vec!["diff".to_string()];
     args.extend(base_args(opts));
-    args.push(from.unwrap_or(EMPTY_TREE).to_string());
+    args.push(match from {
+        Some(from) => from.to_owned(),
+        None => empty_tree(repo)?,
+    });
     args.push(to.to_string());
     args.push("--".into());
     args.push(path.into());
@@ -391,7 +398,11 @@ pub fn rev_diff(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &Di
     if !out.ok() {
         return Err(runner::to_error("git diff", &out));
     }
-    let raw = out.stdout;
+    Ok(out.stdout)
+}
+
+pub fn rev_diff(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &DiffOptions) -> GitResult<FileDiff> {
+    let raw = rev_raw(repo, from, to, path, opts)?;
     let hash = fingerprint(&raw);
     let files = parse(&raw);
     let pick = files.iter().find(|f| f.new_path.as_deref() == Some(path)).or_else(|| files.first());

@@ -3,12 +3,15 @@
 use std::path::Path;
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use super::runner::{self, GitResult};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FileStatus {
+    /// Display invalidation for this path, separate from the repository-wide mutation guard.
+    pub diff_token: String,
     pub path: String,
     pub orig_path: Option<String>,
     /// Index (staged) status letter: '.', 'M', 'A', 'D', 'R', 'C', 'T', 'U'
@@ -26,6 +29,8 @@ pub struct FileStatus {
 pub struct StatusSummary {
     /// Optimistic precondition for mutations queued from this displayed state.
     pub state_token: Option<String>,
+    /// Attribute/configuration interpretation, independent of ordinary file edits.
+    pub diff_context_token: Option<String>,
     pub state_version: u64,
     pub branch: Option<String>,
     pub oid: Option<String>,
@@ -81,6 +86,7 @@ pub fn parse(raw: &str) -> StatusSummary {
                 let path = fields[nfields - 1].to_string();
                 let orig = if kind == b'2' { parts.next().map(|p| p.to_string()) } else { None };
                 s.files.push(FileStatus {
+                    diff_token: format!("{:x}", Sha256::digest(rec.as_bytes())),
                     path,
                     orig_path: orig,
                     index: (xy[0] as char).to_string(),
@@ -97,6 +103,7 @@ pub fn parse(raw: &str) -> StatusSummary {
                     continue;
                 }
                 s.files.push(FileStatus {
+                    diff_token: format!("{:x}", Sha256::digest(rec.as_bytes())),
                     path: fields[10].to_string(),
                     orig_path: None,
                     index: "U".into(),
@@ -108,6 +115,7 @@ pub fn parse(raw: &str) -> StatusSummary {
             }
             b'?' => {
                 s.files.push(FileStatus {
+                    diff_token: format!("{:x}", Sha256::digest(rec.as_bytes())),
                     path: rec[2..].to_string(),
                     orig_path: None,
                     index: ".".into(),
@@ -141,7 +149,9 @@ pub fn status(repo: &Path) -> GitResult<StatusSummary> {
         let version = super::operations::next_version(repo);
         let raw = runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames"])?;
         let mut status = parse(&raw);
-        status.state_token = Some(super::operations::state_token(repo, &raw, &status.files)?);
+        let tokens = super::operations::state_tokens(repo, &raw, &mut status.files)?;
+        status.state_token = Some(tokens.state);
+        status.diff_context_token = Some(tokens.diff_context);
         status.state_version = version;
         Ok(status)
     })

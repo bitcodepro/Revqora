@@ -421,11 +421,12 @@ impl Journal {
         }
         let payload = serde_json::json!({"format":"revqora-operation-log","version":1,"exportedAt":now(),"matchingEntries":total,"truncated":total>snapshot.len() as i64,"operations":snapshot});
         let bytes = serde_json::to_vec_pretty(&payload).map_err(diagnostic)?;
-        let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(diagnostic)?;
+        let destination = parent.join(destination.file_name().ok_or("Choose a destination file.")?);
+        let mut temp = crate::git::atomic_file::new_in(&parent).map_err(diagnostic)?;
         use std::io::Write;
         temp.write_all(&bytes).map_err(diagnostic)?;
         temp.as_file().sync_all().map_err(diagnostic)?;
-        temp.persist(destination).map_err(diagnostic)?;
+        crate::git::atomic_file::replace(temp, &destination).map_err(diagnostic)?;
         Ok(snapshot.len())
     }
 }

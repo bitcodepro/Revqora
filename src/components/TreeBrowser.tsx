@@ -43,19 +43,27 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
   const [file, setFile] = useState<string | null>(null);
   const [line, setLine] = useState<number | null>(null);
   const [text, setText] = useState<string | null>(null);
+  const [textError, setTextError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<GrepHit[] | null>(null);
   const [searching, setSearching] = useState(false);
   const host = useRef<HTMLDivElement>(null);
+  const grepRequest = useRef(0);
 
   useEffect(() => {
-    api.listTree(root, rev).then(setPaths, (e) => setErr(errorMessage(e)));
+    let alive = true;
+    setPaths(null); setErr(null); setFile(null); setHits(null); setSearching(false);
+    api.listTree(root, rev).then(p => alive && setPaths(p), (e) => alive && setErr(errorMessage(e)));
+    return () => { alive = false; grepRequest.current++; };
   }, [root, rev]);
 
   useEffect(() => {
-    if (!file) return;
+    if (!file) { setText(null); return; }
+    let alive = true;
     setText(null);
-    api.fileText(root, `${rev}:${file}`).then((t) => setText(t ?? ""), (e) => toast.error(e));
+    setTextError(null);
+    api.fileText(root, `${rev}:${file}`).then((t) => alive && setText(t ?? ""), (e) => alive && setTextError(errorMessage(e)));
+    return () => { alive = false; };
   }, [root, rev, file]);
 
   useEffect(() => {
@@ -83,14 +91,16 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
   }, [text, file, line]);
 
   const runGrep = async () => {
-    if (!query.trim()) return setHits(null);
+    const request = ++grepRequest.current;
+    if (!query.trim()) { setHits(null); setSearching(false); return; }
     setSearching(true);
     try {
-      setHits(await api.grep(root, rev, query, true, false));
+      const result = await api.grep(root, rev, query, true, false);
+      if (request === grepRequest.current) setHits(result);
     } catch (e) {
-      toast.error(e, "Search failed");
+      if (request === grepRequest.current) toast.error(e, "Search failed");
     } finally {
-      setSearching(false);
+      if (request === grepRequest.current) setSearching(false);
     }
   };
 
@@ -136,7 +146,7 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
       <div className="cf-head">
         <FolderTree size={18} style={{ color: "var(--accent)" }} />
         <div className="cf-title">
-          <span className="p">Files at {/^[0-9a-f]{40}$/.test(rev) ? shortOid(rev) : rev}</span>
+          <span className="p">Files at {/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(rev) ? shortOid(rev) : rev}</span>
           <span className="s">{paths ? `${paths.length.toLocaleString()} files` : "Loading…"}</span>
         </div>
         <div className="search-box" style={{ width: 360, marginLeft: 16 }}>
@@ -161,7 +171,7 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
                 <>
                   <div className="file-list-head">
                     Search results
-                    <button className="btn sm ghost" style={{ marginLeft: "auto" }} onClick={() => setHits(null)}>
+                    <button className="btn sm ghost" style={{ marginLeft: "auto" }} onClick={() => { grepRequest.current++; setHits(null); setSearching(false); }}>
                       Show files
                     </button>
                   </div>
@@ -203,7 +213,8 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
                 </button>
               )}
             </div>
-            {file && text === null && (
+            {file && textError && <div className="empty error">{textError}</div>}
+            {file && text === null && !textError && (
               <div className="loading-center">
                 <span className="loader" />
               </div>

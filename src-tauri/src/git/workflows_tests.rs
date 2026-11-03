@@ -68,6 +68,38 @@ fn definitions_are_validated_and_compare_and_swap_preserves_other_editors() {
     delete_definition(r.path(), &id, &c.revision).unwrap();
     assert!(catalog(r.path()).unwrap().definitions.is_empty());
 }
+
+#[test]
+fn commit_step_rejects_unregistered_nested_repositories_before_staging_any_path() {
+    let r = repo();
+    let root = r.path();
+    let head = runner::run(root, ["rev-parse", "HEAD"]).unwrap();
+    fs::write(root.join("base.txt"), "workflow edits\n").unwrap();
+    let child = root.join("nested");
+    fs::create_dir(&child).unwrap();
+    runner::run(&child, ["init", "-qb", "main"]).unwrap();
+    runner::run(
+        &child,
+        ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "nested base"],
+    )
+    .unwrap();
+    let run = start(root, vec![step("commit", "workflow must not embed repositories", "")]);
+    let outcome = next(root, &run);
+    assert_eq!(outcome.phase, "failed", "{outcome:?}");
+    assert!(outcome.error.unwrap().contains("Nested repository"));
+    assert_eq!(runner::run(root, ["rev-parse", "HEAD"]).unwrap(), head);
+    assert!(runner::run(root, ["diff", "--cached", "--name-only"]).unwrap().is_empty());
+    assert_eq!(fs::read_to_string(root.join("base.txt")).unwrap(), "workflow edits\n");
+    assert!(child.join(".git").exists());
+    // A deliberately ignored child stays separate while ordinary edits can
+    // still be committed through the same workflow action.
+    fs::write(root.join(".gitignore"), "nested/\n").unwrap();
+    let run = start(root, vec![step("commit", "parent edits only", "")]);
+    assert_eq!(next(root, &run).phase, "completed");
+    assert_eq!(runner::run(root, ["show", "HEAD:base.txt"]).unwrap(), "workflow edits\n");
+    assert!(!runner::run(root, ["ls-tree", "HEAD"]).unwrap().contains("160000"));
+    assert!(child.join(".git").exists());
+}
 #[test]
 fn ordered_checks_branch_and_command_keep_base_and_reject_replayed_reviews() {
     let r = repo();
@@ -380,6 +412,9 @@ fn pr_agent_tests_and_commit_use_the_isolated_working_copy_and_review_requests_c
     let server_deny = deny.clone();
     let forked = Arc::new(AtomicBool::new(false));
     let server_forked = forked.clone();
+    // Deliver Stop while the last authoritative metadata read is in flight.
+    let cancel_on_detail: Arc<Mutex<Option<Arc<Job>>>> = Arc::new(Mutex::new(None));
+    let server_cancel = cancel_on_detail.clone();
     let http = Http::new(move |req| {
         let headers = "Content-Type: application/json\r\n".to_owned();
         let path = req.path.split('?').next().unwrap();
@@ -390,6 +425,9 @@ fn pr_agent_tests_and_commit_use_the_isolated_working_copy_and_review_requests_c
             return (200, headers, json!({"archived":false,"permissions":{"push":true}}).to_string());
         }
         if path.ends_with("/pulls/7") {
+            if let Some(job) = server_cancel.lock().take() {
+                job.cancel.store(true, Ordering::Release);
+            }
             let mut v = metadata("github", "Fixture follow-up", "", "main", 1);
             v["head"]["sha"] = json!(*server_head.lock());
             v["base"]["sha"] = json!(*server_head.lock());
@@ -527,5 +565,32 @@ fn pr_agent_tests_and_commit_use_the_isolated_working_copy_and_review_requests_c
     let waiting = start(root, vec![step("prChecks", "7", "")]);
     assert_eq!(next(root, &waiting).phase, "completed");
     assert!(forge::detect(root).unwrap().is_some());
+    deny.store(false, Ordering::Release);
+    let request = start(root, vec![step("prRequestReview", "7", "reviewer")]);
+    let proof = review(root, &request.id).unwrap();
+    let job = Arc::new(Job { run: Mutex::new(request.clone()), cancel: AtomicBool::new(false), finished: AtomicBool::new(false) });
+    let writes_before = http.seen.lock().iter().filter(|r| r.path.ends_with("/requested_reviewers") && r.method == "POST").count();
+    *cancel_on_detail.lock() = Some(job.clone());
+    assert!(execute_action(root, &request, &proof, &job).is_err());
+    assert!(job.cancel.load(Ordering::Acquire), "The review cancellation gate was not reached");
+    assert_eq!(http.seen.lock().iter().filter(|r| r.path.ends_with("/requested_reviewers") && r.method == "POST").count(), writes_before);
+    stop(root, &request.id).unwrap();
+    let request = start(root, vec![step("prRequestReview", "7", "reviewer")]);
+    let proof = review(root, &request.id).unwrap();
+    let job = Arc::new(Job { run: Mutex::new(request.clone()), cancel: AtomicBool::new(false), finished: AtomicBool::new(false) });
+    *cancel_on_detail.lock() = Some(job.clone());
+    assert!(pull_requests::execute_remote(root, &proof, &job).is_err());
+    assert!(job.cancel.load(Ordering::Acquire), "The final dispatch cancellation gate was not reached");
+    assert_eq!(http.seen.lock().iter().filter(|r| r.path.ends_with("/requested_reviewers") && r.method == "POST").count(), writes_before);
+    stop(root, &request.id).unwrap();
+    let history_before = crate::git::agents::list(root).unwrap().len();
+    let cancelled = start(root, vec![stopped.definition.steps[0].clone()]);
+    let proof = review(root, &cancelled.id).unwrap();
+    let job = Arc::new(Job { run: Mutex::new(cancelled.clone()), cancel: AtomicBool::new(false), finished: AtomicBool::new(false) });
+    *cancel_on_detail.lock() = Some(job.clone());
+    let error = pull_requests::execute_waiting(root, &proof, &job).unwrap_err();
+    assert!(job.cancel.load(Ordering::Acquire), "The cancellation gate was not reached");
+    assert_eq!(crate::git::agents::list(root).unwrap().len(), history_before, "Stop during the final PR read must not create another agent task: {error:?}");
+    stop(root, &cancelled.id).unwrap();
     manager.remove(&account, &manager.snapshot().unwrap().revision).unwrap();
 }
