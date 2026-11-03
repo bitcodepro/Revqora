@@ -180,6 +180,10 @@ fn inline_submodule_diff_refreshes_for_an_already_dirty_file_without_a_head_chan
     assert_ne!(token(&before), token(&after), "HEAD alone does not describe an inline submodule diff");
     fs::write(repo.root.join("outside.sqlite-wal"), "unrelated\n").unwrap();
     assert_eq!(token(&after), token(&repo.status()));
+    fs::write(module.join("inside.sqlite-wal"), "1111").unwrap();
+    let untracked = repo.status();
+    fs::write(module.join("inside.sqlite-wal"), "2222").unwrap();
+    assert_eq!(token(&untracked), token(&repo.status()), "untracked bytes are not part of the inline diff");
 }
 
 #[test]

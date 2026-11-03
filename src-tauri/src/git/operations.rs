@@ -260,7 +260,7 @@ fn submodule_fingerprint(module: &Path) -> GitResult<[u8; 32]> {
         // --branch captures the actual checked-out OID, including detached HEAD.
         let out = runner::exec_full(
             &root,
-            ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--ignore-submodules=none"],
+            ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=no", "--ignore-submodules=none"],
             &[("GIT_DIR", ".git")],
             None,
         )?;
