@@ -371,9 +371,16 @@ pub fn fetch_background(repo: &Path) -> GitResult<String> {
     runner::run_env(repo, ["fetch", "--all", "--prune", "--tags", "--quiet"], &background_env(ssh_configured), None)
 }
 
-pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<OpOutcome> {
+pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult<OpOutcome> {
     super::recovery::protect_transport(repo, false, None, None, false)?;
     if mode != "rebase" {
+        // Parse before fetching/merging, including Git's yes/on/1 spellings.
+        // Invalid configuration must fail before a partially completed pull.
+        let recurse = runner::exec(repo, ["config", "--bool", "--get", "submodule.recurse"])?;
+        if !recurse.ok() && recurse.code != 1 {
+            return Err(runner::to_error("git config submodule.recurse", &recurse));
+        }
+        let recurse = recurse.ok() && recurse.text().trim() == "true";
         // Fetch cannot confirm a merge or overwrite working files. Resolve the
         // fetched upstream only after it succeeds, then use our reviewed merge
         // path (including ignored-file protection and explicit commit control).
@@ -386,7 +393,7 @@ pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<OpO
         if !merges.ok() || merges.text().lines().filter(|s| !s.is_empty()).count() != 1 {
             return Err(GitError::new("Configure one upstream for this branch before pulling."));
         }
-        runner::run_streaming(repo, &["fetch".into(), "--progress".into(), "--write-fetch-head".into()], &[], on_line)?;
+        runner::run_streaming(repo, &["fetch".into(), "--progress".into(), "--write-fetch-head".into()], &[], &mut on_line)?;
         let after = status::status(repo)?;
         if before.branch != after.branch
             || before.oid != after.oid
@@ -411,7 +418,30 @@ pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<OpO
         if targets.len() != 1 {
             return Err(GitError::new("Fetch completed, but no single configured upstream was fetched. Check this branch's remote and upstream settings."));
         }
-        return merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, mode == "merge");
+        let mut outcome = merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, mode == "merge")?;
+        if recurse && outcome.status != "conflicts" {
+            // Native `git pull` does this after a successful merge, including
+            // --no-commit. No --init or --force: preserve uninitialized modules
+            // and let checkout reject dirty tracked/untracked collisions.
+            let args = ["submodule", "update", "--recursive", "--checkout"].map(String::from);
+            match runner::run_streaming(repo, &args, &[], &mut on_line) {
+                Ok(output) => {
+                    if !output.trim().is_empty() {
+                        outcome.message.push('\n');
+                        outcome.message.push_str(output.trim());
+                    }
+                }
+                Err(mut error) => {
+                    error.message = format!("Pull integrated the parent repository, but updating submodules failed. Inspect its current state before retrying; the parent update has not been rolled back. {}", error.message);
+                    error.kind = "partial-operation".into();
+                    error.details.push(format!("parent_head_before={}", before.oid.as_deref().unwrap_or("unborn")));
+                    error.details.push(format!("parent_head_after={}", head_oid(repo).as_deref().unwrap_or("unborn")));
+                    error.details.push(format!("parent_outcome={}", outcome.status));
+                    return Err(error);
+                }
+            }
+        }
+        return Ok(outcome);
     }
     let mut args = vec!["pull".to_string(), "--progress".into()];
     match mode {

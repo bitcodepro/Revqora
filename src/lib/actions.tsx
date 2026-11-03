@@ -207,7 +207,8 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
     outcome = await api.pull(root, mode, opId);
   } catch (e) {
     const msg = errorMessage(e).toLowerCase();
-    if (mode === "ff-only" && (msg.includes("not possible to fast-forward") || msg.includes("diverg"))) diverged = true;
+    if (isGitError(e) && e.kind === "partial-operation") toast.error(e, "Pull partially completed — review the repository and submodules");
+    else if (mode === "ff-only" && (msg.includes("not possible to fast-forward") || msg.includes("diverg"))) diverged = true;
     else if (isGitError(e) && e.kind === "auth") toast.error(e, "Authentication failed — check your credentials or SSH key");
     else toast.error(e, "Pull failed");
   } finally {

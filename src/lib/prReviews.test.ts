@@ -1,9 +1,36 @@
 import {beforeEach,describe,expect,it,vi} from "vitest";
-import {mergeReviewThreads,refreshReviewThread,reviewAttemptPending,setReviewAttemptPending,previousReviewDrafts,readReviewDraft,reviewDraftKey,writeReviewDraft} from "./prReviews";
+import {mergeReviewThreads,refreshReviewThread,reviewAttemptPending,setReviewAttemptPending,previousReviewDrafts,readReviewDraft,reviewDraftKey,writeReviewDraft,restoreReviewDraft} from "./prReviews";
 import type {PrThread} from "./types";
 import {mergeDraftKey} from "./prMerge";
 beforeEach(()=>{const values:Record<string,string>={};Object.defineProperties(values,{getItem:{value:(k:string)=>values[k]??null},setItem:{value:(k:string,v:string)=>{values[k]=v;}},removeItem:{value:(k:string)=>{delete values[k];}}});vi.stubGlobal("localStorage",values);});
 const key=(head="a",account="account",number=7)=>reviewDraftKey("D:/Projects/Repo",account,number,head,"reply","T7");
+describe("draft format upgrades",()=>{
+ const server=JSON.stringify(["github","https://api.github.com","team/repo"]),legacy={connection:"proof-before-upgrade",actor:"actor1"};
+ const current=(head="a",kind="reply",target="T7")=>reviewDraftKey("D:/Projects/Repo",JSON.stringify([server,legacy.actor]),7,head,kind,target);
+ // Literal pre-upgrade wire format, independent of the current key builder.
+ const old=(head="a",kind="reply",target="T7",identity="proof-before-upgrade:actor1")=>'revqora:review-draft:'+JSON.stringify(["d:/projects/repo",identity,7,head,kind,target]);
+ const seed=(k:string,text="Saved before upgrading")=>localStorage.setItem(k,JSON.stringify({body:text,updated:1}));
+ it.each([["reply","T7"],["comment","general"],["merge","request"]])("recovers a pre-upgrade %s draft without forgetting an uncertain write",(kind,target)=>{
+  const head=kind==="merge"?"request":"a",from=old(head,kind,target),to=current(head,kind,target);seed(from);setReviewAttemptPending(from,true);
+  expect(previousReviewDrafts(to,legacy)).toEqual([{key:from,head,body:"Saved before upgrading"}]);
+  expect(readReviewDraft(to)).toBe("");expect(restoreReviewDraft(to,from,legacy)).toBe("Saved before upgrading");
+  expect(readReviewDraft(to)).toBe("Saved before upgrading");expect(localStorage.getItem(from)).toBeNull();expect(reviewAttemptPending(to)).toBe(true);
+ });
+ it("requires the verified connection and actor and never mixes destinations or existing text",()=>{
+  seed(old());seed(old("a","reply","T7","other-proof:actor1"));seed(old("a","reply","T7","proof-before-upgrade:actor2"));seed(old("a","reply","other-thread"));
+  writeReviewDraft(current(),"Newer text");expect(readReviewDraft(current())).toBe("Newer text");expect(previousReviewDrafts(current(),legacy)).toHaveLength(1);
+  for(const to of [reviewDraftKey("D:/Other",JSON.stringify([server,"actor1"]),7,"a","reply","T7"),reviewDraftKey("D:/Projects/Repo",JSON.stringify([server,"actor2"]),7,"a","reply","T7"),reviewDraftKey("D:/Projects/Repo",JSON.stringify([server,"actor1"]),8,"a","reply","T7")]){
+   expect(previousReviewDrafts(to,legacy)).toEqual([]);expect(()=>restoreReviewDraft(to,old(),legacy)).toThrow();
+  }
+  expect(previousReviewDrafts(current(),{...legacy,connection:"another-server-proof"})).toEqual([]);expect(previousReviewDrafts(current())).toEqual([]);
+ });
+ it("can migrate at the draft limit and preserves the source on a storage failure",()=>{
+  seed(old());for(let n=0;n<31;n++)writeReviewDraft(key("a","account",100+n),"Keep");
+  expect(restoreReviewDraft(current(),old(),legacy)).toBe("Saved before upgrading");expect(Object.keys(localStorage)).toHaveLength(32);
+  seed(old("b"));const original=localStorage;vi.stubGlobal("localStorage",{...original,getItem:original.getItem,removeItem:original.removeItem,setItem(){throw Error("disk full");}});
+  expect(()=>restoreReviewDraft(current("b"),old("b"),legacy)).toThrow("disk full");expect(readReviewDraft(old("b"))).toBe("Saved before upgrading");
+ });
+});
 it("keeps an unknown review result across account changes, source updates and local clones without sharing written drafts",()=>{
  const server=JSON.stringify(["github","https://api.github.com","team/repo"]);
  const old=reviewDraftKey("D:/Projects/Repo",JSON.stringify([server,"actor1"]),7,"a","reply","T7");

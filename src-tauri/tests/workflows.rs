@@ -30,6 +30,106 @@ fn pull_fixture() -> (Repo, Repo) {
     (local, remote)
 }
 
+fn submodule_pull_fixture() -> (Repo, Repo, Repo, String, String) {
+    let module = Repo::new();
+    module.write("content.txt", "module A\n");
+    let a = module.commit_all("module A");
+    module.write("content.txt", "module B\n");
+    module.write("added.txt", "remote addition\n");
+    let b = module.commit_all("module B");
+    let (local, remote) = pull_fixture();
+    remote.git(&["-c", "protocol.file.allow=always", "submodule", "add", module.p().to_str().unwrap(), "module"]);
+    runner::run(&remote.p().join("module"), ["checkout", "--detach", &a]).unwrap();
+    remote.commit_all("add module at A");
+    local.git(&["pull", "--ff-only"]);
+    local.git(&["-c", "protocol.file.allow=always", "submodule", "update", "--init"]);
+    runner::run(&remote.p().join("module"), ["checkout", "--detach", &b]).unwrap();
+    remote.commit_all("advance module to B");
+    (local, remote, module, a, b)
+}
+
+#[test]
+fn pull_recurses_into_initialized_submodules_like_native_git() {
+    for setting in ["true", "yes", "on", "1"] {
+        let (local, remote, _module, _, b) = submodule_pull_fixture();
+        local.git(&["config", "submodule.recurse", setting]);
+        // Independent control: native Git Pull on the exact same parent/module history.
+        let control = Repo::new();
+        control.git(&["fetch", local.p().to_str().unwrap(), "main"]);
+        control.git(&["reset", "--hard", "FETCH_HEAD"]);
+        control.git(&["remote", "add", "origin", remote.p().to_str().unwrap()]);
+        control.git(&["fetch", "origin"]);
+        control.git(&["branch", "--set-upstream-to=origin/main", "main"]);
+        control.git(&["-c", "protocol.file.allow=always", "submodule", "update", "--init"]);
+        control.git(&["config", "submodule.recurse", setting]);
+        control.git(&["pull", "--ff-only"]);
+        assert_eq!(runner::run(&control.p().join("module"), ["rev-parse", "HEAD"]).unwrap().trim(), b);
+        let out = ops::pull(local.p(), "ff-only", |_| {}).unwrap();
+        assert_eq!(out.status, "fastForward", "{out:?}");
+        assert_eq!(runner::run(&local.p().join("module"), ["rev-parse", "HEAD"]).unwrap().trim(), b, "submodule.recurse={setting}");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]), remote.git(&["rev-parse", "HEAD"]));
+        assert!(local.git(&["status", "--porcelain"]).trim().is_empty());
+    }
+}
+
+#[test]
+fn pull_reports_partial_completion_without_overwriting_dirty_submodules() {
+    for path in ["content.txt", "added.txt"] {
+        let (local, remote, _module, a, _) = submodule_pull_fixture();
+        local.git(&["config", "submodule.recurse", "true"]);
+        local.write(&format!("module/{path}"), "user changes\n");
+        let error = ops::pull(local.p(), "ff-only", |_| {}).unwrap_err();
+        assert_eq!(error.kind, "partial-operation", "{error:?}");
+        assert!(error.message.contains("submodule"), "{error:?}");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]), remote.git(&["rev-parse", "HEAD"]));
+        assert_eq!(runner::run(&local.p().join("module"), ["rev-parse", "HEAD"]).unwrap().trim(), a);
+        assert_eq!(local.read(&format!("module/{path}")), "user changes\n");
+    }
+}
+
+#[test]
+fn pull_keeps_disabled_recursion_and_uninitialized_modules_unchanged() {
+    let (local, _remote, _module, a, _) = submodule_pull_fixture();
+    local.git(&["config", "submodule.recurse", "false"]);
+    ops::pull(local.p(), "ff-only", |_| {}).unwrap();
+    assert_eq!(runner::run(&local.p().join("module"), ["rev-parse", "HEAD"]).unwrap().trim(), a);
+    let (local, _remote, _module, _, _) = submodule_pull_fixture();
+    local.git(&["submodule", "deinit", "module"]);
+    local.git(&["config", "submodule.recurse", "true"]);
+    ops::pull(local.p(), "ff-only", |_| {}).unwrap();
+    assert!(!local.p().join("module/content.txt").exists());
+}
+
+#[test]
+fn recursive_pull_prepares_a_divergent_merge_without_confirming_it() {
+    let (local, _remote, _module, a, b) = submodule_pull_fixture();
+    local.git(&["config", "submodule.recurse", "true"]);
+    local.write("local.txt", "local commit\n");
+    let before = local.commit_all("diverge");
+    let out = ops::pull(local.p(), "merge", |_| {}).unwrap();
+    assert_eq!(out.status, "pending", "{out:?}");
+    assert_eq!(local.git(&["rev-parse", "HEAD"]).trim(), before);
+    assert!(local.p().join(".git/MERGE_HEAD").exists());
+    assert_eq!(runner::run(&local.p().join("module"), ["rev-parse", "HEAD"]).unwrap().trim(), b);
+    assert!(local.git(&["ls-tree", "HEAD", "module"]).contains(&a));
+    assert!(local.git(&["ls-files", "--stage", "module"]).contains(&b));
+    ops::abort_op(local.p(), "merge").unwrap();
+}
+
+#[test]
+fn invalid_submodule_recursion_fails_before_fetching_or_merging() {
+    let (local, remote) = pull_fixture();
+    remote.write("new.txt", "remote update\n");
+    remote.commit_all("remote");
+    let before = local.git(&["rev-parse", "HEAD"]);
+    let fetched_before = fs::read(local.p().join(".git/FETCH_HEAD")).unwrap();
+    local.git(&["config", "submodule.recurse", "invalid"]);
+    assert!(ops::pull(local.p(), "ff-only", |_| {}).is_err());
+    assert_eq!(local.git(&["rev-parse", "HEAD"]), before);
+    assert_eq!(fs::read(local.p().join(".git/FETCH_HEAD")).unwrap(), fetched_before);
+    assert!(!local.p().join("new.txt").exists());
+}
+
 #[test]
 fn audit_pull_merge_waits_for_confirmation_and_ff_ignores_squash_defaults() {
     let (local, remote) = pull_fixture();
