@@ -516,7 +516,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       </div>
     );
   } else if (diff.binary && root && images && isImagePath(path)) {
-    body = <ImageDiff root={root} sides={{ old: diff.isNew ? null : images.old, new: diff.isDeleted ? null : images.new }} />;
+    body = <ImageDiff root={root} revision={diff.hash} sides={{ old: diff.isNew ? null : images.old, new: diff.isDeleted ? null : images.new }} />;
   } else if (diff.binary) {
     body = (
       <div className="empty">
@@ -568,7 +568,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   }
 
   return (
-    <div className="diff" style={{ ["--diff-view-width" as string]: `${viewW}px`, ["--split-scroll" as string]: `${splitPan ? horizontal.position : 0}px`, ["--diff-tab-size" as string]: DIFF_TAB_SIZE }} onKeyDown={onKeyDown} tabIndex={-1}>
+    <div className="diff" aria-busy={!!loading} data-diff-hash={diff?.hash} style={{ ["--diff-view-width" as string]: `${viewW}px`, ["--split-scroll" as string]: `${splitPan ? horizontal.position : 0}px`, ["--diff-tab-size" as string]: DIFF_TAB_SIZE }} onKeyDown={onKeyDown} tabIndex={-1}>
       {path && head}
       {findBar}
       {root&&images&&diff&&!diff.binary&&supportsSemantic(path)&&diff.oldMode!=="120000"&&diff.newMode!=="120000"&&<SemanticDiff key={path} root={root} path={path} version={diff} sides={{old:diff.isNew?null:images.old,new:diff.isDeleted?null:images.new}}/>}

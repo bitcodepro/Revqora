@@ -214,6 +214,11 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       p = { ...p };
       delete p.status;
     }
+    if (p.status?.diffContextToken && p.status.diffContextToken !== t.status?.diffContextToken) {
+      // An index-only .gitattributes edit can arrive as an ordinary status event.
+      // Invalidate interpretation independently from unrelated worktree content.
+      invalidatePreview(root);
+    }
     set({ tabs: { ...get().tabs, [root]: { ...t, ...p } } });
   },
 
@@ -251,7 +256,15 @@ setOperationHooks({
     const tab = useRepos.getState().tabs[root];
     if (tab) useRepos.getState().patch(root, { pendingMutations: Math.max(0, tab.pendingMutations + delta) });
   },
-  observed: (root) => useRepos.getState().tabs[root]?.status?.stateToken ?? null,
+  observed: (root) => {
+    const tab = useRepos.getState().tabs[root];
+    const status = tab?.status, head = tab?.info?.head;
+    // Status can finish before repo_info during an external checkout. A token
+    // for the new branch is not a coherent displayed precondition while its
+    // heading is still old. Let operationClient re-read and reject that mismatch.
+    if (head && status && (head.branch !== status.branch || head.oid !== status.oid)) return null;
+    return status?.stateToken ?? null;
+  },
   observedHead: (root) => useRepos.getState().tabs[root]?.info?.head ?? null,
   refreshed: (root, status, info) => {
     if (useRepos.getState().tabs[root]) useRepos.getState().patch(root, { status, info });

@@ -38,6 +38,11 @@ fn classify(root: &Path, git_dir: &Path, p: &Path) -> Option<bool> {
             return None;
         }
     }
+    if let Some(dir) = rel.ancestors().find(|p| p.file_name().is_some_and(|name| name == ".git")) {
+        // Traditional nested repos/submodules keep Git metadata under the
+        // worktree. Apply the same metadata/lock/object rules there too.
+        return classify(root, &root.join(dir), p);
+    }
     if rel.file_name().is_some_and(|name| name == ".gitattributes") {
         // Attributes can change the interpretation of immutable commit diffs too.
         return Some(true);
@@ -196,6 +201,11 @@ mod tests {
         assert_eq!(classify(root, gd, Path::new("/r/.git/objects/ab/cdef")), None);
         assert_eq!(classify(root, gd, Path::new("/r/.git/index.lock")), None);
         assert_eq!(classify(root, gd, Path::new("/r/src/main.rs")), Some(false));
+        assert_eq!(classify(root, gd, Path::new("/r/module/.git/info/attributes")), Some(true));
+        assert_eq!(classify(root, gd, Path::new("/r/module/.git/HEAD")), Some(true));
+        assert_eq!(classify(root, gd, Path::new("/r/module/.git/index")), Some(false));
+        assert_eq!(classify(root, gd, Path::new("/r/module/.git/index.lock")), None);
+        assert_eq!(classify(root, gd, Path::new("/r/module/.git/objects/ab/cdef")), None);
         assert_eq!(classify(root, gd, Path::new("/r/node_modules/x/index.js")), None);
         assert_eq!(classify(root, gd, Path::new("/r/app/target/debug/x")), None);
     }

@@ -90,6 +90,7 @@ export interface FileStatus {
 
 export interface StatusSummary {
   stateToken?: string | null;
+  diffContextToken?: string | null;
   stateVersion?: number;
   branch: string | null;
   oid: string | null;

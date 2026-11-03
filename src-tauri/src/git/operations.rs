@@ -229,8 +229,73 @@ fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<[u8; 32]> {
     Ok(digest)
 }
 
-/// No write-tree, index refresh or snapshots. Hash changed files, not the entire repo.
-pub fn state_token(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus]) -> GitResult<String> {
+fn hash_attribute(hash: &mut Sha256, path: &Path, indexed: Option<&[u8]>) -> GitResult<[u8; 32]> {
+    let mut attribute = Sha256::new();
+    attribute.update(hash_file(hash, path)?);
+    if let Some(indexed) = indexed {
+        attribute.update(indexed);
+    }
+    Ok(attribute.finalize().into())
+}
+
+pub struct StateTokens {
+    pub state: String,
+    pub diff_context: String,
+}
+
+fn submodule_fingerprint(module: &Path) -> GitResult<[u8; 32]> {
+    let mut hash = Sha256::new();
+    let mut pending = vec![module.to_owned()];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut attributes = std::collections::BTreeSet::new();
+    while let Some(root) = pending.pop() {
+        if !seen.insert(canonical(&root)) {
+            return Err(GitError::new("A cyclic submodule worktree cannot be inspected.").kind("submodule-cycle"));
+        }
+        if !root.join(".git").exists() {
+            hash.update(b"uninitialized\0");
+            continue;
+        }
+        // Explicit Git dir prevents fallback to the parent after deinitializing.
+        // --branch captures the actual checked-out OID, including detached HEAD.
+        let out = runner::exec_full(
+            &root,
+            ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--ignore-submodules=none"],
+            &[("GIT_DIR", ".git")],
+            None,
+        )?;
+        if !out.ok() {
+            return Err(runner::to_error("git status submodule", &out));
+        }
+        hash.update(&out.stdout);
+        let common = repository_key(&root);
+        hash_file(&mut hash, &common.join("config"))?;
+        hash_file(&mut hash, &common.join("info/attributes"))?;
+        // Inline submodule diffs can change while HEAD and dirty flags stay the
+        // same. Stream tracked dirty contents instead of materializing a patch.
+        for file in super::status::parse(&out.text()).files {
+            if file.untracked {
+                continue; // Git's inline diff does not display untracked contents.
+            }
+            let path = root.join(&file.path);
+            hash_file(&mut hash, &path)?;
+            for parent in path.parent().into_iter().flat_map(Path::ancestors).take_while(|p| p.starts_with(&root)) {
+                let attr = parent.join(".gitattributes");
+                if attributes.insert(attr.clone()) {
+                    hash_file(&mut hash, &attr)?;
+                }
+            }
+            if file.submodule {
+                pending.push(path);
+            }
+        }
+    }
+    Ok(hash.finalize().into())
+}
+
+/// No write-tree, index refresh or snapshots. Hash changed files and Git attributes,
+/// not the entire worktree. The display context never substitutes for the full guard.
+pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus]) -> GitResult<StateTokens> {
     let mut hash = Sha256::new();
     hash.update(raw_status.as_bytes());
     let gd = super::repo::git_dir(repo)?;
@@ -277,6 +342,19 @@ pub fn state_token(repo: &Path, raw_status: &str, files: &mut [super::status::Fi
     }
     hash_file(&mut hash, &super::storage::dir(repo)?.join("squash-target"))?;
     let mut attributes = BTreeMap::new();
+    // Indexed attributes may affect a sealed layer even if later layers cancel
+    // that file's net index change and it is absent from the ordinary status list.
+    for path in indexed_attributes
+        .keys()
+        .cloned()
+        .chain(files.iter().filter(|f| Path::new(&f.path).file_name().is_some_and(|name| name == ".gitattributes")).map(|f| repo.join(&f.path)))
+    {
+        if let std::collections::btree_map::Entry::Vacant(entry) = attributes.entry(path) {
+            let path = entry.key();
+            let digest = hash_attribute(&mut hash, path, indexed_attributes.get(path).map(Vec::as_slice))?;
+            entry.insert(digest);
+        }
+    }
     for file in files {
         hash.update(file.path.as_bytes());
         let content = hash_file(&mut hash, &repo.join(&file.path))?;
@@ -287,6 +365,11 @@ pub fn state_token(repo: &Path, raw_status: &str, files: &mut [super::status::Fi
         display.update(content);
         display.update(config);
         display.update(info_attributes);
+        if file.submodule {
+            let module = submodule_fingerprint(&repo.join(&file.path))?;
+            hash.update(module);
+            display.update(module);
+        }
         for name in [Some(file.path.as_str()), file.orig_path.as_deref()].into_iter().flatten() {
             let path = repo.join(name);
             for parent in path.parent().into_iter().flat_map(Path::ancestors).take_while(|p| p.starts_with(repo)) {
@@ -294,12 +377,7 @@ pub fn state_token(repo: &Path, raw_status: &str, files: &mut [super::status::Fi
                 let digest = match attributes.get(&path) {
                     Some(digest) => *digest,
                     None => {
-                        let mut attribute = Sha256::new();
-                        attribute.update(hash_file(&mut hash, &path)?);
-                        if let Some(indexed) = indexed_attributes.get(&path) {
-                            attribute.update(indexed);
-                        }
-                        let digest: [u8; 32] = attribute.finalize().into();
+                        let digest = hash_attribute(&mut hash, &path, indexed_attributes.get(&path).map(Vec::as_slice))?;
                         attributes.insert(path, digest);
                         digest
                     }
@@ -309,5 +387,18 @@ pub fn state_token(repo: &Path, raw_status: &str, files: &mut [super::status::Fi
         }
         file.diff_token = format!("{:x}", display.finalize());
     }
-    Ok(format!("{:x}", hash.finalize()))
+    let mut context = Sha256::new();
+    context.update(config);
+    context.update(info_attributes);
+    for (path, digest) in attributes {
+        // Missing candidates discovered because an unrelated file appeared must
+        // not change the interpretation generation (e.g. a new SQLite WAL).
+        if indexed_attributes.contains_key(&path) || path.exists() {
+            let name = path.as_os_str().as_encoded_bytes();
+            context.update((name.len() as u64).to_le_bytes());
+            context.update(name);
+            context.update(digest);
+        }
+    }
+    Ok(StateTokens { state: format!("{:x}", hash.finalize()), diff_context: format!("{:x}", context.finalize()) })
 }

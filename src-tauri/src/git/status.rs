@@ -29,6 +29,8 @@ pub struct FileStatus {
 pub struct StatusSummary {
     /// Optimistic precondition for mutations queued from this displayed state.
     pub state_token: Option<String>,
+    /// Attribute/configuration interpretation, independent of ordinary file edits.
+    pub diff_context_token: Option<String>,
     pub state_version: u64,
     pub branch: Option<String>,
     pub oid: Option<String>,
@@ -147,7 +149,9 @@ pub fn status(repo: &Path) -> GitResult<StatusSummary> {
         let version = super::operations::next_version(repo);
         let raw = runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames"])?;
         let mut status = parse(&raw);
-        status.state_token = Some(super::operations::state_token(repo, &raw, &mut status.files)?);
+        let tokens = super::operations::state_tokens(repo, &raw, &mut status.files)?;
+        status.state_token = Some(tokens.state);
+        status.diff_context_token = Some(tokens.diff_context);
         status.state_version = version;
         Ok(status)
     })

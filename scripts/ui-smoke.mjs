@@ -1,5 +1,5 @@
 import { futureStagesSmoke } from "./future-stages-smoke.mjs";
-import { liveDiffSmoke } from "./live-diff-smoke.mjs";
+import { liveDiffSmoke, sealedLayerAttributesSmoke, submoduleHeadSmoke } from "./live-diff-smoke.mjs";
 import {workflowSmoke} from "./workflow-smoke.mjs";
 import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
 import {prCenterSmoke} from "./pr-center-smoke.mjs";
@@ -154,6 +154,7 @@ try {
       fs.writeFileSync(userFile, "User changes must still be watched\n");
       await page.waitForFunction(() => window.__profileSignals.some((e) => e.worktree), null, { timeout: 10000 });
       await liveDiffSmoke({page,root:repo,file:userFile,noise:path.join(repo,"watcher.sqlite-wal")});
+      await submoduleHeadSmoke({page,work,returnName:/^demo$/});
     } finally {
       await page.evaluate(async (eventId) => { window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener("repo-changed", eventId); await window.__TAURI_INTERNALS__.invoke("plugin:event|unlisten", { event: "repo-changed", eventId }); }, listener);
       fs.rmSync(userFile, { force: true });
@@ -436,6 +437,7 @@ try {
     await page.click("button[title^='Seal what is staged']");
     await page.waitForSelector(".layer:not(.open-layer)");
     await page.waitForSelector(".changes[data-pending='false']");
+    await sealedLayerAttributesSmoke({page,root:repo});
     // Reproduce a real response ordering: refresh's status was read before add,
     // its layer list after add, while add's completion is still in transit.
     // Delay transport responses; do not fabricate repository state or bypass Git.
@@ -503,6 +505,11 @@ try {
     await page.click(".view-tab:has-text('Changes')");
     await page.locator(".changes .file-row", { hasText: "logo.png" }).first().click();
     await page.waitForSelector(".diff img[alt='After']");
+    const oldHash=await page.locator(".changes .diff").getAttribute("data-diff-hash");
+    const replacement=await page.evaluate(()=>{const canvas=document.createElement("canvas");canvas.width=2;canvas.height=1;const ctx=canvas.getContext("2d");ctx.fillStyle="#12ab34";ctx.fillRect(0,0,2,1);return canvas.toDataURL("image/png");});
+    fs.writeFileSync(path.join(repo,"logo.png"),Buffer.from(replacement.split(",")[1],"base64"));
+    await page.waitForFunction(old=>{const diff=document.querySelector(".changes .diff");return diff?.dataset.diffHash!==old&&diff?.getAttribute("aria-busy")==="false";},oldHash);
+    await page.waitForFunction(expected=>{const img=document.querySelector(".changes .diff img[alt='After']");return img?.src===expected&&img.naturalWidth===2;},replacement);
     await shot("09-image-diff");
   });
 

@@ -1,5 +1,5 @@
 import { repositoryFiles } from "./RepositoryFiles";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import {
   Archive,
   ArrowDown,
@@ -45,6 +45,7 @@ import { confirmDialog, identityDialog, promptDialog } from "./dialogs";
 import { Modal } from "./Modal";
 import { fileHistoryDialog } from "./FileHistory";
 import { Splitter } from "./Overlays";
+import { previewGeneration, subscribePreview } from "../lib/commitPreview";
 
 const isNestedFile = (f: FileStatus) => f.untracked && f.path.endsWith("/");
 const openNestedFile = (root: string, f: FileStatus) => { void useRepos.getState().open(joinPath(root, f.path)).catch((e) => toast.error(e)); };
@@ -213,6 +214,10 @@ function dragFile(e: React.DragEvent, from: "unstaged" | "staged", path: string)
 
 export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConflict: (path: string) => void }) {
   const root = tab.root;
+  const interpretation = useSyncExternalStore(
+    useCallback((listener) => subscribePreview(root, listener), [root]),
+    useCallback(() => previewGeneration(root), [root]),
+  );
   const pending = tab.pendingMutations > 0;
   const patch = useRepos((s) => s.patch);
   const { mode, layout: { changesListWidth: width }, setLayout: setSettings } = useWorkspaceLayout();
@@ -240,7 +245,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const toTree = selectedLayer?.toTree;
   const file = files.find((f) => f.path === path);
   const viewKey = JSON.stringify([root, sel, opts]);
-  const diffKey = JSON.stringify([viewKey, kind === "layer" ? null : file?.diffToken ?? tab.status?.stateToken, layers?.stagedBase, fromTree, toTree, tab.diffRefreshVersion]);
+  const diffKey = JSON.stringify([viewKey, kind === "layer" ? interpretation : file?.diffToken ?? tab.status?.stateToken, file?.submodule ? interpretation : null, layers?.stagedBase, fromTree, toTree, tab.diffRefreshVersion]);
   // Keep the same file readable during revalidation. Its line actions remain
   // unavailable until the new response is current; another file never reuses it.
   const currentDiff = diffResult?.view === viewKey ? diffResult : null;
@@ -433,7 +438,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const conflictSel = sel?.kind === "conflict" ? conflicts.find((f) => f.path === sel.path) : undefined;
 
   return (
-    <div className="changes" data-pending={pending} style={{ ["--changes-w" as string]: `${w}px` }}>
+    <div className="changes" data-pending={pending} data-diff-context={tab.status?.diffContextToken ?? ""} style={{ ["--changes-w" as string]: `${w}px` }}>
       <div className="changes-left">
         <div className="changes-lists">
           <div className="hstack" style={{ justifyContent: "flex-end", padding: "4px 4px 0" }}>

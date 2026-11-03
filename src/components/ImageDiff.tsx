@@ -24,9 +24,9 @@ function fmtSize(n: number) {
   return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }
 
-function useBlob(root: string, spec: BlobSpec | null) {
+function useBlob(root: string, spec: BlobSpec | null, revision: string) {
   const [state, setState] = useState<{ data: Loaded | null; loading: boolean; error: string | null }>({ data: null, loading: !!spec, error: null });
-  const key = spec ? JSON.stringify(spec) : "";
+  const key = spec ? JSON.stringify([spec, revision]) : "";
   useEffect(() => {
     if (!spec) {
       setState({ data: null, loading: false, error: null });
@@ -87,9 +87,9 @@ function Side({ label, tone, state }: { label: string; tone: string; state: Retu
   );
 }
 
-export function ImageDiff({ root, sides }: { root: string; sides: ImageSides }) {
-  const before = useBlob(root, sides.old);
-  const after = useBlob(root, sides.new);
+export function ImageDiff({ root, sides, revision }: { root: string; sides: ImageSides; revision: string }) {
+  const before = useBlob(root, sides.old, revision);
+  const after = useBlob(root, sides.new, revision);
   const [mode, setMode] = useState<"side" | "swipe">("side");
   const [pos, setPos] = useState(50);
   const both = !!before.data && !!after.data;
