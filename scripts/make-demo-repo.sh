@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Builds a demo repository with branches, merges, tags, a remote and a pending
 # conflict scenario. Used for manual testing and the UI smoke test.
-#   scripts/make-demo-repo.sh <target-dir>
+#   scripts/make-demo-repo.sh <new-target-dir>
 set -euo pipefail
 TARGET="${1:?usage: make-demo-repo.sh <target-dir>}"
-rm -rf "$TARGET"
-mkdir -p "$TARGET"
+# Never clear an existing directory: a mistyped fixture path may be real work.
+mkdir -p -- "$(dirname -- "$TARGET")"
+mkdir -- "$TARGET"
 cd "$TARGET"
 
 export GIT_AUTHOR_NAME="Alex Rivera" GIT_AUTHOR_EMAIL="alex@example.com"

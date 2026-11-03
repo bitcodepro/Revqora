@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Archive, ArchiveRestore, RotateCcw, Trash2, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
-import { getTab, useRepos } from "../lib/store";
+import { useRepos } from "../lib/store";
 import { closeOverlay, toast } from "../lib/ui";
 import { stashApply, stashDrop } from "../lib/actions";
 import type { ChangedFile, FileDiff, StashContents } from "../lib/types";
@@ -9,40 +9,48 @@ import { relativeTime } from "../lib/format";
 import { PathLabel, StatusIcon } from "./bits";
 import { DiffView, useDiffOpts } from "./DiffView";
 
-export function StashView({ root, index }: { root: string; index: number }) {
+export function StashView({ root, index, oid }: { root: string; index: number; oid: string }) {
   const [c, setC] = useState<StashContents | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [sel, setSel] = useState<{ path: string; untracked: boolean } | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const diffOpts = useDiffOpts();
-  const info = getTab(root)?.refs?.stashes.find((s) => s.index === index);
+  const tab = useRepos(s => s.tabs[root]);
+  const info = tab?.refs?.stashes.find((s) => s.oid === oid);
+  const diffContext = tab?.status?.diffContextToken;
 
   useEffect(() => {
-    api.stashContents(root, index).then(
+    let alive = true;
+    setC(null); setErr(null); setSel(null); setDiff(null);
+    api.stashContents(root, oid).then(
       (r) => {
+        if (!alive) return;
         setC(r);
         const first = r.files[0] ? { path: r.files[0].path, untracked: false } : r.untracked[0] ? { path: r.untracked[0].path, untracked: true } : null;
         setSel(first);
       },
-      (e) => setErr(errorMessage(e)),
+      (e) => alive && setErr(errorMessage(e)),
     );
-  }, [root, index]);
+    return () => { alive = false; };
+  }, [root, oid, diffContext]);
 
   useEffect(() => {
     if (!c || !sel) return setDiff(null);
     let alive = true;
+    setDiff(null);
     const from = sel.untracked ? null : c.base;
     const to = sel.untracked ? c.untrackedCommit! : c.oid;
-    api.revDiff(root, from, to, sel.path, diffOpts).then((d) => alive && setDiff(d), (e) => toast.error(e));
+    api.revDiff(root, from, to, sel.path, diffOpts).then((d) => alive && setDiff(d), (e) => alive && toast.error(e));
     return () => {
       alive = false;
     };
-  }, [root, c, sel, diffOpts]);
+  }, [root, c, sel, diffOpts, diffContext]);
 
   const restore = async (path: string, untracked: boolean) => {
     try {
-      await api.stashRestoreFile(root, index, path, untracked);
-      toast.success(`Restored ${path} from the stash`, "A backup of the previous file is in .git/revqora/trash.");
+      if (!c || c.oid !== oid) return;
+      await api.stashRestoreFile(root, c.oid, path, untracked);
+      toast.success(`Restored ${path} from the stash`, "A backup of the previous file is in portable recovery storage.");
     } catch (e) {
       toast.error(e);
     }
@@ -68,18 +76,18 @@ export function StashView({ root, index }: { root: string; index: number }) {
         <div className="cf-title">
           <span className="p">{info?.message ?? `stash@{${index}}`}</span>
           <span className="s">
-            stash@{`{${index}}`}
+            {info ? `stash@{${info.index}}` : `Snapshot ${oid.slice(0, 12)}`}
             {info ? ` · ${relativeTime(info.time)}` : ""}
           </span>
         </div>
         <div className="spacer" />
-        <button className="btn" onClick={() => (closeOverlay(), stashApply(root, index, false))}>
+        <button className="btn" disabled={!info || !c} onClick={() => { if (info) { closeOverlay(); void stashApply(root, info.index, false, oid); } }}>
           <ArchiveRestore size={14} /> Apply
         </button>
-        <button className="btn" onClick={() => (closeOverlay(), stashApply(root, index, true))}>
+        <button className="btn" disabled={!info || !c} onClick={() => { if (info) { closeOverlay(); void stashApply(root, info.index, true, oid); } }}>
           Pop
         </button>
-        <button className="btn" onClick={() => (closeOverlay(), stashDrop(root, index))}>
+        <button className="btn" disabled={!info || !c} onClick={() => { if (info) { closeOverlay(); void stashDrop(root, info.index, oid); } }}>
           <Trash2 size={14} /> Drop
         </button>
         <button className="btn" onClick={closeOverlay}>

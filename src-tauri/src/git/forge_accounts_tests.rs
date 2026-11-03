@@ -10,6 +10,21 @@ use std::{
 };
 
 type Requests = Arc<Mutex<Vec<(String, String)>>>;
+
+#[test]
+fn account_updates_keep_an_open_readers_snapshot_and_publish_the_new_document() {
+    let (_temp, manager) = manager_temp();
+    let http = Http::identities();
+    add(&manager, &http, "github", "token-one", false);
+    let mut reader = fs::File::open(manager.root.join("accounts.json")).unwrap();
+    let updated = add(&manager, &http, "github", "token-two", false);
+    assert_eq!(updated.accounts.len(), 2);
+    let mut old = String::new();
+    reader.read_to_string(&mut old).unwrap();
+    assert_eq!(serde_json::from_str::<Document>(&old).unwrap().accounts.len(), 1);
+    assert_eq!(manager.snapshot().unwrap().accounts.len(), 2);
+    assert!(!fs::read_to_string(manager.root.join("accounts.json")).unwrap().contains("token-"));
+}
 struct Http {
     url: String,
     seen: Requests,

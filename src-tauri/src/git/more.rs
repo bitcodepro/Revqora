@@ -65,7 +65,7 @@ pub fn deleted_branches(repo: &Path) -> GitResult<Vec<DeletedBranch>> {
     for (i, (_, msg, time)) in entries.iter().enumerate() {
         let Some(rest) = msg.strip_prefix("checkout: moving from ") else { continue };
         let Some((from, _)) = rest.split_once(" to ") else { continue };
-        if from.len() == 40 || existing.contains(from) || out.iter().any(|b| b.name == from) {
+        if matches!(from.len(), 40 | 64) && from.bytes().all(|b| b.is_ascii_hexdigit()) || existing.contains(from) || out.iter().any(|b| b.name == from) {
             continue;
         }
         // HEAD before this checkout = the next (older) entry's oid.
@@ -146,25 +146,45 @@ pub fn apply_patch(repo: &Path, file: &str) -> GitResult<super::ops::OpOutcome> 
 /// Replaces a working-tree file with its version at `rev` (also staged).
 pub fn checkout_file(repo: &Path, rev: &str, path: &str) -> GitResult<()> {
     super::ops::backup_files(repo, &[path.to_string()])?;
-    runner::run(repo, ["checkout", rev, "--", path])?;
+    runner::run_env(repo, ["checkout", rev, "--", path], &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
     Ok(())
 }
 
 /// Applies (selected lines of) the change a commit made to a file onto the working tree.
 pub fn apply_from_commit(repo: &Path, from: Option<&str>, to: &str, path: &str, selection: Option<&[(usize, usize)]>) -> GitResult<()> {
-    let base = from.unwrap_or(diff::EMPTY_TREE).to_string();
+    let opts = diff::DiffOptions::default();
+    let hash = diff::rev_diff(repo, from, to, path, &opts)?.hash;
+    apply_from_commit_reviewed(repo, from, to, path, selection, &opts, Some(&hash))
+}
+
+pub fn apply_from_commit_reviewed(
+    repo: &Path,
+    from: Option<&str>,
+    to: &str,
+    path: &str,
+    selection: Option<&[(usize, usize)]>,
+    opts: &diff::DiffOptions,
+    expected_hash: Option<&str>,
+) -> GitResult<()> {
+    let base = match from {
+        Some(from) => from.to_owned(),
+        None => diff::empty_tree(repo)?,
+    };
     let patch = match selection {
         Some(sel) if !sel.is_empty() => {
-            // Same diff options as the displayed diff, so line indexes match.
-            let raw = runner::run_bytes(repo, ["diff", "--no-color", "--no-ext-diff", "--find-renames", "-U3", &base, to, "--", path])?;
+            let raw = diff::rev_raw(repo, Some(&base), to, path, opts)?;
+            if expected_hash != Some(diff::fingerprint(&raw).as_str()) {
+                return Err(GitError::new("The displayed diff changed. Reload it before applying selected lines.").kind("stale-diff"));
+            }
             let files = diff::parse(&raw);
             let file = files.into_iter().next().ok_or_else(|| GitError::new("Nothing to apply."))?;
             let set: HashSet<(usize, usize)> = sel.iter().copied().collect();
             diff::build_partial_patch(&file, &set, false).ok_or_else(|| GitError::new("No changed lines selected."))?
         }
-        _ => runner::run_bytes(repo, ["diff", "--no-color", "--no-ext-diff", "--binary", &base, to, "--", path])?,
+        _ => runner::exec_full(repo, ["diff", "--no-color", "--no-ext-diff", "--binary", &base, to, "--", path], &[("GIT_LITERAL_PATHSPECS", "1")], None)
+            .and_then(|out| if out.ok() { Ok(out.stdout) } else { Err(runner::to_error("git diff", &out)) })?,
     };
-    let out = runner::exec_full(repo, ["apply", "-3", "--recount", "--whitespace=nowarn", "-"], &[], Some(&patch))?;
+    let out = runner::exec_full(repo, ["apply", "-3", "--recount", "--unidiff-zero", "--whitespace=nowarn", "-"], &[], Some(&patch))?;
     if !out.ok() {
         return Err(runner::to_error("git apply", &out));
     }
@@ -187,12 +207,17 @@ pub struct StashContents {
 pub fn stash_contents(repo: &Path, index: u32) -> GitResult<StashContents> {
     let name = format!("stash@{{{index}}}");
     let oid = runner::run(repo, ["rev-parse", "--verify", &name])?.trim().to_string();
+    stash_contents_at(repo, &oid)
+}
+
+pub fn stash_contents_at(repo: &Path, oid: &str) -> GitResult<StashContents> {
+    let oid = stash_oid(repo, oid)?;
     let base = runner::run(repo, ["rev-parse", &format!("{oid}^1")])?.trim().to_string();
     let files = changed_files(repo, &base, &oid)?;
     let u = runner::exec(repo, ["rev-parse", "-q", "--verify", &format!("{oid}^3")])?;
     let (untracked, untracked_commit) = if u.ok() {
         let uc = u.text().trim().to_string();
-        (changed_files(repo, diff::EMPTY_TREE, &uc)?, Some(uc))
+        (changed_files(repo, &diff::empty_tree(repo)?, &uc)?, Some(uc))
     } else {
         (Vec::new(), None)
     };
@@ -201,10 +226,27 @@ pub fn stash_contents(repo: &Path, index: u32) -> GitResult<StashContents> {
 
 /// Restores one file from a stash into the working tree.
 pub fn stash_restore_file(repo: &Path, index: u32, path: &str, untracked: bool) -> GitResult<()> {
-    let rev = if untracked { format!("stash@{{{index}}}^3") } else { format!("stash@{{{index}}}") };
+    let oid = runner::run(repo, ["rev-parse", "--verify", &format!("stash@{{{index}}}")])?;
+    stash_restore_file_at(repo, oid.trim(), path, untracked)
+}
+
+/// Pin the displayed snapshot before making a backup or touching the working tree.
+pub fn stash_restore_file_at(repo: &Path, oid: &str, path: &str, untracked: bool) -> GitResult<()> {
+    let oid = stash_oid(repo, oid)?;
+    let rev = if untracked { format!("{oid}^3") } else { oid };
     super::ops::backup_files(repo, &[path.to_string()])?;
-    runner::run(repo, ["restore", &format!("--source={rev}"), "--worktree", "--", path])?;
+    let out = runner::exec_full(repo, ["restore", &format!("--source={rev}"), "--worktree", "--", path], &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
+    if !out.ok() {
+        return Err(runner::to_error("git restore", &out));
+    }
     Ok(())
+}
+
+fn stash_oid(repo: &Path, oid: &str) -> GitResult<String> {
+    if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err(GitError::new("The stash snapshot is missing. Reopen the stash before trying again."));
+    }
+    Ok(runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{oid}^{{commit}}")])?.trim().to_string())
 }
 
 // ───────────── tree browser & grep ─────────────

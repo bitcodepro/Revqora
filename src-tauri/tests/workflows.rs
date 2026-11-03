@@ -17,6 +17,80 @@ struct Repo {
     path: PathBuf,
 }
 
+fn pull_fixture() -> (Repo, Repo) {
+    let local = Repo::new();
+    local.write("base.txt", "base\n");
+    local.commit_all("base");
+    let remote = Repo::new();
+    runner::run(remote.p(), ["fetch", local.p().to_str().unwrap(), "main"]).unwrap();
+    remote.git(&["reset", "--hard", "FETCH_HEAD"]);
+    local.git(&["remote", "add", "origin", remote.p().to_str().unwrap()]);
+    local.git(&["fetch", "origin"]);
+    local.git(&["branch", "--set-upstream-to=origin/main", "main"]);
+    (local, remote)
+}
+
+#[test]
+fn audit_pull_merge_waits_for_confirmation_and_ff_ignores_squash_defaults() {
+    let (local, remote) = pull_fixture();
+    local.write("local.txt", "local\n");
+    let before = local.commit_all("local");
+    remote.write("remote.txt", "remote\n");
+    remote.commit_all("remote");
+    local.git(&["config", "branch.main.mergeOptions", "--commit"]);
+    let out = ops::pull(local.p(), "merge", |_| {}).unwrap();
+    assert_eq!(out.status, "pending", "{out:?}");
+    assert_eq!(local.git(&["rev-parse", "HEAD"]).trim(), before);
+    assert!(local.p().join(".git/MERGE_HEAD").exists());
+    ops::abort_op(local.p(), "merge").unwrap();
+    local.git(&["config", "branch.main.mergeOptions", "--squash"]);
+    local.git(&["reset", "--hard", "origin/main"]);
+    remote.write("next.txt", "next\n");
+    let target = remote.commit_all("next");
+    let out = ops::pull(local.p(), "ff-only", |_| {}).unwrap();
+    assert_eq!(out.status, "fastForward", "{out:?}");
+    assert_eq!(local.git(&["rev-parse", "HEAD"]).trim(), target);
+    assert!(local.git(&["diff", "--cached", "--name-only"]).trim().is_empty());
+}
+
+#[test]
+fn audit_pull_preserves_ignored_files_and_rejects_a_missing_upstream() {
+    let (local, remote) = pull_fixture();
+    local.write(".gitignore", "private.txt\n");
+    local.commit_all("ignore");
+    remote.write("private.txt", "remote version\n");
+    remote.commit_all("tracked collision");
+    local.write("private.txt", "irreplaceable ignored data\n");
+    let head = local.git(&["rev-parse", "HEAD"]);
+    assert!(ops::pull(local.p(), "merge", |_| {}).is_err());
+    assert_eq!(local.read("private.txt"), "irreplaceable ignored data\n");
+    assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
+    local.git(&["config", "branch.main.merge", "refs/heads/deleted"]);
+    assert!(ops::pull(local.p(), "ff-only", |_| {}).is_err());
+    assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn audit_pull_rechecks_index_flags_after_the_fetch() {
+    let (local, remote) = pull_fixture();
+    remote.write("new.txt", "remote\n");
+    remote.commit_all("remote");
+    let head = local.git(&["rev-parse", "HEAD"]);
+    let mut changed = false;
+    let error = ops::pull(local.p(), "ff-only", |_| {
+        if !changed {
+            local.git(&["update-index", "--assume-unchanged", "base.txt"]);
+            changed = true;
+        }
+    })
+    .unwrap_err();
+    assert!(changed, "Fetch did not reach the controlled index-change boundary");
+    assert_eq!(error.kind, "stale-operation");
+    assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
+    assert!(!local.p().join("new.txt").exists());
+    assert!(local.git(&["ls-files", "-v", "base.txt"]).starts_with('h'));
+}
+
 impl Repo {
     fn new() -> Repo {
         let dir = tempfile::tempdir().unwrap();
@@ -60,6 +134,54 @@ impl Repo {
 
 fn opts() -> DiffOptions {
     DiffOptions::default()
+}
+
+fn sha256_repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["init", "-qb", "main", "--object-format=sha256"],
+        vec!["config", "user.name", "Hash format test"],
+        vec!["config", "user.email", "hash@example.invalid"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["config", "core.autocrlf", "false"],
+    ] {
+        runner::run(dir.path(), args).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn audit_sha256_blame_reads_lines_and_authors() {
+    let r = sha256_repo();
+    fs::write(r.path().join("file.txt"), "one\ntwo\n").unwrap();
+    runner::run(r.path(), ["add", "file.txt"]).unwrap();
+    runner::run(r.path(), ["commit", "-qm", "initial"]).unwrap();
+    let head = runner::run(r.path(), ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+    assert_eq!(head.len(), 64);
+    let blame = revqora_lib::git::inspect::blame(r.path(), "file.txt", Some(&head)).unwrap();
+    assert_eq!(blame.lines.len(), 2);
+    assert_eq!(blame.lines[0].text, "one");
+    assert_eq!(blame.commits[&head].author, "Hash format test");
+}
+
+#[test]
+fn audit_sha256_empty_tree_is_used_for_unborn_layers_initial_commits_and_untracked_stash_files() {
+    let r = sha256_repo();
+    fs::write(r.path().join("file.txt"), "initial\n").unwrap();
+    runner::run(r.path(), ["add", "file.txt"]).unwrap();
+    layers::seal(r.path(), Some("unborn layer")).unwrap();
+    let layer = layers::state(r.path()).unwrap().layers.remove(0);
+    let view = diff::rev_diff(r.path(), Some(&layer.from_tree), &layer.to_tree, "file.txt", &opts()).unwrap();
+    assert!(!view.hunks.is_empty());
+    layers::flatten(r.path()).unwrap();
+    let head = ops::commit(r.path(), "initial", &CommitOptions::default()).unwrap();
+    let details = revqora_lib::git::commit::details(r.path(), &head).unwrap();
+    assert_eq!(details.files[0].path, "file.txt");
+    assert!(!diff::rev_diff(r.path(), None, &head, "file.txt", &opts()).unwrap().hunks.is_empty());
+    fs::write(r.path().join("untracked.txt"), "stash payload\n").unwrap();
+    ops::stash_save(r.path(), "untracked", true, false, &[]).unwrap();
+    let contents = revqora_lib::git::more::stash_contents(r.path(), 0).unwrap();
+    assert_eq!(contents.untracked[0].path, "untracked.txt");
 }
 
 fn select_lines(d: &diff::FileDiff, pred: impl Fn(&str, &str) -> bool) -> Vec<(usize, usize)> {

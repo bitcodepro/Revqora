@@ -58,7 +58,7 @@ fn migrate(source: &Path, target: &Path) -> io::Result<()> {
             return Err(io::Error::other("Unsafe migration destination; old data was preserved."));
         }
         if !target.exists() {
-            let mut copy = tempfile::NamedTempFile::new_in(target.parent().unwrap())?;
+            let mut copy = super::atomic_file::new_in(target.parent().unwrap())?;
             io::copy(&mut File::open(source)?, &mut copy)?;
             copy.as_file().sync_all()?;
             copy.persist_noclobber(target).map_err(|e| e.error)?;

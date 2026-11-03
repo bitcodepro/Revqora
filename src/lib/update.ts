@@ -41,19 +41,23 @@ export const useUpdate = create<UpdateState>()((set, get) => ({
     }
   },
   install: async () => {
+    if (["checking", "downloading", "installing", "ready"].includes(get().phase)) return;
     set({ phase: "downloading", progress: 0, error: null });
-    const un = await listen<{ downloaded: number; total: number }>("update-progress", (e) => {
-      const { downloaded, total } = e.payload;
-      const progress = total > 0 ? Math.min(1, downloaded / total) : 0;
-      set({ progress, phase: progress >= 1 ? "installing" : "downloading" });
-    });
+    let un: (() => void) | undefined, live = true;
     try {
+      un = await listen<{ downloaded: number; total: number }>("update-progress", (e) => {
+        if (!live) return;
+        const { downloaded, total } = e.payload;
+        const progress = total > 0 ? Math.min(1, downloaded / total) : 0;
+        set({ progress, phase: progress >= 1 ? "installing" : "downloading" });
+      });
       await api.updateInstall();
       set({ phase: "ready", progress: 1 });
     } catch (e) {
       set({ phase: "error", error: errorMessage(e) });
     } finally {
-      un();
+      live = false;
+      un?.();
     }
   },
   restart: async () => {

@@ -61,6 +61,7 @@ export function CompareView({ root, from: initialFrom, to: initialTo, direct = f
       return;
     }
     let alive = true;
+    setDiff(null);
     setDiffErr(null);
     (cmp.to === WORKTREE ? api.worktreeFileDiff(root, cmp.base, file, diffOpts) : api.revDiff(root, cmp.base, cmp.to, file, diffOpts)).then(
       (d) => alive && setDiff(d),

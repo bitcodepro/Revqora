@@ -155,7 +155,7 @@ pub fn delete(repo: &Path, name: &str, force: bool, target: Option<&RemoteBranch
             // `branch -d` accepts commits merged only into the upstream we are about to remove.
             // Require a surviving checkout to retain BOTH tips before deleting either label.
             for tip in [&format!("refs/heads/{name}"), &target.oid] {
-                let out = runner::exec(repo, ["merge-base", "--is-ancestor", tip, "HEAD"])?;
+                let out = super::history::exec(repo, ["merge-base", "--is-ancestor", tip, "HEAD"])?;
                 if out.code == 1 {
                     return Err(GitError::new(
                         "Branch history is not fully merged into the current checkout. Confirm force deletion before deleting either branch.",
@@ -217,7 +217,7 @@ pub(super) fn validate_mapping(repo: &Path, target: &RemoteBranchTarget) -> GitR
 
 fn require_merged(repo: &Path, oid: &str, force: bool) -> GitResult<()> {
     if !force {
-        let out = runner::exec(repo, ["merge-base", "--is-ancestor", oid, "HEAD"])?;
+        let out = super::history::exec(repo, ["merge-base", "--is-ancestor", oid, "HEAD"])?;
         if out.code == 1 {
             return Err(
                 GitError::new("The reviewed remote tip contains commits outside the current checkout. Confirm their deletion first.").kind("not-merged")
@@ -314,9 +314,9 @@ pub fn refresh_remote(repo: &Path, target: &RemoteBranchTarget, on_line: impl Fn
         let _ = runner::exec(repo, ["update-ref", &target.tracking_ref, &oid, &target.oid]);
     }
     let count = |range: &str| -> GitResult<u64> {
-        runner::run(repo, ["rev-list", "--count", range])?.trim().parse().map_err(|_| GitError::new("Invalid commit count from Git."))
+        super::history::run(repo, ["rev-list", "--count", range])?.trim().parse().map_err(|_| GitError::new("Invalid commit count from Git."))
     };
-    let commits = runner::run(repo, ["log", "-5", "--format=%h %s", &oid])?.lines().map(str::to_owned).collect();
+    let commits = super::history::run(repo, ["log", "-5", "--format=%h %s", &oid])?.lines().map(str::to_owned).collect();
     Ok(RemoteDeletionReview {
         previous_oid: target.oid.clone(),
         new_commits: count(&format!("{}..{oid}", target.oid))?,

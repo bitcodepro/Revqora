@@ -16,19 +16,27 @@ function FileHistoryBody({ root, path, close }: { root: string; path: string; cl
   const [items, setItems] = useState<FileHistoryEntry[] | null>(null);
   const [sel, setSel] = useState<FileHistoryEntry | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    let alive = true;
+    setItems(null); setSel(null); setDiff(null); setError(null);
     api.fileHistory(root, path).then(
       (r) => {
+        if (!alive) return;
         setItems(r);
         setSel(r[0] ?? null);
       },
-      (e) => toast.error(e),
+      (e) => alive && toast.error(e),
     );
+    return () => { alive = false; };
   }, [root, path]);
   useEffect(() => {
     if (!sel) return;
+    let alive = true;
     setDiff(null);
-    api.commitDetails(root, sel.oid).then((d) => api.revDiff(root, d.diffBase, d.oid, sel.path).then(setDiff), () => {});
+    setError(null);
+    api.commitDetails(root, sel.oid).then((d) => api.revDiff(root, d.diffBase, d.oid, sel.path)).then(d => alive && setDiff(d), e => alive && setError(String(e?.message ?? e)));
+    return () => { alive = false; };
   }, [root, sel]);
   return (
     <Modal title="File history" subtitle={path} icon={<History size={18} />} wide onClose={() => close()} footer={<button type="button" className="btn" onClick={() => close()}>Close</button>}>
@@ -46,7 +54,7 @@ function FileHistoryBody({ root, path, close }: { root: string; path: string; cl
           ))}
         </div>
         <div style={{ display: "flex", minHeight: 0, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-          <DiffView diff={diff} loading={!!sel && !diff} mode="readonly" path={sel?.path ?? path} />
+          <DiffView diff={diff} loading={!!sel && !diff && !error} error={error} mode="readonly" path={sel?.path ?? path} />
         </div>
       </div>
     </Modal>

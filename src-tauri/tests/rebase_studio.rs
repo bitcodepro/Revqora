@@ -9,6 +9,28 @@ struct Repo {
     a: String,
     b: String,
 }
+
+#[test]
+fn studio_reports_can_be_replaced_while_an_older_snapshot_is_open() {
+    use std::io::Read;
+    let r = Repo::new();
+    let first_items = r.items();
+    let first_review = r.review(&first_items);
+    let first = r.start(&first_items, &first_review, false, false).unwrap();
+    let path = storage::dir(&r.root).unwrap().join("rebase-studio/last.json");
+    let mut reader = fs::File::open(&path).unwrap();
+    let mut second_items = r.items();
+    second_items[1].oid = r.git(&["rev-parse", "HEAD"]);
+    second_items[1].message = Some("A second reviewed message".into());
+    let second_review = r.review(&second_items);
+    let second = r.start(&second_items, &second_review, false, false).unwrap();
+    assert_eq!(second.report.phase, "completed");
+    let mut old = String::new();
+    reader.read_to_string(&mut old).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&old).unwrap()["id"], first.report.id);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap()["id"], second.report.id);
+    assert_ne!(first.report.id, second.report.id);
+}
 impl Repo {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();

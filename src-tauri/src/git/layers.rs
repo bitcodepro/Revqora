@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::diff::EMPTY_TREE;
+use super::diff::empty_tree;
 
 use super::runner::{self, GitError, GitResult};
 
@@ -88,7 +88,7 @@ fn head_commit(repo: &Path) -> Option<String> {
 fn tree_of(repo: &Path, commit: Option<&str>) -> GitResult<String> {
     match commit {
         Some(c) => Ok(runner::run(repo, ["rev-parse", &format!("{c}^{{tree}}")])?.trim().to_string()),
-        None => Ok(EMPTY_TREE.to_string()),
+        None => empty_tree(repo),
     }
 }
 

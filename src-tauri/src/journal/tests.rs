@@ -225,9 +225,16 @@ fn filters_pagination_and_export_use_literal_search_and_keep_scope() {
     let selected = Filter { search: Some("branch create".into()), ..filter };
     let export = f.dir.path().join("export.json");
     assert_eq!(f.log.export(&selected, &export).unwrap(), 6);
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(export).unwrap()).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&export).unwrap()).unwrap();
     assert_eq!(value["operations"].as_array().unwrap().len(), 6);
     assert_eq!(value["truncated"], false);
+    let mut reader = fs::File::open(&export).unwrap();
+    let before = fs::read(&export).unwrap();
+    assert_eq!(f.log.export(&Filter::default(), &export).unwrap(), 7);
+    let mut old = Vec::new();
+    std::io::Read::read_to_end(&mut reader, &mut old).unwrap();
+    assert_eq!(old, before, "An export reader must retain its original snapshot");
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(&export).unwrap()).unwrap()["operations"].as_array().unwrap().len(), 7);
     assert!(f.log.export(&Filter::default(), &f.log.path).is_err());
     assert_eq!(f.log.clear(&selected).unwrap(), 6);
     assert_eq!(f.log.list(&Filter::default(), 50).unwrap().total, 1);

@@ -401,10 +401,12 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
         "rebase-merge/done",
         "rebase-apply/next",
         "sequencer/todo",
-        "logs/refs/stash",
     ] {
         hash_file(&mut hash, &gd.join(name))?;
     }
+    // Stashes and their reflog are shared, including entries below refs/stash.
+    // Removing a middle entry changes stash@{n} without changing the top OID.
+    hash_file(&mut hash, &common.join("logs/refs/stash"))?;
     hash_file(&mut hash, &super::storage::dir(repo)?.join("squash-target"))?;
     let mut attributes = BTreeMap::new();
     // Indexed attributes may affect a sealed layer even if later layers cancel

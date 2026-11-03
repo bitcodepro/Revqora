@@ -8,7 +8,7 @@ use std::{
 };
 use tempfile::NamedTempFile;
 
-pub(super) fn new_in(parent: &Path) -> io::Result<NamedTempFile> {
+pub(crate) fn new_in(parent: &Path) -> io::Result<NamedTempFile> {
     if !parent.is_absolute() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "Atomic state storage requires an absolute directory."));
     }
@@ -30,7 +30,7 @@ pub(super) fn new_in(parent: &Path) -> io::Result<NamedTempFile> {
 /// Both names must be in one directory. Never delete/truncate the destination,
 /// copy across volumes, or retry after failure. On success Drop only attempts
 /// cleanup of the old temporary name, which no longer exists.
-pub(super) fn replace(temporary: NamedTempFile, destination: &Path) -> io::Result<()> {
+pub(crate) fn replace(temporary: NamedTempFile, destination: &Path) -> io::Result<()> {
     if !destination.is_absolute() || temporary.path().parent() != destination.parent() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "Atomic state replacement requires the same absolute directory."));
     }

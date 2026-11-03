@@ -105,6 +105,67 @@ fn take_files_and_lines_from_another_commit() {
 }
 
 #[test]
+fn audit_partial_commit_transfer_matches_the_displayed_context() {
+    let t = tempfile::tempdir().unwrap();
+    let r = repo(t.path());
+    let base = commit(&r, "f.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n", "base");
+    let changed = commit(&r, "f.txt", "1\n2\n3\nFOUR\n5\n6\n7\n8\n9\n10\n", "change four");
+    git(&r, &["reset", "--hard", &base]);
+    let opts = revqora_lib::git::diff::DiffOptions { context: Some(0), ignore_whitespace: false };
+    let d = revqora_lib::git::diff::rev_diff(&r, Some(&base), &changed, "f.txt", &opts).unwrap();
+    let sel: Vec<_> = d.hunks[0].lines.iter().enumerate().filter(|(_, l)| l.kind != " ").map(|(i, _)| (0, i)).collect();
+    let before = git(&r, &["ls-files", "--stage"]);
+    assert_eq!(more::apply_from_commit_reviewed(&r, Some(&base), &changed, "f.txt", Some(&sel), &opts, Some("stale")).unwrap_err().kind, "stale-diff");
+    assert_eq!(git(&r, &["ls-files", "--stage"]), before);
+    assert_eq!(fs::read_to_string(r.join("f.txt")).unwrap(), "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+    more::apply_from_commit_reviewed(&r, Some(&base), &changed, "f.txt", Some(&sel), &opts, Some(&d.hash)).unwrap();
+    assert_eq!(fs::read_to_string(r.join("f.txt")).unwrap(), "1\n2\n3\nFOUR\n5\n6\n7\n8\n9\n10\n");
+}
+
+#[test]
+fn audit_blob_capture_limits_real_git_output_and_reaps_the_process() {
+    let t = tempfile::tempdir().unwrap();
+    let r = repo(t.path());
+    fs::write(r.join("large.txt"), vec![b'x'; 2 * 1024 * 1024]).unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-qm", "large"]);
+    assert_eq!(runner::exec_limited(&r, ["cat-file", "blob", "HEAD:large.txt"], 1024).unwrap_err().kind, "output-limit");
+    assert!(git(&r, &["status", "--porcelain"]).is_empty());
+    assert_eq!(runner::exec_limited(&r, ["cat-file", "blob", "HEAD:large.txt"], 2 * 1024 * 1024).unwrap().stdout.len(), 2 * 1024 * 1024);
+}
+
+#[test]
+fn audit_file_restore_treats_brackets_as_a_literal_filename() {
+    let t = tempfile::tempdir().unwrap();
+    let r = repo(t.path());
+    commit(&r, "[ab].txt", "old literal\n", "literal");
+    let source = commit(&r, "a.txt", "old a\n", "other");
+    fs::write(r.join("[ab].txt"), "current literal\n").unwrap();
+    fs::write(r.join("a.txt"), "must stay\n").unwrap();
+    more::checkout_file(&r, &source, "[ab].txt").unwrap();
+    assert_eq!(fs::read_to_string(r.join("[ab].txt")).unwrap(), "old literal\n");
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "must stay\n");
+}
+
+#[test]
+fn audit_partial_stash_failure_is_reported_without_a_second_application() {
+    let t = tempfile::tempdir().unwrap();
+    let r = repo(t.path());
+    commit(&r, "a.txt", "base\n", "base");
+    fs::write(r.join("a.txt"), "stashed tracked data\n").unwrap();
+    fs::write(r.join("note.txt"), "stashed note\n").unwrap();
+    ops::stash_save(&r, "partial", true, false, &[]).unwrap();
+    let oid = more::stash_contents(&r, 0).unwrap().oid;
+    fs::write(r.join("note.txt"), "current user note\n").unwrap();
+    let error = ops::stash_apply_reviewed(&r, 0, &oid, true).unwrap_err();
+    assert_eq!(error.kind, "partial-operation", "{error:?}");
+    assert!(error.message.contains("not applied again"));
+    assert_eq!(fs::read_to_string(r.join("note.txt")).unwrap(), "current user note\n");
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "stashed tracked data\n");
+    assert_eq!(git(&r, &["rev-parse", "stash@{0}"]), oid);
+}
+
+#[test]
 fn stash_contents_and_single_file_restore() {
     let t = tempfile::tempdir().unwrap();
     let r = repo(t.path());
@@ -122,6 +183,29 @@ fn stash_contents_and_single_file_restore() {
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "a\n");
     more::stash_restore_file(&r, 0, "a.txt", false).unwrap();
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "changed\n");
+}
+
+#[test]
+fn stash_snapshot_survives_renumbering_and_stale_apply_or_drop_is_rejected() {
+    let t = tempfile::tempdir().unwrap();
+    let r = repo(t.path());
+    let head = commit(&r, "a.txt", "base\n", "init");
+    fs::write(r.join("a.txt"), "old payload\n").unwrap();
+    ops::stash_save(&r, "old", false, false, &[]).unwrap();
+    let oid = more::stash_contents(&r, 0).unwrap().oid;
+    fs::write(r.join("a.txt"), "new payload\n").unwrap();
+    ops::stash_save(&r, "new", false, false, &[]).unwrap();
+    let list = git(&r, &["stash", "list"]);
+    fs::write(r.join("a.txt"), "user data\n").unwrap();
+    assert_eq!(ops::stash_apply_reviewed(&r, 0, &oid, true).unwrap_err().kind, "stale-operation");
+    assert_eq!(ops::stash_drop_reviewed(&r, 0, &oid).unwrap_err().kind, "stale-operation");
+    assert_eq!(git(&r, &["stash", "list"]), list);
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "user data\n");
+    assert_eq!(more::stash_contents_at(&r, &oid).unwrap().oid, oid);
+    more::stash_restore_file_at(&r, &oid, "a.txt", false).unwrap();
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "old payload\n");
+    assert_eq!(git(&r, &["rev-parse", "HEAD"]), head);
+    assert!(git(&r, &["diff", "--cached", "--name-only"]).is_empty());
 }
 
 #[test]

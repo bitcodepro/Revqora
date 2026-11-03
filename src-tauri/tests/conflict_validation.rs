@@ -9,6 +9,70 @@ struct Repo {
     _temp: tempfile::TempDir,
     root: PathBuf,
 }
+
+#[test]
+fn conflict_save_replaces_a_hard_link_without_modifying_the_other_name() {
+    let r = Repo::new();
+    let outside = r._temp.path().join("outside.txt");
+    fs::write(&outside, b"outside user data\n").unwrap();
+    fs::remove_file(r.root.join("f.txt")).unwrap();
+    fs::hard_link(&outside, r.root.join("f.txt")).unwrap();
+    revqora_lib::git::conflicts::save_resolution(&r.root, "f.txt", "resolved\n", false).unwrap();
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "outside user data\n");
+    assert_eq!(fs::read_to_string(r.root.join("f.txt")).unwrap(), "resolved\n");
+    assert!(runner::run(&r.root, ["diff", "--cached", "--name-only"]).unwrap().is_empty());
+}
+
+#[test]
+fn conflict_save_refuses_directory_links_and_outside_paths() {
+    let r = Repo::new();
+    let outside = r._temp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("data.txt"), b"preserve\n").unwrap();
+    let link = r.root.join("linked");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let output =
+            std::process::Command::new("cmd.exe").creation_flags(0x08000000).args(["/D", "/C", "mklink", "/J"]).arg(&link).arg(&outside).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+    for path in ["linked/data.txt", "../outside/data.txt", ".git/config"] {
+        assert!(revqora_lib::git::conflicts::save_resolution(&r.root, path, "overwrite", false).is_err(), "{path}");
+    }
+    assert_eq!(fs::read_to_string(outside.join("data.txt")).unwrap(), "preserve\n");
+    // Remove the link itself before fixture cleanup, never its external target.
+    #[cfg(windows)]
+    fs::remove_dir(&link).unwrap();
+    #[cfg(unix)]
+    fs::remove_file(&link).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn taking_a_conflict_side_unlinks_a_leaf_symlink_and_keeps_its_target() {
+    let r = Repo::new();
+    let outside = r._temp.path().join("outside.txt");
+    fs::write(&outside, b"preserve\n").unwrap();
+    git(&r.root, &["switch", "-qc", "other"]);
+    fs::write(r.root.join("f.txt"), b"theirs\n").unwrap();
+    git(&r.root, &["commit", "-qam", "theirs"]);
+    git(&r.root, &["switch", "-q", "main"]);
+    fs::write(r.root.join("f.txt"), b"ours\n").unwrap();
+    git(&r.root, &["commit", "-qam", "ours"]);
+    assert!(!runner::exec(&r.root, ["merge", "--no-commit", "other"]).unwrap().ok());
+    fs::remove_file(r.root.join("f.txt")).unwrap();
+    std::os::unix::fs::symlink(&outside, r.root.join("f.txt")).unwrap();
+    assert!(revqora_lib::git::conflicts::save_resolution(&r.root, "f.txt", "overwrite", false).is_err());
+    assert!(revqora_lib::git::conflicts::info(&r.root, "f.txt").unwrap().working.is_none());
+    revqora_lib::git::conflicts::take_side(&r.root, "f.txt", "ours").unwrap();
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "preserve\n");
+    assert_eq!(fs::read_to_string(r.root.join("f.txt")).unwrap(), "ours\n");
+    assert!(!fs::symlink_metadata(r.root.join("f.txt")).unwrap().file_type().is_symlink());
+    assert!(git(&r.root, &["ls-files", "-u"]).is_empty());
+}
 impl Repo {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();

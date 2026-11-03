@@ -43,6 +43,39 @@ fn receive<T>(rx: &mpsc::Receiver<T>) -> T {
 }
 
 #[test]
+fn audit_read_scopes_reject_reference_writes_and_reflog_expiry_before_any_git_change() {
+    for args in [vec!["symbolic-ref", "refs/heads/alias", "refs/heads/main"], vec!["reflog", "expire", "--expire=now", "--all"]] {
+        let r = Repo::new();
+        let log = fs::read(r.p().join(".git/logs/refs/heads/main")).unwrap();
+        let result = operations::access(r.p(), false, |_, _| {}, || runner::run(r.p(), &args));
+        assert!(result.is_err(), "Read scope allowed a mutating command: {args:?}");
+        assert_eq!(result.unwrap_err().kind, "operation-scope");
+        assert_eq!(fs::read(r.p().join(".git/logs/refs/heads/main")).unwrap(), log);
+        assert!(!runner::exec(r.p(), ["show-ref", "--verify", "--quiet", "refs/heads/alias"]).unwrap().ok());
+    }
+}
+
+#[test]
+fn audit_linked_worktree_detects_a_changed_stash_selector_even_when_the_top_stash_did_not_move() {
+    let r = Repo::new();
+    for value in ["oldest", "middle", "latest"] {
+        fs::write(r.p().join("file.txt"), value).unwrap();
+        r.git(&["stash", "push", "-m", value]);
+    }
+    let linked = r.dir.path().join("linked");
+    r.git(&["worktree", "add", "-qb", "linked", linked.to_str().unwrap(), "HEAD"]);
+    let token = status::status(&linked).unwrap().state_token.unwrap();
+    let latest = r.git(&["rev-parse", "refs/stash"]);
+    r.git(&["stash", "drop", "stash@{1}"]);
+    assert_eq!(r.git(&["rev-parse", "refs/stash"]), latest);
+    let before = r.git(&["stash", "list", "--format=%H"]);
+    let result = operations::run(&linked, "stash_drop", Some(&token), |_, _| {}, || revqora_lib::git::ops::stash_drop(&linked, 1));
+    assert!(result.is_err(), "The reviewed stash index now refers to another object");
+    assert_eq!(result.unwrap_err().kind, "stale-operation");
+    assert_eq!(r.git(&["stash", "list", "--format=%H"]), before);
+}
+
+#[test]
 fn whole_operations_are_fifo_and_nested_git_calls_do_not_deadlock() {
     let r = Repo::new();
     let order = Arc::new(Mutex::new(Vec::new()));

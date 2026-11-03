@@ -110,6 +110,7 @@ where
     F: Fn(bool, bool) + Send + 'static,
 {
     let ignored = owned_paths(&root, &git_dir);
+    let common = super::operations::repository_key(&root);
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher = notify::recommended_watcher(move |res| {
         let _ = tx.send(res);
@@ -120,6 +121,9 @@ where
         let _ = watcher.watch(&git_dir, RecursiveMode::Recursive);
     }
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    if comparable(&common) != comparable(&git_dir) && !common.starts_with(&root) {
+        watcher.watch(&common, RecursiveMode::Recursive)?;
+    }
     std::thread::spawn(move || {
         let debounce = Duration::from_millis(350);
         let mut pending_git = false;
@@ -134,7 +138,9 @@ where
                 // debounce flush below when access events arrive continuously.
                 Ok(Ok(ev)) if !matches!(ev.kind, notify::EventKind::Access(_)) => {
                     for p in &ev.paths {
-                        match classify_owned(&root, &git_dir, &ignored, p) {
+                        // Shared refs/config/stash live outside a linked worktree's git dir.
+                        let metadata = if p.starts_with(&git_dir) { &git_dir } else { &common };
+                        match classify_owned(&root, metadata, &ignored, p) {
                             Some(true) => pending_git = true,
                             Some(false) => pending_wt = true,
                             None => {}
@@ -165,6 +171,39 @@ where
 mod tests {
     use super::{classify, classify_owned, comparable};
     use std::path::Path;
+
+    #[test]
+    fn linked_worktree_observes_shared_branch_refs_from_external_git() {
+        use super::watch;
+        use crate::git::{repo, runner};
+        use std::{fs, sync::mpsc, time::Duration};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("main");
+        fs::create_dir(&root).unwrap();
+        for args in [
+            vec!["init", "-qb", "main"],
+            vec!["config", "user.name", "T"],
+            vec!["config", "user.email", "t@example.invalid"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            runner::run(&root, args).unwrap();
+        }
+        fs::write(root.join("f.txt"), b"base").unwrap();
+        runner::run(&root, ["add", "."]).unwrap();
+        runner::run(&root, ["commit", "-qm", "base"]).unwrap();
+        let linked = tmp.path().join("linked");
+        runner::run(&root, ["worktree", "add", "-qb", "linked", linked.to_str().unwrap()]).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let watcher = watch(linked.clone(), repo::git_dir(&linked).unwrap(), move |git, _| {
+            if git {
+                let _ = tx.send(());
+            }
+        })
+        .unwrap();
+        runner::run(&root, ["branch", "external-branch"]).unwrap();
+        rx.recv_timeout(Duration::from_secs(10)).expect("Shared refs did not refresh the linked worktree");
+        drop(watcher);
+    }
 
     #[cfg(windows)]
     #[test]

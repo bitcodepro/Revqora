@@ -313,16 +313,16 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
                 className="sb-item"
                 style={{ paddingLeft: 26 }}
                 title={`${s.name}: ${s.message}`}
-                onClick={() => openOverlay({ kind: "stash", root, index: s.index })}
-                onDoubleClick={() => A.stashApply(root, s.index, false)}
+                onClick={() => openOverlay({ kind: "stash", root, index: s.index, oid: s.oid })}
+                onDoubleClick={() => A.stashApply(root, s.index, false, s.oid)}
                 onContextMenu={(e) =>
                   contextMenu(e, [
-                    { label: "Show contents", onClick: () => openOverlay({ kind: "stash", root, index: s.index }) },
-                    { label: "Apply", onClick: () => A.stashApply(root, s.index, false) },
-                    { label: "Pop (apply and delete)", onClick: () => A.stashApply(root, s.index, true) },
+                    { label: "Show contents", onClick: () => openOverlay({ kind: "stash", root, index: s.index, oid: s.oid }) },
+                    { label: "Apply", onClick: () => A.stashApply(root, s.index, false, s.oid) },
+                    { label: "Pop (apply and delete)", onClick: () => A.stashApply(root, s.index, true, s.oid) },
                     { label: "Create branch from stash base…", onClick: () => A.createBranch(root, `${s.oid}^`, s.name) },
                     { separator: true },
-                    { label: "Delete…", danger: true, icon: <Trash2 size={14} />, onClick: () => A.stashDrop(root, s.index) },
+                    { label: "Delete…", danger: true, icon: <Trash2 size={14} />, onClick: () => A.stashDrop(root, s.index, s.oid) },
                   ])
                 }
               >

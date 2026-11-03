@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::diff::EMPTY_TREE;
+use super::diff::empty_tree;
 use super::runner::{self, GitResult};
 
 #[derive(Debug, Clone, Serialize)]
@@ -93,7 +93,11 @@ pub fn details(repo: &Path, oid: &str) -> GitResult<CommitDetails> {
     };
     let base = parents.first().cloned();
     let resolved = f.first().unwrap_or(&"").trim();
-    let files = changed_files(repo, base.as_deref().unwrap_or(EMPTY_TREE), resolved)?;
+    let diff_base = match &base {
+        Some(base) => base.clone(),
+        None => empty_tree(repo)?,
+    };
+    let files = changed_files(repo, &diff_base, resolved)?;
     let contained = runner::run(repo, ["for-each-ref", "--count=1", &format!("--contains={resolved}"), "--format=%(refname)", "refs/remotes"])
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
@@ -146,7 +150,7 @@ pub fn file_history(repo: &Path, path: &str, limit: usize) -> GitResult<Vec<File
 
 /// Contents of a file at a revision ("" = index stage 0, ":2" etc. allowed via `spec`).
 pub fn blob_text(repo: &Path, spec: &str) -> GitResult<Option<String>> {
-    let out = runner::exec(repo, ["show", spec])?;
+    let out = runner::exec_limited(repo, ["cat-file", "blob", spec], 25 * 1024 * 1024)?;
     if !out.ok() {
         return Ok(None);
     }

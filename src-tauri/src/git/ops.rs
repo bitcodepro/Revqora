@@ -373,6 +373,46 @@ pub fn fetch_background(repo: &Path) -> GitResult<String> {
 
 pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<OpOutcome> {
     super::recovery::protect_transport(repo, false, None, None, false)?;
+    if mode != "rebase" {
+        // Fetch cannot confirm a merge or overwrite working files. Resolve the
+        // fetched upstream only after it succeeds, then use our reviewed merge
+        // path (including ignored-file protection and explicit commit control).
+        let before = status::status(repo)?;
+        let index_before = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
+        if before.branch.is_none() {
+            return Err(GitError::new("Choose a branch with an upstream before pulling."));
+        }
+        let merges = runner::exec(repo, ["config", "--get-all", &format!("branch.{}.merge", before.branch.as_deref().unwrap())])?;
+        if !merges.ok() || merges.text().lines().filter(|s| !s.is_empty()).count() != 1 {
+            return Err(GitError::new("Configure one upstream for this branch before pulling."));
+        }
+        runner::run_streaming(repo, &["fetch".into(), "--progress".into(), "--write-fetch-head".into()], &[], on_line)?;
+        let after = status::status(repo)?;
+        if before.branch != after.branch
+            || before.oid != after.oid
+            || before.files != after.files
+            || before.diff_context_token != after.diff_context_token
+            || index_before != runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?
+        {
+            return Err(
+                GitError::new("Fetch completed, but the working tree or current branch changed. Review it before pulling again.").kind("stale-operation")
+            );
+        }
+        let raw = std::fs::read_to_string(repo::git_dir(repo)?.join("FETCH_HEAD"))?;
+        let targets: Vec<_> = raw
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.splitn(3, '\t');
+                let oid = fields.next()?;
+                let merge = fields.next()?;
+                (merge.is_empty() && matches!(oid.len(), 40 | 64) && oid.bytes().all(|c| c.is_ascii_hexdigit())).then_some(oid)
+            })
+            .collect();
+        if targets.len() != 1 {
+            return Err(GitError::new("Fetch completed, but no single configured upstream was fetched. Check this branch's remote and upstream settings."));
+        }
+        return merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, mode == "merge");
+    }
     let mut args = vec!["pull".to_string(), "--progress".into()];
     match mode {
         "rebase" => {
@@ -509,6 +549,10 @@ fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResu
 
 /// Starts a merge but never creates the merge commit: the user reviews and confirms.
 pub fn merge_start(repo: &Path, target: &str, strategy: &str) -> GitResult<OpOutcome> {
+    merge_start_with_autostash(repo, target, strategy, false)
+}
+
+fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autostash: bool) -> GitResult<OpOutcome> {
     let gd = repo::git_dir(repo)?;
     let before = head_oid(repo);
     guard_ignored_merge(repo, target, before.as_deref())?;
@@ -516,6 +560,9 @@ pub fn merge_start(repo: &Path, target: &str, strategy: &str) -> GitResult<OpOut
     // particular an inherited --squash must not turn a fast-forward into staged
     // edits, and an inherited --commit must never confirm a merge for the user.
     let mut args: Vec<&str> = vec!["merge", "--no-squash", "--no-commit", "--no-overwrite-ignore"];
+    if autostash {
+        args.push("--autostash");
+    }
     match strategy {
         "squash" => args.push("--squash"),
         "ff" => {
@@ -1052,6 +1099,7 @@ pub fn stash_save(repo: &Path, message: &str, include_untracked: bool, keep_inde
 
 pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<OpOutcome> {
     let name = format!("stash@{{{index}}}");
+    let before = status::status(repo)?.state_token;
     let out = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, "--index", &name])?;
     if out.ok() {
         return Ok(OpOutcome::done(out.text()));
@@ -1060,7 +1108,16 @@ pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<OpOutcome> {
     if !c.is_empty() {
         return Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: "Stash applied with conflicts; it was kept in the list.".into() });
     }
-    // Retry without restoring the index (fails when staged changes conflict).
+    // Git may have already applied tracked edits before an untracked collision
+    // fails. Never replay that partially completed mutation automatically.
+    if status::status(repo)?.state_token != before {
+        return Err(GitError::new(
+            "The repository changed during the failed stash attempt. The stash was kept and was not applied again; inspect the working tree before another action.",
+        )
+        .kind("partial-operation")
+        .details(vec![out.stderr]));
+    }
+    // A different index strategy is safe only if the first attempt changed nothing.
     let out2 = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, &name])?;
     if out2.ok() {
         return Ok(OpOutcome::done(out2.text()));
@@ -1070,6 +1127,24 @@ pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<OpOutcome> {
         return Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: "Stash applied with conflicts; it was kept in the list.".into() });
     }
     Err(runner::to_error("git stash apply", &out2))
+}
+
+pub fn check_stash(repo: &Path, index: u32, expected_oid: &str) -> GitResult<()> {
+    let actual = runner::run(repo, ["rev-parse", "--verify", &format!("stash@{{{index}}}")])?;
+    if actual.trim() != expected_oid {
+        return Err(GitError::new("The stash list changed. Reopen the stash before trying again.").kind("stale-operation"));
+    }
+    Ok(())
+}
+
+pub fn stash_apply_reviewed(repo: &Path, index: u32, expected_oid: &str, pop: bool) -> GitResult<OpOutcome> {
+    check_stash(repo, index, expected_oid)?;
+    stash_apply(repo, index, pop)
+}
+
+pub fn stash_drop_reviewed(repo: &Path, index: u32, expected_oid: &str) -> GitResult<()> {
+    check_stash(repo, index, expected_oid)?;
+    stash_drop(repo, index)
 }
 
 pub fn stash_drop(repo: &Path, index: u32) -> GitResult<()> {

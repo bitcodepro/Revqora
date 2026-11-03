@@ -1,4 +1,6 @@
 import { futureStagesSmoke } from "./future-stages-smoke.mjs";
+import { stashSnapshotSmoke } from "./stash-snapshot-smoke.mjs";
+import { treeResponseSmoke } from "./tree-response-smoke.mjs";
 import { liveDiffSmoke, sealedLayerAttributesSmoke, submoduleHeadSmoke } from "./live-diff-smoke.mjs";
 import {workflowSmoke} from "./workflow-smoke.mjs";
 import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
@@ -518,6 +520,7 @@ try {
     await page.click(".modal button:has-text('Stash')");
     await until(() => git("status", "--porcelain") === "", "working tree not clean after stash");
     await until(async () => (await page.locator(".sidebar .sb-item", { hasText: "Change the default port" }).count()) === 1, "stash not listed in the sidebar");
+    await stashSnapshotSmoke({page,root:repo,git,until});
   });
 
   await check("merge with conflict stops before committing", async () => {
@@ -704,6 +707,7 @@ try {
     await page.locator(".conflict-overlay .file-row", { hasText: "src/app.ts" }).first().click();
     await page.waitForSelector(".conflict-overlay .cm-content");
     await shot("15-tree-browser");
+    await treeResponseSmoke(page);
     await page.click(".cf-head button:has-text('Close')");
     await page.waitForSelector(".conflict-overlay", { state: "detached" });
   });
@@ -1508,7 +1512,8 @@ try {
     const stashOid = git("rev-parse", "stash@{0}");
     const stash = await page.evaluate(async (root) => {
       const invoke = window.__TAURI_INTERNALS__.invoke;
-      await invoke("stash_drop", { repo: root, index: 0 });
+      const oid = (await invoke("refs_snapshot", {repo:root})).stashes[0].oid;
+      await invoke("stash_drop", { repo: root, index: 0, oid });
       const catalog = await invoke("recovery_list", { repo: root });
       const cp = catalog.checkpoints.find((cp) => cp.command === "stash_drop");
       return invoke("recovery_detail", { repo: root, id: cp.id });

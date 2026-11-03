@@ -6,7 +6,7 @@ use super::{
     runner::{GitError, GitResult},
     session_lease::SessionLease,
     storage,
-    validation::{available, process_tree, Pipe},
+    validation::{available, poll_process, process_tree, Pipe, ProcessState},
     worktree_manager as wm,
 };
 use parking_lot::Mutex;
@@ -654,11 +654,16 @@ fn execute(plan: &Plan, job: &Arc<Job>, dir: &Path) -> GitResult<()> {
     let mut saved = Instant::now();
     let outcome = (|| -> GitResult<()> {
         loop {
-            if job.cancel.load(Ordering::Acquire) || started.elapsed().as_secs() >= plan.request.timeout_seconds {
-                job.task.lock().phase = if job.cancel.load(Ordering::Acquire) { "cancelled" } else { "timed-out" }.into();
+            let state = io_step(
+                "process.poll",
+                worktree,
+                poll_process(&mut child, job.cancel.load(Ordering::Acquire), started.elapsed().as_secs() >= plan.request.timeout_seconds),
+            )?;
+            if matches!(state, ProcessState::Cancelled | ProcessState::TimedOut) {
+                job.task.lock().phase = if state == ProcessState::Cancelled { "cancelled" } else { "timed-out" }.into();
                 break;
             }
-            if io_step("process.poll", worktree, process_tree::exited(&mut child))? {
+            if state == ProcessState::Exited {
                 tree.terminate();
                 let status = io_step("process.wait", worktree, child.wait())?;
                 let mut t = job.task.lock();

@@ -20,6 +20,23 @@ use crate::git::runner::{GitError, GitResult};
 pub const REPO: &str = "bitcodepro/Revqora";
 const STAGING: &str = ".revqora-update";
 const MAX_ARCHIVE: u64 = 512 * 1024 * 1024;
+const MAX_UNPACKED: u64 = 1024 * 1024 * 1024;
+const MAX_ENTRIES: usize = 10_000;
+
+struct UpdateLease(fs::File);
+impl UpdateLease {
+    fn acquire(root: &Path) -> GitResult<Self> {
+        let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(root.join(".revqora-update.lock"))?;
+        fs2::FileExt::try_lock_exclusive(&file)
+            .map_err(|_| GitError::new("Another update or update cleanup is running. Wait for it to finish.").kind("update-busy"))?;
+        Ok(Self(file))
+    }
+}
+impl Drop for UpdateLease {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,10 +165,9 @@ pub fn installable(root: &Path) -> Result<(), String> {
     if !root.join("build-info.json").is_file() {
         return Err("This copy was not installed from a release package.".into());
     }
-    let probe = root.join(".revqora-write-test");
-    match fs::write(&probe, b"") {
-        Ok(()) => {
-            let _ = fs::remove_file(&probe);
+    match tempfile::Builder::new().prefix(".revqora-write-test-").tempfile_in(root) {
+        Ok(probe) => {
+            drop(probe);
             Ok(())
         }
         Err(_) => Err("The app folder is read-only. Download the new version instead.".into()),
@@ -171,8 +187,19 @@ fn net_err(e: ureq::Error) -> GitError {
 }
 
 /// Only release downloads of this repository are fetched.
-fn trusted_url(url: &str) -> bool {
-    url.starts_with(&format!("https://github.com/{REPO}/releases/download/"))
+fn trusted_url(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.host_str() == Some("github.com")
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.path().starts_with(&format!("/{REPO}/releases/download/"))
+        && !["%2f", "%5c"].iter().any(|s| url.path().to_ascii_lowercase().contains(s))
 }
 
 /// Builds the result from a `releases/latest` API response.
@@ -244,8 +271,13 @@ pub fn install(info: &UpdateInfo, mut progress: impl FnMut(Progress)) -> GitResu
     }
     let root = launch().map(|l| l.root.clone()).ok_or_else(|| GitError::new("Could not find the app folder."))?;
     installable(&root).map_err(|r| GitError::new(r).kind("update-readonly"))?;
+    let _lease = UpdateLease::acquire(&root)?;
 
     let staging = root.join(STAGING);
+    if staging.join("rollback-incomplete").exists() {
+        return Err(GitError::new("A previous update needs recovery. Preserve .revqora-update/old and restore its original files before retrying.")
+            .kind("update-install"));
+    }
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging)?;
     let expected = agent().get(checksum_url).call().map_err(net_err)?.into_string().map_err(|e| GitError::new(e.to_string()))?;
@@ -287,7 +319,7 @@ pub fn install(info: &UpdateInfo, mut progress: impl FnMut(Progress)) -> GitResu
         let _ = fs::remove_dir_all(&staging);
         return Err(GitError::new("The download is corrupted (checksum mismatch).").kind("update-checksum"));
     }
-    apply_archive(&root, &archive, &info.latest, rid)
+    apply_archive_locked(&root, &archive, &info.latest, rid)
 }
 
 pub fn parse_checksum(text: &str) -> Option<String> {
@@ -304,31 +336,54 @@ fn safe_relative(path: &Path) -> bool {
     path.components().all(|c| matches!(c, Component::Normal(_))) && path.components().next().is_some()
 }
 
+fn package_path(path: &Path) -> bool {
+    // Same public top-level contract as scripts/release.py. A release archive
+    // never owns portable profiles, repository metadata or update checkpoints.
+    safe_relative(path)
+        && matches!(
+            path.components().next().and_then(|p| p.as_os_str().to_str()),
+            Some("README.md" | "LICENSE" | "THIRD_PARTY_NOTICES.md" | "build-info.json" | "revqora.exe" | "revqora" | "Revqora.app" | "licenses")
+        )
+}
+
+fn reserve_unpacked(total: &mut u64, size: u64) -> GitResult<()> {
+    *total = total.checked_add(size).filter(|total| *total <= MAX_UNPACKED).ok_or_else(|| GitError::new("The unpacked package is unexpectedly large."))?;
+    Ok(())
+}
+
 fn extract(archive: &Path, dest: &Path) -> GitResult<()> {
     let name = archive.to_string_lossy();
     fs::create_dir_all(dest)?;
+    let mut unpacked = 0;
     if name.ends_with(".tar.gz") {
         let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(fs::File::open(archive)?));
-        for entry in tar.entries()? {
+        for (index, entry) in tar.entries()?.enumerate() {
+            if index >= MAX_ENTRIES {
+                return Err(GitError::new("The package contains too many entries."));
+            }
             let mut entry = entry?;
             let path = entry.path()?.into_owned();
             let kind = entry.header().entry_type();
-            if !safe_relative(&path) || !(kind.is_file() || kind.is_dir()) {
+            if !package_path(&path) || !(kind.is_file() || kind.is_dir()) {
                 return Err(GitError::new(format!("Unexpected entry in the package: {}", path.display())));
             }
+            reserve_unpacked(&mut unpacked, entry.header().size()?)?;
             entry.unpack(dest.join(&path))?;
         }
     } else {
         let mut zip = zip::ZipArchive::new(fs::File::open(archive)?).map_err(|e| GitError::new(format!("Bad package: {e}")))?;
+        if zip.len() > MAX_ENTRIES {
+            return Err(GitError::new("The package contains too many entries."));
+        }
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(|e| GitError::new(format!("Bad package: {e}")))?;
-            let path = entry
-                .enclosed_name()
-                .filter(|p| safe_relative(p))
-                .ok_or_else(|| GitError::new(format!("Unexpected entry in the package: {}", entry.name())))?;
+            let path =
+                entry.enclosed_name().filter(|p| package_path(p)).ok_or_else(|| GitError::new(format!("Unexpected entry in the package: {}", entry.name())))?;
             if entry.is_symlink() {
                 return Err(GitError::new(format!("Unexpected link in the package: {}", path.display())));
             }
+            let size = entry.size();
+            reserve_unpacked(&mut unpacked, size)?;
             let target = dest.join(&path);
             if entry.is_dir() {
                 fs::create_dir_all(&target)?;
@@ -338,7 +393,10 @@ fn extract(archive: &Path, dest: &Path) -> GitResult<()> {
                 fs::create_dir_all(parent)?;
             }
             let mut out = fs::File::create(&target)?;
-            std::io::copy(&mut entry, &mut out)?;
+            let written = std::io::copy(&mut Read::by_ref(&mut entry).take(size + 1), &mut out)?;
+            if written != size {
+                return Err(GitError::new("The package entry has an invalid unpacked size."));
+            }
             #[cfg(unix)]
             if let Some(mode) = entry.unix_mode() {
                 use std::os::unix::fs::PermissionsExt;
@@ -351,11 +409,18 @@ fn extract(archive: &Path, dest: &Path) -> GitResult<()> {
 
 /// Extracts `archive`, checks its `build-info.json` and swaps its top-level entries into `root`.
 pub fn apply_archive(root: &Path, archive: &Path, version: &str, rid: &str) -> GitResult<()> {
+    let _lease = UpdateLease::acquire(root)?;
+    apply_archive_locked(root, archive, version, rid)
+}
+
+fn apply_archive_locked(root: &Path, archive: &Path, version: &str, rid: &str) -> GitResult<()> {
     let staging = root.join(STAGING);
+    if staging.join("rollback-incomplete").exists() {
+        return Err(GitError::new("A previous update needs recovery. Preserve .revqora-update/old before retrying.").kind("update-install"));
+    }
     let new = staging.join("new");
     let old = staging.join("old");
     let _ = fs::remove_dir_all(&new);
-    let _ = fs::remove_dir_all(&old);
     extract(archive, &new)?;
     let manifest: serde_json::Value = fs::read(new.join("build-info.json"))
         .ok()
@@ -374,38 +439,82 @@ pub fn apply_archive(root: &Path, archive: &Path, version: &str, rid: &str) -> G
     if !new.join(exe).is_file() {
         return Err(GitError::new("The package has no executable."));
     }
+    // Retain the previous backup while validating a new archive. An invalid
+    // package must not discard the user's last available recovery copy.
+    if old.exists() {
+        fs::remove_dir_all(&old)?;
+    }
     fs::create_dir_all(&old)?;
     let entries: Vec<_> = fs::read_dir(&new)?.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+    // A crash or failed rollback must not let next-start cleanup erase originals.
+    let recovery_marker = staging.join("rollback-incomplete");
+    fs::write(&recovery_marker, b"Preserve old/ until the original files have been restored.\n")?;
+    let swapped = swap_entries(root, &new, &old, &entries, |from, to| fs::rename(from, to));
+    if swapped.as_ref().err().is_none_or(|error| error.details.is_empty()) {
+        let _ = fs::remove_file(&recovery_marker);
+    }
+    swapped?;
+    let _ = fs::remove_file(archive);
+    Ok(())
+}
+
+fn swap_entries(
+    root: &Path,
+    new: &Path,
+    old: &Path,
+    entries: &[std::ffi::OsString],
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> GitResult<()> {
     let mut moved_old = Vec::new();
     let mut placed = Vec::new();
     let result = (|| -> std::io::Result<()> {
-        for name in &entries {
+        for name in entries {
             let target = root.join(name);
             if target.exists() {
-                fs::rename(&target, old.join(name))?;
+                rename(&target, &old.join(name))?;
                 moved_old.push(name.clone());
             }
-            fs::rename(new.join(name), &target)?;
+            rename(&new.join(name), &target)?;
             placed.push(name.clone());
         }
         Ok(())
     })();
     if let Err(e) = result {
+        let mut recovery_errors = Vec::new();
         for name in placed.iter().rev() {
-            let _ = fs::rename(root.join(name), new.join(name));
+            if let Err(error) = rename(&root.join(name), &new.join(name)) {
+                recovery_errors.push(format!("Could not move replacement {:?} aside: {error}", name));
+            }
         }
         for name in moved_old.iter().rev() {
-            let _ = fs::rename(old.join(name), root.join(name));
+            // Never overwrite a replacement we failed to move aside.
+            if root.join(name).exists() {
+                recovery_errors.push(format!("Original {:?} remains in {}", name, old.display()));
+                continue;
+            }
+            if let Err(error) = rename(&old.join(name), &root.join(name)) {
+                recovery_errors.push(format!("Could not restore original {:?}: {error}", name));
+            }
         }
-        return Err(GitError::new(format!("Could not replace the app files ({e}); nothing was changed.")).kind("update-install"));
+        let message = if recovery_errors.is_empty() {
+            format!("Could not replace the app files ({e}); the original files were restored.")
+        } else {
+            format!("Could not replace the app files ({e}). Rollback is incomplete; recovery copies remain in {}. Do not delete that folder.", old.display())
+        };
+        return Err(GitError::new(message).kind("update-install").details(recovery_errors));
     }
-    let _ = fs::remove_file(archive);
     Ok(())
 }
 
 /// Removes what a previous update left behind (the old exe may still be locked for a moment).
 pub fn cleanup(root: &Path) {
+    let Ok(_lease) = UpdateLease::acquire(root) else {
+        return;
+    };
     let staging = root.join(STAGING);
+    if staging.join("rollback-incomplete").exists() {
+        return;
+    }
     for _ in 0..20 {
         if !staging.exists() || fs::remove_dir_all(&staging).is_ok() {
             return;
@@ -464,6 +573,71 @@ pub fn relaunch() -> GitResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn download_url_is_validated_after_url_path_normalization() {
+        assert!(trusted_url("https://github.com/bitcodepro/Revqora/releases/download/v1/app.zip"));
+        for value in [
+            "https://github.com/bitcodepro/Revqora/releases/download/../../../../other/project/releases/download/v1/app.zip",
+            "https://github.com/bitcodepro/Revqora/releases/download/%2e%2e/%2e%2e/%2e%2e/%2e%2e/other/project/releases/download/v1/app.zip",
+            "https://github.com/bitcodepro/Revqora/releases/download/v1%2f..%2fapp.zip",
+            "https://user@github.com/bitcodepro/Revqora/releases/download/v1/app.zip",
+            "https://github.com/bitcodepro/Revqora/releases/download/v1/app.zip?redirect=other",
+        ] {
+            assert!(!trusted_url(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn cleanup_and_install_cannot_remove_an_active_or_incomplete_update() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let staging = root.join(STAGING);
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("download.zip"), b"active download").unwrap();
+        let lease = UpdateLease::acquire(root).unwrap();
+        cleanup(root);
+        assert!(staging.join("download.zip").exists());
+        assert_eq!(apply_archive(root, &staging.join("download.zip"), "0.2.0", "win-x64").unwrap_err().kind, "update-busy");
+        drop(lease);
+        fs::write(staging.join("rollback-incomplete"), b"recover").unwrap();
+        cleanup(root);
+        assert!(staging.join("download.zip").exists());
+        assert!(apply_archive(root, &staging.join("download.zip"), "0.2.0", "win-x64").unwrap_err().message.contains("needs recovery"));
+    }
+
+    #[test]
+    fn failed_swap_restores_original_or_preserves_and_reports_recovery_copy() {
+        for rollback_fails in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let new = root.join("new");
+            let old = root.join("old");
+            fs::create_dir(&new).unwrap();
+            fs::create_dir(&old).unwrap();
+            fs::write(root.join("revqora.exe"), b"original").unwrap();
+            fs::write(new.join("revqora.exe"), b"replacement").unwrap();
+            let mut calls = 0;
+            let error = swap_entries(root, &new, &old, &["revqora.exe".into()], |from, to| {
+                calls += 1;
+                if calls == 2 || rollback_fails && calls == 3 {
+                    return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+                }
+                fs::rename(from, to)
+            })
+            .unwrap_err();
+            assert_eq!(fs::read(new.join("revqora.exe")).unwrap(), b"replacement");
+            if rollback_fails {
+                assert_eq!(fs::read(old.join("revqora.exe")).unwrap(), b"original");
+                assert!(error.message.contains("Rollback is incomplete"));
+                assert!(!error.details.is_empty());
+                assert!(!root.join("revqora.exe").exists());
+            } else {
+                assert_eq!(fs::read(root.join("revqora.exe")).unwrap(), b"original");
+                assert!(error.message.contains("original files were restored"));
+                assert!(error.details.is_empty());
+            }
+        }
+    }
 
     #[test]
     fn compares_versions() {
@@ -650,5 +824,58 @@ mod tests {
     fn dev_builds_are_not_installable() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(installable(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn audit_update_probe_never_truncates_or_deletes_an_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("build-info.json"), "{}").unwrap();
+        let existing = root.join(".revqora-write-test");
+        fs::write(&existing, "existing user data").unwrap();
+        installable(root).unwrap();
+        assert_eq!(fs::read_to_string(&existing).ok().as_deref(), Some("existing user data"));
+        assert_eq!(fs::read_dir(root).unwrap().count(), 2, "The owned temporary probe must be cleaned up");
+    }
+
+    #[test]
+    fn audit_update_rejects_packages_that_replace_portable_data_or_repository_metadata() {
+        for path in ["data/profile.json", "DATA/profile.json", ".git/config", ".revqora-update/marker"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("application");
+            fs::create_dir_all(root.join("data")).unwrap();
+            fs::create_dir_all(root.join(".git")).unwrap();
+            fs::write(root.join("data/profile.json"), "personal settings").unwrap();
+            fs::write(root.join(".git/config"), "repository settings").unwrap();
+            fs::write(root.join("revqora.exe"), "original program").unwrap();
+            let archive = tmp.path().join("package.zip");
+            zip_package(
+                &archive,
+                &[("revqora.exe", "replacement program"), ("build-info.json", r#"{"version":"0.2.0","rid":"win-x64"}"#), (path, "unexpected package payload")],
+            );
+            let outcome = apply_archive(&root, &archive, "0.2.0", "win-x64");
+            assert_eq!(fs::read_to_string(root.join("data/profile.json")).ok().as_deref(), Some("personal settings"), "{path}: {outcome:?}");
+            assert_eq!(fs::read_to_string(root.join(".git/config")).ok().as_deref(), Some("repository settings"), "{path}: {outcome:?}");
+            assert_eq!(fs::read_to_string(root.join("revqora.exe")).unwrap(), "original program", "{path}: {outcome:?}");
+            assert!(outcome.is_err(), "Reserved package path was accepted: {path}");
+        }
+    }
+
+    #[test]
+    fn audit_update_checks_unpacked_size_before_creating_an_oversized_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("oversize.tar.gz");
+        let mut header = tar::Header::new_gnu();
+        header.set_path("README.md").unwrap();
+        header.set_size(MAX_UNPACKED + 1);
+        header.set_mode(0o644);
+        header.set_cksum();
+        let mut stream = flate2::write::GzEncoder::new(fs::File::create(&archive).unwrap(), flate2::Compression::fast());
+        stream.write_all(header.as_bytes()).unwrap();
+        stream.finish().unwrap();
+        let destination = tmp.path().join("unpacked");
+        let error = extract(&archive, &destination).unwrap_err();
+        assert!(error.message.contains("unexpectedly large"), "{error:?}");
+        assert!(!destination.join("README.md").exists());
     }
 }

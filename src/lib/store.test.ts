@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-vi.mock("./api", () => ({ api: { status: vi.fn(), repoInfo: vi.fn(), layersState: vi.fn(), refs: vi.fn(), repoExtras: vi.fn(), squashMerged: vi.fn() }, errorMessage: String }));
+vi.mock("./api", () => ({ api: { status: vi.fn(), repoInfo: vi.fn(), layersState: vi.fn(), refs: vi.fn(), repoExtras: vi.fn(), squashMerged: vi.fn(), graphLoad: vi.fn() }, errorMessage: String }));
 vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn() }) } }));
 vi.mock("./repositoryLibrary", () => ({ useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() } }));
 import { api } from "./api";
-import { useRepos, type RepoTab } from "./store";
+import { loadGraph, useRepos, type RepoTab } from "./store";
 import { previewGeneration } from "./commitPreview";
 import { repositoryCall, type Invoke } from "./operationClient";
 import type { RepoInfo, StatusSummary } from "./types";
@@ -20,6 +20,25 @@ beforeEach(() => {
   useRepos.setState({ order: [root], active: root, tabs: { [root]: { root, status: snapshot("before-wal", 1), graph: {}, graphHasWorktree: true, diffRefreshVersion: 0 } as RepoTab } });
 });
 describe("background repository observation", () => {
+  it("serializes graph cache builds and publishes only the latest branch request", async () => {
+    let release!: (v: never) => void;
+    const first = new Promise<never>(resolve => { release = resolve; });
+    vi.mocked(api.graphLoad).mockImplementationOnce(() => first).mockResolvedValue({key:"latest-branch",total:1,maxLanes:1,headIndex:0});
+    useRepos.getState().patch(root, {branchFilter:"main",graphVersion:0});
+    const old = loadGraph(root);
+    await vi.waitFor(() => expect(api.graphLoad).toHaveBeenCalledTimes(1));
+    useRepos.getState().patch(root, {branchFilter:"feature"});
+    const current = loadGraph(root);
+    await Promise.resolve();
+    expect(api.graphLoad).toHaveBeenCalledTimes(1);
+    release({key:"old-main",total:4,maxLanes:1,headIndex:0} as never);
+    await Promise.all([old,current]);
+    expect(vi.mocked(api.graphLoad).mock.calls.map(args=>args[1])).toEqual(["main","feature"]);
+    const tab=useRepos.getState().tabs[root];
+    expect(tab.graph?.key).toBe("latest-branch");
+    expect(tab.graphVersion).toBe(1);
+    expect(tab.graphLoading).toBe(false);
+  });
   it("updates the full mutation guard without invalidating previews for ordinary worktree activity", async () => {
     const generation = previewGeneration(root);
     await useRepos.getState().refresh(root, { background: true, status: true, layers: true });

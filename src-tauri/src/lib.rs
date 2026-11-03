@@ -1,3 +1,4 @@
+mod desktop;
 #[tauri::command]
 async fn symbol_history(repo: String, path: String, query: String, anchor: Option<String>, offset: usize) -> GitResult<git::semantic::SymbolHistoryPage> {
     blocking(move || git::semantic::symbol_history(&p(&repo), &path, &query, anchor.as_deref(), offset)).await
@@ -1164,13 +1165,13 @@ async fn stash_save(
 }
 
 #[tauri::command]
-async fn stash_apply(app: AppHandle, expected_state: Option<String>, repo: String, index: u32, pop: bool) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "stash_apply", None, move || ops::stash_apply(&p(&repo), index, pop)).await
+async fn stash_apply(app: AppHandle, expected_state: Option<String>, repo: String, index: u32, oid: String, pop: bool) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "stash_apply", None, move || ops::stash_apply_reviewed(&p(&repo), index, &oid, pop)).await
 }
 
 #[tauri::command]
-async fn stash_drop(app: AppHandle, expected_state: Option<String>, repo: String, index: u32) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "stash_drop", None, move || ops::stash_drop(&p(&repo), index)).await
+async fn stash_drop(app: AppHandle, expected_state: Option<String>, repo: String, index: u32, oid: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "stash_drop", None, move || ops::stash_drop_reviewed(&p(&repo), index, &oid)).await
 }
 
 // ───────────────────────────── stage layers ─────────────────────────────
@@ -1491,6 +1492,7 @@ async fn checkout_file(app: AppHandle, expected_state: Option<String>, repo: Str
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat IPC keeps the displayed options and hash with the selection.
 async fn apply_from_commit(
     app: AppHandle,
     expected_state: Option<String>,
@@ -1499,21 +1501,24 @@ async fn apply_from_commit(
     to: String,
     path: String,
     selection: Option<Vec<(usize, usize)>>,
+    opts: Option<DiffOptions>,
+    expected_hash: Option<String>,
 ) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "apply_from_commit", None, move || {
-        more::apply_from_commit(&p(&repo), from.as_deref(), &to, &path, selection.as_deref())
+        more::apply_from_commit_reviewed(&p(&repo), from.as_deref(), &to, &path, selection.as_deref(), &opts.unwrap_or_default(), expected_hash.as_deref())
     })
     .await
 }
 
 #[tauri::command]
-async fn stash_contents(repo: String, index: u32) -> GitResult<more::StashContents> {
-    blocking(move || more::stash_contents(&p(&repo), index)).await
+async fn stash_contents(repo: String, oid: String) -> GitResult<more::StashContents> {
+    blocking(move || more::stash_contents_at(&p(&repo), &oid)).await
 }
 
 #[tauri::command]
-async fn stash_restore_file(app: AppHandle, expected_state: Option<String>, repo: String, index: u32, path: String, untracked: bool) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "stash_restore_file", None, move || more::stash_restore_file(&p(&repo), index, &path, untracked)).await
+async fn stash_restore_file(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, path: String, untracked: bool) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "stash_restore_file", None, move || more::stash_restore_file_at(&p(&repo), &oid, &path, untracked))
+        .await
 }
 
 #[tauri::command]
@@ -1817,20 +1822,7 @@ fn reveal_path(path: String) -> GitResult<()> {
 
 #[tauri::command]
 fn open_path(path: String) -> GitResult<()> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("cmd").args(["/C", "start", ""]).arg(path.replace('/', "\\")).creation_flags(0x0800_0000).spawn()?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open").arg(&path).spawn()?;
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open").arg(&path).spawn()?;
-    }
-    Ok(())
+    desktop::open(&path)
 }
 
 #[tauri::command]

@@ -10,7 +10,6 @@ import { highlightLines, languageFor, type Tok } from "../lib/languages";
 import { jumpToCommit } from "./GraphView";
 
 const ROW = 20;
-const NOT_COMMITTED = "0000000000000000000000000000000000000000";
 
 export function BlameView({ root, path, rev, line }: { root: string; path: string; rev: string | null; line?: number }) {
   const [blame, setBlame] = useState<Blame | null>(null);
@@ -86,7 +85,7 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
       const l = blame.lines[i];
       const c = blame.commits[l.oid];
       const startsGroup = i === 0 || blame.lines[i - 1].oid !== l.oid;
-      const uncommitted = l.oid === NOT_COMMITTED;
+      const uncommitted = /^0+$/.test(l.oid);
       const age = c && maxT > minT ? (c.time - minT) / (maxT - minT) : 1;
       rows.push(
         <div
