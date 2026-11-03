@@ -11,6 +11,16 @@ const status: StatusSummary = { branch: "main", oid: "abc", upstream: "origin/ma
 const clean = (): RepositorySnapshot => ({ info: structuredClone(info), status: structuredClone(status) });
 
 describe("bulk fast-forward eligibility", () => {
+  it("records a deleted upstream as reconciled without claiming a fast-forward or failing the remaining batch",async()=>{
+    const pulled:string[]=[],refreshed:string[]=[];
+    const results=await runRepositoryBatch(["deleted","ready"],"pull",{
+      read:async()=>clean(),fetch:async()=>{},isOpen:()=>true,progress:()=>{},
+      pull:async root=>{pulled.push(root);return root==="deleted"?{status:"upstreamGone",message:"Remote refs refreshed; local branch kept"}:{status:"fastForward",message:"Updated"};},
+      refresh:async root=>{refreshed.push(root);},
+    });
+    expect(pulled).toEqual(["deleted","ready"]);expect(refreshed).toEqual(pulled);
+    expect(results).toEqual([{root:"deleted",status:"skipped",message:"Remote refs refreshed; local branch kept"},{root:"ready",status:"done",message:"Updated (fast-forward)"}]);
+  });
   it("only accepts clean, attached branches with incoming commits and an upstream", () => {
     expect(pullBlockReason(clean())).toBeNull();
     for (const patch of [

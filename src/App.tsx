@@ -1,3 +1,4 @@
+import { ActivityIndicator } from "./components/ActivityIndicator";
 import { createStartupBarrier, type StartupPhase } from "./lib/startupReady";
 import { StackManager } from "./components/StackManager";
 import { HistoryExplorer } from "./components/HistoryExplorer";
@@ -404,7 +405,7 @@ export default function App() {
   return (
     <WorkspaceLayoutContext.Provider value={layoutMode}><div className="app" data-app-startup={startupPhase} aria-busy={startupPhase !== "ready"}>
       <TopBar />
-      {busy && <div className="progress-bar" />}
+      <ActivityIndicator active={busy} />
       <div className="app-body">
         <div className="repository-slot" hidden={!repositoriesOpen || focusMode || (!repositoryCount && !hasBookmarks)}><RepositorySidebar /></div>
         <div className="workspace-host">{overview && repositoryCount ? <RepositoryOverview /> : tab ? <RepoWorkspace key={tab.root} tab={tab} /> : <Welcome />}</div>

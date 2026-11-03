@@ -168,14 +168,17 @@ export function WorktreeManager({root}:{root:string}){
   useEffect(()=>{setSelected(old=>rows.some(w=>w.path===old)?old:rows[0]?.path??null);},[rows]);
   useEffect(()=>{setScroll(0);if(viewport.current)viewport.current.scrollTop=0;},[prefs.filter,prefs.sort,query]);
   const update=(patch:Partial<WorktreePreferences>)=>setPrefs(p=>restoreWorktreePreferences({...p,...patch}));
-  const target=rows.find(w=>w.path===selected),ready=!!target&&!loading&&!pending&&!error,block=target?worktreeRemovalBlock(target):null;
-  const action=async(run:()=>Promise<void>)=>{reviewing.current=true;generation.current++;try{await run();}catch(e){toast.error(e);}finally{reviewing.current=false;inflight.current=null;await refresh();}};
+  const initialLoading=loading&&!snapshot;
+  const target=rows.find(w=>w.path===selected),ready=!!target&&!pending&&!reviewing.current,block=target?worktreeRemovalBlock(target):null;
+  // A read refresh must not interrupt navigation or block opening a fresh review.
+  // Discard any old response when a review starts; each dialog validates its own proof.
+  const action=async(run:()=>Promise<void>)=>{if(reviewing.current)return;reviewing.current=true;generation.current++;setLoading(false);try{await run();}catch(e){toast.error(e);}finally{reviewing.current=false;inflight.current=null;await refresh();}};
   const choose=(i:number)=>{const index=Math.max(0,Math.min(rows.length-1,i));setSelected(rows[index]?.path??null);const p=viewport.current;if(p&&index*ROW<p.scrollTop)p.scrollTop=index*ROW;else if(p&&(index+1)*ROW>p.scrollTop+p.clientHeight)p.scrollTop=(index+1)*ROW-p.clientHeight;};
   const first=Math.max(0,Math.floor(scroll/ROW)-4),last=Math.min(rows.length,Math.ceil((scroll+height)/ROW)+4);
   return <section className="conflict-overlay worktree-manager" aria-label="Worktree manager">
     <header className="cf-head"><FolderGit2 size={18}/><b>Worktree manager</b><span className="muted">{snapshot?.worktrees.length??0} working folders</span><div className="spacer"/>
-      <button className="btn" disabled={loading||pending} onClick={()=>void action(()=>worktreeCreateDialog(root))}><Plus size={14}/>New worktree</button>
-      <button className="btn" disabled={loading||pending||!!error} onClick={()=>void action(()=>worktreePruneDialog(root))}>Review missing entries</button>
+      <button className="btn" disabled={initialLoading||pending} onClick={()=>void action(()=>worktreeCreateDialog(root))}><Plus size={14}/>New worktree</button>
+      <button className="btn" disabled={initialLoading||pending} onClick={()=>void action(()=>worktreePruneDialog(root))}>Review missing entries</button>
       <button className="icon-btn" aria-label="Refresh worktrees" disabled={loading||pending} onClick={()=>void refresh()}><RefreshCw size={16} className={loading?"spin":""}/></button>
       <button className="icon-btn" aria-label="Close worktree manager" onClick={closeOverlay}><X size={18}/></button>
     </header>
@@ -200,9 +203,9 @@ export function WorktreeManager({root}:{root:string}){
         <p>{target.ignored??"Unknown"} ignored paths/folders · ↑{target.ahead??0} ↓{target.behind??0}</p>
         {target.operation&&target.operation!=="none"&&<p>Operation: {target.operation}</p>}{target.error&&<p className="wm-error">{target.error}</p>}
         {target.pruneReason&&<p>{target.pruneReason}</p>}{block&&<p className="wm-note">{block}</p>}
-        <div className="wm-actions"><button className="btn primary" disabled={!ready||!target.exists||target.bare||!!target.error||target.isCurrent} onClick={()=>void openWorktree(target.path,captureOverlay("worktrees",root))}>Open worktree</button>
-          <button className="btn" disabled={!ready||target.isMain||target.bare} onClick={()=>void action(()=>worktreeLockDialog(root,target.path,!target.locked))}>{target.locked?"Unlock…":"Lock…"}</button>
-          <button className="btn danger" disabled={!ready||!!block} onClick={()=>void action(()=>worktreeRemoveDialog(root,target.path))}>Review removal…</button></div>
+        <div className="wm-actions"><button className="btn primary" disabled={!target.exists||target.bare||!!target.error||target.isCurrent} onClick={()=>void openWorktree(target.path,captureOverlay("worktrees",root))}>Open worktree</button>
+          <button className="btn" disabled={!ready||target.isMain||target.bare} onClick={()=>void action(()=>worktreeLockDialog(root,target.path,!target.locked))}>{target.locked?"Unlock worktree":"Lock worktree"}</button>
+          <button className="btn danger" disabled={!ready||!!block} onClick={()=>void action(()=>worktreeRemoveDialog(root,target.path))}>Review removal</button></div>
       </>:<p>Select a working folder.</p>}</aside>
     </div>
     <footer className="wm-footer">{rows.length} shown · Separate working folders share branches and commits, but keep their own files and staging. External changes refresh every 10 seconds, on focus or with Refresh.</footer>

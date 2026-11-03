@@ -201,11 +201,12 @@ button {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }
 .spin {
-  animation: spin 2.4s linear infinite;
+  animation: spin 4s linear infinite;
   transform-box: border-box;
   transform-origin: center;
 }
@@ -227,7 +228,7 @@ button {
   border-radius: 50%;
   border: 2.5px solid var(--accent-soft);
   border-top-color: var(--accent);
-  animation: loaderSpin 2.4s linear infinite, fadeIn 0.4s ease 0.15s both;
+  animation: loaderSpin 4s linear infinite, fadeIn 0.45s ease 0.2s both;
 }
 @keyframes loaderSpin {
   to {
@@ -358,13 +359,16 @@ button {
     box-shadow 0.15s;
   user-select: text;
 }
-/* Selects only: own chevron with breathing room instead of the native arrow glued to the edge. */
-.select {
-  padding-right: 32px;
+/* Cover .input selects and compact/unclassified selects as well as .select. */
+select:not([multiple]):not([size]),
+select[size="1"]:not([multiple]) {
+  padding-inline-end: var(--select-reserved, 42px);
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a91a5' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 11px center;
+  background-position: right var(--select-inset, 14px) center;
+  background-size: 12px;
+  text-overflow: ellipsis;
 }
 .textarea {
   height: auto;
@@ -493,7 +497,7 @@ button {
   border-radius: 4px;
   background: linear-gradient(90deg, var(--skeleton) 0px, var(--bg-hover-strong) 80px, var(--skeleton) 160px);
   background-size: 400px 100%;
-  animation: shimmer 2.6s infinite linear;
+  animation: shimmer 4.8s infinite linear;
 }
 
 /* ───────────── shell ───────────── */
@@ -731,8 +735,11 @@ button {
   overflow: hidden;
   z-index: 50;
   pointer-events: none;
-  /* Quick operations finish before the bar fades in, so it does not flicker. */
-  animation: fadeIn 0.3s ease 0.25s both;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+.progress-bar.is-visible {
+  opacity: 1;
 }
 .progress-bar::before {
   content: "";
@@ -741,7 +748,19 @@ button {
   width: 40%;
   background: linear-gradient(90deg, transparent, var(--accent) 50%, transparent);
   border-radius: 2px;
-  animation: progress 3s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  animation: progress 5s linear infinite;
+  animation-play-state: paused;
+}
+.progress-bar.is-visible::before {
+  animation-play-state: running;
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-bar::before {
+    animation: none !important;
+    transform: none;
+    width: 100%;
+    opacity: 0.5;
+  }
 }
 
 /* ───────────── sidebar ───────────── */
@@ -966,15 +985,17 @@ button {
   user-select: text;
 }
 .search-box select {
+  --select-inset: 10px;
+  --select-reserved: 32px;
   border: none;
-  appearance: none;
-  background: var(--bg-elev3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a91a5' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center / 10px;
+  background-color: var(--bg-elev3);
   border-radius: 4px;
   height: 22px;
   font-size: var(--fs-xs);
   color: var(--text-dim);
   outline: none;
-  padding: 0 22px 0 8px;
+  padding-block: 0;
+  padding-inline-start: 8px;
 }
 .search-box .count {
   font-size: var(--fs-xs);
@@ -3041,7 +3062,7 @@ button {
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
-  animation: busyBreathe 3.2s ease-in-out infinite;
+  animation: busyBreathe 5s ease-in-out infinite;
 }
 @keyframes busyBreathe {
   0%,

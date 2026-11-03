@@ -226,7 +226,6 @@
 .wm-toolbar > input { flex:1; min-width:200px; }
 .wm-toolbar label { display:flex; gap:8px; align-items:center; color:var(--text-faint); }
 .wm-body { display:flex; flex:1; min-height:0; overflow:hidden; }
-.wm-body[aria-busy=true] { opacity:.65; }
 .wm-viewport { flex:1; min-height:160px; min-width:0; overflow:auto; outline-offset:-2px; }
 .wm-row { display:grid; grid-template-columns:minmax(140px,1fr) minmax(160px,1.6fr) minmax(90px,.6fr); gap:14px; padding:14px; height:76px; box-sizing:border-box; border-bottom:1px solid var(--border); cursor:pointer; }
 .wm-row > div { min-width:0; }
@@ -236,7 +235,8 @@
 .wm-row.selected { background:var(--bg-selected); box-shadow:inset 3px 0 var(--accent); }
 .wm-detail { width:clamp(260px,28%,360px); flex-shrink:0; padding:16px; border-left:1px solid var(--border); overflow:auto; }
 .wm-detail h3 { margin-top:0; overflow-wrap:anywhere; }
-.wm-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }
+.wm-actions { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,145px),1fr)); gap:8px; margin-top:16px; }
+.wm-actions > .btn { min-width:0; height:auto; min-height:32px; padding:7px 12px; white-space:normal; }
 .wm-path { display:block; overflow-wrap:anywhere; white-space:pre-wrap; margin:8px 0 12px; }
 .wm-note,.wm-review { padding:12px; border:1px solid var(--border); border-radius:8px; margin:10px 0; overflow-wrap:anywhere; }
 .wm-review > code { display:block; overflow-wrap:anywhere; white-space:pre-wrap; margin:8px 0; }

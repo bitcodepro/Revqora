@@ -54,8 +54,10 @@ export async function runRepositoryBatch(roots: string[], kind: "fetch" | "pull"
           continue;
         }
       }
-      await deps[kind](root);
-      results.push({ root, status: "done", message: kind === "fetch" ? "Fetched" : "Updated (fast-forward)" });
+      const outcome = await deps[kind](root);
+      if (kind === "pull" && outcome && typeof outcome === "object" && "status" in outcome && outcome.status === "upstreamGone") {
+        results.push({ root, status: "skipped", message: "message" in outcome && typeof outcome.message === "string" ? outcome.message : "Remote branch no longer available; references refreshed, local branch kept" });
+      } else results.push({ root, status: "done", message: kind === "fetch" ? "Fetched" : "Updated (fast-forward)" });
     } catch (e) {
       results.push({ root, status: "failed", message: e && typeof e === "object" && "message" in e ? String(e.message) : String(e) });
     } finally {

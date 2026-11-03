@@ -47,7 +47,7 @@ async function runBatch(roots: string[], kind: "fetch" | "pull") {
       // This path never rebases, stashes, or creates a merge commit.
       pull: async (root) => {
         const out = await api.pull(root, "ff-only", id);
-        if (!["done", "fastForward", "upToDate"].includes(out.status)) throw new Error(out.message || "Pull needs attention");
+        if (!["done", "fastForward", "upToDate", "upstreamGone"].includes(out.status)) throw new Error(out.message || "Pull needs attention");
         useRepos.getState().patch(root, { lastFetchedAt: Date.now(), fetchError: null });
         return out;
       },

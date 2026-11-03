@@ -208,7 +208,7 @@ export const api = {
   undoCommit: (repo: string) => call<void>("undo_commit", { repo }),
 
   fetch: (repo: string, remote: string | null, prune: boolean, opId: string) => call<string>("fetch", { repo, remote, prune, opId }),
-  pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string) => call<OpOutcome>("pull", { repo, mode, opId }),
+  pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string) => call<import("./types").PullOutcome>("pull", { repo, mode, opId }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
   pushRef: (repo: string, remote: string, refspec: string, opId: string, expectedState?: string | null) => call<string>("push_ref", { repo, remote, refspec, opId, expectedState }),
   remoteAdd: (repo: string, name: string, url: string) => call<void>("remote_add", { repo, name, url }),
