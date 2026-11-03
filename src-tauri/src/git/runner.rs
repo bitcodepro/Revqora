@@ -146,6 +146,7 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
     let has = |flag: &str| a.iter().any(|x| x == flag);
     match a.first().map(|s| s.as_str()).unwrap_or("") {
         "credential" => a.len() == 2 && a.get(1).is_some_and(|s| s == "fill"),
+        "var" => true,
         "status" | "diff" | "log" | "show" | "rev-parse" | "cat-file" | "for-each-ref" | "ls-files" | "ls-tree" | "range-diff" | "rev-list" | "merge-base"
         | "blame" | "symbolic-ref" | "diff-tree" | "diff-index" | "reflog" | "show-ref" | "check-ref-format" | "version" | "--version" | "ls-remote"
         | "describe" | "count-objects" | "name-rev" | "grep" | "check-ignore" => true,

@@ -117,6 +117,43 @@ fn indexed_attributes_refresh_a_diff_when_the_worktree_attributes_are_absent() {
     assert!(result.binary);
 }
 
+#[test]
+fn configured_attributes_contents_refresh_working_and_sealed_diffs_without_touching_staging() {
+    for absolute in [false, true] {
+        let repo = Repo::new();
+        let policy = repo.root.join("policy.attrs");
+        fs::write(&policy, "*.txt diff\n").unwrap();
+        repo.git(&["add", "policy.attrs"]);
+        repo.git(&["commit", "-qm", "Track custom attributes"]);
+        repo.git(&["config", "core.attributesFile", if absolute { policy.to_str().unwrap() } else { "policy.attrs" }]);
+        fs::write(repo.root.join("selected.txt"), "saved edit\n").unwrap();
+        repo.git(&["add", "selected.txt"]);
+        revqora_lib::git::layers::seal(&repo.root, Some("Configured attributes")).unwrap();
+        let layer = revqora_lib::git::layers::state(&repo.root).unwrap().layers.remove(0);
+        fs::write(repo.root.join("selected.txt"), "working edit\n").unwrap();
+        let before = repo.status();
+        let index = fs::read(repo.root.join(".git/index")).unwrap();
+        let opts = diff::DiffOptions::default();
+        assert!(!diff::working_diff(&repo.root, "selected.txt", diff::WorkSide::Unstaged, None, false, &opts).unwrap().binary);
+        assert!(!diff::rev_diff(&repo.root, Some(&layer.from_tree), &layer.to_tree, "selected.txt", &opts).unwrap().binary);
+        fs::write(&policy, "*.txt -diff\n").unwrap();
+        let after = repo.status();
+        assert!(diff::working_diff(&repo.root, "selected.txt", diff::WorkSide::Unstaged, None, false, &opts).unwrap().binary);
+        assert!(diff::rev_diff(&repo.root, Some(&layer.from_tree), &layer.to_tree, "selected.txt", &opts).unwrap().binary);
+        assert_ne!(Repo::token(&before), Repo::token(&after), "Configured attributes must invalidate the selected path; absolute={absolute}");
+        assert_ne!(before.diff_context_token, after.diff_context_token);
+        let error = operations::run(&repo.root, "stage", before.state_token.as_deref(), |_, _| {}, || Ok(())).unwrap_err();
+        assert_eq!(error.kind, "stale-operation");
+        fs::write(repo.root.join("noise.sqlite-wal"), "noise\n").unwrap();
+        let noise = repo.status();
+        assert_eq!(Repo::token(&after), Repo::token(&noise));
+        assert_eq!(after.diff_context_token, noise.diff_context_token);
+        let unchanged = revqora_lib::git::layers::state(&repo.root).unwrap().layers.remove(0);
+        assert_eq!((layer.from_tree, layer.to_tree), (unchanged.from_tree, unchanged.to_tree));
+        assert_eq!(index, fs::read(repo.root.join(".git/index")).unwrap());
+    }
+}
+
 fn submodule_repo() -> (Repo, PathBuf, Vec<String>) {
     let repo = Repo::new();
     let module = repo.root.join("module");

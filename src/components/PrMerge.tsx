@@ -4,7 +4,7 @@ import {api,errorMessage,isGitError} from "../lib/api";
 import type {ForgeInfo,PrDetail,PrMergePlan,PrCleanupReview,PrCleanupResult} from "../lib/types";
 import {Modal} from "./Modal";
 import {showDialog,toast} from "../lib/ui";
-import {safeWebUrl,utf8Length} from "../lib/prCenter";
+import {safeWebUrl,utf8Length,forgeRepositoryIdentity} from "../lib/prCenter";
 import {shortOid} from "../lib/format";
 import {readReviewDraft,writeReviewDraft,reviewAttemptPending,setReviewAttemptPending} from "../lib/prReviews";
 import {canMerge,mergeDraftKey,needsCleanupForce} from "../lib/prMerge";
@@ -23,7 +23,7 @@ export function PrMergePanel(context:Context&{refreshToken:number}){
 export async function mergeDialog(context:Context){try{const p=await api.prMergePlan(context.root,context.detail.pull.number,context.forge.connectionRevision!,context.detail.revision);await showDialog<void>(close=><MergeDialog {...context} initial={p} close={()=>close()}/>);}catch(e){toast.error(e,"Could not prepare merge");}}
 function MergeDialog({root,forge,detail:initialDetail,initial,updated,close}:Context&{initial:PrMergePlan;close:()=>void}){
  const [detail,setDetail]=useState(initialDetail),[plan,setPlan]=useState(initial),[method,setMethod]=useState(initial.methods[0]?.id??""),[consent,setConsent]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(""),active=useRef(false);
- const key=mergeDraftKey(root,forge.connectionRevision!,plan.actorId,detail.pull.number),[body,setBody]=useState(()=>readReviewDraft(key)),[uncertain,setUncertain]=useState(()=>reviewAttemptPending(key)),[checked,setChecked]=useState(false),[storageError,setStorageError]=useState("");
+ const key=mergeDraftKey(root,forgeRepositoryIdentity(forge),plan.actorId,detail.pull.number),[body,setBody]=useState(()=>readReviewDraft(key)),[uncertain,setUncertain]=useState(()=>reviewAttemptPending(key)),[checked,setChecked]=useState(false),[storageError,setStorageError]=useState("");
  useEffect(()=>{try{writeReviewDraft(key,body);setStorageError("");}catch(e){setStorageError(errorMessage(e));}},[key,body]);
  const dismiss=async()=>{if(active.current)return;if(storageError&&body&&!await confirmDialog({title:"Close unsaved merge message?",message:"Local storage could not save this message. Copy it before closing.",confirm:"Close without saved message",danger:true}))return;close();};
  const refresh=async()=>{if(active.current)return;active.current=true;setBusy(true);setConsent(false);try{const d=await api.prDetail(root,detail.pull.number,forge.connectionRevision!),p=await api.prMergePlan(root,d.pull.number,forge.connectionRevision!,d.revision);setDetail(d);setPlan(p);setMethod(old=>p.methods.some(m=>m.id===old)?old:p.methods[0]?.id??"");setError("");}catch(e){setError(errorMessage(e));}finally{active.current=false;setBusy(false);}};

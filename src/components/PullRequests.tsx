@@ -136,8 +136,8 @@ function RequestEditor(props: EditorProps) {
   const branches = getTab(root)?.refs?.remote.filter(b => b.remote === forge.remote).map(b => b.name.slice(forge.remote.length + 1)) ?? [];
   const defaultBase = initial?.pull.base ?? seed?.base ?? ["main", "master", "develop"].find(b => branches.includes(b) && b !== seed?.head) ?? branches.find(b => b !== seed?.head) ?? "main";
   const [snapshot, setSnapshot] = useState(initial ?? null), [title, setTitle] = useState(initial?.pull.title ?? seed?.title ?? ""), [body, setBody] = useState(initial?.body ?? seed?.body ?? ""), [base, setBase] = useState(defaultBase), [head, setHead] = useState(seed?.head ?? initial?.pull.head ?? "");
-  const attemptKey = prWriteAttemptKey(root, connection, initial?.pull.number ?? null);
-  const [draft, setDraft] = useState(false), [templates, setTemplates] = useState<PrTemplates>({ items: [], notice: null }), [template, setTemplate] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState(""), [uncertain, setUncertain] = useState(() => prWriteAttemptPending(attemptKey)), [checked, setChecked] = useState(false);
+  const attemptKey = prWriteAttemptKey(forge, initial?.pull.number ?? null);
+  const [draft, setDraft] = useState(false), [templates, setTemplates] = useState<PrTemplates>({ items: [], notice: null }), [template, setTemplate] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState(""), [uncertain, setUncertain] = useState(() => prWriteAttemptPending(attemptKey, root)), [checked, setChecked] = useState(false);
   const active = useRef(false), saved = useRef<PrEditResult | null>(null), listId = useId();
   const byteLength = utf8Length(body), valid = !!title.trim() && Array.from(title).length <= 256 && byteLength <= 65536 && !!base.trim() && !!head.trim();
   const dirty = title !== (snapshot?.pull.title ?? seed?.title ?? "") || body !== (snapshot?.body ?? seed?.body ?? "") || base !== (snapshot?.pull.base ?? defaultBase) || !initial && (head !== seed?.head || draft);
@@ -146,20 +146,20 @@ function RequestEditor(props: EditorProps) {
   const dismiss = async () => { if (active.current) return; if (dirty && !await confirmDialog({ title: "Discard unsaved PR edits?", message: "The title, description and branch edits in this window will be discarded.", confirm: "Discard edits", danger: true })) return; finish(saved.current); };
   const applyTemplate = async () => { const t = templates.items.find(t => t.path === template); if (!t || active.current) return; if (body && !await confirmDialog({ title: "Replace the description?", message: "The selected template will replace the current description. Copy the current text first if you want to keep it.", confirm: "Replace description" })) return; setBody(t.body); };
   const reload = async () => { if (!snapshot || active.current) return; if (dirty && !await confirmDialog({ title: "Reload the server version?", message: "This replaces your current edits with the latest title, description and target branch from the server.", confirm: "Reload server version" })) return; active.current = true; setBusy(true); try { const d = await api.prDetail(root, snapshot.pull.number, connection); setSnapshot(d); setTitle(d.pull.title); setBody(d.body); setBase(d.pull.base); setHead(d.pull.head); setError(""); setNotice(""); setChecked(false); } catch (e) { setError(errorMessage(e)); } finally { active.current = false; setBusy(false); } };
-  const markChecked = () => { if (active.current || !checked) return; try { setPrWriteAttemptPending(attemptKey, false); setUncertain(false); setChecked(false); setError(""); } catch (e) { setError(errorMessage(e)); } };
+  const markChecked = () => { if (active.current || !checked) return; try { setPrWriteAttemptPending(attemptKey, false, root); setUncertain(false); setChecked(false); setError(""); } catch (e) { setError(errorMessage(e)); } };
   const submit = async () => {
     if (active.current || !valid) return;
-    const wasPending = prWriteAttemptPending(attemptKey);
+    const wasPending = prWriteAttemptPending(attemptKey, root);
     if ((uncertain || wasPending) && !checked) { setUncertain(true); return; }
     active.current = true; setBusy(true); setError(""); setNotice("");
     // Save before IPC; a lost response or remounted editor must require an
     // explicit server-result check, including when local storage is unavailable.
-    try { setPrWriteAttemptPending(attemptKey, true); } catch (e) { setError(errorMessage(e)); active.current = false; setBusy(false); return; }
-    const clearAttempt = () => { try { setPrWriteAttemptPending(attemptKey, false); setUncertain(false); setChecked(false); } catch (e) { toast.warning("Saved, but the local PR result marker could not be cleared", errorMessage(e)); setUncertain(true); setChecked(false); } };
+    try { setPrWriteAttemptPending(attemptKey, true, root); } catch (e) { setError(errorMessage(e)); active.current = false; setBusy(false); return; }
+    const clearAttempt = () => { try { setPrWriteAttemptPending(attemptKey, false, root); setUncertain(false); setChecked(false); } catch (e) { toast.warning("Saved, but the local PR result marker could not be cleared", errorMessage(e)); setUncertain(true); setChecked(false); } };
     try {
       if (snapshot) { const r = await api.prEdit(root, snapshot.pull.number, connection, snapshot.revision, { title: title.trim(), body, base: base.trim() }); clearAttempt(); saved.current = r; setSnapshot(r.detail); if (r.notice) { setNotice(r.notice); return; } toast.success(`Updated #${r.detail.pull.number}`); finish(r); }
       else { const p = await api.prCreate(root, title.trim(), body, head.trim(), base.trim(), draft, connection); clearAttempt(); toast.success(`Opened #${p.number}`, p.url); finish(p); }
-    } catch (e) { setError(errorMessage(e)); let pending = wasPending || !isGitError(e) || e.kind === "forge-write-uncertain"; if (!pending) { try { setPrWriteAttemptPending(attemptKey, false); } catch { pending = true; } } setUncertain(pending); setChecked(false); }
+    } catch (e) { setError(errorMessage(e)); let pending = wasPending || !isGitError(e) || e.kind === "forge-write-uncertain"; if (!pending) { try { setPrWriteAttemptPending(attemptKey, false, root); } catch { pending = true; } } setUncertain(pending); setChecked(false); }
     finally { active.current = false; setBusy(false); }
   };
   return <Modal title={initial ? `Edit #${initial.pull.number}` : "New pull request"} subtitle={`${forge.host}/${forge.project} · ${forge.accountLogin ?? "Git credentials"}`} icon={initial ? <Pencil size={18} /> : <GitPullRequestCreate size={18} />} wide onClose={() => void dismiss()} onSubmit={() => void submit()} footer={<><button type="button" className="btn" disabled={busy} onClick={() => void dismiss()}>Cancel</button><button type="submit" className="btn primary" disabled={busy || !valid || uncertain && !checked}>{busy && <Loader2 size={14} className="spin" />}{initial ? "Save pull request" : "Create pull request"}</button></>}>

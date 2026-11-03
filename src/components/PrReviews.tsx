@@ -5,7 +5,7 @@ import {showDialog,toast} from "../lib/ui";
 import {Modal} from "./Modal";
 import {confirmDialog} from "./dialogs";
 import {shortOid} from "../lib/format";
-import {utf8Length,safeWebUrl} from "../lib/prCenter";
+import {utf8Length,safeWebUrl,forgeRepositoryIdentity} from "../lib/prCenter";
 import {mergeReviewThreads,refreshReviewThread,reviewAttemptPending,setReviewAttemptPending,readReviewDraft,reviewDraftKey,writeReviewDraft,previousReviewDrafts} from "../lib/prReviews";
 import type {ForgeInfo,PrDetail,PrReviewAnchor,PrReviewCapabilities,PrReviewKind,PrThread} from "../lib/types";
 type Context={root:string;forge:ForgeInfo;detail:PrDetail};
@@ -27,7 +27,7 @@ export async function chooseReview(context:Context,onSent:()=>void){
 }
 function Composer({context,kind,caps,anchor,path,initialThread,onSent,close}:{context:Context;kind:PrReviewKind;caps:PrReviewCapabilities;anchor:PrReviewAnchor|null;path:string|null;initialThread:PrThread|null;onSent:()=>void;close:()=>void}){
   const {root,forge}=context,[detail,setDetail]=useState(context.detail),connection=forge.connectionRevision!,vote=kind==="approve"||kind==="request_changes",hasText=(kind==="comment"||kind==="reply")||(vote&&caps.summaryWithVote);
-  const key=reviewDraftKey(root,`${connection}:${caps.actorId}`,detail.pull.number,detail.pull.headSha,kind,initialThread?.id??(anchor?`${path}:${anchor.side}:${anchor.line}`:"general"));
+  const key=reviewDraftKey(root,JSON.stringify([forgeRepositoryIdentity(forge),caps.actorId]),detail.pull.number,detail.pull.headSha,kind,initialThread?.id??(anchor?`${path}:${anchor.side}:${anchor.line}`:"general"));
   const [body,setBody]=useState(()=>hasText?readReviewDraft(key):""),[thread,setThread]=useState(initialThread),[error,setError]=useState(""),[busy,setBusy]=useState(false),[storageError,setStorageError]=useState(""),[uncertain,setUncertain]=useState(()=>reviewAttemptPending(key)),[ack,setAck]=useState(false);
   const active=useRef(false),sent=useRef(false),[saved,setSaved]=useState(false);
   useEffect(()=>{if(!hasText||sent.current)return;try{writeReviewDraft(key,body);setStorageError("");setSaved(!!body);}catch(e){setStorageError(errorMessage(e));setSaved(false);}},[key,body,hasText]);

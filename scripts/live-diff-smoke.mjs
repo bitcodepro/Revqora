@@ -51,7 +51,20 @@ export async function liveDiffSmoke({page,root,file,noise}) {
 }
 
 export async function sealedLayerAttributesSmoke({page,root}) {
-  const attrs=path.join(root,".gitattributes"),noise=path.join(root,"layer-watcher.sqlite-wal");
+  await layerAttributesSmoke({page,root,attributesName:".gitattributes"});
+  const config=path.join(root,".git/config"),previous=fs.readFileSync(config);
+  const context=await page.locator(".changes").getAttribute("data-diff-context");
+  try {
+    execFileSync("git",["-C",root,"config","core.attributesFile","review-policy.attrs"],{windowsHide:true});
+    await layerAttributesSmoke({page,root,attributesName:"review-policy.attrs"});
+  } finally {
+    fs.writeFileSync(config,previous);
+    await page.locator(`.changes[data-diff-context="${context}"] .diff[aria-busy="false"]`).waitFor();
+  }
+}
+
+async function layerAttributesSmoke({page,root,attributesName}) {
+  const attrs=path.join(root,attributesName),noise=path.join(root,"layer-watcher.sqlite-wal");
   const previous=fs.existsSync(attrs)?fs.readFileSync(attrs):null;
   const index=fs.readFileSync(path.join(root,".git/index"));
   const invoke=(command)=>page.evaluate(({command,root})=>window.__TAURI_INTERNALS__.invoke(command,{repo:root}),{command,root});
@@ -60,7 +73,7 @@ export async function sealedLayerAttributesSmoke({page,root}) {
   await page.locator(".layer:not(.open-layer) .file-row").first().click();
   await page.locator(".layer:not(.open-layer) .file-row.selected").first().waitFor();
   await page.waitForSelector(".changes .diff .dl");
-  await page.locator(".changes .diff[aria-busy='false']").waitFor();
+  await page.locator(`.changes[data-diff-context="${context}"] .diff[aria-busy="false"]`).waitFor();
   let monitored=false,restored=false;
   try {
     fs.writeFileSync(attrs,Buffer.concat([previous??Buffer.alloc(0),Buffer.from("\n*.ts -diff\n")]));

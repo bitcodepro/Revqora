@@ -1,8 +1,24 @@
 import {beforeEach,describe,expect,it,vi} from "vitest";
 import {mergeReviewThreads,refreshReviewThread,reviewAttemptPending,setReviewAttemptPending,previousReviewDrafts,readReviewDraft,reviewDraftKey,writeReviewDraft} from "./prReviews";
 import type {PrThread} from "./types";
+import {mergeDraftKey} from "./prMerge";
 beforeEach(()=>{const values:Record<string,string>={};Object.defineProperties(values,{getItem:{value:(k:string)=>values[k]??null},setItem:{value:(k:string,v:string)=>{values[k]=v;}},removeItem:{value:(k:string)=>{delete values[k];}}});vi.stubGlobal("localStorage",values);});
 const key=(head="a",account="account",number=7)=>reviewDraftKey("D:/Projects/Repo",account,number,head,"reply","T7");
+it("keeps an unknown review result across account changes, source updates and local clones without sharing written drafts",()=>{
+ const server=JSON.stringify(["github","https://api.github.com","team/repo"]);
+ const old=reviewDraftKey("D:/Projects/Repo",JSON.stringify([server,"actor1"]),7,"a","reply","T7");
+ const reopened=reviewDraftKey("E:/AnotherClone",JSON.stringify([server,"actor2"]),7,"b","reply","T7");
+ writeReviewDraft(old,"Private written draft");setReviewAttemptPending(old,true);
+ expect(reviewAttemptPending(reopened)).toBe(true);expect(readReviewDraft(reopened)).toBe("");
+ setReviewAttemptPending(reopened,false);expect(reviewAttemptPending(old)).toBe(false);
+ const legacy=reviewDraftKey("D:/Projects/Repo","expired-proof:actor1",7,"a","reply","T7");
+ setReviewAttemptPending(legacy,true);expect(reviewAttemptPending(old)).toBe(true);
+ setReviewAttemptPending(old,true);expect(reviewAttemptPending(legacy)).toBe(false);expect(reviewAttemptPending(old)).toBe(true);
+ const merge=mergeDraftKey("D:/Projects/Repo",server,"actor1",7),otherActor=mergeDraftKey("E:/AnotherClone",server,"actor2",7);
+ writeReviewDraft(merge,"Private merge message");setReviewAttemptPending(merge,true);
+ expect(reviewAttemptPending(otherActor)).toBe(true);expect(readReviewDraft(otherActor)).toBe("");
+ setReviewAttemptPending(otherActor,false);expect(reviewAttemptPending(merge)).toBe(false);
+});
 describe("local review drafts",()=>{
  it("keeps text per account, request, source and target without sending it",()=>{writeReviewDraft(key(),"Draft 😀\nsecond line");expect(readReviewDraft(key())).toBe("Draft 😀\nsecond line");expect(readReviewDraft(key("b"))).toBe("");expect(readReviewDraft(key("a","another"))).toBe("");expect(readReviewDraft(key("a","account",8))).toBe("");writeReviewDraft(key(),"");expect(readReviewDraft(key())).toBe("");});
  it("offers previous source drafts explicitly and never mixes accounts or PRs",()=>{writeReviewDraft(key(),"Old text");writeReviewDraft(key("c","another"),"Private other account");expect(previousReviewDrafts(key("b"))).toEqual([{key:key(),head:"a",body:"Old text"}]);expect(readReviewDraft(key("b"))).toBe("");});

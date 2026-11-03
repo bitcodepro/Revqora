@@ -48,6 +48,14 @@ export async function prCenterSmoke({page,check,shot,work}) {
   try {
     const snapshot=await invoke("forge_accounts_snapshot");const added=await invoke("forge_account_add",{input:{id:null,kind:"github",server:url,username:"",token,authMode:"token",persist:false},expected:snapshot.revision});const account=added.accounts.find(p=>p.server===url);
     const connections=await invoke("forge_connections",{repo:root});await invoke("forge_connection_select",{repo:root,selection:{remote:"origin",fingerprint:connections.remotes[0].fingerprint,accountId:account.id,allowSshAlias:false},expected:connections.revision});
+    const reconnect=async n=>{
+      const before=(await invoke("forge_info",{repo:root})).connectionRevision;
+      const current=await invoke("forge_connections",{repo:root});
+      await invoke("forge_connection_select",{repo:root,selection:{remote:"origin",fingerprint:current.remotes[0].fingerprint,accountId:account.id,allowSshAlias:false},expected:current.revision});
+      if((await invoke("forge_info",{repo:root})).connectionRevision===before)throw Error("The real account revision did not change");
+      await page.evaluate(()=>window.dispatchEvent(new Event("revqora:forge-accounts")));
+      await detail(1);await openNumber(n);
+    };
     await invoke("plugin:event|emit",{event:"open-paths",payload:[root]});await page.locator(".topbar .repo-current > b").filter({hasText:"stage13-pr-center"}).waitFor();await page.getByRole("button",{name:"Pull requests",exact:true}).click();await detail(1);
     await check("PR Center pages, searches and filters server requests and opens a number directly",async()=>{
       await page.locator("[data-pr-loaded='50']").waitFor();await page.getByRole("button",{name:"Load more requests",exact:true}).click();await page.locator("[data-pr-loaded='52']").waitFor();await openNumber(52);
@@ -80,6 +88,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
       if(pulls.get(101)?.title!=="Created despite a lost response")throw Error("Lost response fixture did not actually save the PR");
       const before=requests.filter(r=>r.method==="POST"&&r.path.endsWith("/pulls")).length;
       await button("Cancel").click();await button("Discard edits").click();
+      await reconnect(100);
       await page.getByRole("button",{name:"New",exact:true}).click();
       await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Changed form must retain the guard");
       await page.getByLabel("PR source branch",{exact:true}).fill("different-topic");
@@ -100,6 +109,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
       const before=requests.filter(r=>r.method==="PATCH").length;
       if(pulls.get(100).title!=="Edit saved despite a lost response")throw Error("Lost edit fixture did not save");
       await button("Cancel").click();await button("Discard edits").click();
+      await reconnect(100);
       await page.getByRole("button",{name:"Edit PR",exact:true}).click();
       if(!await button("Save pull request").isDisabled())throw Error("Reopening an edit lost its pending write");
       await button("Reload server version").click();

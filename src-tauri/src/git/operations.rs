@@ -243,6 +243,69 @@ pub struct StateTokens {
     pub diff_context: String,
 }
 
+pub(super) fn external_attribute_files(repo: &Path) -> GitResult<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    if runner::version_at_least(2, 42) {
+        // Git resolves configured paths, ~/ and its platform-specific defaults.
+        // Query only these variables: `var -l` also exposes arbitrary config.
+        for name in ["GIT_ATTR_GLOBAL", "GIT_ATTR_SYSTEM"] {
+            let out = runner::exec(repo, ["var", name])?;
+            if out.ok() {
+                let value = out.text();
+                let value = value.strip_suffix('\n').unwrap_or(&value).trim_end_matches('\r');
+                if !value.is_empty() {
+                    paths.push(repo.join(value));
+                }
+            } else if out.code != 1 {
+                return Err(runner::to_error("Resolve Git attributes file", &out));
+            }
+        }
+    } else {
+        let out = runner::exec(repo, ["config", "--null", "--path", "--get", "core.attributesFile"])?;
+        if out.ok() {
+            let path = out.text();
+            let path = path.trim_end_matches('\0');
+            if !path.is_empty() {
+                paths.push(repo.join(path));
+            }
+        } else if out.code == 1 {
+            let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+            let config =
+                std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()).map(PathBuf::from).or_else(|| home.map(|p| PathBuf::from(p).join(".config")));
+            if let Some(config) = config {
+                paths.push(config.join("git/attributes"));
+            }
+        } else {
+            return Err(runner::to_error("Resolve configured attributes file", &out));
+        }
+    }
+    Ok(paths)
+}
+
+fn hash_external_attributes(hash: &mut Sha256, repo: &Path) -> GitResult<[u8; 32]> {
+    let mut attributes = Sha256::new();
+    for path in external_attribute_files(repo)? {
+        let name = path.as_os_str().as_encoded_bytes();
+        attributes.update((name.len() as u64).to_le_bytes());
+        attributes.update(name);
+        attributes.update(hash_file(hash, &path)?);
+        // Unlike worktree .gitattributes, a configured global file can be a
+        // symlink; its target's contents also affect Git's interpretation.
+        if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            match fs::canonicalize(&path) {
+                Ok(target) => {
+                    attributes.update(hash_file(hash, &target)?);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    let digest = attributes.finalize().into();
+    hash.update(digest);
+    Ok(digest)
+}
+
 fn submodule_fingerprint(module: &Path) -> GitResult<[u8; 32]> {
     let mut hash = Sha256::new();
     let mut pending = vec![module.to_owned()];
@@ -271,6 +334,7 @@ fn submodule_fingerprint(module: &Path) -> GitResult<[u8; 32]> {
         let common = repository_key(&root);
         hash_file(&mut hash, &common.join("config"))?;
         hash_file(&mut hash, &common.join("info/attributes"))?;
+        hash_external_attributes(&mut hash, &root)?;
         // Inline submodule diffs can change while HEAD and dirty flags stay the
         // same. Stream tracked dirty contents instead of materializing a patch.
         for file in super::status::parse(&out.text()).files {
@@ -303,6 +367,7 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
     hash_file(&mut hash, &gd.join("HEAD"))?;
     let config = hash_file(&mut hash, &common.join("config"))?;
     let info_attributes = hash_file(&mut hash, &common.join("info/attributes"))?;
+    let external_attributes = hash_external_attributes(&mut hash, repo)?;
     // Cache-tree/stat extensions and packed-ref layout can change without changing
     // what the user staged. Compare semantic index entries and resolved refs instead.
     let index = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
@@ -365,6 +430,7 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
         display.update(content);
         display.update(config);
         display.update(info_attributes);
+        display.update(external_attributes);
         if file.submodule {
             let module = submodule_fingerprint(&repo.join(&file.path))?;
             hash.update(module);
@@ -390,6 +456,7 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
     let mut context = Sha256::new();
     context.update(config);
     context.update(info_attributes);
+    context.update(external_attributes);
     for (path, digest) in attributes {
         // Missing candidates discovered because an unrelated file appeared must
         // not change the interpretation generation (e.g. a new SQLite WAL).
