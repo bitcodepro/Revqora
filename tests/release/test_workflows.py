@@ -146,11 +146,20 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(commands[1]["run"].strip(), "cargo test --manifest-path src-tauri/Cargo.toml --features ui-automation\nexit $LASTEXITCODE")
         for command in commands:
             self.assertNotIn("if", command)  # Both remain full, unconditional checks.
+        readiness = next(i for i, s in enumerate(automation["steps"]) if s.get("name") == "Verify cold Windows CLI dependency")
+        tests = next(i for i, s in enumerate(automation["steps"]) if s.get("name") == "Test the complete Windows automation configuration")
+        self.assertEqual(automation["steps"][readiness]["run"], "node scripts/windows-cli-readiness.mjs")
+        self.assertNotIn("if", automation["steps"][readiness])
+        self.assertLess(readiness, tests)
+        self.assertEqual(automation["env"]["REVQORA_AGENT_TEST_DIAGNOSTICS"], "${{ github.workspace }}/ci-results/agent-test-failures")
         diagnostic = next(s for s in automation["steps"] if "agent-windows-diagnostics.mjs" in s.get("run", ""))
         self.assertEqual(diagnostic["if"], "runner.os == 'Windows' && !cancelled()")
         self.assertEqual(diagnostic["run"], "node scripts/agent-windows-diagnostics.mjs --out ci-results/agent-windows-diagnostics")
         self.assertIn("windows-automation", jobs["release"]["needs"])
         self.assertTrue(any(s.get("with", {}).get("name") == "windows-agent-diagnostics" for s in automation["steps"]))
+        evidence = next(s["with"]["path"] for s in automation["steps"] if s.get("with", {}).get("name") == "windows-agent-diagnostics")
+        for path in ("ci-results/agent-windows-diagnostics", "ci-results/agent-test-failures", "ci-results/windows-cli-readiness.json"):
+            self.assertIn(path, evidence.splitlines())
 
     def test_quick_stage_timings_survive_failure_for_each_platform(self):
         checks = self.ci["jobs"]["build-and-test"]

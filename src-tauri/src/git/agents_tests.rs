@@ -27,6 +27,7 @@ fn output_job(root: &Path) -> Job {
         cancel: AtomicBool::new(false),
         done: AtomicBool::new(true),
         clock: Instant::now(),
+        launch_diagnostics: Mutex::new(serde_json::Value::Null),
     }
 }
 
@@ -86,7 +87,7 @@ fn escaped_control_and_invalid_output_history_remains_readable_deletable_and_lau
     save(&dir, &snapshot(&job)).unwrap();
     let task = start(r.path().to_owned(), prepare(r.path(), request("echo history-is-readable")).unwrap(), true).unwrap();
     let task = wait(r.path(), &task.id);
-    assert_eq!(task.phase, "completed", "{:?}", task.error);
+    assert_eq!(task.phase, "completed", "{}", failure_snapshot(r.path(), &task, Path::new(&task.path)));
     forget(r.path(), &snapshot(&job).id).unwrap();
     cleanup(r.path(), &task);
 }
@@ -172,7 +173,7 @@ fn request(code: &str) -> Request {
     #[cfg(windows)]
     let (executable, args) = (
         format!("{}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", std::env::var("SystemRoot").unwrap()),
-        vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), code.into()],
+        vec!["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), format!("[Console]::Error.WriteLine('revqora-fixture-entered'); {code}")],
     );
     #[cfg(unix)]
     let (executable, args) = (fs::canonicalize("/bin/sh").unwrap().to_string_lossy().into_owned(), vec!["-c".into(), code.into()]);
@@ -218,13 +219,22 @@ fn failure_snapshot(root: &Path, task: &Task, expected: &Path) -> serde_json::Va
     } else {
         None
     };
-    serde_json::json!({
+    let launch = jobs().lock().get(&operations::repository_key(root)).map(|job| job.launch_diagnostics.lock().clone());
+    let diagnostic = serde_json::json!({
         "id":task.id,"phase":task.phase,"exitCode":task.exit_code,"error":task.error,
         "stdout":task.stdout.chars().take(4096).collect::<String>(),"stderr":task.stderr.chars().take(4096).collect::<String>(),"outputTruncated":task.truncated,
         "expectedPath":expected,"actualPath":task.path,"expectedPathState":path_probe(expected),"actualPathState":path_probe(Path::new(&task.path)),
         "gitMarkerState":path_probe(&Path::new(&task.path).join(".git")),"registrationPresent":registration,"workerFinished":done,
         "recordPath":record.as_ref().ok(),"recordState":record.as_ref().ok().map(|p|path_probe(p)),"recordInspectionError":record.as_ref().err().map(|e|e.message.as_str()),
-    })
+        "launch":launch,"fixtureEntered":task.stderr.contains("revqora-fixture-entered"),"elapsedMs":task.elapsed_ms,"test":thread::current().name(),
+    });
+    if let Some(output) = std::env::var_os("REVQORA_AGENT_TEST_DIAGNOSTICS").map(PathBuf::from).filter(|p| p.is_absolute()) {
+        let saved = fs::create_dir_all(&output).and_then(|_| fs::write(output.join(format!("{}.json", task.id)), diagnostic.to_string()));
+        if let Err(error) = saved {
+            eprintln!("Could not retain sanitized task diagnostics: {error}");
+        }
+    }
+    diagnostic
 }
 fn path_probe(path: &Path) -> serde_json::Value {
     match fs::symlink_metadata(path) {
@@ -318,6 +328,17 @@ fn cancellation_and_timeout_stop_process_tree_without_removing_worktree() {
         }
         let t = wait(r.path(), &t.id);
         assert_eq!(t.phase, if cancel { "cancelled" } else { "timed-out" });
+        #[cfg(windows)]
+        {
+            let diagnostic = failure_snapshot(r.path(), &t, Path::new(&t.path));
+            assert_eq!(diagnostic["launch"]["resumePreviousCount"], 1, "{diagnostic}");
+            assert!(diagnostic["launch"]["processTimesOsError"].is_null(), "{diagnostic}");
+            if cancel {
+                assert_eq!(diagnostic["fixtureEntered"], true, "{diagnostic}");
+            } else {
+                assert!(diagnostic["launch"]["executionMs"].as_u64().unwrap() >= 1000, "{diagnostic}");
+            }
+        }
         assert!(!Path::new(&t.path).join("late.txt").exists());
         assert!(Path::new(&t.path).exists());
         cleanup(r.path(), &t);
@@ -332,7 +353,7 @@ fn bounded_outputs_are_drained_and_failed_exit_is_retained() {
     let code = "cat >/dev/null; head -c 300000 /dev/zero | tr '\\0' x; head -c 300000 /dev/zero | tr '\\0' y >&2; exit 7";
     let t = start(r.path().to_owned(), prepare(r.path(), request(code)).unwrap(), true).unwrap();
     let t = wait(r.path(), &t.id);
-    assert_eq!(t.phase, "failed");
+    assert_eq!(t.phase, "failed", "{}", failure_snapshot(r.path(), &t, Path::new(&t.path)));
     assert_eq!(t.exit_code, Some(7));
     assert!(t.truncated);
     assert_eq!(t.stdout.len(), OUTPUT_LIMIT);
