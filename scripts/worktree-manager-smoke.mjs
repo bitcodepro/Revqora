@@ -3,8 +3,10 @@ import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fillWorktreeFolder, assertWorktreeFolder } from "./worktree-manager-fixture.mjs";
+import {pullUpstreamSmoke} from "./pull-upstream-smoke.mjs";
 
 export async function worktreeManagerSmoke({page,check,shot,work}) {
+  await pullUpstreamSmoke({page,check,shot,work});
   const root=path.join(work,"stage11-main"),git=(p,...args)=>execFileSync("git",["-C",p,...args],{encoding:"utf8",windowsHide:true,stdio:["ignore","pipe","pipe"]}).trim();
   fs.mkdirSync(root);git(root,"init","-qb","main");
   for(const [k,v] of [["user.name","Worktree Tester"],["user.email","worktree@example.invalid"],["commit.gpgsign","false"],["core.autocrlf","false"],["core.hooksPath",".git/hooks"]])git(root,"config",k,v);
@@ -42,7 +44,33 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
   };
 
   await check("worktree inventory shows independent dirty, ignored, locked and detached state with keyboard navigation",async()=>{
-    await open();if(await page.locator(".wm-row").count()!==4)throw new Error("Worktree inventory omitted a working folder");
+    await open();await select(dirty);
+    await page.evaluate(async()=>{
+      const original=window.fetch,url=window.__TAURI_INTERNALS__.convertFileSrc("worktree_manager_snapshot","ipc"),gate={held:false,release:null,observed:0};
+      gate.restore=()=>{gate.release?.();window.fetch=original;delete window.__wmRefreshGate;};
+      window.__wmRefreshGate=gate;
+      window.fetch=async(input,init)=>{const response=await original.call(window,input,init);const target=typeof input==="string"?input:input.url??String(input);if(target===url&&gate.observed++===0){if(!response.ok||response.headers.get("Tauri-Response")!=="ok")throw Error("Native worktree refresh failed before the response gate");await new Promise(resolve=>{gate.release=resolve;gate.held=true;});}return response;};
+      window.dispatchEvent(new Event("revqora:worktree"));
+    });
+    try {
+      await page.waitForFunction(()=>window.__wmRefreshGate?.held===true);
+      for(const name of ["Open worktree","Lock worktree","Review removal","New worktree"]){if(await page.locator(".worktree-manager").getByRole("button",{name,exact:true}).isDisabled())throw Error(`Background refresh disabled ${name}`);}
+      if(await page.locator(".wm-body").evaluate(el=>getComputedStyle(el).opacity)!=="1")throw Error("Background refresh dimmed the existing worktree inventory");
+      await page.getByRole("textbox",{name:"Search worktrees",exact:true}).fill("wm-dirty");
+      const lock=page.locator(".wm-actions").getByRole("button",{name:"Lock worktree",exact:true});
+      if(!await lock.evaluate(el=>el.scrollWidth<=el.clientWidth&&el.scrollHeight<=el.clientHeight))throw Error("Worktree action text is clipped");
+      await lock.click();await modal().getByRole("button",{name:"Lock worktree",exact:true}).waitFor();
+      await modal().getByRole("textbox",{name:"Worktree lock reason",exact:true}).fill("Keep typed reason during refresh");
+      await page.evaluate(()=>window.__wmRefreshGate.release());
+      if(await modal().getByRole("textbox",{name:"Worktree lock reason",exact:true}).inputValue()!=="Keep typed reason during refresh")throw Error("Late inventory refresh reset an active review");
+      await closeModal("Cancel");await page.waitForSelector(".wm-body[aria-busy=false]");
+    }finally{await page.evaluate(()=>window.__wmRefreshGate?.restore());}
+    // Use the actual shipped styles for all three existing single-select forms.
+    const controls=await page.evaluate(()=>{const host=document.createElement("div");host.innerHTML='<select class="input"><option>Long selected value</option></select><select class="select"><option>Long selected value</option></select><div class="search-box"><select><option>All</option></select></div><span class="spin"></span><span class="loader"></span>';document.body.append(host);host.dataset.controlsProbe="1";return [...host.querySelectorAll("select")].map(el=>{const s=getComputedStyle(el);return{padding:parseFloat(s.paddingRight),arrow:s.backgroundPosition,appearance:s.appearance};});});
+    if(controls.some(s=>s.padding<32||s.appearance!=="none"||!s.arrow.includes("px")))throw Error(`Select text/chevron has insufficient space: ${JSON.stringify(controls)}`);
+    try{await page.emulateMedia({reducedMotion:"reduce"});const iterations=await page.locator('[data-controls-probe] .spin,[data-controls-probe] .loader').evaluateAll(elements=>elements.map(el=>getComputedStyle(el).animationIterationCount));if(iterations.some(value=>value.split(",").some(n=>n.trim()!=="1")))throw Error("Reduced-motion loading animation still loops indefinitely");}
+    finally{await page.emulateMedia({reducedMotion:null});await page.locator('[data-controls-probe]').evaluate(el=>el.remove());}
+    await page.getByRole("textbox",{name:"Search worktrees",exact:true}).fill("");await filter("All");if(await page.locator(".wm-row").count()!==4)throw new Error("Worktree inventory omitted a working folder");
     await select(dirty);if(!(await page.locator(".wm-detail").innerText()).includes("1 changed files")||!(await page.locator(".wm-detail").innerText()).includes("1 ignored"))throw new Error("Dirty/ignored state missing");
     await page.getByRole("textbox",{name:"Search worktrees",exact:true}).fill("");await filter("Locked");if(await page.locator(".wm-row").count()!==1||!(await page.locator(".wm-row").innerText()).includes("Offline drive"))throw new Error("Lock reason/filter missing");
     await filter("Detached");if(await page.locator(".wm-row").count()!==1)throw new Error("Detached filter ignored");
@@ -79,22 +107,22 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
       await page.locator(".topbar .repo-current > b").filter({hasText:"wm-existing"}).waitFor();
     }finally{await page.evaluate(()=>{window.__wmOpenRelease?.();window.fetch=window.__wmOpenFetch;delete window.__wmOpenRelease;delete window.__wmOpenFetch;});}
     await open();await select(root);
-    if(!await page.getByRole("button",{name:"Review removal…",exact:true}).isDisabled())throw new Error("Main worktree removal enabled from a linked worktree");
-    await select(p);if(!await page.getByRole("button",{name:"Review removal…",exact:true}).isDisabled())throw new Error("Current linked worktree removal enabled");
+    if(!await page.getByRole("button",{name:"Review removal",exact:true}).isDisabled())throw new Error("Main worktree removal enabled from a linked worktree");
+    await select(p);if(!await page.getByRole("button",{name:"Review removal",exact:true}).isDisabled())throw new Error("Current linked worktree removal enabled");
     const d=path.join(work,"wm-created-detached");await create("Detached HEAD","",d);if(git(d,"branch","--show-current")||git(d,"rev-parse","HEAD")!==initialHead)throw new Error("Detached creation attached a branch or changed its commit");
     await select(root);await page.locator(".wm-detail").getByRole("button",{name:"Open worktree",exact:true}).click();await page.locator(".topbar .repo-current > b").filter({hasText:"stage11-main"}).waitFor();
     if(git(root,"branch","--show-current")!=="main"||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="source unstaged\r\n")throw new Error("Opening a worktree checked out or reset the original branch");await open();
   });
   await check("worktree lock reasons block removal and require an explicit reviewed unlock",async()=>{
-    await select(dirty);await page.locator(".wm-detail").getByRole("button",{name:"Lock…",exact:true}).click();await modal().getByRole("textbox",{name:"Worktree lock reason",exact:true}).fill("Keep local work · offline drive");await modal().getByRole("button",{name:"Lock worktree",exact:true}).click();await page.waitForSelector(".modal",{state:"detached"});await page.waitForSelector(".wm-body[aria-busy=false]");
-    if(!await page.getByRole("button",{name:"Review removal…",exact:true}).isDisabled()||!(await page.locator(".wm-detail").innerText()).includes("Keep local work"))throw new Error("Locked worktree was removable or lost its reason");
-    await page.locator(".wm-detail").getByRole("button",{name:"Unlock…",exact:true}).click();await modal().getByRole("button",{name:"Unlock worktree",exact:true}).click();await page.waitForSelector(".modal",{state:"detached"});await page.waitForSelector(".wm-body[aria-busy=false]");
+    await select(dirty);await page.locator(".wm-detail").getByRole("button",{name:"Lock worktree",exact:true}).click();await modal().getByRole("textbox",{name:"Worktree lock reason",exact:true}).fill("Keep local work · offline drive");await modal().getByRole("button",{name:"Lock worktree",exact:true}).click();await page.waitForSelector(".modal",{state:"detached"});await page.waitForSelector(".wm-body[aria-busy=false]");
+    if(!await page.getByRole("button",{name:"Review removal",exact:true}).isDisabled()||!(await page.locator(".wm-detail").innerText()).includes("Keep local work"))throw new Error("Locked worktree was removable or lost its reason");
+    await page.locator(".wm-detail").getByRole("button",{name:"Unlock worktree",exact:true}).click();await modal().getByRole("button",{name:"Unlock worktree",exact:true}).click();await page.waitForSelector(".modal",{state:"detached"});await page.waitForSelector(".wm-body[aria-busy=false]");
     const state=await invoke("worktree_manager_snapshot");if(state.worktrees.find(w=>w.branch==="wm-dirty").locked)throw new Error("Unlock did not update Git registration");
   });
   await check("removal rejects stale ignored data then restores complete files, hidden flags and staging through Undo Center",async()=>{
     const p=add("wm-removal");fs.writeFileSync(path.join(p,"file.txt"),"staged\n");git(p,"add","file.txt");fs.writeFileSync(path.join(p,"file.txt"),"unstaged\r\n");
     fs.writeFileSync(path.join(p,"ignored.txt"),"before\n");git(p,"update-index","--assume-unchanged","hidden.txt");fs.writeFileSync(path.join(p,"hidden.txt"),"hidden data\n");git(p,"update-index","--skip-worktree","absent.txt");fs.unlinkSync(path.join(p,"absent.txt"));fs.writeFileSync(path.join(p,"untracked.bin"),Buffer.from([0,255,13,10]));
-    const index=git(p,"ls-files","--stage","-v","-z"),sourceIndex=fs.readFileSync(path.join(root,".git/index"));await refresh();await select(p);await page.getByRole("button",{name:"Review removal…",exact:true}).click();await page.waitForSelector('[data-worktree-review="remove"]');
+    const index=git(p,"ls-files","--stage","-v","-z"),sourceIndex=fs.readFileSync(path.join(root,".git/index"));await refresh();await select(p);await page.getByRole("button",{name:"Review removal",exact:true}).click();await page.waitForSelector('[data-worktree-review="remove"]');
     if(!await modal().getByRole("button",{name:"Remove worktree",exact:true}).isDisabled())throw new Error("Local changes did not require consent");
     await modal().getByRole("checkbox",{name:"Confirm removal of worktree local and ignored changes",exact:true}).check();const before=await invoke("status",{repo:p});fs.writeFileSync(path.join(p,"ignored.txt"),"after!\n");const after=await invoke("status",{repo:p});if(before.stateToken!==after.stateToken)throw new Error("Ignored-only fixture changed the ordinary status token");
     await modal().getByRole("button",{name:"Remove worktree",exact:true}).click();await modal().getByRole("alert").filter({hasText:/changed/}).waitFor();if(!fs.existsSync(p))throw new Error("Stale ignored data was removed");
@@ -107,7 +135,7 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
     await shot("93-worktree-recovery");await closeModal("Close");await closeModal("Close");await page.waitForSelector(".wm-body[aria-busy=false]");
   });
   await check("a replaced worktree marker cannot redirect a reviewed removal to an unrelated repository",async()=>{
-    const p=add("wm-identity"),foreign=path.join(work,"wm-foreign");git(root,"clone","-q",root,foreign);const marker=path.join(p,".git"),saved=fs.readFileSync(marker);await refresh();await select(p);await page.getByRole("button",{name:"Review removal…",exact:true}).click();await page.waitForSelector('[data-worktree-review="remove"]');
+    const p=add("wm-identity"),foreign=path.join(work,"wm-foreign");git(root,"clone","-q",root,foreign);const marker=path.join(p,".git"),saved=fs.readFileSync(marker);await refresh();await select(p);await page.getByRole("button",{name:"Review removal",exact:true}).click();await page.waitForSelector('[data-worktree-review="remove"]');
     // Git marks .git hidden on Windows; opening an existing hidden file with w/CREATE_ALWAYS fails EPERM.
     const replaceMarker=data=>{const fd=fs.openSync(marker,"r+");try{fs.ftruncateSync(fd,0);fs.writeFileSync(fd,data);}finally{fs.closeSync(fd);}};
     try{replaceMarker(`gitdir: ${path.join(foreign,".git")}\n`);await modal().getByRole("button",{name:"Remove worktree",exact:true}).click();await modal().getByRole("alert").waitFor();if(!fs.existsSync(p)||git(foreign,"rev-parse","HEAD")!==initialHead)throw new Error("Replaced marker redirected deletion");}

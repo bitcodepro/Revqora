@@ -7,7 +7,7 @@ import { GitMerge } from "lucide-react";
 import { Modal } from "../components/Modal";
 import { DeleteBranchDialog } from "../components/DeleteBranchDialog";
 import { useSettings } from "./settings";
-import type { OpOutcome } from "./types";
+import type { OpOutcome, PullOutcome } from "./types";
 import { shortOid } from "./format";
 import {
   cloneDialog,
@@ -202,7 +202,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
   const opId = newOpId();
   startBusy(opId, "Pulling");
   let diverged = false;
-  let outcome: OpOutcome | undefined;
+  let outcome: PullOutcome | undefined;
   try {
     outcome = await api.pull(root, mode, opId);
   } catch (e) {
@@ -216,7 +216,12 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
     await useRepos.getState().refresh(root, ALL);
   }
   if (outcome) {
-    if (["done", "upToDate", "fastForward"].includes(outcome.status)) toast.success("Pulled", outcome.message);
+    if (outcome.status === "upstreamGone" && outcome.upstreamGone) {
+      const gone = outcome.upstreamGone;
+      useUi.getState().toast({kind:"info",title:"Upstream unavailable; repository refreshed",detail:outcome.message,
+        action:gone.defaultBranch?{label:`Continue on ${gone.defaultBranch}`,run:()=>void continueAfterDeletedUpstream(root,gone)}:{label:"Choose upstream",run:()=>void setUpstream(root,gone.branch)}},20000);
+    }
+    else if (["done", "upToDate", "fastForward"].includes(outcome.status)) toast.success("Pulled", outcome.message);
     else handleOutcome(root, outcome, "Pull");
   }
   if (diverged) {
@@ -246,6 +251,20 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
     ));
     if (how) await pull(root, how);
   }
+}
+
+async function continueAfterDeletedUpstream(root:string,gone:NonNullable<PullOutcome["upstreamGone"]>) {
+  try {
+    const state=await api.status(root),refs=await api.refs(root),branch=gone.defaultBranch;
+    if(state.branch!==gone.branch||!branch){toast.info("Current branch changed","Review the current branch before continuing.");return;}
+    const remote=`${gone.remote}/${branch}`,local=refs.local.find(b=>b.name===branch);
+    if(local&&local.upstream!==remote){
+      await setUpstream(root,local.name);
+      if((await api.refs(root)).local.find(b=>b.name===branch)?.upstream!==remote||(await api.status(root)).branch!==gone.branch)return;
+    }
+    if(!local&&!refs.remote.some(b=>b.name===remote)){toast.info("Choose an upstream",`The remote's default branch ${remote} is outside this repository's fetch settings.`);return;}
+    if(await checkout(root,local?branch:remote,local?"local":"remote")!==undefined)await pull(root,"ff-only");
+  }catch(e){toast.error(e,"Could not continue on the remote's default branch");}
 }
 
 export async function push(root: string) {

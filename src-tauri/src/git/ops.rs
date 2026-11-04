@@ -371,8 +371,119 @@ pub fn fetch_background(repo: &Path) -> GitResult<String> {
     runner::run_env(repo, ["fetch", "--all", "--prune", "--tags", "--quiet"], &background_env(ssh_configured), None)
 }
 
-pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult<OpOutcome> {
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingUpstream {
+    pub branch: String,
+    pub remote: String,
+    pub reference: String,
+    pub default_branch: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullOutcome {
+    #[serde(flatten)]
+    pub operation: OpOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_gone: Option<MissingUpstream>,
+}
+impl std::ops::Deref for PullOutcome {
+    type Target = OpOutcome;
+    fn deref(&self) -> &Self::Target {
+        &self.operation
+    }
+}
+impl From<OpOutcome> for PullOutcome {
+    fn from(operation: OpOutcome) -> Self {
+        Self { operation, upstream_gone: None }
+    }
+}
+
+fn pull_can_prune(repo: &Path, remote: &str) -> GitResult<bool> {
+    let specs = runner::exec(repo, ["config", "--get-all", &format!("remote.{remote}.fetch")])?;
+    if !specs.ok() && specs.code != 1 {
+        return Err(runner::to_error("git config remote fetch", &specs));
+    }
+    // Git also prunes destinations such as refs/tags/* when they occur in a
+    // configured refspec. Automatic cleanup is limited to remote-cache refs.
+    let text = specs.text();
+    Ok(!text.trim().is_empty() && text.lines().all(|s| s.starts_with('^') || s.split_once(':').is_some_and(|(_, target)| target.starts_with("refs/remotes/"))))
+}
+
+fn missing_pull_upstream(error: &GitError, reference: &str) -> bool {
+    error.message.contains("no such ref was fetched") || error.stderr.lines().any(|line| line.trim() == format!("fatal: couldn't find remote ref {reference}"))
+}
+
+fn deleted_pull_upstream(repo: &Path, branch: &str, remote: &str, reference: &str) -> GitResult<Option<PullOutcome>> {
+    if !reference.starts_with("refs/heads/") || !runner::exec(repo, ["check-ref-format", reference])?.ok() {
+        return Ok(None);
+    }
+    // A missing FETCH_HEAD candidate can also mean a restricted fetch refspec.
+    // Confirm absence against the server; never infer deletion from a stale cache.
+    let advertised = runner::exec(repo, ["ls-remote", "--symref", "--", remote, "HEAD", reference])?;
+    if !advertised.ok() {
+        return Err(runner::to_error("git ls-remote (verify upstream)", &advertised));
+    }
+    let text = advertised.text();
+    if text.lines().any(|line| line.split_once('\t').is_some_and(|(_, name)| name == reference)) {
+        return Ok(None);
+    }
+    // Also reconcile this one remote-cache ref when a custom tag/local refspec
+    // made broad pruning unsafe. Verify its mapping and compare its old SHA.
+    let mapping =
+        runner::run(repo, ["for-each-ref", "--format=%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)", &format!("refs/heads/{branch}")])?;
+    let parts: Vec<_> = mapping.trim().split('\0').collect();
+    if parts.len() == 3 && parts[0].starts_with("refs/remotes/") && parts[1] == remote && parts[2] == reference {
+        let old = runner::exec(repo, ["rev-parse", "--verify", "--end-of-options", parts[0]])?;
+        if old.ok() {
+            runner::run(repo, ["update-ref", "--no-deref", "-d", parts[0], old.text().trim()])?;
+        }
+    }
+    let default_branch = text.lines().find_map(|line| {
+        let (target, name) = line.split_once('\t')?;
+        (name == "HEAD").then(|| target.strip_prefix("ref: refs/heads/")).flatten().map(str::to_owned)
+    });
+    Ok(Some(PullOutcome {
+        operation: OpOutcome {
+            status: "upstreamGone".into(),
+            conflicts: Vec::new(),
+            message: format!("Upstream {reference} is no longer available from {remote}. Its absence was verified with the server and stale tracking references were reconciled. Local branch {branch} and its working changes are kept; no merge was performed."),
+        },
+        upstream_gone: Some(MissingUpstream { branch: branch.into(), remote: remote.into(), reference: reference.into(), default_branch }),
+    }))
+}
+
+pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
     super::recovery::protect_transport(repo, false, None, None, false)?;
+    let before = status::status(repo)?;
+    let branch = before.branch.as_deref().ok_or_else(|| GitError::new("Choose a branch with an upstream before pulling."))?;
+    let config_key = format!("branch.{branch}.merge");
+    let merges = runner::exec(repo, ["config", "--get-all", &config_key])?;
+    let merge_text = merges.text();
+    let configured: Vec<_> = merge_text.lines().filter(|s| !s.is_empty()).collect();
+    if !merges.ok() || configured.len() != 1 {
+        return Err(GitError::new("Configure one upstream for this branch before pulling."));
+    }
+    let remote_key = format!("branch.{branch}.remote");
+    let remote_config = runner::exec(repo, ["config", "--get", &remote_key])?;
+    if !remote_config.ok() && remote_config.code != 1 {
+        return Err(runner::to_error("git config branch remote", &remote_config));
+    }
+    let remote = if remote_config.ok() { remote_config.text() } else { "origin".into() };
+    let remote = remote.trim();
+    let prune = pull_can_prune(repo, remote)?;
+    let index_before = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
+    let unchanged = || -> GitResult<bool> {
+        let after = status::status(repo)?;
+        Ok(before.branch == after.branch
+            && before.oid == after.oid
+            && before.files == after.files
+            && before.diff_context_token == after.diff_context_token
+            && runner::exec(repo, ["config", "--get-all", &config_key])?.text() == merge_text
+            && runner::exec(repo, ["config", "--get", &remote_key])?.text() == remote_config.text()
+            && index_before == runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?)
+    };
     if mode != "rebase" {
         // Parse before fetching/merging, including Git's yes/on/1 spellings.
         // Invalid configuration must fail before a partially completed pull.
@@ -384,26 +495,39 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
         // Fetch cannot confirm a merge or overwrite working files. Resolve the
         // fetched upstream only after it succeeds, then use our reviewed merge
         // path (including ignored-file protection and explicit commit control).
-        let before = status::status(repo)?;
-        let index_before = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
-        if before.branch.is_none() {
-            return Err(GitError::new("Choose a branch with an upstream before pulling."));
+        let fetched = runner::run_streaming(
+            repo,
+            &[
+                "fetch".into(),
+                "--progress".into(),
+                if prune { "--prune" } else { "--no-prune" }.into(),
+                "--no-prune-tags".into(),
+                "--write-fetch-head".into(),
+                remote.into(),
+            ],
+            &[],
+            &mut on_line,
+        );
+        // Authentication/network failures remain failures. Only a precise
+        // missing-ref report is eligible for a second server-side check.
+        if let Err(error) = &fetched {
+            if !missing_pull_upstream(error, configured[0]) {
+                return Err(error.clone());
+            }
         }
-        let merges = runner::exec(repo, ["config", "--get-all", &format!("branch.{}.merge", before.branch.as_deref().unwrap())])?;
-        if !merges.ok() || merges.text().lines().filter(|s| !s.is_empty()).count() != 1 {
-            return Err(GitError::new("Configure one upstream for this branch before pulling."));
+        if !unchanged()? {
+            return Err(GitError::new(
+                "Pull stopped because the working tree, current branch or upstream configuration changed. Review it before pulling again.",
+            )
+            .kind("stale-operation"));
         }
-        runner::run_streaming(repo, &["fetch".into(), "--progress".into(), "--write-fetch-head".into()], &[], &mut on_line)?;
-        let after = status::status(repo)?;
-        if before.branch != after.branch
-            || before.oid != after.oid
-            || before.files != after.files
-            || before.diff_context_token != after.diff_context_token
-            || index_before != runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?
-        {
-            return Err(
-                GitError::new("Fetch completed, but the working tree or current branch changed. Review it before pulling again.").kind("stale-operation")
-            );
+        if let Err(error) = fetched {
+            if repo::op_state(repo, &repo::git_dir(repo)?).kind == "none" {
+                if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
+                    return Ok(outcome);
+                }
+            }
+            return Err(error);
         }
         let raw = std::fs::read_to_string(repo::git_dir(repo)?.join("FETCH_HEAD"))?;
         let targets: Vec<_> = raw
@@ -416,7 +540,12 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
             })
             .collect();
         if targets.len() != 1 {
-            return Err(GitError::new("Fetch completed, but no single configured upstream was fetched. Check this branch's remote and upstream settings."));
+            if targets.is_empty() {
+                if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
+                    return Ok(outcome);
+                }
+            }
+            return Err(GitError::new(format!("Fetch completed, but upstream {} on {remote} was not fetched unambiguously. Check the remote's fetch refspecs. Local branch {branch} was not merged.", configured[0])).kind("upstream-not-fetched"));
         }
         let mut outcome = merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, mode == "merge")?;
         if recurse && outcome.status != "conflicts" {
@@ -441,9 +570,22 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
                 }
             }
         }
-        return Ok(outcome);
+        return Ok(outcome.into());
     }
-    let mut args = vec!["pull".to_string(), "--progress".into()];
+    let mut args = vec![
+        "-c".into(),
+        "fetch.all=false".into(),
+        "-c".into(),
+        format!("fetch.prune={prune}"),
+        "-c".into(),
+        format!("remote.{remote}.prune={prune}"),
+        "-c".into(),
+        "fetch.pruneTags=false".into(),
+        "-c".into(),
+        format!("remote.{remote}.pruneTags=false"),
+        "pull".into(),
+        "--progress".into(),
+    ];
     match mode {
         "rebase" => {
             args.push("--rebase".into());
@@ -455,13 +597,22 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
         }
         _ => args.push("--ff-only".into()),
     }
+    // Pruning was reviewed only for this remote. A configured fetch.all must
+    // never expand Pull to other remotes with unreviewed destination refspecs.
+    args.push("--".into());
+    args.push(remote.into());
     match runner::run_streaming(repo, &args, &[], on_line) {
-        Ok(out) => Ok(OpOutcome::done(out)),
+        Ok(out) => Ok(OpOutcome::done(out).into()),
         Err(e) => {
             let c = conflicted(repo);
             if !c.is_empty() {
-                Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: e.message })
+                Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: e.message }.into())
             } else {
+                if missing_pull_upstream(&e, configured[0]) && unchanged()? && repo::op_state(repo, &repo::git_dir(repo)?).kind == "none" {
+                    if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
+                        return Ok(outcome);
+                    }
+                }
                 Err(e)
             }
         }

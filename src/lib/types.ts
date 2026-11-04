@@ -279,7 +279,7 @@ export interface RefsSnapshot {
 }
 
 export interface OpOutcome {
-  status: "done" | "conflicts" | "stopped" | "upToDate" | "fastForward" | "pending";
+  status: "done" | "conflicts" | "stopped" | "upToDate" | "fastForward" | "pending" | "upstreamGone";
   conflicts: string[];
   message: string;
   studioSession?: string | null;
@@ -796,3 +796,5 @@ export interface StackPlan {token:string;stackId:string;index:number;revision:st
 export interface StackOutcome {phase:string;message:string;checkpoint:string}
 
 export interface SymbolHistoryPage extends CodeHistoryPage {anchor:string;scanned:number;unavailable:number;notices:string[]}
+
+export interface PullOutcome extends OpOutcome { upstreamGone?: { branch: string; remote: string; reference: string; defaultBranch: string | null }; }

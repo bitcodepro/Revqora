@@ -30,6 +30,182 @@ fn pull_fixture() -> (Repo, Repo) {
     (local, remote)
 }
 
+#[test]
+fn pull_reconciles_a_deleted_upstream_without_merging_another_branch() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (local, remote) = pull_fixture();
+        remote.git(&["branch", "finished"]);
+        local.git(&["fetch", "origin"]);
+        local.git(&["branch", "--set-upstream-to=origin/finished", "main"]);
+        let head = local.git(&["rev-parse", "HEAD"]);
+        let index = fs::read(local.p().join(".git/index")).unwrap();
+        local.write("base.txt", "local work stays here\n");
+        remote.git(&["branch", "-D", "finished"]);
+        remote.write("new.txt", "new main data\n");
+        let main = remote.commit_all("advance default branch after merge");
+        let out = ops::pull(local.p(), mode, |_| {}).unwrap();
+        assert_eq!(out.status, "upstreamGone", "{mode}: {out:?}");
+        let gone = out.upstream_gone.as_ref().unwrap();
+        assert_eq!(gone.remote, "origin");
+        assert_eq!(gone.reference, "refs/heads/finished");
+        assert_eq!(gone.default_branch.as_deref(), Some("main"));
+        assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(fs::read(local.p().join(".git/index")).unwrap(), index);
+        assert_eq!(local.read("base.txt"), "local work stays here\n");
+        assert!(!local.p().join("new.txt").exists());
+        assert_eq!(local.git(&["rev-parse", "origin/main"]).trim(), main);
+        assert!(!runner::exec(local.p(), ["show-ref", "--verify", "refs/remotes/origin/finished"]).unwrap().ok());
+    }
+}
+
+#[test]
+fn pull_reconciles_deleted_upstreams_in_single_branch_clones() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (_, remote) = pull_fixture();
+        remote.git(&["branch", "finished"]);
+        let parent = Repo::new();
+        let root = parent.p().join("single-branch");
+        parent.git(&["clone", "--single-branch", "-b", "finished", remote.p().to_str().unwrap(), root.to_str().unwrap()]);
+        let head = runner::run(&root, ["rev-parse", "HEAD"]).unwrap();
+        let index = fs::read(root.join(".git/index")).unwrap();
+        fs::write(root.join("base.txt"), "keep this work\n").unwrap();
+        remote.git(&["branch", "-D", "finished"]);
+        let out = ops::pull(&root, mode, |_| {}).unwrap();
+        assert_eq!(out.status, "upstreamGone", "{mode}: {out:?}");
+        assert_eq!(out.upstream_gone.unwrap().default_branch.as_deref(), Some("main"));
+        assert_eq!(runner::run(&root, ["rev-parse", "HEAD"]).unwrap(), head);
+        assert_eq!(runner::run(&root, ["branch", "--show-current"]).unwrap().trim(), "finished");
+        assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+        assert_eq!(fs::read_to_string(root.join("base.txt")).unwrap(), "keep this work\n");
+        assert!(!runner::exec(&root, ["show-ref", "--verify", "refs/remotes/origin/finished"]).unwrap().ok());
+    }
+}
+
+#[test]
+fn pull_keeps_transport_errors_and_does_not_prune_an_unverified_upstream() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (local, remote) = pull_fixture();
+        local.git(&["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"]);
+        local.git(&["remote", "set-url", "origin", remote.p().join("unavailable.git").to_str().unwrap()]);
+        let cached = local.git(&["rev-parse", "refs/remotes/origin/main"]);
+        let head = local.git(&["rev-parse", "HEAD"]);
+        let error = ops::pull(local.p(), mode, |_| {}).unwrap_err();
+        assert!(error.code.is_some(), "original transport exit code must remain: {error:?}");
+        assert!(error.stderr.contains("unavailable.git"), "{mode}: {error:?}");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(local.git(&["rev-parse", "refs/remotes/origin/main"]), cached);
+    }
+}
+
+#[test]
+fn pull_does_not_reconcile_a_failed_exact_fetch_after_the_upstream_config_changes() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (local, remote) = pull_fixture();
+        remote.git(&["branch", "finished"]);
+        local.git(&["fetch", "origin"]);
+        local.git(&["branch", "--set-upstream-to=origin/finished", "main"]);
+        local.git(&["config", "remote.origin.fetch", "+refs/heads/finished:refs/remotes/origin/finished"]);
+        remote.git(&["branch", "-D", "finished"]);
+        let mut changed = false;
+        let error = ops::pull(local.p(), mode, |_| {
+            if !changed {
+                local.git(&["config", "branch.main.merge", "refs/heads/main"]);
+                changed = true;
+            }
+        })
+        .unwrap_err();
+        assert!(changed, "fetch must emit the failure before the mutation");
+        assert!(error.kind == "stale-operation" || error.stderr.contains("couldn't find remote ref"), "{mode}: {error:?}");
+        assert!(
+            runner::exec(local.p(), ["show-ref", "--verify", "refs/remotes/origin/finished"]).unwrap().ok(),
+            "stale operation must not prune a tracking ref"
+        );
+        assert_eq!(local.git(&["branch", "--show-current"]).trim(), "main");
+    }
+}
+
+#[test]
+fn pull_rebase_only_fetches_the_validated_remote_when_fetch_all_is_enabled() {
+    let (local, remote) = pull_fixture();
+    let other = Repo::new();
+    other.write("other.txt", "other remote\n");
+    other.commit_all("other");
+    local.git(&["remote", "add", "other", other.p().to_str().unwrap()]);
+    local.git(&["config", "remote.other.fetch", "+refs/tags/*:refs/tags/*"]);
+    local.git(&["config", "fetch.all", "true"]);
+    local.git(&["tag", "private-local"]);
+    let saved = local.git(&["rev-parse", "refs/tags/private-local"]);
+    remote.write("new.txt", "remote update\n");
+    let tip = remote.commit_all("remote update");
+    let out = ops::pull(local.p(), "rebase", |_| {}).unwrap();
+    assert_eq!(out.status, "done", "{out:?}");
+    assert_eq!(local.git(&["rev-parse", "HEAD"]).trim(), tip);
+    assert_eq!(local.git(&["rev-parse", "refs/tags/private-local"]), saved);
+    assert_eq!(local.git(&["config", "fetch.all"]).trim(), "true");
+}
+
+#[test]
+fn pull_does_not_mistake_an_excluded_upstream_for_a_deleted_branch() {
+    let (local, remote) = pull_fixture();
+    remote.git(&["branch", "other"]);
+    remote.write("new.txt", "remote main update\n");
+    remote.commit_all("main update");
+    local.git(&["config", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other"]);
+    local.git(&["config", "--add", "remote.origin.fetch", "^refs/heads/main"]);
+    let head = local.git(&["rev-parse", "HEAD"]);
+    let error = ops::pull(local.p(), "ff-only", |_| {}).unwrap_err();
+    assert_eq!(error.kind, "upstream-not-fetched", "{error:?}");
+    assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
+    assert!(!local.p().join("new.txt").exists());
+}
+
+#[test]
+fn pull_automatic_cleanup_preserves_local_tags_with_custom_fetch_settings() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (local, remote) = pull_fixture();
+        remote.git(&["branch", "finished"]);
+        local.git(&["fetch", "origin"]);
+        local.git(&["branch", "--set-upstream-to=origin/finished", "main"]);
+        local.git(&["tag", "private-local"]);
+        let saved = local.git(&["rev-parse", "refs/tags/private-local"]);
+        local.git(&["config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*"]);
+        local.git(&["config", "fetch.pruneTags", "true"]);
+        local.git(&["config", "remote.origin.pruneTags", "true"]);
+        ops::pull(local.p(), mode, |_| {}).unwrap();
+        assert_eq!(local.git(&["rev-parse", "refs/tags/private-local"]), saved);
+        remote.git(&["branch", "-D", "finished"]);
+        remote.write("new.txt", "main advanced\n");
+        remote.commit_all("main");
+        let out = ops::pull(local.p(), mode, |_| {}).unwrap();
+        assert_eq!(out.status, "upstreamGone", "{mode}: {out:?}");
+        assert_eq!(local.git(&["rev-parse", "refs/tags/private-local"]), saved);
+        assert!(!runner::exec(local.p(), ["show-ref", "--verify", "refs/remotes/origin/finished"]).unwrap().ok());
+    }
+}
+
+#[test]
+fn pull_rechecks_upstream_configuration_after_fetch() {
+    for setting in ["merge", "remote"] {
+        let (local, remote) = pull_fixture();
+        local.git(&["remote", "add", "other", remote.p().to_str().unwrap()]);
+        remote.write("new.txt", "remote update\n");
+        remote.commit_all("remote");
+        let before = local.git(&["rev-parse", "HEAD"]);
+        let mut changed = false;
+        let error = ops::pull(local.p(), "ff-only", |_| {
+            if !changed {
+                local.git(&["config", &format!("branch.main.{setting}"), if setting == "merge" { "refs/heads/other" } else { "other" }]);
+                changed = true;
+            }
+        })
+        .unwrap_err();
+        assert!(changed);
+        assert_eq!(error.kind, "stale-operation", "{error:?}");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]), before);
+        assert!(!local.p().join("new.txt").exists());
+    }
+}
+
 fn submodule_pull_fixture() -> (Repo, Repo, Repo, String, String) {
     let module = Repo::new();
     module.write("content.txt", "module A\n");
@@ -154,7 +330,7 @@ fn audit_pull_merge_waits_for_confirmation_and_ff_ignores_squash_defaults() {
 }
 
 #[test]
-fn audit_pull_preserves_ignored_files_and_rejects_a_missing_upstream() {
+fn audit_pull_preserves_ignored_files_and_keeps_a_missing_upstream_unmerged() {
     let (local, remote) = pull_fixture();
     local.write(".gitignore", "private.txt\n");
     local.commit_all("ignore");
@@ -166,7 +342,7 @@ fn audit_pull_preserves_ignored_files_and_rejects_a_missing_upstream() {
     assert_eq!(local.read("private.txt"), "irreplaceable ignored data\n");
     assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
     local.git(&["config", "branch.main.merge", "refs/heads/deleted"]);
-    assert!(ops::pull(local.p(), "ff-only", |_| {}).is_err());
+    assert_eq!(ops::pull(local.p(), "ff-only", |_| {}).unwrap().status, "upstreamGone");
     assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
 }
 

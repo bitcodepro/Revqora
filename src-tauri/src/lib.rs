@@ -928,7 +928,7 @@ async fn fetch_background(app: AppHandle, expected_state: Option<String>, repo: 
 }
 
 #[tauri::command]
-async fn pull(expected_state: Option<String>, app: AppHandle, repo: String, mode: String, op_id: String) -> GitResult<OpOutcome> {
+async fn pull(expected_state: Option<String>, app: AppHandle, repo: String, mode: String, op_id: String) -> GitResult<ops::PullOutcome> {
     mutating(repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || ops::pull(&p(&repo), &mode, progress(&app, &op_id))).await
 }
 

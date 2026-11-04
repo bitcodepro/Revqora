@@ -22,7 +22,7 @@ export function CheckIcon({ state, size = 14 }: { state: Check["state"]; size?: 
   switch (state) {
     case "success": return <CheckCircle2 size={size} style={{ color: "var(--green)" }} />;
     case "failure": return <XCircle size={size} style={{ color: "var(--red)" }} />;
-    case "pending": return <CircleDashed size={size} className="spin" style={{ color: "var(--amber)", animationDuration: "2.4s" }} />;
+    case "pending": return <CircleDashed size={size} className="spin" style={{ color: "var(--amber)" }} />;
     default: return <MinusCircle size={size} style={{ color: "var(--text-faint)" }} />;
   }
 }
