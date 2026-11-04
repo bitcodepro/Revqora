@@ -6,8 +6,9 @@ import { endBusy, showDialog, startBusy, toast, useUi } from "./ui";
 import { GitMerge } from "lucide-react";
 import { Modal } from "../components/Modal";
 import { DeleteBranchDialog } from "../components/DeleteBranchDialog";
+import { ignoredCollisionDialog } from "../components/IgnoredCollisionDialog";
 import { useSettings } from "./settings";
-import type { OpOutcome, PullOutcome } from "./types";
+import type { GitError, OpOutcome, PullOutcome } from "./types";
 import { shortOid } from "./format";
 import {
   cloneDialog,
@@ -202,12 +203,14 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
   const opId = newOpId();
   startBusy(opId, "Pulling");
   let diverged = false;
+  let ignoredCollision: GitError | undefined;
   let outcome: PullOutcome | undefined;
   try {
     outcome = await api.pull(root, mode, opId);
   } catch (e) {
     const msg = errorMessage(e).toLowerCase();
-    if (isGitError(e) && e.kind === "partial-operation") toast.error(e, "Pull partially completed — review the repository and submodules");
+    if (isGitError(e) && e.kind === "ignored-collision") ignoredCollision = e;
+    else if (isGitError(e) && e.kind === "partial-operation") toast.error(e, "Pull partially completed — review the repository and submodules");
     else if (mode === "ff-only" && (msg.includes("not possible to fast-forward") || msg.includes("diverg"))) diverged = true;
     else if (isGitError(e) && e.kind === "auth") toast.error(e, "Authentication failed — check your credentials or SSH key");
     else toast.error(e, "Pull failed");
@@ -215,6 +218,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
     endBusy(opId);
     await useRepos.getState().refresh(root, ALL);
   }
+  if (ignoredCollision && await ignoredCollisionDialog(root, ignoredCollision)) await pull(root, mode);
   if (outcome) {
     if (outcome.status === "upstreamGone" && outcome.upstreamGone) {
       const gone = outcome.upstreamGone;

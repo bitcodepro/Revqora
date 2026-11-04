@@ -99,6 +99,10 @@ make large repository sets easier to navigate. Use **Manage library** to organiz
 them. The panel shows repository state and incoming/outgoing counts; remote counts
 reflect the last Fetch.
 
+At startup, Revqora opens all saved repositories and restores the last selection.
+Named workspaces keep their own repository set. To restore only previously open
+tabs, disable **Settings → Behaviour → Open all saved repositories**.
+
 Use **Fetch all** to refresh matching open repositories, **Pull all** to receive
 updates, or **Sync all** to review receiving and publishing together. Closed library
 bookmarks do not run background Git operations. Configure auto-fetch in Settings.

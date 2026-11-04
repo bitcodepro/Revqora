@@ -9,6 +9,11 @@ or network work until opened. The library keeps previously opened paths availabl
 
 On startup, the complete saved repository list and all group memberships appear
 together. The last active repository is selected immediately and discovered first.
+By default, every saved library repository opens automatically, including grouped
+and ungrouped paths that had no open tab. Disable **Settings → Behaviour → Open all
+saved repositories** to restore only the previous open tabs. Named workspaces
+always retain their own repository set. Closing a tab stops its background work
+for the current session; with this option enabled it opens again next startup.
 Git discovery and status reads use bounded background queues; inactive repositories
 use display-only Git status without hashing dirty contents for mutation proofs.
 They do not load full commit histories, layers or squash-merge analysis until selected.
@@ -17,6 +22,20 @@ Action previews and execution still read full safety preconditions independently
 closed. Ungrouped saved paths remain visible too. An unavailable folder keeps its
 place in the session and offers **Try again**, instead of silently disappearing.
 Opening several folders or a group registers every row before reading their Git data.
+
+## When Pull protects ignored data
+
+Ignored files are excluded from Git tracking, but may still contain important local
+settings or generated data. When Pull detects an incoming file overlapping an ignored
+file, directory or link, it stops and shows both paths. Use **Show local path** or
+**Inspect ignored files…**, move the conflicting data outside the repository to keep
+a copy, then choose **Retry Pull**. Review any saved content before restoring it.
+Cancel leaves the local data in place. Changing `.gitignore` alone does not resolve
+the overlap. Fetch may already have refreshed remote-tracking information.
+
+An ignored sibling such as `bin/` or `obj/` does not conflict with a new source file
+in the same project folder. Revqora checks the incoming path without recursively
+scanning build caches or deleting generated files.
 
 ## Workspaces
 

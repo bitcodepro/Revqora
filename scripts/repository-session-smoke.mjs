@@ -34,7 +34,10 @@ export async function repositorySessionSmoke({ page, work, shot, template }) {
   try {
     await page.evaluate(roots => {
       const settings = JSON.parse(localStorage.getItem("revqora.settings"));
-      settings.state.openTabs = roots; settings.state.activeTab = roots.at(-1); settings.state.autoFetchMinutes = 0;
+      // Half the library was saved without open tabs. It must still be opened
+      // in the first roster, including the three ungrouped repositories.
+      settings.state.openTabs = roots.slice(0, 20); settings.state.activeTab = roots[19]; settings.state.autoFetchMinutes = 0;
+      settings.state.openLibraryOnStartup = true;
       for (const layout of Object.values(settings.state.layouts)) { layout.repositoriesOpen = true; layout.focusMode = false; }
       localStorage.setItem("revqora.settings", JSON.stringify(settings));
       localStorage.setItem("revqora.repositories", JSON.stringify({ version: 1, state: { knownRoots: roots, favorites: [], groups: [{ id: "backend", name: "Backend", roots: roots.slice(0, 20), collapsed: false }, { id: "frontend", name: "Frontend", roots: roots.slice(20, 37), collapsed: false }], workspaces: [], activeWorkspaceId: null } }));
@@ -49,7 +52,7 @@ export async function repositorySessionSmoke({ page, work, shot, template }) {
     }
     if (await page.locator(".repository-select .faint").filter({ hasText: "Closed" }).count()) throw Error("Pending discovery was displayed as Closed");
     const first = await page.evaluate(() => ({ calls: window.__repositorySessionGate.calls, errors: window.__repositorySessionGate.errors, firstRoster: window.__repositorySessionGate.firstRoster, firstOpening: window.__repositorySessionGate.firstOpening, rosterMs: window.__repositorySessionGate.rosterMs, active: document.querySelector(".repo-current")?.title }));
-    if (first.errors.length || first.firstRoster !== 40 || first.firstOpening !== 40 || first.active !== roots.at(-1) || first.calls[0] !== roots.at(-1)) throw Error(`Last active repository was not restored and prioritized: ${JSON.stringify(first)}`);
+    if (first.errors.length || first.firstRoster !== 40 || first.firstOpening !== 40 || first.active !== roots[19] || first.calls[0] !== roots[19]) throw Error(`Last active repository was not restored and prioritized: ${JSON.stringify(first)}`);
     console.log(`Complete 40-repository first roster: ${Math.round(first.rosterMs)}ms after document initialization`);
     await shot("session-40-before-discovery");
     await page.locator(".repository-item", { hasText: "frontend-35" }).locator(".repository-select").click();

@@ -826,6 +826,53 @@ fn checkout_branch_creation_and_merge_preserve_colliding_ignored_files() {
 }
 
 #[test]
+fn pull_allows_new_source_files_beside_collapsed_ignored_build_outputs() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (local, remote) = pull_fixture();
+        local.write(".gitignore", "bin/\nobj/\n");
+        let base = local.commit_all("ignore build outputs");
+        remote.git(&["fetch", local.p().to_str().unwrap(), "main"]);
+        remote.git(&["reset", "--hard", "FETCH_HEAD"]);
+        let project = "tests/WindowsIntegration";
+        remote.write(&format!("{project}/BackgroundRuntimeCheck.cs"), "// new source\n");
+        let target = remote.commit_all("add integration project");
+        local.write(&format!("{project}/bin/Debug/app.dll"), "keep build output\n");
+        local.write(&format!("{project}/obj/project.assets.json"), "keep build assets\n");
+        local.git(&["config", "core.ignorecase", "true"]);
+        let ignored = runner::run(local.p(), ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]).unwrap();
+        assert!(ignored.split('\0').any(|path| path == format!("{project}/")), "fixture must reproduce collapsed parent: {ignored:?}");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]).trim(), base);
+        let result = ops::pull(local.p(), mode, |_| {}).unwrap();
+        assert!(matches!(result.status.as_str(), "done" | "fastForward"), "{mode}: {result:?}");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]).trim(), target, "{mode}");
+        assert_eq!(local.read(&format!("{project}/BackgroundRuntimeCheck.cs")), "// new source\n");
+        assert_eq!(local.read(&format!("{project}/bin/Debug/app.dll")), "keep build output\n");
+        assert_eq!(local.read(&format!("{project}/obj/project.assets.json")), "keep build assets\n");
+        assert!(local.git(&["status", "--porcelain"]).is_empty());
+    }
+}
+
+#[test]
+fn merge_preserves_ignored_files_obstructing_an_incoming_parent() {
+    let r = Repo::new();
+    r.write(".gitignore", "local/\n");
+    let base = r.commit_all("base");
+    r.git(&["switch", "-qc", "feature"]);
+    r.write("local/settings/config.json", "versioned configuration\n");
+    r.git(&["add", "-f", "local/settings/config.json"]);
+    r.git(&["commit", "-qm", "add configuration"]);
+    r.git(&["switch", "-q", "main"]);
+    r.write("local/settings", "personal ignored file\n");
+    let index = fs::read(r.p().join(".git/index")).unwrap();
+    let error = ops::merge_start(r.p(), "feature", "ff-only").unwrap_err();
+    assert_eq!(error.kind, "ignored-collision");
+    assert_eq!(error.details, ["local/settings/config.json", "local/settings"]);
+    assert_eq!(r.read("local/settings"), "personal ignored file\n");
+    assert_eq!(r.git(&["rev-parse", "HEAD"]).trim(), base);
+    assert_eq!(fs::read(r.p().join(".git/index")).unwrap(), index);
+}
+
+#[test]
 fn merge_checks_ignored_directory_collisions_but_allows_unrelated_cache_folders() {
     let r = Repo::new();
     r.write(".gitignore", "cache/\n");

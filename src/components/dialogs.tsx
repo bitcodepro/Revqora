@@ -801,6 +801,9 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
             </button>
           ))}
         </div>
+        <label>Startup</label>
+        <div><label className="hstack"><input type="checkbox" checked={s.openLibraryOnStartup} onChange={(e) => s.set({ openLibraryOnStartup: e.target.checked })} /> Open all saved repositories</label>
+          <small className="muted">Turn off to restore only previously open repositories. Named workspaces keep their own repository set.</small></div>
         <label>Large files</label>
         <div className="hstack">
           <span className="faint">Warn when a staged file is bigger than</span>

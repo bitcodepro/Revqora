@@ -687,6 +687,59 @@ pub fn remote_set_url(repo: &Path, name: &str, url: &str) -> GitResult<()> {
 
 // ───────────────────────────── merge ─────────────────────────────
 
+/// A collapsed ignored directory can contain only ignored siblings (bin/obj),
+/// without obstructing an incoming source file. Inspect just the incoming path,
+/// without recursively scanning build caches or following link targets.
+fn ignored_merge_obstruction(repo: &Path, path: &str, ignore_case: bool) -> GitResult<Option<String>> {
+    let parts: Vec<_> = path.split('/').collect();
+    let mut local = repo.to_path_buf();
+    for (index, part) in parts.iter().enumerate() {
+        let mut components = Path::new(part).components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_))) || components.next().is_some() {
+            return Err(GitError::new("Cannot safely inspect an incoming merge path."));
+        }
+        local.push(part);
+        let metadata = match std::fs::symlink_metadata(&local) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // core.ignorecase may be enabled on a case-sensitive filesystem.
+                // Do not interpret differently cased local data as absent. Only
+                // inspect siblings, never recurse through ignored directories.
+                if ignore_case {
+                    for entry in std::fs::read_dir(local.parent().unwrap_or(repo))? {
+                        let entry = entry?;
+                        if entry.file_name().to_string_lossy().to_lowercase() == part.to_lowercase() {
+                            let mut obstructing = parts[..index].join("/");
+                            if !obstructing.is_empty() {
+                                obstructing.push('/');
+                            }
+                            obstructing.push_str(&entry.file_name().to_string_lossy());
+                            return Ok(Some(obstructing));
+                        }
+                    }
+                }
+                return Ok(None);
+            }
+            Err(error) => {
+                let mut error = GitError::from(error);
+                error.message = format!("Cannot inspect local merge path {}: {}", parts[..=index].join("/"), error.message);
+                return Err(error);
+            }
+        };
+        #[cfg(windows)]
+        let linked = {
+            use std::os::windows::fs::MetadataExt;
+            metadata.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
+        };
+        #[cfg(not(windows))]
+        let linked = metadata.file_type().is_symlink();
+        if index + 1 == parts.len() || linked || !metadata.is_dir() {
+            return Ok(Some(parts[..=index].join("/")));
+        }
+    }
+    Ok(None)
+}
+
 fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResult<()> {
     // Some merge-ort versions overwrite ignored collisions even with
     // --no-overwrite-ignore (unlike switch / the fast-forward checkout path).
@@ -720,9 +773,10 @@ fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResu
         let ancestor = p.match_indices('/').any(|(index, _)| ignored.contains(&p[..index]));
         let descendant = ignored.range(prefix.clone()..).next().is_some_and(|i| i.starts_with(&prefix));
         if ignored.contains(&p) || ancestor || descendant {
+            let Some(obstruction) = ignored_merge_obstruction(repo, path, ignore_case)? else { continue };
             return Err(GitError::new(format!(
-                "Merge may overwrite ignored data at {path}. Move the overlapping ignored file or folder aside before merging."
-            )));
+                "Merge may overwrite ignored data at {obstruction}. Your local data was preserved. Move or rename the conflicting path outside the repository, then retry. Incoming path: {path}."
+            )).kind("ignored-collision").details(vec![path.to_owned(), obstruction]));
         }
     }
     Ok(())
