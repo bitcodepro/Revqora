@@ -4,6 +4,41 @@ The native suite uses real WebView2, real Git repositories, exact reference/inde
 assertions and recovery checks. Performance changes must preserve those assertions
 and scenario-level timeouts. A missing, failed or cancelled suite is not a pass.
 
+## Windows verification budget after PR #31
+
+The repeated main check in [run 41819440101, Windows job
+126566957735](https://github.com/bitcodepro/Revqora/actions/runs/41819440101/job/126566957735)
+was cancelled at its shared 35-minute job limit. Timestamped logs show:
+
+| Phase | UTC start/end | Elapsed |
+| --- | --- | ---: |
+| Runner/dependency preparation | 12:16:20–12:16:54 | 34s |
+| Complete normal `verify:quick` | 12:16:54–12:36:38 | 19m44s |
+| Automation-feature lint, compilation and repeated Rust suite, until cancellation | 12:36:38–12:51:24 | 14m46s (partial) |
+| Worktree suite inside that second interval | 12:51:04–12:51:24 | 20s (partial) |
+
+The ordinary pass included 2m42s of clippy compilation and 4m00s of test
+compilation. Its Rust test execution took about 12m43s after compilation;
+the 187-test unit binary alone took 278s. That same unit binary's automation
+configuration then took another 278s. Both configurations ran their complete
+integration suites, including the 43 workflows; diagnostic agent cases were still
+waiting behind them. There is no evidence in this tail that worktree tests hung.
+
+`windows-automation` now runs feature-enabled clippy/all-targets, the complete
+feature-enabled Rust suite and the existing 20-case agent diagnostic matrix on an
+independent Windows runner. It runs alongside the ordinary three-platform checks,
+not after them. Release explicitly requires both jobs. Their 35-minute limits,
+test assertions, native scenario counts and diagnostic workloads are unchanged.
+This removes the shared serial budget; final-head CI must establish the actual
+runtime. Separate cold builds can increase runner minutes even while reducing
+elapsed verification time.
+
+Download caches remain disabled because of the previously measured cache-service
+failure below. This change does not reintroduce cache availability as a dependency
+or claim to make individual Git tests faster. Per-platform quick-stage JSON is
+now retained even on failure in `quick-verification-<os>`; the automation lint,
+complete test suite and diagnostic matrix are separate timestamped CI steps.
+
 ## Measured baseline
 
 Run [41052963280](https://github.com/bitcodepro/Revqora/actions/runs/41052963280),
@@ -36,20 +71,21 @@ assertions remain; they do not account for the multi-minute bottleneck.
 
 ## Execution structure
 
-1. Required quick checks run on Windows, Linux and macOS as before. The Windows
-   matrix job also retains clippy/all-targets and Rust tests with `ui-automation`
-   enabled, outside the native critical path. Both Rust feature configurations
-   remain checked; moving them does not drop the former full job's checks.
+1. Required normal quick checks run on Windows, Linux and macOS. The independent
+   `windows-automation` job runs clippy/all-targets and the complete Rust tests with
+   `ui-automation`, followed by the existing normal/automation agent diagnostic
+   matrix. Both jobs are release gates; neither waits for the other.
 2. `windows-native-build` runs `verify --build-only`: one release build, portable
    ZIP and a transport probe using that release executable. No debug host is
    built. The ZIP's SHA-256 is passed to every consumer; consumers verify it
    before extracting. No native executable is cached between commits.
-3. Three independent `windows-smoke` jobs use that exact build, separate runners,
+3. Four independent `windows-smoke` jobs use that exact build, separate runners,
    temporary directories, Git repositories, CDP ports and portable profiles:
-   core (1–71), workspace/branch manager (72–80), cleanup (81–86). Core retains
+   core (1–71), workspace/branch manager (72–80), cleanup (81–86), and
+   worktrees/accounts/PRs/agents/workflows (87–157). Core retains
    the fresh-profile preference replay/storage-readiness boundary. Tail suites
    create their own state instead of depending on core's mutated repositories.
-4. All six cleanup scenarios run unchanged, including exclusions, mixed deletion
+4. All six cleanup scenarios remain, including exclusions, mixed deletion
    and recovery, protection/consent, server-only stale preflight, fetched local
    staleness and partial server rejection. Coverage checks reject missing or
    extra scenario counts. Fail-fast is disabled across the native matrix.
