@@ -62,6 +62,24 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
   const exists=(root,name)=>!!git(root,"for-each-ref","--format=%(objectname)",`refs/heads/${name}`);
   await check("excluded cleanup branches stay excluded after scope, base and review refresh changes",async()=>{
     const {root,server,tip}=await fixture("exclusions");
+    // Hold an actual inventory read to verify that local selection intent stays
+    // editable during refresh, while opening a destructive review stays blocked.
+    await page.evaluate(()=>{
+      const original=window.fetch,url=window.__TAURI_INTERNALS__.convertFileSrc("branch_manager_snapshot","ipc"),gate={held:false,open:false,releases:[]};
+      gate.release=()=>{gate.open=true;for(const resolve of gate.releases.splice(0))resolve();};
+      gate.restore=()=>{gate.release();window.fetch=original;delete window.__cleanupInventoryGate;};window.__cleanupInventoryGate=gate;
+      window.fetch=async function(input,init){const response=await Reflect.apply(original,window,[input,init]);const target=typeof input==="string"?input:input.url;if(target===url&&!gate.open){if(!response.ok||response.headers.get("Tauri-Response")!=="ok")throw Error("Branch snapshot failed before the inventory gate");await new Promise(resolve=>{gate.releases.push(resolve);gate.held=true;});}return response;};
+    });
+    try{
+      await page.getByRole("button",{name:"Refresh branches",exact:true}).click();await page.waitForFunction(()=>window.__cleanupInventoryGate?.held===true);
+      await page.waitForSelector(".bm-body[aria-busy=true]");await search("bulk-clean-a");
+      const selected=page.getByRole("checkbox",{name:"Select refs/heads/bulk-clean-a for cleanup",exact:true});
+      if(await selected.isDisabled())throw Error("A background branch read disabled local cleanup selection");
+      await selected.check();if(!await selected.isChecked())throw Error("Cleanup selection did not retain the user's intent");
+      if(!await page.getByRole("button",{name:"Review cleanup…",exact:true}).isDisabled())throw Error("Cleanup review opened before the fresh inventory arrived");
+      await page.evaluate(()=>window.__cleanupInventoryGate.release());await page.waitForSelector(".bm-body[aria-busy=false]");
+      if(!await selected.isChecked())throw Error("Inventory refresh cleared an explicit cleanup selection");await selected.uncheck();
+    }finally{await page.evaluate(()=>window.__cleanupInventoryGate.restore());}
     git(root,"branch","keep-base");
     git(root,"checkout","-qb","bulk-risk");fs.writeFileSync(path.join(root,"new.txt"),"unique\n");git(root,"add",".");git(root,"commit","-qm","Unmerged history for consent reset");git(root,"checkout","main");
     await page.getByRole("button",{name:"Refresh branches",exact:true}).click();await page.waitForSelector(".bm-body[aria-busy=false]");

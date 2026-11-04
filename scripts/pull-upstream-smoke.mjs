@@ -9,8 +9,12 @@ export async function pullUpstreamSmoke({page,check,shot,work}) {
     fs.mkdirSync(remote);git(remote,"init","-qb","main");
     for(const [key,value]of [["user.name","Pull fixture"],["user.email","pull@example.invalid"],["commit.gpgsign","false"],["core.autocrlf","false"],["core.hooksPath",".git/hooks"]])git(remote,"config",key,value);
     fs.writeFileSync(path.join(remote,"file.txt"),"base\n");git(remote,"add",".");git(remote,"commit","-qm","base");
-    git(remote,"clone","-q",remote,root);git(root,"config","user.name","Pull fixture");git(root,"config","user.email","pull@example.invalid");git(root,"config","commit.gpgsign","false");git(root,"config","core.autocrlf","false");git(root,"config","core.hooksPath",".git/hooks");
+    // Clone must set the persistent policy BEFORE its initial checkout. Setting
+    // it afterward leaves inherited CRLF bytes that a later git add commits.
+    git(remote,"clone","-q","-c","core.autocrlf=false",remote,root);git(root,"config","user.name","Pull fixture");git(root,"config","user.email","pull@example.invalid");git(root,"config","commit.gpgsign","false");git(root,"config","core.hooksPath",".git/hooks");
     git(root,"checkout","-qb","feature/completed");fs.writeFileSync(path.join(root,"feature.txt"),"feature\n");git(root,"add",".");git(root,"commit","-qm","feature");git(root,"push","-qu","origin","feature/completed");
+    const baseBlob=git(root,"rev-parse","main:file.txt");
+    if(git(root,"rev-parse","HEAD:file.txt")!==baseBlob||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="base\n"||git(root,"status","--porcelain"))throw Error("Pull fixture must have identical base-file blobs and a clean LF working tree before the deliberate edit");
     git(remote,"merge","--squash","feature/completed");git(remote,"commit","-qm","squash feature");git(remote,"branch","-D","feature/completed");
     const merged=git(remote,"rev-parse","HEAD"),before=git(root,"rev-parse","HEAD"),index=fs.readFileSync(path.join(root,".git/index"));
     fs.writeFileSync(path.join(root,"file.txt"),"uncommitted user work\n");
