@@ -93,13 +93,17 @@ export async function worktreeManagerSmoke({page,check,shot,work}) {
     await page.evaluate(()=>{const original=window.fetch,base=window.__TAURI_INTERNALS__.convertFileSrc("","ipc");window.__wmOpenFetch=original;window.__wmOpenRelease=null;let held=false;window.fetch=async function(input,init){const response=await original.call(this,input,init);if(String(input)===base+"repo_open"&&!held){held=true;await new Promise(resolve=>{window.__wmOpenRelease=resolve;});}return response;};});
     try{
       await page.locator(".wm-detail").getByRole("button",{name:"Open worktree",exact:true}).click();await page.waitForFunction(()=>typeof window.__wmOpenRelease==="function");
-      await page.getByRole("button",{name:"Close worktree manager",exact:true}).click();await page.getByRole("button",{name:"Open branch manager",exact:true}).click();await page.waitForSelector(".branch-manager");
-      await page.evaluate(async()=>{window.__wmOpenRelease();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+      // Pending tabs now activate immediately. Return while discovery is still
+      // held, then create a NEW overlay whose ownership must survive its reply.
       await page.locator(".topbar .repo-current > b").filter({hasText:"wm-existing"}).waitFor();
-      // Existing store.open activates the new repository. Overlays render only
-      // for their repository: return to the original tab to verify retention,
-      // rather than mistaking that visibility filter for unconditional dismissal.
       await page.evaluate(p=>window.__TAURI_INTERNALS__.invoke("plugin:event|emit",{event:"open-paths",payload:[p]}),root);
+      await page.locator(".topbar .repo-current > b").filter({hasText:"stage11-main"}).waitFor();
+      await open();await page.getByRole("button",{name:"Close worktree manager",exact:true}).click();
+      await page.getByRole("button",{name:"Open branch manager",exact:true}).click();await page.waitForSelector(".branch-manager");
+      await page.evaluate(()=>window.__wmOpenRelease());
+      await page.locator('.repository-item[data-repository-state="open"][aria-busy="false"]').filter({hasText:"wm-existing"}).waitFor();
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      // A late reply must neither reactivate its worktree nor dismiss the newer overlay.
       await page.locator(".topbar .repo-current > b").filter({hasText:"stage11-main"}).waitFor();
       await page.locator(".branch-manager").waitFor({state:"visible"});
       await page.getByRole("button",{name:"Close branch manager",exact:true}).click();

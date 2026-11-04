@@ -1575,8 +1575,8 @@ async fn forge_account_test(id: String) -> GitResult<String> {
 #[tauri::command]
 async fn forge_account_git_respond(id: u64, account_id: String, expected: String) -> GitResult<bool> {
     blocking(move || {
-        let prompt = askpass::pending_prompt(id).ok_or_else(|| GitError::new("This Git sign-in request has expired."))?;
-        let answer = git::forge_accounts::manager()?.git_answer(&account_id, &expected, &prompt)?;
+        let request = askpass::pending_request(id).ok_or_else(|| GitError::new("This Git sign-in request has expired."))?;
+        let answer = git::forge_accounts::manager()?.git_answer(&account_id, &expected, &request)?;
         Ok(askpass::respond(id, Some(answer.to_string())))
     })
     .await
@@ -1998,6 +1998,7 @@ pub fn run() {
             let exe = std::env::current_exe()?;
             if let Err(e) = askpass::start(
                 &exe,
+                &portable::runtime_dir()?.join("helpers"),
                 std::sync::Arc::new(move |req| {
                     let _ = handle.emit("askpass-request", req);
                 }),

@@ -179,7 +179,7 @@ export function RepositorySidebar() {
         {sections.map((group) => <div key={group.id}>{library.groups.length > 0 && <button type="button" className="repository-group" aria-expanded={!group.collapsed} onClick={() => group.id !== "ungrouped" && library.collapse(group.id)}>{group.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{group.name}<span className="faint">{group.roots.length}</span></button>}{(!group.collapsed || !!query) && group.roots.map((r) => {
           const t = tabs[r];
           return (
-            <div role="listitem" data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""}`} key={r}>
+            <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""}`} key={r}>
               <FavoriteButton root={r} />
               <button className="repository-select" onClick={() => activate(r)} title={`${r}\n${t?.info ? t.info.head.branch ?? "Detached HEAD" : t ? t.error ?? "Opening repository…" : "Closed · click to open"}${t?.fetchError ? "\n" + t.fetchError : ""}`}>
                 <FolderGit2 size={14} />

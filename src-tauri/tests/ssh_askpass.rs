@@ -31,7 +31,10 @@ fn ssh_key_passphrase_is_asked_through_revqora() {
     let p2 = prompts.clone();
     askpass::start(
         Path::new(env!("CARGO_BIN_EXE_revqora")),
+        &tmp.path().join("helpers"),
         Arc::new(move |req| {
+            assert_eq!(req.origin, askpass::Origin::Ssh);
+            assert_eq!(askpass::pending_request(req.id).unwrap().origin, askpass::Origin::Ssh);
             p2.lock().unwrap().push(req.prompt.clone());
             std::thread::spawn(move || askpass::respond(req.id, Some("correct horse".into())));
         }),

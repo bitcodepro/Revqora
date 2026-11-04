@@ -10,6 +10,9 @@ use std::{
 };
 
 type Requests = Arc<Mutex<Vec<(String, String)>>>;
+fn git_prompt(prompt: &str) -> crate::askpass::AskpassRequest {
+    crate::askpass::AskpassRequest { id: 1, prompt: prompt.into(), kind: crate::askpass::classify(prompt).into(), origin: crate::askpass::Origin::Git }
+}
 
 #[test]
 fn bitbucket_git_prompts_reject_other_transports_origins_and_arbitrary_text() {
@@ -58,22 +61,30 @@ fn bitbucket_git_token_consent_requires_current_available_matching_account() {
             })
             .unwrap();
         let current = manager.snapshot().unwrap();
-        let prompt = "Username for 'https://bitbucket.org': ";
-        let username = manager.git_answer(mode, &current.revision, prompt).unwrap();
+        let prompt = git_prompt("Username for 'https://bitbucket.org': ");
+        let username = manager.git_answer(mode, &current.revision, &prompt).unwrap();
         assert_eq!(username.as_str(), if mode == "basic" { "x-bitbucket-api-token-auth" } else { "x-token-auth" });
         assert_ne!(username.as_str(), "api@example.invalid");
-        assert_eq!(manager.git_answer(mode, &current.revision, "Password for 'https://x-token-auth@bitbucket.org': ").unwrap().as_str(), "test-only-secret");
-        assert!(manager.git_answer(mode, &before, prompt).is_err());
-        assert!(manager.git_answer(mode, &current.revision, "Password for 'https://elsewhere.invalid': ").is_err());
-        assert!(manager.git_answer("missing", &current.revision, prompt).is_err());
+        assert_eq!(
+            manager.git_answer(mode, &current.revision, &git_prompt("Password for 'https://x-token-auth@bitbucket.org': ")).unwrap().as_str(),
+            "test-only-secret"
+        );
+        for text in ["Password for 'https://bitbucket.org': ", "Username for 'https://bitbucket.org': "] {
+            let mut forged = git_prompt(text);
+            forged.origin = crate::askpass::Origin::Ssh;
+            assert!(manager.git_answer(mode, &current.revision, &forged).unwrap_err().message.contains("cannot be sent to SSH"));
+        }
+        assert!(manager.git_answer(mode, &before, &prompt).is_err());
+        assert!(manager.git_answer(mode, &current.revision, &git_prompt("Password for 'https://elsewhere.invalid': ")).is_err());
+        assert!(manager.git_answer("missing", &current.revision, &prompt).is_err());
         let snapshot = String::from_utf8(json(&current).unwrap()).unwrap();
         assert!(!snapshot.contains("test-only-secret"));
         assert!(!fs::read_to_string(manager.root.join("accounts.json")).unwrap().contains("test-only-secret"));
     }
     let locked = manager.lock().unwrap();
-    assert!(manager.git_answer("basic", &locked.revision, "Password for 'https://bitbucket.org': ").is_err());
+    assert!(manager.git_answer("basic", &locked.revision, &git_prompt("Password for 'https://bitbucket.org': ")).is_err());
     let restarted = Manager::new(manager.root.clone());
-    assert!(restarted.git_answer("bearer", &restarted.snapshot().unwrap().revision, "Password for 'https://bitbucket.org': ").is_err());
+    assert!(restarted.git_answer("bearer", &restarted.snapshot().unwrap().revision, &git_prompt("Password for 'https://bitbucket.org': ")).is_err());
 }
 
 #[test]

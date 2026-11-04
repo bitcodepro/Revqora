@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { bitbucketPromptKind } from "./bitbucketCredentials";
+import { bitbucketPromptKind as parse } from "./bitbucketCredentials";
+const bitbucketPromptKind = (prompt: string) => parse(prompt, "git");
 describe("Bitbucket Cloud Git token prompts", () => {
+  it("never offers saved tokens or Bitbucket hints for SSH or missing provenance", () => {
+    for (const origin of ["ssh", undefined, "", "https"]) {
+      expect(parse("Password for 'https://bitbucket.org': ", origin)).toBeNull();
+      expect(parse("Username for 'https://bitbucket.org': ", origin)).toBeNull();
+    }
+  });
   it("recognizes only exact HTTPS destinations for username and password hints", () => {
     expect(bitbucketPromptKind("Username for 'https://bitbucket.org': ")).toBe("username");
     expect(bitbucketPromptKind("Password for 'https://x-bitbucket-api-token-auth@bitbucket.org/workspace/repo.git': ")).toBe("secret");

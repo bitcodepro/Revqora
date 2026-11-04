@@ -210,6 +210,8 @@ it does not put the secret in the remote URL. You can also enter
 `x-bitbucket-api-token-auth` as the Git username and paste the API token into the
 password field. OAuth tokens use `x-token-auth`. Git needs repository read scope
 for Fetch/Pull and write scope for Push; PR operations need their own API scopes.
+SSH prompts use a separate authenticated channel and cannot receive saved API
+tokens, even when their server-supplied text resembles an HTTPS prompt.
 SSH remotes continue to use SSH keys. See Atlassian's
 [API token instructions](https://support.atlassian.com/bitbucket-cloud/docs/using-api-tokens/).
 

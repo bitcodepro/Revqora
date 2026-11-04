@@ -1,5 +1,6 @@
 /** Display hints only; the backend independently validates the native prompt. */
-export function bitbucketPromptKind(prompt: string): "username" | "secret" | null {
+export function bitbucketPromptKind(prompt: string, origin?: string): "username" | "secret" | null {
+  if (origin !== "git") return null;
   const match = /^(Username|Password) for '([^'\r\n\\]+)': $/.exec(prompt);
   if (!match) return null;
   try {

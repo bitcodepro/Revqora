@@ -32,7 +32,7 @@ function splitPrompt(prompt: string): { detail: string; question: string } {
 }
 
 function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onAnswer: (v: string | null) => void; onAnswered: () => void }) {
-  const bitbucket = bitbucketPromptKind(req.prompt);
+  const bitbucket = bitbucketPromptKind(req.prompt, req.origin);
   const [value, setValue] = useState(bitbucket === "username" ? "x-bitbucket-api-token-auth" : "");
   const [accounts, setAccounts] = useState<ForgeAccountsSnapshot | null>(null);
   const [account, setAccount] = useState("");
@@ -83,11 +83,11 @@ function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onA
   }
 
   const secret = req.kind === "secret";
-  const title = bitbucket ? "Sign in to Bitbucket Cloud" : req.kind === "username" ? "Sign in" : /passphrase/i.test(req.prompt) ? "Unlock SSH key" : secret ? "Password required" : "Git needs input";
+  const title = bitbucket ? "Sign in to Bitbucket Cloud" : /passphrase/i.test(req.prompt) ? "Unlock SSH key" : req.origin === "ssh" ? "SSH authentication" : req.kind === "username" ? "Sign in" : secret ? "Password required" : "Git needs input";
   return (
     <Modal
       title={title}
-      subtitle={host ? `Requested by git for ${host.replace(/^for '|'$/g, "")}` : "Requested by git"}
+      subtitle={req.origin === "ssh" ? "Requested by SSH" : host ? `Requested by git for ${host.replace(/^for '|'$/g, "")}` : "Requested by git"}
       icon={req.kind === "username" ? <UserRound size={18} /> : <KeyRound size={18} />}
       onClose={() => { if (!sending) onAnswer(null); }}
       onSubmit={() => { if (!sending) onAnswer(value); }}
