@@ -157,6 +157,16 @@ pub fn status(repo: &Path) -> GitResult<StatusSummary> {
     })
 }
 
+/// Sidebar-only observation. Do not hash every dirty file or build mutation proofs
+/// for dozens of inactive repositories. Callers must never use this as a guard.
+pub fn sidebar_status(repo: &Path) -> GitResult<StatusSummary> {
+    super::operations::read(repo, || {
+        let version = super::operations::next_version(repo);
+        let raw = runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames"])?;
+        Ok(StatusSummary { state_version: version, ..parse(&raw) })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

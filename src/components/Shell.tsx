@@ -90,11 +90,11 @@ export function TopBar() {
       <button className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
       <RepositoryLibraryButton /><WorkspacePicker />
       <div className="repo-current" title={root ?? ""}>
-        <b>{overview ? "All repositories" : tab?.info?.name ?? "Repositories"}</b>
-        {!overview && tab && <span><GitBranch size={12} />{tab.info?.head.branch ?? shortOid(tab.info?.head.oid ?? "")}</span>}
+        <b>{overview ? "All repositories" : tab?.info?.name ?? (root ? basename(root) : "Repositories")}</b>
+        {!overview && tab?.info && <span><GitBranch size={12} />{tab.info.head.branch ?? shortOid(tab.info.head.oid ?? "")}</span>}
       </div>
       <button className="icon-btn" title="Open repository (Ctrl+O)" aria-label="Open repositories" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>
-      {root && !overview && (
+      {root && tab?.info && !overview && (
         <div className="toolbar">
           <SyncButton roots={[root]} />
           <button className="tb-btn" aria-label="Open worktree manager" title="Worktree manager" onClick={() => openOverlay({ kind: "worktrees", root })}><FolderGit2 size={15} />Worktrees</button>

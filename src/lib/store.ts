@@ -1,4 +1,5 @@
-import { useLibrary } from "./repositoryLibrary";
+import { repositoryKey, uniqueRoots, useLibrary } from "./repositoryLibrary";
+import { repositoryQueue } from "./repositoryQueue";
 import { invalidatePreview } from "./commitPreview";
 // Repository tabs and their cached state.
 import { create } from "zustand";
@@ -22,6 +23,8 @@ export interface RepoTab {
   root: string;
   info: RepoInfo | null;
   status: StatusSummary | null;
+  /** Display-only observation; never supplies mutation or diff preconditions. */
+  sidebarStatus?: StatusSummary | null;
   refs: RefsSnapshot | null;
   /** Branches whose changes are already in HEAD without a merge link (squash / rebase merged). */
   squashMerged: string[];
@@ -41,11 +44,16 @@ export interface RepoTab {
   conflictPath: string | null;
   error: string | null;
   loaded: boolean;
+  opening?: boolean;
   lastFetchedAt: number | null;
   fetchError: string | null;
 }
 
 export interface Parts {
+  /** Sidebar observations do not need histories, layers or branch analysis. */
+  summary?: boolean;
+  /** Explicit action preview needs full mutation preconditions even off-screen. */
+  guard?: boolean;
   /** Filesystem observation, rather than an explicit refresh/action. */
   background?: boolean;
   info?: boolean;
@@ -61,7 +69,9 @@ interface RepoStore {
   tabs: Record<string, RepoTab>;
   order: string[];
   active: string | null;
+  selectionVersion: number;
   open: (path: string, activate?: boolean) => Promise<string | null>;
+  openMany: (paths: string[], active?: string | null) => Promise<PromiseSettledResult<string | null>[]>;
   close: (root: string) => void;
   activate: (root: string | null) => void;
   arrange: (roots: string[], active: string | null) => void;
@@ -101,6 +111,75 @@ function emptyTab(root: string): RepoTab {
 const inflight = new Map<string, Promise<void>>();
 const pending = new Map<string, Parts>();
 const squashJobs = new Map<string, { wanted: string; done: string; running: boolean }>();
+const openingQueue = repositoryQueue();
+const summaryQueue = repositoryQueue();
+const openingJobs = new Map<string, Promise<string | null>>();
+const lifetimes = new Map<string, symbol>();
+
+function existingRoot(path: string) {
+  return useRepos.getState().order.find(root => repositoryKey(root) === repositoryKey(path));
+}
+
+/** Publish the entire roster before starting any asynchronous Git discovery. */
+function register(paths: string[], active?: string | null): string[] {
+  const state = useRepos.getState(), tabs = { ...state.tabs }, order = [...state.order];
+  const roots = uniqueRoots(paths).map(path => {
+    const root = order.find(r => repositoryKey(r) === repositoryKey(path)) ?? path;
+    if (!tabs[root]) {
+      tabs[root] = { ...emptyTab(root), opening: true };
+      lifetimes.set(root, Symbol(root));
+      order.push(root);
+    }
+    return root;
+  });
+  const selected = active ? order.find(r => repositoryKey(r) === repositoryKey(active)) : undefined;
+  useRepos.setState({ tabs, order, ...(active !== undefined ? { active: selected ?? state.active ?? order[0] ?? null, selectionVersion: state.selectionVersion + 1 } : {}) });
+  if (active !== undefined) useUi.setState({ repositoryOverview: false });
+  persistTabs();
+  return roots;
+}
+
+function hydrate(root: string): Promise<string | null> {
+  const prior = openingJobs.get(root);
+  if (prior) return prior;
+  if (useRepos.getState().tabs[root]?.info) return Promise.resolve(root);
+  const lifetime = lifetimes.get(root);
+  const current = () => lifetimes.get(root) === lifetime && !!useRepos.getState().tabs[root];
+  const job = openingQueue.run(root, async () => {
+    if (!current()) return null;
+    useRepos.getState().patch(root, { opening: true, error: null });
+    try {
+      const info = await api.repoOpen(root);
+      if (!current()) return null;
+      const actual = existingRoot(info.root) ?? info.root;
+      const state = useRepos.getState();
+      if (actual !== root) {
+        const tabs = { ...state.tabs }, original = tabs[root];
+        delete tabs[root];
+        tabs[actual] = tabs[actual] ?? { ...original, root: actual };
+        lifetimes.delete(root);
+        if (!lifetimes.has(actual)) lifetimes.set(actual, lifetime ?? Symbol(actual));
+        useRepos.setState({ tabs, order: [...new Set(state.order.map(r => r === root ? actual : r))], active: state.active === root ? actual : state.active });
+      }
+      useRepos.getState().patch(actual, { info, opening: false, error: null });
+      useLibrary.getState().remember(actual, root);
+      if (actual !== root) persistTabs();
+      const actualLifetime = lifetimes.get(actual);
+      void api.watchRepo(actual).then(() => {
+        if (!useRepos.getState().tabs[actual]) return api.unwatchRepo(actual);
+      }).catch(() => {});
+      if (useRepos.getState().active === actual) void useRepos.getState().refresh(actual, ALL);
+      else await useRepos.getState().refresh(actual, { background: true, summary: true, status: true });
+      return lifetimes.get(actual) === actualLifetime ? actual : null;
+    } catch (error) {
+      if (current()) useRepos.getState().patch(root, { opening: false, loaded: true, error: errorMessage(error) });
+      throw error;
+    }
+  });
+  openingJobs.set(root, job);
+  void job.finally(() => { if (openingJobs.get(root) === job) openingJobs.delete(root); }).catch(() => {});
+  return job;
+}
 
 /** Coalesce background branch analysis; rapid refreshes must not create a Git backlog. */
 function updateSquashMerged(root: string) {
@@ -129,6 +208,8 @@ function updateSquashMerged(root: string) {
 
 function merge(a: Parts | undefined, b: Parts): Parts {
   return {
+    summary: a ? !!a.summary && !!b.summary : b.summary,
+    guard: a?.guard || b.guard,
     background: a ? !!a.background && !!b.background : b.background,
     info: a?.info || b.info,
     status: a?.status || b.status,
@@ -147,35 +228,32 @@ export const useRepos = create<RepoStore>()((set, get) => ({
   tabs: {},
   order: [],
   active: null,
+  selectionVersion: 0,
 
   open: async (path, activate = true) => {
-    let info: RepoInfo;
-    try {
-      info = await api.repoOpen(path);
-    } catch (e) {
-      throw e;
-    }
-    const root = info.root;
-    useLibrary.getState().remember(root, path);
-    const s = get();
-    if (!s.tabs[root]) {
-      const tab = emptyTab(root);
-      tab.info = info;
-      set({ tabs: { ...s.tabs, [root]: tab }, order: [...s.order, root] });
-    }
-    if (activate) {
-      set({ active: root });
-      useUi.setState({ repositoryOverview: false });
-    }
-    useSettings.getState().addRecent(root);
-    persistTabs();
-    api.watchRepo(root).catch(() => {});
-    // Load in the background so restoring several tabs does not wait for every history.
-    void get().refresh(root, ALL);
-    return root;
+    const [root] = register([path], activate ? path : undefined);
+    if (!root) return null;
+    if (activate) get().activate(root);
+    const actual = await hydrate(root);
+    if (actual && activate) useSettings.getState().addRecent(actual);
+    return actual;
+  },
+
+  openMany: (paths, active) => {
+    const roots = register(paths, active);
+    if (active !== undefined && get().active && get().tabs[get().active!]?.info) get().activate(get().active);
+    // Selection is an intent recorded now, never a late activation after I/O.
+    const first = get().active;
+    const prioritized = [...roots].sort((a, b) => Number(b === first) - Number(a === first));
+    const jobs = new Map(prioritized.map(root => [root, hydrate(root)]));
+    return Promise.allSettled(roots.map(root => jobs.get(root)!));
   },
 
   close: (root) => {
+    lifetimes.delete(root);
+    openingJobs.delete(root);
+    pending.delete(root);
+    graphRequests.set(root, (graphRequests.get(root) ?? 0) + 1);
     invalidatePreview(root);
     squashJobs.delete(root);
     const s = get();
@@ -187,23 +265,28 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       const i = s.order.indexOf(root);
       active = order[Math.min(i, order.length - 1)] ?? null;
     }
-    set({ tabs, order, active });
+    set({ tabs, order, active, selectionVersion: s.selectionVersion + Number(active !== s.active) });
     api.unwatchRepo(root).catch(() => {});
     persistTabs();
-    if (active && active !== s.active) void get().refresh(active, ALL);
+    if (active && active !== s.active) get().activate(active);
   },
 
   activate: (root) => {
-    set({ active: root });
+    set({ active: root, selectionVersion: get().selectionVersion + 1 });
     useUi.setState({ repositoryOverview: false });
     persistTabs();
-    if (root) void get().refresh(root, { info: true, status: true, refs: true, graph: true });
+    if (root) {
+      openingQueue.prioritize(root);
+      summaryQueue.prioritize(root);
+      if (get().tabs[root]?.info) void get().refresh(root, ALL);
+      else void hydrate(root).catch(() => {});
+    }
   },
 
   arrange: (roots, active) => {
     const order = [...new Set([...roots, ...get().order])].filter((r) => !!get().tabs[r]);
     set({ order, active: active && order.includes(active) ? active : order[0] ?? null });
-    persistTabs();
+    get().activate(get().active);
   },
 
   patch: (root, p) => {
@@ -214,6 +297,10 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       p = { ...p };
       delete p.status;
     }
+    if (p.status && (p.status.stateVersion ?? 0) >= (t.sidebarStatus?.stateVersion ?? 0)) p = { ...p, sidebarStatus: p.status };
+    if (p.sidebarStatus && (p.sidebarStatus.stateVersion ?? 0) < Math.max(t.sidebarStatus?.stateVersion ?? 0, t.status?.stateVersion ?? 0)) {
+      p = { ...p }; delete p.sidebarStatus;
+    }
     if (p.status?.diffContextToken && p.status.diffContextToken !== t.status?.diffContextToken) {
       // An index-only .gitattributes edit can arrive as an ordinary status event.
       // Invalidate interpretation independently from unrelated worktree content.
@@ -223,6 +310,8 @@ export const useRepos = create<RepoStore>()((set, get) => ({
   },
 
   refresh: async (root, parts = ALL) => {
+    if (!get().tabs[root] || get().tabs[root].opening) return;
+    if (get().active !== root) parts = { ...parts, summary: true, graph: false, layers: false, refs: false };
     // Ordinary working-file activity does not change immutable commit previews.
     // Metadata/attribute events and explicit refreshes still invalidate them.
     if (!parts.background || parts.info || parts.refs || parts.graph) invalidatePreview(root);
@@ -237,7 +326,9 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     const job = (async () => {
       let todo: Parts | undefined = parts;
       while (todo) {
-        await refreshOnce(root, todo);
+        const read = todo;
+        if (read.summary) await summaryQueue.run(root, () => refreshOnce(root, read));
+        else await refreshOnce(root, read);
         todo = pending.get(root);
         pending.delete(root);
       }
@@ -274,24 +365,27 @@ setOperationHooks({
 async function refreshOnce(root: string, parts: Parts) {
   const store = useRepos.getState();
   if (!store.tabs[root]) return;
+  const lifetime = lifetimes.get(root);
+  const current = () => !!useRepos.getState().tabs[root] && lifetimes.get(root) === lifetime;
   const patch: Partial<RepoTab> = {};
   // Everything starts at once; the history only waits for the (fast) status, which decides
   // whether the "Uncommitted changes" row is part of the graph.
-  const infoP = parts.info || parts.status ? api.repoInfo(root) : Promise.resolve(null);
-  const statusP = parts.status ? api.status(root) : Promise.resolve(null);
+  const infoP = parts.info || (parts.status && !parts.summary) ? api.repoInfo(root) : Promise.resolve(null);
+  const sidebarOnly = parts.summary && !parts.guard;
+  const statusP = parts.status ? (sidebarOnly ? api.repositorySidebarStatus(root) : api.status(root)) : Promise.resolve(null);
   const refsP = parts.refs ? api.refs(root) : Promise.resolve(null);
-  const extrasP = parts.refs || parts.info ? api.repoExtras(root).catch(() => null) : Promise.resolve(null);
-  const layersP = parts.layers || parts.status ? api.layersState(root).catch(() => null) : Promise.resolve(null);
+  const extrasP = !parts.summary && (parts.refs || parts.info) ? api.repoExtras(root).catch(() => null) : Promise.resolve(null);
+  const layersP = !parts.summary && (parts.layers || parts.status) ? api.layersState(root).catch(() => null) : Promise.resolve(null);
   for (const p of [infoP, refsP]) p.catch(() => {}); // rejections are handled below
   let graphP: Promise<void> | null = null;
   try {
     const status = await statusP;
     const tab = useRepos.getState().tabs[root];
-    if (!tab) return;
+    if (!tab || !current()) return;
     const st = status ?? tab.status;
     const dirty = !!st && st.files.length > 0;
-    if (status) useRepos.getState().patch(root, { status });
-    if (parts.graph || dirty !== tab.graphHasWorktree || !tab.graph) graphP = loadGraph(root, dirty);
+    if (status) useRepos.getState().patch(root, sidebarOnly ? { sidebarStatus: status } : { status });
+    if (!parts.summary && (parts.graph || dirty !== tab.graphHasWorktree || !tab.graph)) graphP = loadGraph(root, dirty);
     const [info, refs, layers, extras] = await Promise.all([infoP, refsP, layersP, extrasP]);
     if (info) patch.info = info;
     if (refs) patch.refs = refs;
@@ -301,7 +395,7 @@ async function refreshOnce(root: string, parts: Parts) {
   } catch (e) {
     patch.error = errorMessage(e);
   }
-  if (!useRepos.getState().tabs[root]) return;
+  if (!current()) return;
   useRepos.getState().patch(root, { ...patch, loaded: true });
   if (patch.refs) updateSquashMerged(root);
   // Wait for history only when it was explicitly requested; a dirty/clean toggle reloads it in the background.
@@ -363,4 +457,8 @@ export function activeRoot(): string | null {
 
 export function getTab(root: string): RepoTab | undefined {
   return useRepos.getState().tabs[root];
+}
+
+export function repositorySidebarStatus(tab: RepoTab | undefined) {
+  return tab?.sidebarStatus ?? tab?.status ?? null;
 }

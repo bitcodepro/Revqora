@@ -8,7 +8,7 @@ import * as A from "../lib/actions";
 import { basename, relativeTime } from "../lib/format";
 import { pullBlockReason, runRepositoryBatch, type BatchResult } from "../lib/repositoryBatch";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { useRepos, type RepoTab } from "../lib/store";
+import { repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
 import { endBusy, showDialog, startBusy, toast, useUi } from "../lib/ui";
 import { AheadBehind } from "./bits";
 import { Modal } from "./Modal";
@@ -94,7 +94,7 @@ export async function pullRepositories(onlyRoots?: string[]) {
   const roots = onlyRoots ?? useRepos.getState().order;
   try {
     // Refresh the preview as well as rechecking each repository during execution.
-    await Promise.allSettled(roots.map((r) => useRepos.getState().refresh(r, { info: true, status: true })));
+    await Promise.allSettled(roots.map((r) => useRepos.getState().refresh(r, { info: true, status: true, guard: true })));
     const tabs = roots.map((r) => useRepos.getState().tabs[r]).filter((t): t is RepoTab => !!t);
     const selected = await showDialog<string[] | null>((close) => <PullRepositoriesDialog tabs={tabs} close={close} />);
     if (selected?.length) await runBatch(selected, "pull");
@@ -127,11 +127,13 @@ function PullRepositoriesDialog({ tabs, close }: { tabs: RepoTab[]; close: (root
 }
 
 function RepoState({ tab }: { tab: RepoTab }) {
-  if (!tab.status) return <span className="faint">Loading…</span>;
+  if (tab.error) return <span className="pill amber" title={tab.error}>{tab.info ? "Needs attention" : "Unavailable"}</span>;
+  const status = repositorySidebarStatus(tab);
+  if (!status) return <span className="faint">Loading…</span>;
   if (tab.fetchError) return <span className="pill amber" title={tab.fetchError}>Fetch failed</span>;
-  if (tab.info?.state.kind !== "none" || tab.status.conflictCount) return <span className="pill amber">Needs attention</span>;
-  if (tab.status.files.length) return <span className="pill amber">{tab.status.files.length} changed</span>;
-  if (tab.status.ahead && tab.status.behind) return <span className="pill amber">Diverged</span>;
+  if (tab.info?.state.kind !== "none" || status.conflictCount) return <span className="pill amber">Needs attention</span>;
+  if (status.files.length) return <span className="pill amber">{status.files.length} changed</span>;
+  if (status.ahead && status.behind) return <span className="pill amber">Diverged</span>;
   return <span className="faint">Clean</span>;
 }
 
@@ -159,11 +161,11 @@ export function RepositorySidebar() {
   const { mode, layout: { repositoriesWidth: width }, setLayout: set } = useWorkspaceLayout();
   const [w, setW] = useState(width);
   useEffect(() => setW(width), [mode, width]);
-  const count = order.filter((r) => (tabs[r]?.status?.behind ?? 0) > 0).length;
-  const candidates = uniqueRoots([...order, ...library.favorites, ...library.groups.flatMap((g) => g.roots)]);
+  const count = order.filter((r) => (repositorySidebarStatus(tabs[r])?.behind ?? 0) > 0).length;
+  const candidates = uniqueRoots([...order, ...library.knownRoots, ...library.favorites, ...library.groups.flatMap((g) => g.roots)]);
   const favorite = (r: string) => library.favorites.some((p) => repositoryKey(p) === repositoryKey(r));
   const groupFilter = library.groups.find((g) => g.id === groupId);
-  const visible = candidates.filter((r) => (r + " " + tabs[r]?.info?.name).toLowerCase().includes(query.trim().toLowerCase()) && (!updatesOnly || !!tabs[r]?.status?.behind) && (!favoritesOnly || favorite(r)) && (!groupFilter || groupFilter.roots.some((p) => repositoryKey(p) === repositoryKey(r))));
+  const visible = candidates.filter((r) => (r + " " + tabs[r]?.info?.name).toLowerCase().includes(query.trim().toLowerCase()) && (!updatesOnly || !!repositorySidebarStatus(tabs[r])?.behind) && (!favoritesOnly || favorite(r)) && (!groupFilter || groupFilter.roots.some((p) => repositoryKey(p) === repositoryKey(r))));
   const sections = [...library.groups.map((g) => ({ ...g, roots: visible.filter((r) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r))) })), { id: "ungrouped", name: "Ungrouped", collapsed: false, roots: visible.filter((r) => !library.groups.some((g) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r)))) }];
   return (
     <div className="repository-sidebar" style={{ width: w }}>
@@ -177,14 +179,15 @@ export function RepositorySidebar() {
         {sections.map((group) => <div key={group.id}>{library.groups.length > 0 && <button type="button" className="repository-group" aria-expanded={!group.collapsed} onClick={() => group.id !== "ungrouped" && library.collapse(group.id)}>{group.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{group.name}<span className="faint">{group.roots.length}</span></button>}{(!group.collapsed || !!query) && group.roots.map((r) => {
           const t = tabs[r];
           return (
-            <div role="listitem" className={`repository-item ${r === active && !overview ? "active" : ""}`} key={r}>
+            <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""}`} key={r}>
               <FavoriteButton root={r} />
-              <button className="repository-select" onClick={() => activate(r)} title={`${r}\n${t ? t.info?.head.branch ?? "Detached HEAD" : "Closed · click to open"}${t?.fetchError ? "\n" + t.fetchError : ""}`}>
+              <button className="repository-select" onClick={() => activate(r)} title={`${r}\n${t?.info ? t.info.head.branch ?? "Detached HEAD" : t ? t.error ?? "Opening repository…" : "Closed · click to open"}${t?.fetchError ? "\n" + t.fetchError : ""}`}>
                 <FolderGit2 size={14} />
                 <span className="repository-label">{t?.info?.name ?? basename(r)}</span>
                 {!t && <span className="faint">Closed</span>}
-                <AheadBehind ahead={t?.status?.ahead ?? 0} behind={t?.status?.behind ?? 0} />
-                {!!t?.status?.files.length && <span className="repository-dirty" aria-label="Local changes" />}
+                {t && !t.info && (t.error ? <CircleAlert size={12} className="amber" aria-label="Repository unavailable" /> : <span className="faint" title="Opening repository…" aria-label="Opening repository">…</span>)}
+                <AheadBehind ahead={repositorySidebarStatus(t)?.ahead ?? 0} behind={repositorySidebarStatus(t)?.behind ?? 0} />
+                {!!repositorySidebarStatus(t)?.files.length && <span className="repository-dirty" aria-label="Local changes" />}
                 {!!t?.fetchError && <CircleAlert size={12} className="amber" />}
               </button>
               {t && <button className="repository-close icon-btn sm" title={`Close ${t?.info?.name ?? basename(r)}`} aria-label={`Close ${t?.info?.name ?? basename(r)}`} onClick={() => useRepos.getState().close(r)}><X size={12} /></button>}
@@ -207,7 +210,7 @@ export function RepositoryOverview() {
   const busy = useUi((s) => s.busy.length > 0);
   const [query, setQuery] = useState("");
   const visible = order.filter((r) => (r + " " + tabs[r]?.info?.name).toLowerCase().includes(query.trim().toLowerCase()));
-  const incoming = order.filter((r) => !!tabs[r]?.status?.behind).length;
+  const incoming = order.filter((r) => !!repositorySidebarStatus(tabs[r])?.behind).length;
   return (
     <div className="repository-overview">
       <header><div><h2>Repositories</h2><span className="faint">{order.length} open · {incoming} with incoming commits</span></div><div className="spacer" /><SyncButtons roots={visible} scoped={!!query.trim()} /><button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button></header>
@@ -216,14 +219,14 @@ export function RepositoryOverview() {
         <table className="repository-table">
           <thead><tr><th>Repository</th><th>Current branch</th><th>Incoming / outgoing</th><th>Working copy</th><th>Last fetch</th><th /></tr></thead>
           <tbody>
-            {visible.map((r) => { const t = tabs[r]; return (
+            {visible.map((r) => { const t = tabs[r], status = repositorySidebarStatus(t); return (
               <tr key={r}>
                 <td><button className="repository-name" title={r} onClick={() => activate(r)}><FolderGit2 size={15} />{t?.info?.name ?? basename(r)}</button></td>
                 <td title={t?.info?.head.branch ?? ""}><GitBranch size={12} /> {t?.info?.head.branch ?? (t?.info?.head.detached ? "Detached HEAD" : "—")}</td>
-                <td>{t.status ? <AheadBehind ahead={t.status.ahead} behind={t.status.behind} /> : "…"}</td>
+                <td>{status ? <AheadBehind ahead={status.ahead} behind={status.behind} /> : "…"}</td>
                 <td><RepoState tab={t} /></td>
                 <td className="faint">{t.lastFetchedAt ? relativeTime(t.lastFetchedAt / 1000) : "Not fetched this session"}</td>
-                <td><button className="btn sm" disabled={busy || !!t?.fetchError || !!pullBlockReason(t)} onClick={() => void pullRepositories([r])}>Pull</button></td>
+                <td><button className="btn sm" disabled={busy || !!t?.fetchError || !!pullBlockReason({ info: t.info, status })} onClick={() => void pullRepositories([r])}>Pull</button></td>
               </tr>
             ); })}
           </tbody>

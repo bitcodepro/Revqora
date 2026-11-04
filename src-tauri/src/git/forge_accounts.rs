@@ -512,6 +512,29 @@ impl Manager {
         }
         Ok(i.login)
     }
+    /// Explicit, one-prompt consent. Secrets go directly to Git, not the WebView.
+    pub fn git_answer(&self, id: &str, expected: &str, request: &crate::askpass::AskpassRequest) -> GitResult<Zeroizing<String>> {
+        if request.origin != crate::askpass::Origin::Git {
+            return Err(fail("Saved API tokens cannot be sent to SSH prompts."));
+        }
+        let username =
+            bitbucket_git_prompt(&request.prompt).ok_or_else(|| fail("This is not a Bitbucket Cloud HTTPS credential prompt. No token was sent."))?;
+        let mut m = self.memory.lock();
+        let d = self.read()?;
+        sync_memory(&d, &mut m)?;
+        if revision(&d, &m)? != expected {
+            return Err(stale());
+        }
+        let profile = &d.accounts.iter().find(|r| r.profile.id == id).ok_or_else(|| fail("Choose an available Bitbucket Cloud account."))?.profile;
+        if profile.server.kind != "bitbucket" || profile.server.server != "https://bitbucket.org" {
+            return Err(fail("Choose an account verified for https://bitbucket.org. No token was sent."));
+        }
+        let c = credential(&d, &m, id)?;
+        if !["basic", "bearer"].contains(&c.mode.as_str()) {
+            return Err(fail("Unsupported Bitbucket token type."));
+        }
+        Ok(Zeroizing::new(if username { if c.mode == "basic" { "x-bitbucket-api-token-auth" } else { "x-token-auth" }.to_owned() } else { c.token.clone() }))
+    }
     fn account(&self, id: &str) -> GitResult<(Profile, Credential)> {
         let mut m = self.memory.lock();
         let d = self.read()?;
@@ -519,6 +542,24 @@ impl Manager {
         let r = d.accounts.iter().find(|r| r.profile.id == id).ok_or_else(|| fail("Selected API account was removed. Choose an account explicitly."))?;
         Ok((r.profile.clone(), credential(&d, &m, id)?))
     }
+}
+
+/// Do not infer a destination from arbitrary prompt text or a lookalike host.
+fn bitbucket_git_prompt(prompt: &str) -> Option<bool> {
+    let (username, value) =
+        if let Some(value) = prompt.strip_prefix("Username for '") { (true, value) } else { (false, prompt.strip_prefix("Password for '")?) };
+    let address = value.strip_suffix("': ")?;
+    if address.chars().any(|c| c.is_control() || c == '\\' || c == '\'') {
+        return None;
+    }
+    let u = Url::parse(address).ok()?;
+    (u.scheme() == "https"
+        && u.host_str() == Some("bitbucket.org")
+        && u.port_or_known_default() == Some(443)
+        && u.password().is_none()
+        && u.query().is_none()
+        && u.fragment().is_none())
+    .then_some(username)
 }
 fn credential(d: &Document, m: &Memory, id: &str) -> GitResult<Credential> {
     let r = d.accounts.iter().find(|r| r.profile.id == id).ok_or_else(|| fail("Selected account no longer exists."))?;

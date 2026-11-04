@@ -383,7 +383,11 @@ pub(super) mod process_tree {
         Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
         System::{Diagnostics::ToolHelp::*, JobObjects::*, Threading::*},
     };
-    pub struct Tree(HANDLE);
+    pub struct Tree {
+        handle: HANDLE,
+        #[cfg(test)]
+        resumed_thread: Option<(u32, u32)>,
+    }
     struct OwnedHandle(HANDLE);
     impl Drop for OwnedHandle {
         fn drop(&mut self) {
@@ -395,15 +399,30 @@ pub(super) mod process_tree {
     impl Tree {
         pub fn terminate(&self) {
             unsafe {
-                TerminateJobObject(self.0, 1);
+                TerminateJobObject(self.handle, 1);
             }
         }
     }
     impl Drop for Tree {
         fn drop(&mut self) {
             unsafe {
-                CloseHandle(self.0);
+                CloseHandle(self.handle);
             }
+        }
+    }
+    #[cfg(test)]
+    impl Tree {
+        /// Whitelisted observations only: no command arguments, environment or prompts.
+        pub fn diagnostics(&self, child: &Child) -> serde_json::Value {
+            let mut created = unsafe { std::mem::zeroed() };
+            let mut exited = unsafe { std::mem::zeroed() };
+            let mut kernel = unsafe { std::mem::zeroed::<windows_sys::Win32::Foundation::FILETIME>() };
+            let mut user = unsafe { std::mem::zeroed::<windows_sys::Win32::Foundation::FILETIME>() };
+            let ok = unsafe { GetProcessTimes(child.as_raw_handle(), &mut created, &mut exited, &mut kernel, &mut user) };
+            let error = if ok == 0 { std::io::Error::last_os_error().raw_os_error() } else { None };
+            let millis = |t: windows_sys::Win32::Foundation::FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) / 10_000;
+            serde_json::json!({"pid":child.id(),"resumedThreadId":self.resumed_thread.map(|v|v.0),"resumePreviousCount":self.resumed_thread.map(|v|v.1),"processTimesOsError":error,
+                "kernelMs":(ok!=0).then(||millis(kernel)),"userMs":(ok!=0).then(||millis(user))})
         }
     }
     pub fn exited(child: &mut Child) -> std::io::Result<bool> {
@@ -416,7 +435,11 @@ pub(super) mod process_tree {
                 let error = std::io::Error::last_os_error();
                 return Err(process_error("CreateJobObjectW", cmd, error));
             }
-            let tree = Tree(job);
+            let tree = Tree {
+                handle: job,
+                #[cfg(test)]
+                resumed_thread: None,
+            };
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
             if SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits as *const _ as _, std::mem::size_of_val(&limits) as u32) == 0 {
@@ -451,11 +474,12 @@ pub(super) mod process_tree {
                             return Err(process_error("OpenThread", cmd, error));
                         }
                         let thread = OwnedHandle(thread);
-                        if ResumeThread(thread.0) == u32::MAX {
+                        let previous_count = ResumeThread(thread.0);
+                        if previous_count == u32::MAX {
                             let error = std::io::Error::last_os_error();
                             return Err(process_error("ResumeThread", cmd, error));
                         }
-                        return Ok(());
+                        return Ok((entry.th32ThreadID, previous_count));
                     }
                     next = Thread32Next(snap.0, &mut entry);
                     if next == 0 {
@@ -476,6 +500,12 @@ pub(super) mod process_tree {
                 let _ = child.wait();
                 return Err(e);
             }
+            #[cfg(test)]
+            let tree = {
+                let mut owned = tree;
+                owned.resumed_thread = resumed.ok();
+                owned
+            };
             Ok((child, tree))
         }
     }
@@ -484,6 +514,21 @@ pub(super) mod process_tree {
 #[cfg(test)]
 mod output_tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn suspended_launch_diagnostics_capture_resume_and_cpu_without_command_secrets() {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/D", "/C", "echo PRIVATE_ARGUMENT"]).env("PRIVATE_ENVIRONMENT", "PRIVATE_VALUE").stdout(Stdio::null()).stderr(Stdio::null());
+        let (mut child, tree) = process_tree::spawn(&mut command).unwrap();
+        let diagnostic = tree.diagnostics(&child);
+        assert_eq!(diagnostic["pid"], child.id());
+        assert_eq!(diagnostic["resumePreviousCount"], 1, "{diagnostic}");
+        assert!(diagnostic["resumedThreadId"].as_u64().is_some());
+        assert!(diagnostic["kernelMs"].as_u64().is_some() && diagnostic["userMs"].as_u64().is_some());
+        assert!(diagnostic["processTimesOsError"].is_null());
+        assert!(!diagnostic.to_string().contains("PRIVATE_"));
+        assert!(child.wait().unwrap().success());
+    }
     #[test]
     fn completed_process_wins_over_a_late_timeout_or_cancel_poll() {
         #[cfg(windows)]

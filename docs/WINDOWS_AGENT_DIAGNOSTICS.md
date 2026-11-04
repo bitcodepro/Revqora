@@ -89,7 +89,36 @@ with warnings denied in both configurations, and 27 release-tooling tests. Nativ
 WebView2/release/package checks are delegated to full CI; no native app window was
 opened locally.
 
-## Current decision
+## PR #33: three execution deadlines on the automation runner
+
+Run `41875944978`, job `126736023387`, failed three Rust unit fixtures:
+bounded output/exit-code retention, large escaped history, and the default portable
+worktree. They returned `timed-out` under their configured **10 second** execution
+deadline. This was not a native UI actionability timeout. The available default
+worktree snapshot had no stdout/stderr, OS error or exit code. The subsequent
+20-case matrix passed, which does not invalidate the failed full suite.
+
+The normal Windows job ran the cold PowerShell/.NET dependency probe before its
+full suite (4.43 seconds on that runner). The separate automation job omitted that
+probe after the jobs were split. Both jobs now require the same single, bounded
+dependency check. This fixes preparation parity; it does **not** establish why
+those three processes exceeded their deadline on the historical runner.
+
+Unit-test-only evidence now records process-spawn duration, the selected thread ID
+and previous `ResumeThread` suspend count, CPU counters and elapsed execution time
+when a timeout/cancellation occurs. Windows PowerShell fixtures emit a fixed stderr
+marker before reading stdin or executing their test body. The failure snapshots for
+all three cases include this marker's presence and are retained in
+`agent-test-failures`, alongside the dependency probe and fixed diagnostic matrix.
+Arguments, environment and prompts remain excluded. No process launch flags,
+access rights, timeout, concurrency limit, assertions or retry policy were relaxed.
+
+The marker can distinguish reaching the fixture body from an earlier stall; the
+resume and CPU observations help distinguish startup from thread-launch problems.
+They are diagnostic observations, not proof that any one of these explanations
+caused the historical failure. A successful subsequent run alone is also not proof.
+
+## Historical Access-denied decision
 
 The minimal evidence-backed fix is to preserve the lost operation/error context.
 There is no evidence-backed behavioral workaround for the historical access denial

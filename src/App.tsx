@@ -1,5 +1,6 @@
 import { ActivityIndicator } from "./components/ActivityIndicator";
 import { createStartupBarrier, type StartupPhase } from "./lib/startupReady";
+import { restoreRepositorySession } from "./lib/restoreRepositorySession";
 import { StackManager } from "./components/StackManager";
 import { HistoryExplorer } from "./components/HistoryExplorer";
 import { WorkflowBuilder } from "./components/WorkflowBuilder";
@@ -7,7 +8,7 @@ import { AgentWorkspace } from "./components/AgentWorkspace";
 import { WorktreeManager } from "./components/WorktreeManager";
 import { finishWorkspaceStartup, startWorkspaceTracking } from "./lib/repositoryWorkspaces";
 import { useLibrary } from "./lib/repositoryLibrary";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -68,6 +69,16 @@ function useAppearance() {
     r.setProperty("--font-ui", `"${s.uiFont}", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif`);
     r.setProperty("--font-code", `"${s.codeFont}", "Cascadia Code", Consolas, monospace`);
   }, [s.uiFontSize, s.codeFontSize, s.uiFont, s.codeFont]);
+}
+
+function RepositoryContent({ tab }: { tab: RepoTab }) {
+  if (!tab.info) return <div className="repository-opening" role="status">
+    <h2>{tab.root.split(/[\\/]/).filter(Boolean).at(-1)}</h2>
+    <p>{tab.error ? "Repository unavailable" : "Opening repository…"}</p>
+    <code>{tab.root}</code>
+    {tab.error && <><p role="alert">{tab.error}</p><button type="button" className="btn" onClick={() => void A.openRepoPath(tab.root)}>Try again</button></>}
+  </div>;
+  return <RepoWorkspace tab={tab} />;
 }
 
 function RepoWorkspace({ tab }: { tab: RepoTab }) {
@@ -217,7 +228,7 @@ function useAutoFetch() {
   useEffect(() => {
     if (!minutes) return;
     const id = setInterval(() => {
-      for (const root of Object.keys(useRepos.getState().tabs)) void quietFetch(root);
+      for (const tab of Object.values(useRepos.getState().tabs)) if (tab.info) void quietFetch(tab.root);
     }, minutes * 60_000);
     return () => clearInterval(id);
   }, [minutes]);
@@ -241,33 +252,20 @@ export default function App() {
   const { layout } = useWorkspaceLayout(layoutMode);
   const { focusMode, repositoriesOpen } = layout;
   const repositoryCount = useRepos((s) => s.order.length);
-  const hasBookmarks = useLibrary((s) => s.favorites.length > 0 || s.groups.some((g) => g.roots.length > 0));
+  const hasBookmarks = useLibrary((s) => s.knownRoots.length > 0);
 
   useEffect(startWorkspaceTracking, []);
   // Restore the tabs from the previous session.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (restored.current) return;
     restored.current = true;
-    const { openTabs, activeTab } = useSettings.getState();
     (async () => {
-      for (const p of openTabs) {
-        try {
-          await useRepos.getState().open(p, false);
-        } catch {
-          /* folder moved or deleted */
-        }
-      }
-      const order = useRepos.getState().order;
-      let want = activeTab && order.find((r) => r.toLowerCase() === activeTab.toLowerCase());
-      for (const p of await api.startupPaths().catch(() => [] as string[])) {
-        try {
-          want = (await useRepos.getState().open(p, false)) ?? want;
-        } catch {
-          /* not a repository */
-        }
-      }
-      useRepos.getState().activate(want ?? useRepos.getState().order[0] ?? null);
+      // Publish the entire roster before asynchronous Git discovery begins.
+      void restoreRepositorySession();
       finishWorkspaceStartup();
+      const initial = useRepos.getState().selectionVersion;
+      const paths = await api.startupPaths().catch(() => [] as string[]);
+      if (paths.length) void useRepos.getState().openMany(paths, useRepos.getState().selectionVersion === initial ? paths.at(-1) : undefined);
     })().then(() => startup.current!.restored(), error => toast.error(error, "Could not restore repository session"));
   }, []);
 
@@ -408,7 +406,7 @@ export default function App() {
       <ActivityIndicator active={busy} />
       <div className="app-body">
         <div className="repository-slot" hidden={!repositoriesOpen || focusMode || (!repositoryCount && !hasBookmarks)}><RepositorySidebar /></div>
-        <div className="workspace-host">{overview && repositoryCount ? <RepositoryOverview /> : tab ? <RepoWorkspace key={tab.root} tab={tab} /> : <Welcome />}</div>
+        <div className="workspace-host">{overview && repositoryCount ? <RepositoryOverview /> : tab ? <RepositoryContent key={tab.root} tab={tab} /> : <Welcome />}</div>
       </div>
       <StatusBar />
       <ContextMenuHost />

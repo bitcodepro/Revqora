@@ -400,6 +400,7 @@ export interface AskpassRequest {
   id: number;
   prompt: string;
   kind: "username" | "secret" | "yesno" | "text";
+  origin: "git" | "ssh";
 }
 
 export interface BlameCommit {

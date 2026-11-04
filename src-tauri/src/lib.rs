@@ -556,6 +556,10 @@ async fn repo_info(repo: String) -> GitResult<RepoInfo> {
 async fn status(repo: String) -> GitResult<StatusSummary> {
     blocking(move || status::status(&p(&repo))).await
 }
+#[tauri::command]
+async fn repository_sidebar_status(repo: String) -> GitResult<StatusSummary> {
+    blocking(move || status::sidebar_status(&p(&repo))).await
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1569,6 +1573,15 @@ async fn forge_account_test(id: String) -> GitResult<String> {
     blocking(move || git::forge_accounts::manager()?.test(&id)).await
 }
 #[tauri::command]
+async fn forge_account_git_respond(id: u64, account_id: String, expected: String) -> GitResult<bool> {
+    blocking(move || {
+        let request = askpass::pending_request(id).ok_or_else(|| GitError::new("This Git sign-in request has expired."))?;
+        let answer = git::forge_accounts::manager()?.git_answer(&account_id, &expected, &request)?;
+        Ok(askpass::respond(id, Some(answer.to_string())))
+    })
+    .await
+}
+#[tauri::command]
 async fn forge_vault_password(password: String, expected: String, unlock: bool) -> GitResult<git::forge_accounts::Snapshot> {
     blocking(move || git::forge_accounts::manager()?.vault(password, &expected, unlock)).await
 }
@@ -1985,6 +1998,7 @@ pub fn run() {
             let exe = std::env::current_exe()?;
             if let Err(e) = askpass::start(
                 &exe,
+                &portable::runtime_dir()?.join("helpers"),
                 std::sync::Arc::new(move |req| {
                     let _ = handle.emit("askpass-request", req);
                 }),
@@ -2021,6 +2035,7 @@ pub fn run() {
             git_selection,
             git_configure,
             askpass_respond,
+            repository_sidebar_status,
             repo_open,
             repo_init,
             repo_clone,
@@ -2154,6 +2169,7 @@ pub fn run() {
             forge_account_add,
             forge_account_remove,
             forge_account_test,
+            forge_account_git_respond,
             forge_vault_password,
             forge_vault_lock,
             forge_vault_reset,

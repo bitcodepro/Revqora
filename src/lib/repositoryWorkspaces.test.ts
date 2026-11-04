@@ -22,6 +22,21 @@ beforeEach(async () => {
   await useRepos.getState().open("/original"); useRepos.setState({ active: "/original" }); finishWorkspaceStartup();
 });
 describe("workspace transitions", () => {
+  it("keeps saved order and selection when independent repository opens finish out of order", async () => {
+    const id = useLibrary.getState().save("Parallel target", { ...workspaceSnapshot(), roots: ["/first", "/second"], activeRoot: "/second" });
+    const original = useRepos.getState().open;
+    let first!: () => void, second!: () => void;
+    const a = new Promise<void>(resolve => { first = resolve; }), b = new Promise<void>(resolve => { second = resolve; });
+    const mock = vi.spyOn(useRepos.getState(), "open").mockImplementation(async root => { await (root === "/first" ? a : b); return original(root, false); });
+    try {
+      const switching = switchWorkspace(id);
+      await vi.waitFor(() => expect(mock).toHaveBeenCalledTimes(2));
+      second(); await vi.waitFor(() => expect(useRepos.getState().order).toContain("/second")); first();
+      expect(await switching).toEqual([]);
+      expect(useRepos.getState().order).toEqual(["/first", "/second"]);
+      expect(useRepos.getState().active).toBe("/second");
+    } finally { first(); second(); useRepos.setState({ open: original }); }
+  });
   it("restores views and layouts without any branch checkout API", async () => {
     const id = useLibrary.getState().save("Target", { ...workspaceSnapshot(), roots: ["/target"], activeRoot: "/target", views: { "/target": "changes" }, historyMode: "columns" });
     useLibrary.getState().select(null);

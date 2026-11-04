@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createProfile, launch } from "./ui-driver.mjs";
+import { repositorySessionSmoke } from "./repository-session-smoke.mjs";
 
 export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
   const root = path.join(work, "stage8-workspace"), second = path.join(work, "stage8-tools"), bare = path.join(work, "stage8.git"), peer = path.join(work, "stage8-peer");
@@ -39,6 +40,7 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     await page.reload(); await page.waitForSelector(".repository-group:has-text('Stage 8 projects')[aria-expanded='false']"); await header.click();
     await waitActive("stage8-workspace");
     if (await page.getByRole("button", { name: "Unfavorite stage8-workspace", exact: true }).count() !== 1) throw new Error("favorite duplicated or was lost"); await shot("75-repository-library");
+    await repositorySessionSmoke({ page, work, shot, template: second });
   });
   await check("saved workspaces restore repository sets, views and panel layout without switching Git branches", async () => {
     await page.locator(".history-mode").getByRole("button", { name: "Columns", exact: true }).click();

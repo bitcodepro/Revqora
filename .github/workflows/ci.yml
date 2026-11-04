@@ -112,6 +112,7 @@ jobs:
       TEMP: ${{ github.workspace }}/.ci-temp
       TMP: ${{ github.workspace }}/.ci-temp
       TMPDIR: ${{ github.workspace }}/.ci-temp
+      REVQORA_AGENT_TEST_DIAGNOSTICS: ${{ github.workspace }}/ci-results/agent-test-failures
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -133,6 +134,9 @@ jobs:
         run: |
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features ui-automation -- -D warnings
           exit $LASTEXITCODE
+      - name: Verify cold Windows CLI dependency
+        run: node scripts/windows-cli-readiness.mjs
+
       - name: Test the complete Windows automation configuration
         shell: pwsh
         run: |
@@ -153,7 +157,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: windows-agent-diagnostics
-          path: ci-results/agent-windows-diagnostics
+          path: |
+            ci-results/agent-windows-diagnostics
+            ci-results/agent-test-failures
+            ci-results/windows-cli-readiness.json
           if-no-files-found: warn
           retention-days: 7
 

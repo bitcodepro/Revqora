@@ -101,6 +101,8 @@ struct Job {
     cancel: AtomicBool,
     done: AtomicBool,
     clock: Instant,
+    #[cfg(test)]
+    launch_diagnostics: Mutex<serde_json::Value>,
 }
 fn jobs() -> &'static Mutex<HashMap<PathBuf, Arc<Job>>> {
     static JOBS: OnceLock<Mutex<HashMap<PathBuf, Arc<Job>>>> = OnceLock::new();
@@ -394,6 +396,8 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
         cancel: AtomicBool::new(false),
         done: AtomicBool::new(false),
         clock: Instant::now(),
+        #[cfg(test)]
+        launch_diagnostics: Mutex::new(serde_json::Value::Null),
     });
     jobs().lock().insert(operations::repository_key(&root), job.clone());
     thread::spawn(move || {
@@ -646,7 +650,14 @@ fn execute(plan: &Plan, job: &Arc<Job>, dir: &Path) -> GitResult<()> {
         }
     }
     let worktree = Path::new(&plan.creation.path);
+    #[cfg(all(test, windows))]
+    let spawning = Instant::now();
     let (mut child, tree) = step("process.spawn", worktree, process_tree::spawn(&mut cmd))?;
+    #[cfg(all(test, windows))]
+    {
+        *job.launch_diagnostics.lock() = tree.diagnostics(&child);
+        job.launch_diagnostics.lock()["spawnMs"] = (spawning.elapsed().as_millis() as u64).into();
+    }
     let end = Arc::new(AtomicBool::new(false));
     let out = reader(child.stdout.take().unwrap(), job.clone(), false, end.clone());
     let err = reader(child.stderr.take().unwrap(), job.clone(), true, end.clone());
@@ -660,6 +671,13 @@ fn execute(plan: &Plan, job: &Arc<Job>, dir: &Path) -> GitResult<()> {
                 poll_process(&mut child, job.cancel.load(Ordering::Acquire), started.elapsed().as_secs() >= plan.request.timeout_seconds),
             )?;
             if matches!(state, ProcessState::Cancelled | ProcessState::TimedOut) {
+                #[cfg(all(test, windows))]
+                {
+                    let mut diagnostic = tree.diagnostics(&child);
+                    diagnostic["spawnMs"] = job.launch_diagnostics.lock()["spawnMs"].clone();
+                    diagnostic["executionMs"] = (started.elapsed().as_millis() as u64).into();
+                    *job.launch_diagnostics.lock() = diagnostic;
+                }
                 job.task.lock().phase = if state == ProcessState::Cancelled { "cancelled" } else { "timed-out" }.into();
                 break;
             }

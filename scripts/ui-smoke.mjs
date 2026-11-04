@@ -1,4 +1,5 @@
 import { futureStagesSmoke } from "./future-stages-smoke.mjs";
+import { repositoryRosterState } from "./repository-roster.mjs";
 import { stashSnapshotSmoke } from "./stash-snapshot-smoke.mjs";
 import { treeResponseSmoke } from "./tree-response-smoke.mjs";
 import { liveDiffSmoke, sealedLayerAttributesSmoke, submoduleHeadSmoke } from "./live-diff-smoke.mjs";
@@ -1170,7 +1171,14 @@ try {
     const expected = at(seed, "rev-parse", "HEAD");
     for (let i = 4; i < 19; i++) { const dir = path.join(multi, "extra-" + String(i).padStart(2, "0")); at(seed, "clone", "-q", origin, dir); repos.push(dir); }
     await page.evaluate((paths) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: paths }), repos);
-    await until(async () => await page.locator(".repository-item").count() === 20, "twenty repositories did not open", 60000);
+    const expectedRoots = [repo, ...repos];
+    let roster;
+    try {
+      await until(async () => { roster = await page.evaluate(repositoryRosterState, expectedRoots); return roster.ready; }, "twenty repositories did not open", 60000);
+    } catch (error) {
+      throw new Error(`${error.message}; exact repository roster: ${JSON.stringify(roster)}`);
+    }
+    console.log(`Verified ${roster.openCount} exact loaded repositories; ${roster.closed.length} closed library bookmarks retained`);
     await page.click(".topbar button[aria-label='All repositories']");
     await page.waitForSelector(".repository-table tbody tr");
     await page.locator(".repository-overview .repository-sync button:has-text('Fetch all')").click();
