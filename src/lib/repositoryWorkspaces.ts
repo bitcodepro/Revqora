@@ -52,10 +52,10 @@ export async function switchWorkspace(id: string, add = false): Promise<string[]
       if (useRepos.getState().order.some((r) => useRepos.getState().tabs[r].pendingMutations) || useUi.getState().repositoryOperations.length) throw new Error("An operation started. Wait for it to finish.");
     }
     library.select(null);
-    for (const root of target.roots) {
+    await Promise.all(target.roots.map(async root => {
       try { const actual = await useRepos.getState().open(root, false); if (actual) { opened.push(actual); mapped.set(root, actual); } else errors.push(`${root}: Could not open repository`); }
       catch (e) { errors.push(`${root}: ${errorMessage(e)}`); }
-    }
+    }));
     // Keep the original session and saved layout intact on any partial failure.
     if (errors.length) return errors;
     if (add) { useLibrary.getState().select(previous); return errors; }
@@ -66,7 +66,7 @@ export async function switchWorkspace(id: string, add = false): Promise<string[]
     for (const root of original) if (!opened.includes(root)) useRepos.getState().close(root);
     for (const [root, view] of Object.entries(target.views)) { const actual = mapped.get(root); if (actual) useRepos.getState().patch(actual, { view }); }
     const active = mapped.get(target.activeRoot ?? "") ?? opened[0] ?? null;
-    useRepos.getState().arrange(opened, active);
+    useRepos.getState().arrange(target.roots.map(root => mapped.get(root)!).filter(Boolean), active);
     useSettings.getState().set({ layouts: structuredClone(target.layouts), historyMode: target.historyMode });
     useUi.setState({ overlay: null, repositoryOverview: false });
     useLibrary.getState().select(id);

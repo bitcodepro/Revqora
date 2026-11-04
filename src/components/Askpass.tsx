@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Eye, EyeOff, KeyRound, ShieldQuestion, UserRound } from "lucide-react";
-import { api } from "../lib/api";
-import type { AskpassRequest } from "../lib/types";
+import { api, errorMessage } from "../lib/api";
+import type { AskpassRequest, ForgeAccountsSnapshot } from "../lib/types";
+import { bitbucketPromptKind } from "../lib/bitbucketCredentials";
 import { Modal } from "./Modal";
 
 /** Answers credential / passphrase / host-key prompts that git and ssh send to Revqora. */
@@ -20,7 +21,7 @@ export function AskpassHost() {
     api.askpassRespond(current.id, value).catch(() => {});
     setQueue((q) => q.slice(1));
   };
-  return <AskpassDialog key={current.id} req={current} onAnswer={answer} />;
+  return <AskpassDialog key={current.id} req={current} onAnswer={answer} onAnswered={() => setQueue(q => q.filter(item => item.id !== current.id))} />;
 }
 
 /** Splits an OpenSSH host-key prompt into the explanation and the question. */
@@ -30,8 +31,26 @@ function splitPrompt(prompt: string): { detail: string; question: string } {
   return { detail: lines.join("\n"), question };
 }
 
-function AskpassDialog({ req, onAnswer }: { req: AskpassRequest; onAnswer: (v: string | null) => void }) {
-  const [value, setValue] = useState("");
+function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onAnswer: (v: string | null) => void; onAnswered: () => void }) {
+  const bitbucket = bitbucketPromptKind(req.prompt);
+  const [value, setValue] = useState(bitbucket === "username" ? "x-bitbucket-api-token-auth" : "");
+  const [accounts, setAccounts] = useState<ForgeAccountsSnapshot | null>(null);
+  const [account, setAccount] = useState("");
+  const [sending, setSending] = useState(false), [error, setError] = useState("");
+  useEffect(() => {
+    let live = true;
+    if (bitbucket) void api.forgeAccounts().then(data => { if (live) setAccounts(data); }, () => {});
+    return () => { live = false; };
+  }, [bitbucket]);
+  const available = accounts?.accounts.filter(a => a.kind === "bitbucket" && a.server === "https://bitbucket.org" && a.status === "available") ?? [];
+  const useSaved = async () => {
+    if (!accounts || !account || sending) return;
+    setSending(true); setError("");
+    try {
+      if (!await api.forgeAccountGitRespond(req.id, account, accounts.revision)) throw new Error("This Git sign-in request has expired.");
+      onAnswered();
+    } catch (e) { setError(errorMessage(e)); setSending(false); }
+  };
   const [show, setShow] = useState(false);
   const { detail, question } = splitPrompt(req.prompt);
   const host = req.prompt.match(/(?:https?:\/\/[^'\s]+|[\w.-]+@[\w.-]+|for '([^']+)')/)?.[0];
@@ -64,27 +83,27 @@ function AskpassDialog({ req, onAnswer }: { req: AskpassRequest; onAnswer: (v: s
   }
 
   const secret = req.kind === "secret";
-  const title = req.kind === "username" ? "Sign in" : /passphrase/i.test(req.prompt) ? "Unlock SSH key" : secret ? "Password required" : "Git needs input";
+  const title = bitbucket ? "Sign in to Bitbucket Cloud" : req.kind === "username" ? "Sign in" : /passphrase/i.test(req.prompt) ? "Unlock SSH key" : secret ? "Password required" : "Git needs input";
   return (
     <Modal
       title={title}
       subtitle={host ? `Requested by git for ${host.replace(/^for '|'$/g, "")}` : "Requested by git"}
       icon={req.kind === "username" ? <UserRound size={18} /> : <KeyRound size={18} />}
-      onClose={() => onAnswer(null)}
-      onSubmit={() => onAnswer(value)}
+      onClose={() => { if (!sending) onAnswer(null); }}
+      onSubmit={() => { if (!sending) onAnswer(value); }}
       footer={
         <>
-          <button type="button" className="btn" onClick={() => onAnswer(null)}>
+          <button type="button" className="btn" disabled={sending} onClick={() => onAnswer(null)}>
             Cancel
           </button>
-          <button type="submit" className="btn primary">
+          <button type="submit" className="btn primary" disabled={sending}>
             Continue
           </button>
         </>
       }
     >
       <div className="field">
-        <label style={{ whiteSpace: "pre-wrap", fontWeight: 500 }}>{req.prompt.trim()}</label>
+        <label style={{ whiteSpace: "pre-wrap", fontWeight: 500 }}>{bitbucket === "secret" ? "Bitbucket access token" : req.prompt.trim()}</label>
         <div className="input-wrap">
           <input
             className="input"
@@ -92,6 +111,7 @@ function AskpassDialog({ req, onAnswer }: { req: AskpassRequest; onAnswer: (v: s
             autoComplete="off"
             spellCheck={false}
             value={value}
+            disabled={sending}
             onChange={(e) => setValue(e.target.value)}
             style={{ paddingRight: secret ? 36 : undefined }}
           />
@@ -103,6 +123,12 @@ function AskpassDialog({ req, onAnswer }: { req: AskpassRequest; onAnswer: (v: s
         </div>
         <div className="help">The answer goes straight to git and is not stored by Revqora.</div>
       </div>
+      {bitbucket && <>
+        <p className="help">For an API token, use your Bitbucket username or <code>x-bitbucket-api-token-auth</code> as the Git username and paste the token when Git asks for a password. For an OAuth access token, use <code>x-token-auth</code>. Git needs repository read permission for Fetch/Pull and write permission for Push.</p>
+        {!!available.length && <div className="field"><label>Use an existing Bitbucket account<select className="select" aria-label="Bitbucket Git account" value={account} disabled={sending} onChange={e => setAccount(e.target.value)}><option value="">Choose an account…</option>{available.map(a => <option key={a.id} value={a.id}>{a.login} · {a.authMode === "basic" ? "API token" : "OAuth token"}</option>)}</select></label><button type="button" className="btn" disabled={!account || sending} onClick={() => void useSaved()}>Use saved account for this request</button><small>The selected credential goes directly to Git. This does not change the repository URL or your PR account selection.</small></div>}
+        <p className="help">For Pull Requests, add Bitbucket Cloud in Accounts and API connections. API tokens use your Atlassian email there. Unlock the portable vault to use saved tokens.</p>
+      </>}
+      {error && <p role="alert">{error}</p>}
     </Modal>
   );
 }

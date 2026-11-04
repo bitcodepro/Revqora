@@ -46,8 +46,13 @@ struct Answer {
 
 type Responder = Arc<dyn Fn(AskpassRequest) + Send + Sync>;
 
+struct PendingPrompt {
+    prompt: String,
+    answer: Sender<Option<String>>,
+}
+
 struct Server {
-    pending: Mutex<HashMap<u64, Sender<Option<String>>>>,
+    pending: Mutex<HashMap<u64, PendingPrompt>>,
     next: AtomicU64,
 }
 
@@ -131,7 +136,7 @@ fn handle(stream: TcpStream, server: &Server, token: &str, on_request: &Responde
     }
     let id = server.next.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = channel();
-    server.pending.lock().insert(id, tx);
+    server.pending.lock().insert(id, PendingPrompt { prompt: ask.prompt.clone(), answer: tx });
     on_request(AskpassRequest { id, kind: classify(&ask.prompt).to_string(), prompt: ask.prompt });
     let answer = rx.recv_timeout(ANSWER_TIMEOUT).ok().flatten();
     server.pending.lock().remove(&id);
@@ -148,9 +153,14 @@ pub fn respond(id: u64, value: Option<String>) -> bool {
     let Some(server) = SERVER.get() else { return false };
     let tx = server.pending.lock().remove(&id);
     match tx {
-        Some(tx) => tx.send(value).is_ok(),
+        Some(pending) => pending.answer.send(value).is_ok(),
         None => false,
     }
+}
+
+/// Only a live native Git prompt may receive a saved account credential.
+pub fn pending_prompt(id: u64) -> Option<String> {
+    SERVER.get()?.pending.lock().get(&id).map(|pending| pending.prompt.clone())
 }
 
 /// Asks the running app; Ok(None) = the user cancelled.

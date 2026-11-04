@@ -5,6 +5,9 @@ import "@fontsource-variable/jetbrains-mono";
 import "./styles/theme.css";
 import "./styles/app.css";
 import App from "./App";
+import { restoreRepositorySession } from "./lib/restoreRepositorySession";
+
+void restoreRepositorySession();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

@@ -200,6 +200,19 @@ file-mode/type limitation. Uncertain publication results require checking the
 server before another send. See the provider details in the
 [roadmap](https://github.com/bitcodepro/Revqora/blob/main/docs/ROADMAP.md).
 
+### Connect Bitbucket Cloud with a token
+
+For **Bitbucket Cloud API tokens**, add an API account with your Atlassian email,
+verify it and select **Use for PR and checks** for the repository's remote. For
+HTTPS Fetch/Pull/Push, choose that available account in the Git sign-in dialog.
+Revqora supplies the Git-specific username and sends the token directly to Git;
+it does not put the secret in the remote URL. You can also enter
+`x-bitbucket-api-token-auth` as the Git username and paste the API token into the
+password field. OAuth tokens use `x-token-auth`. Git needs repository read scope
+for Fetch/Pull and write scope for Push; PR operations need their own API scopes.
+SSH remotes continue to use SSH keys. See Atlassian's
+[API token instructions](https://support.atlassian.com/bitbucket-cloud/docs/using-api-tokens/).
+
 ### Run an agent or a workflow
 
 Open **Agent Workspace**, choose **New task**, select an installed CLI executable

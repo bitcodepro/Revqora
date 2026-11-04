@@ -40,6 +40,36 @@ impl Repo {
 }
 
 #[test]
+fn sidebar_status_matches_git_counts_without_hashing_content_or_supplying_mutation_proofs() {
+    let repo = Repo::new();
+    fs::write(repo.root.join("selected.txt"), "edit\n").unwrap();
+    fs::write(repo.root.join("untracked.txt"), "new\n").unwrap();
+    let index = fs::read(repo.root.join(".git/index")).unwrap();
+    let sidebar = status::sidebar_status(&repo.root).unwrap();
+    let full = repo.status();
+    assert!(sidebar.state_token.is_none());
+    assert!(sidebar.diff_context_token.is_none());
+    assert!(full.state_token.is_some());
+    assert!(full.state_version > sidebar.state_version);
+    assert_eq!(
+        (&sidebar.branch, &sidebar.oid, &sidebar.upstream, sidebar.ahead, sidebar.behind),
+        (&full.branch, &full.oid, &full.upstream, full.ahead, full.behind)
+    );
+    assert_eq!((sidebar.staged_count, sidebar.unstaged_count, sidebar.conflict_count), (full.staged_count, full.unstaged_count, full.conflict_count));
+    assert_eq!(
+        sidebar.files.iter().map(|f| (&f.path, &f.index, &f.worktree)).collect::<Vec<_>>(),
+        full.files.iter().map(|f| (&f.path, &f.index, &f.worktree)).collect::<Vec<_>>()
+    );
+    assert_eq!(index, fs::read(repo.root.join(".git/index")).unwrap());
+    fs::write(repo.root.join("selected.txt"), "another edit\n").unwrap();
+    let newer_sidebar = status::sidebar_status(&repo.root).unwrap();
+    assert_eq!(sidebar.files, newer_sidebar.files);
+    let newer_full = repo.status();
+    assert_ne!(full.state_token, newer_full.state_token);
+    assert_ne!(Repo::token(&full), Repo::token(&newer_full));
+}
+
+#[test]
 fn unrelated_wal_writes_keep_selected_diff_token_but_not_the_mutation_guard() {
     let repo = Repo::new();
     fs::write(repo.root.join("selected.txt"), "edit\n").unwrap();

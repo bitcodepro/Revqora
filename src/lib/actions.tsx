@@ -158,7 +158,7 @@ export async function openRepoPath(path: string) {
 
 export async function openRepoDialog() {
   const dirs = await openFolder({ directory: true, multiple: true, title: "Open Git repositories" });
-  for (const dir of typeof dirs === "string" ? [dirs] : dirs ?? []) await openRepoPath(dir);
+  await Promise.all((typeof dirs === "string" ? [dirs] : dirs ?? []).map(openRepoPath));
 }
 
 export async function initRepoDialog() {

@@ -7,6 +7,17 @@ one group. Search, favorites and the group selector scope the panel's bulk actio
 to matching **open** repositories. Closed bookmarks do not perform background Git
 or network work until opened. The library keeps previously opened paths available.
 
+On startup, the complete saved repository list and all group memberships appear
+together. The last active repository is selected immediately and discovered first.
+Git discovery and status reads use bounded background queues; inactive repositories
+use display-only Git status without hashing dirty contents for mutation proofs.
+They do not load full commit histories, layers or squash-merge analysis until selected.
+Action previews and execution still read full safety preconditions independently.
+**Opening…** means discovery is pending; **Closed** means the tab was deliberately
+closed. Ungrouped saved paths remain visible too. An unavailable folder keeps its
+place in the session and offers **Try again**, instead of silently disappearing.
+Opening several folders or a group registers every row before reading their Git data.
+
 ## Workspaces
 
 **Save current as** creates a named workspace. The active workspace automatically
