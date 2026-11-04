@@ -58,6 +58,7 @@ jobs:
       TEMP: ${{ github.workspace }}/.ci-temp
       TMP: ${{ github.workspace }}/.ci-temp
       TMPDIR: ${{ github.workspace }}/.ci-temp
+      REVQORA_VERIFY_TIMINGS: ${{ github.workspace }}/ci-results/verify-stages.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -83,14 +84,58 @@ jobs:
         run: node scripts/windows-cli-readiness.mjs
       - run: npm run verify:quick
 
-      # Retain both production and automation-feature Rust checks, outside the
-      # native critical path. They do not open an application window.
-      - name: Lint and test the Windows automation feature
-        if: runner.os == 'Windows'
+      - name: Retain verification stage timings
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: quick-verification-${{ matrix.os }}
+          path: ci-results/verify-stages.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Retain dependency preparation evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-cli-readiness
+          path: ci-results/windows-cli-readiness.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  # Full production and automation configurations run on independent runners,
+  # rather than sharing a serial 35-minute budget before agent diagnostics.
+  windows-automation:
+    name: Windows Rust and agent diagnostics (ui-automation)
+    runs-on: windows-2025
+    timeout-minutes: 35
+    env:
+      REVQORA_TEST_TMP: ${{ github.workspace }}/.ci-temp
+      TEMP: ${{ github.workspace }}/.ci-temp
+      TMP: ${{ github.workspace }}/.ci-temp
+      TMPDIR: ${{ github.workspace }}/.ci-temp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prepare isolated temporary directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:REVQORA_TEST_TMP | Out-Null
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install Rust toolchain
+        shell: bash
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
+      - run: npm ci
+      - name: Lint the Windows automation feature
         shell: pwsh
         run: |
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features ui-automation -- -D warnings
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          exit $LASTEXITCODE
+      - name: Test the complete Windows automation configuration
+        shell: pwsh
+        run: |
           cargo test --manifest-path src-tauri/Cargo.toml --features ui-automation
           exit $LASTEXITCODE
 
@@ -109,14 +154,6 @@ jobs:
         with:
           name: windows-agent-diagnostics
           path: ci-results/agent-windows-diagnostics
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Retain dependency preparation evidence
-        if: always() && runner.os == 'Windows'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: windows-cli-readiness
-          path: ci-results/windows-cli-readiness.json
           if-no-files-found: warn
           retention-days: 7
 
@@ -334,7 +371,7 @@ jobs:
 
   release:
     name: Publish release from main
-    needs: [release-tooling, build-and-test, windows-smoke, version, packages, verify-packages]
+    needs: [release-tooling, build-and-test, windows-automation, windows-smoke, version, packages, verify-packages]
     if: >-
       github.repository == 'bitcodepro/Revqora' && github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&

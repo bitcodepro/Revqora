@@ -22,7 +22,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(publisher["permissions"], {"contents": "write"})
         for context in ("bitcodepro/Revqora", "refs/heads/main", "'push'", "'workflow_dispatch'"):
             self.assertIn(context, publisher["if"])
-        self.assertEqual(set(publisher["needs"]), {"release-tooling", "build-and-test", "windows-smoke", "version", "packages", "verify-packages"})
+        self.assertEqual(set(publisher["needs"]), {"release-tooling", "build-and-test", "windows-automation", "windows-smoke", "version", "packages", "verify-packages"})
 
     def test_all_platforms_and_checks_are_present(self):
         jobs = self.ci["jobs"]
@@ -115,7 +115,7 @@ class WorkflowTests(unittest.TestCase):
         for workflow in (self.ci, self.package):
             self.assertNotIn("REVQORA_VERIFY_UI_AUTOMATION", workflow.get("env", {}))
             for name, job in workflow["jobs"].items():
-                if name not in {"windows-smoke", "windows-native-build", "build-and-test"}:
+                if name not in {"windows-smoke", "windows-native-build", "windows-automation"}:
                     self.assertNotIn("ui-automation", str(job))
                     self.assertNotIn("REVQORA_VERIFY_UI_AUTOMATION", str(job))
                 for step in job.get("steps", []):
@@ -123,8 +123,39 @@ class WorkflowTests(unittest.TestCase):
                     if step.get("uses", "").startswith("actions/setup-node@"):
                         self.assertEqual(step["with"]["package-manager-cache"], "false")
                         self.assertNotIn("cache", step["with"])
-        feature = next(step for step in self.ci["jobs"]["build-and-test"]["steps"] if step.get("name") == "Lint and test the Windows automation feature")
-        self.assertEqual(feature["if"], "runner.os == 'Windows'")
-        self.assertIn("cargo clippy", feature["run"])
-        self.assertIn("--all-targets --features ui-automation -- -D warnings", feature["run"])
-        self.assertIn("cargo test", feature["run"])
+
+    def test_both_complete_windows_configurations_and_diagnostics_gate_release_in_parallel(self):
+        jobs = self.ci["jobs"]
+        normal, automation = jobs["build-and-test"], jobs["windows-automation"]
+        self.assertNotIn("ui-automation", str(normal))
+        self.assertTrue(any(s.get("run") == "npm run verify:quick" for s in normal["steps"]))
+        self.assertEqual(automation["runs-on"], "windows-2025")
+        for job in (normal, automation):
+            self.assertLessEqual(int(job["timeout-minutes"]), 35)
+            self.assertNotIn("if", job)
+            self.assertNotIn("continue-on-error", job)
+            self.assertNotIn("build-and-test", job.get("needs", []))
+            self.assertNotIn("windows-automation", job.get("needs", []))
+            for key in ("TEMP", "TMP", "TMPDIR"):
+                self.assertEqual(job["env"][key], job["env"]["REVQORA_TEST_TMP"])
+            for step in job["steps"]:
+                self.assertNotIn("continue-on-error", step)
+        commands = [s for s in automation["steps"] if "cargo " in s.get("run", "")]
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(commands[0]["run"].strip(), "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features ui-automation -- -D warnings\nexit $LASTEXITCODE")
+        self.assertEqual(commands[1]["run"].strip(), "cargo test --manifest-path src-tauri/Cargo.toml --features ui-automation\nexit $LASTEXITCODE")
+        for command in commands:
+            self.assertNotIn("if", command)  # Both remain full, unconditional checks.
+        diagnostic = next(s for s in automation["steps"] if "agent-windows-diagnostics.mjs" in s.get("run", ""))
+        self.assertEqual(diagnostic["if"], "runner.os == 'Windows' && !cancelled()")
+        self.assertEqual(diagnostic["run"], "node scripts/agent-windows-diagnostics.mjs --out ci-results/agent-windows-diagnostics")
+        self.assertIn("windows-automation", jobs["release"]["needs"])
+        self.assertTrue(any(s.get("with", {}).get("name") == "windows-agent-diagnostics" for s in automation["steps"]))
+
+    def test_quick_stage_timings_survive_failure_for_each_platform(self):
+        checks = self.ci["jobs"]["build-and-test"]
+        self.assertIn("github.workspace", checks["env"]["REVQORA_VERIFY_TIMINGS"])
+        upload = next(s for s in checks["steps"] if s.get("with", {}).get("name") == "quick-verification-${{ matrix.os }}")
+        self.assertEqual(upload["if"], "always()")
+        self.assertEqual(upload["with"]["path"], "ci-results/verify-stages.json")
+        self.assertTrue(checks["env"]["REVQORA_VERIFY_TIMINGS"].endswith("/" + upload["with"]["path"]))

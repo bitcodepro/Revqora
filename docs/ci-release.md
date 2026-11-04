@@ -11,19 +11,22 @@ has `contents: write`. No additional repository secrets are required.
 - Windows 2025, Ubuntu 24.04 and macOS 15 run `npm ci` and
   `npm run verify:quick`: Rust format, clippy, Rust unit and Git workflow tests,
   TypeScript typecheck and frontend unit tests.
-- A separate Windows job runs the complete `npm run verify`, including a release
-  build, the existing portable zip script and the real WebView2 UI smoke test.
-  It locates the WebView2 Runtime or installs Microsoft's Evergreen Runtime
-  bootstrapper on the disposable runner, and passes the runtime path to the test.
-  A debug-app startup probe checks native CDP connectivity before release compilation.
+- A separate required Windows job runs feature-enabled clippy/all-targets, the
+  complete Rust suite with `ui-automation`, and the existing 20-case Windows agent
+  diagnostic matrix. It runs alongside the normal checks on its own runner; both
+  remain mandatory publication gates with independent 35-minute budgets.
+- The Windows native producer builds one release executable and portable ZIP,
+  then probes native CDP on that exact executable. Four isolated UI suites consume
+  its SHA-256-verified artifact and require all 157 scenarios. It locates or
+  installs Microsoft's Evergreen WebView2 Runtime on the disposable runner.
   Hosted GUI tests enable the optional `ui-automation` Cargo feature. It passes a
   validated loopback-only CDP port through Tauri's `additionalBrowserArgs`, since
   the hosted Runtime did not apply the environment-only debugging switch.
   Production package builds do not enable this feature. Local verification uses
   production defaults unless `REVQORA_VERIFY_UI_AUTOMATION=1` is explicitly set.
-  The test uses disposable repositories and a separate WebView2 profile.
-  On Windows the profile is created in the native per-user Temp folder, separate
-  from the runner's workspace drive; inherited browser options are preserved.
+  Tests use disposable repositories and separate WebView2 profiles beneath the
+  job-owned workspace temporary directory. `REVQORA_TEST_TMP`, `TEMP`, `TMP` and
+  `TMPDIR` point there; inherited browser options are preserved.
 - Release tooling tests exercise version selection, archive and checksum
   validation, wrong architectures, traversal, links, unexpected files, source
   mismatches, publication guards, immutable tags and interrupted draft uploads.
