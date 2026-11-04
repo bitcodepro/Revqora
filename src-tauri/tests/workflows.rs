@@ -59,6 +59,92 @@ fn pull_reconciles_a_deleted_upstream_without_merging_another_branch() {
 }
 
 #[test]
+fn pull_reconciles_deleted_upstreams_in_single_branch_clones() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (_, remote) = pull_fixture();
+        remote.git(&["branch", "finished"]);
+        let parent = Repo::new();
+        let root = parent.p().join("single-branch");
+        parent.git(&["clone", "--single-branch", "-b", "finished", remote.p().to_str().unwrap(), root.to_str().unwrap()]);
+        let head = runner::run(&root, ["rev-parse", "HEAD"]).unwrap();
+        let index = fs::read(root.join(".git/index")).unwrap();
+        fs::write(root.join("base.txt"), "keep this work\n").unwrap();
+        remote.git(&["branch", "-D", "finished"]);
+        let out = ops::pull(&root, mode, |_| {}).unwrap();
+        assert_eq!(out.status, "upstreamGone", "{mode}: {out:?}");
+        assert_eq!(out.upstream_gone.unwrap().default_branch.as_deref(), Some("main"));
+        assert_eq!(runner::run(&root, ["rev-parse", "HEAD"]).unwrap(), head);
+        assert_eq!(runner::run(&root, ["branch", "--show-current"]).unwrap().trim(), "finished");
+        assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+        assert_eq!(fs::read_to_string(root.join("base.txt")).unwrap(), "keep this work\n");
+        assert!(!runner::exec(&root, ["show-ref", "--verify", "refs/remotes/origin/finished"]).unwrap().ok());
+    }
+}
+
+#[test]
+fn pull_keeps_transport_errors_and_does_not_prune_an_unverified_upstream() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (local, remote) = pull_fixture();
+        local.git(&["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"]);
+        local.git(&["remote", "set-url", "origin", remote.p().join("unavailable.git").to_str().unwrap()]);
+        let cached = local.git(&["rev-parse", "refs/remotes/origin/main"]);
+        let head = local.git(&["rev-parse", "HEAD"]);
+        let error = ops::pull(local.p(), mode, |_| {}).unwrap_err();
+        assert!(error.code.is_some(), "original transport exit code must remain: {error:?}");
+        assert!(error.stderr.contains("unavailable.git"), "{mode}: {error:?}");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(local.git(&["rev-parse", "refs/remotes/origin/main"]), cached);
+    }
+}
+
+#[test]
+fn pull_does_not_reconcile_a_failed_exact_fetch_after_the_upstream_config_changes() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (local, remote) = pull_fixture();
+        remote.git(&["branch", "finished"]);
+        local.git(&["fetch", "origin"]);
+        local.git(&["branch", "--set-upstream-to=origin/finished", "main"]);
+        local.git(&["config", "remote.origin.fetch", "+refs/heads/finished:refs/remotes/origin/finished"]);
+        remote.git(&["branch", "-D", "finished"]);
+        let mut changed = false;
+        let error = ops::pull(local.p(), mode, |_| {
+            if !changed {
+                local.git(&["config", "branch.main.merge", "refs/heads/main"]);
+                changed = true;
+            }
+        })
+        .unwrap_err();
+        assert!(changed, "fetch must emit the failure before the mutation");
+        assert!(error.kind == "stale-operation" || error.stderr.contains("couldn't find remote ref"), "{mode}: {error:?}");
+        assert!(
+            runner::exec(local.p(), ["show-ref", "--verify", "refs/remotes/origin/finished"]).unwrap().ok(),
+            "stale operation must not prune a tracking ref"
+        );
+        assert_eq!(local.git(&["branch", "--show-current"]).trim(), "main");
+    }
+}
+
+#[test]
+fn pull_rebase_only_fetches_the_validated_remote_when_fetch_all_is_enabled() {
+    let (local, remote) = pull_fixture();
+    let other = Repo::new();
+    other.write("other.txt", "other remote\n");
+    other.commit_all("other");
+    local.git(&["remote", "add", "other", other.p().to_str().unwrap()]);
+    local.git(&["config", "remote.other.fetch", "+refs/tags/*:refs/tags/*"]);
+    local.git(&["config", "fetch.all", "true"]);
+    local.git(&["tag", "private-local"]);
+    let saved = local.git(&["rev-parse", "refs/tags/private-local"]);
+    remote.write("new.txt", "remote update\n");
+    let tip = remote.commit_all("remote update");
+    let out = ops::pull(local.p(), "rebase", |_| {}).unwrap();
+    assert_eq!(out.status, "done", "{out:?}");
+    assert_eq!(local.git(&["rev-parse", "HEAD"]).trim(), tip);
+    assert_eq!(local.git(&["rev-parse", "refs/tags/private-local"]), saved);
+    assert_eq!(local.git(&["config", "fetch.all"]).trim(), "true");
+}
+
+#[test]
 fn pull_does_not_mistake_an_excluded_upstream_for_a_deleted_branch() {
     let (local, remote) = pull_fixture();
     remote.git(&["branch", "other"]);

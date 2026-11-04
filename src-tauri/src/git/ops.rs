@@ -411,6 +411,10 @@ fn pull_can_prune(repo: &Path, remote: &str) -> GitResult<bool> {
     Ok(!text.trim().is_empty() && text.lines().all(|s| s.starts_with('^') || s.split_once(':').is_some_and(|(_, target)| target.starts_with("refs/remotes/"))))
 }
 
+fn missing_pull_upstream(error: &GitError, reference: &str) -> bool {
+    error.message.contains("no such ref was fetched") || error.stderr.lines().any(|line| line.trim() == format!("fatal: couldn't find remote ref {reference}"))
+}
+
 fn deleted_pull_upstream(repo: &Path, branch: &str, remote: &str, reference: &str) -> GitResult<Option<PullOutcome>> {
     if !reference.starts_with("refs/heads/") || !runner::exec(repo, ["check-ref-format", reference])?.ok() {
         return Ok(None);
@@ -444,7 +448,7 @@ fn deleted_pull_upstream(repo: &Path, branch: &str, remote: &str, reference: &st
         operation: OpOutcome {
             status: "upstreamGone".into(),
             conflicts: Vec::new(),
-            message: format!("Upstream {reference} is no longer available from {remote}. Remote references and history were refreshed. Local branch {branch} and its working changes are kept; no merge was performed."),
+            message: format!("Upstream {reference} is no longer available from {remote}. Its absence was verified with the server and stale tracking references were reconciled. Local branch {branch} and its working changes are kept; no merge was performed."),
         },
         upstream_gone: Some(MissingUpstream { branch: branch.into(), remote: remote.into(), reference: reference.into(), default_branch }),
     }))
@@ -469,6 +473,17 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
     let remote = if remote_config.ok() { remote_config.text() } else { "origin".into() };
     let remote = remote.trim();
     let prune = pull_can_prune(repo, remote)?;
+    let index_before = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
+    let unchanged = || -> GitResult<bool> {
+        let after = status::status(repo)?;
+        Ok(before.branch == after.branch
+            && before.oid == after.oid
+            && before.files == after.files
+            && before.diff_context_token == after.diff_context_token
+            && runner::exec(repo, ["config", "--get-all", &config_key])?.text() == merge_text
+            && runner::exec(repo, ["config", "--get", &remote_key])?.text() == remote_config.text()
+            && index_before == runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?)
+    };
     if mode != "rebase" {
         // Parse before fetching/merging, including Git's yes/on/1 spellings.
         // Invalid configuration must fail before a partially completed pull.
@@ -480,8 +495,7 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
         // Fetch cannot confirm a merge or overwrite working files. Resolve the
         // fetched upstream only after it succeeds, then use our reviewed merge
         // path (including ignored-file protection and explicit commit control).
-        let index_before = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
-        runner::run_streaming(
+        let fetched = runner::run_streaming(
             repo,
             &[
                 "fetch".into(),
@@ -493,19 +507,27 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
             ],
             &[],
             &mut on_line,
-        )?;
-        let after = status::status(repo)?;
-        if before.branch != after.branch
-            || before.oid != after.oid
-            || before.files != after.files
-            || before.diff_context_token != after.diff_context_token
-            || runner::exec(repo, ["config", "--get-all", &config_key])?.text() != merge_text
-            || runner::exec(repo, ["config", "--get", &remote_key])?.text() != remote_config.text()
-            || index_before != runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?
-        {
-            return Err(
-                GitError::new("Fetch completed, but the working tree or current branch changed. Review it before pulling again.").kind("stale-operation")
-            );
+        );
+        // Authentication/network failures remain failures. Only a precise
+        // missing-ref report is eligible for a second server-side check.
+        if let Err(error) = &fetched {
+            if !missing_pull_upstream(error, configured[0]) {
+                return Err(error.clone());
+            }
+        }
+        if !unchanged()? {
+            return Err(GitError::new(
+                "Pull stopped because the working tree, current branch or upstream configuration changed. Review it before pulling again.",
+            )
+            .kind("stale-operation"));
+        }
+        if let Err(error) = fetched {
+            if repo::op_state(repo, &repo::git_dir(repo)?).kind == "none" {
+                if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
+                    return Ok(outcome);
+                }
+            }
+            return Err(error);
         }
         let raw = std::fs::read_to_string(repo::git_dir(repo)?.join("FETCH_HEAD"))?;
         let targets: Vec<_> = raw
@@ -552,6 +574,8 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
     }
     let mut args = vec![
         "-c".into(),
+        "fetch.all=false".into(),
+        "-c".into(),
         format!("fetch.prune={prune}"),
         "-c".into(),
         format!("remote.{remote}.prune={prune}"),
@@ -573,6 +597,10 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
         }
         _ => args.push("--ff-only".into()),
     }
+    // Pruning was reviewed only for this remote. A configured fetch.all must
+    // never expand Pull to other remotes with unreviewed destination refspecs.
+    args.push("--".into());
+    args.push(remote.into());
     match runner::run_streaming(repo, &args, &[], on_line) {
         Ok(out) => Ok(OpOutcome::done(out).into()),
         Err(e) => {
@@ -580,13 +608,7 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
             if !c.is_empty() {
                 Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: e.message }.into())
             } else {
-                let after = status::status(repo)?;
-                if e.message.contains("no such ref was fetched")
-                    && before.branch == after.branch
-                    && before.oid == after.oid
-                    && before.files == after.files
-                    && repo::op_state(repo, &repo::git_dir(repo)?).kind == "none"
-                {
+                if missing_pull_upstream(&e, configured[0]) && unchanged()? && repo::op_state(repo, &repo::git_dir(repo)?).kind == "none" {
                     if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
                         return Ok(outcome);
                     }
