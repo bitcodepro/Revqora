@@ -868,6 +868,13 @@ fn rebase_pull_blocks_local_add_remove_replay_before_losing_recreated_files() {
     }
 }
 
+fn configure_module_fixture_line_endings(root: &Path) {
+    // A clone has its own config: neither its parent nor its origin's policy
+    // applies to a later Pull executed by the application.
+    runner::run(root, ["config", "--local", "core.autocrlf", "false"]).unwrap();
+    assert_eq!(runner::run(root, ["config", "--local", "--get", "core.autocrlf"]).unwrap().trim(), "false", "fixture policy at {}", root.display());
+}
+
 fn ignored_module_pull_fixture(nested: bool) -> (Repo, Repo, Repo, Option<Repo>, String) {
     let leaf = Repo::new();
     leaf.write(".gitignore", "private.env\nscratch.env\nbin/\n");
@@ -882,7 +889,8 @@ fn ignored_module_pull_fixture(nested: bool) -> (Repo, Repo, Repo, Option<Repo>,
         let module = Repo::new();
         module.write("outer.txt", "outer\n");
         module.commit_all("outer base");
-        module.git(&["-c", "protocol.file.allow=always", "submodule", "add", leaf.p().to_str().unwrap(), "inner module"]);
+        module.git(&["-c", "protocol.file.allow=always", "-c", "core.autocrlf=false", "submodule", "add", leaf.p().to_str().unwrap(), "inner module"]);
+        configure_module_fixture_line_endings(&module.p().join("inner module"));
         runner::run(&module.p().join("inner module"), ["checkout", "--detach", &a]).unwrap();
         let old = module.commit_all("nested A");
         runner::run(&module.p().join("inner module"), ["checkout", "--detach", &b]).unwrap();
@@ -894,11 +902,18 @@ fn ignored_module_pull_fixture(nested: bool) -> (Repo, Repo, Repo, Option<Repo>,
         (leaf.p().to_owned(), a, b, "module")
     };
     let (local, remote) = pull_fixture();
-    remote.git(&["-c", "protocol.file.allow=always", "submodule", "add", source.to_str().unwrap(), path]);
+    remote.git(&["-c", "protocol.file.allow=always", "-c", "core.autocrlf=false", "submodule", "add", source.to_str().unwrap(), path]);
+    configure_module_fixture_line_endings(&remote.p().join(path));
     runner::run(&remote.p().join(path), ["checkout", "--detach", &old]).unwrap();
     remote.commit_all("add module A");
     local.git(&["pull", "--ff-only"]);
-    local.git(&["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"]);
+    // The command override covers initial checkout in every clone; persist the
+    // same policy in each initialized repo before invoking the actual Pull.
+    local.git(&["-c", "protocol.file.allow=always", "-c", "core.autocrlf=false", "submodule", "update", "--init", "--recursive"]);
+    configure_module_fixture_line_endings(&local.p().join(path));
+    if nested {
+        configure_module_fixture_line_endings(&local.p().join(path).join("inner module"));
+    }
     runner::run(&remote.p().join(path), ["checkout", "--detach", &new]).unwrap();
     remote.commit_all("advance module B");
     local.git(&["config", "submodule.recurse", "true"]);
