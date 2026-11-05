@@ -116,7 +116,7 @@ pub fn unstage_paths(repo: &Path, paths: &[String], base: Option<&str>) -> GitRe
     Ok(())
 }
 
-fn path_is_link(metadata: &std::fs::Metadata) -> bool {
+pub(super) fn path_is_link(metadata: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -128,19 +128,19 @@ fn path_is_link(metadata: &std::fs::Metadata) -> bool {
 
 /// Normalize away trailing slashes and never traverse a directory link while
 /// backing up/removing a selected leaf. Paths originate in Git, not the trash.
-fn discard_path(repo: &Path, path: &str) -> GitResult<PathBuf> {
+pub(super) fn local_leaf_path(repo: &Path, path: &str) -> GitResult<PathBuf> {
     let relative = Path::new(path);
     if relative.as_os_str().is_empty()
         || relative.components().any(|c| !matches!(c, std::path::Component::Normal(_)) || c.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git"))
     {
-        return Err(GitError::new("Unsafe discard path."));
+        return Err(GitError::new("Unsafe working-tree path."));
     }
     let mut full = repo.to_path_buf();
     let parts: Vec<_> = relative.components().collect();
     for (index, part) in parts.iter().enumerate() {
         full.push(part.as_os_str());
         if index + 1 < parts.len() && std::fs::symlink_metadata(&full).is_ok_and(|m| path_is_link(&m)) {
-            return Err(GitError::new("Discard paths cannot traverse directory links."));
+            return Err(GitError::new("Working-tree paths cannot traverse directory links."));
         }
     }
     Ok(full)
@@ -157,7 +157,7 @@ pub fn backup_files(repo: &Path, paths: &[String]) -> GitResult<PathBuf> {
     let folder = tempfile::Builder::new().prefix(&format!("{ts}-")).tempdir_in(trash)?;
     let dir = folder.path();
     for p in paths {
-        let src = discard_path(repo, p)?;
+        let src = local_leaf_path(repo, p)?;
         let metadata = match std::fs::symlink_metadata(&src) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -194,7 +194,7 @@ pub fn discard_paths(repo: &Path, tracked: &[String], untracked: &[String]) -> G
         with_paths(repo, &["restore", "--worktree"], tracked)?;
     }
     for p in untracked {
-        let full = discard_path(repo, p)?;
+        let full = local_leaf_path(repo, p)?;
         match std::fs::symlink_metadata(&full) {
             Ok(metadata) if path_is_link(&metadata) => {
                 #[cfg(windows)]
@@ -613,6 +613,14 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
         }
         return Err(GitError::new(format!("Fetch completed, but upstream {} on {remote} was not fetched unambiguously. Check the remote's fetch refspecs. Local branch {branch} was not merged.", configured[0])).kind("upstream-not-fetched"));
     }
+    if recurse {
+        super::pull_guard::submodules(repo, targets[0], mode)?;
+        if !unchanged()? {
+            return Err(
+                GitError::new("Pull stopped because the repository changed during submodule inspection. Review it before retrying.").kind("stale-operation")
+            );
+        }
+    }
     let mut outcome = if mode == "rebase" {
         let can_ff = match before.oid.as_deref() {
             Some(head) => {
@@ -633,7 +641,7 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
             }
             result
         } else {
-            guard_ignored_merge(repo, targets[0], before.oid.as_deref())?;
+            guard_untracked_tree(repo, targets[0])?;
             // Match Git Pull's pre-fetch reflog fork point: rewritten upstream
             // commits must not be replayed as if they were the user's commits.
             let mut upstream = targets[0];
@@ -646,11 +654,11 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
                     upstream = fork;
                 }
             }
-            if recurse {
-                let raw = runner::run(repo, ["log", "--format=", "--raw", &format!("{upstream}..HEAD"), "--"])?;
-                if raw.lines().any(|line| line.starts_with(":160000 ") || line.starts_with(':') && line.split_whitespace().nth(1) == Some("160000")) {
-                    return Err(GitError::new("Cannot rebase with locally recorded submodule modifications while recursive submodule updates are enabled."));
-                }
+            super::pull_guard::replayed_paths(repo, upstream, recurse)?;
+            if !unchanged()? {
+                return Err(
+                    GitError::new("Pull stopped because the repository changed during rebase inspection. Review it before retrying.").kind("stale-operation")
+                );
             }
             let args = ["rebase", "--autostash", "--onto", targets[0], upstream].map(String::from);
             match runner::run_streaming(repo, &args, &[], &mut on_line) {
@@ -806,11 +814,19 @@ fn ignored_merge_obstruction(repo: &Path, path: &str, ignore_case: bool) -> GitR
     Ok(None)
 }
 
-fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResult<()> {
+pub(super) fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResult<()> {
+    guard_transition(repo, target, head, false)
+}
+
+pub(super) fn guard_untracked_tree(repo: &Path, target: &str) -> GitResult<()> {
+    guard_transition(repo, target, None, true)
+}
+
+fn guard_transition(repo: &Path, target: &str, head: Option<&str>, all_untracked: bool) -> GitResult<()> {
     // Some merge-ort versions overwrite ignored collisions even with
     // --no-overwrite-ignore (unlike switch / the fast-forward checkout path).
     // Inspect collapsed ignored folders, without scanning their build caches.
-    let ignored = super::workspace_files::ignored(repo)?;
+    let ignored = if all_untracked { super::workspace_files::untracked(repo)? } else { super::workspace_files::ignored(repo)? };
     if ignored.truncated {
         return Err(GitError::new("Ignored-file inspection was truncated; no merge was started."));
     }
@@ -823,10 +839,21 @@ fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResu
         Some(head) => runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", head, target, "--"]),
         None => runner::run_bytes(repo, ["ls-tree", "-r", "-z", "--name-only", target]),
     }?;
-    let paths = String::from_utf8(paths).map_err(|_| {
-        GitError::new("Cannot safely merge incoming non-UTF-8 paths while ignored data is present. No working files were changed.")
-            .kind("unsupported-path-encoding")
-    })?;
+    check_ignored_paths(repo, &ignored, &paths, if all_untracked { "uncommitted" } else { "ignored" })
+}
+
+pub(super) fn guard_untracked_paths(repo: &Path, paths: &[u8]) -> GitResult<()> {
+    check_ignored_paths(repo, &super::workspace_files::untracked(repo)?, paths, "uncommitted")
+}
+
+fn check_ignored_paths(repo: &Path, ignored: &super::workspace_files::IgnoredFiles, paths: &[u8], kind: &str) -> GitResult<()> {
+    if ignored.truncated {
+        return Err(GitError::new("Ignored-file inspection was truncated; no integration was started."));
+    }
+    if ignored.paths.is_empty() {
+        return Ok(());
+    }
+    let paths = super::workspace_files::path_list(paths)?;
     let ignore_case = cfg!(windows) || runner::exec(repo, ["config", "--bool", "--get", "core.ignorecase"])?.text().trim() == "true";
     let normalize = |p: &str| {
         let p = p.trim_end_matches('/');
@@ -845,7 +872,7 @@ fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResu
         if ignored.contains(&p) || ancestor || descendant {
             let Some(obstruction) = ignored_merge_obstruction(repo, path, ignore_case)? else { continue };
             return Err(GitError::new(format!(
-                "Merge may overwrite ignored data at {obstruction}. Your local data was preserved. Move or rename the conflicting path outside the repository, then retry. Incoming path: {path}."
+                "Integration may overwrite {kind} data at {obstruction}. Your local data was preserved. Move or rename the conflicting path outside the repository, then retry. Incoming path: {path}."
             )).kind("ignored-collision").details(vec![path.to_owned(), obstruction]));
         }
     }

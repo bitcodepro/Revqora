@@ -12,14 +12,29 @@ pub struct IgnoredFiles {
     pub truncated: bool,
 }
 
+/// Filesystem guards must never inspect a lossy replacement for a Git path.
+pub(super) fn path_list(raw: &[u8]) -> GitResult<&str> {
+    std::str::from_utf8(raw).map_err(|_| {
+        GitError::new("Cannot safely inspect non-UTF-8 Git paths. No working files were changed. Rename these paths with a filesystem tool before retrying.")
+            .kind("unsupported-path-encoding")
+    })
+}
+
 pub fn ignored(root: &Path) -> GitResult<IgnoredFiles> {
     // Collapsing wholly ignored folders avoids enumerating node_modules or build
     // output. Git handles repository, info/exclude and global ignore rules.
     let raw = runner::run_bytes(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])?;
-    let raw = String::from_utf8(raw).map_err(|_| {
-        GitError::new("Cannot safely inspect ignored files with non-UTF-8 names. No working files were changed. Rename these paths with a filesystem tool before retrying.")
-            .kind("unsupported-path-encoding")
-    })?;
+    parse_paths(&raw)
+}
+
+/// No exclusion flags: include ordinary untracked AND ignored files. A rebase
+/// can change .gitignore before checking out another local commit's tree.
+pub(super) fn untracked(root: &Path) -> GitResult<IgnoredFiles> {
+    parse_paths(&runner::run_bytes(root, ["ls-files", "--others", "--directory", "-z"])?)
+}
+
+fn parse_paths(raw: &[u8]) -> GitResult<IgnoredFiles> {
+    let raw = path_list(raw)?;
     let mut paths: Vec<_> = raw.split('\0').filter(|p| !p.is_empty()).map(str::to_owned).collect();
     paths.sort();
     let truncated = paths.len() > 10_000;

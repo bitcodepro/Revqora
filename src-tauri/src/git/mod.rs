@@ -22,6 +22,7 @@ pub mod ops;
 pub mod pr_center;
 pub mod pr_merge;
 pub mod pr_reviews;
+pub(super) mod pull_guard;
 pub mod recovery;
 pub mod refs;
 pub mod repo;

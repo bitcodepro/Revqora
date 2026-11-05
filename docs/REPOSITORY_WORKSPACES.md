@@ -37,6 +37,17 @@ An ignored sibling such as `bin/` or `obj/` does not conflict with a new source 
 in the same project folder. Revqora checks the incoming path without recursively
 scanning build caches or deleting generated files.
 
+Rebase also checks paths touched by the local commits it will replay, including
+files that were added and deleted between the two endpoints. Ordinary untracked
+files are protected too, since ignore rules can change during replay.
+
+With recursive submodule updates enabled, Pull inspects initialized submodules
+and nested modules before updating the parent. Unrelated ignored build outputs
+can stay in place. Overlapping local data, removal of a module with local data,
+or an unavailable target needed for inspection stops the operation before working
+files change. Collision paths include the module directory so **Show local path**
+opens the correct location. An empty, deinitialized module remains uninitialized.
+
 ## Workspaces
 
 **Save current as** creates a named workspace. The active workspace automatically

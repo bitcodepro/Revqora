@@ -249,15 +249,25 @@ fn pull_recurses_into_initialized_submodules_like_native_git() {
 }
 
 #[test]
-fn pull_reports_partial_completion_without_overwriting_dirty_submodules() {
+fn pull_preserves_dirty_submodules_and_distinguishes_preflight_from_partial_failure() {
     for path in ["content.txt", "added.txt"] {
         let (local, remote, _module, a, _) = submodule_pull_fixture();
         local.git(&["config", "submodule.recurse", "true"]);
         local.write(&format!("module/{path}"), "user changes\n");
+        let parent_before = worktree_proof(local.p());
+        let module_before = worktree_proof(&local.p().join("module"));
         let error = ops::pull(local.p(), "ff-only", |_| {}).unwrap_err();
-        assert_eq!(error.kind, "partial-operation", "{error:?}");
+        if path == "added.txt" {
+            // Previously this untracked collision failed only after updating
+            // the parent. Preflight now protects it before either mutation.
+            assert_eq!(error.kind, "ignored-collision", "{error:?}");
+            assert_eq!(worktree_proof(local.p()), parent_before);
+            assert_eq!(worktree_proof(&local.p().join("module")), module_before);
+        } else {
+            assert_eq!(error.kind, "partial-operation", "{error:?}");
+            assert_eq!(local.git(&["rev-parse", "HEAD"]), remote.git(&["rev-parse", "HEAD"]));
+        }
         assert!(error.message.contains("submodule"), "{error:?}");
-        assert_eq!(local.git(&["rev-parse", "HEAD"]), remote.git(&["rev-parse", "HEAD"]));
         assert_eq!(runner::run(&local.p().join("module"), ["rev-parse", "HEAD"]).unwrap().trim(), a);
         assert_eq!(local.read(&format!("module/{path}")), "user changes\n");
     }
@@ -826,6 +836,180 @@ fn checkout_branch_creation_and_merge_preserve_colliding_ignored_files() {
 }
 
 #[test]
+fn rebase_pull_blocks_local_add_remove_replay_before_losing_recreated_files() {
+    for ignored_at_head in [true, false] {
+        let (local, remote) = pull_fixture();
+        if ignored_at_head {
+            local.write(".gitignore", "private.env\n");
+            local.commit_all("ignore local settings");
+        }
+        local.write("private.env", "temporarily versioned\n");
+        local.git(&["add", "-f", "private.env"]);
+        local.commit_all("add private settings");
+        local.git(&["rm", "private.env"]);
+        local.commit_all("remove private settings");
+        remote.write(".gitignore", "private.env\n");
+        remote.write("remote.txt", "unrelated upstream change\n");
+        remote.commit_all("advance upstream");
+        local.write("private.env", "unique local data must survive\n");
+        local.write("base.txt", "dirty tracked work must survive\n");
+        let head = local.git(&["rev-parse", "HEAD"]);
+        let index = fs::read(local.p().join(".git/index")).unwrap();
+        let error = ops::pull(local.p(), "rebase", |_| {}).unwrap_err();
+        assert_eq!(error.kind, "ignored-collision", "ignored_at_head={ignored_at_head}: {error:?}");
+        assert_eq!(error.details[1], "private.env");
+        assert_eq!(local.read("private.env"), "unique local data must survive\n");
+        assert_eq!(local.read("base.txt"), "dirty tracked work must survive\n");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(fs::read(local.p().join(".git/index")).unwrap(), index);
+        assert!(local.git(&["stash", "list"]).is_empty());
+        assert!(!local.p().join(".git/rebase-merge").exists());
+        assert!(!local.p().join(".git/rebase-apply").exists());
+    }
+}
+
+fn ignored_module_pull_fixture(nested: bool) -> (Repo, Repo, Repo, Option<Repo>, String) {
+    let leaf = Repo::new();
+    leaf.write(".gitignore", "private.env\nscratch.env\nbin/\n");
+    leaf.write("content.txt", "module A\n");
+    let a = leaf.commit_all("module A");
+    leaf.write("private.env", "remote defaults\n");
+    leaf.write("content.txt", "module B\n");
+    leaf.git(&["add", "-f", "private.env"]);
+    let b = leaf.commit_all("module B");
+    let mut outer = None;
+    let (source, old, new, path) = if nested {
+        let module = Repo::new();
+        module.write("outer.txt", "outer\n");
+        module.commit_all("outer base");
+        module.git(&["-c", "protocol.file.allow=always", "submodule", "add", leaf.p().to_str().unwrap(), "inner module"]);
+        runner::run(&module.p().join("inner module"), ["checkout", "--detach", &a]).unwrap();
+        let old = module.commit_all("nested A");
+        runner::run(&module.p().join("inner module"), ["checkout", "--detach", &b]).unwrap();
+        let new = module.commit_all("nested B");
+        let source = module.p().to_owned();
+        outer = Some(module);
+        (source, old, new, "outer module")
+    } else {
+        (leaf.p().to_owned(), a, b, "module")
+    };
+    let (local, remote) = pull_fixture();
+    remote.git(&["-c", "protocol.file.allow=always", "submodule", "add", source.to_str().unwrap(), path]);
+    runner::run(&remote.p().join(path), ["checkout", "--detach", &old]).unwrap();
+    remote.commit_all("add module A");
+    local.git(&["pull", "--ff-only"]);
+    local.git(&["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"]);
+    runner::run(&remote.p().join(path), ["checkout", "--detach", &new]).unwrap();
+    remote.commit_all("advance module B");
+    local.git(&["config", "submodule.recurse", "true"]);
+    (local, remote, leaf, outer, if nested { "outer module/inner module" } else { "module" }.into())
+}
+
+fn worktree_proof(root: &Path) -> (String, Vec<u8>) {
+    let index = repo::git_dir(root).unwrap().join("index");
+    (runner::run(root, ["rev-parse", "HEAD"]).unwrap(), fs::read(index).unwrap())
+}
+
+#[test]
+fn recursive_pull_blocks_ignored_collisions_in_direct_and_nested_modules_before_parent_mutation() {
+    for nested in [false, true] {
+        let (local, _remote, _leaf, _outer, path) = ignored_module_pull_fixture(nested);
+        local.write(&format!("{path}/private.env"), "unique module settings\n");
+        let module = local.p().join(&path);
+        let parent_before = worktree_proof(local.p());
+        let module_before = worktree_proof(&module);
+        let outer_before = nested.then(|| worktree_proof(&local.p().join("outer module")));
+        for mode in ["ff-only", "merge", "rebase"] {
+            let error = ops::pull(local.p(), mode, |_| {}).unwrap_err();
+            assert_eq!(error.kind, "ignored-collision", "{mode}, nested={nested}: {error:?}");
+            assert_eq!(error.details[1], format!("{path}/private.env"));
+            assert_eq!(local.read(&format!("{path}/private.env")), "unique module settings\n");
+            assert_eq!(worktree_proof(local.p()), parent_before, "{mode}: parent changed");
+            assert_eq!(worktree_proof(&module), module_before, "{mode}: child changed");
+            if let Some(proof) = &outer_before {
+                assert_eq!(&worktree_proof(&local.p().join("outer module")), proof);
+            }
+            assert!(local.git(&["stash", "list"]).is_empty());
+        }
+    }
+}
+
+#[test]
+fn recursive_pull_allows_unrelated_ignored_module_build_output() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (local, _remote, _leaf, _outer, path) = ignored_module_pull_fixture(false);
+        local.write(&format!("{path}/bin/local.dll"), "keep build output\n");
+        if mode == "rebase" {
+            local.write("topic.txt", "local topic\n");
+            local.commit_all("local topic");
+        }
+        let result = ops::pull(local.p(), mode, |_| {}).unwrap();
+        assert!(matches!(result.status.as_str(), "done" | "fastForward"), "{mode}: {result:?}");
+        assert_eq!(local.read(&format!("{path}/private.env")), "remote defaults\n");
+        assert_eq!(local.read(&format!("{path}/bin/local.dll")), "keep build output\n");
+        if mode == "rebase" {
+            assert_eq!(local.read("topic.txt"), "local topic\n");
+        }
+        assert!(local.git(&["status", "--porcelain"]).is_empty());
+    }
+}
+
+#[test]
+fn recursive_rebase_blocks_child_local_add_remove_replay() {
+    let (local, _remote, _leaf, _outer, path) = ignored_module_pull_fixture(false);
+    let child = local.p().join(&path);
+    for (key, value) in [("user.name", "Fixture"), ("user.email", "fixture@example.invalid"), ("commit.gpgsign", "false")] {
+        runner::run(&child, ["config", key, value]).unwrap();
+    }
+    local.write(&format!("{path}/scratch.env"), "temporarily versioned\n");
+    runner::run(&child, ["add", "-f", "scratch.env"]).unwrap();
+    runner::run(&child, ["commit", "-qm", "add settings"]).unwrap();
+    runner::run(&child, ["rm", "scratch.env"]).unwrap();
+    runner::run(&child, ["commit", "-qm", "remove settings"]).unwrap();
+    local.write(&format!("{path}/scratch.env"), "unique recreated settings\n");
+    let parent = worktree_proof(local.p());
+    let module = worktree_proof(&child);
+    let error = ops::pull(local.p(), "rebase", |_| {}).unwrap_err();
+    assert_eq!(error.kind, "ignored-collision", "{error:?}");
+    assert_eq!(error.details[1], format!("{path}/scratch.env"));
+    assert_eq!(worktree_proof(local.p()), parent);
+    assert_eq!(worktree_proof(&child), module);
+    assert_eq!(local.read(&format!("{path}/scratch.env")), "unique recreated settings\n");
+}
+
+#[test]
+fn recursive_pull_stops_before_parent_mutation_when_module_target_cannot_be_inspected() {
+    let (local, remote, _leaf, _outer, path) = ignored_module_pull_fixture(false);
+    let missing = "1111111111111111111111111111111111111111";
+    remote.git(&["update-index", "--cacheinfo", "160000", missing, &path]);
+    remote.git(&["commit", "-qm", "unavailable module target"]);
+    // Force the inspection, rather than having Fetch itself reject the missing
+    // module object. The parent must still not be integrated first.
+    local.git(&["config", "fetch.recurseSubmodules", "false"]);
+    let parent = worktree_proof(local.p());
+    let child = worktree_proof(&local.p().join(&path));
+    let error = ops::pull(local.p(), "ff-only", |_| {}).unwrap_err();
+    assert!(error.message.contains("submodule"), "{error:?}");
+    assert_eq!(worktree_proof(local.p()), parent);
+    assert_eq!(worktree_proof(&local.p().join(&path)), child);
+}
+
+#[test]
+fn recursive_pull_does_not_remove_a_module_containing_ignored_local_data() {
+    let (local, remote, _leaf, _outer, path) = ignored_module_pull_fixture(false);
+    remote.git(&["rm", "-f", &path]);
+    remote.commit_all("remove module");
+    local.write(&format!("{path}/private.env"), "keep removed-module settings\n");
+    let parent = worktree_proof(local.p());
+    let module = worktree_proof(&local.p().join(&path));
+    let error = ops::pull(local.p(), "ff-only", |_| {}).unwrap_err();
+    assert_eq!(error.kind, "ignored-collision", "{error:?}");
+    assert_eq!(worktree_proof(local.p()), parent);
+    assert_eq!(worktree_proof(&local.p().join(&path)), module);
+    assert_eq!(local.read(&format!("{path}/private.env")), "keep removed-module settings\n");
+}
+
+#[test]
 fn rebase_pull_preserves_ignored_collisions_before_fast_forward_or_replay() {
     for divergent in [false, true] {
         let (local, remote) = pull_fixture();
@@ -912,7 +1096,14 @@ fn merge_rejects_undecodable_ignored_or_incoming_names_without_mutating_data() {
         r.write(".gitignore", "private-*.bin\nother.ignored\n");
         r.commit_all("base");
         r.git(&["switch", "-qc", "incoming"]);
-        fs::write(r.p().join(&name), b"remote defaults").unwrap();
+        if let Err(error) = fs::write(r.p().join(&name), b"remote defaults") {
+            #[cfg(target_os = "macos")]
+            if error.raw_os_error() == Some(92) {
+                eprintln!("Filesystem rejects invalid UTF-8 names (EILSEQ); skipping this filesystem fixture. The cross-platform strict-decoder regression still runs.");
+                return;
+            }
+            panic!("Cannot create raw-name fixture: {error}");
+        }
         r.git(&["add", "-f", "-A"]);
         r.commit_all("incoming raw name");
         r.git(&["switch", "-q", "main"]);
