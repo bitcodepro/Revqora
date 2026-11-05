@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::runner::{self, GitResult};
+use super::runner::{self, GitError, GitResult};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,7 +15,11 @@ pub struct IgnoredFiles {
 pub fn ignored(root: &Path) -> GitResult<IgnoredFiles> {
     // Collapsing wholly ignored folders avoids enumerating node_modules or build
     // output. Git handles repository, info/exclude and global ignore rules.
-    let raw = runner::run(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])?;
+    let raw = runner::run_bytes(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])?;
+    let raw = String::from_utf8(raw).map_err(|_| {
+        GitError::new("Cannot safely inspect ignored files with non-UTF-8 names. No working files were changed. Rename these paths with a filesystem tool before retrying.")
+            .kind("unsupported-path-encoding")
+    })?;
     let mut paths: Vec<_> = raw.split('\0').filter(|p| !p.is_empty()).map(str::to_owned).collect();
     paths.sort();
     let truncated = paths.len() > 10_000;

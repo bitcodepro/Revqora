@@ -297,6 +297,8 @@ history. Close the application before copying a portable installation.
 Settings controls update checks, auto-fetch, themes, fonts, shortcuts and optional
 avatars. An available update appears in the status bar; package checksums and
 source metadata are verified before installation. Updates preserve portable data.
+Affected older Linux builds need a manual portable-archive update to receive the
+archive-extraction fix; keep the existing `data` folder when upgrading.
 **Settings → About Revqora**, or **Ctrl+K → About Revqora**, shows the installed
 version, author and links to this guide, the project and issue reporting.
 

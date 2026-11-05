@@ -826,6 +826,119 @@ fn checkout_branch_creation_and_merge_preserve_colliding_ignored_files() {
 }
 
 #[test]
+fn rebase_pull_preserves_ignored_collisions_before_fast_forward_or_replay() {
+    for divergent in [false, true] {
+        let (local, remote) = pull_fixture();
+        local.write(".gitignore", "personal.local\n");
+        local.commit_all("ignore personal settings");
+        remote.git(&["fetch", local.p().to_str().unwrap(), "main"]);
+        remote.git(&["reset", "--hard", "FETCH_HEAD"]);
+        remote.write("personal.local", "remote defaults\n");
+        remote.git(&["add", "-f", "personal.local"]);
+        remote.commit_all("publish defaults");
+        if divergent {
+            local.write("topic.txt", "local commit\n");
+            local.commit_all("local work");
+        }
+        local.write("personal.local", "irreplaceable ignored bytes\n");
+        local.write("base.txt", "uncommitted tracked work\n");
+        let head = local.git(&["rev-parse", "HEAD"]);
+        let index = fs::read(local.p().join(".git/index")).unwrap();
+        let error = ops::pull(local.p(), "rebase", |_| {}).unwrap_err();
+        assert_eq!(error.kind, "ignored-collision", "divergent={divergent}: {error:?}");
+        assert_eq!(local.read("personal.local"), "irreplaceable ignored bytes\n");
+        assert_eq!(local.read("base.txt"), "uncommitted tracked work\n");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(fs::read(local.p().join(".git/index")).unwrap(), index);
+        assert!(local.git(&["stash", "list"]).is_empty());
+        assert!(!local.p().join(".git/rebase-merge").exists());
+    }
+}
+
+#[test]
+fn rebase_pull_preserves_the_pre_fetch_fork_point_and_dirty_work() {
+    for rewritten in [false, true] {
+        let (local, remote) = pull_fixture();
+        let base = remote.git(&["rev-parse", "HEAD"]);
+        remote.write("old-upstream.txt", "old upstream work\n");
+        remote.commit_all("old upstream");
+        local.git(&["pull", "--ff-only"]);
+        local.write("topic.txt", "local work\n");
+        local.commit_all("local topic");
+        if rewritten {
+            remote.git(&["reset", "--hard", base.trim()]);
+        }
+        remote.write("new-upstream.txt", "new upstream work\n");
+        let target = remote.commit_all("new upstream");
+        local.write("base.txt", "dirty tracked work\n");
+        let outcome = ops::pull(local.p(), "rebase", |_| {}).unwrap();
+        assert_eq!(outcome.status, "done", "{outcome:?}");
+        assert_eq!(local.git(&["rev-parse", "HEAD^"]).trim(), target);
+        assert_eq!(local.git(&["log", "-1", "--format=%s"]).trim(), "local topic");
+        assert_eq!(local.read("base.txt"), "dirty tracked work\n");
+        assert_eq!(local.read("topic.txt"), "local work\n");
+        assert_eq!(local.p().join("old-upstream.txt").exists(), !rewritten);
+        assert!(local.git(&["stash", "list"]).is_empty());
+    }
+}
+
+#[test]
+fn rebase_pull_updates_recursive_submodules_without_dropping_local_parent_commits() {
+    for divergent in [false, true] {
+        let (local, _remote, _module, _a, b) = submodule_pull_fixture();
+        local.git(&["config", "submodule.recurse", "true"]);
+        if divergent {
+            local.write("topic.txt", "local work\n");
+            local.commit_all("local topic");
+        }
+        let outcome = ops::pull(local.p(), "rebase", |_| {}).unwrap();
+        assert!(matches!(outcome.status.as_str(), "done" | "fastForward"), "{outcome:?}");
+        assert_eq!(runner::run(&local.p().join("module"), ["rev-parse", "HEAD"]).unwrap().trim(), b);
+        assert!(local.git(&["status", "--porcelain"]).is_empty());
+        if divergent {
+            assert_eq!(local.read("topic.txt"), "local work\n");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn merge_rejects_undecodable_ignored_or_incoming_names_without_mutating_data() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    for ignored_name in [false, true] {
+        let r = Repo::new();
+        let name = OsString::from_vec(b"private-\xff.bin".to_vec());
+        r.write(".gitignore", "private-*.bin\nother.ignored\n");
+        r.commit_all("base");
+        r.git(&["switch", "-qc", "incoming"]);
+        fs::write(r.p().join(&name), b"remote defaults").unwrap();
+        r.git(&["add", "-f", "-A"]);
+        r.commit_all("incoming raw name");
+        r.git(&["switch", "-q", "main"]);
+        r.write("local.txt", "diverge\n");
+        r.commit_all("local work");
+        if ignored_name {
+            fs::write(r.p().join(&name), b"irreplaceable local bytes").unwrap();
+        }
+        r.write("other.ignored", "keep ignored sibling\n");
+        let head = r.git(&["rev-parse", "HEAD"]);
+        let index = fs::read(r.p().join(".git/index")).unwrap();
+        let error = ops::merge_start(r.p(), "incoming", "no-ff").unwrap_err();
+        assert_eq!(error.kind, "unsupported-path-encoding", "{error:?}");
+        if ignored_name {
+            assert_eq!(fs::read(r.p().join(&name)).unwrap(), b"irreplaceable local bytes");
+        } else {
+            assert!(!r.p().join(&name).exists());
+        }
+        assert_eq!(r.read("other.ignored"), "keep ignored sibling\n");
+        assert_eq!(r.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(fs::read(r.p().join(".git/index")).unwrap(), index);
+        assert!(!r.p().join(".git/MERGE_HEAD").exists());
+    }
+}
+
+#[test]
 fn pull_allows_new_source_files_beside_collapsed_ignored_build_outputs() {
     for mode in ["ff-only", "merge", "rebase"] {
         let (local, remote) = pull_fixture();
@@ -1001,6 +1114,40 @@ fn graph_rows_and_search() {
     assert!(hits.len() >= 2);
     let hits = graph::search(r.p(), &g, "b.txt", graph::SearchMode::Path).unwrap();
     assert_eq!(hits.len(), 1);
+}
+
+#[test]
+#[cfg(unix)]
+fn discard_unlinks_dangling_links_and_backs_up_links_without_reading_outside_targets() {
+    use std::os::unix::fs::symlink;
+    let r = Repo::new();
+    r.write("tracked.txt", "base\n");
+    r.commit_all("base");
+    let outside = r._dir.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("secret.txt"), b"outside data must not be copied").unwrap();
+    let links = [
+        ("dangling-file", outside.join("missing-file")),
+        ("dangling-directory", outside.join("missing-dir/")),
+        ("file-link", outside.join("secret.txt")),
+        ("directory-link", outside.clone()),
+    ];
+    for (name, target) in &links {
+        symlink(target, r.p().join(name)).unwrap();
+    }
+    assert!(ops::backup_files(r.p(), &["directory-link/secret.txt".into()]).is_err());
+    let head = r.git(&["rev-parse", "HEAD"]);
+    let index = fs::read(r.p().join(".git/index")).unwrap();
+    let backup = ops::discard_paths(r.p(), &[], &links.iter().map(|(name, _)| name.to_string()).collect::<Vec<_>>()).unwrap();
+    for (name, target) in &links {
+        assert!(fs::symlink_metadata(r.p().join(name)).is_err(), "{name} was not removed");
+        let saved = Path::new(&backup).join(name);
+        assert!(fs::symlink_metadata(&saved).unwrap().file_type().is_symlink(), "{name} was copied as target contents");
+        assert_eq!(fs::read_link(saved).unwrap(), *target);
+    }
+    assert_eq!(fs::read(outside.join("secret.txt")).unwrap(), b"outside data must not be copied");
+    assert_eq!(r.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(fs::read(r.p().join(".git/index")).unwrap(), index);
 }
 
 #[test]

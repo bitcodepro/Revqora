@@ -16,6 +16,10 @@ export async function ignoredPullSmoke({ page, work, returnRoot, shot }) {
   fs.writeFileSync(path.join(remote, ".gitignore"), "personal.local\n");
   git(remote, "add", "."); git(remote, "commit", "-qm", "base");
   git(remote, "clone", "-q", remote, root);
+  // Pull runs in the application process, outside this helper's -c overrides.
+  // Persist the fixture policy before the application checks out incoming files.
+  git(root, "config", "core.autocrlf", "false");
+  if (git(root, "config", "--local", "--get", "core.autocrlf") !== "false") throw Error("Ignored Pull fixture did not persist its line-ending policy");
   fs.writeFileSync(path.join(remote, "personal.local"), "versioned defaults\n");
   git(remote, "add", "-f", "personal.local"); git(remote, "commit", "-qm", "publish defaults");
   const target = git(remote, "rev-parse", "HEAD"), before = git(root, "rev-parse", "HEAD"), index = fs.readFileSync(path.join(root, ".git", "index"));

@@ -779,8 +779,25 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const state = tab.info?.state;
   const kind = state?.kind ?? "none";
   const draft = drafts.get(root) ?? { summary: "", body: "" };
-  const [summary, setSummary] = useState(draft.summary);
-  const [body, setBody] = useState(draft.body);
+  const [summary, publishSummary] = useState(draft.summary);
+  const [body, publishBody] = useState(draft.body);
+  const messageRef = useRef({ summary: draft.summary, body: draft.body });
+  const amendRequest = useRef(0);
+  const amendRef = useRef(false);
+  const submitting = useRef(false);
+  const setSummary = (value: string | ((current: string) => string)) => {
+    amendRequest.current++;
+    const next = typeof value === "function" ? value(messageRef.current.summary) : value;
+    messageRef.current.summary = next;
+    publishSummary(next);
+  };
+  const setBody = (value: string | ((current: string) => string)) => {
+    amendRequest.current++;
+    const next = typeof value === "function" ? value(messageRef.current.body) : value;
+    messageRef.current.body = next;
+    publishBody(next);
+  };
+  useEffect(() => () => { amendRequest.current++; }, [root]);
   const [amend, setAmend] = useState(false);
   const [signOff, setSignOff] = useState(false);
   const [noVerify, setNoVerify] = useState(false);
@@ -795,7 +812,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
       (h) => {
         setHelpers(h);
         // A configured commit.template fills an empty message.
-        if (h.template && !drafts.get(root)?.summary && !drafts.get(root)?.body) {
+        if (h.template && !amendRef.current && !messageRef.current.summary && !messageRef.current.body) {
           const lines = h.template.replace(/^#.*$/gm, "").split("\n");
           setSummary((cur) => cur || lines[0].trim());
           setBody((cur) => cur || lines.slice(1).join("\n").trim());
@@ -836,9 +853,12 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   }, [kind, state?.message]);
 
   const toggleAmend = async (v: boolean) => {
+    const request = ++amendRequest.current;
+    amendRef.current = v;
     setAmend(v);
-    if (v && !summary.trim()) {
+    if (v && !messageRef.current.summary.trim() && !messageRef.current.body.trim()) {
       const last = await api.lastMessage(root).catch(() => "");
+      if (request !== amendRequest.current || !amendRef.current || messageRef.current.summary.trim() || messageRef.current.body.trim()) return;
       const [s, ...rest] = last.split("\n");
       setSummary(s ?? "");
       setBody(rest.join("\n").trim());
@@ -851,16 +871,20 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const rebasing = kind === "rebase";
   const pendingMutations = useRepos((s) => s.tabs[root]?.pendingMutations ?? 0);
   const canCommit = !busy && pendingMutations === 0 && !!summary.trim() && conflicts === 0 && (stagedCount > 0 || amend || merging);
+  const canContinue = !busy && pendingMutations === 0 && conflicts === 0;
+  const canSubmit = !rebasing && (picking ? canContinue : canCommit);
 
   const reset = () => {
     setSummary("");
     setBody("");
     setAmend(false);
+    amendRef.current = false;
     drafts.delete(root);
   };
 
   const doCommit = async (push = false) => {
-    if (!canCommit && !(picking || rebasing)) return;
+    if (submitting.current || !canSubmit || (useRepos.getState().tabs[root]?.pendingMutations ?? 0) > 0) return;
+    submitting.current = true;
     setBusy(true);
     try {
       if (merging) {
@@ -871,13 +895,15 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
           if (push) await A.quickPush(root);
         }
       } else if (picking) {
-        await A.act(root, () => api.opContinue(root, kind, message || null), { success: "Continued" });
-        reset();
+        const out = await A.act(root, () => api.opContinue(root, kind, message || null), { busy: `Continuing ${kind}`, success: (out) => out.status === "done" ? "Continued" : null });
+        if (out?.status === "done") reset();
+        else A.handleOutcome(root, out, "Continue");
       } else {
         const ok = await commitChecked(push, noVerify);
         if (ok) reset();
       }
     } finally {
+      submitting.current = false;
       setBusy(false);
     }
   };
@@ -1005,7 +1031,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
         </div>
       )}
       <div className="split-btn">
-        <button className="btn primary" disabled={!canCommit && !picking} onClick={() => doCommit()} title="Ctrl+Enter">
+        <button className="btn primary" disabled={!canSubmit} onClick={() => doCommit()} title="Ctrl+Enter">
           {merging ? <GitMerge size={15} /> : <Check size={15} />} {label}
         </button>
         <button
