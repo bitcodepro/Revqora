@@ -56,7 +56,7 @@ pub struct DeletionPlan {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletionResult {
-    pub checkpoint: recovery::Summary,
+    pub checkpoint: Option<recovery::Summary>,
     pub warning: Option<String>,
 }
 
@@ -308,7 +308,17 @@ pub(super) fn require_retained(root: &Path, proof: &DeletionProof, local: bool, 
     Ok(())
 }
 
-fn checkpoint(root: &Path, proof: &DeletionProof, command: &str, expected: Option<&str>) -> GitResult<recovery::Summary> {
+fn checkpoint(root: &Path, proof: &DeletionProof, command: &str, expected: Option<&str>, enabled: bool) -> GitResult<Option<recovery::Summary>> {
+    if !enabled {
+        // Disabling recovery must not also disable the reviewed state guard
+        // previously enforced when the checkpoint was created.
+        if let Some(expected) = expected {
+            if status::status(root)?.state_token.as_deref() != Some(expected) {
+                return Err(GitError::new("The repository changed. Refresh the deletion review.").kind("stale-operation"));
+            }
+        }
+        return Ok(None);
+    }
     let mut references = Vec::new();
     if !proof.remote_only || proof.local_present {
         references.push(recovery::SavedRef { name: format!("refs/heads/{}", proof.name), oid: proof.local_oid.clone(), kind: "branch".into() });
@@ -320,7 +330,7 @@ fn checkpoint(root: &Path, proof: &DeletionProof, command: &str, expected: Optio
             kind: "remote".into(),
         });
     }
-    recovery::reference_checkpoint(root, command, &format!("Before deleting {}", proof.name), &references, expected)
+    recovery::reference_checkpoint(root, command, &format!("Before deleting {}", proof.name), &references, expected).map(Some)
 }
 
 pub fn delete_local(
@@ -330,6 +340,18 @@ pub fn delete_local(
     force: bool,
     expected: Option<&str>,
     protection_rules: Option<&[String]>,
+) -> GitResult<DeletionResult> {
+    delete_local_with_checkpoint(root, proof, include_remote, force, expected, protection_rules, true)
+}
+
+pub fn delete_local_with_checkpoint(
+    root: &Path,
+    proof: &DeletionProof,
+    include_remote: bool,
+    force: bool,
+    expected: Option<&str>,
+    protection_rules: Option<&[String]>,
+    create_checkpoint: bool,
 ) -> GitResult<DeletionResult> {
     operations::access(
         root,
@@ -342,9 +364,11 @@ pub fn delete_local(
                 return Err(stale("Choose the remote branch to delete."));
             }
             require_retained(root, proof, true, include_remote, force)?;
-            let checkpoint = checkpoint(root, proof, "branch_delete_reviewed", expected)?;
+            let checkpoint = checkpoint(root, proof, "branch_delete_reviewed", expected, create_checkpoint)?;
             validate(root, proof, true)?;
-            let _ = super::more::record_deleted(root, &proof.name);
+            if create_checkpoint {
+                let _ = super::more::record_deleted(root, &proof.name);
+            }
             let reference = format!("refs/heads/{}", proof.name);
             let out = runner::exec(root, ["update-ref", "--no-deref", "-d", &reference, &proof.local_oid])?;
             if !out.ok() {
@@ -355,7 +379,7 @@ pub fn delete_local(
             let cleanup = runner::exec(root, ["config", "--remove-section", &format!("branch.{}", proof.name)]);
             let warning = match cleanup {
                 Ok(out) if out.ok() || out.stderr.contains("no such section") => None,
-                _ => Some("The branch was deleted and checkpoint saved, but its Git configuration section could not be removed.".into()),
+                _ => Some("The branch was deleted, but its Git configuration section could not be removed.".into()),
             };
             Ok(DeletionResult { checkpoint, warning })
         },
@@ -370,6 +394,18 @@ pub fn delete_remote(
     protection_rules: Option<&[String]>,
     on_line: impl FnMut(&str),
 ) -> GitResult<DeletionResult> {
+    delete_remote_with_checkpoint(root, proof, force, expected, protection_rules, true, on_line)
+}
+
+pub fn delete_remote_with_checkpoint(
+    root: &Path,
+    proof: &DeletionProof,
+    force: bool,
+    expected: Option<&str>,
+    protection_rules: Option<&[String]>,
+    create_checkpoint: bool,
+    on_line: impl FnMut(&str),
+) -> GitResult<DeletionResult> {
     operations::access(
         root,
         true,
@@ -379,7 +415,7 @@ pub fn delete_remote(
             let target = proof.target.as_ref().ok_or_else(|| stale("Choose the remote branch to delete."))?;
             super::branch_protection::require_allowed(protection_rules, None, Some(target))?;
             require_retained(root, proof, false, true, force)?;
-            let checkpoint = checkpoint(root, proof, "branch_delete_remote_reviewed", expected)?;
+            let checkpoint = checkpoint(root, proof, "branch_delete_remote_reviewed", expected, create_checkpoint)?;
             validate(root, proof, false)?;
             // The selected comparison was checked above. Reuse the sender with its
             // HEAD-specific ancestry check disabled; the exact-SHA server lease stays.

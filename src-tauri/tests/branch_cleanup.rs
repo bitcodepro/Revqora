@@ -61,6 +61,30 @@ impl Fixture {
     }
 }
 #[test]
+fn disabling_checkpoints_for_a_mixed_batch_keeps_whole_selection_protection() {
+    let f = Fixture::new();
+    let server = f.server();
+    let selections = [f.selection("one", Mode::Local), f.selection("two", Mode::Both), f.selection("three", Mode::Remote)];
+    let before = recovery::list(&f.root).unwrap().checkpoints.len();
+    let refs = f.git(&["show-ref"]);
+    let denied = branch_cleanup::execute_with_checkpoint(&f.root, &selections, &["two".into()], false, |_| {}).unwrap();
+    assert!(denied.preflight_failed);
+    assert_eq!(f.git(&["show-ref"]), refs);
+    fs::write(f.root.join("file.txt"), "manual contents\n").unwrap();
+    let index = fs::read(f.root.join(".git/index")).unwrap();
+    let report = branch_cleanup::execute_with_checkpoint(&f.root, &selections, &["main".into()], false, |_| {}).unwrap();
+    assert!(!report.preflight_failed);
+    assert!(report.items.iter().all(|r| r.status == "deleted" && r.checkpoints.is_empty()));
+    assert!(!f.exists("one") && !f.exists("two") && f.exists("three"));
+    for (name, kept) in [("one", true), ("two", false), ("three", false)] {
+        assert_eq!(runner::exec(&server, ["show-ref", "--verify", "--quiet", &format!("refs/heads/{name}")]).unwrap().ok(), kept);
+    }
+    assert_eq!(recovery::list(&f.root).unwrap().checkpoints.len(), before);
+    assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(f.root.join("file.txt")).unwrap(), b"manual contents\n");
+}
+
+#[test]
 fn mixed_scopes_preserve_working_files_and_recover_each_exact_tip() {
     let f = Fixture::new();
     let server = f.server();

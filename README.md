@@ -140,6 +140,27 @@ targets before deleting. **Also delete remote branch** chooses local-and-remote
 deletion; leave it unchecked for local-only deletion. Remote-only actions are
 available for remote branches. Bulk cleanup reviews each target and preserves
 excluded branches. Application protection rules and server permissions still apply.
+**Create recovery checkpoint** is enabled by default in individual and bulk
+deletion reviews. Uncheck it to delete without saving a new recovery point;
+this choice applies only to the current dialog/batch. History, protection,
+worktree and exact-tip checks still apply.
+
+Combine **My branches** with **Remote deleted** to find local cleanup candidates.
+My branches matches the tip author's email against this repository's effective
+Git `user.email` (including local, conditional and worktree configuration).
+The settings button beside it opens **Branch author filter**: enter an email or
+author name to match part of either field, or choose **Use Git email** to reset.
+The choice is saved per repository. Git does not record branch ownership, so a
+tip-author match is a navigation aid; always review history before deleting.
+
+In the sidebar, a local branch and its configured remote upstream appear once
+under **Branches**, with a cloud icon and any incoming/down or outgoing/up commit
+counts. Hover the icon for details; the branch's context menu includes its
+upstream actions, including **Show tip in history** and **Show only this branch
+in graph** for the remote branch. A drive icon means no remote upstream is configured; a crossed
+cloud means that upstream is missing after Fetch. **Remotes** contains branches
+without a linked local branch. Counts and missing-upstream state use cached refs;
+Fetch updates them without changing your working files.
 
 ### Fetch, Pull, Push and Sync
 

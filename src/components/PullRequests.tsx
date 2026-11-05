@@ -14,6 +14,7 @@ import { Modal } from "./Modal";
 import { Splitter } from "./Overlays";
 import { DiffView } from "./DiffView";
 import { confirmDialog } from "./dialogs";
+import { virtualRange } from "../lib/virtualRange";
 
 const FORGE_NAMES: Record<string, string> = { github: "GitHub", azure: "Azure DevOps", gitlab: "GitLab", bitbucket: "Bitbucket Cloud", "bitbucket-server": "Bitbucket Server" };
 const browser = (url: string) => { const safe = safeWebUrl(url); if (safe) void api.openPath(safe); };
@@ -83,7 +84,7 @@ function RequestRows({ rows, selected, select, resetKey }: { rows: PullRequest[]
   const ref = useRef<HTMLDivElement>(null), [top, setTop] = useState(0), [height, setHeight] = useState(500), rowHeight = 82;
   useEffect(() => { const el = ref.current; if (!el) return; const observer = new ResizeObserver(() => setHeight(el.clientHeight)); observer.observe(el); return () => observer.disconnect(); }, []);
   useEffect(() => { if (ref.current) ref.current.scrollTop = 0; setTop(0); }, [resetKey]);
-  const first = Math.max(0, Math.floor(top / rowHeight) - 5), last = Math.min(rows.length, Math.ceil((top + height) / rowHeight) + 5);
+  const { start: first, end: last } = virtualRange(rows.length, rowHeight, height, top);
   const move = (e: React.KeyboardEvent) => { if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key) || !rows.length) return; e.preventDefault(); const old = rows.findIndex(p => p.number === selected), i = e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, old + (e.key === "ArrowDown" ? 1 : -1))); select(rows[i].number); if (ref.current) ref.current.scrollTop = Math.max(0, i * rowHeight - height / 2); };
   return <div className="pr-request-rows" ref={ref} role="listbox" aria-label="Pull requests" tabIndex={0} onKeyDown={move} onScroll={e => setTop(e.currentTarget.scrollTop)}><div style={{ height: first * rowHeight }} />{rows.slice(first, last).map(p => <button role="option" aria-selected={selected === p.number} data-pr-number={p.number} key={p.number} className={`pr-request-row ${selected === p.number ? "selected" : ""}`} onClick={() => select(p.number)}><span className="pr-row-title"><span className="mono faint">#{p.number}</span><b title={p.title}>{p.title}</b></span><span className="pr-row-meta"><span className={`pill pr-state-${p.state}`}>{p.draft && p.state === "open" ? "Draft" : p.state}</span><span className="ellipsis">{p.author}</span><span className="faint">{relativeTime(Date.parse(p.created) / 1000)}</span></span><small className="ellipsis" title={`${p.head} → ${p.base}`}>{p.head} → {p.base}</small></button>)}<div style={{ height: Math.max(0, rows.length - last) * rowHeight }} /></div>;
 }

@@ -780,7 +780,7 @@ export function GraphView({
   return (
     <div className="graph-panel">
       <div
-        className="hstack"
+        className="hstack graph-toolbar"
         style={{
           padding: "8px 12px",
           gap: 8,
@@ -861,11 +861,9 @@ export function GraphView({
           )}
         </div>
         {tab.branchFilter && (
-          <span className="pill accent" style={{ height: 24, gap: 6 }}>
-            Only {tab.branchFilter}
-            <X
-              size={12}
-              style={{ cursor: "pointer" }}
+          <span className="pill accent graph-branch-filter" title={tab.branchFilter} data-branch-filter={tab.branchFilter}>
+            <span>Only {tab.branchFilter.replace(/^refs\/(heads|remotes)\//, "")}</span>
+            <button type="button" className="icon-btn sm" aria-label="Clear branch filter" title="Clear branch filter"
               onClick={() => {
                 patch(root, { branchFilter: null });
                 setTimeout(
@@ -873,7 +871,7 @@ export function GraphView({
                   0,
                 );
               }}
-            />
+            ><X size={12} /></button>
           </span>
         )}
         <div className="spacer" />

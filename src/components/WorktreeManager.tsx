@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open as openFolder } from "@tauri-apps/plugin-dialog";
 import { FolderGit2, FolderOpen, Lock, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
+import { virtualRange } from "../lib/virtualRange";
 import { basename, shortOid } from "../lib/format";
 import { useRepos } from "../lib/store";
 import { captureOverlay, closeOverlay, copyText, showDialog, toast, useUi } from "../lib/ui";
@@ -174,7 +175,7 @@ export function WorktreeManager({root}:{root:string}){
   // Discard any old response when a review starts; each dialog validates its own proof.
   const action=async(run:()=>Promise<void>)=>{if(reviewing.current)return;reviewing.current=true;generation.current++;setLoading(false);try{await run();}catch(e){toast.error(e);}finally{reviewing.current=false;inflight.current=null;await refresh();}};
   const choose=(i:number)=>{const index=Math.max(0,Math.min(rows.length-1,i));setSelected(rows[index]?.path??null);const p=viewport.current;if(p&&index*ROW<p.scrollTop)p.scrollTop=index*ROW;else if(p&&(index+1)*ROW>p.scrollTop+p.clientHeight)p.scrollTop=(index+1)*ROW-p.clientHeight;};
-  const first=Math.max(0,Math.floor(scroll/ROW)-4),last=Math.min(rows.length,Math.ceil((scroll+height)/ROW)+4);
+  const {start:first,end:last}=virtualRange(rows.length,ROW,height,scroll,4);
   return <section className="conflict-overlay worktree-manager" aria-label="Worktree manager">
     <header className="cf-head"><FolderGit2 size={18}/><b>Worktree manager</b><span className="muted">{snapshot?.worktrees.length??0} working folders</span><div className="spacer"/>
       <button className="btn" disabled={initialLoading||pending} onClick={()=>void action(()=>worktreeCreateDialog(root))}><Plus size={14}/>New worktree</button>

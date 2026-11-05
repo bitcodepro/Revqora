@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   Cloud,
+  CloudOff,
   Copy,
   Eraser,
   Eye,
@@ -37,6 +38,7 @@ import { AheadBehind } from "./bits";
 import { branchMenu, tagMenu } from "./menus";
 import { highlightBranch, jumpToCommit } from "./GraphView";
 import { promptDialog } from "./dialogs";
+import { branchConnection, branchPairs } from "../lib/branchPresentation";
 
 interface TreeNode {
   name: string;
@@ -81,19 +83,24 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
   const f = filter.trim().toLowerCase();
   const match = (s: string) => !f || s.toLowerCase().includes(f);
   const current = tab.info?.head.branch;
+  const filterGraph = (reference: string) => {
+    useRepos.getState().patch(root, { branchFilter: reference });
+    void useRepos.getState().refresh(root, { graph: true });
+  };
 
-  const local = useMemo(() => (refs?.local ?? []).filter((b) => match(b.name)), [refs, f]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pairs = useMemo(() => branchPairs(refs?.local ?? [], refs?.remote ?? []), [refs]);
+  const local = useMemo(() => (refs?.local ?? []).filter((b) => match(b.name) || !!b.upstream && match(b.upstream)), [refs, f]); // eslint-disable-line react-hooks/exhaustive-deps
   const remoteByName = useMemo(() => {
     const m = new Map<string, BranchInfo[]>();
     for (const r of refs?.remotes ?? []) m.set(r.name, []);
-    for (const b of refs?.remote ?? []) {
+    for (const b of pairs.remoteOnly) {
       if (!match(b.name)) continue;
       const k = b.remote ?? "origin";
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(b);
     }
     return m;
-  }, [refs, f]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [refs, pairs, f]); // eslint-disable-line react-hooks/exhaustive-deps
   const tags = (refs?.tags ?? []).filter((t) => match(t.name));
   const stashes = (refs?.stashes ?? []).filter((s) => match(s.message));
 
@@ -106,6 +113,8 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
       if (n.branch) {
         const b = n.branch;
         const isCur = kind === "local" && b.name === current;
+        const connection = branchConnection(b);
+        const upstream = pairs.upstreams.get(b.fullName);
         return [
           <div
             key={b.fullName}
@@ -143,14 +152,17 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
             onContextMenu={(e) =>
               contextMenu(e, [
                 ...branchMenu(root, b.name, kind),
+                ...(upstream ? [{ label: `Upstream: ${upstream.name}`, icon: <Cloud size={14} />, children: [
+                  { label: "Show tip in history", icon: <GitBranch size={14} />, onClick: () => jumpToCommit(root, upstream.oid) },
+                  { label: "Show only this branch in graph", icon: <Eye size={14} />, onClick: () => filterGraph(upstream.fullName) },
+                  { separator: true },
+                  ...branchMenu(root, upstream.name, "remote"),
+                ] }] : []),
                 { separator: true },
                 {
                   label: "Show only this branch in graph",
                   icon: <Eye size={14} />,
-                  onClick: () => {
-                    useRepos.getState().patch(root, { branchFilter: b.name });
-                    useRepos.getState().refresh(root, { graph: true });
-                  },
+                  onClick: () => filterGraph(b.fullName),
                 },
               ])
             }
@@ -158,16 +170,11 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
             {kind === "local" ? <GitBranch size={13} style={{ flex: "none", color: isCur ? "var(--accent)" : undefined }} /> : <Cloud size={13} style={{ flex: "none" }} />}
             <span className="label">{n.name}</span>
             <span className="meta">
-              {kind === "local" && tab.squashMerged.includes(b.name) ? (
+              {kind === "local" && <span className={`branch-connection ${connection.kind}`} role="img" aria-label={connection.title} title={connection.title}>{connection.kind === "gone" ? <CloudOff size={13} /> : connection.kind === "paired" ? <Cloud size={13} /> : <HardDrive size={13} />}</span>}
+              {kind === "local" && tab.squashMerged.includes(b.name) && (
                 <span className="pill amber" title={`Changes appear integrated in ${current ?? "the current branch"}. Original commit SHAs can still be outside it; review unique history before deletion.`}>
                   integrated
                 </span>
-              ) : (
-                b.gone && (
-                  <span className="pill amber" title="The branch it tracked was deleted on the remote (usually after its pull request was merged). The local branch is untouched.">
-                    remote deleted
-                  </span>
-                )
               )}
               <AheadBehind ahead={b.ahead} behind={b.behind} />
             </span>
@@ -188,7 +195,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
 
   // Every section yields flat rows so the whole sidebar can be virtualized.
   const section = (id: string, title: string, count: number, icon: ReactNode, actions: ReactNode, body: ReactNode[]): ReactNode[] => [
-    <div key={`sec:${id}`} className={`sb-section-head ${collapsed[id] ? "collapsed" : ""}`} onClick={() => toggle(id)}>
+    <div key={`sec:${id}`} title={id === "remotes" ? "Remote-only branches. Configured upstreams are shown with their local branch under Branches." : undefined} className={`sb-section-head ${collapsed[id] ? "collapsed" : ""}`} onClick={() => toggle(id)}>
       <ChevronDown size={12} className="chev" />
       {icon}
       <span>{title}</span>
@@ -231,7 +238,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
         ...section(
           "remotes",
           "Remotes",
-          refs?.remote.length ?? 0,
+          pairs.remoteOnly.length,
           <Globe size={12} />,
           <button className="icon-btn sm" title="Add remote" onClick={() => A.addRemote(root)}>
             <Plus size={13} />

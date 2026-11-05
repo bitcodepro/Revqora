@@ -220,6 +220,7 @@ export interface BranchInfo {
   fullName: string;
   oid: string;
   upstream: string | null;
+  upstreamFullName: string | null;
   ahead: number;
   behind: number;
   gone: boolean;
@@ -676,7 +677,7 @@ export interface BranchCleanupRequest { reference: string; oid: string; mode: Br
 export interface BranchCleanupSelection { proof: DeletionProof; mode: BranchCleanupMode; force: boolean; }
 export interface BranchCleanupReview { items: { request: BranchCleanupRequest; plan: DeletionPlan | null; error: string | null; forceRequired: boolean }[]; stateToken: string; }
 export interface BranchCleanupReport { status: "done" | "stopped"; preflightFailed: boolean; items: { name: string; localDeleted: boolean; remoteDeleted: boolean; status: "deleted" | "partial" | "failed" | "skipped"; message: string | null; checkpoints: RecoverySummary[] }[]; }
-export interface DeletionResult { checkpoint: RecoverySummary; warning: string | null }
+export interface DeletionResult { checkpoint: RecoverySummary | null; warning: string | null }
 
 export interface IgnoredFiles { paths: string[]; truncated: boolean; }
 export interface NestedRepository { path: string; relativePath: string; kind: string; branch: string | null; }
@@ -734,11 +735,12 @@ export interface SyncResult {
 export interface ManagedBranch {
   fullRef: string; name: string; oid: string; local: boolean; current: boolean;
   upstream: string | null; ahead: number; behind: number; gone: boolean;
-  time: number; author: string; subject: string; merged: boolean | null;
+  time: number; author: string; authorEmail: string; subject: string; merged: boolean | null;
   protectionNames: string[]; mappingKnown: boolean;
 }
 export interface BranchManagerSnapshot {
   branches: ManagedBranch[]; worktrees: Worktree[]; baseRef: string | null; baseOid: string | null;
+  identityEmail: string | null;
 }
 
 export interface ManagedWorktree extends Worktree {

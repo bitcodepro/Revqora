@@ -156,7 +156,7 @@ pub fn cleanup_act(repo: &Path, n: u64, connection: &str, revision: &str, input:
             if input.local {
                 let local = branch_review::delete_local(repo, proof, input.remote, input.force, Some(&review.plan.state_token), Some(&input.protection_rules))?;
                 result.local_deleted = true;
-                result.checkpoint = Some(local.checkpoint);
+                result.checkpoint = local.checkpoint;
                 result.warning = local.warning;
             }
             if input.remote {
@@ -170,7 +170,7 @@ pub fn cleanup_act(repo: &Path, n: u64, connection: &str, revision: &str, input:
                 ) {
                     Ok(remote) => {
                         result.remote_deleted = true;
-                        result.checkpoint = Some(remote.checkpoint);
+                        result.checkpoint = remote.checkpoint;
                     }
                     Err(e) if result.local_deleted => {
                         result.state = "partial".into();

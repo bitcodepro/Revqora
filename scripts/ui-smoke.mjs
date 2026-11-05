@@ -12,6 +12,7 @@ import { smokeTimings, assertSmokeCoverage } from "./ci-timing.mjs";
 import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
 import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manager-smoke.mjs";
+import { remoteRenameSmoke } from "./remote-rename-smoke.mjs";
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
 //   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
@@ -1727,42 +1728,7 @@ try {
     if (git5("rev-parse", "HEAD^{tree}") !== tree || git5("log", "--format=%s").includes("fixup!")) throw new Error("autosquash changed the result tree or retained the fixup");
   });
 
-  const openRename5 = async (oldName, newName) => {
-    await page.locator(".sidebar .sb-item", { hasText: oldName }).first().click({ button: "right" });
-    await page.locator(".ctx-item", { hasText: "Rename on remote…" }).click();
-    await page.fill("input[aria-label='New remote branch name']", newName);
-    await page.locator(".modal").last().getByRole("button", { name: "Review rename", exact: true }).click();
-    await page.waitForSelector(".modal input[type='checkbox']");
-  };
-  await check("remote rename reviews the server SHA and offers explicit local upstream repair", async () => {
-    await openRename5("topic-old", "topic-renamed");
-    if (!(await page.locator(".modal").last().innerText()).includes(base5)) throw new Error("review did not show the server commit");
-    const confirm = page.locator(".modal").last().getByRole("button", { name: "Rename on server", exact: true });
-    if (!await confirm.isDisabled()) throw new Error("rename allowed without explicit confirmation");
-    await page.locator(".modal input[type='checkbox']").check(); await shot("57-remote-rename-review"); await confirm.click();
-    await page.waitForSelector(".modal:has-text('The server branch was renamed')", { timeout: 30000 });
-    if (server5("rev-parse", "refs/heads/topic-renamed") !== base5 || server5("for-each-ref", "--format=%(refname)", "refs/heads/topic-old")) throw new Error("server rename was not exact");
-    if (git5("config", "branch.main.merge") !== "refs/heads/topic-old") throw new Error("upstream was silently changed");
-    await page.getByRole("button", { name: "Use renamed upstream", exact: true }).click();
-    await until(() => git5("config", "branch.main.merge") === "refs/heads/topic-renamed", "explicit upstream update failed", 15000);
-    await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
-  });
-
-  await check("a changed remote tip clears rename consent and requires a fresh server review", async () => {
-    server5("update-ref", "refs/heads/stale-old", base5); git5("push", "origin", "HEAD:refs/heads/seed"); git5("fetch", "origin");
-    await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".sidebar .sb-item:has-text('stale-old')");
-    await openRename5("stale-old", "stale-new");
-    const advanced = git5("rev-parse", "HEAD"); server5("update-ref", "refs/heads/stale-old", advanced);
-    await page.locator(".modal input[type='checkbox']").check(); await page.locator(".modal").last().getByRole("button", { name: "Rename on server", exact: true }).click();
-    await page.locator(".modal").last().getByRole("button", { name: "Review rename", exact: true }).waitFor();
-    if (server5("rev-parse", "refs/heads/stale-old") !== advanced || server5("for-each-ref", "--format=%(refname)", "refs/heads/stale-new")) throw new Error("stale consent changed server refs");
-    await page.locator(".modal").last().getByRole("button", { name: "Review rename", exact: true }).click(); await page.waitForSelector(".modal input[type='checkbox']");
-    if (!(await page.locator(".modal").last().innerText()).includes(advanced) || await page.locator(".modal input[type='checkbox']").isChecked()) throw new Error("fresh review reused the old SHA or consent");
-    await page.locator(".modal input[type='checkbox']").check(); await page.locator(".modal").last().getByRole("button", { name: "Rename on server", exact: true }).click();
-    await page.waitForSelector(".modal:has-text('The server branch was renamed')", { timeout: 30000 });
-    if (server5("rev-parse", "refs/heads/stale-new") !== advanced) throw new Error("fresh rename moved the wrong commit");
-    await shot("58-remote-rename-complete"); await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
-  });
+  await remoteRenameSmoke({ page, check, shot, git:git5, server:server5, base:base5, until });
 
   await check("Stage all refuses implicit nested gitlinks and opens the child from Changes", async () => {
     fs.writeFileSync(path.join(stage5, ".gitignore"), "ignored.log\n"); fs.writeFileSync(path.join(stage5, "regular.txt"), "must remain unstaged\n");
