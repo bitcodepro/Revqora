@@ -1077,6 +1077,11 @@ select[size="1"]:not([multiple]) {
   min-height: 120px;
   flex: 1;
 }
+.graph-toolbar { flex-wrap: wrap; flex-shrink: 0; min-width: 0; }
+.graph-toolbar .search-box { min-width: 0; max-width: 100%; }
+.graph-branch-filter { height: 24px; gap: 6px; min-width: 0; max-width: 100%; }
+.graph-branch-filter > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-branch-filter > button { flex: none; width: 20px; height: 20px; }
 .graph-cols {
   display: grid;
   align-items: center;

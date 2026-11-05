@@ -2,7 +2,7 @@ import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProfile, launch, withViewport } from "./ui-driver.mjs";
+import { createProfile, launch, openSubmenu, withViewport } from "./ui-driver.mjs";
 
 export async function branchManagerSmoke({ page, check, shot, work }) {
   const root = path.join(work, "stage9-branches"), wt = path.join(work, "stage9-linked");
@@ -112,6 +112,7 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
     git("branch","--set-upstream-to=origin/innocent","main");
     git("branch","--set-upstream-to=origin/innocent","feature/login");
     git("update-ref","refs/remotes/origin/innocent",other); // login is now one commit ahead and one behind
+    git("branch","origin/innocent",tip); // make the short upstream name ambiguous
     git("config","--add","remote.origin.fetch","+refs/heads/remote-only:refs/remotes/origin/remote-only");
     git("update-ref","refs/remotes/origin/remote-only",base);
     await page.getByRole("button", { name:"Refresh branches",exact:true }).click();
@@ -142,16 +143,57 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
     await manager().getByRole("button",{name:"Remote deleted",exact:true}).click();
     await page.getByRole("button", { name: "Close branch manager", exact: true }).click();
 
+    // Workspaces deliberately remember a collapsed sidebar. Establish this
+    // scenario's UI precondition via its real control, not saved-state edits.
+    const branches = page.getByRole("button", { name:"Branches",exact:true });
+    if(await branches.getAttribute("aria-expanded") === "false") await branches.click();
+    await page.locator(".branches-slot:not([hidden])").waitFor();
     const search = page.locator(".sidebar input[placeholder^='Filter branches']");
+    await search.waitFor({state:"visible"});
     await search.fill("origin/innocent");
     await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="feature/login"] .branch-connection.paired').waitFor();
     if(await page.locator('.sidebar [data-branch-kind="remote"][data-branch-name="origin/innocent"]').count()) throw new Error("Paired remote still appears separately");
     const login = page.locator('.sidebar [data-branch-kind="local"][data-branch-name="feature/login"]');
     if(!await login.locator(".ab.up").isVisible()) throw new Error("Pairing hid outgoing commit counts");
     if(!await login.locator(".ab.down").isVisible()) throw new Error("Pairing hid incoming commit counts");
+    const expectPreview = async (oid,subject) => page.waitForFunction(({oid,subject}) =>
+      document.querySelector(".commit-preview .commit-subject")?.textContent === subject &&
+      [...document.querySelectorAll('.commit-preview .hash-chip[title="Copy full hash"], .commit-preview .hash-chip[title="Copy commit hash"]')].some(node=>node.textContent.includes(oid.slice(0,8))),{oid,subject});
+    await login.click();
+    await expectPreview(tip,"Add authentication flow");
+    // The distinct tips must remain directly navigable after removing the
+    // duplicate remote row. Verify rendered history, not only a menu label.
+    if(other === tip) throw new Error("Upstream navigation fixture requires distinct tips");
+    const upstreamMenu = page.locator(".ctx-item").filter({has:page.getByText("Upstream: origin/innocent",{exact:true})});
+    const upstreamActions = page.locator(".ctx-menu").filter({has:page.getByText("Show tip in history",{exact:true})});
+    const tipAction = upstreamActions.locator(".ctx-item").filter({has:page.getByText("Show tip in history",{exact:true})});
+    await openSubmenu(page,()=>login.click({button:"right"}),upstreamMenu,tipAction);
+    await tipAction.click();
+    await expectPreview(other,"Other author tip");
+    const filterAction = upstreamActions.locator(".ctx-item").filter({has:page.getByText("Show only this branch in graph",{exact:true})});
+    await openSubmenu(page,()=>login.click({button:"right"}),upstreamMenu,filterAction);
+    await filterAction.click();
+    const remoteFilter=page.locator('[data-branch-filter="refs/remotes/origin/innocent"]');
+    await remoteFilter.waitFor();
+    await page.waitForFunction(() => {
+      const rows=[...document.querySelectorAll(".grow")].map(node=>node.textContent);
+      return rows.some(text=>text.includes("Other author tip")) && !rows.some(text=>text.includes("Add authentication flow"));
+    });
+    const clearFilter=page.getByRole("button",{name:"Clear branch filter",exact:true});
+    const panelBounds=await page.locator(".graph-panel").boundingBox(), clearBounds=await clearFilter.boundingBox();
+    if(!panelBounds||!clearBounds||clearBounds.x<panelBounds.x||clearBounds.x+clearBounds.width>panelBounds.x+panelBounds.width+1)throw new Error("Branch filter reset overflowed its commit column");
+    await clearFilter.click();
+    await remoteFilter.waitFor({state:"detached"});
     await login.click({button:"right"});
-    await page.locator(".ctx-item").filter({has:page.getByText("Upstream: origin/innocent",{exact:true})}).waitFor();
-    await page.keyboard.press("Escape");
+    await page.locator(".ctx-menu").filter({has:page.getByText("Upstream: origin/innocent",{exact:true})}).locator(".ctx-item").filter({has:page.getByText("Show only this branch in graph",{exact:true})}).click();
+    const localFilter=page.locator('[data-branch-filter="refs/heads/feature/login"]');
+    await localFilter.waitFor();
+    await page.waitForFunction(() => {
+      const rows=[...document.querySelectorAll(".grow")].map(node=>node.textContent);
+      return rows.some(text=>text.includes("Add authentication flow")) && !rows.some(text=>text.includes("Other author tip"));
+    });
+    await clearFilter.click();
+    await localFilter.waitFor({state:"detached"});
     await search.fill("owned/removed");
     await page.locator('.sidebar [data-branch-name="owned/removed"] .branch-connection.gone').waitFor();
     await search.fill("occupied");

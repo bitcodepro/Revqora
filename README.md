@@ -156,7 +156,8 @@ tip-author match is a navigation aid; always review history before deleting.
 In the sidebar, a local branch and its configured remote upstream appear once
 under **Branches**, with a cloud icon and any incoming/down or outgoing/up commit
 counts. Hover the icon for details; the branch's context menu includes its
-upstream actions. A drive icon means no remote upstream is configured; a crossed
+upstream actions, including **Show tip in history** and **Show only this branch
+in graph** for the remote branch. A drive icon means no remote upstream is configured; a crossed
 cloud means that upstream is missing after Fetch. **Remotes** contains branches
 without a linked local branch. Counts and missing-upstream state use cached refs;
 Fetch updates them without changing your working files.

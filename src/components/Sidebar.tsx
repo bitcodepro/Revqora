@@ -83,6 +83,10 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
   const f = filter.trim().toLowerCase();
   const match = (s: string) => !f || s.toLowerCase().includes(f);
   const current = tab.info?.head.branch;
+  const filterGraph = (reference: string) => {
+    useRepos.getState().patch(root, { branchFilter: reference });
+    void useRepos.getState().refresh(root, { graph: true });
+  };
 
   const pairs = useMemo(() => branchPairs(refs?.local ?? [], refs?.remote ?? []), [refs]);
   const local = useMemo(() => (refs?.local ?? []).filter((b) => match(b.name) || !!b.upstream && match(b.upstream)), [refs, f]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -148,15 +152,17 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
             onContextMenu={(e) =>
               contextMenu(e, [
                 ...branchMenu(root, b.name, kind),
-                ...(upstream ? [{ label: `Upstream: ${upstream.name}`, icon: <Cloud size={14} />, children: branchMenu(root, upstream.name, "remote") }] : []),
+                ...(upstream ? [{ label: `Upstream: ${upstream.name}`, icon: <Cloud size={14} />, children: [
+                  { label: "Show tip in history", icon: <GitBranch size={14} />, onClick: () => jumpToCommit(root, upstream.oid) },
+                  { label: "Show only this branch in graph", icon: <Eye size={14} />, onClick: () => filterGraph(upstream.fullName) },
+                  { separator: true },
+                  ...branchMenu(root, upstream.name, "remote"),
+                ] }] : []),
                 { separator: true },
                 {
                   label: "Show only this branch in graph",
                   icon: <Eye size={14} />,
-                  onClick: () => {
-                    useRepos.getState().patch(root, { branchFilter: b.name });
-                    useRepos.getState().refresh(root, { graph: true });
-                  },
+                  onClick: () => filterGraph(b.fullName),
                 },
               ])
             }
