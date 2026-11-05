@@ -1,4 +1,5 @@
 mod desktop;
+pub mod git_credentials;
 #[tauri::command]
 async fn symbol_history(repo: String, path: String, query: String, anchor: Option<String>, offset: usize) -> GitResult<git::semantic::SymbolHistoryPage> {
     blocking(move || git::semantic::symbol_history(&p(&repo), &path, &query, anchor.as_deref(), offset)).await
@@ -1591,8 +1592,8 @@ async fn forge_account_remove(id: String, expected: String) -> GitResult<git::fo
     blocking(move || git::forge_accounts::manager()?.remove(&id, &expected)).await
 }
 #[tauri::command]
-async fn forge_account_test(id: String) -> GitResult<String> {
-    blocking(move || git::forge_accounts::manager()?.test(&id)).await
+async fn forge_account_test(id: String, repo: Option<String>) -> GitResult<String> {
+    blocking(move || if let Some(repo) = repo { git::forge_accounts::test_repository(&p(&repo), &id) } else { git::forge_accounts::manager()?.test(&id) }).await
 }
 #[tauri::command]
 async fn forge_account_git_respond(id: u64, account_id: String, expected: String) -> GitResult<bool> {

@@ -1,5 +1,9 @@
 use super::*;
 pub(super) fn actor(repo: &Path, f: &ForgeInfo) -> GitResult<(String, String)> {
+    if f.kind == "bitbucket" {
+        let (name, id, _) = forge::bitbucket_actor(repo, f)?;
+        return Ok((name, id));
+    }
     if f.kind == "bitbucket-server" {
         return Ok(("Native Git credentials (server permissions)".into(), "git-credentials".into()));
     }

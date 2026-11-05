@@ -1,4 +1,5 @@
 use super::*;
+use crate::git::runner;
 use std::{
     io::{BufRead, BufReader},
     net::TcpListener,
@@ -51,6 +52,9 @@ fn bitbucket_git_token_consent_requires_current_available_matching_account() {
                     name: "Test".into(),
                     auth_mode: mode.into(),
                     auth_username: "api@example.invalid".into(),
+                    identity_verified: None,
+                    git_username: None,
+                    actor_namespace: None,
                 };
                 m.sessions.insert(
                     profile.id.clone(),
@@ -191,6 +195,8 @@ fn http_fixture_waits_for_fragmented_request_headers() {
 }
 fn input(server: &Http, kind: &str, token: &str, persist: bool) -> Add {
     Add {
+        verify_identity: None,
+        git_source: None,
         id: None,
         kind: kind.into(),
         server: server.url.clone(),
@@ -199,6 +205,116 @@ fn input(server: &Http, kind: &str, token: &str, persist: bool) -> Add {
         auth_mode: if kind == "bitbucket" { "basic" } else { "token" }.into(),
         persist,
     }
+}
+
+#[test]
+fn bitbucket_token_connection_saves_and_restarts_without_reading_a_profile() {
+    let (_temp, m) = manager_temp();
+    let h = Http::new(|_, _| panic!("A token-only connection must not request user information"));
+    let password = "portable token connection password";
+    m.vault(password.into(), &m.snapshot().unwrap().revision, false).unwrap();
+    let mut request = input(&h, "bitbucket", "token-with-pr-scopes", true);
+    request.verify_identity = Some(false);
+    let added = m.add(request, &m.snapshot().unwrap().revision).unwrap();
+    let profile = &added.accounts[0].profile;
+    assert_eq!(profile.identity_verified, Some(false));
+    assert!(profile.user_id.is_empty());
+    assert_eq!(profile.actor_namespace.as_deref(), Some(format!("bitbucket-token:{}", profile.id).as_str()));
+    assert!(h.seen.lock().is_empty());
+    let restarted = Manager::new(m.root.clone());
+    let snapshot = restarted.snapshot().unwrap();
+    assert_eq!(snapshot.accounts[0].status, "locked");
+    restarted.vault(password.into(), &snapshot.revision, true).unwrap();
+    assert_eq!(restarted.account(&profile.id).unwrap().1.token, "token-with-pr-scopes");
+    assert!(restarted.test(&profile.id).unwrap_err().message.contains("repository connection"));
+    assert!(h.seen.lock().is_empty());
+}
+
+#[test]
+fn optional_profile_switch_keeps_the_publication_namespace_across_reconnects() {
+    let (_temp, m) = manager_temp();
+    let h = Http::identities();
+    let first = add(&m, &h, "bitbucket", "token-one", false);
+    let old = first.accounts[0].profile.clone();
+    let reads = h.seen.lock().len();
+    let mut request = input(&h, "bitbucket", "token-two", false);
+    request.id = Some(old.id.clone());
+    request.verify_identity = Some(false);
+    let token_only = m.add(request, &first.revision).unwrap();
+    let current = &token_only.accounts[0].profile;
+    assert!(current.user_id.is_empty());
+    assert_eq!(current.actor_namespace.as_deref(), Some(old.user_id.as_str()));
+    assert_eq!(h.seen.lock().len(), reads);
+    let mut request = input(&h, "bitbucket", "token-one", false);
+    request.id = Some(old.id.clone());
+    request.verify_identity = Some(true);
+    let verified = m.add(request, &token_only.revision).unwrap();
+    let current = &verified.accounts[0].profile;
+    assert_eq!(current.identity_verified, None);
+    assert_eq!(current.user_id, old.user_id);
+    assert_eq!(current.actor_namespace.as_deref(), Some(old.user_id.as_str()));
+}
+
+#[test]
+fn legacy_encrypted_profile_aad_is_byte_identical_after_adding_optional_fields() {
+    let bytes=br#"{"id":"legacy-account","kind":"bitbucket","server":"https://bitbucket.org","login":"legacy","userId":"uuid-legacy","name":"Legacy","authMode":"basic","authUsername":"legacy@example.invalid"}"#;
+    let profile: Profile = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(json(&profile).unwrap(), bytes);
+    let mut original = b"Revqora account v1\0".to_vec();
+    original.extend(bytes);
+    assert_eq!(aad(&profile).unwrap(), original);
+    let (_temp, m) = manager_temp();
+    let password = "legacy portable vault password";
+    m.vault(password.into(), &m.snapshot().unwrap().revision, false).unwrap();
+    let c = Credential { username: "legacy@example.invalid".into(), token: "legacy-secret-token".into(), mode: "basic".into() };
+    let sealed = seal(m.memory.lock().key.as_ref().unwrap(), &original, &json(&c).unwrap()).unwrap();
+    m.edit(&m.snapshot().unwrap().revision, |d, _| {
+        d.accounts.push(Record { profile, sealed: Some(sealed) });
+        Ok(())
+    })
+    .unwrap();
+    let restarted = Manager::new(m.root.clone());
+    restarted.vault(password.into(), &restarted.snapshot().unwrap().revision, true).unwrap();
+    assert_eq!(restarted.account("legacy-account").unwrap().1.token, "legacy-secret-token");
+}
+
+#[test]
+fn bitbucket_connection_proof_detects_external_git_helper_token_changes() {
+    let (temp, m) = manager_temp();
+    let root = temp.path().join("repository");
+    fs::create_dir(&root).unwrap();
+    runner::run(&root, ["init", "-q"]).unwrap();
+    runner::run(&root, ["remote", "add", "origin", "https://alice@bitbucket.org/team/repo.git"]).unwrap();
+    let credentials = temp.path().join("fixture-credentials");
+    let shell_path = credentials.to_string_lossy().replace('\\', "/").replace('\'', "'\\''");
+    runner::run(&root, ["config", "credential.helper", ""]).unwrap();
+    runner::run(&root, ["config", "--add", "credential.helper", &format!("!f() {{ if test \"$1\" = get; then cat '{shell_path}'; fi; }}; f")]).unwrap();
+    fs::write(&credentials, "username=alice\npassword=first-fixture-token\n").unwrap();
+    let before = m.snapshot().unwrap().revision;
+    let first = context_from(&m, &root).unwrap().unwrap().info;
+    assert_eq!(first, context_from(&m, &root).unwrap().unwrap().info);
+    fs::write(&credentials, "username=alice\npassword=second-fixture-token\n").unwrap();
+    let second = context_from(&m, &root).unwrap().unwrap().info;
+    assert_eq!(m.snapshot().unwrap().revision, before);
+    assert_ne!(first.connection_revision, second.connection_revision);
+    assert!(!serde_json::to_string(&second).unwrap().contains("fixture-token"));
+}
+
+#[test]
+fn importing_a_git_token_rejects_a_different_api_destination_before_any_request() {
+    let (temp, m) = manager_temp();
+    let root = temp.path().join("repository");
+    fs::create_dir(&root).unwrap();
+    runner::run(&root, ["init", "-q"]).unwrap();
+    let remote = "https://alice@bitbucket.org/team/repo.git";
+    runner::run(&root, ["remote", "add", "origin", remote]).unwrap();
+    let h = Http::new(|_, _| panic!("A foreign API destination must never receive the Git token"));
+    let mut request = input(&h, "bitbucket", "", false);
+    request.verify_identity = Some(true);
+    request.git_source = Some(GitSource { repo: root.to_string_lossy().into(), remote: "origin".into(), fingerprint: fingerprint(remote) });
+    assert!(m.add(request, &m.snapshot().unwrap().revision).err().unwrap().message.contains("does not match"));
+    assert!(m.snapshot().unwrap().accounts.is_empty());
+    assert!(h.seen.lock().is_empty());
 }
 fn manager_temp() -> (tempfile::TempDir, Manager) {
     let t = tempfile::tempdir().unwrap();

@@ -124,6 +124,13 @@ pub struct Profile {
     pub name: String,
     pub auth_mode: String,
     pub auth_username: String,
+    // Omitted on legacy records to preserve their exact encrypted AAD bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_verified: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_namespace: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Sealed {
@@ -264,7 +271,9 @@ fn validate_document(d: &Document) -> GitResult<()> {
         if !ids.insert(&p.id)
             || !valid_text(&p.id, 24)
             || !valid_text(&p.login, 256)
-            || !valid_text(&p.user_id, 256)
+            || if p.identity_verified == Some(false) { p.server.kind != "bitbucket" || !p.user_id.is_empty() } else { !valid_text(&p.user_id, 256) }
+            || p.git_username.as_ref().is_some_and(|s| !valid_text(s, 256) || p.server.kind != "bitbucket")
+            || p.actor_namespace.as_ref().is_some_and(|s| !valid_text(s, 256) || p.server.kind != "bitbucket")
             || p.name.len() > 512
             || p.auth_username.len() > 254
             || Server::new(&p.server.kind, &p.server.server)? != p.server
@@ -382,6 +391,7 @@ impl Manager {
         m.sessions.clear();
         m.epoch += 1;
         drop(m);
+        crate::git_credentials::clear_sessions();
         self.snapshot()
     }
     pub fn vault(&self, password: String, expected: &str, unlock: bool) -> GitResult<Snapshot> {
@@ -437,22 +447,69 @@ impl Manager {
             m.sessions.clear();
             Ok(())
         })?;
+        crate::git_credentials::clear_sessions();
         self.snapshot()
     }
     pub fn add(&self, input: Add, expected: &str) -> GitResult<Snapshot> {
-        let c = Credential { username: input.username.clone(), token: input.token, mode: input.auth_mode.clone() };
+        let server = Server::new(&input.kind, &input.server)?;
+        let imported = if let Some(source) = &input.git_source {
+            if !input.token.is_empty() || server.kind != "bitbucket" {
+                return Err(fail("Choose one Bitbucket token source."));
+            }
+            let r = refs::remotes(Path::new(&source.repo))?.into_iter().find(|r| r.name == source.remote).ok_or_else(stale)?;
+            if fingerprint(&r.fetch_url) != source.fingerprint {
+                return Err(stale());
+            }
+            let destination = Profile {
+                id: "source".into(),
+                server: server.clone(),
+                login: "Git token".into(),
+                user_id: String::new(),
+                name: String::new(),
+                auth_mode: "bearer".into(),
+                auth_username: String::new(),
+                identity_verified: Some(false),
+                git_username: None,
+                actor_namespace: None,
+            };
+            info_for_profile(&destination, &r.fetch_url, &source.remote, false)?;
+            let mut c = forge::token(Path::new(&source.repo), &r.fetch_url)?;
+            c.mode = "bearer".into();
+            Some((c, r.fetch_url))
+        } else {
+            None
+        };
+        let c = imported.as_ref().map(|(c, _)| c.clone()).unwrap_or_else(|| Credential {
+            username: input.username.clone(),
+            token: input.token,
+            mode: input.auth_mode.clone(),
+        });
         if !valid_text(&c.token, 4096) || c.token.len() < 8 || c.token.chars().any(char::is_whitespace) {
             return Err(fail("Enter a token without whitespace (8–4096 bytes)."));
         }
-        let server = Server::new(&input.kind, &input.server)?;
         if !["token", "basic", "bearer"].contains(&c.mode.as_str()) || server.kind == "bitbucket" && c.mode == "basic" && !valid_text(&c.username, 254) {
             return Err(fail("Bitbucket API tokens require your Atlassian email address."));
         }
-        let identity = verify(&server, &c)?;
+        let verified = server.kind != "bitbucket" || input.verify_identity.unwrap_or(true);
+        let identity = if verified {
+            verify(&server, &c)?
+        } else {
+            Identity {
+                login: if c.username.is_empty() { "Bitbucket token".into() } else { c.username.clone() },
+                user_id: String::new(),
+                name: "Bitbucket token (profile not read)".into(),
+            }
+        };
         self.edit(expected, |d, m| {
+            if let Some(source) = &input.git_source {
+                let r = refs::remotes(Path::new(&source.repo))?.into_iter().find(|r| r.name == source.remote).ok_or_else(stale)?;
+                if fingerprint(&r.fetch_url) != source.fingerprint {
+                    return Err(stale());
+                }
+            }
             let id = if let Some(id) = &input.id {
                 let old = d.accounts.iter().find(|r| r.profile.id == *id).ok_or_else(|| fail("Account was removed. Refresh first."))?;
-                if old.profile.server != server || old.profile.user_id != identity.user_id {
+                if old.profile.server != server || verified && old.profile.identity_verified != Some(false) && old.profile.user_id != identity.user_id {
                     return Err(fail("This token belongs to a different account. Add it separately."));
                 }
                 id.clone()
@@ -460,10 +517,21 @@ impl Manager {
                 if d.accounts.len() >= 50 {
                     return Err(fail("At most 50 accounts can be saved."));
                 }
-                if d.accounts.iter().any(|r| r.profile.server == server && r.profile.user_id == identity.user_id) {
+                if verified && d.accounts.iter().any(|r| r.profile.server == server && r.profile.user_id == identity.user_id) {
                     return Err(fail("This account already exists. Use Reconnect to replace its token."));
                 }
                 digest(&random::<32>()?)[..24].to_owned()
+            };
+            // Keep publication/draft identity stable across profile opt-in/out.
+            // It is a connection namespace, separate from a verified user UUID.
+            let actor_namespace = if server.kind == "bitbucket" {
+                d.accounts
+                    .iter()
+                    .find(|r| r.profile.id == id)
+                    .and_then(|r| r.profile.actor_namespace.clone().or_else(|| (!r.profile.user_id.is_empty()).then(|| r.profile.user_id.clone())))
+                    .or_else(|| (!verified).then(|| format!("bitbucket-token:{id}")))
+            } else {
+                None
             };
             let profile = Profile {
                 id: id.clone(),
@@ -473,6 +541,9 @@ impl Manager {
                 user_id: identity.user_id,
                 auth_mode: c.mode.clone(),
                 auth_username: c.username.clone(),
+                identity_verified: (!verified).then_some(false),
+                git_username: imported.as_ref().and_then(|(c, _)| (!c.username.is_empty()).then(|| c.username.clone())),
+                actor_namespace,
             };
             if String::from_utf8_lossy(&json(&profile)?).contains(&c.token) {
                 return Err(fail("Server returned token material as identity metadata; account was not saved."));
@@ -502,10 +573,14 @@ impl Manager {
             m.sessions.remove(id);
             Ok(())
         })?;
+        crate::git_credentials::clear_sessions();
         self.snapshot()
     }
     pub fn test(&self, id: &str) -> GitResult<String> {
         let (p, c) = self.account(id)?;
+        if p.identity_verified == Some(false) {
+            return Err(fail("Select a repository connection to test this token without reading its profile."));
+        }
         let i = verify(&p.server, &c)?;
         if i.user_id != p.user_id {
             return Err(fail("The server identity changed. Reconnect and review this account."));
@@ -533,7 +608,11 @@ impl Manager {
         if !["basic", "bearer"].contains(&c.mode.as_str()) {
             return Err(fail("Unsupported Bitbucket token type."));
         }
-        Ok(Zeroizing::new(if username { if c.mode == "basic" { "x-bitbucket-api-token-auth" } else { "x-token-auth" }.to_owned() } else { c.token.clone() }))
+        Ok(Zeroizing::new(if username {
+            profile.git_username.clone().unwrap_or_else(|| if c.mode == "basic" { "x-bitbucket-api-token-auth" } else { "x-token-auth" }.to_owned())
+        } else {
+            c.token.clone()
+        }))
     }
     fn account(&self, id: &str) -> GitResult<(Profile, Credential)> {
         let mut m = self.memory.lock();
@@ -583,6 +662,15 @@ pub struct Add {
     pub token: String,
     pub auth_mode: String,
     pub persist: bool,
+    pub verify_identity: Option<bool>,
+    pub git_source: Option<GitSource>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitSource {
+    pub repo: String,
+    pub remote: String,
+    pub fingerprint: String,
 }
 struct Identity {
     login: String,
@@ -795,6 +883,7 @@ pub struct Context {
     pub info: forge::ForgeInfo,
     pub credential: Option<Credential>,
     pub git_url: String,
+    pub profile: Option<Profile>,
 }
 fn resolve(d: &Document, m: &Memory, repository: &str, r: &refs::RemoteInfo) -> GitResult<Option<Context>> {
     if let Some(b) = d.bindings.iter().find(|b| b.repository == repository && b.remote == r.name) {
@@ -808,10 +897,11 @@ fn resolve(d: &Document, m: &Memory, repository: &str, r: &refs::RemoteInfo) -> 
                 info: info_for_profile(&record.profile, &r.fetch_url, &r.name, b.allow_ssh_alias)?,
                 credential: Some(credential(d, m, id)?),
                 git_url: r.fetch_url.clone(),
+                profile: Some(record.profile.clone()),
             }));
         }
     }
-    Ok(forge::forge_for(&r.fetch_url, &r.name).map(|info| Context { info, credential: None, git_url: r.fetch_url.clone() }))
+    Ok(forge::forge_for(&r.fetch_url, &r.name).map(|info| Context { info, credential: None, git_url: r.fetch_url.clone(), profile: None }))
 }
 pub fn context(root: &Path) -> GitResult<Option<Context>> {
     context_from(manager()?, root)
@@ -829,11 +919,44 @@ fn context_from(manager: &Manager, root: &Path) -> GitResult<Option<Context>> {
         remotes.iter().find(|r| r.name == "origin").or_else(|| remotes.first())
     };
     let mut context = r.map(|r| resolve(&d, &m, &repo, r)).transpose()?.flatten();
+    let revision = revision(&d, &m)?;
+    drop(m);
     if let Some(c) = context.as_mut() {
-        let proof = format!("{}\0{}\0{}\0{}", revision(&d, &m)?, repo, c.git_url, c.info.remote);
+        let mut proof = format!("{}\0{}\0{}\0{}", revision, repo, c.git_url, c.info.remote);
+        if c.info.kind == "bitbucket" {
+            if c.credential.is_none() {
+                c.credential = Some(forge::token(root, &c.git_url)?);
+            }
+            proof.push_str(&credential_stamp(c.credential.as_ref().unwrap())?);
+        }
         c.info.connection_revision = Some(digest(proof.as_bytes()));
     }
     Ok(context)
+}
+
+fn credential_stamp(c: &Credential) -> GitResult<String> {
+    static KEY: Mutex<Option<Zeroizing<[u8; 32]>>> = Mutex::new(None);
+    let mut key = KEY.lock();
+    if key.is_none() {
+        *key = Some(Zeroizing::new(random()?));
+    }
+    let signing = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key.as_ref().unwrap()[..]);
+    let bytes = Zeroizing::new(json(c)?);
+    Ok(digest(ring::hmac::sign(&signing, &bytes).as_ref()))
+}
+
+pub fn test_repository(root: &Path, id: &str) -> GitResult<String> {
+    let context = context(root)?.ok_or_else(|| fail("Select an API connection first."))?;
+    let profile = context.profile.as_ref().filter(|p| p.id == id).ok_or_else(|| fail("Select this token for the repository before testing it."))?;
+    if profile.identity_verified != Some(false) {
+        return manager()?.test(id);
+    }
+    let path = format!("/repositories/{}/pullrequests?pagelen=1", forge::project_path(&context.info.project));
+    let response = forge::request(root, &context.info, "GET", &path, None)?;
+    if !response.get("values").is_some_and(Value::is_array) {
+        return Err(fail("The server returned an invalid pull-request list."));
+    }
+    Ok(profile.login.clone())
 }
 pub fn connections(root: &Path) -> GitResult<Connections> {
     let manager = manager()?;

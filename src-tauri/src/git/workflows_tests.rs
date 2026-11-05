@@ -462,6 +462,8 @@ fn pr_agent_tests_and_commit_use_the_isolated_working_copy_and_review_requests_c
     let snapshot = manager
         .add(
             accounts::Add {
+                verify_identity: None,
+                git_source: None,
                 id: None,
                 kind: "github".into(),
                 server: http.url.clone(),

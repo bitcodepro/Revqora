@@ -104,7 +104,7 @@ fn action(kind: &str, actor: &str) -> Action {
 fn real_review_contracts_pin_lines_and_identity_and_preserve_git_and_failed_drafts() {
     let _serial = SERIAL.lock();
     let manager = accounts::manager().unwrap();
-    for kind in ["github", "gitlab", "bitbucket", "azure"] {
+    for (kind, read_profile) in [("github", true), ("gitlab", true), ("bitbucket", true), ("bitbucket", false), ("azure", true)] {
         let state = Arc::new(Mutex::new(discussion(kind)));
         let server_state = state.clone();
         let deny = Arc::new(AtomicBool::new(false));
@@ -118,6 +118,7 @@ fn real_review_contracts_pin_lines_and_identity_and_preserve_git_and_failed_draf
         let h = Http::new(move |r| {
             let headers = "Content-Type: application/json\r\n".to_string();
             if r.path.ends_with("/user") || r.path.contains("connectionData") {
+                assert!(read_profile, "Token-only PR operations must not require profile permissions");
                 let wrong = flipping.load(Ordering::SeqCst) && identity_calls.fetch_add(1, Ordering::SeqCst) > 0;
                 return(200,headers,json!({"id":if wrong{2}else{1},"login":"tester","username":"tester","name":"Tester","display_name":"Tester","nickname":"tester","uuid":if wrong{"other"}else{"tester"},"authenticatedUser":{"id":if wrong{"other"}else{"tester"},"providerDisplayName":"Tester","properties":{"Account":{"$value":"Tester"}}}}).to_string());
             }
@@ -188,6 +189,9 @@ fn real_review_contracts_pin_lines_and_identity_and_preserve_git_and_failed_draf
                 return (204, String::new(), String::new());
             }
             let clean = r.path.split('?').next().unwrap();
+            if kind == "bitbucket" && clean.ends_with("/pullrequests") {
+                return (200, headers, json!({"values":[metadata(kind,"Review PR","Description","main",1)]}).to_string());
+            }
             let t = server_state.lock().clone();
             if clean.ends_with("/discussions/d7") || clean.ends_with("/comments/7") || clean.ends_with("/threads/7") {
                 return (200, headers, t.to_string());
@@ -225,6 +229,8 @@ fn real_review_contracts_pin_lines_and_identity_and_preserve_git_and_failed_draf
         let s = manager
             .add(
                 accounts::Add {
+                    verify_identity: Some(read_profile),
+                    git_source: None,
                     id: None,
                     kind: kind.into(),
                     server: h.url.clone(),
@@ -252,6 +258,11 @@ fn real_review_contracts_pin_lines_and_identity_and_preserve_git_and_failed_draf
         let connection = forge::detect(repo).unwrap().unwrap().connection_revision.unwrap();
         let d = pr_center::detail(repo, 7, &connection).unwrap();
         let c = capabilities(repo, 7, &connection, &d.revision).unwrap();
+        if !read_profile {
+            assert!(c.actor.contains("profile not read"));
+            assert!(c.actor_id.starts_with("bitbucket-token:"));
+            assert_eq!(accounts::test_repository(repo, &aid).unwrap(), "tester@example.invalid");
+        }
         assert!(c.approve, "{kind}");
         assert_eq!(c.request_changes, kind != "gitlab");
         let listed = page(repo, 7, &connection, &d.revision, "threads", None).unwrap();
@@ -300,17 +311,41 @@ fn real_review_contracts_pin_lines_and_identity_and_preserve_git_and_failed_draf
             approve.body.clear();
         }
         act(repo, 7, &connection, &d.revision, approve).unwrap();
-        identities.store(0, Ordering::SeqCst);
-        flip.store(true, Ordering::SeqCst);
-        let before = h.seen.lock().len();
-        assert_eq!(act(repo, 7, &connection, &d.revision, action("comment", &c.actor_id)).unwrap_err().kind, "stale-operation");
-        assert!(h.seen.lock()[before..].iter().all(|r| r.method == "GET"));
-        flip.store(false, Ordering::SeqCst);
+        if read_profile {
+            identities.store(0, Ordering::SeqCst);
+            flip.store(true, Ordering::SeqCst);
+            let before = h.seen.lock().len();
+            assert_eq!(act(repo, 7, &connection, &d.revision, action("comment", &c.actor_id)).unwrap_err().kind, "stale-operation");
+            assert!(h.seen.lock()[before..].iter().all(|r| r.method == "GET"));
+            flip.store(false, Ordering::SeqCst);
+        }
         deny.store(true, Ordering::SeqCst);
         assert_eq!(act(repo, 7, &connection, &d.revision, action("comment", &c.actor_id)).unwrap_err().kind, "auth");
         deny.store(false, Ordering::SeqCst);
         uncertain.store(true, Ordering::SeqCst);
         assert_eq!(act(repo, 7, &connection, &d.revision, action("comment", &c.actor_id)).unwrap_err().kind, "forge-write-uncertain");
+        if !read_profile {
+            manager
+                .add(
+                    accounts::Add {
+                        id: Some(aid.clone()),
+                        kind: kind.into(),
+                        server: h.url.clone(),
+                        username: "tester@example.invalid".into(),
+                        token: "replacement-pr-token".into(),
+                        auth_mode: "basic".into(),
+                        persist: false,
+                        verify_identity: Some(false),
+                        git_source: None,
+                    },
+                    &manager.snapshot().unwrap().revision,
+                )
+                .unwrap();
+            let before = h.seen.lock().len();
+            assert_eq!(act(repo, 7, &connection, &d.revision, action("comment", &c.actor_id)).unwrap_err().kind, "stale-operation");
+            assert_eq!(h.seen.lock().len(), before, "A stale write must be rejected before contacting the server");
+            assert!(!h.seen.lock().iter().any(|r| r.path.ends_with("/user")));
+        }
         if kind == "github" {
             let mut a = action("reply", &c.actor_id);
             a.thread = Some("foreign".into());

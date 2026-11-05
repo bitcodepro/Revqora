@@ -79,7 +79,12 @@ pub fn command(repo: &Path) -> Command {
     // Credentials and SSH passphrases are asked through Revqora's own dialog.
     for (k, v) in crate::askpass::env() {
         c.env(k, v);
+        if k == crate::git_credentials::HELPER_VAR {
+            c.args(["-c", &format!("credential.helper={v}")]);
+        }
     }
+    c.env(crate::git_credentials::REPO_VAR, std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_owned()));
+    c.env(crate::git_credentials::EPOCH_VAR, crate::git_credentials::epoch().to_string());
     c.args([
         "-c",
         "core.quotepath=false",

@@ -47,13 +47,22 @@ pub struct AskpassRequest {
 #[derive(Serialize, Deserialize)]
 struct Ask {
     token: String,
+    #[serde(default)]
     prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credential: Option<crate::git_credentials::Request>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct Answer {
     ok: bool,
     value: String,
+}
+impl Drop for Answer {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.value.zeroize();
+    }
 }
 
 type Responder = Arc<dyn Fn(AskpassRequest) + Send + Sync>;
@@ -114,14 +123,14 @@ fn random_token() -> std::io::Result<String> {
 /// Git executes one helper pathname, not a shell command with arguments. A tiny
 /// executable script adds a fixed argv marker; SSH still executes the bare exe
 /// with ONE server-controlled argument, which cannot become this two-arg entry.
-fn git_helper(exe: &std::path::Path, directory: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+fn git_helper(exe: &std::path::Path, directory: &std::path::Path, filename: &str, flag: &str) -> std::io::Result<std::path::PathBuf> {
     std::fs::create_dir_all(directory)?;
     let mut path = exe.to_string_lossy().into_owned();
     if cfg!(windows) {
         path = path.replace('\\', "/");
     }
     let quoted = path.replace('\'', "'\\''");
-    let script = format!("#!/bin/sh\nexec '{quoted}' {GIT_HELPER_FLAG} \"$@\"\n");
+    let script = format!("#!/bin/sh\nexec '{quoted}' {flag} \"$@\"\n");
     let mut file = crate::git::atomic_file::new_in(directory)?;
     file.write_all(script.as_bytes())?;
     #[cfg(unix)]
@@ -130,7 +139,7 @@ fn git_helper(exe: &std::path::Path, directory: &std::path::Path) -> std::io::Re
         file.as_file().set_permissions(std::fs::Permissions::from_mode(0o700))?;
     }
     file.as_file().sync_all()?;
-    let destination = directory.join("git-askpass.sh");
+    let destination = directory.join(filename);
     crate::git::atomic_file::replace(file, &destination)?;
     Ok(destination)
 }
@@ -143,7 +152,9 @@ pub fn start(helper_exe: &std::path::Path, directory: &std::path::Path, on_reque
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let channels = Arc::new(Channels { git: random_token()?, ssh: random_token()? });
-    let git_helper = git_helper(helper_exe, directory)?;
+    let git_helper = git_helper(helper_exe, directory, "git-askpass.sh", GIT_HELPER_FLAG)?;
+    let credential_helper = self::git_helper(helper_exe, directory, "git-credential.sh", crate::git_credentials::HELPER_FLAG)?;
+    let credential_helper = credential_helper.to_string_lossy().replace('\\', "/").replace('\'', "'\\''");
     let server = Arc::new(Server { pending: Mutex::new(HashMap::new()), next: AtomicU64::new(1) });
     let _ = SERVER.set(server.clone());
     let exe = helper_exe.to_string_lossy().into_owned();
@@ -155,6 +166,7 @@ pub fn start(helper_exe: &std::path::Path, directory: &std::path::Path, on_reque
         (PORT_VAR.to_string(), port.to_string()),
         (TOKEN_VAR.to_string(), channels.ssh.clone()),
         (GIT_TOKEN_VAR.to_string(), channels.git.clone()),
+        (crate::git_credentials::HELPER_VAR.into(), format!("!'{credential_helper}'")),
     ];
     if std::env::var_os("DISPLAY").is_none() {
         // Older OpenSSH builds only consult SSH_ASKPASS when DISPLAY is set.
@@ -177,11 +189,20 @@ pub fn start(helper_exe: &std::path::Path, directory: &std::path::Path, on_reque
 fn handle(stream: TcpStream, server: &Server, channels: &Channels, on_request: &Responder) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut reader = BufReader::new(stream.try_clone()?.take(MAX_LINE));
-    let mut line = String::new();
+    let mut line = zeroize::Zeroizing::new(String::new());
     reader.read_line(&mut line)?;
     let mut out = stream;
     let Ok(ask) = serde_json::from_str::<Ask>(line.trim()) else { return Ok(()) };
     let Some(origin) = channels.origin(&ask.token) else { return Ok(()) };
+    if let Some(credential) = ask.credential {
+        if origin != Origin::Git {
+            return Ok(());
+        }
+        let value = zeroize::Zeroizing::new(crate::git_credentials::handle(&credential));
+        let reply = zeroize::Zeroizing::new(serde_json::to_string(&Answer { ok: true, value: value.to_string() })?);
+        writeln!(out, "{}", reply.as_str())?;
+        return out.flush();
+    }
     let id = server.next.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = channel();
     let request = AskpassRequest { id, kind: classify(&ask.prompt).to_string(), prompt: ask.prompt, origin };
@@ -215,13 +236,29 @@ pub fn pending_request(id: u64) -> Option<AskpassRequest> {
 /// Asks the running app; Ok(None) = the user cancelled.
 pub fn ask(port: &str, token: &str, prompt: &str) -> std::io::Result<Option<String>> {
     let mut s = TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap_or(0)))?;
-    let msg = serde_json::to_string(&Ask { token: token.to_string(), prompt: prompt.to_string() }).unwrap_or_default();
+    let msg = serde_json::to_string(&Ask { token: token.to_string(), prompt: prompt.to_string(), credential: None }).unwrap_or_default();
     writeln!(s, "{msg}")?;
     s.flush()?;
     let mut line = String::new();
     BufReader::new(s.take(MAX_LINE)).read_line(&mut line)?;
-    let a: Answer = serde_json::from_str(line.trim()).map_err(|e| std::io::Error::other(e.to_string()))?;
-    Ok(if a.ok { Some(a.value) } else { None })
+    let mut a: Answer = serde_json::from_str(line.trim()).map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(if a.ok { Some(std::mem::take(&mut a.value)) } else { None })
+}
+
+pub(crate) fn credential(port: &str, token: &str, request: crate::git_credentials::Request) -> std::io::Result<String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap_or(0)))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    let message = zeroize::Zeroizing::new(serde_json::to_string(&Ask { token: token.into(), prompt: String::new(), credential: Some(request) })?);
+    writeln!(stream, "{}", message.as_str())?;
+    stream.flush()?;
+    let mut line = zeroize::Zeroizing::new(String::new());
+    BufReader::new(stream.take(MAX_LINE)).read_line(&mut line)?;
+    let mut answer: Answer = serde_json::from_str(line.trim())?;
+    if answer.ok {
+        Ok(std::mem::take(&mut answer.value))
+    } else {
+        Err(std::io::Error::other("Credential helper request rejected"))
+    }
 }
 
 /// Entry point used by `main`: when started by git/ssh as the askpass program, answer and
@@ -229,6 +266,11 @@ pub fn ask(port: &str, token: &str, prompt: &str) -> std::io::Result<Option<Stri
 pub fn run_helper_if_requested() -> Option<i32> {
     let port = std::env::var(PORT_VAR).ok()?;
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [marker, operation] = args.as_slice() {
+        if marker == crate::git_credentials::HELPER_FLAG {
+            return Some(crate::git_credentials::run_helper(&port, operation));
+        }
+    }
     let (variable, prompt) = match args.as_slice() {
         [marker, prompt] if marker == GIT_HELPER_FLAG => (GIT_TOKEN_VAR, prompt),
         [prompt] => (TOKEN_VAR, prompt),

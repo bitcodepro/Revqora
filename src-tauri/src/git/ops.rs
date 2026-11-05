@@ -747,7 +747,13 @@ pub fn push_ref(repo: &Path, remote: &str, refspec: &str, on_line: impl FnMut(&s
 
 pub fn clone(parent: &Path, url: &str, dir_name: &str, on_line: impl FnMut(&str)) -> GitResult<PathBuf> {
     std::fs::create_dir_all(parent)?;
-    runner::run_streaming(parent, &["clone".into(), "--progress".into(), url.into(), dir_name.into()], &[], on_line)?;
+    let root = parent.join(dir_name);
+    runner::run_streaming(
+        parent,
+        &["clone".into(), "--progress".into(), url.into(), dir_name.into()],
+        &[(crate::git_credentials::REPO_VAR, &root.to_string_lossy())],
+        on_line,
+    )?;
     Ok(parent.join(dir_name))
 }
 

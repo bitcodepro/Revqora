@@ -209,6 +209,8 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
         let s = manager
             .add(
                 Add {
+                    verify_identity: None,
+                    git_source: None,
                     id: None,
                     kind: kind.into(),
                     server: h.url.clone(),

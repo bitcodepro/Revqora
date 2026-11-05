@@ -169,7 +169,7 @@ fn is_bitbucket(f: &ForgeInfo) -> bool {
 
 /// Let Git apply this repository's URL/account matching, including useHttpPath.
 /// Never override its storage scope or cache credentials by host in Revqora.
-fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
+pub(super) fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
     let (host, path) = parse_remote(url).ok_or_else(|| GitError::new("Unsupported credential URL").kind("auth"))?;
     let username = url::Url::parse(url).ok().filter(|u| matches!(u.scheme(), "http" | "https")).map(|u| u.username().to_owned()).unwrap_or_default();
     let username =
@@ -182,7 +182,9 @@ fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential>
         .map(|u| percent_encoding::percent_decode_str(u.path().trim_start_matches('/')).decode_utf8_lossy().into_owned())
         .unwrap_or_else(|| url.split_once(':').map(|(_, p)| p.into()).unwrap_or(path));
     let user = if username.is_empty() { String::new() } else { format!("username={username}\n") };
-    let input = format!("protocol=https\nhost={host}\npath={git_path}\n{user}\n");
+    let transport = url::Url::parse(url).ok().filter(|u| matches!(u.scheme(), "http" | "https"));
+    let protocol = transport.as_ref().map_or("https", |u| u.scheme());
+    let input = format!("protocol={protocol}\nhost={host}\npath={git_path}\n{user}\n");
     let out = crate::journal::suspend(|| {
         runner::exec_full(
             repo,
@@ -236,7 +238,7 @@ pub(super) fn graphql_as(repo: &Path, f: &ForgeInfo, query: &str, variables: Val
     };
     let v = authorized(repo, f, |c| {
         if let Some(actor) = actor {
-            check_actor(f, c, actor)?;
+            check_actor(repo, f, c, actor)?;
         }
         super::forge_accounts::request_json("github", base, c, "POST", path, Some(serde_json::json!({"query":query,"variables":variables})))
     })?;
@@ -251,7 +253,7 @@ pub(super) fn graphql_as(repo: &Path, f: &ForgeInfo, query: &str, variables: Val
 /// Some writes return 204. An empty success body is not a failed JSON response.
 pub(super) fn write_api(repo: &Path, f: &ForgeInfo, method: &str, path: &str, body: Option<Value>, actor: &str) -> GitResult<()> {
     authorized(repo, f, |c| {
-        check_actor(f, c, actor)?;
+        check_actor(repo, f, c, actor)?;
         super::forge_accounts::request_content(&f.kind, &f.api, c, method, path, body.clone(), "application/json", 4 * 1024 * 1024, false)
     })
     .map(|_| ())
@@ -266,12 +268,20 @@ pub(super) fn write_response(
     actor: &str,
 ) -> GitResult<super::forge_accounts::ApiContent> {
     authorized(repo, f, |c| {
-        check_actor(f, c, actor)?;
+        check_actor(repo, f, c, actor)?;
         super::forge_accounts::request_content(&f.kind, &f.api, c, method, path, body.clone(), "application/json", 4 * 1024 * 1024, false)
     })
 }
 
-fn check_actor(f: &ForgeInfo, c: &super::forge_accounts::Credential, expected: &str) -> GitResult<()> {
+fn check_actor(repo: &Path, f: &ForgeInfo, c: &super::forge_accounts::Credential, expected: &str) -> GitResult<()> {
+    if f.kind == "bitbucket" {
+        let (_, actual, _) = bitbucket_actor(repo, f)?;
+        return if actual == expected {
+            Ok(())
+        } else {
+            Err(GitError::new("The selected token connection changed. Refresh before sending.").kind("stale-operation"))
+        };
+    }
     if f.kind == "bitbucket-server" {
         return if expected == "git-credentials" { Ok(()) } else { Err(GitError::new("Unverified review identity.").kind("stale-operation")) };
     }
@@ -294,7 +304,7 @@ fn authorized<T>(repo: &Path, f: &ForgeInfo, send: impl Fn(&super::forge_account
     if context.info != *f {
         return Err(GitError::new("The API connection changed. Refresh before trying again.").kind("stale-operation"));
     }
-    let explicit = context.credential.is_some();
+    let explicit = context.profile.is_some();
     let mut credential = match context.credential {
         Some(c) => c,
         None => token(repo, &context.git_url)?,
@@ -309,6 +319,34 @@ fn authorized<T>(repo: &Path, f: &ForgeInfo, send: impl Fn(&super::forge_account
         return send(&credential);
     }
     result
+}
+
+/// An opaque connection namespace is never presented as a Bitbucket user UUID.
+/// The connection proof binds the actual token (including Git-helper changes).
+pub(super) fn bitbucket_actor(repo: &Path, f: &ForgeInfo) -> GitResult<(String, String, Option<String>)> {
+    let context = super::forge_accounts::context(repo)?.ok_or_else(|| GitError::new("Select a Bitbucket connection."))?;
+    if context.info != *f {
+        return Err(GitError::new("The token connection changed. Refresh before sending.").kind("stale-operation"));
+    }
+    if context.profile.as_ref().is_some_and(|p| p.identity_verified != Some(false)) {
+        let u = request(repo, f, "GET", "/user", None)?;
+        let name = p(&u, "/display_name");
+        let id = p(&u, "/uuid");
+        if name.is_empty() || id.is_empty() {
+            return Err(GitError::new("Could not verify the selected Bitbucket profile."));
+        }
+        let profile = context.profile.as_ref().unwrap();
+        if id != profile.user_id {
+            return Err(GitError::new("The Bitbucket identity changed. Reconnect and review this account.").kind("stale-operation"));
+        }
+        return Ok((name, profile.actor_namespace.clone().unwrap_or_else(|| id.clone()), Some(id)));
+    }
+    let key = context
+        .profile
+        .as_ref()
+        .map(|p| p.actor_namespace.clone().unwrap_or_else(|| format!("bitbucket-token:{}", p.id)))
+        .unwrap_or_else(|| format!("bitbucket-token:git:{}", super::pr_center::hash(context.git_url)));
+    Ok(("Selected Bitbucket token (profile not read)".into(), key, None))
 }
 
 pub(crate) fn enc(s: &str) -> String {

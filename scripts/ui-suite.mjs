@@ -14,6 +14,7 @@ import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
 import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manager-smoke.mjs";
 import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
 import { cloneInputSmoke } from "./clone-input-smoke.mjs";
+import { bitbucketTokenSmoke } from "./bitbucket-token-smoke.mjs";
 
 const arg=name=>process.argv[process.argv.indexOf(name)+1];
 const suite=process.env.REVQORA_SMOKE_SUITE;
@@ -46,6 +47,7 @@ try{
     await cloneInputSmoke({page,check,shot,work});
   }else if(suite==="cleanup") await branchCleanupSmoke({page,check,shot,work});
   else {await worktreeManagerSmoke({page,check,shot,work});await forgeAccountsSmoke({page,check,shot,work,profile:path.join(work,"profile"),restart});await prCenterSmoke({page:app.page,check,shot,work});await agentWorkspaceSmoke({page:app.page,check,shot,work,restart,deferCleanup});await workflowSmoke({page:app.page,check,shot,work,restart});await futureStagesSmoke({page:app.page,check,shot,work,restart});}
+  if(suite==="worktrees")await bitbucketTokenSmoke({exe:path.resolve(arg("--exe")),work,check,out});
   assertSmokeCoverage(suite,completed);
   if(errors.length)throw new Error(errors.join(" | "));
 }catch(e){console.error(e);process.exitCode=1;await app?.page.screenshot({path:path.join(out,"failure.png")}).catch(()=>{});}

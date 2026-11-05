@@ -121,7 +121,7 @@ function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onA
             </button>
           )}
         </div>
-        <div className="help">The answer goes straight to git and is not stored by Revqora.</div>
+        <div className="help">{req.origin==="git"?"Git-approved HTTPS credentials can be reused for this repository during this session, including PR access. Revqora keeps this cache in memory; use Accounts to save a token in the encrypted vault.":"The answer goes straight to SSH and is not reused as an API token."}</div>
       </div>
       {bitbucket && <>
         <p className="help">For an API token, use your Bitbucket username or <code>x-bitbucket-api-token-auth</code> as the Git username and paste the token when Git asks for a password. For an OAuth access token, use <code>x-token-auth</code>. Git needs repository read permission for Fetch/Pull and write permission for Push.</p>

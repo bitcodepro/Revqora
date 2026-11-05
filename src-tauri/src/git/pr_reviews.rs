@@ -93,11 +93,14 @@ fn caps(repo: &Path, f: &ForgeInfo, d: &Detail, v: &Value) -> GitResult<Capabili
             c.reason="GitLab approval eligibility is checked on the server. Request Changes is not exposed by this REST integration; use GitLab for that action. Token write scopes are checked when sending.".into();
         }
         "bitbucket" => {
-            let u = forge::request(repo, f, "GET", "/user", None)?;
-            c.actor = text(&u, "/display_name");
-            c.actor_id = text(&u, "/uuid");
-            c.approve = c.actor_id != text(v, "/author/uuid");
+            let (actor, actor_id, user_id) = forge::bitbucket_actor(repo, f)?;
+            c.actor = actor;
+            c.actor_id = actor_id;
+            c.approve = user_id.as_ref().is_none_or(|id| *id != text(v, "/author/uuid"));
             c.request_changes = c.approve;
+            if user_id.is_none() {
+                c.reason = "Profile access is disabled. Actions use the selected token; Bitbucket checks write permissions and voting eligibility.".into();
+            }
         }
         "azure" => {
             let u = forge::request(repo, f, "GET", "/_apis/connectionData?api-version=7.1-preview.1", None)?;
