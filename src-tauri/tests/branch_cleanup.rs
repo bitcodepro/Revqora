@@ -329,3 +329,141 @@ fn replace_refs_cannot_hide_unmerged_history_and_state_guard_preserves_manual_ed
     assert!(f.exists("two"));
     assert_eq!(fs::read_to_string(f.root.join("file.txt")).unwrap(), "external manual edit");
 }
+
+fn fast_review(f: &Fixture, names: &[&str]) -> branch_cleanup::Review {
+    let requests = names.iter().map(|name| Request { reference: format!("refs/heads/{name}"), oid: f.oid(name), mode: Mode::Local }).collect();
+    branch_cleanup::review_with_analysis(&f.root, requests, "refs/heads/main", &["main".into()], false).unwrap()
+}
+fn fast_selections(review: &branch_cleanup::Review) -> Vec<Selection> {
+    review.items.iter().map(|item| Selection { proof: item.plan.as_ref().unwrap().proof.clone(), mode: item.request.mode, force: true }).collect()
+}
+
+#[test]
+fn twenty_remote_deleted_local_branches_need_no_history_comparison_and_share_one_checkpoint() {
+    let f = Fixture::new();
+    f.git(&["remote", "add", "origin", f.temp.path().join("unavailable.git").to_str().unwrap()]);
+    let names: Vec<_> = (0..20).map(|n| format!("obsolete-{n:02}")).collect();
+    let mut tips = std::collections::BTreeMap::new();
+    for name in &names {
+        let tip = f.git(&["commit-tree", &f.oid("HEAD^{tree}"), "-p", "HEAD", "-m", name]);
+        f.git(&["update-ref", &format!("refs/heads/{name}"), &tip]);
+        f.git(&["config", &format!("branch.{name}.remote"), "origin"]);
+        f.git(&["config", &format!("branch.{name}.merge"), &format!("refs/heads/{name}")]);
+        tips.insert(format!("refs/heads/{name}"), tip);
+    }
+    fs::write(f.root.join("file.txt"), "manual changes stay\n").unwrap();
+    let index = fs::read(f.root.join(".git/index")).unwrap();
+    let r = fast_review(&f, &names.iter().map(String::as_str).collect::<Vec<_>>());
+    for item in &r.items {
+        let plan = item.plan.as_ref().unwrap();
+        assert!(!plan.analysis_performed);
+        assert!(plan.proof.base_oid.is_none() && plan.proof.base_ref.is_none());
+        assert_eq!(plan.local_integration, "not-analyzed");
+        assert!(plan.local_only.is_none() && plan.remote_only.is_none());
+    }
+    let before = recovery::list(&f.root).unwrap().checkpoints.len();
+    let report = f.execute(&fast_selections(&r), &["main".into()]);
+    assert!(!report.preflight_failed);
+    assert!(report.items.iter().all(|item| item.status == "deleted" && item.checkpoints.len() == 1));
+    let id = &report.items[0].checkpoints[0].id;
+    assert!(report.items.iter().all(|item| item.checkpoints[0].id == *id));
+    assert_eq!(recovery::list(&f.root).unwrap().checkpoints.len(), before + 1);
+    let saved = recovery::detail(&f.root, id).unwrap();
+    let deleted = revqora_lib::git::more::deleted_branches(&f.root).unwrap();
+    for name in &names {
+        assert!(deleted.iter().any(|entry| entry.name == *name && entry.oid == tips[&format!("refs/heads/{name}")] && entry.subject == *name));
+    }
+    assert_eq!(
+        saved.refs.iter().filter(|r| tips.contains_key(&r.name)).map(|r| (r.name.clone(), r.oid.clone())).collect::<std::collections::BTreeMap<_, _>>(),
+        tips
+    );
+    for (i, reference) in saved.refs.iter().enumerate().filter(|(_, r)| tips.contains_key(&r.name)) {
+        assert!(!f.exists(reference.name.strip_prefix("refs/heads/").unwrap()));
+        let restored = format!("restored-{i}");
+        recovery::restore_branch(&f.root, id, Some(i), &restored).unwrap();
+        assert_eq!(f.oid(&restored), reference.oid);
+    }
+    for name in ["main", "one", "two", "three"] {
+        assert!(f.exists(name));
+    }
+    assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(f.root.join("file.txt")).unwrap(), b"manual changes stay\n");
+}
+
+#[test]
+fn fast_review_does_not_traverse_history_but_explicit_analysis_does() {
+    let f = Fixture::new();
+    // A real tip with an unavailable parent: reading the ref is possible, walking
+    // its history is not. This proves skipping analysis, without timing guesses.
+    let raw = format!(
+        "tree {}\nparent {}\nauthor Tester <test@example.invalid> 1 +0000\ncommitter Tester <test@example.invalid> 1 +0000\n\nMissing ancestor\n",
+        f.oid("HEAD^{tree}"),
+        "f".repeat(40)
+    );
+    let out = runner::exec_full(&f.root, ["hash-object", "-t", "commit", "-w", "--stdin"], &[], Some(raw.as_bytes())).unwrap();
+    assert!(out.ok());
+    let tip = out.text().trim().to_owned();
+    f.git(&["update-ref", "refs/heads/incomplete", &tip]);
+    let r = fast_review(&f, &["incomplete"]);
+    assert!(!r.items[0].plan.as_ref().unwrap().analysis_performed);
+    let analyzed = branch_cleanup::review_with_analysis(
+        &f.root,
+        vec![Request { reference: "refs/heads/incomplete".into(), oid: tip, mode: Mode::Local }],
+        "refs/heads/main",
+        &[],
+        true,
+    )
+    .unwrap();
+    assert!(analyzed.items[0].error.is_some() && analyzed.items[0].plan.is_none());
+    let report = branch_cleanup::execute_with_checkpoint(&f.root, &fast_selections(&r), &[], false, |_| {}).unwrap();
+    assert_eq!(report.items[0].status, "deleted");
+    assert!(report.items[0].checkpoints.is_empty());
+}
+
+#[test]
+fn unchecked_history_still_rejects_stale_protected_symbolic_and_occupied_branches() {
+    let f = Fixture::new();
+    let r = fast_review(&f, &["one", "two"]);
+    let selections = fast_selections(&r);
+    let refs = f.git(&["show-ref"]);
+    assert!(f.execute(&selections, &["two".into()]).preflight_failed);
+    assert_eq!(f.git(&["show-ref"]), refs);
+    f.git(&["update-ref", "refs/heads/two", &f.next()]);
+    assert!(f.execute(&selections, &[]).preflight_failed);
+    assert!(f.exists("one"));
+    f.git(&["symbolic-ref", "refs/heads/alias", "refs/heads/main"]);
+    let wt = f.temp.path().join("occupied");
+    f.git(&["worktree", "add", wt.to_str().unwrap(), "two"]);
+    let occupied = fast_review(&f, &["alias", "two", "main"]);
+    assert!(occupied.items.iter().all(|r| r.error.is_some() && r.plan.is_none()));
+    assert!(recovery::list(&f.root).unwrap().checkpoints.is_empty());
+}
+
+#[test]
+fn fast_local_transaction_failure_does_not_partially_delete_the_selection() {
+    let f = Fixture::new();
+    let selections = fast_selections(&fast_review(&f, &["one", "two", "three"]));
+    let refs = f.git(&["show-ref"]);
+    fs::write(f.root.join(".git/refs/heads/two.lock"), b"another Git writer").unwrap();
+    let report = branch_cleanup::execute_with_checkpoint(&f.root, &selections, &[], false, |_| {}).unwrap();
+    assert_eq!(report.status, "stopped");
+    assert!(report.items.iter().all(|r| r.status == "failed" && !r.local_deleted && r.checkpoints.is_empty()));
+    assert_eq!(f.git(&["show-ref"]), refs);
+}
+
+#[test]
+fn fast_local_batch_rechecks_new_worktree_usage_after_saving_recovery() {
+    let f = Fixture::new();
+    let selections = fast_selections(&fast_review(&f, &["one", "two"]));
+    let refs = f.git(&["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"]);
+    let wt = f.temp.path().join("occupied-during-confirmation");
+    let result = branch_cleanup::execute_with_checkpoint(&f.root, &selections, &[], true, |line| {
+        if line == "Deleting reviewed local branch references" {
+            f.git(&["worktree", "add", wt.to_str().unwrap(), "two"]);
+        }
+    });
+    assert_eq!(result.err().unwrap().kind, "branch-in-use");
+    assert_eq!(f.git(&["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"]), refs);
+    assert!(wt.join("file.txt").is_file());
+    assert_eq!(recovery::list(&f.root).unwrap().checkpoints.len(), 1);
+}

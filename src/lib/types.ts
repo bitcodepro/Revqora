@@ -666,6 +666,7 @@ export interface DeletionProof {
   name: string; localOid: string; remoteOnly: boolean; localPresent: boolean; baseRef: string | null; baseOid: string | null; target: RemoteBranchTarget | null;
 }
 export interface DeletionPlan {
+  analysisPerformed: boolean;
   proof: DeletionProof; bases: { reference: string; label: string }[];
   localOnly: number | null; remoteOnly: number | null; localUnmerged: number; remoteUnmerged: number | null;
   localIntegration: string; remoteIntegration: string | null;

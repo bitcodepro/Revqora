@@ -47,6 +47,36 @@ pub fn record_deleted(repo: &Path, name: &str) -> GitResult<()> {
     Ok(())
 }
 
+/// Preserve the legacy deleted-branches list without spawning Git per row.
+pub(super) fn record_deleted_tips(repo: &Path, tips: &[(&str, &str)]) -> GitResult<()> {
+    let mut args = vec!["log", "--no-walk", "--format=%H%x00%s"];
+    args.extend(tips.iter().map(|(_, oid)| *oid));
+    args.push("--");
+    let subjects = runner::run(repo, &args).unwrap_or_default();
+    let subjects: std::collections::HashMap<_, _> = subjects.lines().filter_map(|line| line.split_once('\0')).collect();
+    let file = deleted_file(repo)?;
+    let mut list: Vec<DeletedBranch> = std::fs::read_to_string(&file).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    list.retain(|b| !tips.iter().any(|(name, _)| *name == b.name));
+    for (name, oid) in tips.iter().rev() {
+        list.insert(
+            0,
+            DeletedBranch {
+                name: (*name).into(),
+                oid: (*oid).into(),
+                time: now(),
+                subject: subjects.get(oid).copied().unwrap_or("").into(),
+                source: "revqora".into(),
+            },
+        );
+    }
+    list.truncate(100);
+    let mut temporary = super::atomic_file::new_in(file.parent().ok_or_else(|| GitError::new("Invalid deleted-branch history path"))?)?;
+    serde_json::to_writer_pretty(&mut temporary, &list).map_err(|_| GitError::new("Could not encode deleted-branch history"))?;
+    temporary.as_file().sync_all()?;
+    super::atomic_file::replace(temporary, &file)?;
+    Ok(())
+}
+
 /// Branches that no longer exist: deleted in Revqora, or last seen in HEAD's reflog.
 pub fn deleted_branches(repo: &Path) -> GitResult<Vec<DeletedBranch>> {
     let existing: HashSet<String> = runner::run(repo, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])?.lines().map(|s| s.to_string()).collect();

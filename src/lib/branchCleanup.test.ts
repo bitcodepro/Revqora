@@ -5,6 +5,7 @@ import type { BranchCleanupReview, BranchCleanupMode, DeletionPlan } from "./typ
 const ref = (name: string) => `refs/heads/${name}`;
 function item(name: string, mode: BranchCleanupMode = "local", base = "main"): BranchCleanupReview["items"][number] {
   const plan: DeletionPlan = {
+    analysisPerformed: true,
     proof: { name, localOid: "a".repeat(40), remoteOnly: mode === "remote", localPresent: true, baseRef: ref(base), baseOid: "b".repeat(40), target: null },
     bases: [], localOnly: null, remoteOnly: null, localUnmerged: 0, remoteUnmerged: null, localIntegration: "reachable", remoteIntegration: null,
     worktrees: [], currentChanges: 0, stateToken: "state",

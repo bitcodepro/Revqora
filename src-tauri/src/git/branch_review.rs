@@ -40,6 +40,7 @@ pub struct BranchWorktree {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletionPlan {
+    pub analysis_performed: bool,
     pub proof: DeletionProof,
     pub bases: Vec<BaseChoice>,
     pub local_only: Option<u64>,
@@ -239,6 +240,7 @@ pub fn plan(
             })
             .collect();
         Ok(DeletionPlan {
+            analysis_performed: true,
             proof,
             bases,
             local_only,
@@ -254,6 +256,79 @@ pub fn plan(
     })?;
     plan.state_token = token;
     Ok(plan)
+}
+
+/// The batch owns the surrounding state inspection. This path reads reference
+/// identities only: no ancestry walk, merge-tree, diff or per-row status scan.
+pub(super) struct LocalRefSnapshot {
+    refs: std::collections::HashMap<String, (String, String, String)>,
+    occupied: std::collections::HashSet<String>,
+}
+impl LocalRefSnapshot {
+    pub(super) fn read(root: &Path) -> GitResult<Self> {
+        let raw = runner::run(root, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)", "refs/heads/"])?;
+        let refs = raw
+            .lines()
+            .filter_map(|line| {
+                let fields: Vec<_> = line.split('\0').collect();
+                (fields.len() == 4).then(|| (fields[0].to_owned(), (fields[1].to_owned(), fields[2].to_owned(), fields[3].to_owned())))
+            })
+            .collect();
+        let worktrees = runner::run(root, ["worktree", "list", "--porcelain", "-z"])?;
+        let occupied = worktrees.split('\0').filter_map(|field| field.strip_prefix("branch ").map(str::to_owned)).collect();
+        Ok(Self { refs, occupied })
+    }
+    pub(super) fn plan(&self, name: &str, oid: &str) -> GitResult<DeletionPlan> {
+        let reference = format!("refs/heads/{name}");
+        let Some((actual, kind, symbolic)) = self.refs.get(&reference) else {
+            return Err(stale("The selected local branch no longer exists."));
+        };
+        if !symbolic.is_empty() {
+            return Err(stale("Select a direct local branch, not a symbolic reference."));
+        }
+        if kind != "commit" || actual != oid {
+            return Err(stale("The local branch changed. Refresh deletion review."));
+        }
+        if self.occupied.contains(&reference) {
+            return Err(
+                GitError::new("This branch is checked out in a worktree. Switch that worktree to another branch before deleting it.").kind("branch-in-use")
+            );
+        }
+        Ok(unchecked_plan(name, oid.to_owned(), false, true, None))
+    }
+}
+
+pub(super) fn plan_without_history(root: &Path, name: &str, target: Option<RemoteBranchTarget>, remote_only: bool) -> GitResult<DeletionPlan> {
+    runner::run(root, ["check-ref-format", "--branch", name])?;
+    let local = runner::exec(root, ["rev-parse", "--verify", &format!("refs/heads/{name}^{{commit}}")])?;
+    let exists = local.ok();
+    let local_oid = if exists {
+        local.text().trim().to_owned()
+    } else if remote_only {
+        target.as_ref().ok_or_else(|| stale("Choose a remote branch."))?.oid.clone()
+    } else {
+        return Err(stale("The selected local branch no longer exists."));
+    };
+    if let Some(target) = &target {
+        validate_target(root, name, target, exists && !remote_only)?;
+    }
+    Ok(unchecked_plan(name, local_oid, remote_only, exists, target))
+}
+fn unchecked_plan(name: &str, local_oid: String, remote_only: bool, local_present: bool, target: Option<RemoteBranchTarget>) -> DeletionPlan {
+    DeletionPlan {
+        analysis_performed: false,
+        proof: DeletionProof { name: name.into(), local_oid, remote_only, local_present, base_ref: None, base_oid: None, target },
+        bases: Vec::new(),
+        local_only: None,
+        remote_only: None,
+        local_unmerged: 0,
+        remote_unmerged: None,
+        local_integration: "not-analyzed".into(),
+        remote_integration: None,
+        worktrees: Vec::new(),
+        current_changes: 0,
+        state_token: String::new(),
+    }
 }
 
 pub(super) fn validate(root: &Path, proof: &DeletionProof, local: bool) -> GitResult<()> {

@@ -39,6 +39,21 @@ fn git_credential_prompts_go_through_revqora() {
 
     runner::run(dir.path(), ["init", "-q"]).unwrap();
     let input = b"protocol=https\nhost=example.com\n\n";
+    // A credential manager must still be able to return a cached token, but
+    // must see noninteractive flags instead of starting browser/device login.
+    let cached = "credential.helper=!f() { test \"$GCM_INTERACTIVE\" = never && test \"$GCM_GUI_PROMPT\" = 0 || exit 1; if test \"$1\" = get; then printf 'username=cached-user\\npassword=cached-fixture-token\\n'; fi; }; f";
+    let cached_out = runner::exec_full(dir.path(), ["-c", "credential.helper=", "-c", cached, "credential", "fill"], &[], Some(input)).unwrap();
+    assert!(cached_out.ok(), "cached helper failed: {}", cached_out.stderr);
+    assert!(cached_out.text().contains("username=cached-user") && cached_out.text().contains("password=cached-fixture-token"));
+    assert!(seen.lock().unwrap().is_empty(), "Cached credentials unnecessarily asked for sign-in");
+    // A cache miss falls back to Revqora askpass. Rejecting an interactive
+    // helper never disables Git's own supported username/token prompt.
+    let miss = "credential.helper=!f() { test \"$GCM_INTERACTIVE\" = never && test \"$GCM_GUI_PROMPT\" = 0 || exit 1; }; f";
+    let fallback = runner::exec_full(dir.path(), ["-c", "credential.helper=", "-c", miss, "credential", "fill"], &[], Some(input)).unwrap();
+    assert!(fallback.ok());
+    assert!(fallback.text().contains("password=s3cret"));
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    seen.lock().unwrap().clear();
     // An empty helper list makes git fall back to GIT_ASKPASS.
     let out = runner::exec_full(dir.path(), ["-c", "credential.helper=", "credential", "fill"], &[], Some(input)).unwrap();
     let text = out.text();

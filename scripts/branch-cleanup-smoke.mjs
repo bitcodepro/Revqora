@@ -35,6 +35,11 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     await page.getByRole("button",{name:"Review cleanup…",exact:true}).click();
     await page.waitForSelector(".branch-cleanup[aria-busy=false]",{timeout:180000});
   };
+  const analyze=async()=>{
+    await page.getByRole("checkbox",{name:"Compare branch history before deletion",exact:true}).check();
+    await page.getByRole("button",{name:"Analyze history",exact:true}).click();
+    await page.waitForSelector('.branch-cleanup[aria-busy=false][data-cleanup-analysis="complete"]',{timeout:180000});
+  };
   const scope=async(ref,mode)=>{
     await page.getByRole("combobox",{name:`Deletion scope for ${ref}`,exact:true}).selectOption(mode);
     await page.waitForSelector(".branch-cleanup[aria-busy=false]",{timeout:180000});
@@ -60,6 +65,42 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     await page.getByRole("button",{name:"Close branch manager",exact:true}).click();
   };
   const exists=(root,name)=>!!git(root,"for-each-ref","--format=%(objectname)",`refs/heads/${name}`);
+  await check("twenty remote-deleted local branches delete without history analysis and retain exact batch recovery",async()=>{
+    const {root,server,invoke}=await fixture("fast-local");
+    const names=Array.from({length:20},(_,i)=>`obsolete-${String(i).padStart(2,"0")}`),tips=new Map();
+    for(const name of names){
+      const tip=git(root,"commit-tree",git(root,"rev-parse","HEAD^{tree}"),"-p","HEAD","-m",`Unmerged ${name}`);
+      git(root,"update-ref",`refs/heads/${name}`,tip);tips.set(name,tip);
+      git(root,"config",`branch.${name}.remote`,"origin");git(root,"config",`branch.${name}.merge`,`refs/heads/${name}`);
+    }
+    fs.writeFileSync(path.join(root,"file.txt"),"manual fast-cleanup changes\n");const index=fs.readFileSync(path.join(root,".git/index"));
+    await page.getByRole("button",{name:"Refresh branches",exact:true}).click();await page.waitForSelector(".bm-body[aria-busy=false]");
+    await search("obsolete-");await page.getByRole("button",{name:"Select shown (up to 50)",exact:true}).click();
+    const before=(await invoke("recovery_list",{repo:root})).checkpoints.length;
+    // Inspect the actual native request; opening the popup must never opt in.
+    await page.evaluate(()=>{
+      const original=window.fetch,url=window.__TAURI_INTERNALS__.convertFileSrc("branch_cleanup_review","ipc");
+      window.__fastCleanupCalls=[];window.__restoreFastCleanup=()=>{window.fetch=original;delete window.__restoreFastCleanup;};
+      window.fetch=function(input,init){if((typeof input==="string"?input:input.url)===url)window.__fastCleanupCalls.push(JSON.parse(init.body));return Reflect.apply(original,window,[input,init]);};
+    });
+    try{
+      const started=Date.now();await openReview();console.log(`Fast 20-branch review: ${Date.now()-started} ms`);
+      const calls=await page.evaluate(()=>window.__fastCleanupCalls);
+      if(!calls.length||calls.some(c=>c.analyze!==false))throw Error("Opening fast cleanup requested history analysis");
+      if(await page.getByRole("checkbox",{name:"Compare branch history before deletion",exact:true}).isChecked()||await page.getByRole("combobox",{name:"Cleanup comparison base",exact:true}).count()||await page.getByRole("checkbox",{name:/Allow unmerged deletion/}).count())throw Error("Default deletion requires an unrequested comparison or consent");
+      if(!await page.getByRole("button",{name:"Delete 20 selected",exact:true}).isEnabled())throw Error("Unanalyzed local branches cannot be deleted");
+      await shot("fast-local-20-review");await run(20);
+      if(await page.locator('[data-cleanup-status="deleted"]').count()!==20)throw Error("Fast cleanup did not delete all 20 branches");
+      const checkpoints=(await invoke("recovery_list",{repo:root})).checkpoints;
+      if(checkpoints.length!==before+1)throw Error("Fast cleanup did not save one shared checkpoint");
+      const cp=checkpoints.find(c=>c.command==="branch_cleanup_execute");if(!cp)throw Error("Missing batch checkpoint");
+      const detail=await invoke("recovery_detail",{repo:root,id:cp.id});
+      for(const name of names)if(exists(root,name)||exists(server,name)||!detail.refs.some(r=>r.name===`refs/heads/${name}`&&r.oid===tips.get(name)))throw Error(`Wrong ref or missing recovery for ${name}`);
+      if(!fs.readFileSync(path.join(root,".git/index")).equals(index)||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="manual fast-cleanup changes\n")throw Error("Fast deletion modified working files or staging");
+      if(await page.getByRole("button",{name:/Open batch recovery checkpoint/}).count()!==1)throw Error("Batch recovery link was duplicated or lost");
+      await shot("fast-local-20-result");await close();
+    }finally{await page.evaluate(()=>{window.__restoreFastCleanup?.();delete window.__fastCleanupCalls;});}
+  });
   await check("excluded cleanup branches stay excluded after scope, base and review refresh changes",async()=>{
     const {root,server,tip,invoke}=await fixture("exclusions");
     // Hold an actual inventory read to verify that local selection intent stays
@@ -84,7 +125,7 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     git(root,"checkout","-qb","bulk-risk");fs.writeFileSync(path.join(root,"new.txt"),"unique\n");git(root,"add",".");git(root,"commit","-qm","Unmerged history for consent reset");git(root,"checkout","main");
     await page.getByRole("button",{name:"Refresh branches",exact:true}).click();await page.waitForSelector(".bm-body[aria-busy=false]");
     for(const name of ["bulk-clean-a","bulk-clean-b","bulk-risk"]){await search(name);await select(`refs/heads/${name}`);}
-    await openReview();
+    await openReview();await analyze();
     const a=page.getByRole("checkbox",{name:"Include refs/heads/bulk-clean-a",exact:true});
     const consent=page.getByRole("checkbox",{name:"Allow unmerged deletion for refs/heads/bulk-risk",exact:true});
     await a.uncheck();await consent.check();
@@ -93,8 +134,8 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
       if(await consent.isChecked())throw new Error("Force consent survived a fresh review");
       if(!await page.getByRole("button",{name:"Delete 2 selected",exact:true}).isDisabled())throw new Error("Fresh unmerged review skipped renewed consent");
     };
-    await scope("refs/heads/bulk-clean-b","both");await assertKept();await consent.check();
-    const comparison=page.getByRole("combobox",{name:"Cleanup comparison base",exact:true});if(await comparison.inputValue()==="refs/heads/keep-base")throw new Error("Consent-reset scenario requires an actual base change");await comparison.selectOption("refs/heads/keep-base");await page.waitForSelector('.branch-cleanup[aria-busy=false][data-cleanup-base="refs/heads/keep-base"]',{timeout:180000});await assertKept();await consent.check();
+    await scope("refs/heads/bulk-clean-b","both");await analyze();await assertKept();await consent.check();
+    const comparison=page.getByRole("combobox",{name:"Cleanup comparison base",exact:true});if(await comparison.inputValue()==="refs/heads/keep-base")throw new Error("Consent-reset scenario requires an actual base change");await comparison.selectOption("refs/heads/keep-base");await analyze();await page.waitForSelector('.branch-cleanup[aria-busy=false][data-cleanup-base="refs/heads/keep-base"]',{timeout:180000});await assertKept();await consent.check();
     await page.getByRole("button",{name:"Refresh review",exact:true}).click();await page.waitForSelector(".branch-cleanup[aria-busy=false]",{timeout:180000});await assertKept();
     await page.getByRole("checkbox",{name:"Include refs/heads/bulk-risk",exact:true}).uncheck();
     const checkpointOption=page.getByRole("checkbox",{name:"Create recovery checkpoint",exact:true});
@@ -113,6 +154,7 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     await search("bulk-clean");await page.getByRole("button",{name:"Select shown (up to 50)",exact:true}).click();
     await search("bulk-clean-a");await page.locator(".bm-bulk").getByText("3 selected · 2 hidden by filter",{exact:true}).waitFor();
     await openReview();await scope("refs/heads/bulk-clean-b","both");await scope("refs/heads/bulk-clean-c","remote");
+    await analyze();
     if(!await page.getByRole("checkbox",{name:"Create recovery checkpoint",exact:true}).isChecked())throw new Error("Disabled checkpoints leaked into another bulk review");
     await shot("83-bulk-cleanup-review");await run(3);
     if(await page.locator('[data-cleanup-status="deleted"]').count()!==3)throw new Error("Mixed cleanup did not complete three rows");
@@ -139,6 +181,7 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     const protectedRow=page.locator('[data-cleanup-ref="refs/heads/bulk-clean-b"]');
     await protectedRow.getByRole("alert").filter({hasText:"main is protected"}).waitFor();
     if(!await protectedRow.getByRole("checkbox",{name:"Include refs/heads/bulk-clean-b",exact:true}).isDisabled())throw new Error("Protected upstream allowed selection");
+    await analyze();
     if(!await page.getByRole("button",{name:"Delete 1 selected",exact:true}).isDisabled())throw new Error("Unmerged deletion skipped explicit consent");
     await page.getByRole("checkbox",{name:"Allow unmerged deletion for refs/heads/bulk-risk",exact:true}).check();
     if(!await page.getByRole("button",{name:"Delete 1 selected",exact:true}).isEnabled())throw new Error("Per-row consent did not enable eligible cleanup");
@@ -182,7 +225,7 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
   await check("bulk server rejection reports partial local removal, saved checkpoints and skipped remaining rows",async()=>{
     const {root,server}=await fixture("partial");
     const hook=path.join(server,"hooks/pre-receive");fs.writeFileSync(hook,"#!/bin/sh\nexit 1\n");if(process.platform!=="win32")fs.chmodSync(hook,0o755);
-    await search("bulk-clean-a");await select("refs/heads/bulk-clean-a");await search("bulk-clean-b");await select("refs/heads/bulk-clean-b");await openReview();await scope("refs/heads/bulk-clean-a","both");await run(2);
+    await search("bulk-clean-a");await select("refs/heads/bulk-clean-a");await search("bulk-clean-b");await select("refs/heads/bulk-clean-b");await openReview();await scope("refs/heads/bulk-clean-a","both");await analyze();await run(2);
     if(await page.locator('[data-cleanup-status="partial"]').count()!==1||await page.locator('[data-cleanup-status="skipped"]').count()!==1)throw new Error("Partial cleanup result is inaccurate");
     if(exists(root,"bulk-clean-a")||!exists(server,"bulk-clean-a")||!exists(root,"bulk-clean-b"))throw new Error("Server rejection did not stop the batch");
     if(!await page.locator('[data-cleanup-status="partial"]').getByRole("button",{name:/Open recovery checkpoint/}).count())throw new Error("Partial deletion lost recovery checkpoint");

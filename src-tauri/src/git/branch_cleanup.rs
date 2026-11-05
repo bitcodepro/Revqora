@@ -106,12 +106,24 @@ fn check(root: &Path, s: &Selection, rules: &[String], server: bool) -> GitResul
     Ok(())
 }
 pub fn review(root: &Path, requests: Vec<Request>, base: &str, rules: &[String]) -> GitResult<Review> {
+    review_with_analysis(root, requests, base, rules, true)
+}
+
+pub fn review_with_analysis(root: &Path, requests: Vec<Request>, base: &str, rules: &[String], analyze: bool) -> GitResult<Review> {
     bounded(requests.len())?;
-    let (items, state_token) = operations::inspect(root, || {
+    let (mut items, state_token) = operations::inspect(root, || {
+        let local_refs = if !analyze && requests.iter().any(|r| r.mode == Mode::Local) { Some(branch_review::LocalRefSnapshot::read(root)?) } else { None };
         requests
             .into_iter()
             .map(|request| {
                 let result = (|| {
+                    if let (Some(snapshot), Some(name)) = (local_refs.as_ref(), request.reference.strip_prefix("refs/heads/")) {
+                        if request.mode == Mode::Local {
+                            let plan = snapshot.plan(name, &request.oid)?;
+                            branch_protection::require_allowed(Some(rules), Some(name), None)?;
+                            return Ok(plan);
+                        }
+                    }
                     let remote_row = request.reference.starts_with("refs/remotes/");
                     if remote_row && request.mode != Mode::Remote {
                         return Err(invalid("A remote row can only delete its server branch."));
@@ -137,7 +149,11 @@ pub fn review(root: &Path, requests: Vec<Request>, base: &str, rules: &[String])
                     if oid.trim() != request.oid {
                         return Err(invalid("The selected branch changed. Refresh the manager and select it again."));
                     }
-                    let p = branch_review::plan(root, &name, Some(base), target, None, request.mode == Mode::Remote)?;
+                    let p = if analyze {
+                        branch_review::plan(root, &name, Some(base), target, None, request.mode == Mode::Remote)?
+                    } else {
+                        branch_review::plan_without_history(root, &name, target, request.mode == Mode::Remote)?
+                    };
                     branch_review::validate(root, &p.proof, request.mode.local())?;
                     branch_protection::require_allowed(
                         Some(rules),
@@ -159,6 +175,11 @@ pub fn review(root: &Path, requests: Vec<Request>, base: &str, rules: &[String])
             })
             .collect::<GitResult<Vec<_>>>()
     })?;
+    for item in &mut items {
+        if let Some(plan) = &mut item.plan {
+            plan.state_token = state_token.clone();
+        }
+    }
     Ok(Review { items, state_token })
 }
 pub fn execute(root: &Path, selections: &[Selection], rules: &[String], mut progress: impl FnMut(&str)) -> GitResult<Report> {
@@ -178,6 +199,16 @@ pub fn execute_with_checkpoint(
         true,
         |_, _| {},
         || {
+            let fast_local = selections.iter().all(|s| {
+                s.mode == Mode::Local
+                    && s.force
+                    && !s.proof.remote_only
+                    && s.proof.local_present
+                    && s.proof.base_ref.is_none()
+                    && s.proof.base_oid.is_none()
+                    && s.proof.target.is_none()
+            });
+            let local_snapshot = if fast_local { Some(branch_review::LocalRefSnapshot::read(root)?) } else { None };
             let local_refs: HashSet<_> = selections.iter().filter(|s| s.mode.local()).map(|s| format!("refs/heads/{}", s.proof.name)).collect();
             let mut seen_local = HashSet::new();
             let mut seen_remote = HashSet::new();
@@ -204,7 +235,12 @@ pub fn execute_with_checkpoint(
                             return Err(invalid("The same server branch is selected twice. Keep only one row for this destination."));
                         }
                     }
-                    check(root, s, rules, true)
+                    if let Some(snapshot) = &local_snapshot {
+                        snapshot.plan(&s.proof.name, &s.proof.local_oid)?;
+                        branch_protection::require_allowed(Some(rules), Some(&s.proof.name), None)
+                    } else {
+                        check(root, s, rules, true)
+                    }
                 })();
                 if result.is_err() {
                     failed = true;
@@ -226,6 +262,59 @@ pub fn execute_with_checkpoint(
                 }
                 return Ok(Report { status: "stopped".into(), items: outcomes, preflight_failed: true });
             }
+            // Fast cleanup preserves the entire selection in one bundle rather
+            // than walking and packing the same history once for every row.
+            let batch_checkpoint = if create_checkpoint && fast_local {
+                progress("Saving one recovery checkpoint for the selected branch tips");
+                let mut references = std::collections::BTreeMap::new();
+                for s in selections {
+                    let name = format!("refs/heads/{}", s.proof.name);
+                    references.insert(name.clone(), recovery::SavedRef { name, oid: s.proof.local_oid.clone(), kind: "branch".into() });
+                }
+                Some(recovery::reference_checkpoint(
+                    root,
+                    "branch_cleanup_execute",
+                    "Before deleting selected branches",
+                    &references.into_values().collect::<Vec<_>>(),
+                    None,
+                )?)
+            } else {
+                None
+            };
+            if fast_local {
+                progress("Deleting reviewed local branch references");
+                // Refresh worktree usage after checkpoint creation. Local CAS is
+                // then enforced for the entire selection by one ref transaction.
+                let fresh = branch_review::LocalRefSnapshot::read(root)?;
+                for s in selections {
+                    fresh.plan(&s.proof.name, &s.proof.local_oid)?;
+                }
+                if create_checkpoint {
+                    let tips = selections.iter().map(|s| (s.proof.name.as_str(), s.proof.local_oid.as_str())).collect::<Vec<_>>();
+                    let _ = super::more::record_deleted_tips(root, &tips);
+                }
+                let mut transaction = String::from("start\n");
+                for s in selections {
+                    transaction.push_str(&format!("delete refs/heads/{} {}\n", s.proof.name, s.proof.local_oid));
+                }
+                transaction.push_str("prepare\ncommit\n");
+                let out = runner::exec_full(root, ["update-ref", "--no-deref", "--stdin"], &[], Some(transaction.as_bytes()))?;
+                for (s, outcome) in selections.iter().zip(&mut outcomes) {
+                    outcome.checkpoints.extend(batch_checkpoint.clone());
+                    if !out.ok() {
+                        outcome.status = "failed".into();
+                        outcome.message = Some(runner::to_error("git update-ref transaction", &out).message);
+                        continue;
+                    }
+                    outcome.local_deleted = true;
+                    outcome.status = "deleted".into();
+                    let cleanup = runner::exec(root, ["config", "--remove-section", &format!("branch.{}", s.proof.name)]);
+                    if !matches!(cleanup,Ok(ref out) if out.ok()||out.stderr.contains("no such section")) {
+                        outcome.message = Some("The branch was deleted, but its Git configuration section could not be removed.".into());
+                    }
+                }
+                return Ok(Report { status: if out.ok() { "done" } else { "stopped" }.into(), items: outcomes, preflight_failed: false });
+            }
             for (s, outcome) in selections.iter().zip(&mut outcomes) {
                 if failed {
                     outcome.message = Some("Skipped after an earlier failure. Prepare a new review.".into());
@@ -235,9 +324,18 @@ pub fn execute_with_checkpoint(
                 let result: GitResult<()> = (|| {
                     // An external CLI can mutate refs even while our writer turn is held.
                     check(root, s, rules, true)?;
+                    outcome.checkpoints.extend(batch_checkpoint.clone());
                     let mut warnings = Vec::new();
                     if s.mode.local() {
-                        let r = branch_review::delete_local_with_checkpoint(root, &s.proof, s.mode.remote(), s.force, None, Some(rules), create_checkpoint)?;
+                        let r = branch_review::delete_local_with_checkpoint(
+                            root,
+                            &s.proof,
+                            s.mode.remote(),
+                            s.force,
+                            None,
+                            Some(rules),
+                            create_checkpoint && batch_checkpoint.is_none(),
+                        )?;
                         outcome.local_deleted = true;
                         outcome.checkpoints.extend(r.checkpoint);
                         if let Some(w) = r.warning {
@@ -245,7 +343,15 @@ pub fn execute_with_checkpoint(
                         }
                     }
                     if s.mode.remote() {
-                        let r = branch_review::delete_remote_with_checkpoint(root, &s.proof, s.force, None, Some(rules), create_checkpoint, &mut progress)?;
+                        let r = branch_review::delete_remote_with_checkpoint(
+                            root,
+                            &s.proof,
+                            s.force,
+                            None,
+                            Some(rules),
+                            create_checkpoint && batch_checkpoint.is_none(),
+                            &mut progress,
+                        )?;
                         outcome.remote_deleted = true;
                         outcome.checkpoints.extend(r.checkpoint);
                         if let Some(w) = r.warning {
