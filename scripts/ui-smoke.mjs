@@ -124,6 +124,10 @@ try {
     // Auto-fetch scheduling itself is covered by the frontend unit tests.
     await page.getByTitle("Settings", { exact: true }).click();
     await page.locator(".modal label:has-text('Auto fetch') + .seg").getByRole("button", { name:"Off", exact:true }).click();
+    // Core scenarios deliberately close fixture repositories and later assert
+    // their exact open set. Exercise that startup policy explicitly; the native
+    // workspace fixture separately verifies the default all-library startup.
+    await page.getByRole("checkbox", { name: "Open all saved repositories", exact: true }).uncheck();
     await page.locator(".modal").getByRole("button", { name:"Done", exact:true }).click();
   });
 

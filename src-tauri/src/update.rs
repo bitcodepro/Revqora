@@ -368,7 +368,14 @@ fn extract(archive: &Path, dest: &Path) -> GitResult<()> {
                 return Err(GitError::new(format!("Unexpected entry in the package: {}", path.display())));
             }
             reserve_unpacked(&mut unpacked, entry.header().size()?)?;
-            entry.unpack(dest.join(&path))?;
+            let target = dest.join(&path);
+            // Release tarballs contain files only, without directory records.
+            // Path components and entry type were validated above; links are
+            // rejected, so no archive-created parent can redirect extraction.
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            entry.unpack(target)?;
         }
     } else {
         let mut zip = zip::ZipArchive::new(fs::File::open(archive)?).map_err(|e| GitError::new(format!("Bad package: {e}")))?;
@@ -717,6 +724,41 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join(STAGING).join("old/revqora.exe")).unwrap(), "old exe");
         cleanup(root);
         assert!(!root.join(STAGING).exists());
+    }
+
+    #[test]
+    fn installs_release_shaped_tar_with_nested_files_and_no_directory_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("revqora"), "old executable").unwrap();
+        let archive = root.join("release.tar.gz");
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(fs::File::create(&archive).unwrap(), flate2::Compression::fast()));
+        for (name, body) in [
+            ("revqora", "new executable"),
+            ("licenses/OFL.txt", "font license"),
+            ("licenses/nested/notice.txt", "nested notice"),
+            ("build-info.json", r#"{"version":"0.2.0","rid":"linux-x64"}"#),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(if name == "revqora" { 0o755 } else { 0o644 });
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            tar.append_data(&mut header, name, body.as_bytes()).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap();
+        let mut inspection = tar::Archive::new(flate2::read::GzDecoder::new(fs::File::open(&archive).unwrap()));
+        assert!(inspection.entries().unwrap().all(|entry| entry.unwrap().header().entry_type().is_file()));
+        apply_archive(root, &archive, "0.2.0", "linux-x64").unwrap();
+        assert_eq!(fs::read(root.join("revqora")).unwrap(), b"new executable");
+        assert_eq!(fs::read(root.join("licenses/OFL.txt")).unwrap(), b"font license");
+        assert_eq!(fs::read(root.join("licenses/nested/notice.txt")).unwrap(), b"nested notice");
+        assert_eq!(fs::read(root.join(STAGING).join("old/revqora")).unwrap(), b"old executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(root.join("revqora")).unwrap().permissions().mode() & 0o777, 0o755);
+        }
     }
 
     #[test]

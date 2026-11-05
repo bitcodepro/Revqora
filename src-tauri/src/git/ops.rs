@@ -116,21 +116,74 @@ pub fn unstage_paths(repo: &Path, paths: &[String], base: Option<&str>) -> GitRe
     Ok(())
 }
 
-/// Copies files into portable `data/repositories/<id>/trash/<time>/` before destructive operations.
+pub(super) fn path_is_link(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT, including junctions
+    }
+    #[cfg(not(windows))]
+    metadata.file_type().is_symlink()
+}
+
+/// Normalize away trailing slashes and never traverse a directory link while
+/// backing up/removing a selected leaf. Paths originate in Git, not the trash.
+pub(super) fn local_leaf_path(repo: &Path, path: &str) -> GitResult<PathBuf> {
+    let relative = Path::new(path);
+    if relative.as_os_str().is_empty()
+        || relative.components().any(|c| !matches!(c, std::path::Component::Normal(_)) || c.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git"))
+    {
+        return Err(GitError::new("Unsafe working-tree path."));
+    }
+    let mut full = repo.to_path_buf();
+    let parts: Vec<_> = relative.components().collect();
+    for (index, part) in parts.iter().enumerate() {
+        full.push(part.as_os_str());
+        if index + 1 < parts.len() && std::fs::symlink_metadata(&full).is_ok_and(|m| path_is_link(&m)) {
+            return Err(GitError::new("Working-tree paths cannot traverse directory links."));
+        }
+    }
+    Ok(full)
+}
+
+/// Copies regular files and preserves link targets without reading their contents.
+/// Backups live in portable `data/repositories/<id>/trash/<time>/`.
 pub fn backup_files(repo: &Path, paths: &[String]) -> GitResult<PathBuf> {
     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let dir = super::storage::dir(repo)?.join("trash").join(ts.to_string());
+    let trash = super::storage::dir(repo)?.join("trash");
+    std::fs::create_dir_all(&trash)?;
+    // Never reuse a previous backup path, especially one containing a saved
+    // link: a later regular-file copy must not follow that destination link.
+    let folder = tempfile::Builder::new().prefix(&format!("{ts}-")).tempdir_in(trash)?;
+    let dir = folder.path();
     for p in paths {
-        let src = repo.join(p);
-        if src.is_file() {
-            let dst = dir.join(p);
+        let src = local_leaf_path(repo, p)?;
+        let metadata = match std::fs::symlink_metadata(&src) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.is_file() || path_is_link(&metadata) {
+            let dst = dir.join(Path::new(p).components().collect::<PathBuf>());
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(&src, &dst)?;
+            if path_is_link(&metadata) {
+                let target = std::fs::read_link(&src)?;
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(target, &dst)?;
+                #[cfg(windows)]
+                if metadata.is_dir() {
+                    std::os::windows::fs::symlink_dir(target, &dst)?;
+                } else {
+                    std::os::windows::fs::symlink_file(target, &dst)?;
+                }
+            } else {
+                std::fs::copy(&src, &dst)?;
+            }
         }
     }
-    Ok(dir)
+    Ok(folder.keep())
 }
 
 pub fn discard_paths(repo: &Path, tracked: &[String], untracked: &[String]) -> GitResult<String> {
@@ -141,11 +194,22 @@ pub fn discard_paths(repo: &Path, tracked: &[String], untracked: &[String]) -> G
         with_paths(repo, &["restore", "--worktree"], tracked)?;
     }
     for p in untracked {
-        let full = repo.join(p);
-        if full.is_dir() {
-            std::fs::remove_dir_all(&full)?;
-        } else if full.exists() {
-            std::fs::remove_file(&full)?;
+        let full = local_leaf_path(repo, p)?;
+        match std::fs::symlink_metadata(&full) {
+            Ok(metadata) if path_is_link(&metadata) => {
+                #[cfg(windows)]
+                if metadata.is_dir() {
+                    std::fs::remove_dir(&full)?;
+                } else {
+                    std::fs::remove_file(&full)?;
+                }
+                #[cfg(not(windows))]
+                std::fs::remove_file(&full)?;
+            }
+            Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(&full)?,
+            Ok(_) => std::fs::remove_file(&full)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
     }
     Ok(backup.to_string_lossy().into_owned())
@@ -484,139 +548,156 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
             && runner::exec(repo, ["config", "--get", &remote_key])?.text() == remote_config.text()
             && index_before == runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?)
     };
-    if mode != "rebase" {
-        // Parse before fetching/merging, including Git's yes/on/1 spellings.
-        // Invalid configuration must fail before a partially completed pull.
-        let recurse = runner::exec(repo, ["config", "--bool", "--get", "submodule.recurse"])?;
-        if !recurse.ok() && recurse.code != 1 {
-            return Err(runner::to_error("git config submodule.recurse", &recurse));
+    let fork_point = if mode == "rebase" && before.oid.is_some() {
+        let point = runner::exec(repo, ["merge-base", "--fork-point", "@{upstream}", "HEAD"])?;
+        point.ok().then(|| point.text().trim().to_owned())
+    } else {
+        None
+    };
+    // Parse before fetching/merging, including Git's yes/on/1 spellings.
+    // Invalid configuration must fail before a partially completed pull.
+    let recurse = runner::exec(repo, ["config", "--bool", "--get", "submodule.recurse"])?;
+    if !recurse.ok() && recurse.code != 1 {
+        return Err(runner::to_error("git config submodule.recurse", &recurse));
+    }
+    let recurse = recurse.ok() && recurse.text().trim() == "true";
+    // All Pull modes fetch once, resolve exactly that target, and inspect
+    // ignored collisions before any merge/rebase/autostash changes working files.
+    let fetched = runner::run_streaming(
+        repo,
+        &[
+            "fetch".into(),
+            "--progress".into(),
+            if prune { "--prune" } else { "--no-prune" }.into(),
+            "--no-prune-tags".into(),
+            "--write-fetch-head".into(),
+            remote.into(),
+        ],
+        &[],
+        &mut on_line,
+    );
+    // Authentication/network failures remain failures. Only a precise
+    // missing-ref report is eligible for a second server-side check.
+    if let Err(error) = &fetched {
+        if !missing_pull_upstream(error, configured[0]) {
+            return Err(error.clone());
         }
-        let recurse = recurse.ok() && recurse.text().trim() == "true";
-        // Fetch cannot confirm a merge or overwrite working files. Resolve the
-        // fetched upstream only after it succeeds, then use our reviewed merge
-        // path (including ignored-file protection and explicit commit control).
-        let fetched = runner::run_streaming(
-            repo,
-            &[
-                "fetch".into(),
-                "--progress".into(),
-                if prune { "--prune" } else { "--no-prune" }.into(),
-                "--no-prune-tags".into(),
-                "--write-fetch-head".into(),
-                remote.into(),
-            ],
-            &[],
-            &mut on_line,
-        );
-        // Authentication/network failures remain failures. Only a precise
-        // missing-ref report is eligible for a second server-side check.
-        if let Err(error) = &fetched {
-            if !missing_pull_upstream(error, configured[0]) {
-                return Err(error.clone());
-            }
-        }
-        if !unchanged()? {
-            return Err(GitError::new(
-                "Pull stopped because the working tree, current branch or upstream configuration changed. Review it before pulling again.",
-            )
+    }
+    if !unchanged()? {
+        return Err(GitError::new("Pull stopped because the working tree, current branch or upstream configuration changed. Review it before pulling again.")
             .kind("stale-operation"));
+    }
+    if let Err(error) = fetched {
+        if repo::op_state(repo, &repo::git_dir(repo)?).kind == "none" {
+            if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
+                return Ok(outcome);
+            }
         }
-        if let Err(error) = fetched {
-            if repo::op_state(repo, &repo::git_dir(repo)?).kind == "none" {
-                if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
-                    return Ok(outcome);
+        return Err(error);
+    }
+    let raw = std::fs::read_to_string(repo::git_dir(repo)?.join("FETCH_HEAD"))?;
+    let targets: Vec<_> = raw
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let oid = fields.next()?;
+            let merge = fields.next()?;
+            (merge.is_empty() && matches!(oid.len(), 40 | 64) && oid.bytes().all(|c| c.is_ascii_hexdigit())).then_some(oid)
+        })
+        .collect();
+    if targets.len() != 1 {
+        if targets.is_empty() {
+            if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
+                return Ok(outcome);
+            }
+        }
+        return Err(GitError::new(format!("Fetch completed, but upstream {} on {remote} was not fetched unambiguously. Check the remote's fetch refspecs. Local branch {branch} was not merged.", configured[0])).kind("upstream-not-fetched"));
+    }
+    if recurse {
+        super::pull_guard::submodules(repo, targets[0], mode)?;
+        if !unchanged()? {
+            return Err(
+                GitError::new("Pull stopped because the repository changed during submodule inspection. Review it before retrying.").kind("stale-operation")
+            );
+        }
+    }
+    let mut outcome = if mode == "rebase" {
+        let can_ff = match before.oid.as_deref() {
+            Some(head) => {
+                let result = runner::exec(repo, ["merge-base", "--is-ancestor", head, targets[0]])?;
+                if !result.ok() && result.code != 1 {
+                    return Err(runner::to_error("git merge-base", &result));
+                }
+                result.ok()
+            }
+            None => true,
+        };
+        if can_ff {
+            let mut result = merge_start_with_autostash(repo, targets[0], "ff-only", true)?;
+            // Preserve the rebase-Pull API's success status, including when
+            // native Git can integrate it without replaying any commits.
+            if matches!(result.status.as_str(), "done" | "fastForward" | "upToDate") {
+                result.status = "done".into();
+            }
+            result
+        } else {
+            guard_untracked_tree(repo, targets[0])?;
+            // Match Git Pull's pre-fetch reflog fork point: rewritten upstream
+            // commits must not be replayed as if they were the user's commits.
+            let mut upstream = targets[0];
+            if let (Some(fork), Some(head)) = (fork_point.as_deref(), before.oid.as_deref()) {
+                let base = runner::exec(repo, ["merge-base", "--octopus", head, targets[0], fork])?;
+                if !base.ok() && base.code != 1 {
+                    return Err(runner::to_error("git merge-base", &base));
+                }
+                if !base.ok() || base.text().trim() != fork {
+                    upstream = fork;
                 }
             }
-            return Err(error);
-        }
-        let raw = std::fs::read_to_string(repo::git_dir(repo)?.join("FETCH_HEAD"))?;
-        let targets: Vec<_> = raw
-            .lines()
-            .filter_map(|line| {
-                let mut fields = line.splitn(3, '\t');
-                let oid = fields.next()?;
-                let merge = fields.next()?;
-                (merge.is_empty() && matches!(oid.len(), 40 | 64) && oid.bytes().all(|c| c.is_ascii_hexdigit())).then_some(oid)
-            })
-            .collect();
-        if targets.len() != 1 {
-            if targets.is_empty() {
-                if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
-                    return Ok(outcome);
-                }
+            super::pull_guard::replayed_paths(repo, upstream, recurse)?;
+            if !unchanged()? {
+                return Err(
+                    GitError::new("Pull stopped because the repository changed during rebase inspection. Review it before retrying.").kind("stale-operation")
+                );
             }
-            return Err(GitError::new(format!("Fetch completed, but upstream {} on {remote} was not fetched unambiguously. Check the remote's fetch refspecs. Local branch {branch} was not merged.", configured[0])).kind("upstream-not-fetched"));
-        }
-        let mut outcome = merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, mode == "merge")?;
-        if recurse && outcome.status != "conflicts" {
-            // Native `git pull` does this after a successful merge, including
-            // --no-commit. No --init or --force: preserve uninitialized modules
-            // and let checkout reject dirty tracked/untracked collisions.
-            let args = ["submodule", "update", "--recursive", "--checkout"].map(String::from);
+            let args = ["rebase", "--autostash", "--onto", targets[0], upstream].map(String::from);
             match runner::run_streaming(repo, &args, &[], &mut on_line) {
-                Ok(output) => {
-                    if !output.trim().is_empty() {
-                        outcome.message.push('\n');
-                        outcome.message.push_str(output.trim());
+                Ok(output) => OpOutcome::done(output),
+                Err(error) => {
+                    let conflicts = conflicted(repo);
+                    if conflicts.is_empty() && repo::op_state(repo, &repo::git_dir(repo)?).kind != "rebase" {
+                        return Err(error);
                     }
-                }
-                Err(mut error) => {
-                    error.message = format!("Pull integrated the parent repository, but updating submodules failed. Inspect its current state before retrying; the parent update has not been rolled back. {}", error.message);
-                    error.kind = "partial-operation".into();
-                    error.details.push(format!("parent_head_before={}", before.oid.as_deref().unwrap_or("unborn")));
-                    error.details.push(format!("parent_head_after={}", head_oid(repo).as_deref().unwrap_or("unborn")));
-                    error.details.push(format!("parent_outcome={}", outcome.status));
-                    return Err(error);
+                    OpOutcome { status: if conflicts.is_empty() { "stopped" } else { "conflicts" }.into(), conflicts, message: error.message }
                 }
             }
         }
-        return Ok(outcome.into());
-    }
-    let mut args = vec![
-        "-c".into(),
-        "fetch.all=false".into(),
-        "-c".into(),
-        format!("fetch.prune={prune}"),
-        "-c".into(),
-        format!("remote.{remote}.prune={prune}"),
-        "-c".into(),
-        "fetch.pruneTags=false".into(),
-        "-c".into(),
-        format!("remote.{remote}.pruneTags=false"),
-        "pull".into(),
-        "--progress".into(),
-    ];
-    match mode {
-        "rebase" => {
-            args.push("--rebase".into());
-            args.push("--autostash".into());
-        }
-        "merge" => {
-            args.push("--no-rebase".into());
-            args.push("--autostash".into());
-        }
-        _ => args.push("--ff-only".into()),
-    }
-    // Pruning was reviewed only for this remote. A configured fetch.all must
-    // never expand Pull to other remotes with unreviewed destination refspecs.
-    args.push("--".into());
-    args.push(remote.into());
-    match runner::run_streaming(repo, &args, &[], on_line) {
-        Ok(out) => Ok(OpOutcome::done(out).into()),
-        Err(e) => {
-            let c = conflicted(repo);
-            if !c.is_empty() {
-                Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: e.message }.into())
-            } else {
-                if missing_pull_upstream(&e, configured[0]) && unchanged()? && repo::op_state(repo, &repo::git_dir(repo)?).kind == "none" {
-                    if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
-                        return Ok(outcome);
-                    }
+    } else {
+        merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, mode == "merge")?
+    };
+    if recurse && !matches!(outcome.status.as_str(), "conflicts" | "stopped") {
+        // Native `git pull` does this after a successful merge, including
+        // --no-commit. No --init or --force: preserve uninitialized modules
+        // and let checkout reject dirty tracked/untracked collisions.
+        let args = ["submodule", "update", "--recursive", if mode == "rebase" { "--rebase" } else { "--checkout" }].map(String::from);
+        match runner::run_streaming(repo, &args, &[], &mut on_line) {
+            Ok(output) => {
+                if !output.trim().is_empty() {
+                    outcome.message.push('\n');
+                    outcome.message.push_str(output.trim());
                 }
-                Err(e)
+            }
+            Err(mut error) => {
+                error.message = format!("Pull integrated the parent repository, but updating submodules failed. Inspect its current state before retrying; the parent update has not been rolled back. {}", error.message);
+                error.kind = "partial-operation".into();
+                error.details.push(format!("parent_head_before={}", before.oid.as_deref().unwrap_or("unborn")));
+                error.details.push(format!("parent_head_after={}", head_oid(repo).as_deref().unwrap_or("unborn")));
+                error.details.push(format!("parent_outcome={}", outcome.status));
+                return Err(error);
             }
         }
     }
+    Ok(outcome.into())
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -687,11 +768,65 @@ pub fn remote_set_url(repo: &Path, name: &str, url: &str) -> GitResult<()> {
 
 // ───────────────────────────── merge ─────────────────────────────
 
-fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResult<()> {
+/// A collapsed ignored directory can contain only ignored siblings (bin/obj),
+/// without obstructing an incoming source file. Inspect just the incoming path,
+/// without recursively scanning build caches or following link targets.
+fn ignored_merge_obstruction(repo: &Path, path: &str, ignore_case: bool) -> GitResult<Option<String>> {
+    let parts: Vec<_> = path.split('/').collect();
+    let mut local = repo.to_path_buf();
+    for (index, part) in parts.iter().enumerate() {
+        let mut components = Path::new(part).components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_))) || components.next().is_some() {
+            return Err(GitError::new("Cannot safely inspect an incoming merge path."));
+        }
+        local.push(part);
+        let metadata = match std::fs::symlink_metadata(&local) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // core.ignorecase may be enabled on a case-sensitive filesystem.
+                // Do not interpret differently cased local data as absent. Only
+                // inspect siblings, never recurse through ignored directories.
+                if ignore_case {
+                    for entry in std::fs::read_dir(local.parent().unwrap_or(repo))? {
+                        let entry = entry?;
+                        if entry.file_name().to_string_lossy().to_lowercase() == part.to_lowercase() {
+                            let mut obstructing = parts[..index].join("/");
+                            if !obstructing.is_empty() {
+                                obstructing.push('/');
+                            }
+                            obstructing.push_str(&entry.file_name().to_string_lossy());
+                            return Ok(Some(obstructing));
+                        }
+                    }
+                }
+                return Ok(None);
+            }
+            Err(error) => {
+                let mut error = GitError::from(error);
+                error.message = format!("Cannot inspect local merge path {}: {}", parts[..=index].join("/"), error.message);
+                return Err(error);
+            }
+        };
+        if index + 1 == parts.len() || path_is_link(&metadata) || !metadata.is_dir() {
+            return Ok(Some(parts[..=index].join("/")));
+        }
+    }
+    Ok(None)
+}
+
+pub(super) fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResult<()> {
+    guard_transition(repo, target, head, false)
+}
+
+pub(super) fn guard_untracked_tree(repo: &Path, target: &str) -> GitResult<()> {
+    guard_transition(repo, target, None, true)
+}
+
+fn guard_transition(repo: &Path, target: &str, head: Option<&str>, all_untracked: bool) -> GitResult<()> {
     // Some merge-ort versions overwrite ignored collisions even with
     // --no-overwrite-ignore (unlike switch / the fast-forward checkout path).
     // Inspect collapsed ignored folders, without scanning their build caches.
-    let ignored = super::workspace_files::ignored(repo)?;
+    let ignored = if all_untracked { super::workspace_files::untracked(repo)? } else { super::workspace_files::ignored(repo)? };
     if ignored.truncated {
         return Err(GitError::new("Ignored-file inspection was truncated; no merge was started."));
     }
@@ -701,9 +836,24 @@ fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResu
     let target = runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{target}^{{commit}}")])?;
     let target = target.trim();
     let paths = match head {
-        Some(head) => runner::run(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", head, target, "--"]),
-        None => runner::run(repo, ["ls-tree", "-r", "-z", "--name-only", target]),
+        Some(head) => runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", head, target, "--"]),
+        None => runner::run_bytes(repo, ["ls-tree", "-r", "-z", "--name-only", target]),
     }?;
+    check_ignored_paths(repo, &ignored, &paths, if all_untracked { "uncommitted" } else { "ignored" })
+}
+
+pub(super) fn guard_untracked_paths(repo: &Path, paths: &[u8]) -> GitResult<()> {
+    check_ignored_paths(repo, &super::workspace_files::untracked(repo)?, paths, "uncommitted")
+}
+
+fn check_ignored_paths(repo: &Path, ignored: &super::workspace_files::IgnoredFiles, paths: &[u8], kind: &str) -> GitResult<()> {
+    if ignored.truncated {
+        return Err(GitError::new("Ignored-file inspection was truncated; no integration was started."));
+    }
+    if ignored.paths.is_empty() {
+        return Ok(());
+    }
+    let paths = super::workspace_files::path_list(paths)?;
     let ignore_case = cfg!(windows) || runner::exec(repo, ["config", "--bool", "--get", "core.ignorecase"])?.text().trim() == "true";
     let normalize = |p: &str| {
         let p = p.trim_end_matches('/');
@@ -720,9 +870,10 @@ fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResu
         let ancestor = p.match_indices('/').any(|(index, _)| ignored.contains(&p[..index]));
         let descendant = ignored.range(prefix.clone()..).next().is_some_and(|i| i.starts_with(&prefix));
         if ignored.contains(&p) || ancestor || descendant {
+            let Some(obstruction) = ignored_merge_obstruction(repo, path, ignore_case)? else { continue };
             return Err(GitError::new(format!(
-                "Merge may overwrite ignored data at {path}. Move the overlapping ignored file or folder aside before merging."
-            )));
+                "Integration may overwrite {kind} data at {obstruction}. Your local data was preserved. Move or rename the conflicting path outside the repository, then retry. Incoming path: {path}."
+            )).kind("ignored-collision").details(vec![path.to_owned(), obstruction]));
         }
     }
     Ok(())

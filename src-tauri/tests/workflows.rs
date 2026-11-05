@@ -249,15 +249,25 @@ fn pull_recurses_into_initialized_submodules_like_native_git() {
 }
 
 #[test]
-fn pull_reports_partial_completion_without_overwriting_dirty_submodules() {
+fn pull_preserves_dirty_submodules_and_distinguishes_preflight_from_partial_failure() {
     for path in ["content.txt", "added.txt"] {
         let (local, remote, _module, a, _) = submodule_pull_fixture();
         local.git(&["config", "submodule.recurse", "true"]);
         local.write(&format!("module/{path}"), "user changes\n");
+        let parent_before = worktree_proof(local.p());
+        let module_before = worktree_proof(&local.p().join("module"));
         let error = ops::pull(local.p(), "ff-only", |_| {}).unwrap_err();
-        assert_eq!(error.kind, "partial-operation", "{error:?}");
+        if path == "added.txt" {
+            // Previously this untracked collision failed only after updating
+            // the parent. Preflight now protects it before either mutation.
+            assert_eq!(error.kind, "ignored-collision", "{error:?}");
+            assert_eq!(worktree_proof(local.p()), parent_before);
+            assert_eq!(worktree_proof(&local.p().join("module")), module_before);
+        } else {
+            assert_eq!(error.kind, "partial-operation", "{error:?}");
+            assert_eq!(local.git(&["rev-parse", "HEAD"]), remote.git(&["rev-parse", "HEAD"]));
+        }
         assert!(error.message.contains("submodule"), "{error:?}");
-        assert_eq!(local.git(&["rev-parse", "HEAD"]), remote.git(&["rev-parse", "HEAD"]));
         assert_eq!(runner::run(&local.p().join("module"), ["rev-parse", "HEAD"]).unwrap().trim(), a);
         assert_eq!(local.read(&format!("module/{path}")), "user changes\n");
     }
@@ -826,6 +836,362 @@ fn checkout_branch_creation_and_merge_preserve_colliding_ignored_files() {
 }
 
 #[test]
+fn rebase_pull_blocks_local_add_remove_replay_before_losing_recreated_files() {
+    for ignored_at_head in [true, false] {
+        let (local, remote) = pull_fixture();
+        if ignored_at_head {
+            local.write(".gitignore", "private.env\n");
+            local.commit_all("ignore local settings");
+        }
+        local.write("private.env", "temporarily versioned\n");
+        local.git(&["add", "-f", "private.env"]);
+        local.commit_all("add private settings");
+        local.git(&["rm", "private.env"]);
+        local.commit_all("remove private settings");
+        remote.write(".gitignore", "private.env\n");
+        remote.write("remote.txt", "unrelated upstream change\n");
+        remote.commit_all("advance upstream");
+        local.write("private.env", "unique local data must survive\n");
+        local.write("base.txt", "dirty tracked work must survive\n");
+        let head = local.git(&["rev-parse", "HEAD"]);
+        let index = fs::read(local.p().join(".git/index")).unwrap();
+        let error = ops::pull(local.p(), "rebase", |_| {}).unwrap_err();
+        assert_eq!(error.kind, "ignored-collision", "ignored_at_head={ignored_at_head}: {error:?}");
+        assert_eq!(error.details[1], "private.env");
+        assert_eq!(local.read("private.env"), "unique local data must survive\n");
+        assert_eq!(local.read("base.txt"), "dirty tracked work must survive\n");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(fs::read(local.p().join(".git/index")).unwrap(), index);
+        assert!(local.git(&["stash", "list"]).is_empty());
+        assert!(!local.p().join(".git/rebase-merge").exists());
+        assert!(!local.p().join(".git/rebase-apply").exists());
+    }
+}
+
+fn configure_module_fixture_line_endings(root: &Path) {
+    // A clone has its own config: neither its parent nor its origin's policy
+    // applies to a later Pull executed by the application.
+    runner::run(root, ["config", "--local", "core.autocrlf", "false"]).unwrap();
+    assert_eq!(runner::run(root, ["config", "--local", "--get", "core.autocrlf"]).unwrap().trim(), "false", "fixture policy at {}", root.display());
+}
+
+fn ignored_module_pull_fixture(nested: bool) -> (Repo, Repo, Repo, Option<Repo>, String) {
+    let leaf = Repo::new();
+    leaf.write(".gitignore", "private.env\nscratch.env\nbin/\n");
+    leaf.write("content.txt", "module A\n");
+    let a = leaf.commit_all("module A");
+    leaf.write("private.env", "remote defaults\n");
+    leaf.write("content.txt", "module B\n");
+    leaf.git(&["add", "-f", "private.env"]);
+    let b = leaf.commit_all("module B");
+    let mut outer = None;
+    let (source, old, new, path) = if nested {
+        let module = Repo::new();
+        module.write("outer.txt", "outer\n");
+        module.commit_all("outer base");
+        module.git(&["-c", "protocol.file.allow=always", "-c", "core.autocrlf=false", "submodule", "add", leaf.p().to_str().unwrap(), "inner module"]);
+        configure_module_fixture_line_endings(&module.p().join("inner module"));
+        runner::run(&module.p().join("inner module"), ["checkout", "--detach", &a]).unwrap();
+        let old = module.commit_all("nested A");
+        runner::run(&module.p().join("inner module"), ["checkout", "--detach", &b]).unwrap();
+        let new = module.commit_all("nested B");
+        let source = module.p().to_owned();
+        outer = Some(module);
+        (source, old, new, "outer module")
+    } else {
+        (leaf.p().to_owned(), a, b, "module")
+    };
+    let (local, remote) = pull_fixture();
+    remote.git(&["-c", "protocol.file.allow=always", "-c", "core.autocrlf=false", "submodule", "add", source.to_str().unwrap(), path]);
+    configure_module_fixture_line_endings(&remote.p().join(path));
+    runner::run(&remote.p().join(path), ["checkout", "--detach", &old]).unwrap();
+    remote.commit_all("add module A");
+    local.git(&["pull", "--ff-only"]);
+    // The command override covers initial checkout in every clone; persist the
+    // same policy in each initialized repo before invoking the actual Pull.
+    local.git(&["-c", "protocol.file.allow=always", "-c", "core.autocrlf=false", "submodule", "update", "--init", "--recursive"]);
+    configure_module_fixture_line_endings(&local.p().join(path));
+    if nested {
+        configure_module_fixture_line_endings(&local.p().join(path).join("inner module"));
+    }
+    runner::run(&remote.p().join(path), ["checkout", "--detach", &new]).unwrap();
+    remote.commit_all("advance module B");
+    local.git(&["config", "submodule.recurse", "true"]);
+    (local, remote, leaf, outer, if nested { "outer module/inner module" } else { "module" }.into())
+}
+
+fn worktree_proof(root: &Path) -> (String, Vec<u8>) {
+    let index = repo::git_dir(root).unwrap().join("index");
+    (runner::run(root, ["rev-parse", "HEAD"]).unwrap(), fs::read(index).unwrap())
+}
+
+#[test]
+fn recursive_pull_blocks_ignored_collisions_in_direct_and_nested_modules_before_parent_mutation() {
+    for nested in [false, true] {
+        let (local, _remote, _leaf, _outer, path) = ignored_module_pull_fixture(nested);
+        local.write(&format!("{path}/private.env"), "unique module settings\n");
+        let module = local.p().join(&path);
+        let parent_before = worktree_proof(local.p());
+        let module_before = worktree_proof(&module);
+        let outer_before = nested.then(|| worktree_proof(&local.p().join("outer module")));
+        for mode in ["ff-only", "merge", "rebase"] {
+            let error = ops::pull(local.p(), mode, |_| {}).unwrap_err();
+            assert_eq!(error.kind, "ignored-collision", "{mode}, nested={nested}: {error:?}");
+            assert_eq!(error.details[1], format!("{path}/private.env"));
+            assert_eq!(local.read(&format!("{path}/private.env")), "unique module settings\n");
+            assert_eq!(worktree_proof(local.p()), parent_before, "{mode}: parent changed");
+            assert_eq!(worktree_proof(&module), module_before, "{mode}: child changed");
+            if let Some(proof) = &outer_before {
+                assert_eq!(&worktree_proof(&local.p().join("outer module")), proof);
+            }
+            assert!(local.git(&["stash", "list"]).is_empty());
+        }
+    }
+}
+
+#[test]
+fn recursive_pull_allows_unrelated_ignored_module_build_output() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (local, _remote, _leaf, _outer, path) = ignored_module_pull_fixture(false);
+        local.write(&format!("{path}/bin/local.dll"), "keep build output\n");
+        if mode == "rebase" {
+            local.write("topic.txt", "local topic\n");
+            local.commit_all("local topic");
+        }
+        let result = ops::pull(local.p(), mode, |_| {}).unwrap();
+        assert!(matches!(result.status.as_str(), "done" | "fastForward"), "{mode}: {result:?}");
+        assert_eq!(local.read(&format!("{path}/private.env")), "remote defaults\n");
+        assert_eq!(local.read(&format!("{path}/bin/local.dll")), "keep build output\n");
+        if mode == "rebase" {
+            assert_eq!(local.read("topic.txt"), "local topic\n");
+        }
+        assert!(local.git(&["status", "--porcelain"]).is_empty());
+    }
+}
+
+#[test]
+fn recursive_rebase_blocks_child_local_add_remove_replay() {
+    let (local, _remote, _leaf, _outer, path) = ignored_module_pull_fixture(false);
+    let child = local.p().join(&path);
+    for (key, value) in [("user.name", "Fixture"), ("user.email", "fixture@example.invalid"), ("commit.gpgsign", "false")] {
+        runner::run(&child, ["config", key, value]).unwrap();
+    }
+    local.write(&format!("{path}/scratch.env"), "temporarily versioned\n");
+    runner::run(&child, ["add", "-f", "scratch.env"]).unwrap();
+    runner::run(&child, ["commit", "-qm", "add settings"]).unwrap();
+    runner::run(&child, ["rm", "scratch.env"]).unwrap();
+    runner::run(&child, ["commit", "-qm", "remove settings"]).unwrap();
+    local.write(&format!("{path}/scratch.env"), "unique recreated settings\n");
+    let parent = worktree_proof(local.p());
+    let module = worktree_proof(&child);
+    let error = ops::pull(local.p(), "rebase", |_| {}).unwrap_err();
+    assert_eq!(error.kind, "ignored-collision", "{error:?}");
+    assert_eq!(error.details[1], format!("{path}/scratch.env"));
+    assert_eq!(worktree_proof(local.p()), parent);
+    assert_eq!(worktree_proof(&child), module);
+    assert_eq!(local.read(&format!("{path}/scratch.env")), "unique recreated settings\n");
+}
+
+#[test]
+fn recursive_pull_stops_before_parent_mutation_when_module_target_cannot_be_inspected() {
+    let (local, remote, _leaf, _outer, path) = ignored_module_pull_fixture(false);
+    let missing = "1111111111111111111111111111111111111111";
+    remote.git(&["update-index", "--cacheinfo", "160000", missing, &path]);
+    remote.git(&["commit", "-qm", "unavailable module target"]);
+    // Force the inspection, rather than having Fetch itself reject the missing
+    // module object. The parent must still not be integrated first.
+    local.git(&["config", "fetch.recurseSubmodules", "false"]);
+    let parent = worktree_proof(local.p());
+    let child = worktree_proof(&local.p().join(&path));
+    let error = ops::pull(local.p(), "ff-only", |_| {}).unwrap_err();
+    assert!(error.message.contains("submodule"), "{error:?}");
+    assert_eq!(worktree_proof(local.p()), parent);
+    assert_eq!(worktree_proof(&local.p().join(&path)), child);
+}
+
+#[test]
+fn recursive_pull_does_not_remove_a_module_containing_ignored_local_data() {
+    let (local, remote, _leaf, _outer, path) = ignored_module_pull_fixture(false);
+    remote.git(&["rm", "-f", &path]);
+    remote.commit_all("remove module");
+    local.write(&format!("{path}/private.env"), "keep removed-module settings\n");
+    let parent = worktree_proof(local.p());
+    let module = worktree_proof(&local.p().join(&path));
+    let error = ops::pull(local.p(), "ff-only", |_| {}).unwrap_err();
+    assert_eq!(error.kind, "ignored-collision", "{error:?}");
+    assert_eq!(worktree_proof(local.p()), parent);
+    assert_eq!(worktree_proof(&local.p().join(&path)), module);
+    assert_eq!(local.read(&format!("{path}/private.env")), "keep removed-module settings\n");
+}
+
+#[test]
+fn rebase_pull_preserves_ignored_collisions_before_fast_forward_or_replay() {
+    for divergent in [false, true] {
+        let (local, remote) = pull_fixture();
+        local.write(".gitignore", "personal.local\n");
+        local.commit_all("ignore personal settings");
+        remote.git(&["fetch", local.p().to_str().unwrap(), "main"]);
+        remote.git(&["reset", "--hard", "FETCH_HEAD"]);
+        remote.write("personal.local", "remote defaults\n");
+        remote.git(&["add", "-f", "personal.local"]);
+        remote.commit_all("publish defaults");
+        if divergent {
+            local.write("topic.txt", "local commit\n");
+            local.commit_all("local work");
+        }
+        local.write("personal.local", "irreplaceable ignored bytes\n");
+        local.write("base.txt", "uncommitted tracked work\n");
+        let head = local.git(&["rev-parse", "HEAD"]);
+        let index = fs::read(local.p().join(".git/index")).unwrap();
+        let error = ops::pull(local.p(), "rebase", |_| {}).unwrap_err();
+        assert_eq!(error.kind, "ignored-collision", "divergent={divergent}: {error:?}");
+        assert_eq!(local.read("personal.local"), "irreplaceable ignored bytes\n");
+        assert_eq!(local.read("base.txt"), "uncommitted tracked work\n");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(fs::read(local.p().join(".git/index")).unwrap(), index);
+        assert!(local.git(&["stash", "list"]).is_empty());
+        assert!(!local.p().join(".git/rebase-merge").exists());
+    }
+}
+
+#[test]
+fn rebase_pull_preserves_the_pre_fetch_fork_point_and_dirty_work() {
+    for rewritten in [false, true] {
+        let (local, remote) = pull_fixture();
+        let base = remote.git(&["rev-parse", "HEAD"]);
+        remote.write("old-upstream.txt", "old upstream work\n");
+        remote.commit_all("old upstream");
+        local.git(&["pull", "--ff-only"]);
+        local.write("topic.txt", "local work\n");
+        local.commit_all("local topic");
+        if rewritten {
+            remote.git(&["reset", "--hard", base.trim()]);
+        }
+        remote.write("new-upstream.txt", "new upstream work\n");
+        let target = remote.commit_all("new upstream");
+        local.write("base.txt", "dirty tracked work\n");
+        let outcome = ops::pull(local.p(), "rebase", |_| {}).unwrap();
+        assert_eq!(outcome.status, "done", "{outcome:?}");
+        assert_eq!(local.git(&["rev-parse", "HEAD^"]).trim(), target);
+        assert_eq!(local.git(&["log", "-1", "--format=%s"]).trim(), "local topic");
+        assert_eq!(local.read("base.txt"), "dirty tracked work\n");
+        assert_eq!(local.read("topic.txt"), "local work\n");
+        assert_eq!(local.p().join("old-upstream.txt").exists(), !rewritten);
+        assert!(local.git(&["stash", "list"]).is_empty());
+    }
+}
+
+#[test]
+fn rebase_pull_updates_recursive_submodules_without_dropping_local_parent_commits() {
+    for divergent in [false, true] {
+        let (local, _remote, _module, _a, b) = submodule_pull_fixture();
+        local.git(&["config", "submodule.recurse", "true"]);
+        if divergent {
+            local.write("topic.txt", "local work\n");
+            local.commit_all("local topic");
+        }
+        let outcome = ops::pull(local.p(), "rebase", |_| {}).unwrap();
+        assert!(matches!(outcome.status.as_str(), "done" | "fastForward"), "{outcome:?}");
+        assert_eq!(runner::run(&local.p().join("module"), ["rev-parse", "HEAD"]).unwrap().trim(), b);
+        assert!(local.git(&["status", "--porcelain"]).is_empty());
+        if divergent {
+            assert_eq!(local.read("topic.txt"), "local work\n");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn merge_rejects_undecodable_ignored_or_incoming_names_without_mutating_data() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    for ignored_name in [false, true] {
+        let r = Repo::new();
+        let name = OsString::from_vec(b"private-\xff.bin".to_vec());
+        r.write(".gitignore", "private-*.bin\nother.ignored\n");
+        r.commit_all("base");
+        r.git(&["switch", "-qc", "incoming"]);
+        if let Err(error) = fs::write(r.p().join(&name), b"remote defaults") {
+            #[cfg(target_os = "macos")]
+            if error.raw_os_error() == Some(92) {
+                eprintln!("Filesystem rejects invalid UTF-8 names (EILSEQ); skipping this filesystem fixture. The cross-platform strict-decoder regression still runs.");
+                return;
+            }
+            panic!("Cannot create raw-name fixture: {error}");
+        }
+        r.git(&["add", "-f", "-A"]);
+        r.commit_all("incoming raw name");
+        r.git(&["switch", "-q", "main"]);
+        r.write("local.txt", "diverge\n");
+        r.commit_all("local work");
+        if ignored_name {
+            fs::write(r.p().join(&name), b"irreplaceable local bytes").unwrap();
+        }
+        r.write("other.ignored", "keep ignored sibling\n");
+        let head = r.git(&["rev-parse", "HEAD"]);
+        let index = fs::read(r.p().join(".git/index")).unwrap();
+        let error = ops::merge_start(r.p(), "incoming", "no-ff").unwrap_err();
+        assert_eq!(error.kind, "unsupported-path-encoding", "{error:?}");
+        if ignored_name {
+            assert_eq!(fs::read(r.p().join(&name)).unwrap(), b"irreplaceable local bytes");
+        } else {
+            assert!(!r.p().join(&name).exists());
+        }
+        assert_eq!(r.read("other.ignored"), "keep ignored sibling\n");
+        assert_eq!(r.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(fs::read(r.p().join(".git/index")).unwrap(), index);
+        assert!(!r.p().join(".git/MERGE_HEAD").exists());
+    }
+}
+
+#[test]
+fn pull_allows_new_source_files_beside_collapsed_ignored_build_outputs() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (local, remote) = pull_fixture();
+        local.write(".gitignore", "bin/\nobj/\n");
+        let base = local.commit_all("ignore build outputs");
+        remote.git(&["fetch", local.p().to_str().unwrap(), "main"]);
+        remote.git(&["reset", "--hard", "FETCH_HEAD"]);
+        let project = "tests/WindowsIntegration";
+        remote.write(&format!("{project}/BackgroundRuntimeCheck.cs"), "// new source\n");
+        let target = remote.commit_all("add integration project");
+        local.write(&format!("{project}/bin/Debug/app.dll"), "keep build output\n");
+        local.write(&format!("{project}/obj/project.assets.json"), "keep build assets\n");
+        local.git(&["config", "core.ignorecase", "true"]);
+        let ignored = runner::run(local.p(), ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]).unwrap();
+        assert!(ignored.split('\0').any(|path| path == format!("{project}/")), "fixture must reproduce collapsed parent: {ignored:?}");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]).trim(), base);
+        let result = ops::pull(local.p(), mode, |_| {}).unwrap();
+        assert!(matches!(result.status.as_str(), "done" | "fastForward"), "{mode}: {result:?}");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]).trim(), target, "{mode}");
+        assert_eq!(local.read(&format!("{project}/BackgroundRuntimeCheck.cs")), "// new source\n");
+        assert_eq!(local.read(&format!("{project}/bin/Debug/app.dll")), "keep build output\n");
+        assert_eq!(local.read(&format!("{project}/obj/project.assets.json")), "keep build assets\n");
+        assert!(local.git(&["status", "--porcelain"]).is_empty());
+    }
+}
+
+#[test]
+fn merge_preserves_ignored_files_obstructing_an_incoming_parent() {
+    let r = Repo::new();
+    r.write(".gitignore", "local/\n");
+    let base = r.commit_all("base");
+    r.git(&["switch", "-qc", "feature"]);
+    r.write("local/settings/config.json", "versioned configuration\n");
+    r.git(&["add", "-f", "local/settings/config.json"]);
+    r.git(&["commit", "-qm", "add configuration"]);
+    r.git(&["switch", "-q", "main"]);
+    r.write("local/settings", "personal ignored file\n");
+    let index = fs::read(r.p().join(".git/index")).unwrap();
+    let error = ops::merge_start(r.p(), "feature", "ff-only").unwrap_err();
+    assert_eq!(error.kind, "ignored-collision");
+    assert_eq!(error.details, ["local/settings/config.json", "local/settings"]);
+    assert_eq!(r.read("local/settings"), "personal ignored file\n");
+    assert_eq!(r.git(&["rev-parse", "HEAD"]).trim(), base);
+    assert_eq!(fs::read(r.p().join(".git/index")).unwrap(), index);
+}
+
+#[test]
 fn merge_checks_ignored_directory_collisions_but_allows_unrelated_cache_folders() {
     let r = Repo::new();
     r.write(".gitignore", "cache/\n");
@@ -954,6 +1320,40 @@ fn graph_rows_and_search() {
     assert!(hits.len() >= 2);
     let hits = graph::search(r.p(), &g, "b.txt", graph::SearchMode::Path).unwrap();
     assert_eq!(hits.len(), 1);
+}
+
+#[test]
+#[cfg(unix)]
+fn discard_unlinks_dangling_links_and_backs_up_links_without_reading_outside_targets() {
+    use std::os::unix::fs::symlink;
+    let r = Repo::new();
+    r.write("tracked.txt", "base\n");
+    r.commit_all("base");
+    let outside = r._dir.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("secret.txt"), b"outside data must not be copied").unwrap();
+    let links = [
+        ("dangling-file", outside.join("missing-file")),
+        ("dangling-directory", outside.join("missing-dir/")),
+        ("file-link", outside.join("secret.txt")),
+        ("directory-link", outside.clone()),
+    ];
+    for (name, target) in &links {
+        symlink(target, r.p().join(name)).unwrap();
+    }
+    assert!(ops::backup_files(r.p(), &["directory-link/secret.txt".into()]).is_err());
+    let head = r.git(&["rev-parse", "HEAD"]);
+    let index = fs::read(r.p().join(".git/index")).unwrap();
+    let backup = ops::discard_paths(r.p(), &[], &links.iter().map(|(name, _)| name.to_string()).collect::<Vec<_>>()).unwrap();
+    for (name, target) in &links {
+        assert!(fs::symlink_metadata(r.p().join(name)).is_err(), "{name} was not removed");
+        let saved = Path::new(&backup).join(name);
+        assert!(fs::symlink_metadata(&saved).unwrap().file_type().is_symlink(), "{name} was copied as target contents");
+        assert_eq!(fs::read_link(saved).unwrap(), *target);
+    }
+    assert_eq!(fs::read(outside.join("secret.txt")).unwrap(), b"outside data must not be copied");
+    assert_eq!(r.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(fs::read(r.p().join(".git/index")).unwrap(), index);
 }
 
 #[test]

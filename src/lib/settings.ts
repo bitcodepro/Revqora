@@ -21,6 +21,7 @@ export interface Settings {
   wrapDiff: boolean;
   recent: string[];
   openTabs: string[];
+  openLibraryOnStartup: boolean;
   activeTab: string | null;
   layouts: Record<WorkspaceMode, WorkspaceLayout>;
   setLayout: (mode: WorkspaceMode, patch: Partial<WorkspaceLayout>) => void;
@@ -69,6 +70,7 @@ export const useSettings = create<Settings>()(
       wrapDiff: false,
       recent: [],
       openTabs: [],
+      openLibraryOnStartup: true,
       activeTab: null,
       layouts: restoreWorkspaceLayouts(),
       setLayout: (mode, patch) => set((state) => ({ layouts: { ...state.layouts, [mode]: { ...state.layouts[mode], ...patch } } })),

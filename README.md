@@ -99,6 +99,10 @@ make large repository sets easier to navigate. Use **Manage library** to organiz
 them. The panel shows repository state and incoming/outgoing counts; remote counts
 reflect the last Fetch.
 
+At startup, Revqora opens all saved repositories and restores the last selection.
+Named workspaces keep their own repository set. To restore only previously open
+tabs, disable **Settings → Behaviour → Open all saved repositories**.
+
 Use **Fetch all** to refresh matching open repositories, **Pull all** to receive
 updates, or **Sync all** to review receiving and publishing together. Closed library
 bookmarks do not run background Git operations. Configure auto-fetch in Settings.
@@ -293,6 +297,8 @@ history. Close the application before copying a portable installation.
 Settings controls update checks, auto-fetch, themes, fonts, shortcuts and optional
 avatars. An available update appears in the status bar; package checksums and
 source metadata are verified before installation. Updates preserve portable data.
+Affected older Linux builds need a manual portable-archive update to receive the
+archive-extraction fix; keep the existing `data` folder when upgrading.
 **Settings → About Revqora**, or **Ctrl+K → About Revqora**, shows the installed
 version, author and links to this guide, the project and issue reporting.
 
