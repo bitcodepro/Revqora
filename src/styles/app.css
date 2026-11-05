@@ -804,6 +804,14 @@ select[size="1"]:not([multiple]) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Virtual rows/spacers move as the visible range changes. Browser scroll
+   anchoring must not fight the user's wheel position by following a row. */
+.bm-viewport, .wm-viewport, .pr-request-rows, .sb-scroll, .graph-scroll, .diff-body, .blame-scroll {
+  overflow-anchor: none;
+}
+.bm-viewport, .wm-viewport, .pr-request-rows { overscroll-behavior: contain; scrollbar-gutter: stable; }
+.branch-connection { display: inline-flex; align-items: center; flex: none; color: var(--text-faint); }
+.branch-connection.gone { color: var(--amber); }
 .sb-scroll {
   flex: 1;
   overflow-y: auto;

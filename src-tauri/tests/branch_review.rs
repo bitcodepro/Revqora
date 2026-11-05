@@ -9,6 +9,64 @@ struct Fixture {
 }
 
 #[test]
+fn disabling_local_checkpoint_keeps_force_state_and_tip_guards() {
+    let f = Fixture::new();
+    f.topic_change();
+    let plan = f.plan();
+    let count = recovery::list(&f.root).unwrap().checkpoints.len();
+    let pins = f.git(&["for-each-ref", "--format=%(refname) %(objectname)", "refs/worktree/revqora"]);
+    assert_eq!(branch_review::delete_local_with_checkpoint(&f.root, &plan.proof, false, false, None, None, false).err().unwrap().kind, "not-merged");
+    assert_eq!(
+        branch_review::delete_local_with_checkpoint(&f.root, &plan.proof, false, true, None, Some(&["topic".into()]), false).err().unwrap().kind,
+        "protected-branch"
+    );
+    fs::write(f.root.join("file.txt"), "manual edit must survive\n").unwrap();
+    assert_eq!(
+        branch_review::delete_local_with_checkpoint(&f.root, &plan.proof, false, true, Some(&plan.state_token), None, false).err().unwrap().kind,
+        "stale-operation"
+    );
+    let next = f.git(&["commit-tree", &f.git(&["rev-parse", "topic^{tree}"]), "-p", "topic", "-m", "Moved topic"]);
+    f.git(&["update-ref", "refs/heads/topic", &next]);
+    assert_eq!(branch_review::delete_local_with_checkpoint(&f.root, &plan.proof, false, true, None, None, false).err().unwrap().kind, "stale-selection");
+    let fresh = f.plan();
+    let index = fs::read(f.root.join(".git/index")).unwrap();
+    let result = branch_review::delete_local_with_checkpoint(&f.root, &fresh.proof, false, true, Some(&fresh.state_token), None, false).unwrap();
+    assert!(result.checkpoint.is_none());
+    assert!(!f.exists());
+    assert_eq!(recovery::list(&f.root).unwrap().checkpoints.len(), count);
+    assert_eq!(f.git(&["for-each-ref", "--format=%(refname) %(objectname)", "refs/worktree/revqora"]), pins);
+    assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(f.root.join("file.txt")).unwrap(), b"manual edit must survive\n");
+}
+
+#[test]
+fn disabling_remote_checkpoint_keeps_server_lease_and_local_worktree() {
+    let f = Fixture::new();
+    f.topic_change();
+    let server = f.bare("no-checkpoint.git");
+    f.git(&["remote", "add", "origin", server.to_str().unwrap()]);
+    f.git(&["push", "-q", "origin", "topic"]);
+    let target = branch_deletion::remote_target(&f.root, "refs/remotes/origin/topic").unwrap();
+    let plan = branch_review::plan(&f.root, "topic", Some("refs/heads/main"), Some(target.clone()), None, true).unwrap();
+    let count = recovery::list(&f.root).unwrap().checkpoints.len();
+    assert_eq!(branch_review::delete_remote_with_checkpoint(&f.root, &plan.proof, false, None, None, false, |_| {}).err().unwrap().kind, "not-merged");
+    let next = f.git(&["commit-tree", &f.git(&["rev-parse", "topic^{tree}"]), "-p", "topic", "-m", "New server tip"]);
+    f.git(&["push", "-q", "origin", &format!("{next}:refs/heads/topic")]);
+    f.git(&["update-ref", "refs/remotes/origin/topic", &target.oid]);
+    assert_eq!(branch_review::delete_remote_with_checkpoint(&f.root, &plan.proof, true, None, None, false, |_| {}).err().unwrap().kind, "remote-changed");
+    assert_eq!(runner::run(&server, ["rev-parse", "topic"]).unwrap().trim(), next);
+    let refreshed = branch_deletion::refresh_remote(&f.root, &target, |_| {}).unwrap();
+    let fresh = branch_review::plan(&f.root, "topic", Some("refs/heads/main"), Some(refreshed.target), None, true).unwrap();
+    let index = fs::read(f.root.join(".git/index")).unwrap();
+    let result = branch_review::delete_remote_with_checkpoint(&f.root, &fresh.proof, true, Some(&fresh.state_token), None, false, |_| {}).unwrap();
+    assert!(result.checkpoint.is_none());
+    assert!(f.exists());
+    assert!(!runner::exec(&server, ["show-ref", "--verify", "--quiet", "refs/heads/topic"]).unwrap().ok());
+    assert_eq!(recovery::list(&f.root).unwrap().checkpoints.len(), count);
+    assert_eq!(fs::read(f.root.join(".git/index")).unwrap(), index);
+}
+
+#[test]
 fn manager_policy_blocks_combined_protected_server_deletion_before_either_mutation() {
     for tracking in ["main", "innocent"] {
         let f = Fixture::new();
@@ -141,7 +199,7 @@ fn selected_base_controls_deletion_and_returns_exact_recovery_checkpoint() {
     assert_eq!(f.git(&["show-ref"]), refs);
     let result = f.remove(&plan, false, false).unwrap();
     assert!(!f.exists());
-    let cp = recovery::detail(&f.root, &result.checkpoint.id).unwrap();
+    let cp = recovery::detail(&f.root, &result.checkpoint.as_ref().unwrap().id).unwrap();
     let slot = cp.refs.iter().position(|r| r.name == "refs/heads/topic" && r.oid == tip).unwrap();
     recovery::restore_branch(&f.root, &cp.summary.id, Some(slot), "restored-topic").unwrap();
     assert_eq!(f.git(&["rev-parse", "restored-topic"]), tip);
@@ -287,10 +345,10 @@ fn distinct_push_server_tip_is_backed_up_without_rewriting_fetch_tracking_ref() 
     assert_eq!((plan.local_only, plan.remote_only), (Some(0), Some(1)));
     let local = f.remove(&plan, true, true).unwrap();
     let remote = branch_review::delete_remote(&f.root, &plan.proof, true, None, None, |_| {}).unwrap();
-    recovery::delete(&f.root, &local.checkpoint.id).unwrap();
+    recovery::delete(&f.root, &local.checkpoint.as_ref().unwrap().id).unwrap();
     f.git(&["reflog", "expire", "--expire=now", "--all"]);
     f.git(&["gc", "--prune=now"]);
-    let cp = recovery::detail(&f.root, &remote.checkpoint.id).unwrap();
+    let cp = recovery::detail(&f.root, &remote.checkpoint.as_ref().unwrap().id).unwrap();
     let slot = cp.refs.iter().position(|r| r.name == "push/origin/topic" && r.oid == remote_oid).unwrap();
     recovery::restore_branch(&f.root, &cp.summary.id, Some(slot), "saved-server-tip").unwrap();
     assert_eq!(f.git(&["rev-parse", "saved-server-tip"]), remote_oid);
@@ -323,7 +381,7 @@ fn remote_only_deletion_keeps_checked_out_local_branch_and_dirty_files() {
     assert_eq!(f.git(&["rev-parse", "main"]), tip);
     assert_eq!(fs::read(f.root.join("base.txt")).unwrap(), b"Manual edit stays here\n");
     assert!(!runner::exec(&server, ["show-ref", "--verify", "--quiet", "refs/heads/main"]).unwrap().ok());
-    let cp = recovery::detail(&f.root, &result.checkpoint.id).unwrap();
+    let cp = recovery::detail(&f.root, &result.checkpoint.as_ref().unwrap().id).unwrap();
     assert!(cp.refs.iter().any(|r| r.name == "push/origin/main" && r.oid == tip));
 }
 
@@ -348,9 +406,9 @@ fn remote_only_without_local_branch_requires_force_and_retains_server_tip() {
     f.git(&["branch", "-D", "topic"]);
     let result = branch_review::delete_remote(&f.root, &plan.proof, true, None, None, |_| {}).unwrap();
     assert!(!f.exists());
-    let cp = recovery::detail(&f.root, &result.checkpoint.id).unwrap();
+    let cp = recovery::detail(&f.root, &result.checkpoint.as_ref().unwrap().id).unwrap();
     let slot = cp.refs.iter().position(|r| r.name == "push/origin/topic" && r.oid == tip).unwrap();
-    recovery::restore_branch(&f.root, &result.checkpoint.id, Some(slot), "restored-server-only").unwrap();
+    recovery::restore_branch(&f.root, &result.checkpoint.as_ref().unwrap().id, Some(slot), "restored-server-only").unwrap();
     assert_eq!(f.git(&["rev-parse", "restored-server-only"]), tip);
 }
 

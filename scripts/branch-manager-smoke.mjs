@@ -75,9 +75,91 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
     await list.focus(); await page.keyboard.press("End");
     await row("refs/heads/topic/239").waitFor();
     if (await page.locator(".bm-viewport [role=option]").count() > 50) throw new Error("Scrolling disabled virtualization");
+    // Exercise native wheel input and a real refreshed snapshot, not just
+    // programmatic scrollTop. Both browser anchoring and snapshot resets used
+    // to fight scrolling through this virtual list.
+    await page.keyboard.press("Home");
+    await list.hover(); await page.mouse.wheel(0, 1200);
+    await page.waitForFunction(() => document.querySelector(".bm-viewport").scrollTop > 500);
+    await list.evaluate(node => new Promise((resolve,reject) => {
+      let previous = node.scrollTop, stable = 0; const deadline = performance.now() + 5000;
+      const frame = () => { const top = node.scrollTop; stable = top === previous ? stable + 1 : 0; previous = top; if (stable >= 4) resolve(); else if(performance.now() >= deadline) reject(new Error("Wheel scrolling did not settle")); else requestAnimationFrame(frame); };
+      requestAnimationFrame(frame);
+    }));
+    const position = await list.evaluate(node => node.scrollTop);
+    if(position <= 500) throw new Error("Wheel scrolling jumped back while virtual rows changed");
+    await page.getByRole("button", { name:"Refresh branches",exact:true }).click();
+    await page.waitForSelector(".bm-body[aria-busy=false]");
+    if (Math.abs(await list.evaluate(node => node.scrollTop) - position) > 1) throw new Error("A snapshot refresh reset the user's scroll position");
+    const count = Number((await manager().locator(".cf-head .muted").innerText()).split(" ")[0]);
+    git("branch", "external/while-scrolling");
+    await manager().locator(".cf-head .muted").filter({hasText:`${count + 1} branches`}).waitFor();
+    if (Math.abs(await list.evaluate(node => node.scrollTop) - position) > 1) throw new Error("External Git refresh reset the user's scroll position");
+    await list.hover(); await page.mouse.wheel(0, -240);
+    await page.waitForFunction(before => document.querySelector(".bm-viewport").scrollTop < before - 100, position);
     await shot("79-branch-manager-list");
     if (!fs.readFileSync(path.join(root,".git/index")).equals(before)) throw new Error("Read-only manager modified the Git index");
+
+    // Real author metadata with a HEAD author different from user.email proves
+    // that My branches uses effective Git config, not the last commit's author.
+    const other = git("-c","user.name=Other Author","-c","user.email=other@example.invalid","commit-tree",`${base}^{tree}`,"-p",base,"-m","Other author tip");
+    git("update-ref","refs/heads/main",other);
+    git("branch","owned/removed",base); git("branch","other/removed",other);
+    git("config","--add","remote.origin.fetch","+refs/heads/retired/*:refs/remotes/origin/retired/*");
+    for (const [name,upstream] of [["owned/removed","own"],["other/removed","other"]]) {
+      git("config",`branch.${name}.remote`,"origin"); git("config",`branch.${name}.merge`,`refs/heads/retired/${upstream}`);
+    }
+    git("branch","--set-upstream-to=origin/innocent","main");
+    git("branch","--set-upstream-to=origin/innocent","feature/login");
+    git("update-ref","refs/remotes/origin/innocent",other); // login is now one commit ahead and one behind
+    git("config","--add","remote.origin.fetch","+refs/heads/remote-only:refs/remotes/origin/remote-only");
+    git("update-ref","refs/remotes/origin/remote-only",base);
+    await page.getByRole("button", { name:"Refresh branches",exact:true }).click();
+    await page.waitForSelector(".bm-body[aria-busy=false]");
+    await manager().getByRole("button",{name:"Remote deleted",exact:true}).click();
+    await row("refs/heads/owned/removed").waitFor(); await row("refs/heads/other/removed").waitFor();
+    await manager().getByRole("button",{name:"My branches",exact:true}).click();
+    await row("refs/heads/other/removed").waitFor({state:"detached"});
+    if(await page.locator(".bm-viewport [role=option]").count() !== 1 || !await row("refs/heads/owned/removed").isVisible()) throw new Error("My + Remote deleted did not intersect using configured user.email");
+    await manager().getByRole("button",{name:"Select shown (up to 50)",exact:true}).click();
+    if(!await page.getByRole("checkbox",{name:"Select refs/heads/owned/removed for cleanup",exact:true}).isChecked()) throw new Error("Filtered branch could not be selected for safety review");
+    await manager().getByRole("button",{name:"Clear selection",exact:true}).click();
+    await manager().getByRole("button",{name:"Configure branch author filter",exact:true}).click();
+    await page.getByRole("textbox",{name:"Branch author email or name",exact:true}).fill("Other Author");
+    await page.getByRole("button",{name:"Apply filter",exact:true}).click();
+    await row("refs/heads/other/removed").waitFor();
+    if(await page.locator(".bm-viewport [role=option]").count() !== 1) throw new Error("Custom author filter did not replace the default email");
     await page.getByRole("button", { name: "Close branch manager", exact: true }).click();
+    await open();
+    await row("refs/heads/other/removed").waitFor();
+    await manager().getByRole("button",{name:"Configure branch author filter",exact:true}).click();
+    if(await page.getByRole("textbox",{name:"Branch author email or name",exact:true}).inputValue() !== "Other Author") throw new Error("Custom author was not remembered per repository");
+    await page.getByRole("button",{name:"Use Git email",exact:true}).click();
+    await row("refs/heads/owned/removed").waitFor();
+    if(git("config","--get","user.email") !== "branch@example.invalid" || git("rev-parse","HEAD") !== other) throw new Error("Author filtering changed Git identity or checked out a branch");
+    await shot("79-branch-manager-author");
+    await manager().getByRole("button",{name:"My branches",exact:true}).click();
+    await manager().getByRole("button",{name:"Remote deleted",exact:true}).click();
+    await page.getByRole("button", { name: "Close branch manager", exact: true }).click();
+
+    const search = page.locator(".sidebar input[placeholder^='Filter branches']");
+    await search.fill("origin/innocent");
+    await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="feature/login"] .branch-connection.paired').waitFor();
+    if(await page.locator('.sidebar [data-branch-kind="remote"][data-branch-name="origin/innocent"]').count()) throw new Error("Paired remote still appears separately");
+    const login = page.locator('.sidebar [data-branch-kind="local"][data-branch-name="feature/login"]');
+    if(!await login.locator(".ab.up").isVisible()) throw new Error("Pairing hid outgoing commit counts");
+    if(!await login.locator(".ab.down").isVisible()) throw new Error("Pairing hid incoming commit counts");
+    await login.click({button:"right"});
+    await page.locator(".ctx-item").filter({has:page.getByText("Upstream: origin/innocent",{exact:true})}).waitFor();
+    await page.keyboard.press("Escape");
+    await search.fill("owned/removed");
+    await page.locator('.sidebar [data-branch-name="owned/removed"] .branch-connection.gone').waitFor();
+    await search.fill("occupied");
+    await page.locator('.sidebar [data-branch-name="occupied"] .branch-connection.local').waitFor();
+    await search.fill("remote-only");
+    await page.locator('.sidebar [data-branch-kind="remote"][data-branch-name="origin/remote-only"]').waitFor();
+    await shot("79-branches-remote-only");
+    await search.fill("");
   });
   await check("a delayed old branch snapshot cannot overwrite newer external Git state", async () => {
     await open();
@@ -154,6 +236,10 @@ export async function branchManagerProtectionSmoke({ page, check, shot, work }) 
       await page.waitForSelector(".branch-review[aria-busy=false][data-review-local-oid]");
     };
     await openReview();
+    const checkpointOption=page.getByRole("checkbox",{name:"Create recovery checkpoint",exact:true});
+    if(!await checkpointOption.isChecked())throw new Error("Deletion recovery must default to enabled");
+    await checkpointOption.uncheck();
+    const checkpointsBefore=(await invoke("recovery_list",{repo:root})).checkpoints.map(x=>x.id).sort();
     const checkbox=page.locator(".delete-remote-branch"),submit=page.locator(".delete-branch-confirm");
     if(!await checkbox.isDisabled() || await checkbox.isChecked() || !await submit.isEnabled())throw new Error("Protected upstream did not leave only local deletion available");
     await page.locator(".branch-deletion-protection").filter({hasText:"main is protected"}).waitFor();
@@ -163,7 +249,7 @@ export async function branchManagerProtectionSmoke({ page, check, shot, work }) 
     const target=targets.find(t=>t.remoteRef==="refs/heads/main");
     const plan=await invoke("branch_delete_plan",{repo:root,name:"topic",base:"refs/heads/main",target,remoteOnly:false});
     const error=await page.evaluate(async({root,plan})=>{
-      try{await window.__TAURI_INTERNALS__.invoke("branch_delete_reviewed",{repo:root,review:plan.proof,includeRemote:true,force:true,expectedState:plan.stateToken,protectionRules:["main","master","develop","release/*"]});return null;}catch(e){return e;}
+      try{await window.__TAURI_INTERNALS__.invoke("branch_delete_reviewed",{repo:root,review:plan.proof,includeRemote:true,force:true,expectedState:plan.stateToken,protectionRules:["main","master","develop","release/*"],createCheckpoint:false});return null;}catch(e){return e;}
     },{root,plan});
     if(error?.kind!=="protected-branch" || git(root,"rev-parse","topic")!==oid || git(server,"rev-parse","main")!==oid)throw new Error("Combined deletion bypassed backend protection");
     const remote=page.getByRole("combobox",{name:"Remote branch",exact:true});
@@ -176,12 +262,19 @@ export async function branchManagerProtectionSmoke({ page, check, shot, work }) 
     await checkbox.uncheck();if(!await submit.isEnabled())throw new Error("Local-only deletion became unavailable");
     await shot(`82-protected-combined-${alias ? "alias" : "standard"}`);
     await submit.click();await page.waitForSelector(".modal",{state:"detached",timeout:180000});
+    if(JSON.stringify((await invoke("recovery_list",{repo:root})).checkpoints.map(x=>x.id).sort())!==JSON.stringify(checkpointsBefore))throw new Error("Local deletion ignored disabled checkpoint option");
+    const deletedNotice=page.locator(".toast").filter({hasText:"Deleted local branch topic"});
+    await deletedNotice.getByText("Deleted without a recovery checkpoint",{exact:true}).waitFor();
+    if(await deletedNotice.getByRole("button",{name:"Open recovery checkpoint",exact:true}).count())throw new Error("Deletion offered a checkpoint that was never created");
     if(git(root,"for-each-ref","--format=%(objectname)","refs/heads/topic") || git(server,"rev-parse","main")!==oid || git(server,"rev-parse","topic")!==oid || !fs.readFileSync(path.join(root,".git/index")).equals(index))throw new Error("Local-only deletion changed protected remote or index");
     // Explicitly editing the rule is the only supported way to allow main.
     git(root,"branch","topic");trackTopic();await page.getByRole("button",{name:"Refresh branches",exact:true}).click();await page.waitForSelector(".bm-body[aria-busy=false]");
     await page.getByRole("button",{name:"Protection rules",exact:true}).click();await page.getByRole("textbox",{name:"Branch protection rules"}).fill("master\ndevelop\nrelease/*");await page.getByRole("button",{name:"Save rules",exact:true}).click();
     await openReview();if(await checkbox.isDisabled())throw new Error("Edited rules did not allow the reviewed target");
+    if(!await checkpointOption.isChecked())throw new Error("Disabling checkpoints leaked into the next deletion dialog");
+    await checkpointOption.uncheck();
     await checkbox.check();await submit.click();await page.waitForSelector(".modal",{state:"detached",timeout:180000});
+    if(JSON.stringify((await invoke("recovery_list",{repo:root})).checkpoints.map(x=>x.id).sort())!==JSON.stringify(checkpointsBefore))throw new Error("Combined deletion ignored disabled checkpoint option");
     if(git(root,"for-each-ref","--format=%(objectname)","refs/heads/topic") || git(server,"for-each-ref","--format=%(objectname)","refs/heads/main") || git(root,"rev-parse","main")!==oid)throw new Error("Explicit rule change did not authorize exactly the selected deletions");
     await page.getByRole("button",{name:"Close branch manager",exact:true}).click();
   });

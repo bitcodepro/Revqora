@@ -24,6 +24,7 @@ pub struct BranchInfo {
     pub full_name: String,
     pub oid: String,
     pub upstream: Option<String>,
+    pub upstream_full_name: Option<String>,
     pub ahead: u32,
     pub behind: u32,
     pub gone: bool,
@@ -73,7 +74,7 @@ pub struct RefsSnapshot {
     pub remotes: Vec<RemoteInfo>,
 }
 
-const FMT: &str = "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)%1f%(creatordate:unix)%1f%(contents:subject)%1f%(authorname)%1f%(symref)%1f%(objecttype)";
+const FMT: &str = "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(HEAD)%00%(creatordate:unix)%00%(contents:subject)%00%(authorname)%00%(symref)%00%(objecttype)%00%(upstream)%00";
 
 fn parse_track(t: &str) -> (u32, u32, bool) {
     let mut ahead = 0;
@@ -95,12 +96,13 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
     let mut local = Vec::new();
     let mut remote = Vec::new();
     let mut tags = Vec::new();
-    for line in raw.lines() {
-        let f: Vec<&str> = line.split('\x1f').collect();
-        if f.len() < 11 {
-            continue;
-        }
-        let full = f[0];
+    let fields: Vec<&str> = raw.split_terminator('\0').collect();
+    let (records, tail) = fields.as_chunks::<12>();
+    if tail.iter().any(|s| !s.trim_matches('\n').is_empty()) {
+        return Err(super::runner::GitError::new("Invalid reference metadata record."));
+    }
+    for f in records {
+        let full = f[0].trim_start_matches('\n');
         let time = f[6].parse().unwrap_or(0);
         if let Some(name) = full.strip_prefix("refs/heads/") {
             let (ahead, behind, gone) = parse_track(f[4]);
@@ -109,6 +111,7 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
                 full_name: full.to_string(),
                 oid: f[1].to_string(),
                 upstream: Some(f[3].to_string()).filter(|s| !s.is_empty()),
+                upstream_full_name: Some(f[11].to_string()).filter(|s| !s.is_empty()),
                 ahead,
                 behind,
                 gone,
@@ -128,6 +131,7 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
                 full_name: full.to_string(),
                 oid: f[1].to_string(),
                 upstream: None,
+                upstream_full_name: None,
                 ahead: 0,
                 behind: 0,
                 gone: false,

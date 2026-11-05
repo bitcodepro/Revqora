@@ -1,4 +1,4 @@
-use revqora_lib::git::{branch_manager, runner};
+use revqora_lib::git::{branch_manager, refs, runner};
 use std::{fs, path::Path};
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -43,6 +43,12 @@ fn inventory_is_read_only_tracks_upstreams_and_worktree_occupancy() {
     assert!(main.current && !main.merged.unwrap());
     assert_eq!((main.ahead, main.behind), (1, 0));
     assert_eq!(main.subject, "message with \u{1f} delimiter");
+    assert_eq!(main.author_email, "branch@test.invalid");
+    assert_eq!(snap.identity_email.as_deref(), Some("branch@test.invalid"));
+    let sidebar = refs::snapshot(root).unwrap();
+    let main = sidebar.local.iter().find(|b| b.name == "main").unwrap();
+    assert_eq!(main.subject, "message with \u{1f} delimiter");
+    assert_eq!(main.upstream_full_name.as_deref(), Some("refs/remotes/origin/main"));
     assert!(snap.worktrees.iter().any(|w| w.branch.as_deref() == Some("topic") && !w.is_current));
     let d = branch_manager::compare(root, &base, &tip).unwrap();
     assert_eq!((d.ahead, d.behind), (1, 0));
@@ -50,6 +56,49 @@ fn inventory_is_read_only_tracks_upstreams_and_worktree_occupancy() {
     assert_eq!(index, fs::read(root.join(".git/index")).unwrap());
     assert_eq!(refs, git(root, &["show-ref"]));
     assert_eq!(fs::read_to_string(root.join("file.txt")).unwrap(), "manual contents");
+}
+
+#[test]
+fn author_filter_identity_uses_effective_git_config_not_the_head_author() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init(root);
+    let oid = commit(root, "authored by someone else");
+    // Conditional config and worktree overrides must work just like committing
+    // in this repository. Do not derive the user's email from this old commit.
+    let included = root.join("identity.gitconfig");
+    fs::write(&included, "[user]\n\temail = configured@example.invalid\n").unwrap();
+    git(root, &["config", "includeIf.onbranch:main.path", included.to_str().unwrap()]);
+    let snap = branch_manager::snapshot(root, None).unwrap();
+    assert_eq!(snap.identity_email.as_deref(), Some("configured@example.invalid"));
+    assert_eq!(snap.branches[0].author_email, "branch@test.invalid");
+    assert_eq!(snap.branches[0].oid, oid);
+    git(root, &["config", "extensions.worktreeConfig", "true"]);
+    git(root, &["config", "--worktree", "user.email", "worktree@example.invalid"]);
+    assert_eq!(branch_manager::snapshot(root, None).unwrap().identity_email.as_deref(), Some("worktree@example.invalid"));
+    git(root, &["config", "--worktree", "user.email", ""]);
+    assert!(branch_manager::snapshot(root, None).unwrap().identity_email.is_none());
+}
+
+#[test]
+fn full_upstream_refs_distinguish_local_tracking_and_deleted_remote_branches() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init(root);
+    let oid = commit(root, "base");
+    git(root, &["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    git(root, &["update-ref", "refs/remotes/origin/differently-named", &oid]);
+    git(root, &["branch", "--set-upstream-to=origin/differently-named", "main"]);
+    git(root, &["branch", "local-tracking"]);
+    git(root, &["branch", "--set-upstream-to=main", "local-tracking"]);
+    let snapshot = refs::snapshot(root).unwrap();
+    assert_eq!(snapshot.local.iter().find(|b| b.name == "local-tracking").unwrap().upstream_full_name.as_deref(), Some("refs/heads/main"));
+    assert_eq!(snapshot.local.iter().find(|b| b.name == "main").unwrap().upstream_full_name.as_deref(), Some("refs/remotes/origin/differently-named"));
+    git(root, &["update-ref", "-d", "refs/remotes/origin/differently-named"]);
+    let snapshot = refs::snapshot(root).unwrap();
+    let main = snapshot.local.iter().find(|b| b.name == "main").unwrap();
+    assert!(main.gone);
+    assert_eq!(main.upstream_full_name.as_deref(), Some("refs/remotes/origin/differently-named"));
 }
 
 #[test]

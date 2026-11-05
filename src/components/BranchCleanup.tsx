@@ -22,6 +22,7 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
   const [loading, setLoading] = useState(true);
   const [reviewedInput, setReviewedInput] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [createCheckpoint, setCreateCheckpoint] = useState(true);
   const [error, setError] = useState("");
   const [consumed, setConsumed] = useState(false);
   const generation = useRef(0);
@@ -67,7 +68,7 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
     const id = newOpId(); startBusy(id, "Reviewing and deleting selected branches");
     try {
       const selections = selected.map(x => ({ proof: x.plan.proof, mode: x.request.mode, force: forced.has(x.request.reference) }));
-      setReport(await api.branchCleanupExecute(root, selections, rules, review.stateToken, id));
+      setReport(await api.branchCleanupExecute(root, selections, rules, review.stateToken, id, createCheckpoint));
     } catch (e) { setError(errorMessage(e)); }
     finally { endBusy(id); setBusy(false); await useRepos.getState().refresh(root, ALL); }
   };
@@ -106,11 +107,13 @@ export function BranchCleanup({ root, initial, bases, initialBase, rules, onClos
           </>}
         </article>;
       })}
-      {!consumed && <div className="callout warn">Each actual local and remote branch is checked against protection rules before any deletion. Every removed tip gets a recovery checkpoint in Undo Center. This is a sequence of operations: a server rejection can leave a local branch already deleted. Remaining rows stop on failure.</div>}
+      {!consumed && <label className="bc-consent"><input type="checkbox" aria-label="Create recovery checkpoint" checked={createCheckpoint} disabled={busy} onChange={e => setCreateCheckpoint(e.target.checked)} />Create recovery checkpoint</label>}
+      {!consumed && <div className="callout warn">Each actual local and remote branch is checked against protection rules before any deletion. {createCheckpoint ? "Every removed tip gets a recovery checkpoint in Undo Center." : "No recovery checkpoints will be created for this batch."} This is a sequence of operations: a server rejection can leave a local branch already deleted. Remaining rows stop on failure.</div>}
       {!consumed && batchBlocker && <p className="bc-error" role="alert">{batchBlocker}</p>}
       {busy && <div className="bc-loading"><Loader2 size={16} className="spin" /><span>Checking the whole selection, then deleting one branch at a time…</span></div>}
       {report?.preflightFailed && <p className="callout warn" role="alert">Preflight failed. Nothing was deleted. Close this result and prepare a new review.</p>}
       {results && <>
+        {!createCheckpoint && <p className="muted">Recovery checkpoints were disabled for this batch.</p>}
         <p className="bc-summary">{results.filter(x => x.status === "deleted").length} completed · {results.filter(x => x.status === "partial").length} partial · {results.filter(x => x.status === "failed").length} failed · {results.filter(x => x.status === "skipped").length} skipped</p>
         {results.map((r, i) => <article className="bc-item" key={i} data-cleanup-status={r.status}><b>{r.name} · {r.status}</b>
           <p>Local: {r.localDeleted ? "deleted" : "kept"} · Remote: {r.remoteDeleted ? "deleted" : "kept"}</p>{r.message && <p className="bc-error">{r.message}</p>}

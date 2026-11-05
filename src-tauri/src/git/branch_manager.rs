@@ -1,6 +1,6 @@
 //! Batched, read-only branch inventory. Merged means physical reachability, not patch equivalence.
 use super::{
-    branch_deletion, extras, history, operations,
+    branch_deletion, extras, history, operations, repo,
     runner::{GitError, GitResult},
 };
 use serde::Serialize;
@@ -20,6 +20,7 @@ pub struct Branch {
     pub gone: bool,
     pub time: i64,
     pub author: String,
+    pub author_email: String,
     pub subject: String,
     pub merged: Option<bool>,
     pub protection_names: Vec<String>,
@@ -32,6 +33,7 @@ pub struct Snapshot {
     pub worktrees: Vec<extras::Worktree>,
     pub base_ref: Option<String>,
     pub base_oid: Option<String>,
+    pub identity_email: Option<String>,
 }
 #[derive(Serialize)]
 pub struct Distance {
@@ -40,12 +42,12 @@ pub struct Distance {
 }
 
 fn inventory(root: &Path) -> GitResult<Vec<Branch>> {
-    let format = "--format=%(refname)%00%(objectname)%00%(symref)%00%(HEAD)%00%(upstream)%00%(upstream:track,nobracket)%00%(committerdate:unix)%00%(authorname)%00%(contents:subject)%00";
+    let format = "--format=%(refname)%00%(objectname)%00%(symref)%00%(HEAD)%00%(upstream)%00%(upstream:track,nobracket)%00%(committerdate:unix)%00%(authorname)%00%(contents:subject)%00%(authoremail:trim)%00";
     let raw = history::run(root, ["for-each-ref", format, "refs/heads/", "refs/remotes/"])?;
     let mut branches = Vec::new();
-    // Each record has nine NUL-terminated fields plus Git's record newline.
+    // NULs keep author names and subjects containing other separators intact.
     let fields: Vec<&str> = raw.split_terminator('\0').collect();
-    let (records, tail) = fields.as_chunks::<9>();
+    let (records, tail) = fields.as_chunks::<10>();
     if tail.iter().any(|s| !s.trim_matches('\n').is_empty()) {
         return Err(GitError::new("Invalid branch metadata record."));
     }
@@ -75,6 +77,7 @@ fn inventory(root: &Path) -> GitResult<Vec<Branch>> {
             gone: f[5] == "gone",
             time: f[6].parse().unwrap_or(0),
             author: f[7].into(),
+            author_email: f[9].into(),
             subject: f[8].into(),
             merged: None,
             protection_names: vec![name.into()],
@@ -121,7 +124,10 @@ pub fn snapshot(root: &Path, requested_base: Option<&str>) -> GitResult<Snapshot
         {
             return Err(GitError::new("Branches changed while loading. Refresh the branch manager.").kind("stale-operation"));
         }
-        Ok(Snapshot { branches, worktrees, base_ref, base_oid })
+        // Use the effective commit identity, including local/worktree/includeIf
+        // configuration. HEAD's author and forge accounts are not this identity.
+        let identity_email = repo::config_get(root, "user.email").filter(|s| !s.trim().is_empty());
+        Ok(Snapshot { branches, worktrees, base_ref, base_oid, identity_email })
     })
 }
 pub fn compare(root: &Path, base: &str, tip: &str) -> GitResult<Distance> {

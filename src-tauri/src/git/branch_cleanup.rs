@@ -162,6 +162,16 @@ pub fn review(root: &Path, requests: Vec<Request>, base: &str, rules: &[String])
     Ok(Review { items, state_token })
 }
 pub fn execute(root: &Path, selections: &[Selection], rules: &[String], mut progress: impl FnMut(&str)) -> GitResult<Report> {
+    execute_with_checkpoint(root, selections, rules, true, &mut progress)
+}
+
+pub fn execute_with_checkpoint(
+    root: &Path,
+    selections: &[Selection],
+    rules: &[String],
+    create_checkpoint: bool,
+    mut progress: impl FnMut(&str),
+) -> GitResult<Report> {
     bounded(selections.len())?;
     operations::access(
         root,
@@ -227,17 +237,17 @@ pub fn execute(root: &Path, selections: &[Selection], rules: &[String], mut prog
                     check(root, s, rules, true)?;
                     let mut warnings = Vec::new();
                     if s.mode.local() {
-                        let r = branch_review::delete_local(root, &s.proof, s.mode.remote(), s.force, None, Some(rules))?;
+                        let r = branch_review::delete_local_with_checkpoint(root, &s.proof, s.mode.remote(), s.force, None, Some(rules), create_checkpoint)?;
                         outcome.local_deleted = true;
-                        outcome.checkpoints.push(r.checkpoint);
+                        outcome.checkpoints.extend(r.checkpoint);
                         if let Some(w) = r.warning {
                             warnings.push(w);
                         }
                     }
                     if s.mode.remote() {
-                        let r = branch_review::delete_remote(root, &s.proof, s.force, None, Some(rules), &mut progress)?;
+                        let r = branch_review::delete_remote_with_checkpoint(root, &s.proof, s.force, None, Some(rules), create_checkpoint, &mut progress)?;
                         outcome.remote_deleted = true;
-                        outcome.checkpoints.push(r.checkpoint);
+                        outcome.checkpoints.extend(r.checkpoint);
                         if let Some(w) = r.warning {
                             warnings.push(w);
                         }

@@ -61,7 +61,7 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
   };
   const exists=(root,name)=>!!git(root,"for-each-ref","--format=%(objectname)",`refs/heads/${name}`);
   await check("excluded cleanup branches stay excluded after scope, base and review refresh changes",async()=>{
-    const {root,server,tip}=await fixture("exclusions");
+    const {root,server,tip,invoke}=await fixture("exclusions");
     // Hold an actual inventory read to verify that local selection intent stays
     // editable during refresh, while opening a destructive review stays blocked.
     await page.evaluate(()=>{
@@ -97,7 +97,13 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     const comparison=page.getByRole("combobox",{name:"Cleanup comparison base",exact:true});if(await comparison.inputValue()==="refs/heads/keep-base")throw new Error("Consent-reset scenario requires an actual base change");await comparison.selectOption("refs/heads/keep-base");await page.waitForSelector('.branch-cleanup[aria-busy=false][data-cleanup-base="refs/heads/keep-base"]',{timeout:180000});await assertKept();await consent.check();
     await page.getByRole("button",{name:"Refresh review",exact:true}).click();await page.waitForSelector(".branch-cleanup[aria-busy=false]",{timeout:180000});await assertKept();
     await page.getByRole("checkbox",{name:"Include refs/heads/bulk-risk",exact:true}).uncheck();
+    const checkpointOption=page.getByRole("checkbox",{name:"Create recovery checkpoint",exact:true});
+    if(!await checkpointOption.isChecked())throw new Error("Bulk recovery must default to enabled");
+    await checkpointOption.uncheck();
+    const checkpointsBefore=(await invoke("recovery_list",{repo:root})).checkpoints.map(x=>x.id).sort();
     await shot("88-bulk-cleanup-exclusions");await run(1);
+    if(JSON.stringify((await invoke("recovery_list",{repo:root})).checkpoints.map(x=>x.id).sort())!==JSON.stringify(checkpointsBefore))throw new Error("Bulk cleanup ignored disabled checkpoint option");
+    if(await page.locator(".branch-cleanup").getByRole("button",{name:/Open recovery checkpoint/}).count())throw new Error("Bulk results offered an unsaved checkpoint");
     if(!exists(root,"bulk-clean-a")||!exists(server,"bulk-clean-a")||git(root,"rev-parse","bulk-clean-a")!==tip||!exists(root,"bulk-risk")||exists(root,"bulk-clean-b")||exists(server,"bulk-clean-b"))throw new Error("Cleanup deleted an explicitly kept branch or retained the selected destination");
     await close();
   });
@@ -107,6 +113,7 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     await search("bulk-clean");await page.getByRole("button",{name:"Select shown (up to 50)",exact:true}).click();
     await search("bulk-clean-a");await page.locator(".bm-bulk").getByText("3 selected · 2 hidden by filter",{exact:true}).waitFor();
     await openReview();await scope("refs/heads/bulk-clean-b","both");await scope("refs/heads/bulk-clean-c","remote");
+    if(!await page.getByRole("checkbox",{name:"Create recovery checkpoint",exact:true}).isChecked())throw new Error("Disabled checkpoints leaked into another bulk review");
     await shot("83-bulk-cleanup-review");await run(3);
     if(await page.locator('[data-cleanup-status="deleted"]').count()!==3)throw new Error("Mixed cleanup did not complete three rows");
     if(exists(root,"bulk-clean-a")||exists(root,"bulk-clean-b")||!exists(root,"bulk-clean-c")||!exists(server,"bulk-clean-a")||exists(server,"bulk-clean-b")||exists(server,"bulk-clean-c"))throw new Error("Cleanup removed the wrong local/server refs");

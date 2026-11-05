@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GitBranch, RefreshCw, ShieldCheck, X } from "lucide-react";
+import { CloudOff, GitBranch, RefreshCw, Settings2, ShieldCheck, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import * as A from "../lib/actions";
 import { useRepos } from "../lib/store";
 import { closeOverlay, copyText, openOverlay, showDialog, toast } from "../lib/ui";
-import { branchFilters, branchWorktrees, isProtected, loadBranchPreferences, preferencesKey, restoreBranchPreferences, selectBranches, type BranchPreferences } from "../lib/branchManager";
+import { branchFilters, branchWorktrees, isProtected, isRemoteDeleted, loadBranchPreferences, preferencesKey, restoreBranchPreferences, selectBranches, type BranchPreferences } from "../lib/branchManager";
+import { virtualRange } from "../lib/virtualRange";
+import { Modal } from "./Modal";
 import type { BranchManagerSnapshot } from "../lib/types";
 import { relativeTime, shortOid } from "../lib/format";
 import { jumpToCommit } from "./GraphView";
@@ -58,12 +60,16 @@ export function BranchManager({ root }: { root: string }) {
     return () => resize.disconnect();
   }, []);
   const update = (patch: Partial<BranchPreferences>) => setPrefs(p => restoreBranchPreferences({ ...p, ...patch }));
-  const rows = useMemo(() => selectBranches(snapshot?.branches ?? [], prefs, query, snapshot?.worktrees ?? []), [snapshot, prefs, query]);
+  const rows = useMemo(() => selectBranches(snapshot?.branches ?? [], prefs, query, snapshot?.worktrees ?? [], Date.now(), snapshot?.identityEmail ?? null), [snapshot, prefs, query]);
   useEffect(() => {
     setSelected(old => rows.some(b => b.fullRef === old) ? old : rows[0]?.fullRef ?? null);
+  }, [rows]);
+  // Only an intentional filter/sort change resets navigation. A refreshed
+  // snapshot creates a new rows array even when every branch is unchanged.
+  useEffect(() => {
     if (viewport.current) viewport.current.scrollTop = 0;
     setScroll(0);
-  }, [rows]);
+  }, [prefs.scope, prefs.filter, prefs.sort, prefs.staleDays, prefs.onlyMine, prefs.remoteDeleted, prefs.authorQuery, query]);
   const branch = rows.find(b => b.fullRef === selected);
   const base = snapshot?.baseOid;
   const tip = branch?.oid;
@@ -94,8 +100,11 @@ export function BranchManager({ root }: { root: string }) {
     await showDialog<void>(close => <BranchCleanup root={root} initial={Object.values(checked)} rules={prefs.protections} bases={(snapshot?.branches ?? []).filter(b => b.local).map(b => ({ reference: b.fullRef, name: b.name }))} initialBase={snapshot?.baseRef?.startsWith("refs/heads/") ? snapshot.baseRef : (snapshot?.branches.find(b => b.local && b.current)?.fullRef ?? "")} onClose={() => close()} />);
     setChecked({}); await refresh();
   };
-  const start = Math.max(0, Math.floor(scroll / ROW) - 5);
-  const end = Math.min(rows.length, Math.ceil((scroll + height) / ROW) + 5);
+  const { start, end } = virtualRange(rows.length, ROW, height, scroll);
+  const editAuthor = async () => {
+    const value = await showDialog<string | null>(close => <AuthorFilter initial={prefs.authorQuery} email={snapshot?.identityEmail ?? null} close={close} />);
+    if (value !== null) update({ authorQuery: value, onlyMine: !!value || !!snapshot?.identityEmail });
+  };
   const choose = (index: number) => {
     const i = Math.max(0, Math.min(rows.length - 1, index));
     setSelected(rows[i]?.fullRef ?? null);
@@ -121,8 +130,12 @@ export function BranchManager({ root }: { root: string }) {
     </div>
     {rulesOpen && <div className="bm-rules"><label>Protect rename and deletion in this manager. One branch name or wildcard (*, ?) per line. These are local UI rules.<textarea className="input mono" aria-label="Branch protection rules" rows={3} value={rules} onChange={e => setRules(e.target.value)} /></label><button className="btn primary" onClick={() => { update({ protections: rules.split(/\r?\n/) }); setRulesOpen(false); }}>Save rules</button></div>}
     <nav className="bm-filters" aria-label="Branch filters">{branchFilters.map(f => <button className={`btn ${prefs.filter === f ? "active" : ""}`} aria-pressed={prefs.filter === f} key={f} onClick={() => update({ filter: f })}>{f}</button>)}
+      <button className={`btn ${prefs.onlyMine ? "active" : ""}`} aria-pressed={prefs.onlyMine} disabled={!prefs.onlyMine && !prefs.authorQuery && !snapshot?.identityEmail} title={prefs.authorQuery ? `Tip author name or email contains: ${prefs.authorQuery}` : snapshot?.identityEmail ? `Tip author email equals Git user.email: ${snapshot.identityEmail}` : "Set Git user.email or choose a custom author."} onClick={() => update({ onlyMine: !prefs.onlyMine })}>{prefs.authorQuery ? "By author" : "My branches"}</button>
+      <button className="icon-btn" aria-label="Configure branch author filter" title="Choose author email or name" onClick={() => void editAuthor()}><Settings2 size={15} /></button>
+      <button className={`btn ${prefs.remoteDeleted ? "active" : ""}`} aria-pressed={prefs.remoteDeleted} title="Local branches whose configured remote upstream is missing after Fetch." onClick={() => update({ remoteDeleted: !prefs.remoteDeleted })}><CloudOff size={14} />Remote deleted</button>
       <label>Stale after <input className="input" type="number" min={1} max={3650} aria-label="Stale branch days" value={prefs.staleDays} onChange={e => update({ staleDays: Number(e.target.value) })} /> days</label>
     </nav>
+    {prefs.onlyMine && <div className="bm-author-summary">Tip author {prefs.authorQuery ? <>name or email contains <b>{prefs.authorQuery}</b></> : <>email matches Git <code>user.email</code>: <b>{snapshot?.identityEmail ?? "not configured"}</b></>}. Git does not record branch ownership; this filter uses the latest commit author.</div>}
     <div className="bm-bulk">
       <button className="btn" disabled={loading || pending || !rows.length} onClick={() => setChecked(Object.fromEntries(rows.slice(0, 50).map(b => [b.fullRef, { reference: b.fullRef, oid: b.oid, mode: b.local ? "local" : "remote" }])))}>Select shown (up to 50)</button>
       <span>{Object.keys(checked).length} selected · {Object.keys(checked).filter(ref => !rows.some(b => b.fullRef === ref)).length} hidden by filter</span>
@@ -140,8 +153,8 @@ export function BranchManager({ root }: { root: string }) {
           <div style={{ height: start * ROW }} />
           {rows.slice(start, end).map((b, i) => <div className={`bm-row ${b.fullRef === selected ? "selected" : ""}`} id={`bm-row-${start + i}`} key={b.fullRef} role="option" aria-selected={b.fullRef === selected} data-branch-ref={b.fullRef} onClick={() => setSelected(b.fullRef)}>
             <div title={b.fullRef} className="bm-name"><input type="checkbox" aria-label={`Select ${b.fullRef} for cleanup`} checked={!!checked[b.fullRef]} disabled={pending || (!checked[b.fullRef] && Object.keys(checked).length >= 50)} onClick={e => e.stopPropagation()} onChange={e => checkBranch(b, e.target.checked)} /><div><b>{b.name}</b><small>{b.local ? "Local" : "Remote"}{b.current ? " · HEAD" : ""}{branchWorktrees(b, snapshot?.worktrees ?? []).length ? " · Worktree" : ""}{isProtected(b, prefs.protections) ? " · Protected" : ""}</small></div></div>
-            <div title={b.upstream ?? "No upstream"}><span>{b.upstream?.replace(/^refs\/(remotes|heads)\//, "") ?? "—"}</span><small>{b.gone ? "Upstream missing" : b.upstream ? `↑${b.ahead} ↓${b.behind}` : "No upstream"}</small></div>
-            <div title={b.time > 0 ? new Date(b.time * 1000).toLocaleString() : ""}><span>{b.author || "—"}</span><small>{b.time > 0 ? relativeTime(b.time) : "Unknown date"}</small></div>
+            <div title={b.upstream ?? "No upstream"}><span>{b.upstream?.replace(/^refs\/(remotes|heads)\//, "") ?? "—"}</span><small>{isRemoteDeleted(b) ? <><CloudOff size={11} /> Remote deleted</> : b.gone ? "Local upstream missing" : b.upstream ? `↑${b.ahead} ↓${b.behind}` : "No upstream"}</small></div>
+            <div title={`${b.author} <${b.authorEmail}>${b.time > 0 ? ` · ${new Date(b.time * 1000).toLocaleString()}` : ""}`}><span>{b.author || "—"}</span><small>{b.time > 0 ? relativeTime(b.time) : "Unknown date"}</small></div>
             <div title={b.subject}><span>{b.subject}</span><small className="mono">{shortOid(b.oid)}</small></div>
           </div>)}
           <div style={{ height: Math.max(0, rows.length - end) * ROW }} />
@@ -151,7 +164,7 @@ export function BranchManager({ root }: { root: string }) {
       <aside className="bm-detail" aria-label="Selected branch">{branch ? <>
         <h3 title={branch.fullRef}>{branch.name}</h3><div className="muted bm-wrap">{branch.fullRef}</div>
         <button className="btn mono" onClick={() => copyText(branch.oid)} title="Copy commit ID">{shortOid(branch.oid)}</button>
-        <p className="bm-wrap">{branch.subject}</p><div className="muted">{branch.author}</div>
+        <p className="bm-wrap">{branch.subject}</p><div className="muted bm-wrap">{branch.author} &lt;{branch.authorEmail}&gt;</div>
         <h4>Compared to {snapshot?.baseRef?.replace(/^refs\/(heads|remotes)\//, "")}</h4>
         <small className="mono muted">{base ? shortOid(base) : "No base commit"}</small>
         <p>{loading ? "Refreshing…" : error ? "Refresh required" : distanceError || (distance ? `${distance.ahead} ahead · ${distance.behind} behind` : "Comparing…")}</p>
@@ -171,4 +184,17 @@ export function BranchManager({ root }: { root: string }) {
     </div>
     <footer className="bm-footer">{rows.length} shown · Stale uses the tip commit date. Counts use cached remote refs; Fetch updates them. Merged uses original commit ancestry and does not detect squash integration. Deletion has a separate safety review.</footer>
   </section>;
+}
+
+function AuthorFilter({ initial, email, close }: { initial: string; email: string | null; close: (value: string | null) => void }) {
+  const [value, setValue] = useState(initial);
+  return <Modal title="Branch author filter" onClose={() => close(null)} onSubmit={() => close(value.trim())} footer={<>
+    <button type="button" className="btn" onClick={() => close(null)}>Cancel</button>
+    <button type="button" className="btn" onClick={() => close("")}>Use Git email</button>
+    <button type="submit" className="btn primary">Apply filter</button>
+  </>}>
+    <label className="field">Author email or name<input className="input" aria-label="Branch author email or name" maxLength={256} value={value} placeholder={email ?? "Email or author name"} onChange={e => setValue(e.target.value)} /></label>
+    <p className="muted">Leave empty to match the exact email from this repository’s Git configuration: <b>{email ?? "user.email is not configured"}</b>.</p>
+    <p className="muted">Custom text matches part of the tip author’s name or email, ignoring case. It is saved for this repository and does not change your Git identity. Branch creator/ownership is not stored by Git.</p>
+  </Modal>;
 }

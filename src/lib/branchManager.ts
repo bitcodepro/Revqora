@@ -8,8 +8,9 @@ export type BranchFilter = typeof branchFilters[number];
 export interface BranchPreferences {
   base: string | null; scope: "all" | "local" | "remote"; filter: BranchFilter;
   sort: "recent" | "name" | "divergence"; staleDays: number; protections: string[];
+  onlyMine: boolean; remoteDeleted: boolean; authorQuery: string;
 }
-export const defaults: BranchPreferences = { base: null, scope: "all", filter: "All", sort: "recent", staleDays: 90, protections: ["main", "master", "develop", "release/*"] };
+export const defaults: BranchPreferences = { base: null, scope: "all", filter: "All", sort: "recent", staleDays: 90, protections: ["main", "master", "develop", "release/*"], onlyMine: false, remoteDeleted: false, authorQuery: "" };
 export function restoreBranchPreferences(value: unknown): BranchPreferences {
   const v = value && typeof value === "object" ? value as Partial<BranchPreferences> : {};
   return {
@@ -19,6 +20,9 @@ export function restoreBranchPreferences(value: unknown): BranchPreferences {
     sort: v.sort === "name" || v.sort === "divergence" ? v.sort : "recent",
     staleDays: typeof v.staleDays === "number" && Number.isFinite(v.staleDays) ? Math.max(1, Math.min(3650, Math.round(v.staleDays))) : 90,
     protections: Array.isArray(v.protections) ? v.protections.filter((s): s is string => typeof s === "string" && !!s.trim() && s.length <= 256).slice(0, 100).map(s => s.trim()) : [...defaults.protections],
+    onlyMine: v.onlyMine === true,
+    remoteDeleted: v.remoteDeleted === true,
+    authorQuery: typeof v.authorQuery === "string" ? v.authorQuery.trim().slice(0, 256) : "",
   };
 }
 export function preferencesKey(root: string) { return `revqora.branch-manager.${repositoryKey(root)}`; }
@@ -42,10 +46,22 @@ export function matchesFilter(b: ManagedBranch, filter: BranchFilter, preference
     default: return true;
   }
 }
-export function selectBranches(branches: ManagedBranch[], preferences: BranchPreferences, search: string, worktrees: Worktree[], now = Date.now()) {
+export function matchesBranchAuthor(b: ManagedBranch, custom: string, identityEmail: string | null) {
+  const query = custom.trim().toLocaleLowerCase();
+  if (query) return [b.author, b.authorEmail].some(s => s.toLocaleLowerCase().includes(query));
+  // Default is exact email equality, never a guessed name or HEAD identity.
+  const email = identityEmail?.trim().toLocaleLowerCase();
+  return !!email && b.authorEmail.trim().toLocaleLowerCase() === email;
+}
+export function isRemoteDeleted(b: ManagedBranch) {
+  return b.local && b.gone && !!b.upstream?.startsWith("refs/remotes/");
+}
+export function selectBranches(branches: ManagedBranch[], preferences: BranchPreferences, search: string, worktrees: Worktree[], now = Date.now(), identityEmail: string | null = null) {
   const query = search.trim().toLocaleLowerCase();
   return branches.filter(b => (preferences.scope === "all" || b.local === (preferences.scope === "local")) &&
-    (!query || [b.name, b.fullRef, b.author, b.subject, b.oid].some(s => s.toLocaleLowerCase().includes(query))) &&
+    (!preferences.onlyMine || matchesBranchAuthor(b, preferences.authorQuery, identityEmail)) &&
+    (!preferences.remoteDeleted || isRemoteDeleted(b)) &&
+    (!query || [b.name, b.fullRef, b.author, b.authorEmail, b.subject, b.oid].some(s => s.toLocaleLowerCase().includes(query))) &&
     matchesFilter(b, preferences.filter, preferences, worktrees, now))
     .sort((a, b) => (preferences.sort === "name" ? a.name.localeCompare(b.name) : preferences.sort === "divergence" ? (b.ahead + b.behind) - (a.ahead + a.behind) : b.time - a.time) || a.fullRef.localeCompare(b.fullRef));
 }
