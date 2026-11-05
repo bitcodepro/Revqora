@@ -164,7 +164,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
           </div>}
           <div className="branch-review-checkpoint"><ShieldCheck size={18} /><div><b>{checkpoint ? `Checkpoint saved: ${checkpoint.id}` : createCheckpoint ? "Recovery checkpoint before deletion" : "Recovery checkpoint disabled"}</b>
             <span>{checkpoint ? "The saved branch tips are available in Undo Center." : createCheckpoint ? "Reviewed branch tips are preserved before removal. Available in Undo Center for up to 30 days / 100 checkpoints." : "This deletion will not save the reviewed tips in Recovery Center."}</span>
-            <small>Reference checkpoint only. {plan.currentChanges ? `${plan.currentChanges} current working-copy changes stay in their worktree.` : "Working-copy files stay in their worktree."}</small>
+            <small>{(checkpoint || createCheckpoint) && "Reference checkpoint only. "}{plan.currentChanges ? `${plan.currentChanges} current working-copy changes stay in their worktree.` : "Working-copy files stay in their worktree."}</small>
             {checkpoint && <button type="button" className="btn sm" disabled={busy} onClick={() => openCheckpoint(checkpoint.id)}>Open recovery checkpoint</button>}</div></div>
         </>}
       </div>
