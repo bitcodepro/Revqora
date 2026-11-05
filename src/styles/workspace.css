@@ -185,6 +185,11 @@
 .bm-author-summary b { color: var(--text); }
 .bm-list { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .bm-viewport { flex: 1; min-height: 0; overflow: auto; outline-offset: -2px; }
+/* A fixed scroll extent cannot shrink while React replaces virtual rows. Disable
+   local overscroll bounce as well as scroll chaining at either list boundary. */
+.branch-manager .bm-viewport { overscroll-behavior: none; }
+.bm-canvas { position: relative; }
+.bm-window { position: absolute; top: 0; left: 0; right: 0; }
 .bm-row { display: grid; grid-template-columns: minmax(150px, 1.2fr) minmax(120px, .8fr) minmax(120px, .7fr) minmax(120px, 1fr); gap: 12px; padding: 8px 14px; height: 56px; box-sizing: border-box; border-bottom: 1px solid var(--border); cursor: pointer; }
 .bm-row > div { min-width: 0; }
 .bm-row b, .bm-row span, .bm-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

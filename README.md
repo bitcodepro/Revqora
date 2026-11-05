@@ -49,6 +49,10 @@ Git executable.
 
 - Press **Ctrl+O** to open a local repository, or drag its folder into the window.
 - Press **Ctrl+K**, then choose **Clone repository…** to clone a remote URL.
+  You can paste either the URL or the complete `git clone <URL>` command copied
+  from your hosting service, including an HTTPS username. Quoted sources are
+  supported; choose the parent folder and folder name in the form. Extra command
+  options and destination arguments are rejected with an explanation.
 - Choose **New repository…** to initialize a local repository. This does not create
   a hosted repository on GitHub, GitLab or another service.
 - Set your commit name and email in **Settings → Edit name & email** when needed.

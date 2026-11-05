@@ -21,7 +21,7 @@ test("failed native scenarios retain partial timings and propagate the original 
   }finally{fs.rmSync(work,{recursive:true,force:true});}
 });
 
-test("native partitions require all 158 scenarios including the previous 157 with no gap or overlap",()=>{
+test("native partitions require all 159 scenarios including the previous 158 with no gap or overlap",()=>{
   let next=0;
   for(const [suite,{offset,count}] of Object.entries(SMOKE_SUITES)){
     assert.equal(offset,next);next+=count;
@@ -29,7 +29,8 @@ test("native partitions require all 158 scenarios including the previous 157 wit
     assert.throws(()=>assertSmokeCoverage(suite,count-1),/Incomplete/);
     assert.throws(()=>assertSmokeCoverage(suite,count+1),/Incomplete/);
   }
-  assert.equal(next,158);assertSmokeCoverage("all",158);
+  assert.equal(next,159);assertSmokeCoverage("all",159);
+  assert.throws(()=>assertSmokeCoverage("all",158),/Incomplete/);
   assert.throws(()=>assertSmokeCoverage("all",157),/Incomplete/);
   assert.throws(()=>assertSmokeCoverage("all",152),/Incomplete/);
   assert.throws(()=>assertSmokeCoverage("all",119),/Incomplete/);

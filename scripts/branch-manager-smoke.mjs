@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createProfile, launch, openSubmenu, withViewport } from "./ui-driver.mjs";
+import { branchScrollBoundary } from "./branch-scroll-boundary.mjs";
 
 export async function branchManagerSmoke({ page, check, shot, work }) {
   const root = path.join(work, "stage9-branches"), wt = path.join(work, "stage9-linked");
@@ -75,6 +76,7 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
     await list.focus(); await page.keyboard.press("End");
     await row("refs/heads/topic/239").waitFor();
     if (await page.locator(".bm-viewport [role=option]").count() > 50) throw new Error("Scrolling disabled virtualization");
+    await branchScrollBoundary(page);
     // Exercise native wheel input and a real refreshed snapshot, not just
     // programmatic scrollTop. Both browser anchoring and snapshot resets used
     // to fight scrolling through this virtual list.

@@ -13,6 +13,7 @@ import { smokeTimings, SMOKE_SUITES, assertSmokeCoverage } from "./ci-timing.mjs
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
 import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manager-smoke.mjs";
 import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
+import { cloneInputSmoke } from "./clone-input-smoke.mjs";
 
 const arg=name=>process.argv[process.argv.indexOf(name)+1];
 const suite=process.env.REVQORA_SMOKE_SUITE;
@@ -42,6 +43,7 @@ try{
     await repositoryWorkspaceSmoke({page,check,shot,work});
     await branchManagerSmoke({page,check,shot,work});
     await branchManagerProtectionSmoke({page,check,shot,work});
+    await cloneInputSmoke({page,check,shot,work});
   }else if(suite==="cleanup") await branchCleanupSmoke({page,check,shot,work});
   else {await worktreeManagerSmoke({page,check,shot,work});await forgeAccountsSmoke({page,check,shot,work,profile:path.join(work,"profile"),restart});await prCenterSmoke({page:app.page,check,shot,work});await agentWorkspaceSmoke({page:app.page,check,shot,work,restart,deferCleanup});await workflowSmoke({page:app.page,check,shot,work,restart});await futureStagesSmoke({page:app.page,check,shot,work,restart});}
   assertSmokeCoverage(suite,completed);

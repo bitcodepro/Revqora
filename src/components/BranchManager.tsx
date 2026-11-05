@@ -150,14 +150,14 @@ export function BranchManager({ root }: { root: string }) {
           if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) { e.preventDefault(); choose(e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : rows.findIndex(b => b.fullRef === selected) + (e.key === "ArrowDown" ? 1 : -1)); }
           if (e.key === "Enter" && branch && ready) { closeOverlay(); jumpToCommit(root, branch.oid); }
         }}>
-          <div style={{ height: start * ROW }} />
+          <div className="bm-canvas" style={{ height: rows.length * ROW }}><div className="bm-window" style={{ transform: `translateY(${start * ROW}px)` }}>
           {rows.slice(start, end).map((b, i) => <div className={`bm-row ${b.fullRef === selected ? "selected" : ""}`} id={`bm-row-${start + i}`} key={b.fullRef} role="option" aria-selected={b.fullRef === selected} data-branch-ref={b.fullRef} onClick={() => setSelected(b.fullRef)}>
             <div title={b.fullRef} className="bm-name"><input type="checkbox" aria-label={`Select ${b.fullRef} for cleanup`} checked={!!checked[b.fullRef]} disabled={pending || (!checked[b.fullRef] && Object.keys(checked).length >= 50)} onClick={e => e.stopPropagation()} onChange={e => checkBranch(b, e.target.checked)} /><div><b>{b.name}</b><small>{b.local ? "Local" : "Remote"}{b.current ? " · HEAD" : ""}{branchWorktrees(b, snapshot?.worktrees ?? []).length ? " · Worktree" : ""}{isProtected(b, prefs.protections) ? " · Protected" : ""}</small></div></div>
             <div title={b.upstream ?? "No upstream"}><span>{b.upstream?.replace(/^refs\/(remotes|heads)\//, "") ?? "—"}</span><small>{isRemoteDeleted(b) ? <><CloudOff size={11} /> Remote deleted</> : b.gone ? "Local upstream missing" : b.upstream ? `↑${b.ahead} ↓${b.behind}` : "No upstream"}</small></div>
             <div title={`${b.author} <${b.authorEmail}>${b.time > 0 ? ` · ${new Date(b.time * 1000).toLocaleString()}` : ""}`}><span>{b.author || "—"}</span><small>{b.time > 0 ? relativeTime(b.time) : "Unknown date"}</small></div>
             <div title={b.subject}><span>{b.subject}</span><small className="mono">{shortOid(b.oid)}</small></div>
           </div>)}
-          <div style={{ height: Math.max(0, rows.length - end) * ROW }} />
+          </div></div>
           {!rows.length && <p className="bm-empty">{loading ? "Loading branches…" : "No branches match these filters."}</p>}
         </div>
       </div>
