@@ -38,10 +38,13 @@ export async function forgeAccountsSmoke({page,check,shot,work,profile,restart})
     await openRepository(page,root);
     await check("API account verification returns metadata and keeps session tokens out of settings and disk",async()=>{
       await open();await add(tokens[0],"first-user");const snapshot=await invoke("forge_accounts_snapshot");if(snapshot.accounts.length!==1||snapshot.accounts[0].status!=="available"||snapshot.accounts[0].storage!=="session")throw Error("Session account not available");
+      if((await invoke("forge_connections",{repo:root})).remotes.find(r=>r.name==="origin")?.accountId!==snapshot.accounts[0].id)throw Error("The explicitly checked token connection was not saved for this repository");
       const local=await page.evaluate(()=>JSON.stringify({...localStorage}));if(local.includes(tokens[0])||JSON.stringify(snapshot).includes(tokens[0])||fs.readFileSync(storageFile,"utf8").includes(tokens[0]))throw Error("Session token leaked into public settings");await shot("100-api-accounts");
     });
     await check("two accounts on one host route PR requests through the explicitly selected API identity",async()=>{
-      await add(tokens[1],"second-user");await select((await account("second-user")).id);const r=await invoke("pull_requests",{repo:root});if(r.forge.accountLogin!=="second-user"||r.items[0]?.author!=="second-user")throw Error("Second account was replaced by the host's first token");
+      await button("Add API account").click();await modal().getByRole("textbox",{name:"API server URL",exact:true}).fill(url);await modal().getByLabel("API access token",{exact:true}).fill(tokens[1]);await modal().getByRole("checkbox",{name:"Use token for this repository",exact:true}).uncheck();await button("Verify and save account").click();await card("second-user").waitFor();await ready();
+      if((await invoke("forge_connections",{repo:root})).remotes.find(r=>r.name==="origin")?.accountId!==(await account("first-user")).id)throw Error("Adding an unselected token silently changed the repository account");
+      await select((await account("second-user")).id);const r=await invoke("pull_requests",{repo:root});if(r.forge.accountLogin!=="second-user"||r.items[0]?.author!=="second-user")throw Error("Second account was replaced by the host's first token");
       await select((await account("first-user")).id);const first=await invoke("pull_requests",{repo:root});if(first.items[0]?.author!=="first-user")throw Error("Switching API accounts reused a cached host token");await shot("101-api-connection");
     });
     await check("changed remote URLs and stale API-account confirmations are rejected before any server write",async()=>{
@@ -67,7 +70,11 @@ export async function forgeAccountsSmoke({page,check,shot,work,profile,restart})
       await modal().getByRole("textbox",{name:"API server URL",exact:true}).fill(`${url}/redirect`);await modal().getByLabel("API access token",{exact:true}).fill(tokens[0]);await button("Verify and save account").click();await modal().getByRole("alert").waitFor();await ready();if(requests.some(r=>r.destination)||(await invoke("forge_accounts_snapshot")).accounts.length!==2)throw Error("Redirect forwarded credentials or saved a false identity");await button("Cancel account").click();
     });
     await check("real app restart retains encrypted metadata and remote selection but restores neither vault keys nor session tokens",async()=>{
-      await button("Close").click();page=await restart();page.setDefaultTimeout(60000);await openRepository(page,root);await open();
+      await button("Close").click();page=await restart();page.setDefaultTimeout(60000);
+      // Forced process termination can lose the WebView onboarding preference.
+      // Dismiss only that setup screen; never recreate account/vault records.
+      if(await page.getByRole("heading",{name:"Welcome to Revqora",exact:true}).isVisible())await page.locator(".modal").getByRole("button",{name:"Skip",exact:true}).click();
+      await openRepository(page,root);await open();
       const s=await invoke("forge_accounts_snapshot");if(s.vaultUnlocked||s.accounts.find(p=>p.login==="first-user")?.status!=="locked"||s.accounts.find(p=>p.login==="second-user")?.status!=="reconnect")throw Error("Restart restored secret keys or lost encrypted account metadata");
       if((await invoke("forge_connections",{repo:root})).remotes[0]?.accountId!==(await account("first-user")).id)throw Error("Restart lost the explicit account binding");
       await modal().getByLabel("Vault password",{exact:true}).fill(vaultPassword);await button("Unlock vault").click();await ready();if((await invoke("pull_requests",{repo:root})).items[0]?.author!=="first-user")throw Error("Persistent encrypted token could not reconnect after restarting");await shot("103-vault-after-restart");
@@ -75,7 +82,12 @@ export async function forgeAccountsSmoke({page,check,shot,work,profile,restart})
     await check("removing the selected API account requires a new explicit choice and keeps Git files and staging unchanged",async()=>{
       await card("first-user").getByRole("button",{name:"Remove",exact:true}).click();await modal().getByRole("button",{name:"Remove account",exact:true}).click();await ready();let removed=false;try{await invoke("pull_requests",{repo:root});}catch{removed=true;}if(!removed)throw Error("Removed account silently fell back to another credential");
       await card("second-user").getByRole("button",{name:"Reconnect",exact:true}).click();await modal().getByLabel("API access token",{exact:true}).fill(tokens[1]);await button("Verify and save account").click();await ready();await select((await account("second-user")).id);if((await invoke("pull_requests",{repo:root})).items[0]?.author!=="second-user")throw Error("Explicit replacement account did not take effect");
-      if(git("rev-parse","HEAD")!==head||!index.equals(fs.readFileSync(path.join(root,".git/index")))||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="local edit must stay\n")throw Error("Account management changed Git HEAD, files or staging");await shot("104-api-account-reselection");await button("Close").click();
+      if(git("rev-parse","HEAD")!==head||!index.equals(fs.readFileSync(path.join(root,".git/index")))||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="local edit must stay\n")throw Error("Account management changed Git HEAD, files or staging");await shot("104-api-account-reselection");
+      // Provider discovery and token entry do not require contacting Bitbucket.
+      git("remote","set-url","origin","https://bitbucket.org/example/token-ui.git");await button("Refresh API accounts").click();await ready();await button("Add API account").click();
+      if(await modal().getByRole("combobox",{name:"API provider",exact:true}).inputValue()!=="bitbucket"||await modal().getByRole("combobox",{name:"Bitbucket token type",exact:true}).inputValue()!=="basic"||await modal().getByRole("textbox",{name:"API server URL",exact:true}).inputValue()!=="https://bitbucket.org")throw Error("Bitbucket remote did not preselect the email/API-token form");
+      await modal().getByRole("textbox",{name:"Atlassian email",exact:true}).fill("fixture@example.invalid");await modal().getByLabel("API access token",{exact:true}).fill("not-sent-fixture-token");await shot("bitbucket-token-entry");await button("Cancel account").click();
+      git("remote","set-url","origin",`${url}/team/repo.git`);await button("Close").click();
     });
   }finally{server.closeAllConnections();destination.closeAllConnections();await Promise.all([new Promise(r=>server.close(r)),new Promise(r=>destination.close(r))]);}
 }

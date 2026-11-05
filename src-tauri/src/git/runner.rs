@@ -95,6 +95,10 @@ pub fn command(repo: &Path) -> Command {
         "i18n.logOutputEncoding=UTF-8",
     ]);
     c.env("GIT_TERMINAL_PROMPT", "0");
+    // Read cached credentials normally, but keep new sign-in/token choices in
+    // Revqora's authenticated askpass UI instead of opening a GCM browser flow.
+    c.env("GCM_INTERACTIVE", "never");
+    c.env("GCM_GUI_PROMPT", "0");
     c.env("GIT_OPTIONAL_LOCKS", "0");
     c.env("LANGUAGE", "en");
     c.env("LC_MESSAGES", "C");

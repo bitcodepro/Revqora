@@ -5,6 +5,7 @@ import {showDialog,toast} from "../lib/ui";
 import type {ForgeAccount,ForgeAccountInput,ForgeAccountsSnapshot,ForgeConnections,ForgeAccountKind} from "../lib/types";
 import {Modal} from "./Modal";
 import {confirmDialog} from "./dialogs";
+import {tokenProvider} from "../lib/tokenProvider";
 
 const providers:Record<ForgeAccountKind,string>={github:"GitHub",gitlab:"GitLab",azure:"Azure DevOps",bitbucket:"Bitbucket Cloud"};
 const defaults:Record<ForgeAccountKind,string>={github:"https://github.com",gitlab:"https://gitlab.com",azure:"https://dev.azure.com/organization",bitbucket:"https://bitbucket.org"};
@@ -14,7 +15,7 @@ export const forgeAccountsDialog=(root:string|null=null)=>showDialog<void>(close
 function ForgeAccounts({root,close}:{root:string|null;close:()=>void}){
   const [data,setData]=useState<ForgeAccountsSnapshot|null>(null),[connections,setConnections]=useState<ForgeConnections|null>(null),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState("");
   const [form,setForm]=useState(false),[editing,setEditing]=useState<ForgeAccount|null>(null),[kind,setKind]=useState<ForgeAccountKind>("github"),[server,setServer]=useState(defaults.github),[username,setUsername]=useState(""),[token,setToken]=useState(""),[authMode,setAuthMode]=useState("token"),[persist,setPersist]=useState(false);
-  const [password,setPassword]=useState(""),[confirmation,setConfirmation]=useState(""),[changePassword,setChangePassword]=useState(false),[remote,setRemote]=useState(""),[account,setAccount]=useState(""),[allowAlias,setAllowAlias]=useState(false);
+  const [password,setPassword]=useState(""),[confirmation,setConfirmation]=useState(""),[changePassword,setChangePassword]=useState(false),[remote,setRemote]=useState(""),[account,setAccount]=useState(""),[allowAlias,setAllowAlias]=useState(false),[connect,setConnect]=useState(true);
   const active=useRef(false),generation=useRef(0);
   const refresh=useCallback(async()=>{const id=++generation.current;setLoading(true);try{
     const [d,c]=await Promise.all([api.forgeAccounts(),root?api.forgeConnections(root):Promise.resolve(null)]);
@@ -26,9 +27,18 @@ function ForgeAccounts({root,close}:{root:string|null;close:()=>void}){
     try{await fn();changed();if(success)toast.success(success);await refresh();return true;}catch(e){setError(errorMessage(e));await refresh();return false;}
     finally{setToken("");setPassword("");setConfirmation("");active.current=false;setBusy(false);}
   };
-  const begin=(p:ForgeAccount|null)=>{setEditing(p);setKind(p?.kind??"github");setServer(p?.server??defaults.github);setUsername(p?.authUsername??"");setAuthMode(p?.authMode??"token");setPersist(p?.storage==="encrypted"&&!!data?.vaultUnlocked);setToken("");setError("");setForm(true);};
+  const begin=(p:ForgeAccount|null)=>{const preset=tokenProvider(connections?.remotes.find(r=>r.name===remote));const provider=p?.kind??preset?.kind??"github";setEditing(p);setKind(provider);setServer(p?.server??preset?.server??defaults[provider]);setUsername(p?.authUsername??"");setAuthMode(p?.authMode??(provider==="bitbucket"?"basic":"token"));setPersist(p?.storage==="encrypted"&&!!data?.vaultUnlocked);setConnect(true);setToken("");setError("");setForm(true);};
   const save=async()=>{if(!data||!token||active.current)return;const input:ForgeAccountInput={id:editing?.id??null,kind,server,username,token,authMode,persist};
-    if(await perform(()=>api.forgeAccountAdd(input,data.revision),"API account verified")){setForm(false);setEditing(null);}
+    await perform(async()=>{
+      const saved=await api.forgeAccountAdd(input,data.revision);
+      // Once saved, a failed/stale repository binding must not resubmit the token.
+      setForm(false);setEditing(null);
+      const added=editing?saved.accounts.find(a=>a.id===editing.id):saved.accounts.find(a=>!data.accounts.some(old=>old.id===a.id));
+      if(connect&&!editing&&root&&target&&connections&&added){
+        try{await api.forgeConnectionSelect(root,{remote:target.name,fingerprint:target.fingerprint,accountId:added.id,allowSshAlias:false},saved.revision);}
+        catch(e){throw new Error(`Account saved. Repository connection was not changed: ${errorMessage(e)} Select it below and click Use for PR and checks.`);}
+      }
+    },"API account verified");
   };
   const vaultAction=async()=>{if(!data)return;const unlock=data.vaultConfigured&&!data.vaultUnlocked;if(!unlock&&password!==confirmation){setError("The vault passwords do not match.");return;}
     if(await perform(()=>api.forgeVaultPassword(password,data.revision,unlock),unlock?"Vault unlocked":"Vault password saved"))setChangePassword(false);
@@ -42,6 +52,7 @@ function ForgeAccounts({root,close}:{root:string|null;close:()=>void}){
   return <Modal title="Accounts and API connections" icon={<UserRound size={18}/>} subtitle="PR and checks accounts. Git uses your credential manager, SSH-agent or an explicit token choice in its sign-in dialog. Commit author identity is configured separately." wide onClose={()=>{if(!active.current)close();}} onSubmit={()=>{if(password)void vaultAction();else if(form&&token)void save();}} footer={<button type="button" className="btn primary" disabled={busy} onClick={close}>Close</button>}>
     <div className="fa-workspace" aria-busy={disabled}>
       <div className="hstack"><b>API accounts</b><div className="spacer"/><button className="btn" type="button" disabled={disabled} onClick={()=>begin(null)}>Add API account</button><button className="icon-btn" type="button" aria-label="Refresh API accounts" disabled={disabled} onClick={()=>{setError("");void refresh();}}><RefreshCw size={15}/></button></div>
+      <p className="help">Have a token? Click <b>Add API account</b>, choose its provider and paste it below. No browser sign-in is required. Existing Git credential-manager credentials are still used automatically; new Git sign-ins stay in Revqora.</p>
       {loading&&<p role="status">Loading account settings…</p>}
       {error&&<p className="fa-error" role="alert">{error}</p>}
       <div className="fa-accounts">{data?.accounts.map(p=><section className="fa-card" key={p.id} data-account-id={p.id}>
@@ -57,6 +68,8 @@ function ForgeAccounts({root,close}:{root:string|null;close:()=>void}){
         <label className="field">Access token<input className="input" type="password" aria-label="API access token" autoComplete="off" spellCheck={false} value={token} onChange={e=>setToken(e.target.value)}/></label>
         <small>Token permissions determine access. GitHub may require organization SSO authorization; GitLab needs user/API access. Bitbucket API tokens need user and repository scopes.</small>
         {kind==="bitbucket"&&<p className="help">API tokens use your Atlassian email for PRs and checks. For HTTPS Fetch/Pull/Push, select this saved account in Revqora's Git sign-in dialog, or use <code>x-bitbucket-api-token-auth</code> as the Git username and your API token as the password. OAuth tokens use <code>x-token-auth</code>. SSH remotes continue to use SSH keys.</p>}
+        {kind==="bitbucket"&&<p className="help">A Git-only repository/workspace access token can be pasted directly in the Git sign-in dialog with username <code>x-token-auth</code>. It may not support the user identity required by API accounts. API tokens for this form need account identity, repository and pull-request permissions for the actions you use.</p>}
+        {!editing&&target&&<label className="check"><input type="checkbox" aria-label="Use token for this repository" checked={connect} onChange={e=>setConnect(e.target.checked)}/>Use this account for {target.name} PRs and checks</label>}
         <label className="check"><input type="checkbox" aria-label="Save API token in encrypted vault" checked={persist} disabled={!data?.vaultUnlocked} onChange={e=>setPersist(e.target.checked)}/>Save token in the encrypted vault</label>{!data?.vaultUnlocked&&<small>Create or unlock the vault below to save a token. Otherwise it stays in memory for this session.</small>}
         <div className="hstack"><button className="btn primary" type="button" disabled={!token} onClick={()=>void save()}>Verify and save account</button><button className="btn" type="button" onClick={()=>{setForm(false);setToken("");}}>Cancel account</button></div>
       </fieldset>}

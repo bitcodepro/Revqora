@@ -138,12 +138,17 @@ For cleanup, open **Branch Manager** from the toolbar or command palette. Pick a
 comparison base and filter/search the branches. Review actual local and remote
 targets before deleting. **Also delete remote branch** chooses local-and-remote
 deletion; leave it unchecked for local-only deletion. Remote-only actions are
-available for remote branches. Bulk cleanup reviews each target and preserves
-excluded branches. Application protection rules and server permissions still apply.
+available for remote branches. In **Review cleanup**, deletion is ready after
+lightweight reference/worktree checks. It does not compare history automatically:
+unmerged local branches can be deleted too. To inspect integration first, enable
+**Compare branch history before deletion**, choose a base and click **Analyze history**.
+After analysis, confirm unmerged rows explicitly. Bulk cleanup preserves excluded
+branches. Application protection rules and server permissions still apply.
 **Create recovery checkpoint** is enabled by default in individual and bulk
 deletion reviews. Uncheck it to delete without saving a new recovery point;
-this choice applies only to the current dialog/batch. History, protection,
-worktree and exact-tip checks still apply.
+this choice applies only to the current dialog/batch. Fast local-only cleanup saves one
+checkpoint containing all selected tips. Saving recovery data may take time;
+disabling it skips that work. Protection, worktree and exact-tip checks still apply.
 
 Combine **My branches** with **Remote deleted** to find local cleanup candidates.
 My branches matches the tip author's email against this repository's effective
@@ -227,13 +232,22 @@ server before another send. See the provider details in the
 
 ### Connect Bitbucket Cloud with a token
 
-For **Bitbucket Cloud API tokens**, add an API account with your Atlassian email,
-verify it and select **Use for PR and checks** for the repository's remote. For
+Open **Accounts and API connections** (the user icon in the toolbar), then
+**Add API account**. The selected remote preselects the provider. For
+**Bitbucket Cloud API tokens**, choose **API token + Atlassian email**, enter
+your email and token, then **Verify and save account**. **Use this account for
+origin PRs and checks** connects it immediately when checked; otherwise select
+the account below and click **Use for PR and checks** later. For
 HTTPS Fetch/Pull/Push, choose that available account in the Git sign-in dialog.
 Revqora supplies the Git-specific username and sends the token directly to Git;
 it does not put the secret in the remote URL. You can also enter
 `x-bitbucket-api-token-auth` as the Git username and paste the API token into the
-password field. OAuth tokens use `x-token-auth`. Git needs repository read scope
+password field. OAuth tokens use `x-token-auth`. Repository/workspace access tokens
+can be entered directly in the Git sign-in dialog with `x-token-auth`; a Git-only
+token may not support the user identity required by API accounts. Existing Git
+credential-manager tokens remain usable. Revqora suppresses new interactive GCM
+browser login so missing credentials can be entered in its own sign-in dialog.
+Git needs repository read scope
 for Fetch/Pull and write scope for Push; PR operations need their own API scopes.
 SSH prompts use a separate authenticated channel and cannot receive saved API
 tokens, even when their server-supplied text resembles an HTTPS prompt.

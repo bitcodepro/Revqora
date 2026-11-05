@@ -221,6 +221,8 @@
 .bc-tips { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
 .bc-consent { display: flex; align-items: start; gap: 8px; margin-top: 12px; color: var(--text-faint); }
 .bc-consent input { flex: none; margin-top: 3px; }
+.bc-analysis { display:flex; align-items:end; gap:10px; flex-wrap:wrap; margin:10px 0; }
+.bc-analysis > label { flex:1; min-width:180px; }
 .bc-error { color: var(--red); white-space: pre-wrap; }
 .bc-item .btn { margin: 3px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 

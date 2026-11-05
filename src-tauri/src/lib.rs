@@ -161,8 +161,9 @@ async fn branch_cleanup_review(
     requests: Vec<git::branch_cleanup::Request>,
     base: String,
     protection_rules: Vec<String>,
+    analyze: Option<bool>,
 ) -> GitResult<git::branch_cleanup::Review> {
-    blocking(move || git::branch_cleanup::review(&p(&repo), requests, &base, &protection_rules)).await
+    blocking(move || git::branch_cleanup::review_with_analysis(&p(&repo), requests, &base, &protection_rules, analyze.unwrap_or(true))).await
 }
 #[tauri::command]
 async fn branch_cleanup_execute(
