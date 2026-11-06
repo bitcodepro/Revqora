@@ -201,9 +201,16 @@ pub fn apply(root: &Path, command: &mut Command, selected: Option<&Options>, arg
     }
     // Azure organizations share a hostname. With Git's default useHttpPath=false,
     // askpass and helpers lose the organization and cannot safely select its
-    // account. Match GCM's Azure policy for this invocation only; other hosts
-    // keep their configured scope, and no repository/global config is edited.
-    command.args(["-c", "credential.https://dev.azure.com.useHttpPath=true"]);
+    // account. Match GCM's Azure policy, and preserve installation prefixes
+    // for saved accounts (e.g. self-managed GitLab). Config is origin-specific
+    // for this invocation only; other hosts/config files remain unchanged.
+    let mut scoped = std::collections::BTreeSet::from(["https://dev.azure.com".to_owned()]);
+    if let Ok(origins) = super::forge_accounts::manager().and_then(|m| m.git_path_origins()) {
+        scoped.extend(origins);
+    }
+    for origin in scoped {
+        command.args(["-c", &format!("credential.{origin}.useHttpPath=true")]);
+    }
     let saved;
     let options = if let Some(selected) = selected {
         selected

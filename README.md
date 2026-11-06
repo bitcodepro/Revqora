@@ -302,6 +302,9 @@ For `dev.azure.com`, Revqora retains the HTTPS credential path for each Git
 invocation so the organization remains visible to helpers and the account chooser.
 This follows [GCM's Azure organization policy](https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/configuration.md#credentialusehttppath),
 does not edit Git configuration files, and leaves other hosts' credential scope unchanged.
+Saved accounts with an installation path, such as `https://company.example/gitlab`,
+also retain the credential path for their HTTPS host. Tokens remain restricted to
+the configured installation prefix; no account is offered for another prefix.
 
 **Browser/device sign-in** explicitly enables an already configured Git Credential
 Manager. GCM handles OAuth/SSO and its credential storage; Revqora does not register

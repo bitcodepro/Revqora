@@ -41,12 +41,14 @@ fn all_four_services_reuse_only_explicitly_selected_matching_api_tokens_for_git_
     for (kind, server, destination, expected_user) in [
         ("github", "https://github.com", "https://github.com/team/repo.git", "fixture"),
         ("gitlab", "https://gitlab.com", "https://gitlab.com/group/repo.git", "oauth2"),
+        ("gitlab", "https://company.invalid/gitlab", "https://company.invalid/gitlab/group/repo.git", "oauth2"),
         ("bitbucket", "https://bitbucket.org", "https://bitbucket.org/team/repo.git", "x-bitbucket-api-token-auth"),
         ("azure", "https://dev.azure.com/org", "https://dev.azure.com/org/project/_git/repo", "git"),
     ] {
+        let id = if server.ends_with("/gitlab") { "gitlab-prefix" } else { kind };
         m.edit(&m.snapshot().unwrap().revision, |d, memory| {
             let profile = Profile {
-                id: kind.into(),
+                id: id.into(),
                 server: Server::new(kind, server)?,
                 login: "fixture".into(),
                 user_id: kind.into(),
@@ -66,16 +68,20 @@ fn all_four_services_reuse_only_explicitly_selected_matching_api_tokens_for_git_
         })
         .unwrap();
         let revision = m.snapshot().unwrap().revision;
-        assert_eq!(m.git_answer(kind, &revision, &git_prompt(&format!("Username for '{destination}': "))).unwrap().as_str(), expected_user);
-        assert_eq!(m.git_answer(kind, &revision, &git_prompt(&format!("Password for '{destination}': "))).unwrap().as_str(), "fixture-api-secret");
+        assert_eq!(m.git_answer(id, &revision, &git_prompt(&format!("Username for '{destination}': "))).unwrap().as_str(), expected_user);
+        assert_eq!(m.git_answer(id, &revision, &git_prompt(&format!("Password for '{destination}': "))).unwrap().as_str(), "fixture-api-secret");
         for url in ["https://elsewhere.invalid/team/repo.git", "http://github.com/team/repo.git", "https://github.com@evil.invalid/team/repo.git"] {
-            assert!(m.git_answer(kind, &revision, &git_prompt(&format!("Password for '{url}': "))).is_err());
+            assert!(m.git_answer(id, &revision, &git_prompt(&format!("Password for '{url}': "))).is_err());
         }
         let mut spoof = git_prompt(&format!("Password for '{destination}': "));
         spoof.origin = crate::askpass::Origin::Ssh;
-        assert!(m.git_answer(kind, &revision, &spoof).is_err());
+        assert!(m.git_answer(id, &revision, &spoof).is_err());
     }
     let revision = m.snapshot().unwrap().revision;
+    assert!(m.git_path_origins().unwrap().contains(&"https://company.invalid".into()));
+    for url in ["https://company.invalid", "https://company.invalid/other/group/repo.git", "https://company.invalid/gitlab-other/group/repo.git"] {
+        assert!(m.git_answer("gitlab-prefix", &revision, &git_prompt(&format!("Password for '{url}': "))).is_err());
+    }
     assert!(m.git_answer("azure", &revision, &git_prompt("Password for 'https://dev.azure.com': ")).is_err());
     assert!(m.git_answer("azure", &revision, &git_prompt("Password for 'https://dev.azure.com/other/project/_git/repo': ")).is_err());
     assert!(m.git_answer("azure", &revision, &git_prompt("Password for 'https://other.visualstudio.com/project/_git/repo': ")).is_err());

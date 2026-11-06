@@ -385,6 +385,18 @@ impl Manager {
                 .collect(),
         })
     }
+    /// Public server metadata only: no vault/session access and no Git calls.
+    /// Keep installation/organization paths in Git prompts for scoped accounts.
+    pub(super) fn git_path_origins(&self) -> GitResult<Vec<String>> {
+        Ok(self
+            .read()?
+            .accounts
+            .iter()
+            .filter_map(|r| Url::parse(&r.profile.server.server).ok())
+            .filter(|u| u.scheme() == "https" && !u.path().trim_matches('/').is_empty())
+            .map(|u| u.origin().ascii_serialization())
+            .collect())
+    }
     pub fn lock(&self) -> GitResult<Snapshot> {
         let mut m = self.memory.lock();
         m.key = None;

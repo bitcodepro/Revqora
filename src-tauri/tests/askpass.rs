@@ -10,6 +10,10 @@ use revqora_lib::git::runner;
 fn git_credential_prompts_go_through_revqora() {
     let exe = env!("CARGO_BIN_EXE_revqora");
     let dir = tempfile::tempdir().unwrap();
+    // This binary has one test; isolate the portable account catalog before
+    // the first runner call without touching any installed user's profile.
+    std::env::set_var("REVQORA_MULTI_INSTANCE", "1");
+    std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", dir.path().join("profile"));
     let helpers = dir.path().join("helpers ' space $ проверка");
     let helper_exe = dir.path().join(if cfg!(windows) { "helper ' space $.exe" } else { "helper ' space $" });
     std::fs::copy(exe, &helper_exe).unwrap();
@@ -107,6 +111,25 @@ fn git_credential_prompts_go_through_revqora() {
         assert!(runner::exec_full(dir.path(), ["-c", "credential.helper=", "credential", "fill"], &[], Some(input)).unwrap().ok());
         assert_eq!(seen.lock().unwrap()[0].2, "Username for 'https://example.com': ");
     }
+
+    // A saved HTTPS installation under /gitlab has the same default-Git
+    // failure. Metadata alone suffices; this fixture stores no usable token.
+    let accounts = revqora_lib::portable::runtime_dir().unwrap().join("accounts");
+    std::fs::create_dir_all(&accounts).unwrap();
+    let catalog = accounts.join("accounts.json");
+    let metadata = serde_json::json!({"version":1,"vault":null,"bindings":[],"active":[],"accounts":[{"sealed":null,"profile":{"id":"prefix-fixture","kind":"gitlab","server":"https://company.invalid/gitlab","login":"fixture","userId":"fixture","name":"Fixture","authMode":"token","authUsername":""}}]});
+    let bytes = serde_json::to_vec(&metadata).unwrap();
+    std::fs::write(&catalog, &bytes).unwrap();
+    for (path, expected) in
+        [("gitlab/team/repo.git", "https://company.invalid/gitlab/team/repo.git"), ("other/repo.git", "https://company.invalid/other/repo.git")]
+    {
+        seen.lock().unwrap().clear();
+        let input = format!("protocol=https\nhost=company.invalid\npath={path}\n\n");
+        let out = runner::exec_full(dir.path(), ["-c", "credential.helper=", "credential", "fill"], &[], Some(input.as_bytes())).unwrap();
+        assert!(out.ok());
+        assert_eq!(seen.lock().unwrap()[0].2, format!("Username for '{expected}': "));
+    }
+    assert_eq!(std::fs::read(&catalog).unwrap(), bytes, "Git must not rewrite the account catalog");
 
     // Exactly the argv layout used by OpenSSH 8.4's execlp(askpass, askpass,
     // server_prompt, NULL). No SSH_ASKPASS_PROMPT hint is required or trusted.
