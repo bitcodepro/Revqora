@@ -675,7 +675,7 @@ fn fetch_pr_branch(repo: &Path, remote: &str, source: &str, number: u64, expecte
         } else {
             runner::run(repo, ["branch", "--", &local, expected_head])?;
         }
-        runner::run(repo, ["switch", "--", &local])?;
+        runner::run(repo, ["switch", "--no-overwrite-ignore", "--", &local])?;
         Ok(local)
     })();
     // Remove only this operation's private pin, using its observed object ID.
@@ -1061,6 +1061,44 @@ mod checkout_tests {
         assert_eq!(runner::run(&local, ["rev-parse", &format!("refs/heads/{branch}")]).unwrap().trim(), user);
         assert_eq!(runner::run(&local, ["rev-parse", "HEAD"]).unwrap().trim(), base);
         no_pins(&local);
+    }
+    #[test]
+    fn pr_checkout_preserves_ignored_file_and_directory_collisions_until_the_user_moves_them() {
+        for directory in [false, true] {
+            let (t, source, local, base) = fixture();
+            let ignored = if directory { "ignored" } else { "ignored.txt" };
+            let tracked = if directory { "ignored/child.txt" } else { ignored };
+            if directory {
+                std::fs::create_dir(source.join(ignored)).unwrap();
+            }
+            std::fs::write(source.join(tracked), "incoming PR content\n").unwrap();
+            runner::run(&source, ["add", "."]).unwrap();
+            runner::run(&source, ["commit", "-qm", "Add PR file"]).unwrap();
+            let tip = runner::run(&source, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+            runner::run(&source, ["update-ref", "refs/pull/7/head", &tip]).unwrap();
+            std::fs::write(local.join(".git/info/exclude"), format!("/{ignored}\n")).unwrap();
+            std::fs::write(local.join(ignored), "irreplaceable ignored local data\n").unwrap();
+            std::fs::write(local.join("file.txt"), "uncommitted tracked edit\n").unwrap();
+            let index = std::fs::read(local.join(".git/index")).unwrap();
+            let result = fetch_pr_branch(&local, "origin", "refs/pull/7/head", 7, &tip);
+            assert!(result.is_err(), "PR checkout overwrote the ignored path {ignored}");
+            assert_eq!(std::fs::read(local.join(ignored)).unwrap(), b"irreplaceable ignored local data\n");
+            assert_eq!(std::fs::read(local.join("file.txt")).unwrap(), b"uncommitted tracked edit\n");
+            assert_eq!(std::fs::read(local.join(".git/index")).unwrap(), index);
+            assert_eq!(runner::run(&local, ["rev-parse", "HEAD"]).unwrap().trim(), base);
+            assert_eq!(runner::run(&local, ["branch", "--show-current"]).unwrap().trim(), "main");
+            no_pins(&local);
+            // Only after an explicit user move can checkout proceed. The saved
+            // ignored content and unrelated tracked edits must both survive.
+            let saved = t.path().join("saved-ignored");
+            std::fs::rename(local.join(ignored), &saved).unwrap();
+            fetch_pr_branch(&local, "origin", "refs/pull/7/head", 7, &tip).unwrap();
+            assert_eq!(std::fs::read(saved).unwrap(), b"irreplaceable ignored local data\n");
+            assert_eq!(std::fs::read(local.join(tracked)).unwrap(), b"incoming PR content\n");
+            assert_eq!(std::fs::read(local.join("file.txt")).unwrap(), b"uncommitted tracked edit\n");
+            assert_eq!(runner::run(&local, ["rev-parse", "HEAD"]).unwrap().trim(), tip);
+            no_pins(&local);
+        }
     }
     #[test]
     fn changed_pr_heads_and_symbolic_branch_aliases_are_rejected_without_forcing_refs() {
