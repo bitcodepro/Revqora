@@ -80,6 +80,22 @@ pub(super) fn qualified_start(root: &Path, start: &str) -> super::runner::GitRes
     })
 }
 
+/// branch/switch accept A...B as a unique merge base, unlike rev-parse and
+/// worktree add. Resolve that shorthand to an immutable commit before recording
+/// creation provenance; never silently choose one of multiple merge bases.
+pub(super) fn branch_start(root: &Path, start: &str) -> super::runner::GitResult<String> {
+    let Some((left, right)) = start.split_once("...") else {
+        return qualified_start(root, start);
+    };
+    let bases =
+        super::runner::run(root, ["merge-base", "--all", "--", if left.is_empty() { "HEAD" } else { left }, if right.is_empty() { "HEAD" } else { right }])?;
+    let base = bases.trim();
+    if !matches!(base.len(), 40 | 64) || !base.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(super::runner::GitError::new("The branch start must have exactly one merge base.").kind("invalid-start"));
+    }
+    Ok(base.to_owned())
+}
+
 fn local_creation_source(start: &str, name: &str) -> bool {
     if start == "HEAD" || start == "@" || (4..=64).contains(&start.len()) && start.bytes().all(|b| b.is_ascii_hexdigit()) {
         return true;
@@ -94,7 +110,7 @@ fn local_creation_source(start: &str, name: &str) -> bool {
         // @{u}/@{upstream}/@{push} select a possibly remote branch, rather
         // than a historical reflog entry. Their old unqualified form cannot
         // establish local creation; new Revqora writes resolve the namespace.
-        return selector.split_once('}').is_some_and(|(selector, _)| !matches!(selector, "u" | "upstream" | "push"));
+        return selector.split_once('}').is_some_and(|(selector, _)| !["u", "upstream", "push"].iter().any(|alias| selector.eq_ignore_ascii_case(alias)));
     }
     if start.starts_with("refs/heads/") || start.starts_with("refs/tags/") {
         return true;
@@ -184,7 +200,18 @@ mod tests {
         for start in ["HEAD~1", "main^", "main^{commit}", "@{-1}", "origin/topic~1", "refs/remotes/origin/topic^0"] {
             assert!(parse(&line('0', "creator@example.invalid", &format!("branch: Created from {start}")), "topic").is_some(), "{start}");
         }
-        for start in ["origin/topic", "refs/remotes/origin/topic", "@{u}", "main@{upstream}", "refs/heads/main@{push}"] {
+        for start in [
+            "origin/topic",
+            "refs/remotes/origin/topic",
+            "@{u}",
+            "@{U}",
+            "main@{upstream}",
+            "main@{UPSTREAM}",
+            "main@{UpStReAm}",
+            "refs/heads/main@{push}",
+            "main@{PUSH}",
+            "main@{PuSh}",
+        ] {
             assert!(parse(&line('0', "creator@example.invalid", &format!("branch: Created from {start}")), "topic").is_none(), "{start}");
         }
     }

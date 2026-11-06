@@ -164,7 +164,11 @@ branch creation reflog, not the first or latest commit's author. Later commits
 by someone else do not change it; renames retain it and copies have a new creator.
 Revqora records named creation sources with their full Git namespace, so changing
 the source later cannot change the recorded creator. Explicit revisions such as
-`HEAD~1`, `main^` and reflog selectors are supported. Older unqualified named
+`HEAD~1`, `main^` and historical reflog selectors are supported. Branch creation
+also accepts Git's unique merge-base shorthand (`main...other`, `...other`,
+`main...`); multiple or missing merge bases leave the repository unchanged.
+Upstream/push selectors are case-insensitive and do not establish historical
+local creation. Older unqualified named
 sources are ambiguous and stay unknown; today's branches or tags cannot prove
 which namespace was selected at creation time.
 Git does not publish branch creators over Fetch/Clone. Imported remote branches,

@@ -733,11 +733,7 @@ async fn graph_load(
 fn graph_rows(state: State<'_, AppState>, repo: String, start: usize, count: usize, expected_key: Option<String>) -> GitResult<Vec<GraphRow>> {
     let graphs = state.graphs.lock();
     let cache = graphs.get(&repo).ok_or_else(|| GitError::new("History is not loaded."))?;
-    if expected_key.as_ref().is_some_and(|key| key != &cache.key) {
-        return Err(GitError::new("History changed. Refresh the graph rows.").kind("stale-operation"));
-    }
-    let end = (start + count).min(cache.rows.len());
-    Ok(if start >= end { Vec::new() } else { cache.rows[start..end].to_vec() })
+    cache.page(start, count, expected_key.as_deref())
 }
 
 #[tauri::command]

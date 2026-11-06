@@ -26,6 +26,33 @@ fn graph_records_its_actual_detached_head_even_outside_the_filter() {
     assert_eq!(second.head_oid, b);
     assert!(second.rows.iter().all(|row| !row.is_head));
 }
+
+#[test]
+fn graph_row_pages_reject_previous_builds_even_when_commit_positions_are_identical() {
+    use revqora_lib::git::graph;
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    for args in [
+        vec!["init", "-qb", "main"],
+        vec!["config", "user.name", "Tester"],
+        vec!["config", "user.email", "test@example.invalid"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["commit", "--allow-empty", "-qm", "A"],
+    ] {
+        runner::run(r, args).unwrap();
+    }
+    let first = graph::build(r, None, false, 100, false).unwrap();
+    runner::run(r, ["-c", "tag.gpgSign=false", "tag", "new-label", "HEAD"]).unwrap();
+    let second = graph::build(r, None, false, 100, false).unwrap();
+    assert_eq!(first.rows.len(), second.rows.len());
+    assert_eq!(first.head_oid, second.head_oid);
+    assert_eq!(first.rows[0].oid, second.rows[0].oid);
+    assert_ne!(first.key, second.key);
+    assert!(second.page(0, 100, Some(&first.key)).unwrap_err().message.contains("History changed"));
+    let rows = second.page(0, usize::MAX, Some(&second.key)).unwrap();
+    assert!(rows[0].refs.iter().any(|label| label.name == "new-label"));
+    assert!(second.page(usize::MAX, 100, Some(&second.key)).unwrap().is_empty());
+}
 #[test]
 fn sidebar_creator_is_independent_of_tip_authors_and_uses_the_effective_git_identity() {
     let root = tempfile::tempdir().unwrap();
@@ -244,4 +271,89 @@ fn revision_expressions_and_new_worktrees_record_local_creation_without_changing
     assert!(snapshot.local.iter().find(|b| b.name == "checkout-qualified-remote").unwrap().upstream.is_none());
     assert_eq!(git(&["branch", "--show-current"]), "checkout-qualified-remote");
     assert!(refs::snapshot(&wt).unwrap().local.iter().find(|b| b.name == "worktree-created").unwrap().creator.is_some());
+}
+
+#[test]
+fn branch_and_switch_preserve_unique_merge_base_shorthands_without_mutating_on_ambiguity() {
+    use revqora_lib::git::ops;
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    let git = |args: &[&str]| runner::run(r, args.iter().copied()).unwrap().trim().to_owned();
+    for args in [
+        vec!["init", "-qb", "main"],
+        vec!["config", "user.name", "Creator"],
+        vec!["config", "user.email", "creator@example.invalid"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["commit", "--allow-empty", "-qm", "Base"],
+    ] {
+        git(&args);
+    }
+    let base = git(&["rev-parse", "HEAD"]);
+    let tree = git(&["rev-parse", "HEAD^{tree}"]);
+    let a = git(&["commit-tree", &tree, "-p", &base, "-m", "A"]);
+    let b = git(&["commit-tree", &tree, "-p", &base, "-m", "B"]);
+    git(&["update-ref", "refs/heads/main", &a]);
+    git(&["update-ref", "refs/heads/other", &b]);
+    let index = std::fs::read(r.join(".git/index")).ok();
+    for (i, start) in ["main...other", "...other", "main...", "..."].into_iter().enumerate() {
+        let expected = if start.ends_with("...") { &a } else { &base };
+        // Compare the app's result with Git's actual branch/switch behavior.
+        for checkout in [false, true] {
+            let control = format!("control-{i}-{checkout}");
+            git(&[if checkout { "switch" } else { "branch" }, if checkout { "-c" } else { "--no-track" }, &control, start]);
+            assert_eq!(git(&["rev-parse", &control]), *expected);
+            git(&["switch", "main"]);
+            let name = format!("app-{i}-{checkout}");
+            ops::create_branch(r, &name, Some(start), checkout).unwrap();
+            assert_eq!(git(&["rev-parse", &name]), *expected);
+            assert_eq!(git(&["branch", "--show-current"]), if checkout { name.clone() } else { "main".into() });
+            let snapshot = refs::snapshot(r).unwrap();
+            assert_eq!(snapshot.local.iter().find(|b| b.name == name).unwrap().creator.as_ref().unwrap().email, "creator@example.invalid");
+            git(&["switch", "main"]);
+            assert_eq!(std::fs::read(r.join(".git/index")).ok(), index);
+        }
+    }
+    // Criss-cross history has two equally valid bases: neither may be chosen.
+    let x = git(&["commit-tree", &tree, "-p", &a, "-p", &b, "-m", "X"]);
+    let y = git(&["commit-tree", &tree, "-p", &b, "-p", &a, "-m", "Y"]);
+    let unrelated = git(&["commit-tree", &tree, "-m", "Unrelated"]);
+    for checkout in [false, true] {
+        for start in [format!("{x}...{y}"), format!("{a}...{unrelated}"), "main...missing".into()] {
+            assert!(ops::create_branch(r, "must-not-exist", Some(&start), checkout).is_err(), "{start}");
+            assert!(!runner::exec(r, ["show-ref", "--verify", "refs/heads/must-not-exist"]).unwrap().ok());
+            assert_eq!(git(&["branch", "--show-current"]), "main");
+            assert_eq!(git(&["rev-parse", "HEAD"]), a);
+            assert_eq!(std::fs::read(r.join(".git/index")).ok(), index);
+        }
+    }
+}
+
+#[test]
+fn upstream_and_push_selectors_never_claim_imported_remote_branches_in_any_case() {
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    let git = |args: &[&str]| runner::run(r, args.iter().copied()).unwrap();
+    for args in [
+        vec!["init", "-qb", "main"],
+        vec!["config", "user.name", "Importer"],
+        vec!["config", "user.email", "importer@example.invalid"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["commit", "--allow-empty", "-qm", "Base"],
+        vec!["remote", "add", "origin", "https://example.invalid/never-contacted.git"],
+        vec!["update-ref", "refs/remotes/origin/topic", "HEAD"],
+        vec!["branch", "--set-upstream-to=origin/topic", "main"],
+        vec!["config", "push.default", "upstream"],
+    ] {
+        git(&args);
+    }
+    for (i, selector) in
+        ["@{u}", "@{U}", "main@{upstream}", "main@{UPSTREAM}", "main@{UpStReAm}", "main@{push}", "main@{PUSH}", "main@{PuSh}"].into_iter().enumerate()
+    {
+        let name = format!("imported-{i}");
+        git(&["branch", &name, selector]);
+        let sidebar = refs::snapshot(r).unwrap();
+        let manager = revqora_lib::git::branch_manager::snapshot(r, None).unwrap();
+        assert!(sidebar.local.iter().find(|b| b.name == name).unwrap().creator.is_none(), "{selector}");
+        assert!(manager.branches.iter().find(|b| b.local && b.name == name).unwrap().creator.is_none(), "{selector}");
+    }
 }

@@ -150,6 +150,16 @@ pub struct GraphCache {
     pub source: String,
 }
 
+impl GraphCache {
+    pub fn page(&self, start: usize, count: usize, expected_key: Option<&str>) -> GitResult<Vec<GraphRow>> {
+        if expected_key.is_some_and(|key| key != self.key) {
+            return Err(super::runner::GitError::new("History changed. Refresh the graph rows.").kind("stale-operation"));
+        }
+        let end = start.saturating_add(count).min(self.rows.len());
+        Ok(if start >= end { Vec::new() } else { self.rows[start..end].to_vec() })
+    }
+}
+
 /// refname → oid for everything the graph shows, plus HEAD.
 fn ref_snapshot(repo: &Path) -> Vec<(String, String)> {
     let mut v: Vec<(String, String)> = runner::run(repo, ["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes", "refs/tags"])
@@ -424,7 +434,11 @@ pub fn build_with(
         });
     }
     let index = rows.iter().map(|r| (r.oid.clone(), r.index)).collect();
-    let key = format!("{}:{}:{}", rows.len(), head_oid, rows.first().map(|r| r.oid.as_str()).unwrap_or(""));
+    // Row count, HEAD and first commit can all stay unchanged across different
+    // filters, ref labels or lane layouts. Readers must identify this exact build.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static BUILDS: AtomicU64 = AtomicU64::new(0);
+    let key = format!("graph-{}", BUILDS.fetch_add(1, Ordering::Relaxed));
     let source = if fast { "fast" } else { reused.as_ref().map(|(_, s)| *s).unwrap_or("full") }.to_string();
     Ok(GraphCache { head_oid, key, rows, max_lanes, index, commits: std::sync::Arc::new(commit_list), refs, filter, limit, source })
 }

@@ -115,14 +115,28 @@ where
     let mut watcher = notify::recommended_watcher(move |res| {
         let _ = tx.send(res);
     })?;
-    watcher.watch(&root, RecursiveMode::Recursive)?;
+    let mut register = |path: &Path, _role: &str| {
+        #[cfg(test)]
+        {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "[repository watcher] registering {_role}");
+        }
+        let result = watcher.watch(path, RecursiveMode::Recursive);
+        #[cfg(test)]
+        {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "[repository watcher] {_role}: {result:?}");
+        }
+        result
+    };
+    register(&root, "working directory")?;
     if !git_dir.starts_with(&root) {
         // Linked worktrees keep their git dir elsewhere.
-        let _ = watcher.watch(&git_dir, RecursiveMode::Recursive);
+        let _ = register(&git_dir, "linked Git directory");
     }
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     if comparable(&common) != comparable(&git_dir) && !common.starts_with(&root) {
-        watcher.watch(&common, RecursiveMode::Recursive)?;
+        register(&common, "shared Git directory")?;
     }
     std::thread::spawn(move || {
         let debounce = Duration::from_millis(350);
@@ -177,6 +191,14 @@ mod tests {
         use super::watch;
         use crate::git::{repo, runner};
         use std::{fs, sync::mpsc, time::Duration};
+        // Bypass libtest's output capture: if a native watch/Git call stalls,
+        // CI must retain its last phase even when the job is forcibly cancelled.
+        let started = std::time::Instant::now();
+        let phase = |message: &str| {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "[linked-worktree watcher +{}ms] {message}", started.elapsed().as_millis());
+        };
+        phase("creating fixture");
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("main");
         fs::create_dir(&root).unwrap();
@@ -186,23 +208,35 @@ mod tests {
             vec!["config", "user.email", "t@example.invalid"],
             vec!["config", "commit.gpgsign", "false"],
         ] {
+            phase(&format!("git {}", args.join(" ")));
             runner::run(&root, args).unwrap();
         }
         fs::write(root.join("f.txt"), b"base").unwrap();
+        phase("git add and commit");
         runner::run(&root, ["add", "."]).unwrap();
         runner::run(&root, ["commit", "-qm", "base"]).unwrap();
         let linked = tmp.path().join("linked");
+        phase("creating linked worktree");
         runner::run(&root, ["worktree", "add", "-qb", "linked", linked.to_str().unwrap()]).unwrap();
         let (tx, rx) = mpsc::channel();
-        let watcher = watch(linked.clone(), repo::git_dir(&linked).unwrap(), move |git, _| {
+        phase("resolving linked git directory");
+        let git_dir = repo::git_dir(&linked).unwrap();
+        phase("registering filesystem watches");
+        let watcher = watch(linked.clone(), git_dir, move |git, _| {
             if git {
                 let _ = tx.send(());
             }
         })
         .unwrap();
+        phase("creating external branch");
         runner::run(&root, ["branch", "external-branch"]).unwrap();
+        phase("awaiting shared ref notification (10s deadline)");
         rx.recv_timeout(Duration::from_secs(10)).expect("Shared refs did not refresh the linked worktree");
+        phase("dropping watcher");
         drop(watcher);
+        phase("removing fixture");
+        tmp.close().unwrap();
+        phase("complete");
     }
 
     #[cfg(windows)]
