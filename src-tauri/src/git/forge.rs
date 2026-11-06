@@ -1026,7 +1026,13 @@ mod checkout_tests {
         std::fs::create_dir(&source).unwrap();
         let hooks = t.path().join("no-hooks").to_string_lossy().into_owned();
         runner::run(&source, ["init", "-qb", "main"]).unwrap();
-        for (k, v) in [("user.name", "Test"), ("user.email", "test@example.invalid"), ("commit.gpgsign", "false"), ("core.hooksPath", hooks.as_str())] {
+        for (k, v) in [
+            ("user.name", "Test"),
+            ("user.email", "test@example.invalid"),
+            ("commit.gpgsign", "false"),
+            ("core.autocrlf", "false"),
+            ("core.hooksPath", hooks.as_str()),
+        ] {
             runner::run(&source, ["config", k, v]).unwrap();
         }
         std::fs::write(source.join("file.txt"), "base\n").unwrap();
@@ -1035,8 +1041,20 @@ mod checkout_tests {
         let base = runner::run(&source, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
         runner::run(&source, ["update-ref", "refs/pull/7/head", &base]).unwrap();
         let local = t.path().join("local");
-        runner::run(t.path(), ["-c", &format!("core.hooksPath={hooks}"), "clone", "-q", source.to_str().unwrap(), local.to_str().unwrap()]).unwrap();
-        for (k, v) in [("user.name", "Test"), ("user.email", "test@example.invalid"), ("commit.gpgsign", "false"), ("core.hooksPath", hooks.as_str())] {
+        // Clone's first checkout must use the same LF policy as the byte-level
+        // assertions; configuring it only afterwards is too late on Windows.
+        runner::run(
+            t.path(),
+            ["-c", "core.autocrlf=false", "-c", &format!("core.hooksPath={hooks}"), "clone", "-q", source.to_str().unwrap(), local.to_str().unwrap()],
+        )
+        .unwrap();
+        for (k, v) in [
+            ("user.name", "Test"),
+            ("user.email", "test@example.invalid"),
+            ("commit.gpgsign", "false"),
+            ("core.autocrlf", "false"),
+            ("core.hooksPath", hooks.as_str()),
+        ] {
             runner::run(&local, ["config", k, v]).unwrap();
         }
         (t, source, local, base)
