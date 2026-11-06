@@ -14,6 +14,7 @@ export interface Settings {
   codeFont: string;
   diffMode: DiffMode;
   ignoreWhitespace: boolean;
+  showWhitespace: boolean;
   contextLines: number;
   dateStyle: DateStyle;
   confirmDiscard: boolean;
@@ -63,6 +64,7 @@ export const useSettings = create<Settings>()(
       codeFont: "JetBrains Mono Variable",
       diffMode: "unified",
       ignoreWhitespace: false,
+      showWhitespace: false,
       contextLines: 3,
       dateStyle: "relative",
       confirmDiscard: true,

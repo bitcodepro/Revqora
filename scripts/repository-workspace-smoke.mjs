@@ -7,6 +7,7 @@ import { repositorySessionSmoke } from "./repository-session-smoke.mjs";
 import { ignoredPullSmoke } from "./ignored-pull-smoke.mjs";
 import { commitDraftSmoke } from "./commit-draft-smoke.mjs";
 import { namePathCopySmoke } from "./name-path-copy-smoke.mjs";
+import { fileEditingSmoke } from "./file-editing-smoke.mjs";
 
 export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
   const root = path.join(work, "stage8-workspace"), second = path.join(work, "stage8-tools"), bare = path.join(work, "stage8.git"), peer = path.join(work, "stage8-peer");
@@ -38,6 +39,7 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     while (await page.locator(".repository-close").count()) await page.locator(".repository-close").first().click();
     await open(root);
     await namePathCopySmoke({page,root});
+    await fileEditingSmoke({page,work,returnRoot:root,shot});
     await ignoredPullSmoke({ page, work, returnRoot: root, shot });
     await commitDraftSmoke({ page, work, returnRoot: root, shot });
     await page.getByRole("button", { name: "Favorite stage8-workspace", exact: true }).click();

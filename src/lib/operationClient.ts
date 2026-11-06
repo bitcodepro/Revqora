@@ -1,6 +1,7 @@
 import type { RepoInfo, StatusSummary } from "./types";
 
 export const MUTATING_COMMANDS = new Set([
+  "working_file_save",
   "stack_append","stack_restack","stack_finalize",
   "pr_merge_submit", "pr_cleanup_submit", "sync_prepare", "sync_execute", "rebase_studio_start", "rebase_studio_capture",
   "stash_selection", "remote_rename_plan", "remote_branch_rename",

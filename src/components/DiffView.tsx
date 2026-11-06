@@ -12,6 +12,7 @@ import {
   Maximize2,
   Minus,
   Plus,
+  Pilcrow,
   Search,
   Space,
   Trash2,
@@ -128,13 +129,14 @@ function useHighlight(path: string, hunks: DiffHunk[] | undefined, enabled: bool
   }, [lang, hunks, enabled]);
 }
 
-function renderCode(text: string, toks: Tok[] | undefined, spans: Span[] | undefined, kind: string): ReactNode {
+function renderCode(text: string, toks: Tok[] | undefined, spans: Span[] | undefined, kind: string, whitespace: boolean): ReactNode {
+  const display = (part: string) => !whitespace ? part : part.split(/( +|\t)/).map((chunk,i) => chunk.startsWith(" ") || chunk === "\t" ? <span key={i} className={chunk === "\t" ? "ws-tab" : "ws-space"}>{chunk}</span> : chunk);
   if (spans && spans.some((s) => s.changed)) {
     const cls = kind === "+" ? "w-add" : "w-del";
-    return spans.map((s, i) => (s.changed ? <span key={i} className={cls}>{s.text}</span> : <Fragment key={i}>{s.text}</Fragment>));
+    return spans.map((s, i) => (s.changed ? <span key={i} className={cls}>{display(s.text)}</span> : <Fragment key={i}>{display(s.text)}</Fragment>));
   }
-  if (toks && toks.length) return toks.map((t, i) => (t.cls ? <span key={i} className={t.cls}>{t.text}</span> : <Fragment key={i}>{t.text}</Fragment>));
-  return text || " ";
+  if (toks && toks.length) return toks.map((t, i) => (t.cls ? <span key={i} className={t.cls}>{display(t.text)}</span> : <Fragment key={i}>{display(t.text)}</Fragment>));
+  return text ? display(text) : " ";
 }
 
 type FlatRow = { kind: "hunk"; h: number } | { kind: "line"; h: number; l: number };
@@ -385,7 +387,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
         {onComment && l.oldNo !== null ? <button className="ln review-line" title={`Comment on old line ${l.oldNo}`} aria-label={`Comment on old line ${l.oldNo}`} onClick={()=>onComment("LEFT",l.oldNo!)}>{l.oldNo}</button> : <span className="ln" onMouseDown={e=>toggle(hi,li,e.shiftKey)}>{l.oldNo??""}</span>}
         {onComment && l.newNo !== null ? <button className="ln review-line" title={`Comment on new line ${l.newNo}`} aria-label={`Comment on new line ${l.newNo}`} onClick={()=>onComment("RIGHT",l.newNo!)}>{l.newNo}</button> : <span className="ln" onMouseDown={e=>toggle(hi,li,e.shiftKey)}>{l.newNo??""}</span>}
         <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
-        <span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, hl?.[hi]?.[li], words?.[hi]?.get(li), l.kind)}</span>
+        <span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, hl?.[hi]?.[li], words?.[hi]?.get(li), l.kind,s.showWhitespace)}</span>
       </div>
     );
   };
@@ -451,6 +453,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       <button className={`btn sm diff-wrap ${s.wrapDiff ? "active" : ""}`} title="Wrap lines" aria-pressed={s.wrapDiff} onClick={() => s.set({ wrapDiff: !s.wrapDiff })}>
         <WrapText size={15} /> Wrap lines
       </button>
+      <button type="button" className={`icon-btn ${s.showWhitespace?"active":""}`} title="Show whitespace" aria-label="Show whitespace" aria-pressed={s.showWhitespace} onClick={()=>s.set({showWhitespace:!s.showWhitespace})}><Pilcrow size={14}/></button>
     </div>
   );
 
@@ -552,7 +555,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
             {hunkHeader(h, hi)}
             {!collapsed.has(hi) &&
               (s.diffMode === "split" ? (
-                <SplitHunk hunk={h} hi={hi} toks={hl?.[hi]} words={words?.[hi]} sel={sel} onToggle={toggle} interactive={interactive} hits={hitSet} onComment={onComment} />
+                <SplitHunk hunk={h} hi={hi} toks={hl?.[hi]} words={words?.[hi]} sel={sel} onToggle={toggle} interactive={interactive} hits={hitSet} onComment={onComment} whitespace={s.showWhitespace}/>
               ) : (
                 h.lines.map((_, li) => lineRow(hi, li))
               ))}
@@ -568,7 +571,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   }
 
   return (
-    <div className="diff" aria-busy={!!loading} data-diff-hash={diff?.hash} style={{ ["--diff-view-width" as string]: `${viewW}px`, ["--split-scroll" as string]: `${splitPan ? horizontal.position : 0}px`, ["--diff-tab-size" as string]: DIFF_TAB_SIZE }} onKeyDown={onKeyDown} tabIndex={-1}>
+    <div className={`diff ${s.showWhitespace?"diff-whitespace":""}`} aria-busy={!!loading} data-diff-hash={diff?.hash} style={{ ["--diff-view-width" as string]: `${viewW}px`, ["--split-scroll" as string]: `${splitPan ? horizontal.position : 0}px`, ["--diff-tab-size" as string]: DIFF_TAB_SIZE }} onKeyDown={onKeyDown} tabIndex={-1}>
       {path && head}
       {findBar}
       {root&&images&&diff&&!diff.binary&&supportsSemantic(path)&&diff.oldMode!=="120000"&&diff.newMode!=="120000"&&<SemanticDiff key={path} root={root} path={path} version={diff} sides={{old:diff.isNew?null:images.old,new:diff.isDeleted?null:images.new}}/>}
@@ -635,6 +638,7 @@ function SplitHunk({
   interactive,
   hits,
   onComment,
+  whitespace,
 }: {
   hunk: DiffHunk;
   hi: number;
@@ -645,6 +649,7 @@ function SplitHunk({
   interactive: boolean;
   hits: Set<string>;
   onComment?: Props["onComment"];
+  whitespace: boolean;
 }) {
   // Build rows of [left index | null, right index | null].
   const rows: [number | null, number | null][] = [];
@@ -677,7 +682,7 @@ function SplitHunk({
       >
         {onComment && no !== null ? <button className="ln review-line" title={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} aria-label={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} onClick={()=>onComment(side === "l" ? "LEFT" : "RIGHT",no)}>{no}</button> : <span className="ln" style={{ cursor: interactive && cls ? "pointer" : undefined }} onMouseDown={e=>onToggle(hi,idx,e.shiftKey)}>{no??""}</span>}
         <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
-        <span className="code-viewport"><span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, toks?.[idx], words?.get(idx), l.kind)}</span></span>
+        <span className="code-viewport"><span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, toks?.[idx], words?.get(idx), l.kind,whitespace)}</span></span>
       </div>
     );
   };

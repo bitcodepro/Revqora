@@ -73,6 +73,12 @@ remain in the working copy. If you edit a file again after staging it, the stage
 and working versions can differ. **Unstage** removes it from the proposed commit
 while keeping your edits.
 
+Click a changed file, then use **Up/Down** to preview the previous/next visible
+file. **Home/End** jump to the first/last visible file. This works in working
+changes, commit review and PR files; collapsed folders are skipped. **Alt+Up/Down**
+also switches files from the diff. Text fields and editors keep their own arrow
+keys, and file navigation does not stage or modify anything.
+
 **Stage again** updates the prepared file to its current complete contents:
 earlier edits you left untouched stay included, and your newer edits take
 precedence where you changed the file again. **Unstage after editing again**
@@ -219,6 +225,32 @@ actions stay unavailable until the fresh diff has been checked.
 
 Sync does not resolve divergence by rewriting remote history. Use the individual
 merge/rebase tools when the histories need reconciliation.
+
+### Inspect whitespace and edit a working file
+
+Toggle **Show whitespace** (¶) in the diff toolbar to see spaces as dots and tabs
+as arrows. This display setting does not ignore whitespace or change file content.
+It is saved and also applies to the built-in editor.
+
+In **Changes**, choose **Edit working file** to edit the current file inside
+Revqora. **Save file** / **Ctrl+S** writes only the working copy; staged content
+stays unchanged. **Undo/Redo** and **Ctrl+Z** operate on the editor draft.
+Choose **Spaces per tab** (2/4/8), then **Tabs → spaces** to convert indentation.
+Two leading tabs at width 2 become four spaces. The default scope leaves tabs
+inside strings/content alone; **All tabs in the file** is an explicit alternative.
+Conversion remains an undoable draft until Save.
+
+The editor preserves UTF-8 BOM, consistent LF/CRLF/CR line endings, final-newline
+choices, Unix file mode and Windows DACLs. It supports existing regular UTF-8 text
+files up to 2 MiB. Binary, other encodings, mixed line endings, links and files in
+nested repositories must be handled in an appropriate external editor (open the
+nested repository separately when applicable).
+
+Saving checks the loaded file/branch revision, keeps an original backup in portable
+data and atomically replaces the working file. If another tool changes the file,
+the stale save is rejected and your draft remains available. **Reload from disk**
+asks before discarding an unsaved draft. Historical commits and server PR snapshots
+remain read-only; use the working file editor for current local content.
 
 ### Use amend, stash and stage layers
 

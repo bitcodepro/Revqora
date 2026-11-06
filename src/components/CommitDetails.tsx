@@ -17,8 +17,10 @@ import { fileHistoryDialog } from "./FileHistory";
 import { Splitter } from "./Overlays";
 import { CommitMessageDialog } from "./CommitMessage";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
+import { useFileListNavigation } from "../lib/useFileListNavigation";
 
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
+  const fileNavigation = useFileListNavigation();
   const generation = useSyncExternalStore(
     useCallback((listener) => subscribePreview(root, listener), [root]),
     useCallback(() => previewGeneration(root), [root]),
@@ -112,23 +114,6 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
     }, 30);
     return () => { alive = false; window.clearTimeout(timer); };
   }, [root, d, file, oid, selectedDiffKey, diffOpts, generation]);
-
-  // Alt+↑ / Alt+↓ step through the commit's files (handy in Review mode, works in Graph too).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!e.altKey || e.ctrlKey || e.metaKey || (e.key !== "ArrowDown" && e.key !== "ArrowUp") || !d?.files.length) return;
-      if (document.querySelector(".modal-backdrop")) return;
-      e.preventDefault();
-      setFile((cur) => {
-        const selected = cur && d.files.some((f) => f.path === cur) ? cur : file;
-        const i = d.files.findIndex((f) => f.path === selected);
-        const next = Math.max(0, Math.min(d.files.length - 1, (i < 0 ? -1 : i) + (e.key === "ArrowDown" ? 1 : -1)));
-        return d.files[next].path;
-      });
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [d, file]);
 
   const current = d && d.oid.slice(0, oid.length) === oid.slice(0, d.oid.length) ? d : null;
   const header = (
@@ -263,11 +248,12 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
               <span className="d">−{dels}</span>
             </span>
           </div>
-          <div className="file-list">
+          <div className="file-list" {...fileNavigation} aria-label="Commit files">
             <FileGroups items={d.files} tree={treeView} idPrefix="c" render={(f, grouped) => (
               <div
                 key={f.path}
                 className={`file-row ${file === f.path ? "selected" : ""}`}
+                data-file-nav=""
                 onClick={() => setFile(f.path)}
                 onContextMenu={(e) =>
                   contextMenu(e, [

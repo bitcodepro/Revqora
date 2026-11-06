@@ -676,6 +676,23 @@ async fn stage(app: AppHandle, expected_state: Option<String>, repo: String, pat
 }
 
 #[tauri::command]
+async fn working_file_read(repo: String, path: String) -> GitResult<git::file_editor::Snapshot> {
+    blocking(move || git::file_editor::read(&p(&repo), &path)).await
+}
+
+#[tauri::command]
+async fn working_file_save(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    path: String,
+    expected_revision: String,
+    content: String,
+) -> GitResult<git::file_editor::Saved> {
+    mutating(repo.clone(), expected_state, app, "working_file_save", None, move || git::file_editor::save(&p(&repo), &path, &expected_revision, &content)).await
+}
+
+#[tauri::command]
 async fn unstage(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "unstage", None, move || {
         let r = p(&repo);
@@ -2281,6 +2298,8 @@ pub fn run() {
             worktree_file_diff,
             commit_helpers,
             save_text_file,
+            working_file_read,
+            working_file_save,
             submodule_update,
             submodule_add,
             submodule_sync,
