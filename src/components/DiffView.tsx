@@ -413,7 +413,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
           <span className="d">−{diff.deletions}</span>
         </span>
       )}
-      <div className="spacer" />
+      <div className="diff-controls">
       {actions}
       {diff && diff.hunks.length > 1 && (
         <>
@@ -454,6 +454,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
         <WrapText size={15} /> Wrap lines
       </button>
       <button type="button" className={`icon-btn ${s.showWhitespace?"active":""}`} title="Show whitespace" aria-label="Show whitespace" aria-pressed={s.showWhitespace} onClick={()=>s.set({showWhitespace:!s.showWhitespace})}><Pilcrow size={14}/></button>
+      </div>
     </div>
   );
 

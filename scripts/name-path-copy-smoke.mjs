@@ -44,7 +44,22 @@ export async function namePathCopySmoke({page,root}) {
     await page.getByRole("button",{name:"Close worktree manager",exact:true}).click();
     await page.getByRole("button",{name:"Repository library and workspaces",exact:true}).click();
     await copy(page.locator(".library-row").filter({has:page.getByText(repoName,{exact:true})}),repoName);
-    await page.locator(".modal").last().getByRole("button",{name:"Done",exact:true}).click();
+    const librarySearch=page.getByRole("textbox",{name:"Find saved repository",exact:true});
+    // Use the actual search control; Escape must leave both dialog and filter intact.
+    const search=await librarySearch.count()?librarySearch:page.locator(".modal input").first();
+    await search.fill(repoName);
+    await page.locator(".library-row").filter({has:page.getByText(repoName,{exact:true})}).click({button:"right"});
+    await page.locator(".ctx-menu").waitFor();await page.keyboard.press("Escape");
+    await page.locator(".ctx-menu").waitFor({state:"detached"});
+    assert.equal(await search.inputValue(),repoName,"First Escape must retain the library search");
+    await page.keyboard.press("Escape");await page.locator(".modal").waitFor({state:"detached"});
+    await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="main"]').click({button:"right"});
+    await page.locator(".ctx-menu").getByText("Branch details…",{exact:true}).click();
+    await page.locator(".modal").last().waitFor();
+    await page.locator(".modal").last().locator("h3 > span").click({button:"right"});await page.locator(".ctx-menu").waitFor();
+    await page.keyboard.press("Escape");await page.locator(".ctx-menu").waitFor({state:"detached"});
+    assert.equal(await page.locator(".modal").count(),1,"First Escape must retain Branch details");
+    await page.keyboard.press("Escape");await page.locator(".modal").waitFor({state:"detached"});
     // A nested branch context menu must stop propagation to its repository row.
     await page.locator(".topbar").getByRole("button",{name:"All repositories",exact:true}).click();
     const row=page.locator(".repository-table tbody tr").filter({has:page.getByRole("button",{name:repoName,exact:true})});

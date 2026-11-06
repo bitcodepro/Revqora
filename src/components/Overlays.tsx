@@ -10,7 +10,7 @@ export function ContextMenuHost() {
     const onDown = (e: MouseEvent) => {
       if (!(e.target as HTMLElement).closest(".ctx-menu")) close();
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
+    const onKey = (e: KeyboardEvent) => { if(e.key === "Escape") {e.preventDefault();e.stopImmediatePropagation();close();} };
     window.addEventListener("mousedown", onDown, true);
     window.addEventListener("keydown", onKey);
     window.addEventListener("blur", close);

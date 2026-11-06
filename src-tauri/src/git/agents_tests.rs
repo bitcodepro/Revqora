@@ -85,9 +85,11 @@ fn escaped_control_and_invalid_output_history_remains_readable_deletable_and_lau
     }
     // A large, valid previous record must not poison start's history preflight.
     save(&dir, &snapshot(&job)).unwrap();
-    let task = start(r.path().to_owned(), prepare(r.path(), request("echo history-is-readable")).unwrap(), true).unwrap();
+    let task = start(r.path().to_owned(), prepare(r.path(), literal_output_request("history-is-readable")).unwrap(), true).unwrap();
     let task = wait(r.path(), &task.id);
     assert_eq!(task.phase, "completed", "{}", failure_snapshot(r.path(), &task, Path::new(&task.path)));
+    assert_eq!(task.exit_code, Some(0));
+    assert_eq!(task.stdout, "history-is-readable");
     forget(r.path(), &snapshot(&job).id).unwrap();
     cleanup(r.path(), &task);
 }
@@ -187,6 +189,15 @@ fn request(code: &str) -> Request {
         worktree_path: None,
         timeout_seconds: 10,
     }
+}
+// These cases need literal stdout, not PowerShell cmdlet/pipeline initialization.
+// Keep the SAME shell, execution timeout and real process-tree/output code.
+fn literal_output_request(marker: &str) -> Request {
+    #[cfg(windows)]
+    let code = format!("[Console]::Out.Write('{}')", marker.replace('\'', "''"));
+    #[cfg(unix)]
+    let code = format!("printf '%s' '{}'", marker.replace('\'', "'\\''"));
+    request(&code)
 }
 fn wait(root: &Path, id: &str) -> Task {
     let until = Instant::now() + Duration::from_secs(30);
@@ -557,7 +568,7 @@ fn default_agent_worktree_uses_portable_pool_without_changing_repository_configu
     runner::run(r.path(), ["config", "core.longpaths", "false"]).unwrap();
     let original_config = fs::read(r.path().join(".git/config")).unwrap();
     let original_head = runner::run(r.path(), ["rev-parse", "HEAD"]).unwrap();
-    let plan = prepare(r.path(), request("echo portable-copy")).unwrap();
+    let plan = prepare(r.path(), literal_output_request("portable-copy")).unwrap();
     let target = PathBuf::from(&plan.creation.request.path);
     assert!(target.starts_with(crate::portable::runtime_dir().unwrap().join("agents/worktrees")));
     assert_eq!(target.file_name().unwrap(), plan.id.as_str());
@@ -567,6 +578,7 @@ fn default_agent_worktree_uses_portable_pool_without_changing_repository_configu
     let task = wait(r.path(), &task.id);
     assert_eq!(task.phase, "completed", "{}", failure_snapshot(r.path(), &task, &target));
     assert!(task.stdout.contains("portable-copy"));
+    assert_eq!(task.exit_code, Some(0));
     assert!(runner::run(&target, ["status", "--porcelain"]).unwrap().is_empty());
     assert_eq!(runner::run(r.path(), ["rev-parse", "HEAD"]).unwrap(), original_head);
     assert_eq!(fs::read(r.path().join(".git/config")).unwrap(), original_config);

@@ -48,12 +48,26 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     assert(await content.evaluate(el=>{const data=new DataTransfer();data.setData("text/plain","\n\tpasted\nend");return !el.dispatchEvent(new ClipboardEvent("paste",{bubbles:true,cancelable:true,clipboardData:data}));}),"CodeMirror must handle the paste event");
     await page.waitForFunction(()=>document.querySelectorAll(".working-code .cm-line").length===4);
     await content.press("Alt+ArrowDown");assert.equal(await selected().innerText(),"a.txt","Editor arrows must not switch files");
+    if(process.platform==="win32") {
+      const externalWriter=fs.openSync(file,"r+");
+      try {
+        await content.press("Control+s");await page.getByRole("alert").filter({hasText:"another editor's write handle"}).waitFor();
+        assert.equal(fs.readFileSync(file,"utf8"),initial,"A competing writer must prevent any save");
+      } finally {fs.closeSync(externalWriter);}
+    }
     await content.press("Control+s");await page.waitForFunction(()=>{const button=document.querySelector(".modal button.primary");return button?.disabled&&button.textContent==="Save file"&&document.querySelector(".modal [role='status']")?.textContent==="Saved";});
     assert.equal(fs.readFileSync(file,"utf8"),"\uFEFF    alpha value\r\n    beta // edited\r\n\tpasted\r\nend");assert(index.equals(fs.readFileSync(path.join(root,".git/index"))));
     if(shot)await shot("working-file-editor");
     await content.press("Control+End");await page.keyboard.insertText(" draft retained");
-    await page.locator(".modal").getByRole("button",{name:"Close",exact:true}).click();
+    await content.press("Escape");
+    await page.waitForFunction(()=>document.querySelectorAll(".modal").length===2&&document.activeElement?.textContent==="Cancel");
+    const draft=await page.locator(".working-code .cm-content").innerText();
+    await page.keyboard.type("BLOCKEDINPUT");await page.keyboard.press("Control+s");
+    assert.equal(await page.locator(".working-code .cm-content").innerText(),draft,"Typing under the confirmation changed the draft");
+    assert.equal(fs.readFileSync(file,"utf8"),"\uFEFF    alpha value\r\n    beta // edited\r\n\tpasted\r\nend","Ctrl+S under the confirmation saved the draft");
+    assert.equal(await page.locator(".modal-backdrop[inert]").count(),1);
     await page.getByRole("button",{name:"Cancel",exact:true}).click();
+    await page.waitForFunction(()=>!!document.activeElement?.closest(".working-code"));
     assert((await content.innerText()).includes("draft retained"),"Cancelling Close must retain the editor draft");
     fs.writeFileSync(file,"IDE latest\n");await page.getByRole("button",{name:"Save file",exact:true}).click();
     await page.getByRole("alert").filter({hasText:"Your draft is kept"}).waitFor();assert((await content.innerText()).includes("draft retained"));assert.equal(fs.readFileSync(file,"utf8"),"IDE latest\n");
@@ -65,6 +79,17 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     const commitFiles=page.getByLabel("Commit files",{exact:true});await commitFiles.locator("[data-file-nav]").first().click();await page.keyboard.press("ArrowDown");
     await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="b.txt");
     await page.keyboard.press("Alt+ArrowDown");await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="c.txt");
+    const historyBinding=()=>page.getByText("Show history",{exact:true}).locator("xpath=following-sibling::button[1]");
+    for(const key of ["Home","End","ArrowUp","ArrowDown"]) {
+      await page.getByTitle("Settings",{exact:true}).click();await historyBinding().click();await historyBinding().press(key);
+      await page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
+      await changes();await page.getByLabel("Changed files",{exact:true}).focus();await page.keyboard.press(key);
+      await page.locator(".changes").waitFor({state:"detached"});
+    }
+    await page.getByTitle("Settings",{exact:true}).click();
+    if(prefs.shortcuts?.history) {await historyBinding().click();await historyBinding().press(prefs.shortcuts.history.replaceAll("Ctrl","Control"));}
+    else await historyBinding().locator("xpath=following-sibling::button[1]").click();
+    await page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
     assert.equal(git("rev-parse","HEAD"),head);assert(index.equals(fs.readFileSync(path.join(root,".git/index"))));
     console.log("File navigation/editor: stage-side identity, collapsed folders, whitespace, undo, CRLF/BOM, stale-save rejection and index/HEAD preservation passed");
   } catch(error) {

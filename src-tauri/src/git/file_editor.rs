@@ -1,4 +1,4 @@
-//! Optimistic, index-preserving edits of an existing UTF-8 working file.
+//! Index-preserving working-file edits with conflict-safe publication.
 use super::{
     operations, ops, repo,
     runner::{GitError, GitResult},
@@ -154,12 +154,33 @@ pub fn read(root: &Path, path: &str) -> GitResult<Snapshot> {
     operations::read(root, || inspect(root, path).map(|d| d.file))
 }
 pub fn save(root: &Path, path: &str, expected_revision: &str, content: &str) -> GitResult<Saved> {
+    save_at_boundary(root, path, expected_revision, content, |_| {})
+}
+fn save_at_boundary(root: &Path, path: &str, expected_revision: &str, content: &str, mut boundary: impl FnMut(&str)) -> GitResult<Saved> {
     operations::access(
         root,
         true,
         |_, _| {},
         || {
             validate(content)?;
+            #[cfg(windows)]
+            let mut locked = {
+                use std::os::windows::fs::OpenOptionsExt;
+                use std::os::windows::io::AsRawHandle;
+                use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+                // Windows enforces sharing against ordinary writes AND atomic
+                // replacement, including handles opened before this one. Keep
+                // this handle through validation, backup, write and sync.
+                let file = fs::OpenOptions::new().read(true).write(true).share_mode(1).open(checked_path(root, path)?).map_err(save_error)?;
+                let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+                if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                if unsafe { info.assume_init() }.nNumberOfLinks != 1 {
+                    return Err(GitError::new("Files with hard links require an external editor so other linked paths cannot be changed accidentally."));
+                }
+                file
+            };
             let disk = inspect(root, path)?;
             if disk.file.revision != expected_revision {
                 return Err(stale());
@@ -170,34 +191,183 @@ pub fn save(root: &Path, path: &str, expected_revision: &str, content: &str) -> 
             if disk.file.content == content {
                 return Ok(Saved { file: disk.file, backup_path: None });
             }
-            // Prepare a complete replacement before touching the original. Recovery
-            // copies stay in portable data; the short-lived replacement must share
-            // the destination directory for atomic same-filesystem rename.
-            let mut temporary = super::atomic_file::new_in(disk.full.parent().ok_or_else(|| GitError::new("Invalid file directory."))?)?;
-            // Apply the existing access policy before putting content in the
-            // temporary file. A Windows rename otherwise inherits a broader
-            // parent DACL instead of retaining a file's explicit restrictions.
-            prepare_permissions(&disk.full, temporary.path(), &disk.permissions)?;
-            temporary.write_all(content.as_bytes())?;
-            temporary.as_file().sync_all()?;
-            let backup = ops::backup_files(root, &[path.to_owned()])?;
+            // POSIX publication uses a prepared file in the destination directory.
+            // The original inode is kept separately in portable recovery.
+            #[cfg(not(windows))]
+            let temporary = {
+                let mut temporary = super::atomic_file::new_in(disk.full.parent().ok_or_else(|| GitError::new("Invalid file directory."))?)?;
+                // Apply the existing mode before putting content in the file.
+                prepare_permissions(&disk.full, temporary.path(), &disk.permissions)?;
+                temporary.write_all(content.as_bytes())?;
+                temporary.as_file().sync_all()?;
+                temporary
+            };
             if inspect(root, path)?.file.revision != expected_revision {
                 return Err(stale());
             }
-            super::atomic_file::replace(temporary, &disk.full).map_err(|e| {
-                let mut error = GitError::from(e);
-                error.message = format!(
-                    "Could not save {path}: {}. The original file and your draft are kept. Check write permissions or close programs that lock this file before saving again.",
-                    error.message
-                );
-                error
-            })?;
+            let trash = super::storage::dir(root)?.join("trash");
+            fs::create_dir_all(&trash)?;
+            let folder = tempfile::Builder::new().prefix("editor-").tempdir_in(&trash)?;
+            let preserved = folder.path().join(path);
+            fs::create_dir_all(preserved.parent().unwrap())?;
+            #[cfg(windows)]
+            let backup = {
+                use std::io::Seek;
+                // Copy the validated bytes while the OS excludes all other
+                // writers. Do not use CopyFile, whose sharing mode can conflict
+                // with our write handle. Preserve source access restrictions.
+                let mut copy = fs::OpenOptions::new().create_new(true).write(true).open(&preserved)?;
+                prepare_permissions(&disk.full, &preserved, &disk.permissions)?;
+                copy.write_all(disk.file.content.as_bytes())?;
+                copy.sync_all()?;
+                let backup = folder.keep();
+                boundary("before-write");
+                // Use the SAME locked handle. Closing it for a path-based
+                // rename would reopen the external-writer race.
+                let result = (|| -> std::io::Result<()> {
+                    locked.rewind()?;
+                    locked.write_all(content.as_bytes())?;
+                    locked.set_len(content.len() as u64)?;
+                    locked.sync_all()
+                })();
+                result.map_err(|e| recovery_error(GitError::from(e), &backup))?;
+                backup
+            };
+            #[cfg(not(windows))]
+            let backup = {
+                // POSIX advisory locks do not exclude IDEs. Atomically detach
+                // the actual current inode into portable recovery, then publish
+                // ONLY into an absent name. Open external writers retain their
+                // inode in recovery; an external replacement is never clobbered.
+                boundary("before-write");
+                fs::rename(&disk.full, &preserved).map_err(|e| {
+                    let cross_device = e.kind() == std::io::ErrorKind::CrossesDevices;
+                    let mut error = save_error(e);
+                    if cross_device {
+                        error
+                            .message
+                            .push_str(" Safe saving requires the recovery folder and repository on the same filesystem; otherwise use an external editor.");
+                    }
+                    error
+                })?;
+                let backup = folder.keep();
+                boundary("after-capture");
+                let result = (|| -> GitResult<()> {
+                    let metadata = fs::symlink_metadata(&preserved)?;
+                    if ops::path_is_link(&metadata) || !metadata.is_file() {
+                        return Err(stale());
+                    }
+                    let mut bytes = Vec::new();
+                    fs::File::open(&preserved)?.take(LIMIT as u64 + 1).read_to_end(&mut bytes)?;
+                    let head = serde_json::to_vec(&repo::head(root)?).map_err(|e| GitError::new(e.to_string()))?;
+                    if revision(root, path, &bytes, &metadata.permissions(), &head) != expected_revision {
+                        return Err(stale());
+                    }
+                    temporary.persist_noclobber(&disk.full).map_err(|e| GitError::from(e.error))?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    // No replace/rollback: another process may already own the
+                    // working path. Restore only if that name is still absent.
+                    let _ = fs::hard_link(&preserved, &disk.full);
+                    return Err(recovery_error(error, &backup));
+                }
+                backup
+            };
             Ok(Saved {
                 file: Snapshot { content: content.into(), revision: revision(root, path, content.as_bytes(), &disk.permissions, &disk.head) },
                 backup_path: Some(backup.to_string_lossy().into_owned()),
             })
         },
     )
+}
+fn save_error(error: std::io::Error) -> GitError {
+    let mut error = GitError::from(error);
+    error.message = format!(
+        "Could not save: {}. The original file and your draft are kept. Check permissions or close another editor's write handle before saving again.",
+        error.message
+    );
+    error
+}
+fn recovery_error(mut error: GitError, backup: &Path) -> GitError {
+    error
+        .message
+        .push_str(&format!(" Your draft is kept. The pre-save file is retained in recovery: {}. Inspect the working file before retrying.", backup.display()));
+    error.details.push(format!("backup-path={}", backup.display()));
+    error
+}
+
+#[cfg(test)]
+mod race_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn external_write_and_replace_at_the_final_save_boundary_cannot_be_lost() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        super::super::runner::run(root, ["init", "-q"]).unwrap();
+        let path = root.join("file.txt");
+        fs::write(&path, "original").unwrap();
+        let loaded = read(root, "file.txt").unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let worker_barrier = barrier.clone();
+        let external_path = path.clone();
+        let worker = std::thread::spawn(move || {
+            worker_barrier.wait();
+            let write = fs::write(&external_path, "IDE in-place");
+            let replacement = external_path.with_file_name("replacement.txt");
+            fs::write(&replacement, "IDE replacement").unwrap();
+            let replace = fs::rename(&replacement, &external_path);
+            worker_barrier.wait();
+            (write, replace)
+        });
+        let saved = save_at_boundary(root, "file.txt", &loaded.revision, "editor draft", |phase| {
+            if phase == "before-write" {
+                barrier.wait();
+                barrier.wait();
+            }
+        });
+        let (write, replace) = worker.join().unwrap();
+        #[cfg(windows)]
+        {
+            assert!(write.is_err() && replace.is_err(), "The held OS handle must exclude BOTH competing write methods");
+            let saved = saved.unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), "editor draft");
+            assert_eq!(fs::read_to_string(PathBuf::from(saved.backup_path.unwrap()).join("file.txt")).unwrap(), "original");
+        }
+        #[cfg(not(windows))]
+        {
+            write.unwrap();
+            replace.unwrap();
+            let error = saved.err().unwrap();
+            assert_eq!(error.kind, "stale-file");
+            assert_eq!(fs::read_to_string(&path).unwrap(), "IDE replacement");
+            let backup = error.details.iter().find_map(|d| d.strip_prefix("backup-path=")).unwrap();
+            assert_eq!(fs::read_to_string(Path::new(backup).join("file.txt")).unwrap(), "IDE replacement");
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn an_external_file_created_after_capture_is_never_overwritten_or_rolled_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        super::super::runner::run(root, ["init", "-q"]).unwrap();
+        let path = root.join("file.txt");
+        fs::write(&path, "original").unwrap();
+        let loaded = read(root, "file.txt").unwrap();
+        let error = save_at_boundary(root, "file.txt", &loaded.revision, "editor draft", |phase| {
+            if phase == "after-capture" {
+                fs::write(&path, "IDE recreated file").unwrap();
+            }
+        })
+        .err()
+        .unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "IDE recreated file");
+        let backup = error.details.iter().find_map(|d| d.strip_prefix("backup-path=")).unwrap();
+        assert_eq!(fs::read_to_string(Path::new(backup).join("file.txt")).unwrap(), "original");
+    }
 }
 
 #[cfg(all(test, windows))]

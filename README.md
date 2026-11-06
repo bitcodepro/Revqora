@@ -246,9 +246,15 @@ files up to 2 MiB. Binary, other encodings, mixed line endings, links and files 
 nested repositories must be handled in an appropriate external editor (open the
 nested repository separately when applicable).
 
-Saving checks the loaded file/branch revision, keeps an original backup in portable
-data and atomically replaces the working file. If another tool changes the file,
-the stale save is rejected and your draft remains available. **Reload from disk**
+Saving checks the loaded file/branch revision and keeps recovery data in portable
+storage. On Windows it holds an OS handle that excludes other writers and renames
+through validation, backup and writing; it updates the same file without dropping
+that protection. A failed/interrupted write can be recovered from the backup.
+On Linux/macOS the current file is moved into recovery and the draft is published
+only if the working path remains absent. The recovery folder and repository must
+be on the same filesystem on these platforms; otherwise use an external editor.
+Concurrent edits are refused or retained in recovery, and your draft stays available.
+**Reload from disk**
 asks before discarding an unsaved draft. Historical commits and server PR snapshots
 remain read-only; use the working file editor for current local content.
 

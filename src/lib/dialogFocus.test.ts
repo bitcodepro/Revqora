@@ -27,4 +27,11 @@ describe("initial dialog focus", () => {
     vi.advanceTimersByTime(30); expect(f.first.focus).not.toHaveBeenCalled();
     scheduleDialogFocus(() => f.dialog); vi.advanceTimersByTime(30); expect(f.first.focus).toHaveBeenCalledOnce();
   });
+  it("focuses Cancel when a danger confirmation has no input or primary button", () => {
+    vi.useFakeTimers(); const f=fixture();
+    const cancel={tagName:"BUTTON",focus:vi.fn()};
+    vi.mocked(f.dialog.querySelector).mockReturnValueOnce(null).mockReturnValueOnce(cancel as unknown as HTMLElement);
+    scheduleDialogFocus(()=>f.dialog);vi.advanceTimersByTime(30);
+    expect(cancel.focus).toHaveBeenCalledOnce();
+  });
 });

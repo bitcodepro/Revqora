@@ -416,14 +416,18 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
                     job.task.lock().phase = "cancelled".into();
                     return Ok(());
                 }
+                setup_diagnostic(&job, "executable.verify");
                 if step("executable.verify", Path::new(&plan.request.executable), executable(&plan.request))? != plan.executable_hash {
                     return Err(fail("The reviewed executable changed before launch."));
                 }
+                setup_diagnostic(&job, "worktree.create");
                 let created = step("worktree.create", Path::new(&plan.creation.path), wm::create(&root, &plan.creation))?;
                 if let Some(warning) = created.warning {
                     return Err(context_error("worktree.verify_head", Path::new(&created.path), fail(warning)));
                 }
+                setup_diagnostic(&job, "worktree.inspect");
                 let inventory = step("worktree.inspect", Path::new(&created.path), wm::snapshot(&root))?;
+                setup_diagnostic(&job, "worktree.lock");
                 step(
                     "worktree.lock",
                     Path::new(&created.path),
@@ -436,7 +440,9 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
                     ),
                 )?;
                 job.task.lock().phase = "running".into();
+                setup_diagnostic(&job, "state.save_running");
                 step("state.save_running", &record, save(&dir, &snapshot(&job)))?;
+                setup_diagnostic(&job, "process.prepare");
                 execute(&plan, &job, &dir)
             },
         )
@@ -479,6 +485,13 @@ pub fn start(root: PathBuf, plan: Plan, consent: bool) -> GitResult<Task> {
         job.done.store(true, Ordering::Release);
     });
     Ok(t)
+}
+fn setup_diagnostic(_job: &Job, _stage: &str) {
+    // Fixed stage names only: no command arguments, prompts or credentials.
+    #[cfg(test)]
+    {
+        _job.launch_diagnostics.lock().clone_from(&serde_json::json!({"setupStage":_stage,"setupElapsedMs":_job.clock.elapsed().as_millis() as u64}));
+    }
 }
 fn completion_error(job: &Job, error: &GitError) {
     let mut task = job.task.lock();

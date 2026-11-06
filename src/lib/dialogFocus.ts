@@ -3,7 +3,8 @@ export function scheduleDialogFocus(current: () => HTMLElement | null): () => vo
   const timer = setTimeout(() => {
     const dialog = current();
     if (!dialog || dialog.contains(dialog.ownerDocument.activeElement)) return;
-    const target = dialog.querySelector<HTMLElement>("input:not([disabled]):not([type=checkbox]):not([type=radio]), textarea:not([disabled]), select:not([disabled]), button.primary:not([disabled])");
+    const target = dialog.querySelector<HTMLElement>("input:not([disabled]):not([type=checkbox]):not([type=radio]), textarea:not([disabled]), select:not([disabled]), button.primary:not([disabled])")
+      ?? dialog.querySelector<HTMLElement>("button:not([disabled])");
     target?.focus();
     if (target?.tagName === "INPUT") (target as HTMLInputElement).select();
   }, 30);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import { scheduleDialogFocus } from "../lib/dialogFocus";
 
 interface ModalProps {
@@ -19,13 +19,24 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
   // which would re-focus and select the input after each keystroke (typing replaced the text).
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  useLayoutEffect(() => {
+    const backdrop = ref.current!.parentElement!;
+    const previous = document.activeElement as HTMLElement | null;
+    const reconcile = (closing?: Element) => {
+      const layers = [...document.querySelectorAll<HTMLElement>(".modal-backdrop")].filter(el => el !== closing);
+      for (const layer of layers) { layer.inert = layer !== layers.at(-1); if(layer.inert)layer.setAttribute("aria-hidden","true");else layer.removeAttribute("aria-hidden"); }
+    };
+    reconcile();
+    return () => { reconcile(backdrop); queueMicrotask(() => { if(previous?.isConnected&&!previous.closest("[inert]"))previous.focus({preventScroll:true}); }); };
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if(document.querySelector(".ctx-menu"))return;
         // A confirmation can sit above an editor. Only the top dialog handles Escape.
         const dialogs = document.querySelectorAll(".modal");
         if (dialogs[dialogs.length - 1] !== ref.current) return;
-        e.stopPropagation();
+        e.preventDefault(); e.stopImmediatePropagation();
         closeRef.current();
       }
     };
@@ -42,6 +53,7 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
       <form
         className={`modal ${wide ? "wide" : ""}`}
         ref={ref as never}
+        role="dialog" aria-modal="true"
         onSubmit={(e) => {
           e.preventDefault();
           onSubmit?.();

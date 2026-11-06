@@ -111,6 +111,10 @@
 
 /* Long lines expand the scrollable content, never the surrounding app layout. */
 .diff-head { flex-wrap: wrap; height: auto; min-height: 42px; padding-top: 6px; padding-bottom: 6px; row-gap: 6px; }
+.diff-controls { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; max-width: 100%; overflow-x: auto; white-space: nowrap; }
+.diff-controls > * { flex: none; }
+.diff-head:has(.diff-controls) { flex-wrap: nowrap; }
+.diff-head:has(.diff-controls) > .path { flex: 0 1 150px; }
 .diff-head > .path { flex: 1 1 150px; }
 .diff-head > .spacer { display: none; }
 .diff-head .seg, .diff-head > button { flex: none; }

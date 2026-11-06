@@ -130,15 +130,15 @@ fn links_to_files_and_directories_are_never_followed() {
 }
 #[cfg(windows)]
 #[test]
-fn a_locking_reader_cannot_destroy_the_original_or_change_staging() {
+fn a_conflicting_writer_cannot_destroy_the_original_or_change_staging() {
     use std::os::windows::fs::OpenOptionsExt;
     let temp = fixture();
     let root = temp.path();
     let path = root.join("file.txt");
     let index = fs::read(root.join(".git/index")).unwrap();
     let loaded = file_editor::read(root, "file.txt").unwrap();
-    let reader = fs::OpenOptions::new().read(true).share_mode(3).open(&path).unwrap();
-    let error = file_editor::save(root, "file.txt", &loaded.revision, "draft\n").err().expect("A handle denying delete sharing must block replacement");
+    let reader = fs::OpenOptions::new().read(true).write(true).share_mode(7).open(&path).unwrap();
+    let error = file_editor::save(root, "file.txt", &loaded.revision, "draft\n").err().expect("An existing writer must block saving");
     assert!(error.message.contains("original file and your draft are kept"), "{error:?}");
     assert!(error.details.iter().any(|d| d == "os_error=5" || d == "os_error=32"), "{error:?}");
     assert_eq!(fs::read_to_string(&path).unwrap(), "base\n");
@@ -148,6 +148,16 @@ fn a_locking_reader_cannot_destroy_the_original_or_change_staging() {
     file_editor::save(root, "file.txt", &loaded.revision, "draft\n").unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "draft\n");
     assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+}
+#[cfg(windows)]
+#[test]
+fn saving_refuses_hard_links_instead_of_modifying_another_path() {
+    let temp = fixture();
+    let root = temp.path();
+    fs::hard_link(root.join("file.txt"), root.join("alias.txt")).unwrap();
+    let loaded = file_editor::read(root, "file.txt").unwrap();
+    assert!(file_editor::save(root, "file.txt", &loaded.revision, "draft").err().unwrap().message.contains("hard links"));
+    assert_eq!(fs::read_to_string(root.join("alias.txt")).unwrap(), "base\n");
 }
 #[cfg(windows)]
 #[test]

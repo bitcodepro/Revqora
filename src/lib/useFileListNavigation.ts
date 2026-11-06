@@ -18,6 +18,7 @@ export function useFileListNavigation() {
   }, []);
   const onKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
     if (e.defaultPrevented || e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const combo = comboFromEvent(e); if (combo && actionFor(combo)) return;
     if (document.querySelector(".modal-backdrop,.ctx-menu,.conflict-overlay")) return;
     const target = e.target as HTMLElement;
     if (target.closest(editable) || target.closest("button,a") && !target.closest("button[data-file-nav]")) return;

@@ -4,7 +4,7 @@ import { EditorView, drawSelection, highlightActiveLine, highlightWhitespace, ke
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo, undoDepth, redoDepth } from "@codemirror/commands";
 import { indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { classHighlighter } from "@lezer/highlight";
-import { api, errorMessage } from "../lib/api";
+import { api, errorMessage, isGitError } from "../lib/api";
 import { editorDocument, tabsToSpaces } from "../lib/textEditing";
 import { languageFor } from "../lib/languages";
 import { useSettings } from "../lib/settings";
@@ -21,6 +21,8 @@ export function editWorkingFile(root: string, path: string) {
 function WorkingFileEditor({root,path,close}: {root:string;path:string;close:()=>void}) {
   const [file,setFile] = useState<Snapshot|null>(null), [text,setText] = useState(""), [loading,setLoading] = useState(true), [saving,setSaving] = useState(false), [error,setError] = useState(""), [epoch,setEpoch] = useState(0);
   const mounted = useRef(true);
+  const confirming = useRef(false), [confirmationOpen,setConfirmationOpen] = useState(false);
+  const [recovery,setRecovery] = useState<string|null>(null);
   const dirty = !!file && text !== file.content;
   useEffect(() => { mounted.current=true; return () => {mounted.current=false;}; }, []);
   useEffect(() => {
@@ -28,26 +30,33 @@ function WorkingFileEditor({root,path,close}: {root:string;path:string;close:()=
     api.workingFileRead(root,path).then(value=>{editorDocument(value.content);if(alive){setFile(value);setText(value.content);}}, e=>{if(alive)setError(errorMessage(e));}).catch(e=>{if(alive)setError(errorMessage(e));}).finally(()=>{if(alive)setLoading(false);});
     return()=>{alive=false;};
   },[root,path,epoch]);
-  const discard = () => !dirty || confirmDialog({title:"Discard editor changes?",message:"Your unsaved draft will be discarded. The file on disk is kept.",confirm:"Discard draft",danger:true});
+  const discard = async () => {
+    if(confirming.current)return false;
+    if(!dirty)return true;
+    confirming.current=true;setConfirmationOpen(true);
+    try {return await confirmDialog({title:"Discard editor changes?",message:"Your unsaved draft will be discarded. The file on disk is kept.",confirm:"Discard draft",danger:true});}
+    finally {confirming.current=false;if(mounted.current)setConfirmationOpen(false);}
+  };
   const onClose = async () => {if(!saving && await discard())close();};
   const reload = async () => {if(!saving && await discard())setEpoch(e=>e+1);};
   const save = async () => {
-    if(!file||loading||saving||!dirty)return;
-    setSaving(true);setError("");
+    if(!file||loading||saving||confirming.current||!dirty)return;
+    setSaving(true);setError("");setRecovery(null);
     try {
       const result=await api.workingFileSave(root,path,file.revision,text);
       if(!mounted.current)return;
       setFile(result.file);
       useUi.getState().toast({kind:"success",title:"Working file saved",detail:"Staging is unchanged.",action:result.backupPath?{label:"Open original backup",run:()=>{void api.openPath(result.backupPath!);}}:undefined});
       void useRepos.getState().refresh(root,{status:true,layers:true});
-    } catch(e) {if(mounted.current)setError(errorMessage(e));}
+    } catch(e) {if(mounted.current){setError(errorMessage(e));if(isGitError(e))setRecovery(e.details.find(v=>v.startsWith("backup-path="))?.slice("backup-path=".length)??null);}}
     finally {if(mounted.current)setSaving(false);}
   };
   return <Modal title={`Edit working file · ${path}`} subtitle="Changes stay in your working copy until you stage them." wide onClose={()=>void onClose()} footer={<>
     <span className="muted" role="status">{loading?"Loading…":!file?"File not loaded":dirty?"Unsaved changes":"Saved"}</span><button type="button" className="btn" disabled={saving||loading} onClick={()=>void reload()}>Reload from disk</button><button type="button" className="btn" disabled={saving} onClick={()=>void onClose()}>Close</button><button type="button" className="btn primary" disabled={!dirty||loading||saving} onClick={()=>void save()}>{saving?"Saving…":"Save file"}</button>
   </>}><section className="working-file-editor" onKeyDownCapture={e=>{if((e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==="s"){e.preventDefault();e.stopPropagation();void save();}}}>
     {error&&<div className="callout warn" role="alert">{error}</div>}
-    {loading?<div className="loading-center">Loading working file…</div>:file&&<WorkingCode key={epoch} path={path} initial={text} disabled={saving} changed={setText}/>}
+    {recovery&&<button type="button" className="btn sm" onClick={()=>void api.openPath(recovery)}>Open recovery copy</button>}
+    {loading?<div className="loading-center">Loading working file…</div>:file&&<WorkingCode key={epoch} path={path} initial={text} disabled={saving||confirmationOpen} changed={setText}/>}
   </section></Modal>;
 }
 function WorkingCode({path,initial,disabled,changed}: {path:string;initial:string;disabled:boolean;changed:(text:string)=>void}) {
