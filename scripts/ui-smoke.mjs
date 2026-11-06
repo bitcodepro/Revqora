@@ -603,7 +603,7 @@ try {
 
   await check("compare two branches", async () => {
     await page.click(".view-tab:has-text('History')");
-    await page.locator(".sb-item", { has: page.locator(".label", { hasText: /^ui$/ }) }).first().click({ button: "right" });
+    await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="feature/ui"]').click({ button: "right" });
     await page.locator(".ctx-item", { hasText: "Compare with main" }).click();
     await page.waitForSelector(".conflict-overlay .file-row");
     const n = await page.locator(".conflict-overlay .file-row").count();

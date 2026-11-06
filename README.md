@@ -162,6 +162,11 @@ creator name to match part of either field, or choose **Use Git email** to reset
 The choice is saved per repository. Creation provenance comes from the local
 branch creation reflog, not the first or latest commit's author. Later commits
 by someone else do not change it; renames retain it and copies have a new creator.
+Revqora records named creation sources with their full Git namespace, so changing
+the source later cannot change the recorded creator. Explicit revisions such as
+`HEAD~1`, `main^` and reflog selectors are supported. Older unqualified named
+sources are ambiguous and stay unknown; today's branches or tags cannot prove
+which namespace was selected at creation time.
 Git does not publish branch creators over Fetch/Clone. Imported remote branches,
 expired/missing creation logs, unsupported reftable logs and oversized logs have
 unknown creators and are excluded rather than guessed. This is a local navigation

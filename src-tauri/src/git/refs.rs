@@ -102,7 +102,7 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
     let mut tags = Vec::new();
     let fields: Vec<&str> = raw.split_terminator('\0').collect();
     let (records, tail) = fields.as_chunks::<13>();
-    let mut origins = super::branch_origin::Reader::new(repo, records.iter().map(|f| f[0].trim_start_matches('\n').to_owned()).collect());
+    let mut origins = super::branch_origin::Reader::new(repo);
     if tail.iter().any(|s| !s.trim_matches('\n').is_empty()) {
         return Err(super::runner::GitError::new("Invalid reference metadata record."));
     }

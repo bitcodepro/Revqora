@@ -44,20 +44,17 @@ pub struct Distance {
 
 fn inventory(root: &Path) -> GitResult<Vec<Branch>> {
     let format = "--format=%(refname)%00%(objectname)%00%(symref)%00%(HEAD)%00%(upstream)%00%(upstream:track,nobracket)%00%(committerdate:unix)%00%(authorname)%00%(contents:subject)%00%(authoremail:trim)%00";
-    let raw = history::run(root, ["for-each-ref", format, "refs/heads/", "refs/remotes/", "refs/tags/"])?;
+    let raw = history::run(root, ["for-each-ref", format, "refs/heads/", "refs/remotes/"])?;
     let mut branches = Vec::new();
     // NULs keep author names and subjects containing other separators intact.
     let fields: Vec<&str> = raw.split_terminator('\0').collect();
     let (records, tail) = fields.as_chunks::<10>();
-    let mut origins = super::branch_origin::Reader::new(root, records.iter().map(|f| f[0].trim_start_matches('\n').to_owned()).collect());
+    let mut origins = super::branch_origin::Reader::new(root);
     if tail.iter().any(|s| !s.trim_matches('\n').is_empty()) {
         return Err(GitError::new("Invalid branch metadata record."));
     }
     for f in records {
         let full_ref = f[0].trim_start_matches('\n');
-        if full_ref.starts_with("refs/tags/") {
-            continue;
-        } // Source resolution only; tags are not branch rows.
         if !(full_ref.starts_with("refs/heads/") || full_ref.starts_with("refs/remotes/"))
             || !matches!(f[1].len(), 40 | 64)
             || !f[1].bytes().all(|b| b.is_ascii_hexdigit())

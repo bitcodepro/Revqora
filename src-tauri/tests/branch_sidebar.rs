@@ -84,17 +84,23 @@ fn slash_named_local_sources_and_copies_after_expiry_have_the_correct_creator() 
         vec!["config", "commit.gpgsign", "false"],
         vec!["commit", "--allow-empty", "-qm", "Base"],
         vec!["branch", "feature/topic"],
-        vec!["branch", "topic", "feature/topic"],
+    ] {
+        git(&args);
+    }
+    revqora_lib::git::ops::create_branch(r, "topic", Some("feature/topic"), false).unwrap();
+    for args in [
         vec!["checkout", "-qb", "source"],
         vec!["commit", "--allow-empty", "-qm", "Surviving entry"],
         vec!["reflog", "delete", "source@{1}"],
         vec!["config", "user.email", "copier@example.invalid"],
         vec!["branch", "-c", "source", "copied"],
         vec!["-c", "tag.gpgSign=false", "tag", "base-tag", "HEAD"],
-        vec!["branch", "from-tag", "base-tag"],
     ] {
         git(&args);
     }
+    revqora_lib::git::ops::create_branch(r, "from-tag", Some("base-tag"), false).unwrap();
+    assert!(std::fs::read_to_string(r.join(".git/logs/refs/heads/topic")).unwrap().contains("Created from refs/heads/feature/topic"));
+    assert!(std::fs::read_to_string(r.join(".git/logs/refs/heads/from-tag")).unwrap().contains("Created from refs/tags/base-tag"));
     let before = git(&["rev-parse", "HEAD"]);
     let index = std::fs::read(r.join(".git/index")).ok();
     let snapshot = refs::snapshot(r).unwrap();
@@ -108,4 +114,134 @@ fn slash_named_local_sources_and_copies_after_expiry_have_the_correct_creator() 
     assert_eq!(manager.branches.iter().find(|b| b.name == "from-tag").unwrap().creator.as_ref().unwrap().email, "copier@example.invalid");
     assert_eq!(git(&["rev-parse", "HEAD"]), before);
     assert_eq!(std::fs::read(r.join(".git/index")).ok(), index);
+}
+
+#[test]
+fn historical_creation_does_not_change_when_source_refs_are_renamed_deleted_or_shadowed() {
+    use revqora_lib::git::ops;
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    let git = |args: &[&str]| runner::run(r, args.iter().copied()).unwrap();
+    for args in [
+        vec!["init", "-qb", "main"],
+        vec!["config", "user.name", "Creator"],
+        vec!["config", "user.email", "creator@example.invalid"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["commit", "--allow-empty", "-qm", "Base"],
+        vec!["remote", "add", "origin", "https://example.invalid/never-contacted.git"],
+        vec!["update-ref", "refs/remotes/origin/topic", "HEAD"],
+        vec!["branch", "topic", "origin/topic"],
+        vec!["branch", "feature/local", "HEAD"],
+        vec!["-c", "tag.gpgSign=false", "tag", "starting-tag", "HEAD"],
+    ] {
+        git(&args);
+    }
+    ops::create_branch(r, "local-child", Some("feature/local"), false).unwrap();
+    ops::create_branch(r, "tag-child", Some("starting-tag"), false).unwrap();
+    ops::create_branch(r, "remote-child", Some("origin/topic"), false).unwrap();
+    let head = git(&["rev-parse", "HEAD"]);
+    let index = std::fs::read(r.join(".git/index")).ok();
+    let verify = || {
+        let sidebar = refs::snapshot(r).unwrap();
+        let manager = revqora_lib::git::branch_manager::snapshot(r, None).unwrap();
+        assert!(sidebar.local.iter().find(|b| b.name == "topic").unwrap().creator.is_none());
+        assert!(manager.branches.iter().find(|b| b.local && b.name == "topic").unwrap().creator.is_none());
+        for name in ["local-child", "tag-child", "remote-child"] {
+            assert_eq!(sidebar.local.iter().find(|b| b.name == name).unwrap().creator.as_ref().unwrap().email, "creator@example.invalid", "{name}");
+            assert_eq!(
+                manager.branches.iter().find(|b| b.local && b.name == name).unwrap().creator.as_ref().unwrap().email,
+                "creator@example.invalid",
+                "{name}"
+            );
+        }
+        assert_eq!(git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(std::fs::read(r.join(".git/index")).ok(), index);
+    };
+    verify();
+    for args in [
+        vec!["-c", "tag.gpgSign=false", "tag", "origin/topic", "HEAD"],
+        vec!["branch", "origin/topic", "HEAD"],
+        vec!["branch", "-m", "feature/local", "renamed/source"],
+        vec!["branch", "-D", "renamed/source"],
+        vec!["tag", "-d", "starting-tag"],
+        vec!["branch", "starting-tag", "HEAD"],
+        vec!["branch", "-D", "origin/topic"],
+        vec!["tag", "-d", "origin/topic"],
+        vec!["update-ref", "-d", "refs/remotes/origin/topic"],
+    ] {
+        git(&args);
+        verify();
+    }
+}
+
+#[test]
+fn revision_expressions_and_new_worktrees_record_local_creation_without_changing_tracking_semantics() {
+    use revqora_lib::git::{extras, ops};
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    let git = |args: &[&str]| runner::run(r, args.iter().copied()).unwrap().trim().to_owned();
+    for args in [
+        vec!["init", "-qb", "main"],
+        vec!["config", "user.name", "Creator"],
+        vec!["config", "user.email", "creator@example.invalid"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["commit", "--allow-empty", "-qm", "A"],
+        vec!["commit", "--allow-empty", "-qm", "B"],
+        vec!["-c", "tag.gpgSign=false", "tag", "base-tag", "HEAD"],
+        vec!["remote", "add", "origin", "https://example.invalid/never-contacted.git"],
+        vec!["update-ref", "refs/remotes/origin/topic", "HEAD"],
+    ] {
+        git(&args);
+    }
+    let a = git(&["rev-parse", "HEAD~1"]);
+    for (name, start) in [
+        ("ancestor-head", "HEAD~1"),
+        ("ancestor-main", "main^"),
+        ("peeled-tag", "base-tag^{commit}"),
+        ("reflog-entry", "HEAD@{1}"),
+        ("remote-parent", "refs/remotes/origin/topic~1"),
+    ] {
+        git(&["branch", name, start]);
+    }
+    git(&["branch", "topic", "origin/topic"]);
+    ops::create_branch(r, "app-ancestor", Some("HEAD~1"), false).unwrap();
+    assert_eq!(git(&["rev-parse", "app-ancestor"]), a);
+    git(&["config", "branch.autoSetupMerge", "always"]);
+    ops::create_branch(r, "tracked-local", Some("main"), false).unwrap();
+    ops::create_branch(r, "tracked-remote", Some("origin/topic"), false).unwrap();
+    ops::create_branch(r, "checkout-remote", Some("origin/topic"), true).unwrap();
+    ops::create_branch(r, "checkout-qualified-remote", Some("refs/remotes/origin/topic"), true).unwrap();
+    git(&["config", "branch.autoSetupMerge", "inherit"]);
+    git(&["branch", "--set-upstream-to=origin/topic", "main"]);
+    ops::create_branch(r, "inherited-local", Some("main"), false).unwrap();
+    let wt = r.join("linked");
+    extras::worktree_add(r, wt.to_str().unwrap(), None, Some("worktree-created"), Some("main")).unwrap();
+    let snapshot = refs::snapshot(r).unwrap();
+    let manager = revqora_lib::git::branch_manager::snapshot(r, None).unwrap();
+    for name in [
+        "ancestor-head",
+        "ancestor-main",
+        "peeled-tag",
+        "reflog-entry",
+        "remote-parent",
+        "app-ancestor",
+        "tracked-local",
+        "tracked-remote",
+        "checkout-remote",
+        "checkout-qualified-remote",
+        "inherited-local",
+        "worktree-created",
+    ] {
+        assert_eq!(snapshot.local.iter().find(|b| b.name == name).unwrap().creator.as_ref().unwrap().email, "creator@example.invalid", "{name}");
+        assert_eq!(manager.branches.iter().find(|b| b.local && b.name == name).unwrap().creator.as_ref().unwrap().email, "creator@example.invalid", "{name}");
+    }
+    assert!(snapshot.local.iter().find(|b| b.name == "topic").unwrap().creator.is_none());
+    assert_eq!(git(&["config", "branch.tracked-local.merge"]), "refs/heads/main");
+    assert_eq!(git(&["config", "branch.tracked-remote.merge"]), "refs/heads/topic");
+    assert_eq!(git(&["config", "branch.inherited-local.remote"]), "origin");
+    assert_eq!(git(&["config", "branch.inherited-local.merge"]), "refs/heads/topic");
+    assert!(snapshot.local.iter().find(|b| b.name == "checkout-remote").unwrap().upstream.is_none());
+    assert!(snapshot.local.iter().find(|b| b.name == "checkout-qualified-remote").unwrap().upstream.is_none());
+    assert_eq!(git(&["branch", "--show-current"]), "checkout-qualified-remote");
+    assert!(refs::snapshot(&wt).unwrap().local.iter().find(|b| b.name == "worktree-created").unwrap().creator.is_some());
 }
