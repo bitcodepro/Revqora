@@ -21,6 +21,7 @@ pub struct Branch {
     pub time: i64,
     pub author: String,
     pub author_email: String,
+    pub creator: Option<super::branch_origin::Creator>,
     pub subject: String,
     pub merged: Option<bool>,
     pub protection_names: Vec<String>,
@@ -42,6 +43,7 @@ pub struct Distance {
 }
 
 fn inventory(root: &Path) -> GitResult<Vec<Branch>> {
+    let mut origins = super::branch_origin::Reader::new(root, super::refs::remotes(root)?.into_iter().map(|r| r.name).collect());
     let format = "--format=%(refname)%00%(objectname)%00%(symref)%00%(HEAD)%00%(upstream)%00%(upstream:track,nobracket)%00%(committerdate:unix)%00%(authorname)%00%(contents:subject)%00%(authoremail:trim)%00";
     let raw = history::run(root, ["for-each-ref", format, "refs/heads/", "refs/remotes/"])?;
     let mut branches = Vec::new();
@@ -78,6 +80,7 @@ fn inventory(root: &Path) -> GitResult<Vec<Branch>> {
             time: f[6].parse().unwrap_or(0),
             author: f[7].into(),
             author_email: f[9].into(),
+            creator: origins.creator(full_ref),
             subject: f[8].into(),
             merged: None,
             protection_names: vec![name.into()],
@@ -120,6 +123,7 @@ pub fn snapshot(root: &Path, requested_base: Option<&str>) -> GitResult<Snapshot
                     || a.upstream != b.upstream
                     || a.protection_names != b.protection_names
                     || a.mapping_known != b.mapping_known
+                    || a.creator != b.creator
             })
         {
             return Err(GitError::new("Branches changed while loading. Refresh the branch manager.").kind("stale-operation"));

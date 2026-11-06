@@ -83,7 +83,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
   const [authorQuery,setAuthorQuery]=useState(()=>loadBranchPreferences(root).authorQuery);
   useEffect(()=>{try{localStorage.setItem(sidebarBranchesKey(root),JSON.stringify(branchPrefs));}catch{}},[root,branchPrefs]);
   useEffect(()=>{const changed=(e:Event)=>{const d=(e as CustomEvent).detail;if(d?.root===root)setAuthorQuery(d.query);};window.addEventListener("revqora:branch-author",changed);return()=>window.removeEventListener("revqora:branch-author",changed);},[root]);
-  const configureAuthor=async()=>{const value=await promptDialog({title:"Branch author filter",label:"Author email or name",initial:authorQuery,help:"Leave empty to match Git user.email. Git does not record branch ownership; this matches the latest commit's author."});if(value===null)return;const query=value.trim().slice(0,256);setAuthorQuery(query);setBranchPrefs(p=>({...p,onlyMine:!!query||!!tab.refs?.identityEmail}));try{localStorage.setItem(preferencesKey(root),JSON.stringify({...loadBranchPreferences(root),authorQuery:query}));}catch{}window.dispatchEvent(new CustomEvent("revqora:branch-author",{detail:{root,query}}));};
+  const configureAuthor=async()=>{const value=await promptDialog({title:"Branch creator filter",label:"Creator email or name",initial:authorQuery,help:"Match the branch creator recorded in local creation logs. Leave empty to use Git user.email. Remote imports and missing or expired logs have unknown creators and are excluded."});if(value===null)return;const query=value.trim().slice(0,256);setAuthorQuery(query);setBranchPrefs(p=>({...p,onlyMine:!!query||!!tab.refs?.identityEmail}));try{localStorage.setItem(preferencesKey(root),JSON.stringify({...loadBranchPreferences(root),authorQuery:query}));}catch{}window.dispatchEvent(new CustomEvent("revqora:branch-author",{detail:{root,query}}));};
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ tags: true });
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({});
@@ -130,7 +130,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
             data-branch-kind={kind}
             className={`sb-item ${isCur ? "current" : ""}`}
             style={{ paddingLeft: pad + 16 }}
-            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}${b.upstream ? `\ntracks ${b.upstream}` : ""}${isCur ? "" : "\nCtrl+click or double-click to check out"}`}
+            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}\n${b.creator?`Created by ${b.creator.name} <${b.creator.email}> (local creation log)`:"Branch creator unknown"}${b.upstream ? `\ntracks ${b.upstream}` : ""}${isCur ? "" : "\nCtrl+click or double-click to check out"}`}
             onClick={(e) => ((e.ctrlKey || e.metaKey) && !isCur ? void A.checkout(root, b.name, kind) : jumpToCommit(root, b.oid))}
             draggable
             onDragStart={(e) => {
@@ -230,7 +230,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
           <Search size={13} />
           <input className="input sm" placeholder="Filter branches, tags, stashes" value={filter} onChange={(e) => setFilter(e.target.value)} />
         </div>
-        <div className="sb-branch-filters"><button type="button" className={`btn sm ${branchPrefs.onlyMine?"active":""}`} aria-pressed={branchPrefs.onlyMine} disabled={!branchPrefs.onlyMine&&!authorQuery&&!refs?.identityEmail} title={`Latest commit author ${authorQuery?`matches: ${authorQuery}`:`email equals Git user.email: ${refs?.identityEmail??"not configured"}`}`} onClick={()=>setBranchPrefs(p=>({...p,onlyMine:!p.onlyMine}))}>My branches</button><button type="button" className="icon-btn sm" aria-label="Sidebar branch author filter" title="Choose author email or name" onClick={()=>void configureAuthor()}><Pencil size={13}/></button><select className="select" aria-label="Branch list order" value={branchPrefs.sort} onChange={e=>setBranchPrefs(p=>({...p,sort:e.target.value as "recent"|"name"}))}><option value="recent">Recent first</option><option value="name">Name / folders</option></select></div>
+        <div className="sb-branch-filters"><button type="button" className={`btn sm ${branchPrefs.onlyMine?"active":""}`} aria-pressed={branchPrefs.onlyMine} disabled={!branchPrefs.onlyMine&&!authorQuery&&!refs?.identityEmail} title={`Recorded branch creator ${authorQuery?`matches: ${authorQuery}`:`email equals Git user.email: ${refs?.identityEmail??"not configured"}`}`} onClick={()=>setBranchPrefs(p=>({...p,onlyMine:!p.onlyMine}))}>My branches</button><button type="button" className="icon-btn sm" aria-label="Sidebar branch author filter" title="Choose branch creator email or name" onClick={()=>void configureAuthor()}><Pencil size={13}/></button><select className="select" aria-label="Branch list order" value={branchPrefs.sort} onChange={e=>setBranchPrefs(p=>({...p,sort:e.target.value as "recent"|"name"}))}><option value="recent">Recent first</option><option value="name">Name / folders</option></select></div>
       </div>
       <VirtualRows
         rows={[

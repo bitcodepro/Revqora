@@ -34,6 +34,7 @@ pub struct BranchInfo {
     pub subject: String,
     pub author: String,
     pub author_email: String,
+    pub creator: Option<super::branch_origin::Creator>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +95,8 @@ fn parse_track(t: &str) -> (u32, u32, bool) {
 }
 
 pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
+    let remotes = remotes(repo)?;
+    let mut origins = super::branch_origin::Reader::new(repo, remotes.iter().map(|r| r.name.clone()).collect());
     let raw = runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"])?;
     let mut local = Vec::new();
     let mut remote = Vec::new();
@@ -123,6 +126,7 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
                 subject: f[7].to_string(),
                 author: f[8].to_string(),
                 author_email: f[12].to_string(),
+                creator: origins.creator(full),
             });
         } else if let Some(name) = full.strip_prefix("refs/remotes/") {
             if !f[9].is_empty() {
@@ -144,6 +148,7 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
                 subject: f[7].to_string(),
                 author: f[8].to_string(),
                 author_email: f[12].to_string(),
+                creator: None,
             });
         } else if let Some(name) = full.strip_prefix("refs/tags/") {
             let annotated = f[10] == "tag";
@@ -158,7 +163,7 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
         }
     }
     tags.sort_by_key(|t| std::cmp::Reverse(t.time));
-    Ok(RefsSnapshot { identity_email: super::repo::config_get(repo, "user.email"), local, remote, tags, stashes: stashes(repo)?, remotes: remotes(repo)? })
+    Ok(RefsSnapshot { identity_email: super::repo::config_get(repo, "user.email"), local, remote, tags, stashes: stashes(repo)?, remotes })
 }
 
 pub fn stashes(repo: &Path) -> GitResult<Vec<StashInfo>> {

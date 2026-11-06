@@ -216,6 +216,7 @@ export interface FileHistoryEntry {
 }
 
 export interface BranchInfo {
+  creator?: {name:string;email:string}|null;
   authorEmail?:string;
   name: string;
   fullName: string;
@@ -738,6 +739,7 @@ export interface SyncResult {
   warnings: string[];
 }
 export interface ManagedBranch {
+  creator?: {name:string;email:string}|null;
   fullRef: string; name: string; oid: string; local: boolean; current: boolean;
   upstream: string | null; ahead: number; behind: number; gone: boolean;
   time: number; author: string; authorEmail: string; subject: string; merged: boolean | null;
