@@ -174,6 +174,7 @@ export interface GraphRow {
 }
 
 export interface GraphSummary {
+  headOid?: string;
   key: string;
   total: number;
   maxLanes: number;
@@ -603,6 +604,7 @@ export interface CommitHelpers {
 }
 
 export interface ForgeInfo {
+  accountId?: string | null;
   connectionRevision: string | null;
   accountLogin: string | null;
   kind: "github" | "gitlab" | "azure" | "bitbucket" | "bitbucket-server";

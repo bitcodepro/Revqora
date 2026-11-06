@@ -16,6 +16,7 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
     const git=(cwd,...args)=>execFileSync("git",["-C",cwd,...args],{encoding:"utf8",windowsHide:true,env:{...process.env,GIT_CONFIG_GLOBAL:config,GIT_CONFIG_NOSYSTEM:"1",GIT_OPTIONAL_LOCKS:"0"}}).trim();
     git(seed,"init","-qb","main");for(const [k,v] of [["user.name","Token Tester"],["user.email","token@example.invalid"],["commit.gpgsign","false"],["core.autocrlf","false"]])git(seed,"config",k,v);
     fs.writeFileSync(path.join(seed,".gitattributes"),"* text eol=lf\n");fs.writeFileSync(path.join(seed,"file.txt"),"credential fixture\n");git(seed,"add",".");git(seed,"commit","-qm","Token clone fixture");git(home,"clone","--bare",seed,bare);git(bare,"update-server-info");const head=git(seed,"rev-parse","HEAD");
+    git(bare,"branch","topic",head);git(bare,"update-server-info");
     const token="scoped-bitbucket-fixture-token",secondToken="other-bitbucket-fixture-token",password="portable bitbucket test vault",user="fixture-user",seen=[];
     const pr={id:7,title:"Scoped Bitbucket PR",description:"Token with repository and PR scopes only",state:"OPEN",author:{display_name:"Fixture Author",nickname:"fixture-author",uuid:"{author}"},source:{branch:{name:"topic"},commit:{hash:head.slice(0,12)}},destination:{branch:{name:"main"},commit:{hash:head.slice(0,12)}},updated_on:"2026-01-01T00:00:00Z",participants:[]};
     const server=http.createServer(async(req,res)=>{
@@ -81,12 +82,33 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await page.getByRole("button",{name:"Files",exact:true}).click();await page.locator('[data-pr-file="file.txt"]').waitFor();await page.getByText("after",{exact:true}).first().waitFor();
       const result=await invoke("pr_page",{repo:root,state:"open",cursor:null}),connection=result.forge.connectionRevision;
       const detail=await invoke("pr_detail",{repo:root,number:7,expectedConnection:connection});
+      const rejected=await page.evaluate(async args=>{try{await window.__TAURI_INTERNALS__.invoke("pull_request_checkout",args);return null;}catch(e){return {kind:e.kind,message:e.message};}},{repo:root,number:7,expectedConnection:connection,expectedHead:"f".repeat(40)});
+      assert.equal(rejected?.kind,"stale-operation",JSON.stringify(rejected));
+      console.log("Bitbucket short SHA: changed-head checkout rejected before fetch");
+      assert.equal(git(root,"branch","--show-current"),"main");
+      const checked=await invoke("pull_request_checkout",{repo:root,number:7,expectedConnection:connection,expectedHead:detail.pull.headSha});
+      assert(checked.startsWith("pr/7-"));assert.equal(git(root,"rev-parse","HEAD"),head);assert.equal(git(root,"branch","--show-current"),checked);assert.equal(git(root,"status","--porcelain"),"");
+      console.log("Bitbucket short SHA: reviewed checkout completed at the exact commit");
       const args={repo:root,number:7,expectedConnection:connection,expectedRevision:detail.revision},caps=await invoke("pr_review_capabilities",args);
       assert(caps.actor.includes("profile not read"));assert(caps.comment);assert(caps.actorId.startsWith("bitbucket-token:"));
       await invoke("pr_review_act",{...args,action:{kind:"comment",body:"PR access reuses the clone token",expectedActor:caps.actorId,thread:null,threadRevision:null,anchor:null}});
       assert.equal(seen.filter(r=>r.method==="POST"&&r.path.endsWith("/comments")&&r.authorized).length,1);assert.equal(seen.filter(r=>r.path==="/2.0/user").length,0);
       assert(!await page.evaluate(secret=>JSON.stringify(localStorage).includes(secret),token));
       if(out)await page.screenshot({path:path.join(out,"bitbucket-token-reuse.png")});
+      // Distinct token-only profiles may intentionally have identical public
+      // display names. Their manually configured My PR authors must not mix.
+      const anonymous=[];
+      for(const secret of [token,secondToken]){
+        const s=await invoke("forge_account_add",{expected:(await invoke("forge_accounts_snapshot")).revision,input:{id:null,kind:"bitbucket",server:url,username:"",token:secret,authMode:"bearer",persist:false,verifyIdentity:false,gitSource:null}});
+        const a=s.accounts.find(a=>a.login==="Bitbucket token"&&!anonymous.includes(a.id));anonymous.push(a.id);
+      }
+      const switchProfile=async(id)=>{await bind("origin",id);await page.getByRole("button",{name:"Refresh pull requests",exact:true}).click();await page.locator('[data-pr-detail="7"]').waitFor();const p=await invoke("pr_page",{repo:root,state:"open",cursor:null});assert.equal(p.forge.accountId,id);assert.equal(p.forge.accountLogin,"Bitbucket token");};
+      await switchProfile(anonymous[0]);assert.equal(await page.getByRole("combobox",{name:"Pull request author",exact:true}).inputValue(),"all");
+      await page.getByRole("combobox",{name:"Pull request author",exact:true}).selectOption("mine");await modal().getByLabel("My PR author",{exact:true}).selectOption("id:{author}");await button("Use as my author").click();await page.locator('[data-pr-detail="7"]').waitFor();
+      await switchProfile(anonymous[1]);assert.equal(await page.getByRole("combobox",{name:"Pull request author",exact:true}).inputValue(),"all");
+      await switchProfile(anonymous[0]);assert.equal(await page.getByRole("combobox",{name:"Pull request author",exact:true}).inputValue(),"mine");
+      console.log("Bitbucket anonymous profiles: author preferences isolated and restored");
+      await bind("origin",account.id);
       await invoke("forge_vault_lock");
       // Reconnection after a real process restart comes only from encrypted state,
       // never an artificial recreation of task/account data or helper cache.

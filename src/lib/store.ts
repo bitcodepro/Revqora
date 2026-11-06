@@ -401,7 +401,8 @@ async function refreshOnce(root: string, parts: Parts) {
     if (status) useRepos.getState().patch(root, sidebarOnly ? { sidebarStatus: status } : { status });
     if (!parts.summary && ((parts.graph&&!graphP) || dirty !== (graphP?initialDirty:tab.graphHasWorktree) || !tab.graph&&!graphP)) graphP = loadGraph(root, dirty);
     const [info, refs] = await Promise.all([infoP, refsP]);
-    const graphChanged=(info&&JSON.stringify(info.head)!==JSON.stringify(before.info?.head))||(refs&&refsFingerprint(refs)!==refsFingerprint(before.refs));
+    const graphHeadChanged=info&&before.graph?.headOid!==undefined&&before.graph.headOid!==(info.head.oid??"");
+    const graphChanged=graphHeadChanged||(info&&JSON.stringify(info.head)!==JSON.stringify(before.info?.head))||(refs&&refsFingerprint(refs)!==refsFingerprint(before.refs));
     if(parts.activation&&current()&&graphChanged){invalidatePreview(root);if(!graphP)graphP=loadGraph(root,dirty);}
     const [layers, extras] = await Promise.all([layersP, extrasP]);
     if (info) patch.info = info;

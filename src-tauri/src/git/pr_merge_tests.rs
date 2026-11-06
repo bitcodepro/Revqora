@@ -2,6 +2,7 @@ use super::*;
 #[test]
 fn bitbucket_ci_pagination_cannot_hide_a_later_failure_or_cross_repository() {
     let mut f = ForgeInfo {
+        account_id: None,
         kind: "bitbucket-server".into(),
         host: "example.invalid".into(),
         project: "team/repo".into(),

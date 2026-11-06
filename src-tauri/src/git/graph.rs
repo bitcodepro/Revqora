@@ -136,6 +136,7 @@ pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
 
 #[derive(Debug, Clone)]
 pub struct GraphCache {
+    pub head_oid: String,
     pub key: String,
     pub rows: Vec<GraphRow>,
     pub max_lanes: u16,
@@ -240,6 +241,7 @@ fn reuse_history(repo: &Path, prev: &GraphCache, refs: &[(String, String)]) -> O
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphSummary {
+    pub head_oid: String,
     pub key: String,
     pub total: usize,
     pub max_lanes: u16,
@@ -424,7 +426,7 @@ pub fn build_with(
     let index = rows.iter().map(|r| (r.oid.clone(), r.index)).collect();
     let key = format!("{}:{}:{}", rows.len(), head_oid, rows.first().map(|r| r.oid.as_str()).unwrap_or(""));
     let source = if fast { "fast" } else { reused.as_ref().map(|(_, s)| *s).unwrap_or("full") }.to_string();
-    Ok(GraphCache { key, rows, max_lanes, index, commits: std::sync::Arc::new(commit_list), refs, filter, limit, source })
+    Ok(GraphCache { head_oid, key, rows, max_lanes, index, commits: std::sync::Arc::new(commit_list), refs, filter, limit, source })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]

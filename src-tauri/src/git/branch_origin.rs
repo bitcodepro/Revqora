@@ -3,6 +3,7 @@
 //! branches merely imported from a remote therefore have unknown provenance.
 use serde::Serialize;
 use std::{
+    collections::HashSet,
     fs::File,
     io::Read,
     path::{Component, Path, PathBuf},
@@ -17,12 +18,12 @@ pub struct Creator {
 
 pub struct Reader {
     logs: PathBuf,
-    remotes: Vec<String>,
+    references: HashSet<String>,
     remaining: usize,
 }
 impl Reader {
-    pub fn new(root: &Path, remotes: Vec<String>) -> Self {
-        Self { logs: super::operations::repository_key(root).join("logs"), remotes, remaining: 16 * 1024 * 1024 }
+    pub fn new(root: &Path, references: HashSet<String>) -> Self {
+        Self { logs: super::operations::repository_key(root).join("logs"), references, remaining: 16 * 1024 * 1024 }
     }
     pub fn creator(&mut self, full_ref: &str) -> Option<Creator> {
         if !full_ref.starts_with("refs/heads/") || !Path::new(full_ref).components().all(|p| matches!(p, Component::Normal(_))) {
@@ -45,7 +46,7 @@ impl Reader {
         if bytes.len() > 256 * 1024 || !bytes.ends_with(b"\n") {
             return None;
         }
-        parse(std::str::from_utf8(&bytes).ok()?, &self.remotes, full_ref.strip_prefix("refs/heads/")?)
+        parse(std::str::from_utf8(&bytes).ok()?, Some(&self.references), full_ref.strip_prefix("refs/heads/")?)
     }
 }
 
@@ -68,7 +69,26 @@ fn actor(line: &str) -> Option<(&str, Creator, &str)> {
     Some((old, Creator { name: name.into(), email: email.into() }, message.trim_end_matches('\r')))
 }
 
-fn parse(log: &str, remotes: &[String], name: &str) -> Option<Creator> {
+fn local_creation_source(start: &str, name: &str, references: Option<&HashSet<String>>) -> bool {
+    if start == "HEAD" || start == "@" || start.len() >= 4 && start.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return true;
+    }
+    let Some(references) = references else {
+        return false;
+    };
+    // Respect actual ref namespaces and Git's local-branch precedence. A slash
+    // in a local branch name is not evidence that it names a remote.
+    if references.contains(&format!("refs/heads/{start}")) || start.starts_with("refs/heads/") && references.contains(start) {
+        return true;
+    }
+    if references.contains(&format!("refs/tags/{start}")) || start.starts_with("refs/tags/") && references.contains(start) {
+        return true;
+    }
+    let remote = if start.starts_with("refs/remotes/") { start.to_owned() } else { format!("refs/remotes/{start}") };
+    references.contains(&remote) && !remote.ends_with(&format!("/{name}"))
+}
+
+fn parse(log: &str, references: Option<&HashSet<String>>, name: &str) -> Option<Creator> {
     // A rename preserves creation provenance, including an imported branch's
     // unknown creator. Compare its source with the name before the first rename.
     let original = log
@@ -80,24 +100,13 @@ fn parse(log: &str, remotes: &[String], name: &str) -> Option<Creator> {
         .unwrap_or(name);
     let mut lines = log.lines();
     let (old, who, message) = actor(lines.next()?)?;
-    // An expired first entry cannot identify the original creator. In
-    // particular, the oldest surviving commit's author is not a substitute.
-    if !old.bytes().all(|b| b == b'0') {
-        return None;
-    }
-    let mut creator = if let Some(start) = message.strip_prefix("branch: Created from ") {
-        let source = start.strip_prefix("refs/remotes/").unwrap_or(start);
-        if source.ends_with(&format!("/{original}")) || remotes.iter().any(|r| source.strip_prefix(&format!("{r}/")).is_some_and(|branch| branch == original)) {
-            None
-        } else {
-            Some(who)
-        }
-    } else if message.starts_with("commit (initial): ") {
-        Some(who)
-    } else {
-        None
-    };
-    for line in lines {
+    // Expired history starts unknown, but a later copy is itself a new branch
+    // creation and still identifies its copier (even if it is the first entry).
+    let created = old.bytes().all(|b| b == b'0')
+        && (message.starts_with("commit (initial): ")
+            || message.strip_prefix("branch: Created from ").is_some_and(|start| local_creation_source(start, original, references)));
+    let mut creator = created.then_some(who);
+    for line in log.lines() {
         let (_, who, message) = actor(line)?;
         // Copying creates a new branch, whereas renaming retains provenance.
         if message.starts_with("Branch: copied ") {
@@ -118,7 +127,7 @@ mod tests {
         let log = line('0', "creator@example.invalid", "branch: Created from HEAD")
             + &line('a', "other@example.invalid", "commit: Others work")
             + &line('a', "renamer@example.invalid", "Branch: renamed refs/heads/a to refs/heads/b");
-        assert_eq!(parse(&log, &[], "b").unwrap().email, "creator@example.invalid");
+        assert_eq!(parse(&log, None, "b").unwrap().email, "creator@example.invalid");
     }
     #[test]
     fn cloning_tracking_and_expired_logs_do_not_claim_ownership() {
@@ -128,17 +137,34 @@ mod tests {
             line('0', "me@example.invalid", "branch: Created from refs/remotes/origin/topic"),
             line('a', "me@example.invalid", "commit: Mine"),
         ] {
-            assert!(parse(&log, &["origin".into()], "topic").is_none());
+            assert!(parse(&log, None, "topic").is_none());
         }
-        assert!(parse(&line('0', "me@example.invalid", "branch: Created from origin/main"), &["origin".into()], "new-feature").is_some());
+        let references = HashSet::from(["refs/remotes/origin/main".into()]);
+        assert!(parse(&line('0', "me@example.invalid", "branch: Created from origin/main"), Some(&references), "new-feature").is_some());
         let renamed = line('0', "me@example.invalid", "branch: Created from removed-remote/topic")
             + &line('a', "me@example.invalid", "Branch: renamed refs/heads/topic to refs/heads/renamed");
-        assert!(parse(&renamed, &[], "renamed").is_none());
+        assert!(parse(&renamed, None, "renamed").is_none());
     }
     #[test]
     fn copy_has_its_own_creator() {
         let log = line('0', "original@example.invalid", "branch: Created from main")
             + &line('a', "copier@example.invalid", "Branch: copied refs/heads/a to refs/heads/b");
-        assert_eq!(parse(&log, &[], "b").unwrap().email, "copier@example.invalid");
+        assert_eq!(parse(&log, None, "b").unwrap().email, "copier@example.invalid");
+        let expired = line('a', "original@example.invalid", "commit: Old surviving entry")
+            + &line('a', "copier@example.invalid", "Branch: copied refs/heads/a to refs/heads/b");
+        assert_eq!(parse(&expired, None, "b").unwrap().email, "copier@example.invalid");
+        assert_eq!(
+            parse(&line('a', "copier@example.invalid", "Branch: copied refs/heads/a to refs/heads/b"), None, "b").unwrap().email,
+            "copier@example.invalid"
+        );
+    }
+    #[test]
+    fn local_names_with_slashes_are_not_remote_imports() {
+        let log = line('0', "creator@example.invalid", "branch: Created from feature/topic");
+        let references = HashSet::from(["refs/heads/feature/topic".into()]);
+        assert_eq!(parse(&log, Some(&references), "topic").unwrap().email, "creator@example.invalid");
+        assert!(parse(&log, None, "topic").is_none());
+        let remote = HashSet::from(["refs/remotes/feature/topic".into()]);
+        assert!(parse(&log, Some(&remote), "topic").is_none());
     }
 }

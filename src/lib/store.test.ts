@@ -31,6 +31,16 @@ describe("background repository observation", () => {
     const pending=useRepos.getState().refresh(root,{background:true,activation:true,info:true,status:true,layers:true});
     await vi.waitFor(()=>expect(useRepos.getState().tabs[root].info).toBe(info));release(null as never);await pending;
   });
+  it("rebuilds the graph after a detached HEAD update was already observed offscreen",async()=>{
+    const refs={local:[],remote:[],tags:[],remotes:[]};const a={head:{branch:null,oid:"a",detached:true}} as RepoInfo;const b={head:{branch:null,oid:"b",detached:true}} as RepoInfo;
+    useRepos.getState().patch(root,{info:a,refs:refs as never,graph:{key:"graph-a",headOid:"a",total:1,maxLanes:1,headIndex:0}});
+    useRepos.setState({active:"another-repository"});vi.mocked(api.repoInfo).mockResolvedValue(b);vi.mocked(api.refs).mockResolvedValue(refs as never);
+    await useRepos.getState().refresh(root,{background:true,info:true});
+    expect(useRepos.getState().tabs[root].info).toBe(b);expect(api.graphLoad).not.toHaveBeenCalled();
+    vi.mocked(api.graphLoad).mockResolvedValue({key:"graph-b",headOid:"b",total:1,maxLanes:1,headIndex:0});useRepos.setState({active:root});
+    await useRepos.getState().refresh(root,{background:true,activation:true,info:true,refs:true});
+    await vi.waitFor(()=>expect(useRepos.getState().tabs[root].graph?.headOid).toBe("b"));expect(api.graphLoad).toHaveBeenCalledTimes(1);
+  });
   it("serializes graph cache builds and publishes only the latest branch request", async () => {
     let release!: (v: never) => void;
     const first = new Promise<never>(resolve => { release = resolve; });

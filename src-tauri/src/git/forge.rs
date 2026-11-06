@@ -23,6 +23,8 @@ pub struct ForgeInfo {
     pub api: String,
     pub connection_revision: Option<String>,
     pub account_login: Option<String>,
+    /// Stable public profile ID, independent of display login and token text.
+    pub account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,7 +130,17 @@ pub fn azure_project(url: &str, server: &str) -> Option<String> {
 pub fn forge_for(url: &str, remote: &str) -> Option<ForgeInfo> {
     let (host, project) = parse_remote(url)?;
     let info = |kind: &str, project: String, web_url: String, api: String| {
-        Some(ForgeInfo { kind: kind.into(), host: host.clone(), project, remote: remote.into(), web_url, api, connection_revision: None, account_login: None })
+        Some(ForgeInfo {
+            kind: kind.into(),
+            host: host.clone(),
+            project,
+            remote: remote.into(),
+            web_url,
+            api,
+            connection_revision: None,
+            account_login: None,
+            account_id: None,
+        })
     };
     if host == "dev.azure.com" || host == "ssh.dev.azure.com" || host.ends_with(".visualstudio.com") {
         let org = if host == "ssh.dev.azure.com" {
@@ -602,8 +614,8 @@ pub fn checkout(repo: &Path, number: u64, expected_connection: &str, expected_he
             expected_head.to_owned()
         }
         "bitbucket" => {
-            let v = request(repo, &f, "GET", &format!("/repositories/{}/pullrequests/{number}", project_path(&f.project)), None)?;
-            if p(&v, "/source/commit/hash") != expected_head {
+            let (detail, v) = super::pr_center::load_detail(repo, &f, number)?;
+            if detail.pull.head_sha != expected_head {
                 return Err(GitError::new("The PR source changed. Refresh before checkout.").kind("stale-operation"));
             }
             let branch = p(&v, "/source/branch/name");

@@ -231,7 +231,7 @@ pub fn page(repo: &Path, state: &str, cursor: Option<&str>) -> GitResult<Page> {
         .accounts
         .into_iter()
         .map(|a| a.profile)
-        .find(|p| p.identity_verified != Some(false) && p.server.kind == f.kind && p.server.api() == f.api && Some(&p.login) == f.account_login.as_ref())
+        .find(|p| p.identity_verified != Some(false) && p.server.kind == f.kind && p.server.api() == f.api && Some(&p.id) == f.account_id.as_ref())
         .map(|p| Viewer { id: p.user_id, login: p.login });
     Ok(Page { forge: f, items, next_cursor, viewer })
 }
@@ -275,17 +275,25 @@ fn detail_value(f: &ForgeInfo, v: &Value) -> GitResult<Detail> {
 pub(super) fn load_detail(repo: &Path, f: &ForgeInfo, n: u64) -> GitResult<(Detail, Value)> {
     number(n)?;
     let mut v = forge::request(repo, f, "GET", &item_endpoint(f, n), None)?;
+    normalize_commits(repo, f, &mut v)?;
+    let d = detail_value(f, &v)?;
+    if d.pull.number != n {
+        return Err(fail("The provider returned a different pull request."));
+    }
+    Ok((d, v))
+}
+pub(super) fn normalize_commits(repo: &Path, f: &ForgeInfo, v: &mut Value) -> GitResult<()> {
     if f.kind == "bitbucket" {
         for side in ["source", "destination"] {
             let path = format!("/{side}/commit/hash");
-            let short = text(&v, &path);
+            let short = text(v, &path);
             if oid(&short) {
                 continue;
             }
             if !(4..40).contains(&short.len()) || !short.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(fail("Bitbucket omitted a valid PR commit ID. Refresh the request details."));
             }
-            let project = text(&v, &format!("/{side}/repository/full_name"));
+            let project = text(v, &format!("/{side}/repository/full_name"));
             let project = if project.is_empty() { &f.project } else { &project };
             if project.split('/').count() != 2
                 || project.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p.chars().any(char::is_control) || p.contains('\\'))
@@ -300,11 +308,7 @@ pub(super) fn load_detail(repo: &Path, f: &ForgeInfo, n: u64) -> GitResult<(Deta
             *v.pointer_mut(&path).ok_or_else(|| fail("Bitbucket omitted the PR commit."))? = json!(full);
         }
     }
-    let d = detail_value(f, &v)?;
-    if d.pull.number != n {
-        return Err(fail("The provider returned a different pull request."));
-    }
-    Ok((d, v))
+    Ok(())
 }
 pub fn detail(repo: &Path, n: u64, connection: &str) -> GitResult<Detail> {
     let f = forge::reviewed_connection(repo, connection)?;
@@ -408,7 +412,9 @@ pub fn edit(repo: &Path, n: u64, connection: &str, revision: &str, input: Edit) 
         }
         _ => ("PATCH", json!({"title":input.title,"description":input.body,"targetRefName":format!("refs/heads/{}",input.base)})),
     };
-    let response = forge::request(repo, &f, method, &item_endpoint(&f, n), Some(body)).map_err(uncertain)?;
+    let mut response = forge::request(repo, &f, method, &item_endpoint(&f, n), Some(body)).map_err(uncertain)?;
+    normalize_commits(repo, &f, &mut response)
+        .map_err(|_| fail("The PR was saved, but its complete revision could not be read. Refresh the PR before retrying.").kind("forge-write-uncertain"))?;
     let detail =
         detail_value(&f, &response).map_err(|_| fail("The save response was incomplete. Refresh the PR before retrying.").kind("forge-write-uncertain"))?;
     if detail.pull.number != n {

@@ -16,6 +16,7 @@ fn f(kind: &str) -> ForgeInfo {
         .into(),
         connection_revision: Some("connection".into()),
         account_login: Some("reviewer".into()),
+        account_id: None,
     }
 }
 
@@ -151,6 +152,8 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
         let current = state.clone();
         let wrong_resolution = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let wrong = wrong_resolution.clone();
+        let fail_after_save = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fail_save = fail_after_save.clone();
         let h = Http::new(move |r| {
             let json_headers = "Content-Type: application/json\r\n".to_string();
             if short_ids && r.path == format!("/2.0/repositories/fork-owner/fork-repo/commit/{}", "a".repeat(12)) {
@@ -213,7 +216,15 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
                     assert_eq!(r.body["version"], 1);
                     assert_eq!(r.body.pointer("/toRef/repository/slug").unwrap(), "repo");
                 }
-                *current.lock() = metadata(kind, title, body, base, 2);
+                let mut updated = metadata(kind, title, body, base, 2);
+                if short_ids {
+                    updated["source"] = current.lock()["source"].clone();
+                    updated["destination"]["commit"]["hash"] = json!("b".repeat(12));
+                }
+                *current.lock() = updated;
+                if short_ids && fail_save.load(std::sync::atomic::Ordering::SeqCst) {
+                    wrong.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
                 return (200, json_headers, current.lock().to_string());
             }
             let item = current.lock().clone();
@@ -280,6 +291,7 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
         let p = page(repo, "open", None).unwrap();
         assert_eq!(p.items.len(), 1);
         assert!(p.next_cursor.is_none());
+        assert_eq!(p.forge.account_id.as_deref(), Some(id.as_str()));
         let connection = p.forge.connection_revision.unwrap();
         let d = detail(repo, 7, &connection).unwrap();
         assert_eq!(d.body, "Description");
@@ -316,6 +328,30 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
             edit(repo, 7, &connection, &d.revision, Edit { title: "Updated".into(), body: "Long description 😀\n".into(), base: "develop".into() }).unwrap();
         assert_eq!(saved.detail.pull.title, "Updated");
         assert_eq!(saved.notice.is_some(), kind == "azure");
+        if short_ids {
+            assert_eq!(saved.detail.pull.head_sha, "a".repeat(40));
+            assert_eq!(saved.detail.base_sha, "b".repeat(40));
+            assert_eq!(saved.detail.revision, detail(repo, 7, &connection).unwrap().revision);
+            assert_eq!(super::files(repo, 7, &connection, &saved.detail.revision, 0).unwrap().items.len(), 1);
+            let again =
+                edit(repo, 7, &connection, &saved.detail.revision, Edit { title: "Updated twice".into(), body: "Second edit".into(), base: "develop".into() })
+                    .unwrap();
+            assert_eq!(again.detail.pull.title, "Updated twice");
+            fail_after_save.store(true, std::sync::atomic::Ordering::SeqCst);
+            // Save succeeds before commit resolution fails: keep the uncertain
+            // write guard rather than reporting an ordinary retryable error.
+            let writes = h.seen.lock().iter().filter(|r| r.method == "PUT").count();
+            assert_eq!(
+                edit(repo, 7, &connection, &again.detail.revision, Edit { title: "Uncertain".into(), body: "".into(), base: "develop".into() })
+                    .err()
+                    .unwrap()
+                    .kind,
+                "forge-write-uncertain"
+            );
+            assert_eq!(h.seen.lock().iter().filter(|r| r.method == "PUT").count(), writes + 1);
+            fail_after_save.store(false, std::sync::atomic::Ordering::SeqCst);
+            wrong_resolution.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
         let count = h.seen.lock().iter().filter(|r| r.method != "GET").count();
         assert!(edit(repo, 7, &connection, &d.revision, Edit { title: "Stale".into(), body: "".into(), base: "main".into() }).is_err());
         assert_eq!(h.seen.lock().iter().filter(|r| r.method != "GET").count(), count);

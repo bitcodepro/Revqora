@@ -96,13 +96,13 @@ fn parse_track(t: &str) -> (u32, u32, bool) {
 
 pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
     let remotes = remotes(repo)?;
-    let mut origins = super::branch_origin::Reader::new(repo, remotes.iter().map(|r| r.name.clone()).collect());
     let raw = runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"])?;
     let mut local = Vec::new();
     let mut remote = Vec::new();
     let mut tags = Vec::new();
     let fields: Vec<&str> = raw.split_terminator('\0').collect();
     let (records, tail) = fields.as_chunks::<13>();
+    let mut origins = super::branch_origin::Reader::new(repo, records.iter().map(|f| f[0].trim_start_matches('\n').to_owned()).collect());
     if tail.iter().any(|s| !s.trim_matches('\n').is_empty()) {
         return Err(super::runner::GitError::new("Invalid reference metadata record."));
     }
