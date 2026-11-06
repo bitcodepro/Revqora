@@ -592,24 +592,26 @@ impl Manager {
         if request.origin != crate::askpass::Origin::Git {
             return Err(fail("Saved API tokens cannot be sent to SSH prompts."));
         }
-        let username =
-            bitbucket_git_prompt(&request.prompt).ok_or_else(|| fail("This is not a Bitbucket Cloud HTTPS credential prompt. No token was sent."))?;
+        let (username, destination) =
+            git_https_prompt(&request.prompt).ok_or_else(|| fail("This is not a native HTTPS credential prompt. No token was sent."))?;
         let mut m = self.memory.lock();
         let d = self.read()?;
         sync_memory(&d, &mut m)?;
         if revision(&d, &m)? != expected {
             return Err(stale());
         }
-        let profile = &d.accounts.iter().find(|r| r.profile.id == id).ok_or_else(|| fail("Choose an available Bitbucket Cloud account."))?.profile;
-        if profile.server.kind != "bitbucket" || profile.server.server != "https://bitbucket.org" {
-            return Err(fail("Choose an account verified for https://bitbucket.org. No token was sent."));
+        let profile = &d.accounts.iter().find(|r| r.profile.id == id).ok_or_else(|| fail("Choose an available API account."))?.profile;
+        if !git_destination_matches(&profile.server, &destination) {
+            return Err(fail("This account does not match the HTTPS server or organization requested by Git. No token was sent."));
         }
         let c = credential(&d, &m, id)?;
-        if !["basic", "bearer"].contains(&c.mode.as_str()) {
-            return Err(fail("Unsupported Bitbucket token type."));
-        }
         Ok(Zeroizing::new(if username {
-            profile.git_username.clone().unwrap_or_else(|| if c.mode == "basic" { "x-bitbucket-api-token-auth" } else { "x-token-auth" }.to_owned())
+            profile.git_username.clone().unwrap_or_else(|| match profile.server.kind.as_str() {
+                "bitbucket" => if c.mode == "basic" { "x-bitbucket-api-token-auth" } else { "x-token-auth" }.into(),
+                "gitlab" => "oauth2".into(),
+                "azure" => "git".into(),
+                _ => profile.login.clone(),
+            })
         } else {
             c.token.clone()
         }))
@@ -624,7 +626,7 @@ impl Manager {
 }
 
 /// Do not infer a destination from arbitrary prompt text or a lookalike host.
-fn bitbucket_git_prompt(prompt: &str) -> Option<bool> {
+fn git_https_prompt(prompt: &str) -> Option<(bool, Url)> {
     let (username, value) =
         if let Some(value) = prompt.strip_prefix("Username for '") { (true, value) } else { (false, prompt.strip_prefix("Password for '")?) };
     let address = value.strip_suffix("': ")?;
@@ -632,13 +634,27 @@ fn bitbucket_git_prompt(prompt: &str) -> Option<bool> {
         return None;
     }
     let u = Url::parse(address).ok()?;
-    (u.scheme() == "https"
-        && u.host_str() == Some("bitbucket.org")
-        && u.port_or_known_default() == Some(443)
-        && u.password().is_none()
-        && u.query().is_none()
-        && u.fragment().is_none())
-    .then_some(username)
+    (u.scheme() == "https" && u.password().is_none() && u.query().is_none() && u.fragment().is_none()).then_some((username, u))
+}
+fn git_destination_matches(server: &Server, destination: &Url) -> bool {
+    let Ok(base) = Url::parse(&server.server) else {
+        return false;
+    };
+    let prefix = base.path().trim_matches('/');
+    if server.kind == "azure"
+        && base.host_str() == Some("dev.azure.com")
+        && destination.port_or_known_default() == Some(443)
+        && destination.host_str() == Some(format!("{prefix}.visualstudio.com").as_str())
+    {
+        return true;
+    }
+    destination.origin() == base.origin()
+        && (prefix.is_empty() || destination.path().trim_matches('/') == prefix || destination.path().starts_with(&format!("/{prefix}/")))
+}
+#[cfg(test)]
+fn bitbucket_git_prompt(prompt: &str) -> Option<bool> {
+    let (username, url) = git_https_prompt(prompt)?;
+    (url.host_str() == Some("bitbucket.org") && url.port_or_known_default() == Some(443)).then_some(username)
 }
 fn credential(d: &Document, m: &Memory, id: &str) -> GitResult<Credential> {
     let r = d.accounts.iter().find(|r| r.profile.id == id).ok_or_else(|| fail("Selected account no longer exists."))?;
@@ -945,14 +961,37 @@ fn credential_stamp(c: &Credential) -> GitResult<String> {
     Ok(digest(ring::hmac::sign(&signing, &bytes).as_ref()))
 }
 
-pub fn test_repository(root: &Path, id: &str) -> GitResult<String> {
-    let context = context(root)?.ok_or_else(|| fail("Select an API connection first."))?;
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionTest {
+    pub remote: String,
+    pub fingerprint: String,
+    pub revision: String,
+}
+pub fn test_repository(root: &Path, id: &str, selected: &ConnectionTest) -> GitResult<String> {
+    test_repository_from(manager()?, root, id, selected)
+}
+fn test_repository_from(manager: &Manager, root: &Path, id: &str, selected: &ConnectionTest) -> GitResult<String> {
+    let remote = refs::remotes(root)?.into_iter().find(|r| r.name == selected.remote).ok_or_else(stale)?;
+    if fingerprint(&remote.fetch_url) != selected.fingerprint {
+        return Err(stale());
+    }
+    let mut memory = manager.memory.lock();
+    let document = manager.read()?;
+    sync_memory(&document, &mut memory)?;
+    if revision(&document, &memory)? != selected.revision {
+        return Err(stale());
+    }
+    let context = resolve(&document, &memory, &repository(root), &remote)?.ok_or_else(|| fail("Select an API connection first."))?;
+    drop(memory);
     let profile = context.profile.as_ref().filter(|p| p.id == id).ok_or_else(|| fail("Select this token for the repository before testing it."))?;
     if profile.identity_verified != Some(false) {
-        return manager()?.test(id);
+        return manager.test(id);
     }
     let path = format!("/repositories/{}/pullrequests?pagelen=1", forge::project_path(&context.info.project));
-    let response = forge::request(root, &context.info, "GET", &path, None)?;
+    // A probe does not activate the selected remote. Regular PR requests must
+    // keep their active-connection guard; this read uses the reviewed binding.
+    let response = request_json(&context.info.kind, &context.info.api, context.credential.as_ref().ok_or_else(stale)?, "GET", &path, None)?;
     if !response.get("values").is_some_and(Value::is_array) {
         return Err(fail("The server returned an invalid pull-request list."));
     }

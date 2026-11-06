@@ -17,8 +17,8 @@ export async function cloneInputSmoke({page,check,shot,work}){
     await open();
     const bitbucket="https://gorillatv@bitbucket.org/myrepos_webler/be-repos.git";
     await field("Repository URL").fill(`git clone ${bitbucket}`);await waitName("be-repos");
-    await field("Clone parent folder").fill(parent); // Blur normalizes the command.
-    if(await field("Repository URL").inputValue()!==bitbucket)throw Error("Copied Bitbucket command lost its URL or HTTPS username");
+    await field("Clone parent folder").fill(parent);
+    if(await field("Repository URL").inputValue()!==`git clone ${bitbucket}`)throw Error("Blur rewrote the raw clone input, risking a second command parse");
     await shot("clone-bitbucket-command");
     await field("Repository URL").fill(`git clone --depth 1 ${bitbucket}`);await page.getByRole("alert").filter({hasText:"command options and extra arguments"}).waitFor();
     if(!await page.getByRole("button",{name:"Clone",exact:true}).isDisabled())throw Error("Unsupported command arguments were silently ignored");
@@ -32,6 +32,21 @@ export async function cloneInputSmoke({page,check,shot,work}){
       const root=path.join(parent,name);
       await page.waitForFunction(repositoryIsActive,{expected:root,windows:process.platform==="win32"});
       if(git(root,"rev-parse","HEAD")!==head||git(root,"config","--get","remote.origin.url")!==literal||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="cloned content\n")throw Error("Clone command did not create the expected repository and literal remote");
+    }
+    // Both possible sources exist, so a second parse would silently succeed on
+    // the wrong repository rather than merely returning a clone error.
+    for(const name of ["demo.git","git clone demo.git","'quoted repo.git"," leading repo.git"]){
+      const local=path.join(parent,name);git(parent,"clone","--no-local",source,local);
+      fs.writeFileSync(path.join(local,"marker.txt"),name);git(local,"-c","user.name=Clone Tester","-c","user.email=clone@example.invalid","-c","commit.gpgsign=false","add","marker.txt");git(local,"-c","user.name=Clone Tester","-c","user.email=clone@example.invalid","-c","commit.gpgsign=false","commit","-qm",`Source ${name}`);
+    }
+    for(const [i,relative] of ["git clone demo.git","'quoted repo.git"," leading repo.git"].entries()){
+      await open();const raw=`git clone "${relative}"`;await field("Repository URL").fill(raw);
+      await field("Clone parent folder").fill(parent);await field("Clone folder name").fill(`literal-${i}`);
+      if(await field("Repository URL").inputValue()!==raw)throw Error("Blur changed a command-like, quoted or whitespace-prefixed source");
+      await page.getByRole("button",{name:"Clone",exact:true}).click();const destination=path.join(parent,`literal-${i}`);
+      await page.waitForFunction(repositoryIsActive,{expected:destination,windows:process.platform==="win32"});
+      const remote=execFileSync("git",["-C",destination,"config","--get","remote.origin.url"],{encoding:"utf8",windowsHide:true}).replace(/\r?\n$/,"");
+      if(git(destination,"rev-parse","HEAD")!==git(path.join(parent,relative),"rev-parse","HEAD")||path.normalize(remote)!==path.normalize(path.join(parent,relative))||fs.readFileSync(path.join(destination,"marker.txt"),"utf8")!==relative)throw Error("Blur/submit cloned a different local repository");
     }
     if(!fs.readFileSync(path.join(source,".git/index")).equals(index)||git(source,"rev-parse","HEAD")!==head)throw Error("Cloning modified the source repository");
     await shot("clone-command-result");

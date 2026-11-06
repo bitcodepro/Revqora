@@ -533,7 +533,14 @@ async fn repo_init(app: AppHandle, path: String, branch: Option<String>) -> GitR
 }
 
 #[tauri::command]
-async fn repo_clone(app: AppHandle, parent: String, url: String, name: String, op_id: String) -> GitResult<RepoInfo> {
+async fn repo_clone(
+    app: AppHandle,
+    parent: String,
+    url: String,
+    name: String,
+    op_id: String,
+    connection: Option<git::connection::Options>,
+) -> GitResult<CloneInfo> {
     blocking(move || {
         journal::record(
             &p(&parent).join(&name),
@@ -542,10 +549,41 @@ async fn repo_clone(app: AppHandle, parent: String, url: String, name: String, o
                 let _ = app.emit("operation-log-changed", ());
             },
             || {
-                let root = ops::clone(&p(&parent), &url, &name, progress(&app, &op_id))?;
-                repo::info(&root)
+                let (root, connection_warning) = ops::clone_with_connection(&p(&parent), &url, &name, progress(&app, &op_id), connection.as_ref())?;
+                Ok(CloneInfo { info: repo::info(&root)?, connection_warning })
             },
         )
+    })
+    .await
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CloneInfo {
+    #[serde(flatten)]
+    info: RepoInfo,
+    connection_warning: Option<String>,
+}
+#[tauri::command]
+async fn git_connection_snapshot(repo: String) -> GitResult<git::connection::Snapshot> {
+    blocking(move || git::connection::snapshot(&p(&repo))).await
+}
+#[tauri::command]
+async fn git_connection_save(repo: String, options: git::connection::Options, expected: String) -> GitResult<git::connection::Snapshot> {
+    blocking(move || git::connection::save(&p(&repo), options, &expected)).await
+}
+#[tauri::command]
+async fn git_connection_test(repo: String, remote: String, expected_url_fingerprint: String) -> GitResult<String> {
+    blocking(move || {
+        let root = p(&repo);
+        let r = git::refs::remotes(&root)?
+            .into_iter()
+            .find(|r| r.name == remote)
+            .ok_or_else(|| GitError::new("The selected remote was removed. Reload connections."))?;
+        use sha2::{Digest, Sha256};
+        if format!("{:x}", Sha256::digest(r.fetch_url.as_bytes())) != expected_url_fingerprint {
+            return Err(GitError::new("The remote changed. Reload before testing.").kind("stale-operation"));
+        }
+        runner::run(&root, ["ls-remote", "--heads", "--", &remote]).map(|_| "Git access verified".into())
     })
     .await
 }
@@ -1592,8 +1630,13 @@ async fn forge_account_remove(id: String, expected: String) -> GitResult<git::fo
     blocking(move || git::forge_accounts::manager()?.remove(&id, &expected)).await
 }
 #[tauri::command]
-async fn forge_account_test(id: String, repo: Option<String>) -> GitResult<String> {
-    blocking(move || if let Some(repo) = repo { git::forge_accounts::test_repository(&p(&repo), &id) } else { git::forge_accounts::manager()?.test(&id) }).await
+async fn forge_account_test(id: String, repo: Option<String>, connection: Option<git::forge_accounts::ConnectionTest>) -> GitResult<String> {
+    blocking(move || match (repo, connection) {
+        (Some(repo), Some(connection)) => git::forge_accounts::test_repository(&p(&repo), &id, &connection),
+        (None, None) => git::forge_accounts::manager()?.test(&id),
+        _ => Err(GitError::new("Choose the repository remote before testing this connection.")),
+    })
+    .await
 }
 #[tauri::command]
 async fn forge_account_git_respond(id: u64, account_id: String, expected: String) -> GitResult<bool> {
@@ -2062,6 +2105,9 @@ pub fn run() {
             repo_open,
             repo_init,
             repo_clone,
+            git_connection_snapshot,
+            git_connection_save,
+            git_connection_test,
             repo_info,
             status,
             identity_get,

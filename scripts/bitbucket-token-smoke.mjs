@@ -16,13 +16,13 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
     const git=(cwd,...args)=>execFileSync("git",["-C",cwd,...args],{encoding:"utf8",windowsHide:true,env:{...process.env,GIT_CONFIG_GLOBAL:config,GIT_CONFIG_NOSYSTEM:"1",GIT_OPTIONAL_LOCKS:"0"}}).trim();
     git(seed,"init","-qb","main");for(const [k,v] of [["user.name","Token Tester"],["user.email","token@example.invalid"],["commit.gpgsign","false"],["core.autocrlf","false"]])git(seed,"config",k,v);
     fs.writeFileSync(path.join(seed,".gitattributes"),"* text eol=lf\n");fs.writeFileSync(path.join(seed,"file.txt"),"credential fixture\n");git(seed,"add",".");git(seed,"commit","-qm","Token clone fixture");git(home,"clone","--bare",seed,bare);git(bare,"update-server-info");const head=git(seed,"rev-parse","HEAD");
-    const token="scoped-bitbucket-fixture-token",password="portable bitbucket test vault",user="fixture-user",seen=[];
+    const token="scoped-bitbucket-fixture-token",secondToken="other-bitbucket-fixture-token",password="portable bitbucket test vault",user="fixture-user",seen=[];
     const pr={id:7,title:"Scoped Bitbucket PR",description:"Token with repository and PR scopes only",state:"OPEN",author:{display_name:"Fixture Author",uuid:"{author}"},source:{branch:{name:"topic"},commit:{hash:head}},destination:{branch:{name:"main"},commit:{hash:head}},updated_on:"2026-01-01T00:00:00Z",participants:[]};
     const server=http.createServer(async(req,res)=>{
       const url=new URL(req.url,"http://fixture"),auth=req.headers.authorization??"";
       let body="";for await(const chunk of req)body+=chunk;
       // Do not retain Authorization headers or prompt values in test artifacts.
-      seen.push({path:url.pathname,method:req.method,authorized:auth===`Bearer ${token}`||auth===`Basic ${Buffer.from(`${user}:${token}`).toString("base64")}`,body});
+      seen.push({path:url.pathname,method:req.method,authorized:auth===`Bearer ${token}`||auth===`Basic ${Buffer.from(`${user}:${token}`).toString("base64")}`,account:auth===`Bearer ${secondToken}`?"second":"first",body});
       const send=(status,value)=>{res.writeHead(status,{"content-type":"application/json"});res.end(JSON.stringify(value));};
       if(url.pathname.startsWith("/team/repo.git/")){
         if(auth!==`Basic ${Buffer.from(`${user}:${token}`).toString("base64")}`){res.writeHead(401,{"www-authenticate":'Basic realm="Git fixture"'});res.end();return;}
@@ -31,8 +31,9 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
         res.writeHead(200,{"content-type":"text/plain"});res.end(fs.readFileSync(file));return;
       }
       if(url.pathname==="/2.0/user")return send(403,{error:{message:"Profile permission deliberately unavailable"}});
-      if(auth!==`Bearer ${token}`)return send(401,{error:{message:"Token rejected"}});
+      if(auth!==`Bearer ${token}`&&auth!==`Bearer ${secondToken}`)return send(401,{error:{message:"Token rejected"}});
       if(url.pathname==="/2.0/repositories/team/repo/pullrequests")return send(200,{values:[pr]});
+      if(url.pathname==="/2.0/repositories/team/other/pullrequests")return send(200,{values:[]});
       if(url.pathname.endsWith("/comments")&&req.method==="POST")return send(201,{id:1,content:{raw:JSON.parse(body).content.raw}});
       if(url.pathname.endsWith("/comments")||url.pathname.endsWith("/diffstat")||url.pathname.endsWith("/statuses"))return send(200,{values:[]});
       if(url.pathname.endsWith("/pullrequests/7"))return send(200,pr);
@@ -65,6 +66,14 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       const snapshot=await invoke("forge_accounts_snapshot"),account=snapshot.accounts[0];assert.equal(account.identityVerified,false);assert.equal(account.storage,"encrypted");assert(!JSON.stringify(snapshot).includes(token));
       assert(!fs.readFileSync(path.join(profile,"revqora-data","accounts","accounts.json"),"utf8").includes(token));
       await modal().locator(".fa-card").getByRole("button",{name:"Test connection",exact:true}).click();await page.waitForSelector(".fa-workspace[aria-busy=false]");assert.equal(await modal().getByRole("alert").count(),0);
+      git(root,"remote","add","upstream",`${url}/team/other.git`);
+      const added=await invoke("forge_account_add",{expected:(await invoke("forge_accounts_snapshot")).revision,input:{id:null,kind:"bitbucket",server:url,username:"second@example.invalid",token:secondToken,authMode:"bearer",persist:false,verifyIdentity:false,gitSource:null}}),second=added.accounts.find(a=>a.id!==account.id);
+      const bind=async(name,id)=>{const c=await invoke("forge_connections",{repo:root}),r=c.remotes.find(r=>r.name===name);await invoke("forge_connection_select",{repo:root,expected:c.revision,selection:{remote:name,fingerprint:r.fingerprint,accountId:id,allowSshAlias:false}});};
+      for(const id of [second.id,account.id]){
+        await bind("upstream",id);await bind("origin",account.id);await button("Refresh API accounts").click();await page.waitForSelector(".fa-workspace[aria-busy=false]");await modal().getByLabel("API remote",{exact:true}).selectOption("upstream");
+        const before=seen.length;await modal().locator(`.fa-card[data-account-id="${id}"]`).getByRole("button",{name:"Test connection",exact:true}).click();await page.waitForSelector(".fa-workspace[aria-busy=false]");assert.equal(await modal().getByRole("alert").count(),0);
+        const calls=seen.slice(before).filter(r=>r.path.includes("/pullrequests"));assert.equal(calls.length,1);assert.equal(calls[0].path,"/2.0/repositories/team/other/pullrequests");assert.equal(calls[0].account,id===second.id?"second":"first");assert.equal((await invoke("forge_connections",{repo:root})).activeRemote,"origin");
+      }
       await button("Close").click();await page.getByRole("button",{name:"Pull requests",exact:true}).click();await page.getByText("Scoped Bitbucket PR",{exact:true}).first().waitFor();
       const result=await invoke("pr_page",{repo:root,state:"open",cursor:null}),connection=result.forge.connectionRevision;
       const detail=await invoke("pr_detail",{repo:root,number:7,expectedConnection:connection});
@@ -82,6 +91,6 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await invoke("forge_vault_password",{password,expected:locked.revision,unlock:true});
       const restored=await invoke("pr_page",{repo:root,state:"open",cursor:null});assert.equal(restored.items[0].title,pr.title);assert.equal(seen.filter(r=>r.path==="/2.0/user").length,0);
     }catch(error){if(out)await page?.screenshot({path:path.join(out,"bitbucket-token-failure.png")}).catch(()=>{});throw error;}
-    finally{await app?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+    finally{if(app){await invoke("unwatch_repo",{repo:root}).catch(()=>{});await app.close();}server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
   });
 }

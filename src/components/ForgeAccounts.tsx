@@ -6,6 +6,7 @@ import type {ForgeAccount,ForgeAccountInput,ForgeAccountsSnapshot,ForgeConnectio
 import {Modal} from "./Modal";
 import {confirmDialog} from "./dialogs";
 import {tokenProvider} from "../lib/tokenProvider";
+import {gitConnectionDialog} from "./GitConnections";
 
 const providers:Record<ForgeAccountKind,string>={github:"GitHub",gitlab:"GitLab",azure:"Azure DevOps",bitbucket:"Bitbucket Cloud"};
 const defaults:Record<ForgeAccountKind,string>={github:"https://github.com",gitlab:"https://gitlab.com",azure:"https://dev.azure.com/organization",bitbucket:"https://bitbucket.org"};
@@ -54,12 +55,13 @@ function ForgeAccounts({root,close}:{root:string|null;close:()=>void}){
     <div className="fa-workspace" aria-busy={disabled}>
       <div className="hstack"><b>API accounts</b><div className="spacer"/><button className="btn" type="button" disabled={disabled} onClick={()=>begin(null)}>Add API account</button><button className="icon-btn" type="button" aria-label="Refresh API accounts" disabled={disabled} onClick={()=>{setError("");void refresh();}}><RefreshCw size={15}/></button></div>
       <p className="help">Have a token? Click <b>Add API account</b>, choose its provider and paste it below. No browser sign-in is required. Existing Git credential-manager credentials are still used automatically; new Git sign-ins stay in Revqora.</p>
+      {root&&<button type="button" className="btn" disabled={disabled} onClick={()=>{close();void gitConnectionDialog(root);}}>Git connection settings…</button>}
       {loading&&<p role="status">Loading account settings…</p>}
       {error&&<p className="fa-error" role="alert">{error}</p>}
       <div className="fa-accounts">{data?.accounts.map(p=><section className="fa-card" key={p.id} data-account-id={p.id}>
         <div><b>{p.login}</b><span className="pill">{providers[p.kind]}</span><span className="pill">{p.status==="available"?"Ready":p.status==="locked"?"Locked":"Reconnect"}</span>{p.identityVerified===false&&<span className="pill">Profile not read</span>}</div>
         <small>{p.name}</small><code>{p.server}</code><small>{p.storage==="encrypted"?"Encrypted token beside the executable":"Session token · reconnect after restarting or locking"}</small>
-        <div className="hstack"><button className="btn sm" type="button" disabled={disabled} onClick={()=>begin(p)}>Reconnect</button><button className="btn sm" type="button" disabled={disabled||p.status!=="available"||p.identityVerified===false&&(!root||target?.accountId!==p.id)} title={p.identityVerified===false?"Tests PR access through this repository's selected token connection":"Test API account"} onClick={()=>void perform(()=>api.forgeAccountTest(p.id,p.identityVerified===false?root:null),"Account connection verified")}>Test connection</button><button className="btn sm danger" type="button" disabled={disabled} onClick={()=>void remove(p)}>Remove</button></div>
+        <div className="hstack"><button className="btn sm" type="button" disabled={disabled} onClick={()=>begin(p)}>Reconnect</button><button className="btn sm" type="button" disabled={disabled||p.status!=="available"||p.identityVerified===false&&(!root||target?.accountId!==p.id)} title={p.identityVerified===false?"Tests PR access through this repository's selected token connection":"Test API account"} onClick={()=>void perform(()=>api.forgeAccountTest(p.id,p.identityVerified===false?root:null,p.identityVerified===false&&target&&connections?{remote:target.name,fingerprint:target.fingerprint,revision:connections.revision}:undefined),"Account connection verified")}>Test connection</button><button className="btn sm danger" type="button" disabled={disabled} onClick={()=>void remove(p)}>Remove</button></div>
       </section>)}{data&&!data.accounts.length&&<p className="muted">Add a token to choose a specific API identity, or use existing Git credentials for a repository remote.</p>}</div>
       {form&&<fieldset className="fa-form" disabled={disabled}><b>{editing?`Reconnect ${editing.login}`:"Add an API account"}</b>
         <label className="field">Provider<select className="select" aria-label="API provider" disabled={!!editing} value={kind} onChange={e=>{const k=e.target.value as ForgeAccountKind;setKind(k);setServer(defaults[k]);setAuthMode(k==="bitbucket"?"basic":"token");setReadProfile(false);setUseGit(false);setToken("");setUsername("");}}>{Object.entries(providers).map(([k,v])=><option value={k} key={k}>{v}</option>)}</select></label>

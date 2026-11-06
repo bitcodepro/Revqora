@@ -35,6 +35,54 @@ fn bitbucket_git_prompts_reject_other_transports_origins_and_arbitrary_text() {
     assert_eq!(bitbucket_git_prompt("Password for 'https://elsewhere.invalid': https://bitbucket.org "), None);
     assert_eq!(bitbucket_git_prompt("Enter passphrase for key 'bitbucket.org': "), None);
 }
+#[test]
+fn all_four_services_reuse_only_explicitly_selected_matching_api_tokens_for_git_https() {
+    let (_temp, m) = manager_temp();
+    for (kind, server, destination, expected_user) in [
+        ("github", "https://github.com", "https://github.com/team/repo.git", "fixture"),
+        ("gitlab", "https://gitlab.com", "https://gitlab.com/group/repo.git", "oauth2"),
+        ("bitbucket", "https://bitbucket.org", "https://bitbucket.org/team/repo.git", "x-bitbucket-api-token-auth"),
+        ("azure", "https://dev.azure.com/org", "https://dev.azure.com/org/project/_git/repo", "git"),
+    ] {
+        m.edit(&m.snapshot().unwrap().revision, |d, memory| {
+            let profile = Profile {
+                id: kind.into(),
+                server: Server::new(kind, server)?,
+                login: "fixture".into(),
+                user_id: kind.into(),
+                name: "Fixture".into(),
+                auth_mode: if kind == "bitbucket" { "basic" } else { "token" }.into(),
+                auth_username: "".into(),
+                identity_verified: None,
+                git_username: None,
+                actor_namespace: None,
+            };
+            memory.sessions.insert(
+                profile.id.clone(),
+                (digest(&aad(&profile)?), Credential { username: "".into(), token: "fixture-api-secret".into(), mode: profile.auth_mode.clone() }),
+            );
+            d.accounts.push(Record { profile, sealed: None });
+            Ok(())
+        })
+        .unwrap();
+        let revision = m.snapshot().unwrap().revision;
+        assert_eq!(m.git_answer(kind, &revision, &git_prompt(&format!("Username for '{destination}': "))).unwrap().as_str(), expected_user);
+        assert_eq!(m.git_answer(kind, &revision, &git_prompt(&format!("Password for '{destination}': "))).unwrap().as_str(), "fixture-api-secret");
+        for url in ["https://elsewhere.invalid/team/repo.git", "http://github.com/team/repo.git", "https://github.com@evil.invalid/team/repo.git"] {
+            assert!(m.git_answer(kind, &revision, &git_prompt(&format!("Password for '{url}': "))).is_err());
+        }
+        let mut spoof = git_prompt(&format!("Password for '{destination}': "));
+        spoof.origin = crate::askpass::Origin::Ssh;
+        assert!(m.git_answer(kind, &revision, &spoof).is_err());
+    }
+    let revision = m.snapshot().unwrap().revision;
+    assert!(m.git_answer("azure", &revision, &git_prompt("Password for 'https://dev.azure.com/other/project/_git/repo': ")).is_err());
+    assert!(m.git_answer("azure", &revision, &git_prompt("Password for 'https://other.visualstudio.com/project/_git/repo': ")).is_err());
+    assert_eq!(
+        m.git_answer("azure", &revision, &git_prompt("Password for 'https://org.visualstudio.com/project/_git/repo': ")).unwrap().as_str(),
+        "fixture-api-secret"
+    );
+}
 
 #[test]
 fn bitbucket_git_token_consent_requires_current_available_matching_account() {
@@ -315,6 +363,78 @@ fn importing_a_git_token_rejects_a_different_api_destination_before_any_request(
     assert!(m.add(request, &m.snapshot().unwrap().revision).err().unwrap().message.contains("does not match"));
     assert!(m.snapshot().unwrap().accounts.is_empty());
     assert!(h.seen.lock().is_empty());
+}
+
+#[test]
+fn connection_test_probes_the_reviewed_remote_without_activating_it_or_substituting_its_account() {
+    let (temp, m) = manager_temp();
+    let root = temp.path().join("repository");
+    fs::create_dir(&root).unwrap();
+    runner::run(&root, ["init", "-q"]).unwrap();
+    let h = Http::new(|path, _| {
+        assert!(path.contains("/pullrequests?pagelen=1"));
+        response(200, "{\"values\":[]}")
+    });
+    let mut first = input(&h, "bitbucket", "origin-token", false);
+    first.verify_identity = Some(false);
+    let a = m.add(first, &m.snapshot().unwrap().revision).unwrap().accounts[0].profile.id.clone();
+    let mut second = input(&h, "bitbucket", "upstream-token", false);
+    second.verify_identity = Some(false);
+    let b = m.add(second, &m.snapshot().unwrap().revision).unwrap().accounts[1].profile.id.clone();
+    let origin = format!("{}/team/origin.git", h.url);
+    let upstream = format!("{}/team/upstream.git", h.url);
+    runner::run(&root, ["remote", "add", "origin", &origin]).unwrap();
+    runner::run(&root, ["remote", "add", "upstream", &upstream]).unwrap();
+    let repo = repository(&root);
+    m.edit(&m.snapshot().unwrap().revision, |d, _| {
+        d.bindings = vec![
+            Binding {
+                repository: repo.clone(),
+                remote: "origin".into(),
+                fingerprint: fingerprint(&origin),
+                account_id: Some(a.clone()),
+                allow_ssh_alias: false,
+            },
+            Binding {
+                repository: repo.clone(),
+                remote: "upstream".into(),
+                fingerprint: fingerprint(&upstream),
+                account_id: Some(b.clone()),
+                allow_ssh_alias: false,
+            },
+        ];
+        d.active = vec![Active { repository: repo.clone(), remote: "origin".into() }];
+        Ok(())
+    })
+    .unwrap();
+    let selected = || ConnectionTest { remote: "upstream".into(), fingerprint: fingerprint(&upstream), revision: m.snapshot().unwrap().revision };
+    let before = fs::read(m.root.join("accounts.json")).unwrap();
+    test_repository_from(&m, &root, &b, &selected()).unwrap();
+    assert_eq!(fs::read(m.root.join("accounts.json")).unwrap(), before);
+    assert_eq!(
+        h.seen.lock().as_slice(),
+        &[("/2.0/repositories/team/upstream/pullrequests?pagelen=1".into(), format!("Basic {}", forge::base64(b"mail@example.invalid:upstream-token")))]
+    );
+    let calls = h.seen.lock().len();
+    assert!(test_repository_from(&m, &root, &a, &selected()).is_err());
+    assert_eq!(h.seen.lock().len(), calls);
+    m.edit(&m.snapshot().unwrap().revision, |d, _| {
+        d.bindings.iter_mut().find(|b| b.remote == "upstream").unwrap().account_id = Some(a.clone());
+        Ok(())
+    })
+    .unwrap();
+    test_repository_from(&m, &root, &a, &selected()).unwrap();
+    assert_eq!(h.seen.lock().last().unwrap().0, "/2.0/repositories/team/upstream/pullrequests?pagelen=1");
+    assert_eq!(h.seen.lock().last().unwrap().1, format!("Basic {}", forge::base64(b"mail@example.invalid:origin-token")));
+    assert_eq!(m.read().unwrap().active[0].remote, "origin");
+    let stale_selection = selected();
+    m.lock().unwrap();
+    let calls = h.seen.lock().len();
+    assert!(test_repository_from(&m, &root, &a, &stale_selection).is_err());
+    assert_eq!(h.seen.lock().len(), calls);
+    runner::run(&root, ["remote", "set-url", "upstream", "https://example.invalid/other/repo.git"]).unwrap();
+    assert!(test_repository_from(&m, &root, &a, &selected()).is_err());
+    assert_eq!(h.seen.lock().len(), calls);
 }
 fn manager_temp() -> (tempfile::TempDir, Manager) {
     let t = tempfile::tempdir().unwrap();

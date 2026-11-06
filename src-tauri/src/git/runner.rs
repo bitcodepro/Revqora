@@ -226,10 +226,12 @@ where
             let mut capture = crate::journal::command(repo, &diagnostic_args);
             let result: GitResult<Output> = (|| {
                 let mut c = command(repo);
+                super::connection::apply(repo, &mut c, None, &diagnostic_args)?;
                 c.args(args.iter().map(|a| a.as_ref()));
                 for (k, v) in env {
                     c.env(k, v);
                 }
+                super::connection::finish(&mut c);
                 c.stdout(Stdio::piped()).stderr(Stdio::piped());
                 if input.is_some() {
                     c.stdin(Stdio::piped());
@@ -369,6 +371,18 @@ pub fn run_streaming<F>(repo: &Path, args: &[String], env: &[(&str, &str)], mut 
 where
     F: FnMut(&str),
 {
+    run_streaming_with_connection(repo, args, env, &mut on_line, None)
+}
+pub fn run_streaming_with_connection<F>(
+    repo: &Path,
+    args: &[String],
+    env: &[(&str, &str)],
+    mut on_line: F,
+    connection: Option<&super::connection::Options>,
+) -> GitResult<String>
+where
+    F: FnMut(&str),
+{
     super::operations::access(
         repo,
         !is_read_only(args),
@@ -377,10 +391,12 @@ where
             let mut capture = crate::journal::command(repo, args);
             let result: GitResult<String> = (|| {
                 let mut c = command(repo);
+                super::connection::apply(repo, &mut c, connection, args)?;
                 c.args(args);
                 for (k, v) in env {
                     c.env(k, v);
                 }
+                super::connection::finish(&mut c);
                 c.stdout(Stdio::piped()).stderr(Stdio::piped());
                 let mut child = c.spawn().map_err(|e| {
                     if e.kind() == std::io::ErrorKind::NotFound {

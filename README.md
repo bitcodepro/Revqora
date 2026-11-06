@@ -276,6 +276,55 @@ tokens, even when their server-supplied text resembles an HTTPS prompt.
 SSH remotes continue to use SSH keys. See Atlassian's
 [API token instructions](https://support.atlassian.com/bitbucket-cloud/docs/using-api-tokens/).
 
+### Git authentication: HTTPS, SSH and browser sign-in
+
+Open **Git connection settings…** from **Accounts and API connections**, the
+repository tools, or the command palette. The clone form also offers authentication
+settings after you enter an HTTPS or SSH address. These preferences apply to all
+Git remotes in the repository; HTTPS and SSH choices are independent. **Save and
+test Git access** reads heads from the selected remote without checking out,
+merging or pushing anything.
+
+| Service | HTTPS | SSH URL example |
+| --- | --- | --- |
+| GitHub / Enterprise | PAT, existing credentials, configured GCM OAuth/SSO | `git@github.com:owner/repo.git` |
+| Bitbucket Cloud / supported enterprise hosts | API/access token, existing credentials, configured GCM authentication | `git@bitbucket.org:workspace/repo.git` |
+| GitLab / self-managed | Personal/project/group token, existing credentials, configured GCM OAuth | `git@gitlab.com:group/repo.git` |
+| Azure DevOps | PAT, existing credentials, Microsoft sign-in through configured GCM | `git@ssh.dev.azure.com:v3/org/project/repo` |
+
+**Existing credentials** keeps Git's configured helpers and prompts inside Revqora
+when necessary. **Token/password in Revqora** bypasses external helpers for the
+operation while keeping Revqora's approved session credentials. Saved matching API
+accounts can be selected in a native HTTPS Git prompt for all four services. SSH
+prompts never receive those API tokens.
+
+**Browser/device sign-in** explicitly enables an already configured Git Credential
+Manager. GCM handles OAuth/SSO and its credential storage; Revqora does not register
+an OAuth application or change global Git configuration. Available flows and
+permissions depend on the provider. Self-hosted OAuth can require an administrator
+to configure an application first. See the [GCM provider overview](https://github.com/git-ecosystem/git-credential-manager)
+and [self-managed GitLab setup](https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/gitlab.md).
+Background fetch and API credential lookup remain noninteractive.
+
+For SSH, choose an existing SSH setup, an agent, a private key file, or
+password/keyboard-interactive authentication where the server allows it. Public
+GitHub, Bitbucket Cloud, GitLab.com and Azure Repos normally require keys. Add the
+public key to your hosting account before connecting. Encrypted keys request their
+passphrase inside Revqora. Private keys are referenced by path and are never copied
+into application storage.
+
+**Existing SSH config** preserves aliases, proxies, certificates, hardware keys and
+custom clients such as PuTTY/Pageant. Managed agent/key/password modes use a full
+SSH hostname and port with deterministic authentication choices. The optional
+OpenSSH program field lets Windows users select Windows OpenSSH for its agent or
+the OpenSSH bundled with Git. Managed modes keep `known_hosts` under portable
+`data/ssh`, ask before trusting a new host, and reject a changed host key.
+
+PRs and checks use the hosting service's HTTPS API. An SSH key authenticates Git,
+not that API; connect a suitable API token or reuse Git HTTPS credentials with API
+permissions. A browser grant limited to Git access may require a separate API
+connection for PR operations.
+
 ### Run an agent or a workflow
 
 Open **Agent Workspace**, choose **New task**, select an installed CLI executable

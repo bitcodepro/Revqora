@@ -4,6 +4,7 @@ import { Eye, EyeOff, KeyRound, ShieldQuestion, UserRound } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import type { AskpassRequest, ForgeAccountsSnapshot } from "../lib/types";
 import { bitbucketPromptKind } from "../lib/bitbucketCredentials";
+import {gitHttpsPrompt,gitAccountMatches} from "../lib/gitCredentials";
 import { Modal } from "./Modal";
 
 /** Answers credential / passphrase / host-key prompts that git and ssh send to Revqora. */
@@ -33,16 +34,17 @@ function splitPrompt(prompt: string): { detail: string; question: string } {
 
 function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onAnswer: (v: string | null) => void; onAnswered: () => void }) {
   const bitbucket = bitbucketPromptKind(req.prompt, req.origin);
+  const destination=gitHttpsPrompt(req.prompt,req.origin);
   const [value, setValue] = useState(bitbucket === "username" ? "x-bitbucket-api-token-auth" : "");
   const [accounts, setAccounts] = useState<ForgeAccountsSnapshot | null>(null);
   const [account, setAccount] = useState("");
   const [sending, setSending] = useState(false), [error, setError] = useState("");
   useEffect(() => {
     let live = true;
-    if (bitbucket) void api.forgeAccounts().then(data => { if (live) setAccounts(data); }, () => {});
+    if (destination) void api.forgeAccounts().then(data => { if (live) setAccounts(data); }, () => {});
     return () => { live = false; };
-  }, [bitbucket]);
-  const available = accounts?.accounts.filter(a => a.kind === "bitbucket" && a.server === "https://bitbucket.org" && a.status === "available") ?? [];
+  }, [req.prompt,req.origin]);
+  const available = destination?accounts?.accounts.filter(a=>gitAccountMatches(a,destination))??[]:[];
   const useSaved = async () => {
     if (!accounts || !account || sending) return;
     setSending(true); setError("");
@@ -125,9 +127,9 @@ function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onA
       </div>
       {bitbucket && <>
         <p className="help">For an API token, use your Bitbucket username or <code>x-bitbucket-api-token-auth</code> as the Git username and paste the token when Git asks for a password. For an OAuth access token, use <code>x-token-auth</code>. Git needs repository read permission for Fetch/Pull and write permission for Push.</p>
-        {!!available.length && <div className="field"><label>Use an existing Bitbucket account<select className="select" aria-label="Bitbucket Git account" value={account} disabled={sending} onChange={e => setAccount(e.target.value)}><option value="">Choose an account…</option>{available.map(a => <option key={a.id} value={a.id}>{a.login} · {a.authMode === "basic" ? "API token" : "OAuth token"}</option>)}</select></label><button type="button" className="btn" disabled={!account || sending} onClick={() => void useSaved()}>Use saved account for this request</button><small>The selected credential goes directly to Git. This does not change the repository URL or your PR account selection.</small></div>}
         <p className="help">For Pull Requests, add Bitbucket Cloud in Accounts and API connections. API tokens use your Atlassian email there. Unlock the portable vault to use saved tokens.</p>
       </>}
+      {!!available.length&&<div className="field"><label>Use an existing account<select className="select" aria-label="Saved Git account" value={account} disabled={sending} onChange={e=>setAccount(e.target.value)}><option value="">Choose an account…</option>{available.map(a=><option key={a.id} value={a.id}>{a.login} · {a.kind} · {a.server}</option>)}</select></label><button type="button" className="btn" disabled={!account||sending} onClick={()=>void useSaved()}>Use saved account for this request</button><small>The credential goes directly to the matching HTTPS Git server. SSH prompts cannot receive API tokens.</small></div>}
       {error && <p role="alert">{error}</p>}
     </Modal>
   );

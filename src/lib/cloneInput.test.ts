@@ -17,6 +17,9 @@ describe("clone clipboard input", () => {
     expect(parseCloneInput(`git clone "${source}"`)).toEqual({ url: source, error: "" });
     expect(repoNameFromUrl(source)).toBe("it's a repo");
   });
+  it.each(["git clone demo.git", "'quoted repo.git", " leading repo.git", "trailing repo.git "])("extracts a literal quoted source once: %s", source => {
+    expect(parseCloneInput(`git clone "${source}"`)).toEqual({ url: source, error: "" });
+  });
   it.each(["git clone", `git clone ${bitbucket} destination`, `git clone --depth 1 ${bitbucket}`, `git clone ${bitbucket} && echo other`, `git clone '${bitbucket}`, `git clone ${bitbucket}\necho other`, "--bare"])("rejects ambiguous commands without silently ignoring arguments: %s", input => {
     expect(parseCloneInput(input).url).toBe("");
     expect(parseCloneInput(input).error).toContain("destination folder");

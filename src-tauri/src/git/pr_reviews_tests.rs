@@ -261,7 +261,16 @@ fn real_review_contracts_pin_lines_and_identity_and_preserve_git_and_failed_draf
         if !read_profile {
             assert!(c.actor.contains("profile not read"));
             assert!(c.actor_id.starts_with("bitbucket-token:"));
-            assert_eq!(accounts::test_repository(repo, &aid).unwrap(), "tester@example.invalid");
+            let selected = accounts::connections(repo).unwrap();
+            assert_eq!(
+                accounts::test_repository(
+                    repo,
+                    &aid,
+                    &accounts::ConnectionTest { remote: "origin".into(), fingerprint: selected.remotes[0].fingerprint.clone(), revision: selected.revision }
+                )
+                .unwrap(),
+                "tester@example.invalid"
+            );
         }
         assert!(c.approve, "{kind}");
         assert_eq!(c.request_changes, kind != "gitlab");
