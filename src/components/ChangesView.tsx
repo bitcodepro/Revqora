@@ -1,4 +1,5 @@
 import { repositoryFiles } from "./RepositoryFiles";
+import {workingDiffSnapshot,rememberWorkingDiff} from "../lib/workingDiffSnapshot";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import {
   Archive,
@@ -24,7 +25,6 @@ import {
   Undo2,
   Info,
   Combine,
-  Sparkles,
   ScanSearch,
   List,
   FolderTree,
@@ -223,7 +223,10 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const { mode, layout: { changesListWidth: width }, setLayout: setSettings } = useWorkspaceLayout();
   const opts = useDiffOpts();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [diffResult, setDiffResult] = useState<{ key: string; view: string; loading: boolean; value?: FileDiff; error?: string } | null>(null);
+  const [diffResult, setDiffResult] = useState<{ key: string; view: string; loading: boolean; value?: FileDiff; error?: string } | null>(()=>{
+    const view=JSON.stringify([root,tab.changeSel,opts]);const value=workingDiffSnapshot(root,view);
+    return value?{key:"revalidate",view,loading:true,value}:null;
+  });
   const diffRequest = useRef(0);
   const currentDiffKey = useRef<string | null>(null);
   const [w, setW] = useState(width);
@@ -303,7 +306,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
       if (kind === "unstaged") d = await api.workingDiff(root, path, "unstaged", untracked, opts);
       else if (kind === "staged") d = await api.workingDiff(root, path, "staged", false, opts);
       else d = await api.revDiff(root, fromTree!, toTree!, path, opts);
-      if (accepts()) setDiffResult({ key: diffKey, view: viewKey, loading: false, value: d });
+      if (accepts()) {rememberWorkingDiff(root,viewKey,d);setDiffResult({ key: diffKey, view: viewKey, loading: false, value: d });}
     } catch (e) {
       if (accepts()) setDiffResult({ key: diffKey, view: viewKey, loading: false, error: errorMessage(e) });
     }
@@ -549,7 +552,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
             layers ? layers.layers.reduce((a, l) => a + l.files.length, 0) + layers.openFiles.length : staged.length,
             <>
               {(layers ? layers.openFiles.length > 0 : staged.length > 0) && (
-                <button disabled={pending} className="icon-btn sm" title="Seal what is staged now into a layer — new staging goes on top" onClick={() => layerAct(root, () => api.layerSeal(root, null), "Layer created")}>
+                <button disabled={pending} className="icon-btn sm" aria-label="Seal staged changes into a layer" title="Stage layers: seal the currently staged changes into a layer. Later staging goes into a new layer on top. Each layer can be unstaged, discarded or committed independently." onClick={() => layerAct(root, () => api.layerSeal(root, null), "Layer created")}>
                   <Layers size={14} />
                 </button>
               )}
@@ -597,15 +600,6 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 </div>
               </div>
             )} />}
-          {!collapsed.staged && !layers && staged.length > 0 && (
-            <div className="layer-hint">
-              <Sparkles size={15} style={{ color: "var(--accent)", flex: "none", marginTop: 1 }} />
-              <div>
-                <b>Stage layers:</b> press <Layers size={12} style={{ verticalAlign: -2 }} /> to seal what is staged now into a layer. Later staging goes into a new layer on top, and each
-                layer can be unstaged, discarded or committed on its own.
-              </div>
-            </div>
-          )}
           {!collapsed.staged &&
             layers &&
             layers.layers.map((l) => (

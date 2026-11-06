@@ -103,7 +103,7 @@ export function BranchManager({ root }: { root: string }) {
   const { start, end } = virtualRange(rows.length, ROW, height, scroll);
   const editAuthor = async () => {
     const value = await showDialog<string | null>(close => <AuthorFilter initial={prefs.authorQuery} email={snapshot?.identityEmail ?? null} close={close} />);
-    if (value !== null) update({ authorQuery: value, onlyMine: !!value || !!snapshot?.identityEmail });
+    if (value !== null) {update({ authorQuery: value, onlyMine: !!value || !!snapshot?.identityEmail });window.dispatchEvent(new CustomEvent("revqora:branch-author",{detail:{root,query:value}}));}
   };
   const choose = (index: number) => {
     const i = Math.max(0, Math.min(rows.length - 1, index));

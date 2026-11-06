@@ -171,6 +171,14 @@ cloud means that upstream is missing after Fetch. **Remotes** contains branches
 without a linked local branch. Counts and missing-upstream state use cached refs;
 Fetch updates them without changing your working files.
 
+The sidebar also offers **My branches** and **Recent first**. Recent order shows
+full branch names with the latest commit at the top; choose **Name / folders**
+for the grouped tree. The pencil beside My branches shares the custom author
+setting with Branch Manager. The filter and sort order are remembered per repository.
+Repository activation restores cached history, scroll position and file previews
+immediately, then revalidates local data in the background. Working-diff line
+actions stay unavailable until the fresh diff has been checked.
+
 ### Fetch, Pull, Push and Sync
 
 | Action | Meaning |
@@ -225,6 +233,14 @@ See [Conflict Studio](https://github.com/bitcodepro/Revqora/blob/main/docs/CONFL
    method before merging or requesting a supported merge queue.
 5. After the server confirms a merge, use **Source cleanup…** if you want to review
    deletion of the source branch. Cleanup is separate from merging.
+
+Use the author selector below the PR search field to choose **My pull requests**,
+**All authors**, or a discovered author. Your connected account appears first.
+With a token that cannot read its profile, choose your author once or enter your
+hosting username; additional profile permission is not required. Author choices
+are isolated by repository and account. Search and author filters combine. The
+selector collects authors from loaded pages and continues through a few older
+pages when no match is found; **Load more requests** includes further history.
 
 Integrations cover GitHub/Enterprise, GitLab, Azure DevOps, Bitbucket Cloud and
 Bitbucket Server/Data Center. Capabilities differ by provider and permissions:

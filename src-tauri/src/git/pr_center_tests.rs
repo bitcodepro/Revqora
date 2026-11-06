@@ -64,6 +64,8 @@ fn bitbucket_diff_redirect_is_limited_to_the_same_repo_and_reviewed_pair() {
             number: 7,
             title: "T".into(),
             author: "A".into(),
+            author_id: String::new(),
+            author_login: String::new(),
             head: "topic".into(),
             base: "main".into(),
             url: String::new(),
@@ -81,6 +83,15 @@ fn bitbucket_diff_redirect_is_limited_to_the_same_repo_and_reviewed_pair() {
     };
     let good = format!("https://api.bitbucket.org/2.0/repositories/team/repo/diff/{}..{}?topic=true&from_pullrequest_id=7", d.pull.head_sha, d.base_sha);
     assert!(bitbucket_redirect(&f, 7, &d, &good).unwrap().starts_with("/repositories/team/repo/diff/"));
+    let abbreviated = good.replace(&d.pull.head_sha, &d.pull.head_sha[..12]).replace(&d.base_sha, &d.base_sha[..12]);
+    assert_eq!(
+        bitbucket_redirect(&f, 7, &d, &abbreviated).unwrap(),
+        bitbucket_redirect(&f, 7, &d, &good).unwrap(),
+        "Short redirect IDs must be replaced with the reviewed full IDs"
+    );
+    let mut ambiguous = d.clone();
+    ambiguous.base_sha = format!("{}{}", "a".repeat(12), "b".repeat(28));
+    assert!(bitbucket_redirect(&f, 7, &ambiguous, &format!("/2.0/repositories/team/repo/diff/{}..{}", "a".repeat(12), "a".repeat(12))).is_err());
     for bad in [
         good.replace("api.bitbucket.org", "third-party.invalid"),
         good.replace("team/repo/", "team/other/"),
@@ -111,9 +122,16 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
     use std::fs;
     let _serial = SERIAL.lock();
     let manager = accounts::manager().unwrap();
-    for fixture in ["github", "gitlab", "bitbucket", "azure", "azure-mode-only"] {
+    for fixture in ["github", "gitlab", "bitbucket", "bitbucket-short", "azure", "azure-mode-only"] {
         let mode_only = fixture == "azure-mode-only";
-        let kind = if mode_only { "azure" } else { fixture };
+        let short_ids = fixture == "bitbucket-short";
+        let kind = if mode_only {
+            "azure"
+        } else if short_ids {
+            "bitbucket"
+        } else {
+            fixture
+        };
         // A mode-only pair has different tree-entry modes but the same blob.
         // Azure's Items response exposes that blob; modes belong to Trees.
         let before_entry = json!({"relativePath":"new.txt","mode":"100644","objectType":"blob","objectId":"d".repeat(40)});
@@ -122,10 +140,36 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
             assert_eq!(before_entry["objectId"], after_entry["objectId"]);
             assert_ne!(before_entry["mode"], after_entry["mode"]);
         }
-        let state = Arc::new(Mutex::new(metadata(kind, "Before", "Description", "main", 1)));
+        let mut initial = metadata(kind, "Before", "Description", "main", 1);
+        if short_ids {
+            initial["source"]["commit"]["hash"] = json!("a".repeat(12));
+            initial["destination"]["commit"]["hash"] = json!("b".repeat(12));
+            initial["source"]["repository"] = json!({"full_name":"fork-owner/fork-repo"});
+            initial["source"]["commit"]["links"] = json!({"self":{"href":"https://untrusted.invalid/steal"}});
+        }
+        let state = Arc::new(Mutex::new(initial));
         let current = state.clone();
+        let wrong_resolution = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let wrong = wrong_resolution.clone();
         let h = Http::new(move |r| {
             let json_headers = "Content-Type: application/json\r\n".to_string();
+            if short_ids && r.path == format!("/2.0/repositories/fork-owner/fork-repo/commit/{}", "a".repeat(12)) {
+                return (200, json_headers, json!({"hash":if wrong.load(std::sync::atomic::Ordering::SeqCst){"c".repeat(40)}else{"a".repeat(40)}}).to_string());
+            }
+            if short_ids && r.path == format!("/2.0/repositories/team/repo/commit/{}", "b".repeat(12)) {
+                return (200, json_headers, json!({"hash":"b".repeat(40)}).to_string());
+            }
+            if short_ids && r.path.ends_with("/pullrequests/7/diff") {
+                return (
+                    302,
+                    format!("Location: /2.0/repositories/team/repo/diff/{}..{}?topic=true&from_pullrequest_id=7\r\n", "a".repeat(12), "b".repeat(12)),
+                    String::new(),
+                );
+            }
+            if short_ids && r.path.contains("/diff/") {
+                assert!(r.path.contains(&format!("{}..{}", "a".repeat(40), "b".repeat(40))));
+                return (200, "Content-Type: text/plain\r\n".into(), PATCH.into());
+            }
             if r.path.ends_with("/user") || r.path.contains("connectionData") || r.path.contains("whoami") {
                 return (200,json_headers,json!({"id":1,"login":"tester","username":"tester","name":"tester","nickname":"tester","uuid":"tester","authenticatedUser":{"id":"tester","providerDisplayName":"tester","properties":{"Account":{"$value":"tester"}}}}).to_string());
             }
@@ -255,6 +299,12 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
             assert!(v.notice.is_none());
         }
         let rendered = v.diff.unwrap();
+        if short_ids {
+            wrong_resolution.store(true, std::sync::atomic::Ordering::SeqCst);
+            let error = detail(repo, 7, &connection).err().expect("A different resolved commit must be rejected");
+            assert!(error.message.contains("different commit"));
+            wrong_resolution.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
         if mode_only {
             assert!(rendered.empty);
             assert!(rendered.hunks.is_empty());

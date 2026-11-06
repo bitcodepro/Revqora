@@ -15,6 +15,7 @@ import { Splitter } from "./Overlays";
 import { DiffView } from "./DiffView";
 import { confirmDialog } from "./dialogs";
 import { virtualRange } from "../lib/virtualRange";
+import {authorSelectionValue,authorScope,authorPreferencesKey,mergePrAuthors,matchesPrAuthor,restoreAuthorPreferences,type PrAuthor,type AuthorPreferences} from "../lib/prAuthors";
 
 const FORGE_NAMES: Record<string, string> = { github: "GitHub", azure: "Azure DevOps", gitlab: "GitLab", bitbucket: "Bitbucket Cloud", "bitbucket-server": "Bitbucket Server" };
 const browser = (url: string) => { const safe = safeWebUrl(url); if (safe) void api.openPath(safe); };
@@ -39,6 +40,11 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
   const [forge, setForge] = useState<ForgeInfo | null>(null), [items, setItems] = useState<PullRequest[]>([]), [cursor, setCursor] = useState<string | null>(null);
   const [error, setError] = useState(""), [loading, setLoading] = useState(false), [query, setQuery] = useState(""), [selected, setSelected] = useState<number | null>(null), [epoch, setEpoch] = useState(0);
   const generation = useRef(0), busy = useRef(false), preferred = useRef<number | null>(null);
+  const [authors,setAuthors]=useState<{scope:string;known:PrAuthor[];viewer:PrAuthor|null;prefs:AuthorPreferences}>({scope:"",known:[],viewer:null,prefs:restoreAuthorPreferences(null)});
+  const mine=authors.viewer??authors.prefs.mine;
+  const selectedAuthor=authors.prefs.selection==="mine"?mine:authors.prefs.selection==="all"?null:authors.known.find(a=>a.key===authors.prefs.selection)??authors.prefs.chosen;
+  useEffect(()=>{if(!authors.scope)return;try{localStorage.setItem(authorPreferencesKey(root,authors.scope),JSON.stringify(authors.prefs));}catch{toast.warning("PR author filter could not be saved");}},[root,authors.scope,authors.prefs]);
+  const chooseAuthor=async(key:string)=>{if(key==="mine"&&!mine){const chosen=await showDialog<PrAuthor|null>(close=><MyPrAuthor authors={authors.known} close={close} bitbucket={forge?.kind==="bitbucket"}/>);if(!chosen)return;setAuthors(a=>({...a,prefs:{...a.prefs,mine:chosen,selection:"mine"}}));}else setAuthors(a=>({...a,prefs:{...a.prefs,selection:key,chosen:a.known.find(x=>x.key===key)??a.prefs.chosen}}));setSelected(null);};
   const savePreferences = (patch: Partial<PrPreferences>) => setPrefs(p => restorePrPreferences({ ...p, ...patch }));
   useEffect(() => { try { localStorage.setItem(prPreferencesKey(root), JSON.stringify(prefs)); } catch { toast.warning("PR Center preferences could not be saved"); } }, [root, prefs]);
   const load = useCallback(async (next: string | null = null) => {
@@ -50,13 +56,19 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
       const page = await api.prPage(root, prefs.state, next);
       if (id !== generation.current) return;
       setForge(page.forge); setItems(old => next ? appendPullRequests(old, page.items) : page.items); setCursor(page.nextCursor);
-      if (!next) setSelected(preferred.current ?? page.items[0]?.number ?? null);
+      const scope=authorScope(page.forge,page.viewer);
+      setAuthors(old=>{let prefs=old.prefs;if(old.scope!==scope){try{prefs=restoreAuthorPreferences(JSON.parse(localStorage.getItem(authorPreferencesKey(root,scope))??"null"));}catch{prefs=restoreAuthorPreferences(null);}}return {scope,known:mergePrAuthors(old.scope===scope?old.known:[],page.items),viewer:page.viewer?{key:page.viewer.id?`id:${page.viewer.id}`:`login:${page.viewer.login.toLowerCase()}`,label:page.viewer.login,login:page.viewer.login}:null,prefs};});
+      if (!next) setSelected(preferred.current);
     } catch (e) { if (id === generation.current) setError(errorMessage(e)); }
     finally { if (id === generation.current) { busy.current = false; setLoading(false); } }
   }, [root, prefs.state]);
   useEffect(() => { void load(); const changed = () => { preferred.current = null; void load(); }; window.addEventListener("revqora:forge-accounts", changed); return () => { generation.current++; busy.current = false; window.removeEventListener("revqora:forge-accounts", changed); }; }, [load]);
-  const visible = useMemo(() => searchPullRequests(items, query), [items, query]);
+  const authored = useMemo(() => items.filter(p=>(authors.prefs.selection!=="mine"||!!mine)&&matchesPrAuthor(p,selectedAuthor)), [items,selectedAuthor,authors.prefs.selection,mine]);
+  const visible = useMemo(()=>searchPullRequests(authored,query),[authored,query]);
+  useEffect(()=>{if(!loading&&selected===null&&authored.length)setSelected(authored[0].number);},[authored,selected,loading]);
   const direct = pullRequestNumber(query);
+  const authorScan=useRef({key:"",pages:0});
+  useEffect(()=>{const key=`${authors.scope}:${authors.prefs.selection}:${prefs.state}`;if(authorScan.current.key!==key)authorScan.current={key,pages:0};if(selectedAuthor&&!visible.length&&cursor&&!loading&&!error&&authorScan.current.pages<4){authorScan.current.pages++;void load(cursor);}},[authors.scope,authors.prefs.selection,prefs.state,selectedAuthor,visible.length,cursor,loading,error,load]);
   const refresh = () => { preferred.current = selected; void load(); };
   const created = async () => { const p = await createPullRequest(root, forge); if (p) { preferred.current = p.number; if (prefs.state !== "open") savePreferences({ state: "open" }); else void load(); } };
   const updated = useCallback((p: PullRequest) => setItems(old => old.map(row => row.number === p.number ? p : row)), []);
@@ -65,9 +77,10 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
       <div className="pr-list-heading"><GitPullRequest size={17} /><b>Pull requests</b><span className="pill" data-pr-loaded={items.length}>{items.length}</span><div className="spacer" /><button className="icon-btn" title="Hide pull request list" aria-label="Hide pull request list" onClick={() => savePreferences({ listOpen: false })}><ChevronLeft size={16} /></button></div>
       <div className="pr-list-tools"><select className="select" aria-label="Request status" value={prefs.state} onChange={e => { preferred.current = null; savePreferences({ state: e.target.value as PrState }); }}>{(["open", "closed", "merged", "all"] as const).map(s => <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>)}</select><button className="icon-btn" title="Refresh pull requests" aria-label="Refresh pull requests" disabled={loading} onClick={refresh}><RefreshCw size={15} className={loading ? "spin" : ""} /></button><button className="btn sm primary" disabled={!forge?.connectionRevision || loading} onClick={() => void created()}><GitPullRequestCreate size={14} />New</button></div>
       <div className="pr-search"><Search size={14} /><input className="input" aria-label="Search loaded pull requests" placeholder="Search loaded PRs or open #…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && direct && forge) setSelected(direct); }} /></div>
+      <div className="pr-author-filter"><select className="select" aria-label="Pull request author" title="Authors found in loaded pages. Load more requests to include older PRs." value={authorSelectionValue(authors.prefs,mine)} onChange={e=>void chooseAuthor(e.target.value)}><option value="mine">My pull requests{mine?` — ${mine.label}`:"…"}</option><option value="all">All authors</option>{authors.known.filter(a=>a.key!==mine?.key).map(a=><option key={a.key} value={a.key}>{a.label}{a.login&&a.login!==a.label?` · ${a.login}`:""}</option>)}{authors.prefs.chosen&&!authors.known.some(a=>a.key===authors.prefs.chosen!.key)&&<option value={authors.prefs.chosen.key}>{authors.prefs.chosen.label}</option>}</select>{!authors.viewer&&<button type="button" className="icon-btn" aria-label="Set my PR author" title="Set my PR author without profile permissions" onClick={async()=>{const chosen=await showDialog<PrAuthor|null>(close=><MyPrAuthor authors={authors.known} initial={mine} close={close} bitbucket={forge?.kind==="bitbucket"}/>);if(chosen){setAuthors(a=>({...a,prefs:{...a.prefs,mine:chosen}}));setSelected(null);}}}><Pencil size={14}/></button>}</div>
       {direct && forge && <button className="btn sm pr-direct" onClick={() => setSelected(direct)}>Open #{direct}</button>}
       {error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connect with token…</button><button type="button" className="btn sm" onClick={refresh}>Try again</button></div>}
-      <RequestRows rows={visible} selected={selected} select={setSelected} resetKey={`${query}:${prefs.state}`} />
+      <RequestRows rows={visible} selected={selected} select={setSelected} resetKey={`${query}:${prefs.state}:${authors.prefs.selection}`} />
       {!visible.length && !loading && !error && <p className="pr-list-empty">No matching requests in the loaded pages.{cursor ? " Load more or open a request by number." : ""}</p>}
       <footer className="pr-list-footer">{loading ? <span className="loading-status" role="status"><Loader2 size={13} className="spin" /> Loading requests…</span> : cursor ? <button className="btn sm" onClick={() => void load(cursor)}>Load more requests</button> : <span className="faint">{items.length} loaded</span>}</footer>
     </aside>}
@@ -78,6 +91,11 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
       {forge?.connectionRevision && selected ? <RequestDetail key={`${forge.connectionRevision}:${selected}:${epoch}`} root={root} forge={forge} number={selected} prefs={prefs} savePreferences={savePreferences} updated={updated} /> : <div className="pr-empty">{loading ? <><Loader2 size={22} className="spin" />Loading pull requests…</> : error ? "Configure the API connection or refresh to continue." : "Select a pull request or open one by number."}</div>}
     </main>
   </section>;
+}
+
+function MyPrAuthor({authors,initial,close,bitbucket}:{authors:PrAuthor[];initial?:PrAuthor|null;close:(author:PrAuthor|null)=>void;bitbucket:boolean}){
+  const [key,setKey]=useState(initial?.key??""),[login,setLogin]=useState(initial?.login??"");const found=authors.find(a=>a.key===key);const typed=login.trim();const valid=!!found||!!typed&&typed.length<=256&&!/[\u0000-\u001f\u007f]/.test(typed);
+  return <Modal title="Your PR author" onClose={()=>close(null)} onSubmit={()=>{if(valid)close(found??{key:`login:${typed.toLowerCase()}`,label:typed,login:typed});}} footer={<><button type="button" className="btn" onClick={()=>close(null)}>Cancel</button><button type="submit" className="btn primary" disabled={!valid}>Use as my author</button></>}><p>Profile access is optional. Choose yourself from the discovered authors or enter your hosting username once.</p><label className="field">Found authors<select className="select" aria-label="My PR author" value={key} onChange={e=>setKey(e.target.value)}><option value="">Enter a username instead…</option>{authors.map(a=><option key={a.key} value={a.key}>{a.label}{a.login?` · ${a.login}`:""}</option>)}</select></label><label className="field">{bitbucket?"Bitbucket nickname (not Atlassian email)":"Hosting username"}<input className="input" aria-label="My PR username" disabled={!!found} value={login} onChange={e=>setLogin(e.target.value)}/></label></Modal>;
 }
 
 function RequestRows({ rows, selected, select, resetKey }: { rows: PullRequest[]; selected: number | null; select: (n: number) => void; resetKey: string }) {

@@ -31,6 +31,8 @@ pub struct PullRequest {
     pub number: u64,
     pub title: String,
     pub author: String,
+    pub author_id: String,
+    pub author_login: String,
     pub head: String,
     pub base: String,
     pub url: String,
@@ -367,12 +369,17 @@ fn error_message(v: &Value) -> Option<String> {
 fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
 }
+fn user_id(v: &Value, path: &str) -> String {
+    v.pointer(path).map(|x| x.as_str().map(str::to_owned).or_else(|| x.as_u64().map(|n| n.to_string())).unwrap_or_default()).unwrap_or_default()
+}
 
 pub(super) fn gh_pr(v: &Value) -> PullRequest {
     PullRequest {
         number: v.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
         title: s(v, "title"),
         author: v.get("user").map(|u| s(u, "login")).unwrap_or_default(),
+        author_id: user_id(v, "/user/id"),
+        author_login: p(v, "/user/login"),
         head: v.get("head").map(|h| s(h, "ref")).unwrap_or_default(),
         base: v.get("base").map(|h| s(h, "ref")).unwrap_or_default(),
         url: s(v, "html_url"),
@@ -388,6 +395,8 @@ pub(super) fn gl_mr(v: &Value) -> PullRequest {
         number: v.get("iid").and_then(|n| n.as_u64()).unwrap_or(0),
         title: s(v, "title"),
         author: v.get("author").map(|u| s(u, "username")).unwrap_or_default(),
+        author_id: user_id(v, "/author/id"),
+        author_login: p(v, "/author/username"),
         head: s(v, "source_branch"),
         base: s(v, "target_branch"),
         url: s(v, "web_url"),
@@ -407,6 +416,8 @@ pub fn bb_pr(v: &Value) -> PullRequest {
         number: v.get("id").and_then(|n| n.as_u64()).unwrap_or(0),
         title: s(v, "title"),
         author: Some(p(v, "/author/nickname")).filter(|a| !a.is_empty()).unwrap_or_else(|| p(v, "/author/display_name")),
+        author_id: user_id(v, "/author/uuid"),
+        author_login: p(v, "/author/nickname"),
         head: p(v, "/source/branch/name"),
         base: p(v, "/destination/branch/name"),
         url: p(v, "/links/html/href"),
@@ -422,6 +433,8 @@ pub fn bbs_pr(v: &Value) -> PullRequest {
         number: v.get("id").and_then(|n| n.as_u64()).unwrap_or(0),
         title: s(v, "title"),
         author: Some(p(v, "/author/user/name")).filter(|a| !a.is_empty()).unwrap_or_else(|| p(v, "/author/user/displayName")),
+        author_id: user_id(v, "/author/user/id"),
+        author_login: p(v, "/author/user/name"),
         head: p(v, "/fromRef/displayId"),
         base: p(v, "/toRef/displayId"),
         url: p(v, "/links/self/0/href"),
@@ -463,6 +476,8 @@ pub(super) fn azure_pr(v: &Value, f: &ForgeInfo) -> PullRequest {
         number,
         title: s(v, "title"),
         author: p(v, "/createdBy/displayName"),
+        author_id: user_id(v, "/createdBy/id"),
+        author_login: p(v, "/createdBy/uniqueName"),
         head: s(v, "sourceRefName").strip_prefix("refs/heads/").unwrap_or(&s(v, "sourceRefName")).into(),
         base: s(v, "targetRefName").strip_prefix("refs/heads/").unwrap_or(&s(v, "targetRefName")).into(),
         url: format!("{}/pullrequest/{number}", f.web_url),

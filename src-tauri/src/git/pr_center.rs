@@ -110,6 +110,13 @@ pub struct Page {
     pub forge: ForgeInfo,
     pub items: Vec<PullRequest>,
     pub next_cursor: Option<String>,
+    pub viewer: Option<Viewer>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Viewer {
+    pub id: String,
+    pub login: String,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -217,7 +224,16 @@ pub fn page(repo: &Path, state: &str, cursor: Option<&str>) -> GitResult<Page> {
         return Err(fail("The provider returned a non-advancing PR page."));
     }
     let next_cursor = next.map(|offset| serde_json::to_string(&Cursor { connection, state: state.into(), offset }).unwrap());
-    Ok(Page { forge: f, items, next_cursor })
+    // Profile access remains optional. A token-only Bitbucket connection must
+    // never require /user just to browse or filter its pull requests.
+    let viewer = super::forge_accounts::manager()?
+        .snapshot()?
+        .accounts
+        .into_iter()
+        .map(|a| a.profile)
+        .find(|p| p.identity_verified != Some(false) && p.server.kind == f.kind && p.server.api() == f.api && Some(&p.login) == f.account_login.as_ref())
+        .map(|p| Viewer { id: p.user_id, login: p.login });
+    Ok(Page { forge: f, items, next_cursor, viewer })
 }
 
 #[derive(Clone, Serialize)]
@@ -258,7 +274,32 @@ fn detail_value(f: &ForgeInfo, v: &Value) -> GitResult<Detail> {
 }
 pub(super) fn load_detail(repo: &Path, f: &ForgeInfo, n: u64) -> GitResult<(Detail, Value)> {
     number(n)?;
-    let v = forge::request(repo, f, "GET", &item_endpoint(f, n), None)?;
+    let mut v = forge::request(repo, f, "GET", &item_endpoint(f, n), None)?;
+    if f.kind == "bitbucket" {
+        for side in ["source", "destination"] {
+            let path = format!("/{side}/commit/hash");
+            let short = text(&v, &path);
+            if oid(&short) {
+                continue;
+            }
+            if !(4..40).contains(&short.len()) || !short.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(fail("Bitbucket omitted a valid PR commit ID. Refresh the request details."));
+            }
+            let project = text(&v, &format!("/{side}/repository/full_name"));
+            let project = if project.is_empty() { &f.project } else { &project };
+            if project.split('/').count() != 2
+                || project.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p.chars().any(char::is_control) || p.contains('\\'))
+            {
+                return Err(fail("Bitbucket returned an invalid PR repository path."));
+            }
+            let commit = forge::request(repo, f, "GET", &format!("/repositories/{}/commit/{}", forge::project_path(project), short), None)?;
+            let full = text(&commit, "/hash");
+            if !oid(&full) || !full.to_ascii_lowercase().starts_with(&short.to_ascii_lowercase()) {
+                return Err(fail("Bitbucket returned a different commit while resolving the PR revision. Refresh the request."));
+            }
+            *v.pointer_mut(&path).ok_or_else(|| fail("Bitbucket omitted the PR commit."))? = json!(full);
+        }
+    }
     let d = detail_value(f, &v)?;
     if d.pull.number != n {
         return Err(fail("The provider returned a different pull request."));
@@ -666,19 +707,31 @@ fn bitbucket_redirect(f: &ForgeInfo, n: u64, d: &Detail, location: &str) -> GitR
     }
     let prefix = format!("{}/repositories/{}/diff/", base.path().trim_end_matches('/'), forge::project_path(&f.project));
     let spec = target.path().strip_prefix(&prefix).ok_or_else(|| fail("PR diff redirect leaves the selected repository."))?;
-    if spec != format!("{}..{}", d.pull.head_sha, d.base_sha) && spec != format!("{}..{}", d.base_sha, d.pull.head_sha) {
-        return Err(fail("PR diff redirect changed the reviewed commits."));
+    let (left, right) = spec.split_once("..").ok_or_else(|| fail("Invalid PR diff revision pair."))?;
+    let matches = |short: &str, full: &str| {
+        short.len() >= 4
+            && short.len() <= full.len()
+            && short.bytes().all(|b| b.is_ascii_hexdigit())
+            && full.to_ascii_lowercase().starts_with(&short.to_ascii_lowercase())
+    };
+    if !d.pull.head_sha.eq_ignore_ascii_case(&d.base_sha)
+        && ((matches(left, &d.pull.head_sha) && matches(left, &d.base_sha)) || (matches(right, &d.pull.head_sha) && matches(right, &d.base_sha)))
+    {
+        return Err(fail("PR diff redirect contains ambiguous commit IDs."));
     }
+    let pair = if matches(left, &d.pull.head_sha) && matches(right, &d.base_sha) {
+        (&d.pull.head_sha, &d.base_sha)
+    } else if matches(left, &d.base_sha) && matches(right, &d.pull.head_sha) {
+        (&d.base_sha, &d.pull.head_sha)
+    } else {
+        return Err(fail("PR diff redirect changed the reviewed commits."));
+    };
     for (k, v) in target.query_pairs() {
         if !matches!((k.as_ref(), v.as_ref()), ("topic", "true") | ("context", "3")) && !(k == "from_pullrequest_id" && v == n.to_string()) {
             return Err(fail("Unsupported PR diff redirect parameters."));
         }
     }
-    Ok(format!(
-        "{}{}",
-        target.path().strip_prefix(base.path().trim_end_matches('/')).unwrap_or(target.path()),
-        target.query().map(|q| format!("?{q}")).unwrap_or_default()
-    ))
+    Ok(format!("/repositories/{}/diff/{}..{}{}", forge::project_path(&f.project), pair.0, pair.1, target.query().map(|q| format!("?{q}")).unwrap_or_default()))
 }
 
 fn raw_bundle(repo: &Path, f: &ForgeInfo, n: u64, d: &Detail, snapshot: String, key: String) -> GitResult<Bundle> {

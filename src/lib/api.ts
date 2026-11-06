@@ -176,7 +176,7 @@ export const api = {
 
   graphLoad: (repo: string, branch: string | null, includeWorktree: boolean, limit?: number, fast?: boolean) =>
     call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast }),
-  graphRows: (repo: string, start: number, count: number) => call<GraphRow[]>("graph_rows", { repo, start, count }),
+  graphRows: (repo: string, start: number, count: number,expectedKey?:string) => call<GraphRow[]>("graph_rows", { repo, start, count,expectedKey }),
   graphFind: (repo: string, oid: string) => call<number | null>("graph_find", { repo, oid }),
   graphSearch: (repo: string, query: string, mode: SearchMode) => call<number[]>("graph_search", { repo, query, mode }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),

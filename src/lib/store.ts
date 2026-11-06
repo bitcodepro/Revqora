@@ -1,6 +1,8 @@
 import { repositoryKey, uniqueRoots, useLibrary } from "./repositoryLibrary";
 import { repositoryQueue } from "./repositoryQueue";
 import { invalidatePreview } from "./commitPreview";
+import {forgetGraphRows} from "./graphRowsCache";
+import {forgetWorkingDiff} from "./workingDiffSnapshot";
 // Repository tabs and their cached state.
 import { create } from "zustand";
 import { api, errorMessage } from "./api";
@@ -50,6 +52,8 @@ export interface RepoTab {
 }
 
 export interface Parts {
+  /** Revalidate cached UI after activation without forcing unchanged previews. */
+  activation?: boolean;
   /** Sidebar observations do not need histories, layers or branch analysis. */
   summary?: boolean;
   /** Explicit action preview needs full mutation preconditions even off-screen. */
@@ -208,6 +212,7 @@ function updateSquashMerged(root: string) {
 
 function merge(a: Parts | undefined, b: Parts): Parts {
   return {
+    activation: a ? !!a.activation && !!b.activation : b.activation,
     summary: a ? !!a.summary && !!b.summary : b.summary,
     guard: a?.guard || b.guard,
     background: a ? !!a.background && !!b.background : b.background,
@@ -250,6 +255,8 @@ export const useRepos = create<RepoStore>()((set, get) => ({
   },
 
   close: (root) => {
+    forgetGraphRows(root);
+    forgetWorkingDiff(root);
     lifetimes.delete(root);
     openingJobs.delete(root);
     pending.delete(root);
@@ -278,7 +285,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     if (root) {
       openingQueue.prioritize(root);
       summaryQueue.prioritize(root);
-      if (get().tabs[root]?.info) void get().refresh(root, ALL);
+      if (get().tabs[root]?.info) void get().refresh(root, {...ALL,graph:!get().tabs[root].graph,background:true,activation:true});
       else void hydrate(root).catch(() => {});
     }
   },
@@ -314,7 +321,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     if (get().active !== root) parts = { ...parts, summary: true, graph: false, layers: false, refs: false };
     // Ordinary working-file activity does not change immutable commit previews.
     // Metadata/attribute events and explicit refreshes still invalidate them.
-    if (!parts.background || parts.info || parts.refs || parts.graph) invalidatePreview(root);
+    if (!parts.activation && (!parts.background || parts.info || parts.refs || parts.graph)) invalidatePreview(root);
     if (!parts.background) {
       const tab = get().tabs[root];
       if (tab) get().patch(root, { diffRefreshVersion: tab.diffRefreshVersion + 1 });
@@ -368,6 +375,8 @@ async function refreshOnce(root: string, parts: Parts) {
   const lifetime = lifetimes.get(root);
   const current = () => !!useRepos.getState().tabs[root] && lifetimes.get(root) === lifetime;
   const patch: Partial<RepoTab> = {};
+  const before = store.tabs[root];
+  const refsFingerprint=(refs:RefsSnapshot|null)=>JSON.stringify(refs);
   // Everything starts at once; the history only waits for the (fast) status, which decides
   // whether the "Uncommitted changes" row is part of the graph.
   const infoP = parts.info || (parts.status && !parts.summary) ? api.repoInfo(root) : Promise.resolve(null);
@@ -376,8 +385,13 @@ async function refreshOnce(root: string, parts: Parts) {
   const refsP = parts.refs ? api.refs(root) : Promise.resolve(null);
   const extrasP = !parts.summary && (parts.refs || parts.info) ? api.repoExtras(root).catch(() => null) : Promise.resolve(null);
   const layersP = !parts.summary && (parts.layers || parts.status) ? api.layersState(root).catch(() => null) : Promise.resolve(null);
+  // Publish independently: slow layers/extras must not hide local branch info
+  // or refs that are already ready. The full status still owns action guards.
+  void infoP.then(info=>{if(info&&current())useRepos.getState().patch(root,{info});}).catch(()=>{});
+  void refsP.then(refs=>{if(refs&&current())useRepos.getState().patch(root,{refs});}).catch(()=>{});
   for (const p of [infoP, refsP]) p.catch(() => {}); // rejections are handled below
-  let graphP: Promise<void> | null = null;
+  const initialDirty=!!(before.status??before.sidebarStatus)?.files.length;
+  let graphP: Promise<void> | null = !parts.summary&&parts.graph&&!before.graph?loadGraph(root,initialDirty):null;
   try {
     const status = await statusP;
     const tab = useRepos.getState().tabs[root];
@@ -385,8 +399,11 @@ async function refreshOnce(root: string, parts: Parts) {
     const st = status ?? tab.status;
     const dirty = !!st && st.files.length > 0;
     if (status) useRepos.getState().patch(root, sidebarOnly ? { sidebarStatus: status } : { status });
-    if (!parts.summary && (parts.graph || dirty !== tab.graphHasWorktree || !tab.graph)) graphP = loadGraph(root, dirty);
-    const [info, refs, layers, extras] = await Promise.all([infoP, refsP, layersP, extrasP]);
+    if (!parts.summary && ((parts.graph&&!graphP) || dirty !== (graphP?initialDirty:tab.graphHasWorktree) || !tab.graph&&!graphP)) graphP = loadGraph(root, dirty);
+    const [info, refs] = await Promise.all([infoP, refsP]);
+    const graphChanged=(info&&JSON.stringify(info.head)!==JSON.stringify(before.info?.head))||(refs&&refsFingerprint(refs)!==refsFingerprint(before.refs));
+    if(parts.activation&&current()&&graphChanged){invalidatePreview(root);if(!graphP)graphP=loadGraph(root,dirty);}
+    const [layers, extras] = await Promise.all([layersP, extrasP]);
     if (info) patch.info = info;
     if (refs) patch.refs = refs;
     if (extras) patch.extras = extras;

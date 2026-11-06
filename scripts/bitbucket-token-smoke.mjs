@@ -17,7 +17,7 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
     git(seed,"init","-qb","main");for(const [k,v] of [["user.name","Token Tester"],["user.email","token@example.invalid"],["commit.gpgsign","false"],["core.autocrlf","false"]])git(seed,"config",k,v);
     fs.writeFileSync(path.join(seed,".gitattributes"),"* text eol=lf\n");fs.writeFileSync(path.join(seed,"file.txt"),"credential fixture\n");git(seed,"add",".");git(seed,"commit","-qm","Token clone fixture");git(home,"clone","--bare",seed,bare);git(bare,"update-server-info");const head=git(seed,"rev-parse","HEAD");
     const token="scoped-bitbucket-fixture-token",secondToken="other-bitbucket-fixture-token",password="portable bitbucket test vault",user="fixture-user",seen=[];
-    const pr={id:7,title:"Scoped Bitbucket PR",description:"Token with repository and PR scopes only",state:"OPEN",author:{display_name:"Fixture Author",uuid:"{author}"},source:{branch:{name:"topic"},commit:{hash:head}},destination:{branch:{name:"main"},commit:{hash:head}},updated_on:"2026-01-01T00:00:00Z",participants:[]};
+    const pr={id:7,title:"Scoped Bitbucket PR",description:"Token with repository and PR scopes only",state:"OPEN",author:{display_name:"Fixture Author",nickname:"fixture-author",uuid:"{author}"},source:{branch:{name:"topic"},commit:{hash:head.slice(0,12)}},destination:{branch:{name:"main"},commit:{hash:head.slice(0,12)}},updated_on:"2026-01-01T00:00:00Z",participants:[]};
     const server=http.createServer(async(req,res)=>{
       const url=new URL(req.url,"http://fixture"),auth=req.headers.authorization??"";
       let body="";for await(const chunk of req)body+=chunk;
@@ -32,6 +32,8 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       }
       if(url.pathname==="/2.0/user")return send(403,{error:{message:"Profile permission deliberately unavailable"}});
       if(auth!==`Bearer ${token}`&&auth!==`Bearer ${secondToken}`)return send(401,{error:{message:"Token rejected"}});
+      if(url.pathname===`/2.0/repositories/team/repo/commit/${head.slice(0,12)}`)return send(200,{hash:head});
+      if(url.pathname.endsWith("/pullrequests/7/diff")){res.writeHead(200,{"content-type":"text/plain"});res.end("diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-before\n+after\n");return;}
       if(url.pathname==="/2.0/repositories/team/repo/pullrequests")return send(200,{values:[pr]});
       if(url.pathname==="/2.0/repositories/team/other/pullrequests")return send(200,{values:[]});
       if(url.pathname.endsWith("/comments")&&req.method==="POST")return send(201,{id:1,content:{raw:JSON.parse(body).content.raw}});
@@ -75,6 +77,8 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
         const calls=seen.slice(before).filter(r=>r.path.includes("/pullrequests"));assert.equal(calls.length,1);assert.equal(calls[0].path,"/2.0/repositories/team/other/pullrequests");assert.equal(calls[0].account,id===second.id?"second":"first");assert.equal((await invoke("forge_connections",{repo:root})).activeRemote,"origin");
       }
       await button("Close").click();await page.getByRole("button",{name:"Pull requests",exact:true}).click();await page.getByText("Scoped Bitbucket PR",{exact:true}).first().waitFor();
+      await page.getByRole("combobox",{name:"Pull request author",exact:true}).selectOption("mine");await page.getByRole("heading",{name:"Your PR author",exact:true}).waitFor();await modal().getByLabel("My PR author",{exact:true}).selectOption("id:{author}");await button("Use as my author").click();await page.locator('[data-pr-detail="7"]').waitFor();
+      await page.getByRole("button",{name:"Files",exact:true}).click();await page.locator('[data-pr-file="file.txt"]').waitFor();await page.getByText("after",{exact:true}).first().waitFor();
       const result=await invoke("pr_page",{repo:root,state:"open",cursor:null}),connection=result.forge.connectionRevision;
       const detail=await invoke("pr_detail",{repo:root,number:7,expectedConnection:connection});
       const args={repo:root,number:7,expectedConnection:connection,expectedRevision:detail.revision},caps=await invoke("pr_review_capabilities",args);

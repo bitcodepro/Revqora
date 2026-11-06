@@ -276,6 +276,10 @@
 .pr-list-heading {display:flex;align-items:center;gap:7px;min-width:0;padding:10px 12px;border-bottom:1px solid var(--border-soft);flex-shrink:0}
 .pr-list-tools {display:flex;align-items:center;gap:6px;padding:8px 10px;flex-wrap:wrap}
 .pr-list-tools .select {flex:1;min-width:90px}
+.pr-author-filter {display:flex;align-items:center;gap:6px;padding:0 10px 8px}
+.pr-author-filter .select {flex:1;min-width:0;width:100%}
+.sb-branch-filters {display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px}
+.sb-branch-filters .select {flex:1;min-width:100px;font-size:var(--fs-xs);height:28px}
 .pr-search {display:flex;align-items:center;gap:5px;padding:0 10px 8px;min-width:0}
 .pr-search .input {min-width:0;flex:1;width:100%}
 .pr-direct {align-self:flex-start;margin:0 10px 6px}

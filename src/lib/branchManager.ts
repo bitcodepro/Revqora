@@ -46,7 +46,7 @@ export function matchesFilter(b: ManagedBranch, filter: BranchFilter, preference
     default: return true;
   }
 }
-export function matchesBranchAuthor(b: ManagedBranch, custom: string, identityEmail: string | null) {
+export function matchesBranchAuthor(b: Pick<ManagedBranch,"author"|"authorEmail">, custom: string, identityEmail: string | null) {
   const query = custom.trim().toLocaleLowerCase();
   if (query) return [b.author, b.authorEmail].some(s => s.toLocaleLowerCase().includes(query));
   // Default is exact email equality, never a guessed name or HEAD identity.

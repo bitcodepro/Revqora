@@ -216,6 +216,7 @@ export interface FileHistoryEntry {
 }
 
 export interface BranchInfo {
+  authorEmail?:string;
   name: string;
   fullName: string;
   oid: string;
@@ -272,6 +273,7 @@ export interface RemoteInfo {
 }
 
 export interface RefsSnapshot {
+  identityEmail?:string|null;
   local: BranchInfo[];
   remote: BranchInfo[];
   tags: TagInfo[];
@@ -614,6 +616,8 @@ export interface PullRequest {
   number: number;
   title: string;
   author: string;
+  authorId?: string;
+  authorLogin?: string;
   head: string;
   base: string;
   url: string;
@@ -624,7 +628,7 @@ export interface PullRequest {
 }
 
 export type PrState = "open" | "closed" | "merged" | "all";
-export interface PrPage { forge: ForgeInfo; items: PullRequest[]; nextCursor: string | null }
+export interface PrPage { forge: ForgeInfo; items: PullRequest[]; nextCursor: string | null; viewer?: {id:string;login:string}|null }
 export interface PrDetail { pull: PullRequest; body: string; updated: string; baseSha: string; diffBaseSha: string; revision: string; fileCount: number | null }
 export interface PrEdit { title: string; body: string; base: string }
 export interface PrEditResult { detail: PrDetail; notice: string | null }

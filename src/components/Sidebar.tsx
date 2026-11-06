@@ -39,6 +39,8 @@ import { branchMenu, tagMenu } from "./menus";
 import { highlightBranch, jumpToCommit } from "./GraphView";
 import { promptDialog } from "./dialogs";
 import { branchConnection, branchPairs } from "../lib/branchPresentation";
+import {sidebarBranchesKey,sidebarBranchPreferences,selectSidebarBranches} from "../lib/sidebarBranches";
+import {loadBranchPreferences,preferencesKey} from "../lib/branchManager";
 
 interface TreeNode {
   name: string;
@@ -47,9 +49,10 @@ interface TreeNode {
   branch?: BranchInfo;
 }
 
-function buildTree(branches: BranchInfo[], strip = 0): TreeNode {
+function buildTree(branches: BranchInfo[], strip = 0, flat=false): TreeNode {
   const root: TreeNode = { name: "", path: "", children: new Map() };
   for (const b of branches) {
+    if(flat){const name=b.name.split("/").slice(strip).join("/");root.children.set(b.fullName,{name,path:b.fullName,children:new Map(),branch:b});continue;}
     const parts = b.name.split("/").slice(strip);
     let node = root;
     parts.forEach((p, i) => {
@@ -62,7 +65,8 @@ function buildTree(branches: BranchInfo[], strip = 0): TreeNode {
   return root;
 }
 
-function sortedChildren(n: TreeNode): TreeNode[] {
+function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
+  if(recent)return [...n.children.values()].sort((a,b)=>(b.branch?.time??0)-(a.branch?.time??0)||a.name.localeCompare(b.name));
   return [...n.children.entries()]
     .sort(([ka, a], [kb, b]) => {
       const da = ka.startsWith("d:") ? 0 : 1;
@@ -75,6 +79,11 @@ function sortedChildren(n: TreeNode): TreeNode[] {
 export function Sidebar({ tab }: { tab: RepoTab }) {
   const { setLayout } = useWorkspaceLayout();
   const root = tab.root;
+  const [branchPrefs,setBranchPrefs]=useState(()=>{try{return sidebarBranchPreferences(JSON.parse(localStorage.getItem(sidebarBranchesKey(root))??"null"));}catch{return sidebarBranchPreferences(null);}});
+  const [authorQuery,setAuthorQuery]=useState(()=>loadBranchPreferences(root).authorQuery);
+  useEffect(()=>{try{localStorage.setItem(sidebarBranchesKey(root),JSON.stringify(branchPrefs));}catch{}},[root,branchPrefs]);
+  useEffect(()=>{const changed=(e:Event)=>{const d=(e as CustomEvent).detail;if(d?.root===root)setAuthorQuery(d.query);};window.addEventListener("revqora:branch-author",changed);return()=>window.removeEventListener("revqora:branch-author",changed);},[root]);
+  const configureAuthor=async()=>{const value=await promptDialog({title:"Branch author filter",label:"Author email or name",initial:authorQuery,help:"Leave empty to match Git user.email. Git does not record branch ownership; this matches the latest commit's author."});if(value===null)return;const query=value.trim().slice(0,256);setAuthorQuery(query);setBranchPrefs(p=>({...p,onlyMine:!!query||!!tab.refs?.identityEmail}));try{localStorage.setItem(preferencesKey(root),JSON.stringify({...loadBranchPreferences(root),authorQuery:query}));}catch{}window.dispatchEvent(new CustomEvent("revqora:branch-author",{detail:{root,query}}));};
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ tags: true });
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({});
@@ -89,18 +98,17 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
   };
 
   const pairs = useMemo(() => branchPairs(refs?.local ?? [], refs?.remote ?? []), [refs]);
-  const local = useMemo(() => (refs?.local ?? []).filter((b) => match(b.name) || !!b.upstream && match(b.upstream)), [refs, f]); // eslint-disable-line react-hooks/exhaustive-deps
+  const local = useMemo(() => selectSidebarBranches(refs?.local??[],branchPrefs,authorQuery,refs?.identityEmail??null,filter), [refs,branchPrefs,authorQuery,filter]);
   const remoteByName = useMemo(() => {
     const m = new Map<string, BranchInfo[]>();
     for (const r of refs?.remotes ?? []) m.set(r.name, []);
-    for (const b of pairs.remoteOnly) {
-      if (!match(b.name)) continue;
+    for (const b of selectSidebarBranches(branchPairs(local,refs?.remote??[]).remoteOnly,branchPrefs,authorQuery,refs?.identityEmail??null,filter)) {
       const k = b.remote ?? "origin";
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(b);
     }
     return m;
-  }, [refs, pairs, f]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [refs,local,branchPrefs,authorQuery,filter]);
   const tags = (refs?.tags ?? []).filter((t) => match(t.name));
   const stashes = (refs?.stashes ?? []).filter((s) => match(s.message));
 
@@ -108,7 +116,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
   const isOpen = (k: string) => (f ? true : openDirs[k] ?? true);
 
   const renderTree = (node: TreeNode, kind: "local" | "remote", depth: number, prefix: string): ReactNode[] =>
-    sortedChildren(node).flatMap((n) => {
+    sortedChildren(node,branchPrefs.sort==="recent").flatMap((n) => {
       const pad = 10 + depth * 14;
       if (n.branch) {
         const b = n.branch;
@@ -222,23 +230,24 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
           <Search size={13} />
           <input className="input sm" placeholder="Filter branches, tags, stashes" value={filter} onChange={(e) => setFilter(e.target.value)} />
         </div>
+        <div className="sb-branch-filters"><button type="button" className={`btn sm ${branchPrefs.onlyMine?"active":""}`} aria-pressed={branchPrefs.onlyMine} disabled={!branchPrefs.onlyMine&&!authorQuery&&!refs?.identityEmail} title={`Latest commit author ${authorQuery?`matches: ${authorQuery}`:`email equals Git user.email: ${refs?.identityEmail??"not configured"}`}`} onClick={()=>setBranchPrefs(p=>({...p,onlyMine:!p.onlyMine}))}>My branches</button><button type="button" className="icon-btn sm" aria-label="Sidebar branch author filter" title="Choose author email or name" onClick={()=>void configureAuthor()}><Pencil size={13}/></button><select className="select" aria-label="Branch list order" value={branchPrefs.sort} onChange={e=>setBranchPrefs(p=>({...p,sort:e.target.value as "recent"|"name"}))}><option value="recent">Recent first</option><option value="name">Name / folders</option></select></div>
       </div>
       <VirtualRows
         rows={[
         ...section(
           "local",
           "Branches",
-          refs?.local.length ?? 0,
+          local.length,
           <GitBranch size={12} />,
           <button className="icon-btn sm" title="New branch" onClick={() => A.createBranch(root, null, current ?? "HEAD")}>
             <Plus size={13} />
           </button>,
-          local.length ? renderTree(buildTree(local), "local", 0, "") : empty("empty-local", f ? "No matches" : "No branches yet"),
+          local.length ? renderTree(buildTree(local,0,branchPrefs.sort==="recent"), "local", 0, "") : empty("empty-local", f||branchPrefs.onlyMine ? "No matches" : "No branches yet"),
         ),
         ...section(
           "remotes",
           "Remotes",
-          pairs.remoteOnly.length,
+          [...remoteByName.values()].reduce((n,list)=>n+list.length,0),
           <Globe size={12} />,
           <button className="icon-btn sm" title="Add remote" onClick={() => A.addRemote(root)}>
             <Plus size={13} />
@@ -278,7 +287,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
                     <span className="label">{name}</span>
                     <span className="meta">{list.length}</span>
                   </div>,
-                  ...(open ? renderTree(buildTree(list, 1), "remote", 1, name + "/") : []),
+                  ...(open ? renderTree(buildTree(list, 1,branchPrefs.sort==="recent"), "remote", 1, name + "/") : []),
               ];
             }),
         ),
