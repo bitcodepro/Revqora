@@ -36,6 +36,7 @@ import { api } from "../lib/api";
 import { basename, joinPath, relativeTime } from "../lib/format";
 import { AheadBehind } from "./bits";
 import { branchMenu, tagMenu } from "./menus";
+import { namePathMenu } from "./NamePathMenu";
 import { highlightBranch, jumpToCommit } from "./GraphView";
 import { promptDialog } from "./dialogs";
 import { branchConnection, branchPairs } from "../lib/branchPresentation";
@@ -376,6 +377,8 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
                     onDoubleClick={() => sm.state !== "uninitialized" && A.openRepoPath(joinPath(root, sm.path))}
                     onContextMenu={(e) =>
                       contextMenu(e, [
+                        ...namePathMenu(sm.path, joinPath(root, sm.path)),
+                        { separator: true },
                         { label: sm.state === "uninitialized" ? "Initialize and update" : "Update", icon: <RefreshCw size={14} />, onClick: () => X.updateSubmodules(root, [sm.path]) },
                         { label: "Open in a new tab", icon: <FolderGit2 size={14} />, disabled: sm.state === "uninitialized", onClick: () => A.openRepoPath(joinPath(root, sm.path)) },
                         { label: "Sync URLs", onClick: () => A.act(root, () => api.submoduleSync(root), { success: "Submodule URLs synced" }) },
@@ -421,6 +424,8 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
                 onDoubleClick={() => !w.isCurrent && A.openRepoPath(w.path)}
                 onContextMenu={(e) =>
                   contextMenu(e, [
+                    ...namePathMenu(basename(w.path), w.path),
+                    { separator: true },
                     { label: "Open in a new tab", icon: <FolderGit2 size={14} />, disabled: w.isCurrent, onClick: () => A.openRepoPath(w.path) },
                     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(w.path) },
                     { label: w.locked ? "Unlock" : "Lock", icon: <Lock size={14} />, disabled: w.isCurrent, onClick: () => X.lockWorktree(root, w.path, !w.locked) },
@@ -434,7 +439,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
                 <span className="meta">
                   {w.locked && <Lock size={11} />}
                   {w.prunable && <span className="pill red">missing</span>}
-                  {w.branch ?? (w.detached ? "detached" : "")}
+                  {w.branch ? <span onContextMenu={e => contextMenu(e, namePathMenu(w.branch!, w.path))}>{w.branch}</span> : (w.detached ? "detached" : "")}
                 </span>
               </div>
             )),

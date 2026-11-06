@@ -1,4 +1,5 @@
 import { renameRemoteBranch } from "./RemoteRename";
+import { namePathMenu } from "./NamePathMenu";
 import {
   ArrowDown,
   ArrowUp,
@@ -47,7 +48,7 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote")
   const tab = getTab(root);
   const current = tab?.info?.head.branch;
   const isCurrent = kind === "local" && name === current;
-  const items: MenuItem[] = [];
+  const items: MenuItem[] = [...namePathMenu(name, root), { separator: true }];
   if (!isCurrent) items.push({ label: kind === "remote" ? `Check out as local branch` : `Check out ${name}`, icon: <Check size={I} />, onClick: () => A.checkout(root, name, kind) });
   items.push({ label: "Create branch from here…", icon: <GitBranchPlus size={I} />, onClick: () => A.createBranch(root, name, name) });
   items.push({ label: "Branch details…", icon: <GitBranch size={I} />, onClick: () => branchCard(root, name) });
@@ -70,8 +71,6 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote")
     items.push({ label: "Rename on remote…", icon: <Pencil size={I} />, onClick: () => renameRemoteBranch(root, name) });
     items.push({ label: "Delete on remote…", icon: <Trash2 size={I} />, danger: true, onClick: () => A.deleteRemoteBranch(root, name) });
   }
-  items.push({ separator: true });
-  items.push({ label: "Copy name", icon: <Copy size={I} />, onClick: () => copyText(name, "Branch name copied") });
   return items;
 }
 

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { namePathMenu } from "./NamePathMenu";
 import { ChevronDown, ChevronRight, Library, Star } from "lucide-react";
 import { basename } from "../lib/format";
 import { errorMessage } from "../lib/api";
@@ -6,7 +7,7 @@ import { useLibrary, repositoryKey } from "../lib/repositoryLibrary";
 import { useRepos } from "../lib/store";
 import { switchWorkspace, workspaceSnapshot } from "../lib/repositoryWorkspaces";
 import { retainedConflictDrafts } from "../lib/conflictStudio";
-import { showDialog, toast, useUi } from "../lib/ui";
+import { contextMenu, showDialog, toast, useUi } from "../lib/ui";
 import { confirmDialog, promptDialog } from "./dialogs";
 import { Modal } from "./Modal";
 
@@ -48,7 +49,7 @@ function RepositoryLibrary({ close }: { close: () => void }) {
   const roots = [...new Set([...order, ...lib.knownRoots])].filter((r) => r.toLowerCase().includes(query.toLowerCase()));
   return <Modal title="Repository library" wide subtitle="Favorites, project groups and saved workspaces" onClose={close} footer={<button type="button" className="btn primary" onClick={close}>Done</button>}>
     <div className="seg library-tabs">{["repositories", "groups", "workspaces"].map((s) => <button type="button" key={s} className={section === s ? "on" : ""} onClick={() => setSection(s)}>{s[0].toUpperCase() + s.slice(1)}</button>)}</div>
-    {section === "repositories" && <><input className="input" aria-label="Find saved repository" placeholder="Find by name or path…" value={query} onChange={(e) => setQuery(e.target.value)} /><div className="library-list">{roots.map((root) => <div className="library-row" key={root}>
+    {section === "repositories" && <><input className="input" aria-label="Find saved repository" placeholder="Find by name or path…" value={query} onChange={(e) => setQuery(e.target.value)} /><div className="library-list">{roots.map((root) => <div className="library-row" key={root} onContextMenu={e => contextMenu(e, namePathMenu(basename(root), root))}>
       <FavoriteButton root={root} /><div className="grow-text"><b>{basename(root)}</b><div className="batch-note library-path" title={root}>{root}</div></div>
       <select className="input sm library-group-select" aria-label={`Group for ${basename(root)}`} value={lib.groups.find((g) => g.roots.some((r) => repositoryKey(r) === repositoryKey(root)))?.id ?? ""} onChange={(e) => lib.move(root, e.target.value || null)}><option value="">Ungrouped</option>{lib.groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select>
       <button type="button" className="btn sm" disabled={busy} onClick={() => { void openLibraryRepository(root); close(); }}>{tabs[root] ? "Activate" : "Open"}</button>

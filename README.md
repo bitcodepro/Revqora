@@ -73,7 +73,22 @@ remain in the working copy. If you edit a file again after staging it, the stage
 and working versions can differ. **Unstage** removes it from the proposed commit
 while keeping your edits.
 
+**Stage again** updates the prepared file to its current complete contents:
+earlier edits you left untouched stay included, and your newer edits take
+precedence where you changed the file again. **Unstage after editing again**
+keeps that latest complete file in your working copy. It does not restore the
+older staged snapshot into the file. Ordinary Stage does not create extra layers;
+use **Stage into a new layer** or **Seal into a layer** explicitly for that.
+
 ## Features
+
+Right-click a repository or branch name to **Copy name** or **Copy path**.
+For a branch, the path is its repository folder, not a file inside `.git`.
+These actions are available in the sidebar, history graph branch badges,
+Branch Manager, repository overview/library, recent repositories and active
+repository/branch headers, plus worktree lists and Worktree Manager. In a worktree
+list, **Copy path** uses that specific worktree's folder. Copying does not activate
+or check out anything.
 
 | Area | What you can do |
 | --- | --- |
@@ -213,6 +228,14 @@ Its SHA changes; take care when that commit has already been shared.
 Use **Stash** to set unfinished edits aside and **Apply** or **Pop** to bring them
 back. Partial stash can save selected changes while leaving other edits in place.
 Choose **Apply** when you want to keep the stash entry after restoration.
+You can create several named stash entries. They appear under **Stashes** in
+the branch sidebar, newest first. Each entry saves the changes present when it
+was created; successive stashes are not automatically cumulative versions of
+one file. Apply keeps an entry; Pop removes it only after successful application.
+Applying onto newer edits can require conflict resolution.
+To keep successive versions of the same unfinished work: stash it as `v1`,
+Apply `v1` (keeping the entry), make your next edits, then stash as `v2`.
+Both entries remain available in the list.
 
 Stage layers organize multiple upcoming commits inside one working copy. Stage
 changes, seal a layer, then prepare another. Inspect layers before committing,

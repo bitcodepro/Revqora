@@ -50,7 +50,8 @@ import {
 import { useRepos, type RepoTab } from "../lib/store";
 import { resolvedTheme, useSettings } from "../lib/settings";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { openOverlay, useUi } from "../lib/ui";
+import { contextMenu, openOverlay, useUi } from "../lib/ui";
+import { namePathMenu } from "./NamePathMenu";
 import * as A from "../lib/actions";
 import * as XA from "../lib/extraActions";
 import { bindingFor, prettyCombo } from "../lib/shortcuts";
@@ -91,9 +92,9 @@ export function TopBar() {
       <button className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => setLayout({ repositoriesOpen: focusMode || !repositoriesOpen, focusMode: false })}><PanelLeft size={16} /></button>
       <button className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
       <RepositoryLibraryButton /><WorkspacePicker />
-      <div className="repo-current" title={root ?? ""}>
+      <div className="repo-current" title={root ?? ""} onContextMenu={e => { if (root && !overview) contextMenu(e, namePathMenu(tab?.info?.name ?? basename(root), root)); }}>
         <b>{overview ? "All repositories" : tab?.info?.name ?? (root ? basename(root) : "Repositories")}</b>
-        {!overview && tab?.info && <span><GitBranch size={12} />{tab.info.head.branch ?? shortOid(tab.info.head.oid ?? "")}</span>}
+        {!overview && tab?.info && <span onContextMenu={e => { if (root && tab.info?.head.branch) contextMenu(e, namePathMenu(tab.info.head.branch, root)); }}><GitBranch size={12} />{tab.info.head.branch ?? shortOid(tab.info.head.oid ?? "")}</span>}
       </div>
       <button className="icon-btn" title="Open repository (Ctrl+O)" aria-label="Open repositories" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>
       {root && tab?.info && !overview && (
@@ -355,10 +356,10 @@ export function StatusBar() {
   return (
     <div className="statusbar">
       {tab && head && (
-        <span className="item">
+        <span className="item" onContextMenu={e => { if (head.branch) contextMenu(e, namePathMenu(head.branch, tab.root)); }}>
           <GitBranch size={12} />
           {head.branch ?? (head.detached ? `detached at ${shortOid(head.oid)}` : "no branch")}
-          {st?.upstream && <span className="faint">→ {st.upstream}</span>}
+          {st?.upstream && <span className="faint" onContextMenu={e => contextMenu(e, namePathMenu(st.upstream!, tab.root))}>→ {st.upstream}</span>}
           {st && <AheadBehind ahead={st.ahead} behind={st.behind} />}
         </span>
       )}
@@ -445,7 +446,7 @@ export function Welcome() {
           <div className="recent-list">
             {recent.length === 0 && <div className="faint" style={{ padding: 10 }}>Repositories you open will appear here. You can also drop a folder onto the window.</div>}
             {recent.map((r) => (
-              <div key={r} className="recent-item" onClick={() => A.openRepoPath(r)}>
+              <div key={r} className="recent-item" onClick={() => A.openRepoPath(r)} onContextMenu={e => contextMenu(e, namePathMenu(basename(r), r))}>
                 <FolderGit2 size={18} style={{ color: "var(--accent)", flex: "none" }} />
                 <div style={{ minWidth: 0 }}>
                   <div className="rn">{basename(r)}</div>

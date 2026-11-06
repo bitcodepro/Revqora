@@ -536,6 +536,77 @@ fn partial_stage_of_untracked_file() {
 }
 
 #[test]
+fn repeated_stage_keeps_untouched_earlier_edits_and_newer_edits_win() {
+    let r = Repo::new();
+    let original = "color=red\nsize=10\nnote=keep\n";
+    r.write("settings.txt", original);
+    r.write("other.txt", "other base\n");
+    let head = r.commit_all("base");
+    r.write("other.txt", "unrelated edit stays unstaged\n");
+    let paths = vec!["settings.txt".to_owned()];
+    for current in ["color=blue\nsize=10\nnote=keep\n", "color=blue\nsize=20\nnote=keep\n", "color=green\nsize=20\nnote=keep\n"] {
+        r.write("settings.txt", current);
+        ops::stage_paths(r.p(), &paths).unwrap();
+        assert_eq!(r.index_blob("settings.txt"), current);
+        assert_eq!(r.read("settings.txt"), current);
+        assert_eq!(r.head_blob("settings.txt"), original);
+        assert_eq!(r.index_blob("other.txt"), "other base\n");
+        assert_eq!(r.read("other.txt"), "unrelated edit stays unstaged\n");
+        assert!(!layers::state(r.p()).unwrap().active, "Ordinary Stage must not seal extra versions");
+    }
+    assert_eq!(r.git(&["rev-parse", "HEAD"]).trim(), head);
+}
+
+#[test]
+fn unstage_after_further_edits_keeps_the_latest_complete_working_file() {
+    let r = Repo::new();
+    let original = "color=red\nsize=10\nnote=keep\n";
+    let latest = "color=green\nsize=20\nnote=keep\n";
+    r.write("settings.txt", original);
+    r.commit_all("base");
+    let paths = vec!["settings.txt".to_owned()];
+    r.write("settings.txt", "color=blue\nsize=10\nnote=keep\n");
+    ops::stage_paths(r.p(), &paths).unwrap();
+    r.write("settings.txt", latest);
+    let before = status::status(r.p()).unwrap();
+    assert_eq!((before.staged_count, before.unstaged_count), (1, 1));
+    ops::unstage_paths(r.p(), &paths, None).unwrap();
+    assert_eq!(r.index_blob("settings.txt"), original);
+    assert_eq!(r.read("settings.txt"), latest);
+    let after = status::status(r.p()).unwrap();
+    assert_eq!((after.staged_count, after.unstaged_count), (0, 1));
+    ops::stage_paths(r.p(), &paths).unwrap();
+    assert_eq!(r.index_blob("settings.txt"), latest);
+}
+
+#[test]
+fn ordinary_restage_and_unstage_preserve_explicitly_sealed_layers_and_latest_edits() {
+    let r = Repo::new();
+    r.write("settings.txt", "color=red\nsize=10\nnote=keep\n");
+    r.commit_all("base");
+    let paths = vec!["settings.txt".to_owned()];
+    let sealed = "color=blue\nsize=10\nnote=keep\n";
+    r.write("settings.txt", sealed);
+    ops::stage_paths(r.p(), &paths).unwrap();
+    layers::seal(r.p(), Some("First logical change")).unwrap();
+    let base = layers::staged_base(r.p()).unwrap();
+    let latest = "color=green\nsize=20\nnote=keep\n";
+    r.write("settings.txt", "color=blue\nsize=20\nnote=keep\n");
+    ops::stage_paths(r.p(), &paths).unwrap();
+    r.write("settings.txt", latest);
+    ops::stage_paths(r.p(), &paths).unwrap();
+    assert_eq!(r.index_blob("settings.txt"), latest);
+    assert_eq!(layers::state(r.p()).unwrap().layers.len(), 1);
+    ops::unstage_paths(r.p(), &paths, Some(&base)).unwrap();
+    assert_eq!(r.read("settings.txt"), latest);
+    assert_eq!(r.index_blob("settings.txt"), sealed);
+    let state = layers::state(r.p()).unwrap();
+    assert_eq!(state.layers.len(), 1);
+    assert_eq!(state.layers[0].name, "First logical change");
+    assert!(state.open_files.is_empty());
+}
+
+#[test]
 fn status_reports_staged_unstaged_untracked() {
     let r = Repo::new();
     r.write("a.txt", "a\n");

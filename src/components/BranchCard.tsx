@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { GitBranch, GitCommitHorizontal, GitFork, GitMerge, Info } from "lucide-react";
 import { Modal } from "./Modal";
-import { showDialog, toast } from "../lib/ui";
+import { contextMenu, showDialog, toast } from "../lib/ui";
+import { namePathMenu } from "./NamePathMenu";
 import { api } from "../lib/api";
 import { getTab } from "../lib/store";
 import type { BranchDetails } from "../lib/types";
@@ -39,7 +40,7 @@ function BranchCardBody({ root, name, close }: { root: string; name: string; clo
   };
   return (
     <Modal
-      title={name}
+      title={<span onContextMenu={e => contextMenu(e, namePathMenu(name, root))}>{name}</span>}
       subtitle="Where this branch started, how far it went, and whether it is merged"
       icon={<GitBranch size={18} />}
       onClose={() => close()}
