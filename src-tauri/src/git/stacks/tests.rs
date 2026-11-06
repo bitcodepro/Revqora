@@ -256,6 +256,8 @@ fn merged_bottom_layer_requires_the_actual_merge_receipt_and_preserves_a_squashe
     let a = manager
         .add(
             accounts::Add {
+                verify_identity: None,
+                git_source: None,
                 id: None,
                 kind: "github".into(),
                 server: http.url.clone(),

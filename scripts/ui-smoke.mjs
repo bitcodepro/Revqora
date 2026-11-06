@@ -13,6 +13,9 @@ import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
 import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manager-smoke.mjs";
 import { remoteRenameSmoke } from "./remote-rename-smoke.mjs";
+import { cloneInputSmoke } from "./clone-input-smoke.mjs";
+import { bitbucketTokenSmoke } from "./bitbucket-token-smoke.mjs";
+import {gitConnectionsSmoke} from "./git-connections-smoke.mjs";
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
 //   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
@@ -1916,9 +1919,12 @@ try {
     await repositoryWorkspaceSmoke({ page, check, shot, work });
     await branchManagerSmoke({ page, check, shot, work });
     await branchManagerProtectionSmoke({ page, check, shot, work });
+    await cloneInputSmoke({ page, check, shot, work });
+    await gitConnectionsSmoke({exe,work,check,out});
     await branchCleanupSmoke({ page, check, shot, work });
     await worktreeManagerSmoke({ page, check, shot, work });
     await forgeAccountsSmoke({page,check,shot,work,profile:workspaceProfile,restart:restartWorkspace});
+    await bitbucketTokenSmoke({exe,work,check,out});
     await prCenterSmoke({page,check,shot,work});
     await agentWorkspaceSmoke({page,check,shot,work,restart:restartWorkspace,deferCleanup});
     await workflowSmoke({page,check,shot,work,restart:restartWorkspace});

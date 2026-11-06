@@ -5,6 +5,7 @@ pub mod branch_protection;
 pub mod branch_review;
 pub mod commit;
 pub mod conflicts;
+pub mod connection;
 pub mod diff;
 pub mod extras;
 pub mod forge;

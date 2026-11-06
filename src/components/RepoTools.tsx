@@ -1,6 +1,7 @@
 import { rebaseResultDialog } from "./RebaseResult";
 import { validationDialog } from "./ConflictValidation";
 import { repositoryFiles } from "./RepositoryFiles";
+import {gitConnectionDialog} from "./GitConnections";
 import { useEffect, useState } from "react";
 import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
 import { Archive, FileDiff, GitBranch, History, Loader2, Undo2, Wrench, Zap } from "lucide-react";
@@ -74,6 +75,7 @@ function RepoToolsBody({ root, initial, close }: { root: string; initial: "overv
     >
       <div className="studio-actions"><button className="btn" onClick={() => { close(); void rebaseResultDialog(root); }}>Rebase Studio result</button><button className="btn" onClick={() => { close(); void validationDialog(root); }}>Validate / conflict drafts</button><button className="btn" onClick={() => { close(); void repositoryFiles(root, "ignored"); }}>Ignored files</button><button className="btn" onClick={() => { close(); void repositoryFiles(root, "nested"); }}>Nested repositories</button></div>
       <div className="seg" style={{ alignSelf: "flex-start" }}>
+        <button type="button" onClick={()=>{close();void gitConnectionDialog(root);}}>Git connections…</button>
         <button type="button" className={tab === "overview" ? "on" : ""} onClick={() => setTab("overview")}>
           Housekeeping
         </button>

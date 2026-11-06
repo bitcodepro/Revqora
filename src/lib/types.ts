@@ -759,9 +759,11 @@ export interface WorktreePruneReview { entries: { path: string; head: string | n
 export interface WorktreePruneResult { removed: string[]; kept: string[]; unknown: string[]; checkpoint: RecoverySummary; warning: string | null }
 
 export type ForgeAccountKind="github"|"gitlab"|"azure"|"bitbucket";
-export interface ForgeAccount {id:string;kind:ForgeAccountKind;server:string;login:string;userId:string;name:string;authMode:string;authUsername:string;storage:"session"|"encrypted";status:"available"|"locked"|"reconnect"}
+export interface GitConnectionOptions {https:"auto"|"token"|"browser";ssh:"auto"|"agent"|"key"|"password";privateKey:string;sshProgram:string}
+export interface GitConnectionSnapshot {options:GitConnectionOptions;revision:string;credentialManagerConfigured:boolean}
+export interface ForgeAccount {id:string;kind:ForgeAccountKind;server:string;login:string;userId:string;name:string;authMode:string;authUsername:string;identityVerified?:boolean|null;storage:"session"|"encrypted";status:"available"|"locked"|"reconnect"}
 export interface ForgeAccountsSnapshot {revision:string;accounts:ForgeAccount[];vaultConfigured:boolean;vaultUnlocked:boolean}
-export interface ForgeAccountInput {id:string|null;kind:ForgeAccountKind;server:string;username:string;token:string;authMode:string;persist:boolean}
+export interface ForgeAccountInput {id:string|null;kind:ForgeAccountKind;server:string;username:string;token:string;authMode:string;persist:boolean;verifyIdentity?:boolean;gitSource?:{repo:string;remote:string;fingerprint:string}}
 export interface ForgeConnectionSelection {allowSshAlias?:boolean;remote:string;fingerprint:string;accountId:string|null}
 export interface ForgeConnections {revision:string;activeRemote:string|null;remotes:{isSsh:boolean;allowSshAlias:boolean;name:string;host:string;project:string;fingerprint:string;accountId:string|null;forge:ForgeInfo|null;error:string|null}[]}
 

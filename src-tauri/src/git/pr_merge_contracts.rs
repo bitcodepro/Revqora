@@ -272,6 +272,8 @@ impl Fixture {
         let added = m
             .add(
                 accounts::Add {
+                    verify_identity: None,
+                    git_source: None,
                     id: None,
                     kind: kind.into(),
                     server: http.url.clone(),

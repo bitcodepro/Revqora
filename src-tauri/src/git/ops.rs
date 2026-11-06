@@ -431,6 +431,7 @@ pub fn fetch_background(repo: &Path) -> GitResult<String> {
     super::recovery::protect_transport(repo, false, None, None, true)?;
     let ssh_configured = std::env::var_os("GIT_SSH_COMMAND").is_some()
         || std::env::var_os("GIT_SSH").is_some()
+        || super::connection::managed_ssh(repo)?
         || runner::run(repo, ["config", "--get", "core.sshCommand"]).map(|s| !s.trim().is_empty()).unwrap_or(false);
     runner::run_env(repo, ["fetch", "--all", "--prune", "--tags", "--quiet"], &background_env(ssh_configured), None)
 }
@@ -746,9 +747,38 @@ pub fn push_ref(repo: &Path, remote: &str, refspec: &str, on_line: impl FnMut(&s
 }
 
 pub fn clone(parent: &Path, url: &str, dir_name: &str, on_line: impl FnMut(&str)) -> GitResult<PathBuf> {
+    clone_with_connection(parent, url, dir_name, on_line, None).map(|result| result.0)
+}
+pub fn clone_with_connection(
+    parent: &Path,
+    url: &str,
+    dir_name: &str,
+    on_line: impl FnMut(&str),
+    connection: Option<&super::connection::Options>,
+) -> GitResult<(PathBuf, Option<String>)> {
+    if let Some(options) = connection {
+        super::connection::validate_for(parent, options)?;
+    }
     std::fs::create_dir_all(parent)?;
-    runner::run_streaming(parent, &["clone".into(), "--progress".into(), url.into(), dir_name.into()], &[], on_line)?;
-    Ok(parent.join(dir_name))
+    let root = parent.join(dir_name);
+    runner::run_streaming_with_connection(
+        parent,
+        &["clone".into(), "--progress".into(), url.into(), dir_name.into()],
+        &[(crate::git_credentials::REPO_VAR, &root.to_string_lossy())],
+        on_line,
+        connection,
+    )?;
+    // An explicit default selection must replace preferences left by a previous
+    // clone at this path too; otherwise Auto silently reuses its old SSH key.
+    let warning = connection.and_then(|options| {
+        super::connection::snapshot(&root).and_then(|before| super::connection::save(&root, options.clone(), &before.revision)).err().map(|error| {
+            format!(
+                "Repository cloned. Authentication preferences were not saved: {}. Open Git connection settings before the next network operation.",
+                error.message
+            )
+        })
+    });
+    Ok((root, warning))
 }
 
 pub fn remote_add(repo: &Path, name: &str, url: &str) -> GitResult<()> {

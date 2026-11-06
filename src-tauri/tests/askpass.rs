@@ -10,6 +10,10 @@ use revqora_lib::git::runner;
 fn git_credential_prompts_go_through_revqora() {
     let exe = env!("CARGO_BIN_EXE_revqora");
     let dir = tempfile::tempdir().unwrap();
+    // This binary has one test; isolate the portable account catalog before
+    // the first runner call without touching any installed user's profile.
+    std::env::set_var("REVQORA_MULTI_INSTANCE", "1");
+    std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", dir.path().join("profile"));
     let helpers = dir.path().join("helpers ' space $ проверка");
     let helper_exe = dir.path().join(if cfg!(windows) { "helper ' space $.exe" } else { "helper ' space $" });
     std::fs::copy(exe, &helper_exe).unwrap();
@@ -67,6 +71,65 @@ fn git_credential_prompts_go_through_revqora() {
     assert_eq!(prompts[0].1, "username");
     assert_eq!(prompts[1].1, "secret");
     assert!(prompts[0].2.contains("example.com"));
+
+    // Exercise real Git prompt generation, not a fabricated full-path prompt:
+    // its default (and explicit false) normally strips the Azure organization.
+    // Revqora must retain it so the existing account filter/native validation
+    // can select that organization's saved account without accepting others.
+    // Neutralize an installed GCM's global true default so an unfixed runner
+    // cannot pass merely because the test machine already repairs Azure.
+    runner::run(dir.path(), ["config", "credential.https://dev.azure.com.useHttpPath", "false"]).unwrap();
+    for configured in [false, true] {
+        if configured {
+            runner::run(dir.path(), ["config", "credential.useHttpPath", "false"]).unwrap();
+        }
+        let before = std::fs::read(dir.path().join(".git/config")).unwrap();
+        seen.lock().unwrap().clear();
+        let azure = b"protocol=https\nhost=dev.azure.com\npath=org/project/_git/repo\n\n";
+        let baseline = runner::exec_full(
+            dir.path(),
+            ["-c", "credential.helper=", "-c", "credential.https://dev.azure.com.useHttpPath=false", "credential", "fill"],
+            &[],
+            Some(azure),
+        )
+        .unwrap();
+        assert!(baseline.ok());
+        assert_eq!(seen.lock().unwrap()[0].2, "Username for 'https://dev.azure.com': ", "Baseline must reproduce Git's stripped organization");
+        seen.lock().unwrap().clear();
+        let out = runner::exec_full(dir.path(), ["-c", "credential.helper=", "credential", "fill"], &[], Some(azure)).unwrap();
+        assert!(out.ok(), "Azure credential fill failed: {}", out.stderr);
+        let prompts = seen.lock().unwrap().clone();
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0].0, askpass::Origin::Git);
+        assert_eq!(prompts[0].2, "Username for 'https://dev.azure.com/org/project/_git/repo': ");
+        assert_eq!(prompts[1].2, "Password for 'https://alice@dev.azure.com/org/project/_git/repo': ");
+        assert!(out.text().contains("path=org/project/_git/repo"));
+        assert_eq!(std::fs::read(dir.path().join(".git/config")).unwrap(), before);
+        // Host-only Git credentials on other services retain their old scope.
+        seen.lock().unwrap().clear();
+        let input = b"protocol=https\nhost=example.com\npath=team/repo.git\n\n";
+        assert!(runner::exec_full(dir.path(), ["-c", "credential.helper=", "credential", "fill"], &[], Some(input)).unwrap().ok());
+        assert_eq!(seen.lock().unwrap()[0].2, "Username for 'https://example.com': ");
+    }
+
+    // A saved HTTPS installation under /gitlab has the same default-Git
+    // failure. Metadata alone suffices; this fixture stores no usable token.
+    let accounts = revqora_lib::portable::runtime_dir().unwrap().join("accounts");
+    std::fs::create_dir_all(&accounts).unwrap();
+    let catalog = accounts.join("accounts.json");
+    let metadata = serde_json::json!({"version":1,"vault":null,"bindings":[],"active":[],"accounts":[{"sealed":null,"profile":{"id":"prefix-fixture","kind":"gitlab","server":"https://company.invalid/gitlab","login":"fixture","userId":"fixture","name":"Fixture","authMode":"token","authUsername":""}}]});
+    let bytes = serde_json::to_vec(&metadata).unwrap();
+    std::fs::write(&catalog, &bytes).unwrap();
+    for (path, expected) in
+        [("gitlab/team/repo.git", "https://company.invalid/gitlab/team/repo.git"), ("other/repo.git", "https://company.invalid/other/repo.git")]
+    {
+        seen.lock().unwrap().clear();
+        let input = format!("protocol=https\nhost=company.invalid\npath={path}\n\n");
+        let out = runner::exec_full(dir.path(), ["-c", "credential.helper=", "credential", "fill"], &[], Some(input.as_bytes())).unwrap();
+        assert!(out.ok());
+        assert_eq!(seen.lock().unwrap()[0].2, format!("Username for '{expected}': "));
+    }
+    assert_eq!(std::fs::read(&catalog).unwrap(), bytes, "Git must not rewrite the account catalog");
 
     // Exactly the argv layout used by OpenSSH 8.4's execlp(askpass, askpass,
     // server_prompt, NULL). No SSH_ASKPASS_PROMPT hint is required or trusted.

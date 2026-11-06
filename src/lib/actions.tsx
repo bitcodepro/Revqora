@@ -180,9 +180,10 @@ export async function cloneRepo() {
   const opId = newOpId();
   startBusy(opId, `Cloning ${r.name}`);
   try {
-    const info = await api.repoClone(r.parent, r.url, r.name, opId);
-    await useRepos.getState().open(info.root);
+    const result = await api.repoClone(r.parent, r.url, r.name, opId,r.connection);
+    await useRepos.getState().open(result.root);
     toast.success(`Cloned ${r.name}`);
+    if(result.connectionWarning)toast.warning("Authentication settings need attention",result.connectionWarning);
   } catch (e) {
     toast.error(e, "Clone failed");
   } finally {

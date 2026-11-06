@@ -1,5 +1,8 @@
 import {forgeAccountsDialog} from "./ForgeAccounts";
 import { aboutDialog } from "./AboutDialog";
+import { parseCloneInput, repoNameFromUrl } from "../lib/cloneInput";
+import {GitConnectionFields,defaultGitConnection,gitTransport} from "./GitConnections";
+import type {GitConnectionOptions} from "../lib/types";
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { useUpdate } from "../lib/update";
 import { SHORTCUTS, bindingFor, comboFromEvent, prettyCombo } from "../lib/shortcuts";
@@ -437,28 +440,26 @@ function ResetBody({ branch, target, subject, close }: { branch: string; target:
 
 // ───────────── clone / init ─────────────
 
-export function cloneDialog(): Promise<{ url: string; parent: string; name: string } | null> {
+export function cloneDialog(): Promise<{ url: string; parent: string; name: string;connection:GitConnectionOptions } | null> {
   return showDialog((close) => <CloneBody close={close} />);
 }
 
-function repoNameFromUrl(url: string): string {
-  const m = url.trim().replace(/\/+$/, "").match(/([^/:\\]+?)(\.git)?$/);
-  return m ? m[1] : "";
-}
-
-function CloneBody({ close }: { close: (v: { url: string; parent: string; name: string } | null) => void }) {
+function CloneBody({ close }: { close: (v: { url: string; parent: string; name: string;connection:GitConnectionOptions } | null) => void }) {
   const [url, setUrl] = useState("");
   const [parent, setParent] = useState(localStorage.getItem("revqora.cloneParent") ?? "");
   const [name, setName] = useState("");
   const [touched, setTouched] = useState(false);
+  const source = parseCloneInput(url);
+  const [connection,setConnection]=useState(defaultGitConnection);
+  const transport=gitTransport(source.url);
   useEffect(() => {
-    if (!touched) setName(repoNameFromUrl(url));
-  }, [url, touched]);
+    if (!touched) setName(repoNameFromUrl(source.url));
+  }, [source.url, touched]);
   const pick = async () => {
     const dir = await openDialog({ directory: true, title: "Choose where to clone" });
     if (typeof dir === "string") setParent(dir);
   };
-  const ok = url.trim() && parent.trim() && name.trim();
+  const ok = !source.error && source.url && parent.trim() && name.trim();
   return (
     <Modal
       title="Clone repository"
@@ -467,7 +468,7 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
       onSubmit={() => {
         if (!ok) return;
         localStorage.setItem("revqora.cloneParent", parent);
-        close({ url: url.trim(), parent: parent.trim(), name: name.trim() });
+        close({ url: source.url, parent: parent.trim(), name: name.trim(),connection:transport==="ssh"?{...connection,https:"auto"}:transport==="https"?{...connection,ssh:"auto",privateKey:"",sshProgram:""}:defaultGitConnection() });
       }}
       footer={
         <>
@@ -482,12 +483,14 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
     >
       <div className="field">
         <label>Repository URL</label>
-        <input className="input mono" value={url} placeholder="https://github.com/user/repo.git" onChange={(e) => setUrl(e.target.value)} />
+        <input className="input mono" aria-label="Repository URL" value={url} placeholder="https://github.com/user/repo.git or git clone <URL>" onChange={(e) => setUrl(e.target.value)} />
+        <small>Paste a repository URL or a git clone command.</small>
+        {source.error && <p role="alert" className="muted">{source.error}</p>}
       </div>
       <div className="field">
         <label>Parent folder</label>
         <div className="hstack">
-          <input className="input" value={parent} onChange={(e) => setParent(e.target.value)} />
+          <input className="input" aria-label="Clone parent folder" value={parent} onChange={(e) => setParent(e.target.value)} />
           <button type="button" className="btn" onClick={pick}>
             <FolderOpen size={15} /> Browse
           </button>
@@ -497,6 +500,7 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
         <label>Folder name</label>
         <input
           className="input"
+          aria-label="Clone folder name"
           value={name}
           onChange={(e) => {
             setTouched(true);
@@ -504,6 +508,7 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
           }}
         />
       </div>
+      {transport!=="local"&&<GitConnectionFields value={connection} onChange={setConnection} transport={transport}/>}
     </Modal>
   );
 }

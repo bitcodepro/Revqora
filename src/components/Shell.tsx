@@ -23,6 +23,7 @@ import {
   GitPullRequestArrow,
   History,
   Info,
+  KeyRound,
   Moon,
   LayoutGrid,
   PanelLeft,
@@ -62,6 +63,7 @@ import { confirmDialog, reflogDialog, settingsDialog } from "./dialogs";
 import { applyPatchFile, repoToolsDialog } from "./RepoTools";
 import { OperationLogButton, operationLogDialog } from "./OperationLog";
 import { recoveryDialog } from "./RecoveryCenter";
+import {gitConnectionDialog} from "./GitConnections";
 
 // ───────────── top bar ─────────────
 
@@ -530,6 +532,7 @@ export function CommandPalette() {
       const root = tab.root;
       list.push(
         { id: "fetch", label: "Fetch", group: "Remote", icon: <RefreshCw size={15} />, run: () => A.fetchAll(root) },
+        { id:"git-connections",label:"Git connection settings…",group:"Remote",icon:<KeyRound size={15}/>,run:()=>gitConnectionDialog(root) },
         { id: "pull", label: "Pull", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => A.pull(root) },
         { id: "push", label: "Push…", group: "Remote", icon: <ArrowUpFromLine size={15} />, run: () => A.push(root) },
         { id: "branch", label: "New branch…", group: "Branch", icon: <GitBranchPlus size={15} />, run: () => A.createBranch(root, null, tab.info?.head.branch ?? "HEAD") },

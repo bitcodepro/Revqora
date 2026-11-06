@@ -1,0 +1,96 @@
+// A real authenticated HTTP clone followed by PR access with the approved Git
+// credential. Profile access is forbidden by the fixture, not just unrequested.
+import fs from "node:fs";
+import path from "node:path";
+import http from "node:http";
+import assert from "node:assert/strict";
+import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
+import {launch} from "./ui-driver.mjs";
+import {repositoryIsActive} from "./ui-readiness.mjs";
+
+export async function bitbucketTokenSmoke({exe,work,check,out}) {
+  await check("an authenticated Git clone token connects Bitbucket PRs without re-entry or profile permission and persists only in the encrypted vault",async()=>{
+    const home=path.join(work,"bitbucket-token"),seed=path.join(home,"seed"),bare=path.join(home,"remote.git"),parent=path.join(home,"clones"),root=path.join(parent,"repo"),profile=path.join(home,"profile");
+    fs.mkdirSync(seed,{recursive:true});fs.mkdirSync(parent);
+    const config=path.join(home,"gitconfig");fs.writeFileSync(config,"[credential]\n\thelper =\n\tuseHttpPath = true\n");
+    const git=(cwd,...args)=>execFileSync("git",["-C",cwd,...args],{encoding:"utf8",windowsHide:true,env:{...process.env,GIT_CONFIG_GLOBAL:config,GIT_CONFIG_NOSYSTEM:"1",GIT_OPTIONAL_LOCKS:"0"}}).trim();
+    git(seed,"init","-qb","main");for(const [k,v] of [["user.name","Token Tester"],["user.email","token@example.invalid"],["commit.gpgsign","false"],["core.autocrlf","false"]])git(seed,"config",k,v);
+    fs.writeFileSync(path.join(seed,".gitattributes"),"* text eol=lf\n");fs.writeFileSync(path.join(seed,"file.txt"),"credential fixture\n");git(seed,"add",".");git(seed,"commit","-qm","Token clone fixture");git(home,"clone","--bare",seed,bare);git(bare,"update-server-info");const head=git(seed,"rev-parse","HEAD");
+    const token="scoped-bitbucket-fixture-token",secondToken="other-bitbucket-fixture-token",password="portable bitbucket test vault",user="fixture-user",seen=[];
+    const pr={id:7,title:"Scoped Bitbucket PR",description:"Token with repository and PR scopes only",state:"OPEN",author:{display_name:"Fixture Author",uuid:"{author}"},source:{branch:{name:"topic"},commit:{hash:head}},destination:{branch:{name:"main"},commit:{hash:head}},updated_on:"2026-01-01T00:00:00Z",participants:[]};
+    const server=http.createServer(async(req,res)=>{
+      const url=new URL(req.url,"http://fixture"),auth=req.headers.authorization??"";
+      let body="";for await(const chunk of req)body+=chunk;
+      // Do not retain Authorization headers or prompt values in test artifacts.
+      seen.push({path:url.pathname,method:req.method,authorized:auth===`Bearer ${token}`||auth===`Basic ${Buffer.from(`${user}:${token}`).toString("base64")}`,account:auth===`Bearer ${secondToken}`?"second":"first",body});
+      const send=(status,value)=>{res.writeHead(status,{"content-type":"application/json"});res.end(JSON.stringify(value));};
+      if(url.pathname.startsWith("/team/repo.git/")){
+        if(auth!==`Basic ${Buffer.from(`${user}:${token}`).toString("base64")}`){res.writeHead(401,{"www-authenticate":'Basic realm="Git fixture"'});res.end();return;}
+        const relative=decodeURIComponent(url.pathname.slice("/team/repo.git/".length)),file=path.resolve(bare,relative);
+        if(!file.startsWith(bare+path.sep)||!fs.existsSync(file)||!fs.statSync(file).isFile()){res.writeHead(404);res.end();return;}
+        res.writeHead(200,{"content-type":"text/plain"});res.end(fs.readFileSync(file));return;
+      }
+      if(url.pathname==="/2.0/user")return send(403,{error:{message:"Profile permission deliberately unavailable"}});
+      if(auth!==`Bearer ${token}`&&auth!==`Bearer ${secondToken}`)return send(401,{error:{message:"Token rejected"}});
+      if(url.pathname==="/2.0/repositories/team/repo/pullrequests")return send(200,{values:[pr]});
+      if(url.pathname==="/2.0/repositories/team/other/pullrequests")return send(200,{values:[]});
+      if(url.pathname.endsWith("/comments")&&req.method==="POST")return send(201,{id:1,content:{raw:JSON.parse(body).content.raw}});
+      if(url.pathname.endsWith("/comments")||url.pathname.endsWith("/diffstat")||url.pathname.endsWith("/statuses"))return send(200,{values:[]});
+      if(url.pathname.endsWith("/pullrequests/7"))return send(200,pr);
+      return send(404,{error:{message:`Unimplemented fixture path ${url.pathname}`}});
+    });
+    await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));const url=`http://127.0.0.1:${server.address().port}`;
+    let app,page;
+    const start=async()=>{
+      const old={GIT_CONFIG_GLOBAL:process.env.GIT_CONFIG_GLOBAL,GIT_CONFIG_NOSYSTEM:process.env.GIT_CONFIG_NOSYSTEM};
+      try{process.env.GIT_CONFIG_GLOBAL=config;process.env.GIT_CONFIG_NOSYSTEM="1";app=await launch({exe,profile,port:0,visible:false});page=app.page;page.setDefaultTimeout(60000);}
+      finally{for(const [k,v] of Object.entries(old))if(v===undefined)delete process.env[k];else process.env[k]=v;}
+      if(await page.getByRole("heading",{name:"Welcome to Revqora",exact:true}).isVisible())await page.getByRole("button",{name:"Skip",exact:true}).click();
+    };
+    const invoke=(command,args={})=>page.evaluate(({command,args})=>window.__TAURI_INTERNALS__.invoke(command,args),{command,args});
+    const modal=()=>page.locator(".modal").last(),button=name=>modal().getByRole("button",{name,exact:true});
+    try{
+      await start();
+      await page.getByTitle("Command palette (Ctrl+K)",{exact:true}).click();await page.waitForFunction(()=>document.activeElement===document.querySelector(".palette input"));await page.locator(".palette input").fill("Clone repository");await page.locator(".palette-item").filter({hasText:"Clone repository…"}).click();
+      await page.getByRole("textbox",{name:"Repository URL",exact:true}).fill(`git clone http://${user}@127.0.0.1:${server.address().port}/team/repo.git`);
+      await page.waitForFunction(()=>document.querySelector('[aria-label="Clone folder name"]')?.value==="repo");
+      await page.getByRole("textbox",{name:"Clone parent folder",exact:true}).fill(parent);await button("Clone").click();
+      await page.getByRole("heading",{name:"Password required",exact:true}).waitFor();await modal().locator('input[type="password"]').fill(token);await button("Continue").click();
+      await page.waitForFunction(repositoryIsActive,{expected:root,windows:process.platform==="win32"});assert.equal(git(root,"rev-parse","HEAD"),head);
+      await page.getByTitle("Accounts and API connections",{exact:true}).click();await page.waitForSelector(".fa-workspace[aria-busy=false]");
+      await modal().getByLabel("Vault password",{exact:true}).fill(password);await modal().getByLabel("Confirm vault password",{exact:true}).fill(password);await button("Create vault").click();await page.waitForSelector(".fa-workspace[aria-busy=false]");
+      await button("Add API account").click();await modal().getByLabel("API provider",{exact:true}).selectOption("bitbucket");await modal().getByLabel("API server URL",{exact:true}).fill(url);
+      assert.equal(await modal().getByLabel("Read Bitbucket profile",{exact:true}).isChecked(),false);
+      await modal().getByLabel("Use existing Git token",{exact:true}).check();assert.equal(await modal().getByLabel("API access token",{exact:true}).count(),0);
+      await modal().getByLabel("Save API token in encrypted vault",{exact:true}).check();await button("Save token connection").click();await page.waitForSelector(".fa-card");await page.waitForSelector(".fa-workspace[aria-busy=false]");
+      const snapshot=await invoke("forge_accounts_snapshot"),account=snapshot.accounts[0];assert.equal(account.identityVerified,false);assert.equal(account.storage,"encrypted");assert(!JSON.stringify(snapshot).includes(token));
+      assert(!fs.readFileSync(path.join(profile,"revqora-data","accounts","accounts.json"),"utf8").includes(token));
+      await modal().locator(".fa-card").getByRole("button",{name:"Test connection",exact:true}).click();await page.waitForSelector(".fa-workspace[aria-busy=false]");assert.equal(await modal().getByRole("alert").count(),0);
+      git(root,"remote","add","upstream",`${url}/team/other.git`);
+      const added=await invoke("forge_account_add",{expected:(await invoke("forge_accounts_snapshot")).revision,input:{id:null,kind:"bitbucket",server:url,username:"second@example.invalid",token:secondToken,authMode:"bearer",persist:false,verifyIdentity:false,gitSource:null}}),second=added.accounts.find(a=>a.id!==account.id);
+      const bind=async(name,id)=>{const c=await invoke("forge_connections",{repo:root}),r=c.remotes.find(r=>r.name===name);await invoke("forge_connection_select",{repo:root,expected:c.revision,selection:{remote:name,fingerprint:r.fingerprint,accountId:id,allowSshAlias:false}});};
+      for(const id of [second.id,account.id]){
+        await bind("upstream",id);await bind("origin",account.id);await button("Refresh API accounts").click();await page.waitForSelector(".fa-workspace[aria-busy=false]");await modal().getByLabel("API remote",{exact:true}).selectOption("upstream");
+        const before=seen.length;await modal().locator(`.fa-card[data-account-id="${id}"]`).getByRole("button",{name:"Test connection",exact:true}).click();await page.waitForSelector(".fa-workspace[aria-busy=false]");assert.equal(await modal().getByRole("alert").count(),0);
+        const calls=seen.slice(before).filter(r=>r.path.includes("/pullrequests"));assert.equal(calls.length,1);assert.equal(calls[0].path,"/2.0/repositories/team/other/pullrequests");assert.equal(calls[0].account,id===second.id?"second":"first");assert.equal((await invoke("forge_connections",{repo:root})).activeRemote,"origin");
+      }
+      await button("Close").click();await page.getByRole("button",{name:"Pull requests",exact:true}).click();await page.getByText("Scoped Bitbucket PR",{exact:true}).first().waitFor();
+      const result=await invoke("pr_page",{repo:root,state:"open",cursor:null}),connection=result.forge.connectionRevision;
+      const detail=await invoke("pr_detail",{repo:root,number:7,expectedConnection:connection});
+      const args={repo:root,number:7,expectedConnection:connection,expectedRevision:detail.revision},caps=await invoke("pr_review_capabilities",args);
+      assert(caps.actor.includes("profile not read"));assert(caps.comment);assert(caps.actorId.startsWith("bitbucket-token:"));
+      await invoke("pr_review_act",{...args,action:{kind:"comment",body:"PR access reuses the clone token",expectedActor:caps.actorId,thread:null,threadRevision:null,anchor:null}});
+      assert.equal(seen.filter(r=>r.method==="POST"&&r.path.endsWith("/comments")&&r.authorized).length,1);assert.equal(seen.filter(r=>r.path==="/2.0/user").length,0);
+      assert(!await page.evaluate(secret=>JSON.stringify(localStorage).includes(secret),token));
+      if(out)await page.screenshot({path:path.join(out,"bitbucket-token-reuse.png")});
+      await invoke("forge_vault_lock");
+      // Reconnection after a real process restart comes only from encrypted state,
+      // never an artificial recreation of task/account data or helper cache.
+      await app.close();app=null;await start();
+      const locked=await invoke("forge_accounts_snapshot");assert.equal(locked.accounts[0].status,"locked");
+      await invoke("forge_vault_password",{password,expected:locked.revision,unlock:true});
+      const restored=await invoke("pr_page",{repo:root,state:"open",cursor:null});assert.equal(restored.items[0].title,pr.title);assert.equal(seen.filter(r=>r.path==="/2.0/user").length,0);
+    }catch(error){if(out)await page?.screenshot({path:path.join(out,"bitbucket-token-failure.png")}).catch(()=>{});throw error;}
+    finally{if(app){await invoke("unwatch_repo",{repo:root}).catch(()=>{});await app.close();}server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+  });
+}
