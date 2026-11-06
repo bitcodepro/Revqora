@@ -76,6 +76,7 @@ fn all_four_services_reuse_only_explicitly_selected_matching_api_tokens_for_git_
         assert!(m.git_answer(kind, &revision, &spoof).is_err());
     }
     let revision = m.snapshot().unwrap().revision;
+    assert!(m.git_answer("azure", &revision, &git_prompt("Password for 'https://dev.azure.com': ")).is_err());
     assert!(m.git_answer("azure", &revision, &git_prompt("Password for 'https://dev.azure.com/other/project/_git/repo': ")).is_err());
     assert!(m.git_answer("azure", &revision, &git_prompt("Password for 'https://other.visualstudio.com/project/_git/repo': ")).is_err());
     assert_eq!(

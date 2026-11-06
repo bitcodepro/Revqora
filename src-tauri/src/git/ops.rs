@@ -768,7 +768,9 @@ pub fn clone_with_connection(
         on_line,
         connection,
     )?;
-    let warning = connection.filter(|c| **c != super::connection::Options::default()).and_then(|options| {
+    // An explicit default selection must replace preferences left by a previous
+    // clone at this path too; otherwise Auto silently reuses its old SSH key.
+    let warning = connection.and_then(|options| {
         super::connection::snapshot(&root).and_then(|before| super::connection::save(&root, options.clone(), &before.revision)).err().map(|error| {
             format!(
                 "Repository cloned. Authentication preferences were not saved: {}. Open Git connection settings before the next network operation.",

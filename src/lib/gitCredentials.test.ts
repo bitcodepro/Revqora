@@ -8,7 +8,7 @@ describe("saved API credentials offered to native Git HTTPS prompts",()=>{
     expect(gitAccountMatches(a,new URL("https://elsewhere.invalid/team/repo.git"))).toBe(false);expect(gitAccountMatches({...a,status:"locked"},destination)).toBe(false);
   });
   it("keeps Azure organization aliases and hosted installation prefixes scoped",()=>{
-    const azure=account("azure","https://dev.azure.com/org");expect(gitAccountMatches(azure,new URL("https://org.visualstudio.com/project/_git/repo"))).toBe(true);expect(gitAccountMatches(azure,new URL("https://other.visualstudio.com/project/_git/repo"))).toBe(false);expect(gitAccountMatches(azure,new URL("https://dev.azure.com/other/project/_git/repo"))).toBe(false);
+    const azure=account("azure","https://dev.azure.com/org");expect(gitAccountMatches(azure,new URL("https://dev.azure.com"))).toBe(false);expect(gitAccountMatches(azure,new URL("https://org.visualstudio.com/project/_git/repo"))).toBe(true);expect(gitAccountMatches(azure,new URL("https://other.visualstudio.com/project/_git/repo"))).toBe(false);expect(gitAccountMatches(azure,new URL("https://dev.azure.com/other/project/_git/repo"))).toBe(false);
     const gitlab=account("gitlab","https://company.invalid/gitlab");expect(gitAccountMatches(gitlab,new URL("https://company.invalid/gitlab/team/repo.git"))).toBe(true);expect(gitAccountMatches(gitlab,new URL("https://company.invalid/gitlab-other/team/repo.git"))).toBe(false);
   });
   it("rejects SSH spoofing, arbitrary prompt text, credentials and lookalike domains",()=>{

@@ -281,8 +281,8 @@ SSH remotes continue to use SSH keys. See Atlassian's
 Open **Git connection settings…** from **Accounts and API connections**, the
 repository tools, or the command palette. The clone form also offers authentication
 settings after you enter an HTTPS or SSH address. These preferences apply to all
-Git remotes in the repository; HTTPS and SSH choices are independent. **Save and
-test Git access** reads heads from the selected remote without checking out,
+Git remotes in the repository, including its linked worktrees. HTTPS and SSH
+choices are independent. **Save and test Git access** reads heads from the selected remote without checking out,
 merging or pushing anything.
 
 | Service | HTTPS | SSH URL example |
@@ -297,6 +297,11 @@ when necessary. **Token/password in Revqora** bypasses external helpers for the
 operation while keeping Revqora's approved session credentials. Saved matching API
 accounts can be selected in a native HTTPS Git prompt for all four services. SSH
 prompts never receive those API tokens.
+
+For `dev.azure.com`, Revqora retains the HTTPS credential path for each Git
+invocation so the organization remains visible to helpers and the account chooser.
+This follows [GCM's Azure organization policy](https://github.com/git-ecosystem/git-credential-manager/blob/main/docs/configuration.md#credentialusehttppath),
+does not edit Git configuration files, and leaves other hosts' credential scope unchanged.
 
 **Browser/device sign-in** explicitly enables an already configured Git Credential
 Manager. GCM handles OAuth/SSO and its credential storage; Revqora does not register

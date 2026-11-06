@@ -68,6 +68,46 @@ fn git_credential_prompts_go_through_revqora() {
     assert_eq!(prompts[1].1, "secret");
     assert!(prompts[0].2.contains("example.com"));
 
+    // Exercise real Git prompt generation, not a fabricated full-path prompt:
+    // its default (and explicit false) normally strips the Azure organization.
+    // Revqora must retain it so the existing account filter/native validation
+    // can select that organization's saved account without accepting others.
+    // Neutralize an installed GCM's global true default so an unfixed runner
+    // cannot pass merely because the test machine already repairs Azure.
+    runner::run(dir.path(), ["config", "credential.https://dev.azure.com.useHttpPath", "false"]).unwrap();
+    for configured in [false, true] {
+        if configured {
+            runner::run(dir.path(), ["config", "credential.useHttpPath", "false"]).unwrap();
+        }
+        let before = std::fs::read(dir.path().join(".git/config")).unwrap();
+        seen.lock().unwrap().clear();
+        let azure = b"protocol=https\nhost=dev.azure.com\npath=org/project/_git/repo\n\n";
+        let baseline = runner::exec_full(
+            dir.path(),
+            ["-c", "credential.helper=", "-c", "credential.https://dev.azure.com.useHttpPath=false", "credential", "fill"],
+            &[],
+            Some(azure),
+        )
+        .unwrap();
+        assert!(baseline.ok());
+        assert_eq!(seen.lock().unwrap()[0].2, "Username for 'https://dev.azure.com': ", "Baseline must reproduce Git's stripped organization");
+        seen.lock().unwrap().clear();
+        let out = runner::exec_full(dir.path(), ["-c", "credential.helper=", "credential", "fill"], &[], Some(azure)).unwrap();
+        assert!(out.ok(), "Azure credential fill failed: {}", out.stderr);
+        let prompts = seen.lock().unwrap().clone();
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0].0, askpass::Origin::Git);
+        assert_eq!(prompts[0].2, "Username for 'https://dev.azure.com/org/project/_git/repo': ");
+        assert_eq!(prompts[1].2, "Password for 'https://alice@dev.azure.com/org/project/_git/repo': ");
+        assert!(out.text().contains("path=org/project/_git/repo"));
+        assert_eq!(std::fs::read(dir.path().join(".git/config")).unwrap(), before);
+        // Host-only Git credentials on other services retain their old scope.
+        seen.lock().unwrap().clear();
+        let input = b"protocol=https\nhost=example.com\npath=team/repo.git\n\n";
+        assert!(runner::exec_full(dir.path(), ["-c", "credential.helper=", "credential", "fill"], &[], Some(input)).unwrap().ok());
+        assert_eq!(seen.lock().unwrap()[0].2, "Username for 'https://example.com': ");
+    }
+
     // Exactly the argv layout used by OpenSSH 8.4's execlp(askpass, askpass,
     // server_prompt, NULL). No SSH_ASKPASS_PROMPT hint is required or trusted.
     let environment = askpass::env();

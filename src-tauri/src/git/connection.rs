@@ -54,7 +54,10 @@ fn fail(message: impl Into<String>) -> GitError {
     GitError::new(message).kind("git-connection")
 }
 fn location(root: &Path) -> GitResult<PathBuf> {
-    let root = fs::canonicalize(root).or_else(|_| std::path::absolute(root))?;
+    // Match Git's shared config and the API-account scope: linked worktrees
+    // must keep the selected key/agent instead of silently falling back to Auto.
+    // This resolver reads metadata directly and never recurses into the runner.
+    let root = super::operations::repository_key(root);
     let mut text = root.to_string_lossy().into_owned();
     if cfg!(windows) {
         text.make_ascii_lowercase();
@@ -196,6 +199,11 @@ pub fn apply(root: &Path, command: &mut Command, selected: Option<&Options>, arg
     if !network && !args.get(index).is_some_and(|s| s == "credential") {
         return Ok(());
     }
+    // Azure organizations share a hostname. With Git's default useHttpPath=false,
+    // askpass and helpers lose the organization and cannot safely select its
+    // account. Match GCM's Azure policy for this invocation only; other hosts
+    // keep their configured scope, and no repository/global config is edited.
+    command.args(["-c", "credential.https://dev.azure.com.useHttpPath=true"]);
     let saved;
     let options = if let Some(selected) = selected {
         selected
@@ -307,6 +315,47 @@ mod tests {
         let mut old = String::new();
         reader.read_to_string(&mut old).unwrap();
         assert!(serde_json::from_str::<Options>(&old).unwrap() == options);
+    }
+    #[test]
+    fn recloning_with_explicit_defaults_replaces_the_previous_identity_at_that_path() {
+        let source = root();
+        runner::run(source.path(), ["config", "user.name", "Connection test"]).unwrap();
+        runner::run(source.path(), ["config", "user.email", "connection@example.invalid"]).unwrap();
+        runner::run(source.path(), ["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"]).unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let key = parent.path().join("old private key");
+        fs::write(&key, "fixture key path only").unwrap();
+        let selected = Options { ssh: Ssh::Key, private_key: key.to_string_lossy().into(), ..Default::default() };
+        let source_url = source.path().to_str().unwrap();
+        let (destination, warning) = ops::clone_with_connection(parent.path(), source_url, "copy", |_| {}, Some(&selected)).unwrap();
+        assert!(warning.is_none());
+        assert!(snapshot(&destination).unwrap().options == selected);
+        fs::remove_dir_all(&destination).unwrap();
+        let (_, warning) = ops::clone_with_connection(parent.path(), source_url, "copy", |_| {}, Some(&Options::default())).unwrap();
+        assert!(warning.is_none());
+        assert!(snapshot(&destination).unwrap().options == Options::default());
+        assert_eq!(runner::run(&destination, ["rev-parse", "HEAD"]).unwrap(), runner::run(source.path(), ["rev-parse", "HEAD"]).unwrap());
+    }
+    #[test]
+    fn linked_worktrees_share_transport_choices_and_revision_guards() {
+        let root = root();
+        runner::run(root.path(), ["config", "user.name", "Connection test"]).unwrap();
+        runner::run(root.path(), ["config", "user.email", "connection@example.invalid"]).unwrap();
+        runner::run(root.path(), ["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"]).unwrap();
+        let linked = tempfile::tempdir().unwrap();
+        let child = linked.path().join("working copy");
+        runner::run(root.path(), ["worktree", "add", "-qb", "linked", child.to_str().unwrap()]).unwrap();
+        let selected = Options { ssh: Ssh::Agent, ..Default::default() };
+        let first = save(root.path(), selected.clone(), &snapshot(root.path()).unwrap().revision).unwrap();
+        assert!(snapshot(&child).unwrap().options == selected);
+        assert_eq!(snapshot(&child).unwrap().revision, first.revision);
+        let password = Options { ssh: Ssh::Password, ..Default::default() };
+        save(&child, password.clone(), &first.revision).unwrap();
+        assert!(snapshot(root.path()).unwrap().options == password);
+        assert_eq!(save(root.path(), selected, &first.revision).err().unwrap().kind, "stale-operation");
+        let mut command = runner::command(&child);
+        apply(&child, &mut command, None, &["fetch".into()]).unwrap();
+        assert!(env(&command, "GIT_SSH_COMMAND").unwrap().contains("PubkeyAuthentication=no"));
     }
     #[test]
     fn managed_ssh_keeps_identity_and_host_trust_while_background_mode_disables_all_prompts() {
