@@ -174,6 +174,7 @@ export interface GraphRow {
 }
 
 export interface GraphSummary {
+  headOid?: string;
   key: string;
   total: number;
   maxLanes: number;
@@ -216,6 +217,8 @@ export interface FileHistoryEntry {
 }
 
 export interface BranchInfo {
+  creator?: {name:string;email:string}|null;
+  authorEmail?:string;
   name: string;
   fullName: string;
   oid: string;
@@ -272,6 +275,7 @@ export interface RemoteInfo {
 }
 
 export interface RefsSnapshot {
+  identityEmail?:string|null;
   local: BranchInfo[];
   remote: BranchInfo[];
   tags: TagInfo[];
@@ -600,6 +604,7 @@ export interface CommitHelpers {
 }
 
 export interface ForgeInfo {
+  accountId?: string | null;
   connectionRevision: string | null;
   accountLogin: string | null;
   kind: "github" | "gitlab" | "azure" | "bitbucket" | "bitbucket-server";
@@ -614,6 +619,8 @@ export interface PullRequest {
   number: number;
   title: string;
   author: string;
+  authorId?: string;
+  authorLogin?: string;
   head: string;
   base: string;
   url: string;
@@ -624,7 +631,7 @@ export interface PullRequest {
 }
 
 export type PrState = "open" | "closed" | "merged" | "all";
-export interface PrPage { forge: ForgeInfo; items: PullRequest[]; nextCursor: string | null }
+export interface PrPage { forge: ForgeInfo; items: PullRequest[]; nextCursor: string | null; viewer?: {id:string;login:string}|null }
 export interface PrDetail { pull: PullRequest; body: string; updated: string; baseSha: string; diffBaseSha: string; revision: string; fileCount: number | null }
 export interface PrEdit { title: string; body: string; base: string }
 export interface PrEditResult { detail: PrDetail; notice: string | null }
@@ -734,6 +741,7 @@ export interface SyncResult {
   warnings: string[];
 }
 export interface ManagedBranch {
+  creator?: {name:string;email:string}|null;
   fullRef: string; name: string; oid: string; local: boolean; current: boolean;
   upstream: string | null; ahead: number; behind: number; gone: boolean;
   time: number; author: string; authorEmail: string; subject: string; merged: boolean | null;

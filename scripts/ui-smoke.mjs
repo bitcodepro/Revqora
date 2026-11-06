@@ -16,6 +16,7 @@ import { remoteRenameSmoke } from "./remote-rename-smoke.mjs";
 import { cloneInputSmoke } from "./clone-input-smoke.mjs";
 import { bitbucketTokenSmoke } from "./bitbucket-token-smoke.mjs";
 import {gitConnectionsSmoke} from "./git-connections-smoke.mjs";
+import {fastSwitchSmoke} from "./fast-switch-smoke.mjs";
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
 //   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
@@ -445,7 +446,7 @@ try {
   });
 
   await check("seal a stage layer and stage more on top", async () => {
-    await page.click("button[title^='Seal what is staged']");
+    await page.getByRole("button", {name:"Seal staged changes into a layer",exact:true}).click();
     await page.waitForSelector(".layer:not(.open-layer)");
     await page.waitForSelector(".changes[data-pending='false']");
     await sealedLayerAttributesSmoke({page,root:repo});
@@ -602,7 +603,7 @@ try {
 
   await check("compare two branches", async () => {
     await page.click(".view-tab:has-text('History')");
-    await page.locator(".sb-item", { has: page.locator(".label", { hasText: /^ui$/ }) }).first().click({ button: "right" });
+    await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="feature/ui"]').click({ button: "right" });
     await page.locator(".ctx-item", { hasText: "Compare with main" }).click();
     await page.waitForSelector(".conflict-overlay .file-row");
     const n = await page.locator(".conflict-overlay .file-row").count();
@@ -763,7 +764,7 @@ try {
     fs.writeFileSync(path.join(repo, "src/config.json"), '{\n  "port": 7000,\n  "debug": true\n}\n');
     git("add", "src/config.json");
     await page.click("button[title='Refresh (F5)']");
-    await page.click("button[title^='Seal what is staged']");
+    await page.getByRole("button", {name:"Seal staged changes into a layer",exact:true}).click();
     await page.waitForSelector(".layer:not(.open-layer)");
     fs.writeFileSync(path.join(repo, "src/config.json"), '{\n  "port": 7001,\n  "debug": true\n}\n');
     git("add", "src/config.json");
@@ -1921,6 +1922,7 @@ try {
     await branchManagerProtectionSmoke({ page, check, shot, work });
     await cloneInputSmoke({ page, check, shot, work });
     await gitConnectionsSmoke({exe,work,check,out});
+    await fastSwitchSmoke({exe,work,check,out});
     await branchCleanupSmoke({ page, check, shot, work });
     await worktreeManagerSmoke({ page, check, shot, work });
     await forgeAccountsSmoke({page,check,shot,work,profile:workspaceProfile,restart:restartWorkspace});

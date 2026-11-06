@@ -102,11 +102,11 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
     await shot("79-branch-manager-list");
     if (!fs.readFileSync(path.join(root,".git/index")).equals(before)) throw new Error("Read-only manager modified the Git index");
 
-    // Real author metadata with a HEAD author different from user.email proves
-    // that My branches uses effective Git config, not the last commit's author.
+    // Creation identities deliberately disagree with the tip authors. A later
+    // commit must neither acquire someone else's branch nor hide my own branch.
     const other = git("-c","user.name=Other Author","-c","user.email=other@example.invalid","commit-tree",`${base}^{tree}`,"-p",base,"-m","Other author tip");
     git("update-ref","refs/heads/main",other);
-    git("branch","owned/removed",base); git("branch","other/removed",other);
+    git("branch","owned/removed",other); git("-c","user.name=Other Author","-c","user.email=other@example.invalid","branch","other/removed",base);
     git("config","--add","remote.origin.fetch","+refs/heads/retired/*:refs/remotes/origin/retired/*");
     for (const [name,upstream] of [["owned/removed","own"],["other/removed","other"]]) {
       git("config",`branch.${name}.remote`,"origin"); git("config",`branch.${name}.merge`,`refs/heads/retired/${upstream}`);
@@ -127,16 +127,16 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
     await manager().getByRole("button",{name:"Select shown (up to 50)",exact:true}).click();
     if(!await page.getByRole("checkbox",{name:"Select refs/heads/owned/removed for cleanup",exact:true}).isChecked()) throw new Error("Filtered branch could not be selected for safety review");
     await manager().getByRole("button",{name:"Clear selection",exact:true}).click();
-    await manager().getByRole("button",{name:"Configure branch author filter",exact:true}).click();
-    await page.getByRole("textbox",{name:"Branch author email or name",exact:true}).fill("Other Author");
+    await manager().getByRole("button",{name:"Configure branch creator filter",exact:true}).click();
+    await page.getByRole("textbox",{name:"Branch creator email or name",exact:true}).fill("Other Author");
     await page.getByRole("button",{name:"Apply filter",exact:true}).click();
     await row("refs/heads/other/removed").waitFor();
     if(await page.locator(".bm-viewport [role=option]").count() !== 1) throw new Error("Custom author filter did not replace the default email");
     await page.getByRole("button", { name: "Close branch manager", exact: true }).click();
     await open();
     await row("refs/heads/other/removed").waitFor();
-    await manager().getByRole("button",{name:"Configure branch author filter",exact:true}).click();
-    if(await page.getByRole("textbox",{name:"Branch author email or name",exact:true}).inputValue() !== "Other Author") throw new Error("Custom author was not remembered per repository");
+    await manager().getByRole("button",{name:"Configure branch creator filter",exact:true}).click();
+    if(await page.getByRole("textbox",{name:"Branch creator email or name",exact:true}).inputValue() !== "Other Author") throw new Error("Custom author was not remembered per repository");
     await page.getByRole("button",{name:"Use Git email",exact:true}).click();
     await row("refs/heads/owned/removed").waitFor();
     if(git("config","--get","user.email") !== "branch@example.invalid" || git("rev-parse","HEAD") !== other) throw new Error("Author filtering changed Git identity or checked out a branch");

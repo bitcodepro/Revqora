@@ -21,6 +21,7 @@ pub struct Branch {
     pub time: i64,
     pub author: String,
     pub author_email: String,
+    pub creator: Option<super::branch_origin::Creator>,
     pub subject: String,
     pub merged: Option<bool>,
     pub protection_names: Vec<String>,
@@ -48,6 +49,7 @@ fn inventory(root: &Path) -> GitResult<Vec<Branch>> {
     // NULs keep author names and subjects containing other separators intact.
     let fields: Vec<&str> = raw.split_terminator('\0').collect();
     let (records, tail) = fields.as_chunks::<10>();
+    let mut origins = super::branch_origin::Reader::new(root);
     if tail.iter().any(|s| !s.trim_matches('\n').is_empty()) {
         return Err(GitError::new("Invalid branch metadata record."));
     }
@@ -78,6 +80,7 @@ fn inventory(root: &Path) -> GitResult<Vec<Branch>> {
             time: f[6].parse().unwrap_or(0),
             author: f[7].into(),
             author_email: f[9].into(),
+            creator: origins.creator(full_ref),
             subject: f[8].into(),
             merged: None,
             protection_names: vec![name.into()],
@@ -120,6 +123,7 @@ pub fn snapshot(root: &Path, requested_base: Option<&str>) -> GitResult<Snapshot
                     || a.upstream != b.upstream
                     || a.protection_names != b.protection_names
                     || a.mapping_known != b.mapping_known
+                    || a.creator != b.creator
             })
         {
             return Err(GitError::new("Branches changed while loading. Refresh the branch manager.").kind("stale-operation"));

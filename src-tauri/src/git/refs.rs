@@ -33,6 +33,8 @@ pub struct BranchInfo {
     pub time: i64,
     pub subject: String,
     pub author: String,
+    pub author_email: String,
+    pub creator: Option<super::branch_origin::Creator>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +69,7 @@ pub struct RemoteInfo {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RefsSnapshot {
+    pub identity_email: Option<String>,
     pub local: Vec<BranchInfo>,
     pub remote: Vec<BranchInfo>,
     pub tags: Vec<TagInfo>,
@@ -74,7 +77,7 @@ pub struct RefsSnapshot {
     pub remotes: Vec<RemoteInfo>,
 }
 
-const FMT: &str = "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(HEAD)%00%(creatordate:unix)%00%(contents:subject)%00%(authorname)%00%(symref)%00%(objecttype)%00%(upstream)%00";
+const FMT: &str = "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(HEAD)%00%(creatordate:unix)%00%(contents:subject)%00%(authorname)%00%(symref)%00%(objecttype)%00%(upstream)%00%(authoremail:trim)%00";
 
 fn parse_track(t: &str) -> (u32, u32, bool) {
     let mut ahead = 0;
@@ -92,12 +95,14 @@ fn parse_track(t: &str) -> (u32, u32, bool) {
 }
 
 pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
+    let remotes = remotes(repo)?;
     let raw = runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"])?;
     let mut local = Vec::new();
     let mut remote = Vec::new();
     let mut tags = Vec::new();
     let fields: Vec<&str> = raw.split_terminator('\0').collect();
-    let (records, tail) = fields.as_chunks::<12>();
+    let (records, tail) = fields.as_chunks::<13>();
+    let mut origins = super::branch_origin::Reader::new(repo);
     if tail.iter().any(|s| !s.trim_matches('\n').is_empty()) {
         return Err(super::runner::GitError::new("Invalid reference metadata record."));
     }
@@ -120,6 +125,8 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
                 time,
                 subject: f[7].to_string(),
                 author: f[8].to_string(),
+                author_email: f[12].to_string(),
+                creator: origins.creator(full),
             });
         } else if let Some(name) = full.strip_prefix("refs/remotes/") {
             if !f[9].is_empty() {
@@ -140,6 +147,8 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
                 time,
                 subject: f[7].to_string(),
                 author: f[8].to_string(),
+                author_email: f[12].to_string(),
+                creator: None,
             });
         } else if let Some(name) = full.strip_prefix("refs/tags/") {
             let annotated = f[10] == "tag";
@@ -154,7 +163,7 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
         }
     }
     tags.sort_by_key(|t| std::cmp::Reverse(t.time));
-    Ok(RefsSnapshot { local, remote, tags, stashes: stashes(repo)?, remotes: remotes(repo)? })
+    Ok(RefsSnapshot { identity_email: super::repo::config_get(repo, "user.email"), local, remote, tags, stashes: stashes(repo)?, remotes })
 }
 
 pub fn stashes(repo: &Path) -> GitResult<Vec<StashInfo>> {

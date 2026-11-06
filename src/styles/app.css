@@ -1614,17 +1614,6 @@ select[size="1"]:not([multiple]) {
 .layer-files {
   padding: 3px 0;
 }
-.layer-hint {
-  margin: 6px 4px 10px;
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  border: 1px dashed var(--border-strong);
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-}
 .commit-box {
   border-top: 1px solid var(--border);
   padding: 10px;

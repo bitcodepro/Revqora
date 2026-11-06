@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -9,6 +9,7 @@ import {
   Zap,
 } from "lucide-react";
 import { api, newOpId } from "../lib/api";
+import {cachedGraphRows,rememberGraphRows,rememberGraphPosition} from "../lib/graphRowsCache";
 import * as A from "../lib/actions";
 import { loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
@@ -327,14 +328,17 @@ export function GraphView({
   const dateStyle = useSettings((s) => s.dateStyle);
   const showRemote = useSettings((s) => s.showRemoteBranchesInGraph);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const cache = useRef(new Map<number, GraphRow>());
+  const [restoredRows]=useState(()=>cachedGraphRows(root,tab.graphVersion));
+  const cache = useRef(restoredRows?.rows??new Map<number, GraphRow>());
   const loadingPages = useRef(new Set<number>());
   const [, force] = useState(0);
-  const [scrollTop, setScrollTop] = useState(0);
+  const [scrollTop, setScrollTop] = useState(restoredRows?.top??0);
+  useLayoutEffect(()=>{if(scrollRef.current&&restoredRows)scrollRef.current.scrollTop=restoredRows.top;},[]);
+  useEffect(()=>{rememberGraphPosition(root,tab.graphVersion,scrollTop);},[root,tab.graphVersion,scrollTop]);
   const [viewH, setViewH] = useState(600);
   const [hl, setHl] = useState<number | null>(null);
   const [drawing, setDrawing] = useState(false);
-  const firstDrawKey = useRef<string | null>(null);
+  const firstDrawKey = useRef<string | null>(tab.loaded?root:null);
   const anchor = useRef<number | null>(null);
 
   // search
@@ -404,14 +408,15 @@ export function GraphView({
     .join(" ");
   const hiddenLanes = (summary?.maxLanes ?? 0) > lanes;
 
-  const cacheVersion = useRef(-1);
+  const cacheVersion = useRef(restoredRows?.rows.size?tab.graphVersion:-1);
   const loadPage = useCallback(
     async (page: number, version: number) => {
       const key = version * 1_000_000 + page;
       if (loadingPages.current.has(key)) return;
       loadingPages.current.add(key);
       try {
-        const rows = await api.graphRows(root, page * PAGE, PAGE);
+        const key=useRepos.getState().tabs[root]?.graph?.key;
+        const rows = await api.graphRows(root, page * PAGE, PAGE,key);
         if (useRepos.getState().tabs[root]?.graphVersion !== version) return;
         // Keep showing the previous rows until the rebuilt graph delivers its first page.
         if (cacheVersion.current !== version) {
@@ -419,6 +424,7 @@ export function GraphView({
           cacheVersion.current = version;
         }
         for (const r of rows) cache.current.set(r.index, r);
+        rememberGraphRows(root,version,cache.current);
         force((n) => n + 1);
       } catch {
         /* history reloads on next refresh */
@@ -507,7 +513,7 @@ export function GraphView({
       if (idx < 0 || idx >= total) return;
       let r = rowAt(idx);
       if (!r) {
-        const rows = await api.graphRows(root, idx, 1).catch(() => []);
+        const rows = await api.graphRows(root, idx, 1,useRepos.getState().tabs[root]?.graph?.key).catch(() => []);
         r = rows[0];
       }
       if (!r) return;
@@ -595,13 +601,19 @@ export function GraphView({
 
   // Jump to a commit when another part of the UI asks (sidebar click etc.).
   useEffect(() => {
+    let jump=0;
     const onJump = (e: Event) => {
       const { root: r, oid } = (e as CustomEvent).detail as {
         root: string;
         oid: string;
       };
       if (r !== root) return;
+      const request=++jump;
+      patch(root,{selected:oid,multi:[]});
+      const local=[...cache.current.values()].find(row=>row.oid===oid);
+      if(local){anchor.current=local.index;scrollToIndex(local.index,true);return;}
       api.graphFind(root, oid).then((idx) => {
+        if(request!==jump||useRepos.getState().tabs[root]?.selected!==oid)return;
         if (idx === null || idx === undefined) {
           toast.info(
             "Commit is not in the loaded history",
@@ -609,18 +621,12 @@ export function GraphView({
           );
           return;
         }
-        let rr = cache.current.get(idx);
-        patch(root, { selected: rr?.oid ?? oid, multi: [] });
         anchor.current = idx;
         scrollToIndex(idx, true);
-        if (!rr)
-          api
-            .graphRows(root, idx, 1)
-            .then((rows) => rows[0] && patch(root, { selected: rows[0].oid }));
-      });
+      }).catch(()=>{});
     };
     window.addEventListener("revqora:jump", onJump);
-    return () => window.removeEventListener("revqora:jump", onJump);
+    return () => {jump++;window.removeEventListener("revqora:jump", onJump);};
   }, [root, patch, scrollToIndex]);
 
   // Highlight a branch lane when it is hovered elsewhere (sidebar).

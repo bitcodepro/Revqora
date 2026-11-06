@@ -46,12 +46,13 @@ export function matchesFilter(b: ManagedBranch, filter: BranchFilter, preference
     default: return true;
   }
 }
-export function matchesBranchAuthor(b: ManagedBranch, custom: string, identityEmail: string | null) {
+export function matchesBranchCreator(b: Pick<ManagedBranch,"creator">, custom: string, identityEmail: string | null) {
+  if(!b.creator)return false;
   const query = custom.trim().toLocaleLowerCase();
-  if (query) return [b.author, b.authorEmail].some(s => s.toLocaleLowerCase().includes(query));
+  if (query) return [b.creator.name, b.creator.email].some(s => s.toLocaleLowerCase().includes(query));
   // Default is exact email equality, never a guessed name or HEAD identity.
   const email = identityEmail?.trim().toLocaleLowerCase();
-  return !!email && b.authorEmail.trim().toLocaleLowerCase() === email;
+  return !!email && b.creator.email.trim().toLocaleLowerCase() === email;
 }
 export function isRemoteDeleted(b: ManagedBranch) {
   return b.local && b.gone && !!b.upstream?.startsWith("refs/remotes/");
@@ -59,9 +60,9 @@ export function isRemoteDeleted(b: ManagedBranch) {
 export function selectBranches(branches: ManagedBranch[], preferences: BranchPreferences, search: string, worktrees: Worktree[], now = Date.now(), identityEmail: string | null = null) {
   const query = search.trim().toLocaleLowerCase();
   return branches.filter(b => (preferences.scope === "all" || b.local === (preferences.scope === "local")) &&
-    (!preferences.onlyMine || matchesBranchAuthor(b, preferences.authorQuery, identityEmail)) &&
+    (!preferences.onlyMine || matchesBranchCreator(b, preferences.authorQuery, identityEmail)) &&
     (!preferences.remoteDeleted || isRemoteDeleted(b)) &&
-    (!query || [b.name, b.fullRef, b.author, b.authorEmail, b.subject, b.oid].some(s => s.toLocaleLowerCase().includes(query))) &&
+    (!query || [b.name, b.fullRef, b.author, b.authorEmail, b.creator?.name??"", b.creator?.email??"", b.subject, b.oid].some(s => s.toLocaleLowerCase().includes(query))) &&
     matchesFilter(b, preferences.filter, preferences, worktrees, now))
     .sort((a, b) => (preferences.sort === "name" ? a.name.localeCompare(b.name) : preferences.sort === "divergence" ? (b.ahead + b.behind) - (a.ahead + a.behind) : b.time - a.time) || a.fullRef.localeCompare(b.fullRef));
 }

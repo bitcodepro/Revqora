@@ -9,7 +9,7 @@ export function restorePrPreferences(value: unknown): PrPreferences {
 }
 export function loadPrPreferences(root: string): PrPreferences { try { return restorePrPreferences(JSON.parse(localStorage.getItem(prPreferencesKey(root)) ?? "null")); } catch { return restorePrPreferences(null); } }
 export function appendPullRequests(before: PullRequest[], page: PullRequest[]): PullRequest[] { const items = new Map(before.map(p => [p.number, p])); for (const p of page) items.set(p.number, p); return [...items.values()]; }
-export function searchPullRequests(items: PullRequest[], query: string): PullRequest[] { const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean); return items.filter(p => terms.every(q => `${p.number} #${p.number} ${p.title} ${p.author} ${p.head} ${p.base} ${p.state}`.toLowerCase().includes(q))); }
+export function searchPullRequests(items: PullRequest[], query: string): PullRequest[] { const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean); return items.filter(p => terms.every(q => `${p.number} #${p.number} ${p.title} ${p.author} ${p.authorLogin??""} ${p.head} ${p.base} ${p.state}`.toLowerCase().includes(q))); }
 export function pullRequestNumber(value: string): number | null { if (!/^#?[1-9]\d*$/.test(value.trim())) return null; const n = Number(value.trim().replace(/^#/, "")); return Number.isSafeInteger(n) ? n : null; }
 export function safeWebUrl(value: string | null | undefined): string | null { if (!value || /[\u0000-\u001f\u007f]/.test(value)) return null; try { const u = new URL(value); return ["https:", "http:"].includes(u.protocol) && !!u.hostname && !u.username && !u.password ? u.href : null; } catch { return null; } }
 export const utf8Length = (value: string) => new TextEncoder().encode(value).length;

@@ -155,12 +155,26 @@ checkpoint containing all selected tips. Saving recovery data may take time;
 disabling it skips that work. Protection, worktree and exact-tip checks still apply.
 
 Combine **My branches** with **Remote deleted** to find local cleanup candidates.
-My branches matches the tip author's email against this repository's effective
-Git `user.email` (including local, conditional and worktree configuration).
-The settings button beside it opens **Branch author filter**: enter an email or
-author name to match part of either field, or choose **Use Git email** to reset.
-The choice is saved per repository. Git does not record branch ownership, so a
-tip-author match is a navigation aid; always review history before deleting.
+My branches matches the recorded branch creator's email against this repository's
+effective Git `user.email` (including local, conditional and worktree configuration).
+The settings button beside it opens **Branch creator filter**: enter an email or
+creator name to match part of either field, or choose **Use Git email** to reset.
+The choice is saved per repository. Creation provenance comes from the local
+branch creation reflog, not the first or latest commit's author. Later commits
+by someone else do not change it; renames retain it and copies have a new creator.
+Revqora records named creation sources with their full Git namespace, so changing
+the source later cannot change the recorded creator. Explicit revisions such as
+`HEAD~1`, `main^` and historical reflog selectors are supported. Branch creation
+also accepts Git's unique merge-base shorthand (`main...other`, `...other`,
+`main...`); multiple or missing merge bases leave the repository unchanged.
+Upstream/push selectors are case-insensitive and do not establish historical
+local creation. Older unqualified named
+sources are ambiguous and stay unknown; today's branches or tags cannot prove
+which namespace was selected at creation time.
+Git does not publish branch creators over Fetch/Clone. Imported remote branches,
+expired/missing creation logs, unsupported reftable logs and oversized logs have
+unknown creators and are excluded rather than guessed. This is a local navigation
+filter, not proof of ownership on the hosting server or authorization to delete.
 
 In the sidebar, a local branch and its configured remote upstream appear once
 under **Branches**, with a cloud icon and any incoming/down or outgoing/up commit
@@ -170,6 +184,14 @@ in graph** for the remote branch. A drive icon means no remote upstream is confi
 cloud means that upstream is missing after Fetch. **Remotes** contains branches
 without a linked local branch. Counts and missing-upstream state use cached refs;
 Fetch updates them without changing your working files.
+
+The sidebar also offers **My branches** and **Recent first**. Recent order shows
+full branch names with the latest commit at the top; choose **Name / folders**
+for the grouped tree. The pencil beside My branches shares the custom author
+setting with Branch Manager. The filter and sort order are remembered per repository.
+Repository activation restores cached history, scroll position and file previews
+immediately, then revalidates local data in the background. Working-diff line
+actions stay unavailable until the fresh diff has been checked.
 
 ### Fetch, Pull, Push and Sync
 
@@ -225,6 +247,14 @@ See [Conflict Studio](https://github.com/bitcodepro/Revqora/blob/main/docs/CONFL
    method before merging or requesting a supported merge queue.
 5. After the server confirms a merge, use **Source cleanup…** if you want to review
    deletion of the source branch. Cleanup is separate from merging.
+
+Use the author selector below the PR search field to choose **My pull requests**,
+**All authors**, or a discovered author. Your connected account appears first.
+With a token that cannot read its profile, choose your author once or enter your
+hosting username; additional profile permission is not required. Author choices
+are isolated by repository and account. Search and author filters combine. The
+selector collects authors from loaded pages and continues through a few older
+pages when no match is found; **Load more requests** includes further history.
 
 Integrations cover GitHub/Enterprise, GitLab, Azure DevOps, Bitbucket Cloud and
 Bitbucket Server/Data Center. Capabilities differ by provider and permissions:

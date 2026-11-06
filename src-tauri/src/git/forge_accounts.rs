@@ -905,6 +905,7 @@ fn info_for_profile(p: &Profile, url: &str, remote: &str, allow_ssh_alias: bool)
         api: server.api(),
         connection_revision: None,
         account_login: Some(p.login.clone()),
+        account_id: Some(p.id.clone()),
     })
 }
 pub struct Context {

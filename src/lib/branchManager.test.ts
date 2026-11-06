@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaults, isProtected, matchesFilter, matchesRule, preferencesKey, restoreBranchPreferences, selectBranches } from "./branchManager";
 import type { ManagedBranch, Worktree } from "./types";
-const branch = (patch: Partial<ManagedBranch> = {}): ManagedBranch => ({ fullRef: "refs/heads/topic", name: "topic", oid: "a".repeat(40), local: true, current: false, upstream: null, ahead: 0, behind: 0, gone: false, time: 100, author: "Author", authorEmail: "me@example.invalid", subject: "Implement login", merged: false, protectionNames: ["topic"], mappingKnown: true, ...patch });
+const branch = (patch: Partial<ManagedBranch> = {}): ManagedBranch => ({ fullRef: "refs/heads/topic", name: "topic", oid: "a".repeat(40), local: true, current: false, upstream: null, ahead: 0, behind: 0, gone: false, time: 100, author: "Author", authorEmail: "tip@example.invalid", creator:{name:"Creator",email:"me@example.invalid"}, subject: "Implement login", merged: false, protectionNames: ["topic"], mappingKnown: true, ...patch });
 describe("branch manager decisions", () => {
   it("protects aliases of actual server branches and supports bounded wildcard rules", () => {
     expect(isProtected(branch({ name: "origin/innocent", protectionNames: ["origin/innocent", "main"] }), defaults.protections)).toBe(true);
@@ -38,7 +38,7 @@ describe("branch manager decisions", () => {
   });
   it("intersects My branches with missing remote upstreams using the configured email exactly", () => {
     const gone = branch({ upstream: "refs/remotes/origin/topic", gone: true });
-    const branches = [gone, branch({ name: "other", authorEmail: "not-me@example.invalid", upstream: gone.upstream, gone: true }), branch({ name: "local-only" }), branch({ name: "local-tracking", upstream: "refs/heads/deleted", gone: true }), branch({ name: "published", upstream: gone.upstream })];
+    const branches = [gone, branch({ name: "other", authorEmail: "me@example.invalid", creator:{name:"Other",email:"not-me@example.invalid"}, upstream: gone.upstream, gone: true }), branch({ name: "local-only" }), branch({ name: "local-tracking", upstream: "refs/heads/deleted", gone: true }), branch({ name: "published", upstream: gone.upstream })];
     const prefs = { ...defaults, onlyMine: true, remoteDeleted: true };
     expect(selectBranches(branches,prefs,"",[],0," ME@EXAMPLE.INVALID ")).toEqual([gone]);
     expect(selectBranches(branches,prefs,"",[],0,null)).toEqual([]);
@@ -46,11 +46,12 @@ describe("branch manager decisions", () => {
   });
   it("supports persisted custom author names/emails without changing the default Git identity", () => {
     const prefs = restoreBranchPreferences({...defaults,onlyMine:true,authorQuery:"  Alice Example  "});
-    const alice = branch({author:"Alice Example",authorEmail:"alice@work.invalid"});
+    const alice = branch({author:"Alice Example",authorEmail:"alice@work.invalid",creator:{name:"Alice Example",email:"alice@work.invalid"}});
     expect(selectBranches([alice,branch()],prefs,"",[],0,"me@example.invalid")).toEqual([alice]);
     expect(selectBranches([alice],{...prefs,authorQuery:"ALICE@WORK"},"",[],0,null)).toEqual([alice]);
     expect(selectBranches([alice],{...prefs,authorQuery:""},"",[],0,"me@example.invalid")).toEqual([]);
     expect(restoreBranchPreferences({onlyMine:"true",remoteDeleted:1,authorQuery:{}})).toEqual(defaults);
     expect(selectBranches([alice],defaults,"alice@work",[])).toEqual([alice]);
   });
+  it("never calls an unknown creator mine just because I committed on that branch",()=>{expect(selectBranches([branch({creator:null,authorEmail:"me@example.invalid"})],{...defaults,onlyMine:true},"",[],0,"me@example.invalid")).toEqual([]);});
 });

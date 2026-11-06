@@ -168,7 +168,7 @@ pub fn worktree_add(repo: &Path, path: &str, branch: Option<&str>, new_branch: O
         args.push(nb.trim().into());
         args.push(path.into());
         if let Some(s) = start {
-            args.push(s.into());
+            args.push(super::branch_origin::qualified_start(repo, s)?);
         }
     } else {
         args.push(path.into());

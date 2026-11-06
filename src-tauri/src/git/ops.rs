@@ -306,12 +306,13 @@ pub fn checkout(repo: &Path, target: &str, kind: &str) -> GitResult<String> {
 pub fn create_branch(repo: &Path, name: &str, start: Option<&str>, checkout: bool) -> GitResult<()> {
     let name = name.trim();
     runner::run(repo, ["check-ref-format", "--branch", name]).map_err(|_| GitError::new(format!("'{name}' is not a valid branch name.")))?;
+    let qualified = start.map(|s| super::branch_origin::branch_start(repo, s)).transpose()?;
     let mut args = if checkout { vec!["switch", "--no-overwrite-ignore", "-c", name] } else { vec!["branch", name] };
     if let Some(s) = start {
-        if checkout && s.contains('/') && runner::exec(repo, ["show-ref", "--verify", "--quiet", &format!("refs/remotes/{s}")])?.ok() {
+        if checkout && qualified.as_deref().is_some_and(|reference| reference.starts_with("refs/remotes/")) {
             args.push("--no-track");
         }
-        args.push(s);
+        args.push(qualified.as_deref().unwrap_or(s));
     }
     runner::run(repo, &args)?;
     Ok(())

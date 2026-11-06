@@ -23,6 +23,8 @@ pub struct ForgeInfo {
     pub api: String,
     pub connection_revision: Option<String>,
     pub account_login: Option<String>,
+    /// Stable public profile ID, independent of display login and token text.
+    pub account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,6 +33,8 @@ pub struct PullRequest {
     pub number: u64,
     pub title: String,
     pub author: String,
+    pub author_id: String,
+    pub author_login: String,
     pub head: String,
     pub base: String,
     pub url: String,
@@ -126,7 +130,17 @@ pub fn azure_project(url: &str, server: &str) -> Option<String> {
 pub fn forge_for(url: &str, remote: &str) -> Option<ForgeInfo> {
     let (host, project) = parse_remote(url)?;
     let info = |kind: &str, project: String, web_url: String, api: String| {
-        Some(ForgeInfo { kind: kind.into(), host: host.clone(), project, remote: remote.into(), web_url, api, connection_revision: None, account_login: None })
+        Some(ForgeInfo {
+            kind: kind.into(),
+            host: host.clone(),
+            project,
+            remote: remote.into(),
+            web_url,
+            api,
+            connection_revision: None,
+            account_login: None,
+            account_id: None,
+        })
     };
     if host == "dev.azure.com" || host == "ssh.dev.azure.com" || host.ends_with(".visualstudio.com") {
         let org = if host == "ssh.dev.azure.com" {
@@ -367,12 +381,17 @@ fn error_message(v: &Value) -> Option<String> {
 fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
 }
+fn user_id(v: &Value, path: &str) -> String {
+    v.pointer(path).map(|x| x.as_str().map(str::to_owned).or_else(|| x.as_u64().map(|n| n.to_string())).unwrap_or_default()).unwrap_or_default()
+}
 
 pub(super) fn gh_pr(v: &Value) -> PullRequest {
     PullRequest {
         number: v.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
         title: s(v, "title"),
         author: v.get("user").map(|u| s(u, "login")).unwrap_or_default(),
+        author_id: user_id(v, "/user/id"),
+        author_login: p(v, "/user/login"),
         head: v.get("head").map(|h| s(h, "ref")).unwrap_or_default(),
         base: v.get("base").map(|h| s(h, "ref")).unwrap_or_default(),
         url: s(v, "html_url"),
@@ -388,6 +407,8 @@ pub(super) fn gl_mr(v: &Value) -> PullRequest {
         number: v.get("iid").and_then(|n| n.as_u64()).unwrap_or(0),
         title: s(v, "title"),
         author: v.get("author").map(|u| s(u, "username")).unwrap_or_default(),
+        author_id: user_id(v, "/author/id"),
+        author_login: p(v, "/author/username"),
         head: s(v, "source_branch"),
         base: s(v, "target_branch"),
         url: s(v, "web_url"),
@@ -407,6 +428,8 @@ pub fn bb_pr(v: &Value) -> PullRequest {
         number: v.get("id").and_then(|n| n.as_u64()).unwrap_or(0),
         title: s(v, "title"),
         author: Some(p(v, "/author/nickname")).filter(|a| !a.is_empty()).unwrap_or_else(|| p(v, "/author/display_name")),
+        author_id: user_id(v, "/author/uuid"),
+        author_login: p(v, "/author/nickname"),
         head: p(v, "/source/branch/name"),
         base: p(v, "/destination/branch/name"),
         url: p(v, "/links/html/href"),
@@ -422,6 +445,8 @@ pub fn bbs_pr(v: &Value) -> PullRequest {
         number: v.get("id").and_then(|n| n.as_u64()).unwrap_or(0),
         title: s(v, "title"),
         author: Some(p(v, "/author/user/name")).filter(|a| !a.is_empty()).unwrap_or_else(|| p(v, "/author/user/displayName")),
+        author_id: user_id(v, "/author/user/id"),
+        author_login: p(v, "/author/user/name"),
         head: p(v, "/fromRef/displayId"),
         base: p(v, "/toRef/displayId"),
         url: p(v, "/links/self/0/href"),
@@ -463,6 +488,8 @@ pub(super) fn azure_pr(v: &Value, f: &ForgeInfo) -> PullRequest {
         number,
         title: s(v, "title"),
         author: p(v, "/createdBy/displayName"),
+        author_id: user_id(v, "/createdBy/id"),
+        author_login: p(v, "/createdBy/uniqueName"),
         head: s(v, "sourceRefName").strip_prefix("refs/heads/").unwrap_or(&s(v, "sourceRefName")).into(),
         base: s(v, "targetRefName").strip_prefix("refs/heads/").unwrap_or(&s(v, "targetRefName")).into(),
         url: format!("{}/pullrequest/{number}", f.web_url),
@@ -587,8 +614,8 @@ pub fn checkout(repo: &Path, number: u64, expected_connection: &str, expected_he
             expected_head.to_owned()
         }
         "bitbucket" => {
-            let v = request(repo, &f, "GET", &format!("/repositories/{}/pullrequests/{number}", project_path(&f.project)), None)?;
-            if p(&v, "/source/commit/hash") != expected_head {
+            let (detail, v) = super::pr_center::load_detail(repo, &f, number)?;
+            if detail.pull.head_sha != expected_head {
                 return Err(GitError::new("The PR source changed. Refresh before checkout.").kind("stale-operation"));
             }
             let branch = p(&v, "/source/branch/name");
@@ -648,7 +675,7 @@ fn fetch_pr_branch(repo: &Path, remote: &str, source: &str, number: u64, expecte
         } else {
             runner::run(repo, ["branch", "--", &local, expected_head])?;
         }
-        runner::run(repo, ["switch", "--", &local])?;
+        runner::run(repo, ["switch", "--no-overwrite-ignore", "--", &local])?;
         Ok(local)
     })();
     // Remove only this operation's private pin, using its observed object ID.
@@ -999,7 +1026,13 @@ mod checkout_tests {
         std::fs::create_dir(&source).unwrap();
         let hooks = t.path().join("no-hooks").to_string_lossy().into_owned();
         runner::run(&source, ["init", "-qb", "main"]).unwrap();
-        for (k, v) in [("user.name", "Test"), ("user.email", "test@example.invalid"), ("commit.gpgsign", "false"), ("core.hooksPath", hooks.as_str())] {
+        for (k, v) in [
+            ("user.name", "Test"),
+            ("user.email", "test@example.invalid"),
+            ("commit.gpgsign", "false"),
+            ("core.autocrlf", "false"),
+            ("core.hooksPath", hooks.as_str()),
+        ] {
             runner::run(&source, ["config", k, v]).unwrap();
         }
         std::fs::write(source.join("file.txt"), "base\n").unwrap();
@@ -1008,8 +1041,20 @@ mod checkout_tests {
         let base = runner::run(&source, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
         runner::run(&source, ["update-ref", "refs/pull/7/head", &base]).unwrap();
         let local = t.path().join("local");
-        runner::run(t.path(), ["-c", &format!("core.hooksPath={hooks}"), "clone", "-q", source.to_str().unwrap(), local.to_str().unwrap()]).unwrap();
-        for (k, v) in [("user.name", "Test"), ("user.email", "test@example.invalid"), ("commit.gpgsign", "false"), ("core.hooksPath", hooks.as_str())] {
+        // Clone's first checkout must use the same LF policy as the byte-level
+        // assertions; configuring it only afterwards is too late on Windows.
+        runner::run(
+            t.path(),
+            ["-c", "core.autocrlf=false", "-c", &format!("core.hooksPath={hooks}"), "clone", "-q", source.to_str().unwrap(), local.to_str().unwrap()],
+        )
+        .unwrap();
+        for (k, v) in [
+            ("user.name", "Test"),
+            ("user.email", "test@example.invalid"),
+            ("commit.gpgsign", "false"),
+            ("core.autocrlf", "false"),
+            ("core.hooksPath", hooks.as_str()),
+        ] {
             runner::run(&local, ["config", k, v]).unwrap();
         }
         (t, source, local, base)
@@ -1034,6 +1079,44 @@ mod checkout_tests {
         assert_eq!(runner::run(&local, ["rev-parse", &format!("refs/heads/{branch}")]).unwrap().trim(), user);
         assert_eq!(runner::run(&local, ["rev-parse", "HEAD"]).unwrap().trim(), base);
         no_pins(&local);
+    }
+    #[test]
+    fn pr_checkout_preserves_ignored_file_and_directory_collisions_until_the_user_moves_them() {
+        for directory in [false, true] {
+            let (t, source, local, base) = fixture();
+            let ignored = if directory { "ignored" } else { "ignored.txt" };
+            let tracked = if directory { "ignored/child.txt" } else { ignored };
+            if directory {
+                std::fs::create_dir(source.join(ignored)).unwrap();
+            }
+            std::fs::write(source.join(tracked), "incoming PR content\n").unwrap();
+            runner::run(&source, ["add", "."]).unwrap();
+            runner::run(&source, ["commit", "-qm", "Add PR file"]).unwrap();
+            let tip = runner::run(&source, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+            runner::run(&source, ["update-ref", "refs/pull/7/head", &tip]).unwrap();
+            std::fs::write(local.join(".git/info/exclude"), format!("/{ignored}\n")).unwrap();
+            std::fs::write(local.join(ignored), "irreplaceable ignored local data\n").unwrap();
+            std::fs::write(local.join("file.txt"), "uncommitted tracked edit\n").unwrap();
+            let index = std::fs::read(local.join(".git/index")).unwrap();
+            let result = fetch_pr_branch(&local, "origin", "refs/pull/7/head", 7, &tip);
+            assert!(result.is_err(), "PR checkout overwrote the ignored path {ignored}");
+            assert_eq!(std::fs::read(local.join(ignored)).unwrap(), b"irreplaceable ignored local data\n");
+            assert_eq!(std::fs::read(local.join("file.txt")).unwrap(), b"uncommitted tracked edit\n");
+            assert_eq!(std::fs::read(local.join(".git/index")).unwrap(), index);
+            assert_eq!(runner::run(&local, ["rev-parse", "HEAD"]).unwrap().trim(), base);
+            assert_eq!(runner::run(&local, ["branch", "--show-current"]).unwrap().trim(), "main");
+            no_pins(&local);
+            // Only after an explicit user move can checkout proceed. The saved
+            // ignored content and unrelated tracked edits must both survive.
+            let saved = t.path().join("saved-ignored");
+            std::fs::rename(local.join(ignored), &saved).unwrap();
+            fetch_pr_branch(&local, "origin", "refs/pull/7/head", 7, &tip).unwrap();
+            assert_eq!(std::fs::read(saved).unwrap(), b"irreplaceable ignored local data\n");
+            assert_eq!(std::fs::read(local.join(tracked)).unwrap(), b"incoming PR content\n");
+            assert_eq!(std::fs::read(local.join("file.txt")).unwrap(), b"uncommitted tracked edit\n");
+            assert_eq!(runner::run(&local, ["rev-parse", "HEAD"]).unwrap().trim(), tip);
+            no_pins(&local);
+        }
     }
     #[test]
     fn changed_pr_heads_and_symbolic_branch_aliases_are_rejected_without_forcing_refs() {

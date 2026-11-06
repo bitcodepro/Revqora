@@ -103,7 +103,7 @@ export function BranchManager({ root }: { root: string }) {
   const { start, end } = virtualRange(rows.length, ROW, height, scroll);
   const editAuthor = async () => {
     const value = await showDialog<string | null>(close => <AuthorFilter initial={prefs.authorQuery} email={snapshot?.identityEmail ?? null} close={close} />);
-    if (value !== null) update({ authorQuery: value, onlyMine: !!value || !!snapshot?.identityEmail });
+    if (value !== null) {update({ authorQuery: value, onlyMine: !!value || !!snapshot?.identityEmail });window.dispatchEvent(new CustomEvent("revqora:branch-author",{detail:{root,query:value}}));}
   };
   const choose = (index: number) => {
     const i = Math.max(0, Math.min(rows.length - 1, index));
@@ -130,12 +130,12 @@ export function BranchManager({ root }: { root: string }) {
     </div>
     {rulesOpen && <div className="bm-rules"><label>Protect rename and deletion in this manager. One branch name or wildcard (*, ?) per line. These are local UI rules.<textarea className="input mono" aria-label="Branch protection rules" rows={3} value={rules} onChange={e => setRules(e.target.value)} /></label><button className="btn primary" onClick={() => { update({ protections: rules.split(/\r?\n/) }); setRulesOpen(false); }}>Save rules</button></div>}
     <nav className="bm-filters" aria-label="Branch filters">{branchFilters.map(f => <button className={`btn ${prefs.filter === f ? "active" : ""}`} aria-pressed={prefs.filter === f} key={f} onClick={() => update({ filter: f })}>{f}</button>)}
-      <button className={`btn ${prefs.onlyMine ? "active" : ""}`} aria-pressed={prefs.onlyMine} disabled={!prefs.onlyMine && !prefs.authorQuery && !snapshot?.identityEmail} title={prefs.authorQuery ? `Tip author name or email contains: ${prefs.authorQuery}` : snapshot?.identityEmail ? `Tip author email equals Git user.email: ${snapshot.identityEmail}` : "Set Git user.email or choose a custom author."} onClick={() => update({ onlyMine: !prefs.onlyMine })}>{prefs.authorQuery ? "By author" : "My branches"}</button>
-      <button className="icon-btn" aria-label="Configure branch author filter" title="Choose author email or name" onClick={() => void editAuthor()}><Settings2 size={15} /></button>
+      <button className={`btn ${prefs.onlyMine ? "active" : ""}`} aria-pressed={prefs.onlyMine} disabled={!prefs.onlyMine && !prefs.authorQuery && !snapshot?.identityEmail} title={prefs.authorQuery ? `Recorded creator name or email contains: ${prefs.authorQuery}` : snapshot?.identityEmail ? `Recorded creator email equals Git user.email: ${snapshot.identityEmail}` : "Set Git user.email or choose a custom author."} onClick={() => update({ onlyMine: !prefs.onlyMine })}>{prefs.authorQuery ? "By creator" : "My branches"}</button>
+      <button className="icon-btn" aria-label="Configure branch creator filter" title="Choose branch creator email or name" onClick={() => void editAuthor()}><Settings2 size={15} /></button>
       <button className={`btn ${prefs.remoteDeleted ? "active" : ""}`} aria-pressed={prefs.remoteDeleted} title="Local branches whose configured remote upstream is missing after Fetch." onClick={() => update({ remoteDeleted: !prefs.remoteDeleted })}><CloudOff size={14} />Remote deleted</button>
       <label>Stale after <input className="input" type="number" min={1} max={3650} aria-label="Stale branch days" value={prefs.staleDays} onChange={e => update({ staleDays: Number(e.target.value) })} /> days</label>
     </nav>
-    {prefs.onlyMine && <div className="bm-author-summary">Tip author {prefs.authorQuery ? <>name or email contains <b>{prefs.authorQuery}</b></> : <>email matches Git <code>user.email</code>: <b>{snapshot?.identityEmail ?? "not configured"}</b></>}. Git does not record branch ownership; this filter uses the latest commit author.</div>}
+    {prefs.onlyMine && <div className="bm-author-summary">Recorded branch creator {prefs.authorQuery ? <>name or email contains <b>{prefs.authorQuery}</b></> : <>email matches Git <code>user.email</code>: <b>{snapshot?.identityEmail ?? "not configured"}</b></>}. Unknown creators (remote imports, missing or expired creation logs) are excluded. Commit authors do not determine ownership.</div>}
     <div className="bm-bulk">
       <button className="btn" disabled={loading || pending || !rows.length} onClick={() => setChecked(Object.fromEntries(rows.slice(0, 50).map(b => [b.fullRef, { reference: b.fullRef, oid: b.oid, mode: b.local ? "local" : "remote" }])))}>Select shown (up to 50)</button>
       <span>{Object.keys(checked).length} selected · {Object.keys(checked).filter(ref => !rows.some(b => b.fullRef === ref)).length} hidden by filter</span>
@@ -188,13 +188,13 @@ export function BranchManager({ root }: { root: string }) {
 
 function AuthorFilter({ initial, email, close }: { initial: string; email: string | null; close: (value: string | null) => void }) {
   const [value, setValue] = useState(initial);
-  return <Modal title="Branch author filter" onClose={() => close(null)} onSubmit={() => close(value.trim())} footer={<>
+  return <Modal title="Branch creator filter" onClose={() => close(null)} onSubmit={() => close(value.trim())} footer={<>
     <button type="button" className="btn" onClick={() => close(null)}>Cancel</button>
     <button type="button" className="btn" onClick={() => close("")}>Use Git email</button>
     <button type="submit" className="btn primary">Apply filter</button>
   </>}>
-    <label className="field">Author email or name<input className="input" aria-label="Branch author email or name" maxLength={256} value={value} placeholder={email ?? "Email or author name"} onChange={e => setValue(e.target.value)} /></label>
+    <label className="field">Creator email or name<input className="input" aria-label="Branch creator email or name" maxLength={256} value={value} placeholder={email ?? "Email or author name"} onChange={e => setValue(e.target.value)} /></label>
     <p className="muted">Leave empty to match the exact email from this repository’s Git configuration: <b>{email ?? "user.email is not configured"}</b>.</p>
-    <p className="muted">Custom text matches part of the tip author’s name or email, ignoring case. It is saved for this repository and does not change your Git identity. Branch creator/ownership is not stored by Git.</p>
+    <p className="muted">Custom text matches part of the recorded branch creator’s name or email, ignoring case. It is saved for this repository and does not change your Git identity. Creation logs are local: cloning or checking out another person's remote branch does not make you its creator. Unknown creators are excluded.</p>
   </Modal>;
 }

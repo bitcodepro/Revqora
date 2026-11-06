@@ -724,17 +724,16 @@ async fn graph_load(
     let prev = state.graphs.lock().get(&repo).cloned();
     let cache = blocking(move || graph::build_with(&p(&repo), branch.as_deref(), include_worktree, limit.unwrap_or(150_000), fast, prev.as_deref())).await?;
     let head_index = cache.rows.iter().position(|r| r.is_head);
-    let summary = GraphSummary { key: cache.key.clone(), total: cache.rows.len(), max_lanes: cache.max_lanes, head_index };
+    let summary = GraphSummary { head_oid: cache.head_oid.clone(), key: cache.key.clone(), total: cache.rows.len(), max_lanes: cache.max_lanes, head_index };
     state.graphs.lock().insert(key, Arc::new(cache));
     Ok(summary)
 }
 
 #[tauri::command]
-fn graph_rows(state: State<'_, AppState>, repo: String, start: usize, count: usize) -> GitResult<Vec<GraphRow>> {
+fn graph_rows(state: State<'_, AppState>, repo: String, start: usize, count: usize, expected_key: Option<String>) -> GitResult<Vec<GraphRow>> {
     let graphs = state.graphs.lock();
     let cache = graphs.get(&repo).ok_or_else(|| GitError::new("History is not loaded."))?;
-    let end = (start + count).min(cache.rows.len());
-    Ok(if start >= end { Vec::new() } else { cache.rows[start..end].to_vec() })
+    cache.page(start, count, expected_key.as_deref())
 }
 
 #[tauri::command]
