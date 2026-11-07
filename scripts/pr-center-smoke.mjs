@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
 import {withViewport} from "./ui-driver.mjs";
+import {interceptClipboard} from "./name-path-copy-smoke.mjs";
 
 export async function prCenterSmoke({page,check,shot,work}) {
   const root=path.join(work,"stage13-pr-center"),requests=[],token="stage13-public-fixture-token",a="a".repeat(40),b="b".repeat(40);
@@ -19,7 +20,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
     "diff --git a/long.txt b/long.txt\nnew file mode 100644\n--- /dev/null\n+++ b/long.txt\n@@ -0,0 +1 @@\n+"+"long-line-".repeat(120)+"\n"+
     "diff --git a/asset.bin b/asset.bin\nBinary files a/asset.bin and b/asset.bin differ\n"+
     "diff --git a/mode.txt b/mode.txt\nold mode 100644\nnew mode 100755\n";
-  let hold=null,nextCreated=100,loseCreateResponse=false,loseEditResponse=false;const mergeFixture=createPrMergeFixture({pulls});const reviewFixture=createPrReviewFixture({pulls,a});
+  let hold=null,holdList=null,nextCreated=100,loseCreateResponse=false,loseEditResponse=false;const mergeFixture=createPrMergeFixture({pulls});const reviewFixture=createPrReviewFixture({pulls,a});
   const server=http.createServer(async(req,res)=>{
     let body="";for await(const chunk of req)body+=chunk;const url=new URL(req.url,"http://fixture"),entry={method:req.method,path:req.url,body:body?JSON.parse(body):null};requests.push(entry);
     if(req.headers.authorization!==`Bearer ${token}`){res.writeHead(401);res.end("{}");return;}
@@ -37,6 +38,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
     }
     if(url.pathname.endsWith("/pulls")){
       if(req.method==="POST"){const n=nextCreated++;const p={...pulls.get(1),...entry.body,number:n,head:{ref:entry.body.head,sha:a},base:{ref:entry.body.base,sha:b},updated_at:"created"};pulls.set(n,p);if(loseCreateResponse){loseCreateResponse=false;res.writeHead(503);res.end("{}");return;}return send(p);}
+      if(holdList){const gate=holdList;holdList=null;gate.started();await gate.response;}
       const state=url.searchParams.get("state"),rows=[...pulls.values()].filter(p=>state==="all"||p.state===state),offset=(Number(url.searchParams.get("page")||1)-1)*50;return send(rows.slice(offset,offset+50));
     }
     res.writeHead(404);res.end("{}");
@@ -62,6 +64,34 @@ export async function prCenterSmoke({page,check,shot,work}) {
       await page.locator("[data-pr-loaded='50']").waitFor();await page.getByRole("button",{name:"Load more requests",exact:true}).click();await page.locator("[data-pr-loaded='52']").waitFor();
       const authors=page.getByRole("combobox",{name:"Pull request author",exact:true});if(!await authors.locator("option").first().innerText().then(t=>t.includes("pr-tester")))throw Error("Connected author must be the first choice");await authors.selectOption("mine");await detail(2);if(await page.locator('[data-pr-number="1"]').count())throw Error("My PR filter included another author");await authors.selectOption("id:99");await detail(1);if(await page.locator('[data-pr-number="2"]').count())throw Error("Author dropdown included a different author");await authors.selectOption("all");await openNumber(52);
       await page.getByRole("combobox",{name:"Request status",exact:true}).selectOption("merged");await page.getByText(/No matching requests in the loaded pages/).waitFor();await page.getByRole("combobox",{name:"Request status",exact:true}).selectOption("open");await detail(1);await page.getByRole("textbox",{name:"Search loaded pull requests",exact:true}).fill("");await shot("105-pr-center");
+      // Hold the real forge request until History is rendered. A slow poll must
+      // never block local navigation or replace the currently shown PR.
+      let started, release, timeout;
+      const request=new Promise((resolve,reject)=>{started=resolve;timeout=setTimeout(()=>reject(Error("The PR watch did not start a background request")),15000);});
+      const response=new Promise(resolve=>{release=resolve;});
+      holdList={started,response};
+      const watch=()=>page.getByRole("button",{name:"Watch PR",exact:true});
+      try{
+        await Promise.all([watch().click(),request]);
+        if(await watch().getAttribute("aria-pressed")!=="true")throw Error("The selected PR was not marked as watched");
+        const historyStart=performance.now();
+        await page.getByRole("button",{name:"History",exact:true}).click();
+        await page.locator(".graph-scroll .grow").first().waitFor();
+        console.log(`History rendered during held PR activity request in ${Math.round(performance.now()-historyStart)} ms`);
+      }finally{clearTimeout(timeout);holdList=null;release();}
+      await page.getByRole("button",{name:"Pull requests",exact:true}).click();await detail(1);
+      if(await watch().getAttribute("aria-pressed")!=="true")throw Error("The watch was lost during navigation");
+      await watch().click();
+      await interceptClipboard(page);
+      try {
+        const expected=`${url}/team/repo/pull/2`;
+        await page.locator('[data-pr-number="2"]').click({button:"right"});
+        await page.locator(".ctx-menu").getByText("Copy URL",{exact:true}).click();
+        await page.waitForFunction(expected=>window.__namePathCopies.at(-1)===expected,expected);
+        if(!await page.locator('[data-pr-detail="1"]').isVisible())throw Error("Copying a PR URL changed the selection");
+      } finally {
+        await page.evaluate(()=>window.__restoreNamePathClipboard?.());
+      }
     });
     await check("long PR descriptions expand without rendering provider HTML or unsafe browser URLs",async()=>{
       await page.getByRole("button",{name:"Expand description",exact:true}).click();const text=await page.locator(".pr-description-expanded").innerText();if(!text.includes("must-not-load.invalid")||await page.locator(".pr-description-expanded img").count())throw Error("Description was truncated or rendered unsafe HTML");await button("Close").click();

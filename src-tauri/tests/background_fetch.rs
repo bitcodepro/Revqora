@@ -9,6 +9,33 @@ use revqora_lib::git::ops;
 use revqora_lib::git::runner;
 
 #[test]
+fn background_fetch_updates_remote_refs_without_rewriting_fetch_head_or_checkout() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let local = tmp.path().join("local");
+    std::fs::create_dir(&source).unwrap();
+    runner::run(&source, ["init", "-qb", "main"]).unwrap();
+    let commit = |message| {
+        runner::run(
+            &source,
+            ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", message],
+        )
+        .unwrap();
+    };
+    commit("first");
+    runner::run(tmp.path(), ["clone", "-q", "source", "local"]).unwrap();
+    runner::run(&local, ["fetch", "origin"]).unwrap();
+    let fetch_head = local.join(".git").join("FETCH_HEAD");
+    let before = std::fs::read(&fetch_head).unwrap();
+    let original = runner::run(&local, ["rev-parse", "HEAD"]).unwrap();
+    commit("second");
+    ops::fetch_background(&local).unwrap();
+    assert_eq!(runner::run(&local, ["rev-parse", "origin/main"]).unwrap(), runner::run(&source, ["rev-parse", "HEAD"]).unwrap());
+    assert_eq!(runner::run(&local, ["rev-parse", "HEAD"]).unwrap(), original);
+    assert_eq!(std::fs::read(fetch_head).unwrap(), before);
+}
+
+#[test]
 fn background_env_disables_every_prompt() {
     let env = ops::background_env(false);
     let get = |k: &str| env.iter().find(|(key, _)| *key == k).map(|(_, v)| *v);

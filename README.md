@@ -88,7 +88,9 @@ use **Stage into a new layer** or **Seal into a layer** explicitly for that.
 
 ## Features
 
-Right-click a repository or branch name to **Copy name** or **Copy path**.
+Right-click a repository or branch name to **Copy name**, **Copy path** or
+**Copy URL**. Right-click a pull request in PR Center to copy its URL.
+Branch URLs follow the known remote branch, including renamed tracking branches.
 For a branch, the path is its repository folder, not a file inside `.git`.
 These actions are available in the sidebar, history graph branch badges,
 Branch Manager, repository overview/library, recent repositories and active
@@ -316,6 +318,17 @@ hosting username; additional profile permission is not required. Author choices
 are isolated by repository and account. Search and author filters combine. The
 selector collects authors from loaded pages and continues through a few older
 pages when no match is found; **Load more requests** includes further history.
+
+Click the bell next to a PR title to watch that request, or enable **My PRs** in
+the PR Center header to watch open requests you created. Revqora checks watched
+requests while you work in other views and shows in-app notifications for new
+approvals, requests for changes, and comments from other authors. The first
+successful check establishes the baseline. If profile access is unavailable,
+set your author so Revqora can identify your own comments.
+
+In **Settings → Behaviour**, set **PR activity check** and **Git auto-fetch**
+independently. Both default to five minutes and can be turned off. Auto-fetch
+updates remote refs for open repositories so you can see incoming commits.
 
 Integrations cover GitHub/Enterprise, GitLab, Azure DevOps, Bitbucket Cloud and
 Bitbucket Server/Data Center. Capabilities differ by provider and permissions:

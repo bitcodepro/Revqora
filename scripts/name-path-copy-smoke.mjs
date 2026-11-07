@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 
 // Exercise real rendered context menus without reading or replacing the user's
 // OS clipboard. Probe the test interception immediately, never wait on a hook
 // that may not have installed (e.g. a read-only native property).
-export async function namePathCopySmoke({page,root}) {
-  const repoName=path.basename(root);
+export async function interceptClipboard(page) {
   await page.evaluate(async()=>{
     const previous=Object.getOwnPropertyDescriptor(navigator,"clipboard");
     window.__namePathCopies=[];
@@ -14,6 +14,11 @@ export async function namePathCopySmoke({page,root}) {
     await navigator.clipboard.writeText("interception probe");
     if(window.__namePathCopies.pop()!=="interception probe")throw new Error("Clipboard interception was not installed");
   });
+}
+
+export async function namePathCopySmoke({page,root}) {
+  const repoName=path.basename(root);
+  await interceptClipboard(page);
   const copy=async(target,name)=>{
     for(const [label,expected] of [["Copy name",name],["Copy path",root]]) {
       await target.click({button:"right"});
@@ -70,7 +75,22 @@ export async function namePathCopySmoke({page,root}) {
       }
     }
     await row.getByRole("button",{name:repoName,exact:true}).click();
-    console.log("Copy name/path: headers, sidebar, graph, manager, library and overview passed");
+    const git=(...args)=>execFileSync("git",["-C",root,...args],{encoding:"utf8",windowsHide:true}).trim();
+    const originalUrl=git("remote","get-url","origin");
+    try {
+      git("remote","set-url","origin","https://fixture-user:fixture-password@github.com/example/project.git");
+      for (const [target,expected] of [
+        [page.locator(".topbar .repo-current > b"),"https://github.com/example/project"],
+        [page.locator(".topbar .repo-current > span"),"https://github.com/example/project/tree/main"],
+      ]) {
+        await target.click({button:"right"});
+        await page.locator(".ctx-menu").getByText("Copy URL",{exact:true}).click();
+        await page.waitForFunction(expected=>window.__namePathCopies.at(-1)===expected,expected);
+      }
+    } finally {
+      git("remote","set-url","origin",originalUrl);
+    }
+    console.log("Copy name, path and URL context menus passed");
   } finally {
     await page.evaluate(()=>window.__restoreNamePathClipboard?.());
     if(!branchesWereOpen&&await toggle.isVisible()&&await toggle.getAttribute("aria-expanded")==="true")await toggle.click();

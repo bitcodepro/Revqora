@@ -5,6 +5,11 @@ import { restoreWorkspaceLayouts, type HistoryMode, type WorkspaceLayout, type W
 export type ThemePref = "system" | "dark" | "light";
 export type DiffMode = "unified" | "split";
 export type DateStyle = "relative" | "absolute";
+export interface PullRequestWatch {
+  mineSince: number | null;
+  selected: Record<number, number>;
+}
+export type PullRequestWatches = Record<string, Record<string, PullRequestWatch>>;
 
 export interface Settings {
   theme: ThemePref;
@@ -43,6 +48,8 @@ export interface Settings {
   checkUpdates: boolean;
   /** Background fetch interval in minutes; 0 turns it off. */
   autoFetchMinutes: number;
+  prPollMinutes: number;
+  prWatches: PullRequestWatches;
   /** Graph, stacked Review, or commit/file/diff columns. */
   historyMode: HistoryMode;
   skippedUpdate: string | null;
@@ -92,6 +99,8 @@ export const useSettings = create<Settings>()(
       diffFullFile: false,
       checkUpdates: true,
       autoFetchMinutes: 5,
+      prPollMinutes: 5,
+      prWatches: {},
       historyMode: "graph",
       skippedUpdate: null,
       set: (patch) => set(patch),

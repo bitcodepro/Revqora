@@ -42,6 +42,8 @@ import { StashView } from "./components/StashView";
 import { TreeBrowser } from "./components/TreeBrowser";
 import { startUpdateChecks } from "./lib/update";
 import { createAutoFetch, defaultFetch } from "./lib/autofetch";
+import { useBackgroundPoll } from "./lib/backgroundPolling";
+import { checkPullRequestActivity, resetPullRequestActivity } from "./lib/prTracking";
 import { RepositoryOverview, RepositorySidebar } from "./components/Repositories";
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
@@ -216,31 +218,39 @@ const quietFetch = createAutoFetch({
   fetch: defaultFetch,
   refresh: (root) => {
     useRepos.getState().patch(root, { lastFetchedAt: Date.now(), fetchError: null });
-    return useRepos.getState().refresh(root, { info: true, status: true, refs: true, graph: useRepos.getState().active === root });
+    return useRepos.getState().refresh(root, { background: true, revalidate: true, info: true, status: true, refs: true });
   },
   failed: (root, e) => useRepos.getState().patch(root, { fetchError: errorMessage(e) }),
   busy: () => useUi.getState().busy.length > 0 || useUi.getState().repositoryOperations.length > 0 || Object.values(useRepos.getState().tabs).some((t) => t.pendingMutations > 0),
 });
 
-/** Fetches the open repositories in the background every few minutes (Settings → Auto fetch). */
+/** Fetches open repositories in the background (Settings → Git auto-fetch). */
 function useAutoFetch() {
   const minutes = useSettings((s) => s.autoFetchMinutes);
-  useEffect(() => {
-    if (!minutes) return;
-    const id = setInterval(() => {
-      for (const tab of Object.values(useRepos.getState().tabs)) if (tab.info) void quietFetch(tab.root);
-    }, minutes * 60_000);
-    return () => clearInterval(id);
-  }, [minutes]);
+  useBackgroundPoll(minutes, async current => {
+    const { active, order } = useRepos.getState();
+    const roots = new Set(active ? [active, ...order] : order);
+    for (const root of roots) {
+      if (!current()) return;
+      if (useRepos.getState().tabs[root]?.info) await quietFetch(root);
+    }
+  });
 }
 
 export default function App() {
   useAppearance();
   useEffect(startUpdateChecks, []);
   useAutoFetch();
+  const prPollMinutes = useSettings(s => s.prPollMinutes);
+  const prWatches = useSettings(s => s.prWatches);
+  useBackgroundPoll(prPollMinutes, checkPullRequestActivity, Object.keys(prWatches).length > 0, prWatches);
+  useEffect(() => {
+    window.addEventListener("revqora:forge-accounts", resetPullRequestActivity);
+    return () => window.removeEventListener("revqora:forge-accounts", resetPullRequestActivity);
+  }, []);
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   const pending = useRepos((s) => Object.values(s.tabs).some((t) => t.pendingMutations > 0));
-  const busy = useUi((s) => s.busy.length > 0 || s.repositoryOperations.length > 0) || pending;
+  const busy = useUi((s) => s.busy.length > 0 || s.repositoryOperations.some(op => op.command !== "fetch_background")) || pending;
   const [dropping, setDropping] = useState(false);
   const restored = useRef(false);
   const [startupPhase, setStartupPhase] = useState<StartupPhase>("restoring");
@@ -283,6 +293,7 @@ export default function App() {
     unsubs.push(listen<{ opId: string; line: string }>("op-progress", (e) => updateBusy(e.payload.opId, e.payload.line)));
     unsubs.push(listen<RepositoryOperation>("repository-operation", (e) => {
       updateRepositoryOperation(e.payload);
+      if (e.payload.command === "fetch_background") return;
       if (e.payload.phase === "finished" || e.payload.phase === "failed") {
         // Shared refs can change in another worktree. Refresh all open views.
         for (const root of useRepos.getState().order) {

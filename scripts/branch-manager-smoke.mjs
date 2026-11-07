@@ -333,7 +333,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const errors = []; app.page.on("pageerror", e => errors.push(e.message));
   try {
     await app.page.getByRole("button", { name:"Skip", exact:true }).click({ timeout:60000 });
-    await app.page.getByTitle("Settings",{exact:true}).click();await app.page.locator(".modal label:has-text('Auto fetch') + .seg").getByRole("button",{name:"Off",exact:true}).click();await app.page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
+    await app.page.getByTitle("Settings",{exact:true}).click();await app.page.getByRole("combobox",{name:"Git auto-fetch",exact:true}).selectOption("0");await app.page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
     if (!process.argv.includes("--protection-only")) await branchManagerSmoke({ page:app.page, work, check: async (name,fn) => { await fn(); console.log(`PASS ${name}`); }, shot: name => app.page.screenshot({path:path.join(out,`${name}.png`)}) });
     await branchManagerProtectionSmoke({ page:app.page, work, check: async (name,fn) => { await fn(); console.log(`PASS ${name}`); }, shot: name => app.page.screenshot({path:path.join(out,`${name}.png`)}) });
     if (errors.length) throw new Error(errors.join("\n"));

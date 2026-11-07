@@ -29,6 +29,9 @@ export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Pro
 export async function repositoryCall<T>(invoke: Invoke, command: string, args?: Record<string, unknown>): Promise<T> {
   const repo = typeof args?.repo === "string" ? args.repo : null;
   if (!repo || !MUTATING_COMMANDS.has(command)) return invoke<T>(command, args);
+  // The background sweep owns the refresh. Its Git write still uses the
+  // backend queue, but the foreground controls stay usable while it runs.
+  if (command === "fetch_background") return invoke<T>(command, { ...args, expectedState: null });
   hooks.pending?.(repo, 1);
   try {
     let expectedState: string | null = null;

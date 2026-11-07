@@ -39,7 +39,7 @@ try{
     await page.getByRole("button",{name:"Skip",exact:true}).click();
     await page.waitForSelector(".modal",{state:"detached"});
     await page.getByTitle("Settings",{exact:true}).click();
-    await page.locator(".modal label:has-text('Auto fetch') + .seg").getByRole("button",{name:"Off",exact:true}).click();
+    await page.getByRole("combobox",{name:"Git auto-fetch",exact:true}).selectOption("0");
     await page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
   });
   if(suite==="workspace"){

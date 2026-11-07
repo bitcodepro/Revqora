@@ -35,11 +35,15 @@ export async function fastSwitchSmoke({exe,work,check,out}){
     window.__fastSwitchGate={held,counts,restore:()=>{active=false;for(const release of held)release();window.fetch=original;delete window.__fastSwitchGate;}};
     await bridge.invoke("plugin:app|version");if(probes!==1){window.__fastSwitchGate.restore();throw Error("Native IPC did not pass through fetch gate");}return true;
    });assert(await installGate());
+   const repositorySwitch=performance.now();
    await page.locator(".repository-select").filter({hasText:"switch-one"}).click();await page.locator(".topbar .repo-current > b").filter({hasText:"switch-one"}).waitFor();
    await page.waitForFunction(()=>window.__fastSwitchGate.held.length>0);
    await page.locator(".graph-rows").getByText("Switch first feature",{exact:true}).waitFor();await preview("feature-body");
+   console.log(`Cached repository and diff rendered with native reads held in ${Math.round(performance.now()-repositorySwitch)} ms`);
    assert.equal(await page.getByRole("button",{name:"My branches",exact:true}).getAttribute("aria-pressed"),"true");
+   const branchSwitch=performance.now();
    await branch("main").click();await preview("base-body");await branch("feature/mine").click();await preview("feature-body");
+   console.log(`Two cached branch previews rendered with native reads held in ${Math.round(performance.now()-branchSwitch)} ms`);
    const counts=await page.evaluate(()=>({...window.__fastSwitchGate.counts}));assert.equal(counts.graph_load??0,0,"Activation rebuilt an unchanged graph");assert.equal(git(one,"branch","--show-current"),"main","Single branch clicks must not check out a branch");
    await page.evaluate(()=>window.__fastSwitchGate.restore());
    // Restored working diffs are readable immediately but cannot stage/discard

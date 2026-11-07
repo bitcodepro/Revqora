@@ -93,6 +93,86 @@ pub fn detect(repo: &Path) -> GitResult<Option<ForgeInfo>> {
     Ok(super::forge_accounts::context(repo)?.map(|c| c.info))
 }
 
+fn browser_link(known: Option<&ForgeInfo>, raw_remote: &str, branch: Option<&str>) -> Option<String> {
+    let mut url = url::Url::parse(known.map_or(raw_remote, |f| f.web_url.as_str())).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    url.set_password(None).ok()?;
+    url.set_username("").ok()?;
+    url.set_query(None);
+    url.set_fragment(None);
+    if let Some(branch) = branch {
+        match known?.kind.as_str() {
+            "azure" => {
+                url.query_pairs_mut().append_pair("version", &format!("GB{branch}"));
+            }
+            "bitbucket-server" => {
+                url.path_segments_mut().ok()?.pop_if_empty().push("browse");
+                url.query_pairs_mut().append_pair("at", &format!("refs/heads/{branch}"));
+            }
+            kind => {
+                let mut path = url.path_segments_mut().ok()?;
+                path.pop_if_empty();
+                if kind == "gitlab" {
+                    path.push("-");
+                }
+                path.push(if kind == "bitbucket" { "branch" } else { "tree" }).extend(branch.split('/'));
+            }
+        }
+    }
+    Some(url.into())
+}
+
+fn branch_web_target(repo: &Path, reference: &str) -> GitResult<Option<(String, String)>> {
+    if !reference.starts_with("refs/") || !runner::exec(repo, ["check-ref-format", reference])?.ok() {
+        return Ok(None);
+    }
+    let records =
+        runner::run(repo, ["for-each-ref", "--format=%(refname)%09%(symref)%09%(upstream:remotename)%09%(upstream:remoteref)%09%(upstream)", reference])?;
+    let Some(row) = records.lines().find(|line| line.split('\t').next() == Some(reference)) else { return Ok(None) };
+    let fields: Vec<_> = row.split('\t').collect();
+    if fields.len() != 5 || !fields[1].is_empty() {
+        return Ok(None);
+    }
+    if let Some(name) = reference.strip_prefix("refs/heads/") {
+        let (remote, source, tracking) = (fields[2], fields[3], fields[4]);
+        if !remote.is_empty() {
+            if !source.starts_with("refs/heads/") || tracking.is_empty() || tracking == reference {
+                return Ok(None);
+            }
+            let configured = (remote.to_owned(), source.to_owned());
+            let mapped = super::branch_deletion::tracking_sources(repo, std::iter::once(tracking))?;
+            if !mapped.get(tracking).is_some_and(|targets| targets.contains(&configured)) {
+                return Ok(None);
+            }
+            let refs = runner::run(repo, ["for-each-ref", "--format=%(refname)%09%(symref)", tracking])?;
+            return Ok(refs.lines().any(|row| row.split_once('\t') == Some((tracking, ""))).then_some(configured));
+        }
+        let targets = super::branch_deletion::targets(repo, name)?;
+        return Ok((targets.len() == 1).then(|| (targets[0].remote.clone(), targets[0].remote_ref.clone())));
+    }
+    let mut mapping = super::branch_deletion::tracking_sources(repo, std::iter::once(reference))?;
+    Ok(mapping.remove(reference).filter(|targets| targets.len() == 1).and_then(|targets| targets.into_iter().next()))
+}
+
+/// Resolve the shareable URL locally from Git configuration and tracking refs.
+pub fn web_link(repo: &Path, reference: Option<&str>) -> GitResult<Option<String>> {
+    let target = match reference {
+        Some(reference) => match branch_web_target(repo, reference)? {
+            Some(target) => Some(target),
+            None => return Ok(None),
+        },
+        None => None,
+    };
+    let remotes = super::refs::remotes(repo)?;
+    let Some((remote, known)) = super::forge_accounts::web_target(repo, &remotes, target.as_ref().map(|(name, _)| name.as_str())) else {
+        return Ok(None);
+    };
+    let branch = target.as_ref().and_then(|(_, reference)| reference.strip_prefix("refs/heads/"));
+    Ok(browser_link(known.as_ref(), &remote.fetch_url, branch))
+}
+
 /// Azure's HTTPS, legacy visualstudio.com and v3 SSH forms share one project/repository.
 pub fn azure_project(url: &str, server: &str) -> Option<String> {
     let (host, path) = parse_remote(url)?;
@@ -155,14 +235,16 @@ pub fn forge_for(url: &str, remote: &str) -> Option<ForgeInfo> {
         let (p, r) = project.split_once('/')?;
         return info("azure", project.clone(), format!("{server}/{}/_git/{}", enc(p), enc(r)), server);
     }
+    let web_scheme = if url.starts_with("http://") { "http" } else { "https" };
+    let path = project_path(&project);
     if host == "github.com" {
-        info("github", project.clone(), format!("https://{host}/{project}"), "https://api.github.com".into())
+        info("github", project, format!("https://{host}/{path}"), "https://api.github.com".into())
     } else if host.contains("github") {
-        info("github", project.clone(), format!("https://{host}/{project}"), format!("https://{host}/api/v3"))
+        info("github", project, format!("{web_scheme}://{host}/{path}"), format!("https://{host}/api/v3"))
     } else if host.contains("gitlab") {
-        info("gitlab", project.clone(), format!("https://{host}/{project}"), format!("https://{host}/api/v4"))
+        info("gitlab", project, format!("{web_scheme}://{host}/{path}"), format!("https://{host}/api/v4"))
     } else if host == "bitbucket.org" {
-        info("bitbucket", project.clone(), format!("https://bitbucket.org/{project}"), "https://api.bitbucket.org/2.0".into())
+        info("bitbucket", project, format!("https://bitbucket.org/{path}"), "https://api.bitbucket.org/2.0".into())
     } else if host.contains("bitbucket") {
         // Server / Data Center: https://host[/context]/scm/PROJECT/repo.git or ssh://git@host:7999/PROJECT/repo.git
         let (context, path) = match project.split_once("scm/") {
@@ -170,8 +252,9 @@ pub fn forge_for(url: &str, remote: &str) -> Option<ForgeInfo> {
             None => (String::new(), project.clone()),
         };
         let (key, slug) = path.split_once('/')?;
-        let base = if context.is_empty() { format!("https://{host}") } else { format!("https://{host}/{context}") };
-        info("bitbucket-server", format!("{key}/{slug}"), format!("{base}/projects/{key}/repos/{slug}"), base)
+        let base = if context.is_empty() { format!("https://{host}") } else { format!("https://{host}/{}", project_path(&context)) };
+        let web_base = base.replacen("https", web_scheme, 1);
+        info("bitbucket-server", format!("{key}/{slug}"), format!("{web_base}/projects/{}/repos/{}", enc(key), project_path(slug)), base)
     } else {
         None
     }
@@ -381,7 +464,7 @@ fn error_message(v: &Value) -> Option<String> {
 fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
 }
-fn user_id(v: &Value, path: &str) -> String {
+pub(super) fn user_id(v: &Value, path: &str) -> String {
     v.pointer(path).map(|x| x.as_str().map(str::to_owned).or_else(|| x.as_u64().map(|n| n.to_string())).unwrap_or_default()).unwrap_or_default()
 }
 
@@ -780,6 +863,54 @@ pub fn bitbucket_statuses(f: &ForgeInfo, sha: &str, mut get: impl FnMut(&str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_urls_encode_provider_routes_and_drop_remote_credentials() {
+        for (remote, expected) in [
+            ("https://user:password@github.com/team/repo%23name.git", "https://github.com/team/repo%23name/tree/feature/a%23b"),
+            ("git@gitlab.com:group/team/repo.git", "https://gitlab.com/group/team/repo/-/tree/feature/a%23b"),
+            ("git@bitbucket.org:team/repo.git", "https://bitbucket.org/team/repo/branch/feature/a%23b"),
+            ("ssh://git@ssh.dev.azure.com/v3/org/Project/Repo", "https://dev.azure.com/org/Project/_git/Repo?version=GBfeature%2Fa%23b"),
+            (
+                "https://bitbucket.example/context/scm/PROJ/repo.git",
+                "https://bitbucket.example/context/projects/PROJ/repos/repo/browse?at=refs%2Fheads%2Ffeature%2Fa%23b",
+            ),
+        ] {
+            assert_eq!(browser_link(forge_for(remote, "origin").as_ref(), remote, Some("feature/a#b")).as_deref(), Some(expected));
+        }
+        assert_eq!(
+            browser_link(None, "https://user:password@git.example/team/repo.git?token=secret#access", None).as_deref(),
+            Some("https://git.example/team/repo.git")
+        );
+        assert!(browser_link(None, "file:///local/repo", None).is_none());
+        assert!(browser_link(None, "https://git.example/team/repo", Some("main")).is_none());
+    }
+
+    #[test]
+    fn copy_branch_url_follows_renamed_tracking_ref_on_the_correct_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        runner::run(r, ["init", "-qb", "main"]).unwrap();
+        runner::run(
+            r,
+            ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "root"],
+        )
+        .unwrap();
+        runner::run(r, ["remote", "add", "origin", "git@github.com:team/primary.git"]).unwrap();
+        runner::run(r, ["remote", "add", "fork", "git@github.com:contributor/fork.git"]).unwrap();
+        runner::run(r, ["config", "--replace-all", "remote.fork.fetch", "+refs/heads/feature/topic:refs/remotes/fork/display-name"]).unwrap();
+        runner::run(r, ["update-ref", "refs/remotes/fork/display-name", "HEAD"]).unwrap();
+        runner::run(r, ["config", "branch.main.remote", "fork"]).unwrap();
+        runner::run(r, ["config", "branch.main.merge", "refs/heads/feature/topic"]).unwrap();
+        runner::run(r, ["branch", "local-only"]).unwrap();
+        let expected = Some("https://github.com/contributor/fork/tree/feature/topic");
+        assert_eq!(web_link(r, Some("refs/heads/main")).unwrap().as_deref(), expected);
+        assert_eq!(web_link(r, Some("refs/remotes/fork/display-name")).unwrap().as_deref(), expected);
+        assert_eq!(web_link(r, None).unwrap().as_deref(), Some("https://github.com/team/primary"));
+        assert_eq!(web_link(r, Some("refs/heads/local-only")).unwrap(), None);
+        runner::run(r, ["update-ref", "-d", "refs/remotes/fork/display-name"]).unwrap();
+        assert_eq!(web_link(r, Some("refs/heads/main")).unwrap(), None);
+    }
 
     #[test]
     fn detects_bitbucket_cloud_and_server() {

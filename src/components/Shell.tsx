@@ -92,9 +92,9 @@ export function TopBar() {
       <button className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => setLayout({ repositoriesOpen: focusMode || !repositoriesOpen, focusMode: false })}><PanelLeft size={16} /></button>
       <button className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
       <RepositoryLibraryButton /><WorkspacePicker />
-      <div className="repo-current" title={root ?? ""} onContextMenu={e => { if (root && !overview) contextMenu(e, namePathMenu(tab?.info?.name ?? basename(root), root)); }}>
+      <div className="repo-current" title={root ?? ""} onContextMenu={e => { if (root && !overview) contextMenu(e, namePathMenu(tab?.info?.name ?? basename(root), root, null)); }}>
         <b>{overview ? "All repositories" : tab?.info?.name ?? (root ? basename(root) : "Repositories")}</b>
-        {!overview && tab?.info && <span onContextMenu={e => { if (root && tab.info?.head.branch) contextMenu(e, namePathMenu(tab.info.head.branch, root)); }}><GitBranch size={12} />{tab.info.head.branch ?? shortOid(tab.info.head.oid ?? "")}</span>}
+        {!overview && tab?.info && <span onContextMenu={e => { if (root && tab.info?.head.branch) contextMenu(e, namePathMenu(tab.info.head.branch, root, `refs/heads/${tab.info.head.branch}`)); }}><GitBranch size={12} />{tab.info.head.branch ?? shortOid(tab.info.head.oid ?? "")}</span>}
       </div>
       <button className="icon-btn" title="Open repository (Ctrl+O)" aria-label="Open repositories" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>
       {root && tab?.info && !overview && (
@@ -339,10 +339,12 @@ function BusyItem({ label, line }: { label: string; line: string }) {
   );
 }
 
+const QUIET_OPERATIONS: ReturnType<typeof useUi.getState>["repositoryOperations"] = [];
+
 export function StatusBar() {
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   const busy = useUi((s) => s.busy);
-  const operations = useUi((s) => s.repositoryOperations);
+  const operations = useUi((s) => s.repositoryOperations.some(op => op.command !== "fetch_background") ? s.repositoryOperations : QUIET_OPERATIONS);
   const [git, setGit] = useState("");
   useEffect(() => {
     api.gitSelection().then(
@@ -356,10 +358,10 @@ export function StatusBar() {
   return (
     <div className="statusbar">
       {tab && head && (
-        <span className="item" onContextMenu={e => { if (head.branch) contextMenu(e, namePathMenu(head.branch, tab.root)); }}>
+        <span className="item" onContextMenu={e => { if (head.branch) contextMenu(e, namePathMenu(head.branch, tab.root, `refs/heads/${head.branch}`)); }}>
           <GitBranch size={12} />
           {head.branch ?? (head.detached ? `detached at ${shortOid(head.oid)}` : "no branch")}
-          {st?.upstream && <span className="faint" onContextMenu={e => contextMenu(e, namePathMenu(st.upstream!, tab.root))}>→ {st.upstream}</span>}
+          {st?.upstream && <span className="faint" onContextMenu={e => contextMenu(e, namePathMenu(st.upstream!, tab.root, tab.refs?.local.find(branch => branch.name === head.branch)?.upstreamFullName ?? undefined))}>→ {st.upstream}</span>}
           {st && <AheadBehind ahead={st.ahead} behind={st.behind} />}
         </span>
       )}
@@ -446,7 +448,7 @@ export function Welcome() {
           <div className="recent-list">
             {recent.length === 0 && <div className="faint" style={{ padding: 10 }}>Repositories you open will appear here. You can also drop a folder onto the window.</div>}
             {recent.map((r) => (
-              <div key={r} className="recent-item" onClick={() => A.openRepoPath(r)} onContextMenu={e => contextMenu(e, namePathMenu(basename(r), r))}>
+              <div key={r} className="recent-item" onClick={() => A.openRepoPath(r)} onContextMenu={e => contextMenu(e, namePathMenu(basename(r), r, null))}>
                 <FolderGit2 size={18} style={{ color: "var(--accent)", flex: "none" }} />
                 <div style={{ minWidth: 0 }}>
                   <div className="rn">{basename(r)}</div>

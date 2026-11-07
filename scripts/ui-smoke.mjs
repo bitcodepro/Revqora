@@ -128,7 +128,7 @@ try {
     // An unrelated timer fetch must not invalidate a prepared deletion mid-test.
     // Auto-fetch scheduling itself is covered by the frontend unit tests.
     await page.getByTitle("Settings", { exact: true }).click();
-    await page.locator(".modal label:has-text('Auto fetch') + .seg").getByRole("button", { name:"Off", exact:true }).click();
+    await page.getByRole("combobox",{name:"Git auto-fetch",exact:true}).selectOption("0");
     // Core scenarios deliberately close fixture repositories and later assert
     // their exact open set. Exercise that startup policy explicitly; the native
     // workspace fixture separately verifies the default all-library startup.

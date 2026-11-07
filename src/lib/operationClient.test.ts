@@ -68,10 +68,13 @@ describe("repository operation client", () => {
     const f = fixture({ refreshFails: true });
     await expect(repositoryCall(f.invoke, "commit", { repo: "repo" })).resolves.toBe("done");
   });
-  it("background fetch is serialized without depending on an obsolete UI state", async () => {
+  it("background fetch bypasses foreground pending state and duplicate refreshes", async () => {
     const f = fixture();
+    const pending: number[] = [];
+    setOperationHooks({ observed: () => "old", refreshed: () => {}, pending: (_repo, delta) => pending.push(delta) });
     await repositoryCall(f.invoke, "fetch_background", { repo: "repo" });
-    expect(f.calls[0].args?.expectedState).toBeNull();
+    expect(f.calls).toEqual([{ cmd: "fetch_background", args: { repo: "repo", expectedState: null } }]);
+    expect(pending).toEqual([]);
   });
   it("keeps dependent actions pending until the post-operation state is refreshed", async () => {
     const pending: number[] = [];

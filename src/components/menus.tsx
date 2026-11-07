@@ -48,10 +48,11 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote")
   const tab = getTab(root);
   const current = tab?.info?.head.branch;
   const isCurrent = kind === "local" && name === current;
-  const items: MenuItem[] = [...namePathMenu(name, root), { separator: true }];
+  const reference = `refs/${kind === "local" ? "heads" : "remotes"}/${name}`;
+  const items: MenuItem[] = [...namePathMenu(name, root, reference), { separator: true }];
   if (!isCurrent) items.push({ label: kind === "remote" ? `Check out as local branch` : `Check out ${name}`, icon: <Check size={I} />, onClick: () => A.checkout(root, name, kind) });
   items.push({ label: "Create branch from here…", icon: <GitBranchPlus size={I} />, onClick: () => A.createBranch(root, name, name) });
-  items.push({ label: "Branch details…", icon: <GitBranch size={I} />, onClick: () => branchCard(root, name) });
+  items.push({ label: "Branch details…", icon: <GitBranch size={I} />, onClick: () => branchCard(root, name, reference) });
   items.push({ label: "Branch history (reflog)…", icon: <History size={I} />, onClick: () => branchReflogDialog(root, name) });
   items.push({ label: "Browse files", icon: <FolderTree size={I} />, onClick: () => openOverlay({ kind: "tree", root, rev: name }) });
   items.push({ label: "Compare with working tree", icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: name, to: WORKTREE }) });

@@ -307,6 +307,7 @@
 .pr-detail-heading {display:flex;flex-direction:column;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border);min-width:0;flex-shrink:0}
 .pr-title-line {display:flex;align-items:center;gap:8px;min-width:0}
 .pr-title-line h2 {margin:0;font-size:var(--fs-lg);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pr-watch-toggle {flex:none}
 .pr-branch-line {display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
 .pr-branch-line .ref {max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pr-detail-actions {display:flex;align-items:center;gap:6px;flex-wrap:wrap}
