@@ -1,4 +1,6 @@
 import { repositoryFiles } from "./RepositoryFiles";
+import { editWorkingFile } from "./WorkingFileEditor";
+import { useFileListNavigation } from "../lib/useFileListNavigation";
 import {workingDiffSnapshot,rememberWorkingDiff} from "../lib/workingDiffSnapshot";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import {
@@ -213,6 +215,7 @@ function dragFile(e: React.DragEvent, from: "unstaged" | "staged", path: string)
 // ───────────── component ─────────────
 
 export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConflict: (path: string) => void }) {
+  const fileNavigation = useFileListNavigation();
   const root = tab.root;
   const interpretation = useSyncExternalStore(
     useCallback((listener) => subscribePreview(root, listener), [root]),
@@ -415,6 +418,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const diffMode = sel?.kind === "unstaged" ? "unstaged" : sel?.kind === "staged" ? "staged" : "readonly";
   const diffActions = sel && sel.kind !== "conflict" && (
     <>
+      {!file?.submodule && file?.worktree !== "D" && !sel.path.endsWith("/") && <button type="button" className="btn sm" disabled={pending} onClick={()=>void editWorkingFile(root,sel.path)}><Pencil size={13}/> Edit working file</button>}
       {sel.kind === "unstaged" && (
         <>
           <button className="btn sm" onClick={() => A.stagePaths(root, [sel.path])}>
@@ -443,7 +447,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   return (
     <div className="changes" data-pending={pending} data-diff-context={tab.status?.diffContextToken ?? ""} style={{ ["--changes-w" as string]: `${w}px` }}>
       <div className="changes-left">
-        <div className="changes-lists">
+        <div className="changes-lists" {...fileNavigation} aria-label="Changed files">
           <div className="hstack" style={{ justifyContent: "flex-end", padding: "4px 4px 0" }}>
             <button className="btn sm" style={{ marginRight: "auto" }} onClick={() => repositoryFiles(root, "ignored")}>Ignored</button>
             <div className="seg">
@@ -469,6 +473,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 conflicts.map((f) => (
                   <div
                     key={f.path}
+                    data-file-nav=""
                     className={`file-row ${selectedIs("conflict", f.path) ? "selected" : ""}`}
                     onClick={() => select({ kind: "conflict", path: f.path })}
                     onDoubleClick={() => onOpenConflict(f.path)}
@@ -520,6 +525,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
               <div
                 key={f.path}
                 className={`file-row ${selectedIs("unstaged", f.path) ? "selected" : ""}`}
+                data-file-nav={isNestedFile(f) ? undefined : ""}
                 onClick={() => isNestedFile(f) ? openNestedFile(root, f) : select({ kind: "unstaged", path: f.path, untracked: f.untracked })}
                 onDoubleClick={() => { if (!isNestedFile(f)) void A.stagePaths(root, [f.path]); }}
                 draggable
@@ -584,6 +590,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
               <div
                 key={f.path}
                 className={`file-row ${selectedIs("staged", f.path) ? "selected" : ""}`}
+                data-file-nav=""
                 onClick={() => select({ kind: "staged", path: f.path })}
                 onDoubleClick={() => A.unstagePaths(root, [f.path])}
                 draggable
@@ -626,6 +633,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                     <div
                       key={f.path}
                       className={`file-row ${selectedIs("layer", f.path, l.index) ? "selected" : ""}`}
+                      data-file-nav=""
                       onClick={() => select({ kind: "layer", layer: l.index, path: f.path })}
                       onContextMenu={(e) =>
                         contextMenu(e, [
@@ -672,6 +680,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                   <div
                     key={f.path}
                     className={`file-row ${selectedIs("staged", f.path) ? "selected" : ""}`}
+                    data-file-nav=""
                     onClick={() => select({ kind: "staged", path: f.path })}
                     onDoubleClick={() => A.unstagePaths(root, [f.path])}
                     draggable

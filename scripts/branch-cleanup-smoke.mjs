@@ -10,7 +10,7 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
   // The separate stale-local scenario below tests an explicit Fetch invalidation.
   const timerBefore=await page.evaluate(()=>JSON.parse(localStorage.getItem("revqora.settings")).state.autoFetchMinutes);
   await page.getByTitle("Settings",{exact:true}).click();
-  await page.locator(".modal label:has-text('Auto fetch') + .seg").getByRole("button",{name:"Off",exact:true}).click();
+  await page.getByRole("combobox",{name:"Git auto-fetch",exact:true}).selectOption("0");
   await page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
   if(await page.evaluate(()=>JSON.parse(localStorage.getItem("revqora.settings")).state.autoFetchMinutes)!==0)throw new Error("Cleanup fixtures require timer auto-fetch to be off");
   console.log(`Cleanup fixture auto-fetch minutes: ${timerBefore} -> 0`);
@@ -239,7 +239,7 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   const app=await launch({exe,profile:path.join(work,"profile"),port:0});const errors=[];app.page.on("pageerror",e=>errors.push(e.message));
   try{
     await app.page.getByRole("button",{name:"Skip",exact:true}).click({timeout:60000});
-    await app.page.getByTitle("Settings",{exact:true}).click();await app.page.locator(".modal label:has-text('Auto fetch') + .seg").getByRole("button",{name:"Off",exact:true}).click();await app.page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
+    await app.page.getByTitle("Settings",{exact:true}).click();await app.page.getByRole("combobox",{name:"Git auto-fetch",exact:true}).selectOption("0");await app.page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
     await branchCleanupSmoke({page:app.page,work,check:async(name,fn)=>{await fn();console.log(`PASS ${name}`);},shot:name=>app.page.screenshot({path:path.join(out,`${name}.png`)})});
     if(errors.length)throw new Error(errors.join("\n"));
   }catch(e){await app.page.screenshot({path:path.join(out,"failure.png")}).catch(()=>{});throw e;}

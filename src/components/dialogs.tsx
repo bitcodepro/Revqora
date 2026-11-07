@@ -798,13 +798,19 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
             </button>
           ))}
         </div>
-        <label>Auto fetch</label>
-        <div className="seg">
-          {[0, 1, 5, 15, 30].map((m) => (
-            <button type="button" key={m} className={s.autoFetchMinutes === m ? "on" : ""} onClick={() => s.set({ autoFetchMinutes: m })}>
-              {m === 0 ? "Off" : `${m} min`}
-            </button>
-          ))}
+        <label htmlFor="git-fetch-interval">Git auto-fetch</label>
+        <div>
+          <select id="git-fetch-interval" className="select" value={s.autoFetchMinutes} onChange={e => s.set({ autoFetchMinutes: Number(e.target.value) })}>
+            {[0, 1, 5, 10, 15, 30, 60].map(m => <option key={m} value={m}>{m ? `${m} min` : "Off"}</option>)}
+          </select>
+          <small className="muted">Fetch open repositories and update the current branch’s ahead/behind counts.</small>
+        </div>
+        <label htmlFor="pr-watch-interval">PR activity check</label>
+        <div>
+          <select id="pr-watch-interval" className="select" value={s.prPollMinutes} onChange={e => s.set({ prPollMinutes: Number(e.target.value) })}>
+            {[0, 1, 5, 10, 15, 30, 60].map(m => <option key={m} value={m}>{m ? `${m} min` : "Off"}</option>)}
+          </select>
+          <small className="muted">Check watched PRs in open repositories for reviews and comments from other people.</small>
         </div>
         <label>Startup</label>
         <div><label className="hstack"><input type="checkbox" checked={s.openLibraryOnStartup} onChange={(e) => s.set({ openLibraryOnStartup: e.target.checked })} /> Open all saved repositories</label>

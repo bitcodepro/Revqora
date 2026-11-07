@@ -52,8 +52,8 @@ export interface RepoTab {
 }
 
 export interface Parts {
-  /** Revalidate cached UI after activation without forcing unchanged previews. */
-  activation?: boolean;
+  /** Refresh cached UI without reloading history or previews for unchanged refs. */
+  revalidate?: boolean;
   /** Sidebar observations do not need histories, layers or branch analysis. */
   summary?: boolean;
   /** Explicit action preview needs full mutation preconditions even off-screen. */
@@ -212,7 +212,7 @@ function updateSquashMerged(root: string) {
 
 function merge(a: Parts | undefined, b: Parts): Parts {
   return {
-    activation: a ? !!a.activation && !!b.activation : b.activation,
+    revalidate: a ? !!a.revalidate && !!b.revalidate : b.revalidate,
     summary: a ? !!a.summary && !!b.summary : b.summary,
     guard: a?.guard || b.guard,
     background: a ? !!a.background && !!b.background : b.background,
@@ -285,7 +285,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     if (root) {
       openingQueue.prioritize(root);
       summaryQueue.prioritize(root);
-      if (get().tabs[root]?.info) void get().refresh(root, {...ALL,graph:!get().tabs[root].graph,background:true,activation:true});
+      if (get().tabs[root]?.info) void get().refresh(root, {...ALL,graph:!get().tabs[root].graph,background:true,revalidate:true});
       else void hydrate(root).catch(() => {});
     }
   },
@@ -321,7 +321,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     if (get().active !== root) parts = { ...parts, summary: true, graph: false, layers: false, refs: false };
     // Ordinary working-file activity does not change immutable commit previews.
     // Metadata/attribute events and explicit refreshes still invalidate them.
-    if (!parts.activation && (!parts.background || parts.info || parts.refs || parts.graph)) invalidatePreview(root);
+    if (!parts.revalidate && (!parts.background || parts.info || parts.refs || parts.graph)) invalidatePreview(root);
     if (!parts.background) {
       const tab = get().tabs[root];
       if (tab) get().patch(root, { diffRefreshVersion: tab.diffRefreshVersion + 1 });
@@ -376,13 +376,17 @@ async function refreshOnce(root: string, parts: Parts) {
   const current = () => !!useRepos.getState().tabs[root] && lifetimes.get(root) === lifetime;
   const patch: Partial<RepoTab> = {};
   const before = store.tabs[root];
-  const refsFingerprint=(refs:RefsSnapshot|null)=>JSON.stringify(refs);
+  let updatedRefs = false;
   // Everything starts at once; the history only waits for the (fast) status, which decides
   // whether the "Uncommitted changes" row is part of the graph.
   const infoP = parts.info || (parts.status && !parts.summary) ? api.repoInfo(root) : Promise.resolve(null);
   const sidebarOnly = parts.summary && !parts.guard;
   const statusP = parts.status ? (sidebarOnly ? api.repositorySidebarStatus(root) : api.status(root)) : Promise.resolve(null);
-  const refsP = parts.refs ? api.refs(root) : Promise.resolve(null);
+  const refsP = parts.refs ? api.refs(root).then(refs => {
+    // Keep the existing rows during a quiet check if their data is identical.
+    if (parts.revalidate && JSON.stringify(refs) === JSON.stringify(before.refs)) return null;
+    return refs;
+  }) : Promise.resolve(null);
   const extrasP = !parts.summary && (parts.refs || parts.info) ? api.repoExtras(root).catch(() => null) : Promise.resolve(null);
   const layersP = !parts.summary && (parts.layers || parts.status) ? api.layersState(root).catch(() => null) : Promise.resolve(null);
   // Publish independently: slow layers/extras must not hide local branch info
@@ -402,11 +406,10 @@ async function refreshOnce(root: string, parts: Parts) {
     if (!parts.summary && ((parts.graph&&!graphP) || dirty !== (graphP?initialDirty:tab.graphHasWorktree) || !tab.graph&&!graphP)) graphP = loadGraph(root, dirty);
     const [info, refs] = await Promise.all([infoP, refsP]);
     const graphHeadChanged=info&&before.graph?.headOid!==undefined&&before.graph.headOid!==(info.head.oid??"");
-    const graphChanged=graphHeadChanged||(info&&JSON.stringify(info.head)!==JSON.stringify(before.info?.head))||(refs&&refsFingerprint(refs)!==refsFingerprint(before.refs));
-    if(parts.activation&&current()&&graphChanged){invalidatePreview(root);if(!graphP)graphP=loadGraph(root,dirty);}
+    const graphChanged=graphHeadChanged||(info&&JSON.stringify(info.head)!==JSON.stringify(before.info?.head))||!!refs;
+    if(parts.revalidate&&current()&&graphChanged){invalidatePreview(root);if(!graphP)graphP=loadGraph(root,dirty);}
     const [layers, extras] = await Promise.all([layersP, extrasP]);
-    if (info) patch.info = info;
-    if (refs) patch.refs = refs;
+    updatedRefs = !!refs;
     if (extras) patch.extras = extras;
     if (layers) patch.layers = layers;
     patch.error = null;
@@ -415,7 +418,7 @@ async function refreshOnce(root: string, parts: Parts) {
   }
   if (!current()) return;
   useRepos.getState().patch(root, { ...patch, loaded: true });
-  if (patch.refs) updateSquashMerged(root);
+  if (updatedRefs) updateSquashMerged(root);
   // Wait for history only when it was explicitly requested; a dirty/clean toggle reloads it in the background.
   if (graphP && parts.graph) await graphP;
 }

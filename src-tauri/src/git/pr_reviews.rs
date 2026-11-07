@@ -131,9 +131,12 @@ fn caps(repo: &Path, f: &ForgeInfo, d: &Detail, v: &Value) -> GitResult<Capabili
 pub struct Comment {
     pub id: String,
     pub author: String,
+    pub author_id: String,
+    pub author_login: String,
     pub body: String,
     pub created: String,
     pub state: String,
+    pub deleted: bool,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,9 +174,12 @@ fn gh_thread(v: &Value) -> GitResult<Thread> {
         .map(|c| Comment {
             id: if c.get("fullDatabaseId").is_some_and(|v| !v.is_null()) { id(c, "/fullDatabaseId") } else { id(c, "/databaseId") },
             author: text(c, "/author/login"),
+            author_id: String::new(),
+            author_login: text(c, "/author/login"),
             body: text(c, "/body"),
             created: text(c, "/createdAt"),
             state: text(c, "/pullRequestReview/state"),
+            deleted: false,
         })
         .collect();
     let resolved = boolean(v, "/isResolved");
@@ -201,9 +207,12 @@ fn gl_thread(v: &Value) -> GitResult<Thread> {
         .map(|c| Comment {
             id: id(c, "/id"),
             author: text(c, "/author/username"),
+            author_id: forge::user_id(c, "/author/id"),
+            author_login: text(c, "/author/username"),
             body: text(c, "/body"),
             created: text(c, "/created_at"),
             state: if boolean(c, "/system") { "system" } else { "comment" }.into(),
+            deleted: false,
         })
         .collect();
     let has_new = position.get("new_line").is_some_and(|v| !v.is_null());
@@ -231,9 +240,12 @@ fn bb_comment(v: &Value) -> Comment {
     Comment {
         id: id(v, "/id"),
         author: text(v, "/user/display_name"),
+        author_id: text(v, "/user/uuid"),
+        author_login: text(v, "/user/nickname"),
         body: if boolean(v, "/deleted") { "[Deleted comment]".into() } else { text(v, "/content/raw") },
         created: text(v, "/created_on"),
         state: "comment".into(),
+        deleted: boolean(v, "/deleted"),
     }
 }
 fn bb_thread(v: &Value) -> Thread {
@@ -273,9 +285,12 @@ fn az_thread(v: &Value) -> GitResult<Thread> {
             .map(|c| Comment {
                 id: id(c, "/id"),
                 author: text(c, "/author/displayName"),
+                author_id: text(c, "/author/id"),
+                author_login: text(c, "/author/uniqueName"),
                 body: if boolean(c, "/isDeleted") { "[Deleted comment]".into() } else { text(c, "/content") },
                 created: text(c, "/publishedDate"),
                 state: text(c, "/commentType"),
+                deleted: boolean(c, "/isDeleted"),
             })
             .collect(),
     })
@@ -288,9 +303,12 @@ fn bbs_thread(v: &Value) -> GitResult<Thread> {
         out.push(Comment {
             id: id(v, "/id"),
             author: text(v, "/author/displayName"),
+            author_id: forge::user_id(v, "/author/id"),
+            author_login: text(v, "/author/name"),
             body: text(v, "/text"),
             created: v.get("createdDate").and_then(Value::as_i64).map(forge::iso_from_millis).unwrap_or_default(),
             state: text(v, "/state"),
+            deleted: false,
         });
         if let Some(children) = v.get("comments").and_then(Value::as_array) {
             for c in children {
@@ -336,7 +354,16 @@ fn singleton(v: &Value, feed: &str, kind: &str) -> Thread {
         can_reply: false,
         can_resolve: false,
         complete: true,
-        comments: vec![Comment { id: ident, author, body, created, state }],
+        comments: vec![Comment {
+            author_id: if kind == "github" { forge::user_id(v, "/user/id") } else { ident.clone() },
+            author_login: if kind == "github" { text(v, "/user/login") } else { String::new() },
+            id: ident,
+            author,
+            body,
+            created,
+            state,
+            deleted: false,
+        }],
     }
 }
 

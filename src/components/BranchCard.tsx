@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { GitBranch, GitCommitHorizontal, GitFork, GitMerge, Info } from "lucide-react";
 import { Modal } from "./Modal";
-import { showDialog, toast } from "../lib/ui";
+import { contextMenu, showDialog, toast } from "../lib/ui";
+import { namePathMenu } from "./NamePathMenu";
 import { api } from "../lib/api";
 import { getTab } from "../lib/store";
 import type { BranchDetails } from "../lib/types";
@@ -20,11 +21,11 @@ function defaultBase(root: string, name: string): string {
   return up ?? "HEAD";
 }
 
-export function branchCard(root: string, name: string) {
-  return showDialog<void>((close) => <BranchCardBody root={root} name={name} close={close} />);
+export function branchCard(root: string, name: string, reference: string) {
+  return showDialog<void>((close) => <BranchCardBody root={root} name={name} reference={reference} close={close} />);
 }
 
-function BranchCardBody({ root, name, close }: { root: string; name: string; close: () => void }) {
+function BranchCardBody({ root, name, reference, close }: { root: string; name: string; reference: string; close: () => void }) {
   const tab = getTab(root);
   const candidates = Array.from(new Set([defaultBase(root, name), ...(tab?.refs?.local.map((b) => b.name) ?? []), ...(tab?.refs?.remote.map((b) => b.name) ?? [])])).filter((b) => b !== name);
   const [base, setBase] = useState(candidates[0] ?? "HEAD");
@@ -39,7 +40,7 @@ function BranchCardBody({ root, name, close }: { root: string; name: string; clo
   };
   return (
     <Modal
-      title={name}
+      title={<span onContextMenu={e => contextMenu(e, namePathMenu(name, root, reference))}>{name}</span>}
       subtitle="Where this branch started, how far it went, and whether it is merged"
       icon={<GitBranch size={18} />}
       onClose={() => close()}

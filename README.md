@@ -73,7 +73,30 @@ remain in the working copy. If you edit a file again after staging it, the stage
 and working versions can differ. **Unstage** removes it from the proposed commit
 while keeping your edits.
 
+Click a changed file, then use **Up/Down** to preview the previous/next visible
+file. **Home/End** jump to the first/last visible file. This works in working
+changes, commit review and PR files; collapsed folders are skipped. **Alt+Up/Down**
+also switches files from the diff. Text fields and editors keep their own arrow
+keys, and file navigation does not stage or modify anything.
+
+**Stage again** updates the prepared file to its current complete contents:
+earlier edits you left untouched stay included, and your newer edits take
+precedence where you changed the file again. **Unstage after editing again**
+keeps that latest complete file in your working copy. It does not restore the
+older staged snapshot into the file. Ordinary Stage does not create extra layers;
+use **Stage into a new layer** or **Seal into a layer** explicitly for that.
+
 ## Features
+
+Right-click a repository or branch name to **Copy name**, **Copy path** or
+**Copy URL**. Right-click a pull request in PR Center to copy its URL.
+Branch URLs follow the known remote branch, including renamed tracking branches.
+For a branch, the path is its repository folder, not a file inside `.git`.
+These actions are available in the sidebar, history graph branch badges,
+Branch Manager, repository overview/library, recent repositories and active
+repository/branch headers, plus worktree lists and Worktree Manager. In a worktree
+list, **Copy path** uses that specific worktree's folder. Copying does not activate
+or check out anything.
 
 | Area | What you can do |
 | --- | --- |
@@ -205,6 +228,38 @@ actions stay unavailable until the fresh diff has been checked.
 Sync does not resolve divergence by rewriting remote history. Use the individual
 merge/rebase tools when the histories need reconciliation.
 
+### Inspect whitespace and edit a working file
+
+Toggle **Show whitespace** (¶) in the diff toolbar to see spaces as dots and tabs
+as arrows. This display setting does not ignore whitespace or change file content.
+It is saved and also applies to the built-in editor.
+
+In **Changes**, choose **Edit working file** to edit the current file inside
+Revqora. **Save file** / **Ctrl+S** writes only the working copy; staged content
+stays unchanged. **Undo/Redo** and **Ctrl+Z** operate on the editor draft.
+Choose **Spaces per tab** (2/4/8), then **Tabs → spaces** to convert indentation.
+Two leading tabs at width 2 become four spaces. The default scope leaves tabs
+inside strings/content alone; **All tabs in the file** is an explicit alternative.
+Conversion remains an undoable draft until Save.
+
+The editor preserves UTF-8 BOM, consistent LF/CRLF/CR line endings, final-newline
+choices, Unix file mode and Windows DACLs. It supports existing regular UTF-8 text
+files up to 2 MiB. Binary, other encodings, mixed line endings, links and files in
+nested repositories must be handled in an appropriate external editor (open the
+nested repository separately when applicable).
+
+Saving checks the loaded file/branch revision and keeps recovery data in portable
+storage. On Windows it holds an OS handle that excludes other writers and renames
+through validation, backup and writing; it updates the same file without dropping
+that protection. A failed/interrupted write can be recovered from the backup.
+On Linux/macOS the current file is moved into recovery and the draft is published
+only if the working path remains absent. The recovery folder and repository must
+be on the same filesystem on these platforms; otherwise use an external editor.
+Concurrent edits are refused or retained in recovery, and your draft stays available.
+**Reload from disk**
+asks before discarding an unsaved draft. Historical commits and server PR snapshots
+remain read-only; use the working file editor for current local content.
+
 ### Use amend, stash and stage layers
 
 **Amend** replaces the last commit with a revised message and/or staged content.
@@ -213,6 +268,14 @@ Its SHA changes; take care when that commit has already been shared.
 Use **Stash** to set unfinished edits aside and **Apply** or **Pop** to bring them
 back. Partial stash can save selected changes while leaving other edits in place.
 Choose **Apply** when you want to keep the stash entry after restoration.
+You can create several named stash entries. They appear under **Stashes** in
+the branch sidebar, newest first. Each entry saves the changes present when it
+was created; successive stashes are not automatically cumulative versions of
+one file. Apply keeps an entry; Pop removes it only after successful application.
+Applying onto newer edits can require conflict resolution.
+To keep successive versions of the same unfinished work: stash it as `v1`,
+Apply `v1` (keeping the entry), make your next edits, then stash as `v2`.
+Both entries remain available in the list.
 
 Stage layers organize multiple upcoming commits inside one working copy. Stage
 changes, seal a layer, then prepare another. Inspect layers before committing,
@@ -255,6 +318,17 @@ hosting username; additional profile permission is not required. Author choices
 are isolated by repository and account. Search and author filters combine. The
 selector collects authors from loaded pages and continues through a few older
 pages when no match is found; **Load more requests** includes further history.
+
+Click the bell next to a PR title to watch that request, or enable **My PRs** in
+the PR Center header to watch open requests you created. Revqora checks watched
+requests while you work in other views and shows in-app notifications for new
+approvals, requests for changes, and comments from other authors. The first
+successful check establishes the baseline. If profile access is unavailable,
+set your author so Revqora can identify your own comments.
+
+In **Settings → Behaviour**, set **PR activity check** and **Git auto-fetch**
+independently. Both default to five minutes and can be turned off. Auto-fetch
+updates remote refs for open repositories so you can see incoming commits.
 
 Integrations cover GitHub/Enterprise, GitLab, Azure DevOps, Bitbucket Cloud and
 Bitbucket Server/Data Center. Capabilities differ by provider and permissions:

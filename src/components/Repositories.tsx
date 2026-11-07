@@ -9,10 +9,11 @@ import { basename, relativeTime } from "../lib/format";
 import { pullBlockReason, runRepositoryBatch, type BatchResult } from "../lib/repositoryBatch";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
-import { endBusy, showDialog, startBusy, toast, useUi } from "../lib/ui";
+import { contextMenu, endBusy, showDialog, startBusy, toast, useUi } from "../lib/ui";
 import { AheadBehind } from "./bits";
 import { Modal } from "./Modal";
 import { Splitter } from "./Overlays";
+import { namePathMenu } from "./NamePathMenu";
 
 let running = false;
 let choosingPull = false;
@@ -179,7 +180,7 @@ export function RepositorySidebar() {
         {sections.map((group) => <div key={group.id}>{library.groups.length > 0 && <button type="button" className="repository-group" aria-expanded={!group.collapsed} onClick={() => group.id !== "ungrouped" && library.collapse(group.id)}>{group.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{group.name}<span className="faint">{group.roots.length}</span></button>}{(!group.collapsed || !!query) && group.roots.map((r) => {
           const t = tabs[r];
           return (
-            <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""}`} key={r}>
+            <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""}`} key={r} onContextMenu={e => contextMenu(e, namePathMenu(t?.info?.name ?? basename(r), r, null))}>
               <FavoriteButton root={r} />
               <button className="repository-select" onClick={() => activate(r)} title={`${r}\n${t?.info ? t.info.head.branch ?? "Detached HEAD" : t ? t.error ?? "Opening repository…" : "Closed · click to open"}${t?.fetchError ? "\n" + t.fetchError : ""}`}>
                 <FolderGit2 size={14} />
@@ -220,9 +221,9 @@ export function RepositoryOverview() {
           <thead><tr><th>Repository</th><th>Current branch</th><th>Incoming / outgoing</th><th>Working copy</th><th>Last fetch</th><th /></tr></thead>
           <tbody>
             {visible.map((r) => { const t = tabs[r], status = repositorySidebarStatus(t); return (
-              <tr key={r}>
+              <tr key={r} onContextMenu={e => contextMenu(e, namePathMenu(t?.info?.name ?? basename(r), r, null))}>
                 <td><button className="repository-name" title={r} onClick={() => activate(r)}><FolderGit2 size={15} />{t?.info?.name ?? basename(r)}</button></td>
-                <td title={t?.info?.head.branch ?? ""}><GitBranch size={12} /> {t?.info?.head.branch ?? (t?.info?.head.detached ? "Detached HEAD" : "—")}</td>
+                <td title={t?.info?.head.branch ?? ""} onContextMenu={e => { if (t?.info?.head.branch) contextMenu(e, namePathMenu(t.info.head.branch, r, `refs/heads/${t.info.head.branch}`)); }}><GitBranch size={12} /> {t?.info?.head.branch ?? (t?.info?.head.detached ? "Detached HEAD" : "—")}</td>
                 <td>{status ? <AheadBehind ahead={status.ahead} behind={status.behind} /> : "…"}</td>
                 <td><RepoState tab={t} /></td>
                 <td className="faint">{t.lastFetchedAt ? relativeTime(t.lastFetchedAt / 1000) : "Not fetched this session"}</td>

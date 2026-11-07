@@ -676,6 +676,23 @@ async fn stage(app: AppHandle, expected_state: Option<String>, repo: String, pat
 }
 
 #[tauri::command]
+async fn working_file_read(repo: String, path: String) -> GitResult<git::file_editor::Snapshot> {
+    blocking(move || git::file_editor::read(&p(&repo), &path)).await
+}
+
+#[tauri::command]
+async fn working_file_save(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    path: String,
+    expected_revision: String,
+    content: String,
+) -> GitResult<git::file_editor::Saved> {
+    mutating(repo.clone(), expected_state, app, "working_file_save", None, move || git::file_editor::save(&p(&repo), &path, &expected_revision, &content)).await
+}
+
+#[tauri::command]
 async fn unstage(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "unstage", None, move || {
         let r = p(&repo);
@@ -1684,6 +1701,11 @@ async fn forge_info(repo: String) -> GitResult<Option<forge::ForgeInfo>> {
 }
 
 #[tauri::command]
+async fn repository_web_link(repo: String, reference: Option<String>) -> GitResult<Option<String>> {
+    blocking(move || forge::web_link(&p(&repo), reference.as_deref())).await
+}
+
+#[tauri::command]
 async fn pull_requests(repo: String) -> GitResult<PullRequests> {
     blocking(move || forge::list(&p(&repo)).map(|(forge, items)| PullRequests { forge, items })).await
 }
@@ -2244,6 +2266,7 @@ pub fn run() {
             forge_connections,
             forge_connection_select,
             forge_info,
+            repository_web_link,
             pull_requests,
             pr_merge_plan,
             pr_merge_submit,
@@ -2281,6 +2304,8 @@ pub fn run() {
             worktree_file_diff,
             commit_helpers,
             save_text_file,
+            working_file_read,
+            working_file_save,
             submodule_update,
             submodule_add,
             submodule_sync,

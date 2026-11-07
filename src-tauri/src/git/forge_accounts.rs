@@ -935,6 +935,30 @@ fn resolve(d: &Document, m: &Memory, repository: &str, r: &refs::RemoteInfo) -> 
 pub fn context(root: &Path) -> GitResult<Option<Context>> {
     context_from(manager()?, root)
 }
+
+/// A browser link only needs public remote and profile metadata, even while the vault is locked.
+pub(super) fn web_target<'a>(
+    root: &Path,
+    remotes: &'a [refs::RemoteInfo],
+    requested: Option<&str>,
+) -> Option<(&'a refs::RemoteInfo, Option<forge::ForgeInfo>)> {
+    let stored = manager().and_then(Manager::read).ok();
+    let key = stored.as_ref().map(|_| repository(root));
+    let by_name = |name: &str| remotes.iter().find(|r| r.name == name);
+    let remote = if let Some(name) = requested {
+        by_name(name)?
+    } else {
+        let active = stored.as_ref().zip(key.as_ref()).and_then(|(d, k)| d.active.iter().find(|a| &a.repository == k));
+        active.and_then(|a| by_name(&a.remote)).or_else(|| by_name("origin")).or_else(|| remotes.first())?
+    };
+    let profile = stored.as_ref().zip(key.as_ref()).and_then(|(d, key)| {
+        let binding = d.bindings.iter().find(|b| &b.repository == key && b.remote == remote.name && b.fingerprint == fingerprint(&remote.fetch_url))?;
+        let record = d.accounts.iter().find(|a| Some(a.profile.id.as_str()) == binding.account_id.as_deref())?;
+        info_for_profile(&record.profile, &remote.fetch_url, &remote.name, binding.allow_ssh_alias).ok()
+    });
+    Some((remote, profile.or_else(|| forge::forge_for(&remote.fetch_url, &remote.name))))
+}
+
 fn context_from(manager: &Manager, root: &Path) -> GitResult<Option<Context>> {
     let repo = repository(root);
     let remotes = refs::remotes(root)?;

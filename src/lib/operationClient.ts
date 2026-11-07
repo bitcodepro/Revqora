@@ -1,6 +1,7 @@
 import type { RepoInfo, StatusSummary } from "./types";
 
 export const MUTATING_COMMANDS = new Set([
+  "working_file_save",
   "stack_append","stack_restack","stack_finalize",
   "pr_merge_submit", "pr_cleanup_submit", "sync_prepare", "sync_execute", "rebase_studio_start", "rebase_studio_capture",
   "stash_selection", "remote_rename_plan", "remote_branch_rename",
@@ -28,6 +29,9 @@ export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Pro
 export async function repositoryCall<T>(invoke: Invoke, command: string, args?: Record<string, unknown>): Promise<T> {
   const repo = typeof args?.repo === "string" ? args.repo : null;
   if (!repo || !MUTATING_COMMANDS.has(command)) return invoke<T>(command, args);
+  // The background sweep owns the refresh. Its Git write still uses the
+  // backend queue, but the foreground controls stay usable while it runs.
+  if (command === "fetch_background") return invoke<T>(command, { ...args, expectedState: null });
   hooks.pending?.(repo, 1);
   try {
     let expectedState: string | null = null;

@@ -71,6 +71,8 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  workingFileRead: (repo:string,path:string) => call<{content:string;revision:string}>("working_file_read",{repo,path}),
+  workingFileSave: (repo:string,path:string,expectedRevision:string,content:string) => call<{file:{content:string;revision:string};backupPath:string|null}>("working_file_save",{repo,path,expectedRevision,content}),
   symbolHistory:(repo:string,path:string,query:string,anchor:string|null,offset:number)=>call<import("./types").SymbolHistoryPage>("symbol_history",{repo,path,query,anchor,offset}),
   stackSnapshot:(repo:string)=>call<import("./types").StackSnapshot>("stack_snapshot",{repo}),
   stackCreate:(repo:string,name:string,base:string,expectedRevision:string)=>call<import("./types").StackCatalog>("stack_create",{repo,name,base,expectedRevision}),
@@ -303,6 +305,7 @@ export const api = {
   commitHelpers: (repo: string) => call<CommitHelpers>("commit_helpers", { repo }),
   saveTextFile: (path: string, content: string) => call<void>("save_text_file", { path, content }),
   forgeInfo: (repo: string) => call<ForgeInfo | null>("forge_info", { repo }),
+  repositoryWebLink: (repo: string, reference: string | null) => call<string | null>("repository_web_link", { repo, reference }),
   pullRequests: (repo: string) => call<{ forge: ForgeInfo; items: PullRequest[] }>("pull_requests", { repo }),
   prPage: (repo: string, state: import("./types").PrState, cursor: string | null = null) => call<import("./types").PrPage>("pr_page", { repo, state, cursor }),
   prMergePlan: (repo: string, number: number, expectedConnection: string, expectedRevision: string) => call<import("./types").PrMergePlan>("pr_merge_plan", { repo, number, expectedConnection, expectedRevision }),

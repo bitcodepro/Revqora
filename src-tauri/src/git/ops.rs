@@ -434,7 +434,7 @@ pub fn fetch_background(repo: &Path) -> GitResult<String> {
         || std::env::var_os("GIT_SSH").is_some()
         || super::connection::managed_ssh(repo)?
         || runner::run(repo, ["config", "--get", "core.sshCommand"]).map(|s| !s.trim().is_empty()).unwrap_or(false);
-    runner::run_env(repo, ["fetch", "--all", "--prune", "--tags", "--quiet"], &background_env(ssh_configured), None)
+    runner::run_env(repo, ["fetch", "--all", "--prune", "--tags", "--quiet", "--no-write-fetch-head"], &background_env(ssh_configured), None)
 }
 
 #[derive(Debug, Serialize)]

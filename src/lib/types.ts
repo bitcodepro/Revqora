@@ -641,7 +641,16 @@ export interface PrFile { id: string; path: string; oldPath: string | null; stat
 export interface PrFiles { items: PrFile[]; nextOffset: number | null; notice: string | null }
 export interface PrFileView { diff: FileDiff | null; notice: string | null }
 export interface PrReviewCapabilities { actor: string; actorId: string; comment: boolean; approve: boolean; requestChanges: boolean; inline: boolean; reason: string; summaryWithVote: boolean }
-export interface PrReviewComment { id: string; author: string; body: string; created: string; state: string }
+export interface PrReviewComment {
+  id: string;
+  author: string;
+  authorId?: string;
+  authorLogin?: string;
+  body: string;
+  created: string;
+  state: string;
+  deleted?: boolean;
+}
 export interface PrThread { id: string; revision: string; path: string | null; side: string; line: number | null; outdated: boolean; resolved: boolean | null; canReply: boolean; canResolve: boolean; complete: boolean; comments: PrReviewComment[] }
 export type PrReviewKind = "comment" | "reply" | "resolve" | "reopen" | "approve" | "request_changes";
 export interface PrReviewAnchor { fileId: string; side: "LEFT" | "RIGHT"; line: number }

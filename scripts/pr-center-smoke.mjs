@@ -5,6 +5,8 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
+import {withViewport} from "./ui-driver.mjs";
+import {interceptClipboard} from "./name-path-copy-smoke.mjs";
 
 export async function prCenterSmoke({page,check,shot,work}) {
   const root=path.join(work,"stage13-pr-center"),requests=[],token="stage13-public-fixture-token",a="a".repeat(40),b="b".repeat(40);
@@ -18,7 +20,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
     "diff --git a/long.txt b/long.txt\nnew file mode 100644\n--- /dev/null\n+++ b/long.txt\n@@ -0,0 +1 @@\n+"+"long-line-".repeat(120)+"\n"+
     "diff --git a/asset.bin b/asset.bin\nBinary files a/asset.bin and b/asset.bin differ\n"+
     "diff --git a/mode.txt b/mode.txt\nold mode 100644\nnew mode 100755\n";
-  let hold=null,nextCreated=100,loseCreateResponse=false,loseEditResponse=false;const mergeFixture=createPrMergeFixture({pulls});const reviewFixture=createPrReviewFixture({pulls,a});
+  let hold=null,holdList=null,nextCreated=100,loseCreateResponse=false,loseEditResponse=false;const mergeFixture=createPrMergeFixture({pulls});const reviewFixture=createPrReviewFixture({pulls,a});
   const server=http.createServer(async(req,res)=>{
     let body="";for await(const chunk of req)body+=chunk;const url=new URL(req.url,"http://fixture"),entry={method:req.method,path:req.url,body:body?JSON.parse(body):null};requests.push(entry);
     if(req.headers.authorization!==`Bearer ${token}`){res.writeHead(401);res.end("{}");return;}
@@ -36,7 +38,10 @@ export async function prCenterSmoke({page,check,shot,work}) {
     }
     if(url.pathname.endsWith("/pulls")){
       if(req.method==="POST"){const n=nextCreated++;const p={...pulls.get(1),...entry.body,number:n,head:{ref:entry.body.head,sha:a},base:{ref:entry.body.base,sha:b},updated_at:"created"};pulls.set(n,p);if(loseCreateResponse){loseCreateResponse=false;res.writeHead(503);res.end("{}");return;}return send(p);}
-      const state=url.searchParams.get("state"),rows=[...pulls.values()].filter(p=>state==="all"||p.state===state),offset=(Number(url.searchParams.get("page")||1)-1)*50;return send(rows.slice(offset,offset+50));
+      const state=url.searchParams.get("state"),rows=[...pulls.values()].filter(p=>state==="all"||p.state===state),offset=(Number(url.searchParams.get("page")||1)-1)*50;
+      const list=structuredClone(rows.slice(offset,offset+50));
+      if(holdList){const gate=holdList;holdList=null;gate.started();await gate.response;}
+      return send(list);
     }
     res.writeHead(404);res.end("{}");
   });await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));const url=`http://127.0.0.1:${server.address().port}`;git("remote","add","origin",`${url}/team/repo.git`);
@@ -61,6 +66,63 @@ export async function prCenterSmoke({page,check,shot,work}) {
       await page.locator("[data-pr-loaded='50']").waitFor();await page.getByRole("button",{name:"Load more requests",exact:true}).click();await page.locator("[data-pr-loaded='52']").waitFor();
       const authors=page.getByRole("combobox",{name:"Pull request author",exact:true});if(!await authors.locator("option").first().innerText().then(t=>t.includes("pr-tester")))throw Error("Connected author must be the first choice");await authors.selectOption("mine");await detail(2);if(await page.locator('[data-pr-number="1"]').count())throw Error("My PR filter included another author");await authors.selectOption("id:99");await detail(1);if(await page.locator('[data-pr-number="2"]').count())throw Error("Author dropdown included a different author");await authors.selectOption("all");await openNumber(52);
       await page.getByRole("combobox",{name:"Request status",exact:true}).selectOption("merged");await page.getByText(/No matching requests in the loaded pages/).waitFor();await page.getByRole("combobox",{name:"Request status",exact:true}).selectOption("open");await detail(1);await page.getByRole("textbox",{name:"Search loaded pull requests",exact:true}).fill("");await shot("105-pr-center");
+      // Hold the real forge request until History is rendered. A slow poll must
+      // never block local navigation or replace the currently shown PR.
+      let started, release, timeout;
+      const request=new Promise((resolve,reject)=>{started=resolve;timeout=setTimeout(()=>reject(Error("The PR watch did not start a background request")),15000);});
+      const response=new Promise(resolve=>{release=resolve;});
+      const oldTitle=pulls.get(2).title, freshTitle="Updated while the background list was held";
+      pulls.get(3).state="closed";
+      holdList={started,response};
+      const watch=()=>page.getByRole("button",{name:"Watch PR",exact:true});
+      const row=n=>page.locator(`[data-pr-number="${n}"]`);
+      try{
+        await Promise.all([watch().click(),request]);
+        if(await watch().getAttribute("aria-pressed")!=="true")throw Error("The selected PR was not marked as watched");
+        const historyStart=performance.now();
+        await page.getByRole("button",{name:"History",exact:true}).click();
+        await page.locator(".graph-scroll .grow").first().waitFor();
+        console.log(`History rendered during held PR activity request in ${Math.round(performance.now()-historyStart)} ms`);
+        pulls.get(2).title=freshTitle;
+        pulls.get(3).state="open";
+        await page.getByRole("button",{name:"Pull requests",exact:true}).click();await detail(1);
+        await row(2).getByText(freshTitle,{exact:true}).waitFor();
+        await row(3).waitFor();
+        await page.evaluate(root=>{
+          window.__prListPoll=new Promise(resolve=>{
+            const listener=event=>{
+              if(event.detail.root.toLowerCase().replaceAll("\\","/")!==root.toLowerCase().replaceAll("\\","/"))return;
+              window.removeEventListener("revqora:pr-page-refreshed",listener);
+              clearTimeout(timer);
+              const {items}=event.detail.page;
+              resolve({title:items.find(p=>p.number===2)?.title, hasThird:items.some(p=>p.number===3)});
+            };
+            const timer=setTimeout(()=>{window.removeEventListener("revqora:pr-page-refreshed",listener);resolve(null);},15000);
+            window.addEventListener("revqora:pr-page-refreshed",listener);
+          });
+        },root);
+        release();
+        const stale=await page.evaluate(async()=>{
+          const proof=await window.__prListPoll;
+          delete window.__prListPoll;
+          await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+          return proof;
+        });
+        if(stale?.title!==oldTitle||stale.hasThird)throw Error("The delayed background poll did not deliver the older list");
+        if(!await row(2).getByText(freshTitle,{exact:true}).isVisible()||!await row(3).isVisible())throw Error("An older background poll replaced the fresh PR list");
+      }finally{clearTimeout(timeout);holdList=null;release();pulls.get(2).title=oldTitle;pulls.get(3).state="open";}
+      if(await watch().getAttribute("aria-pressed")!=="true")throw Error("The watch was lost during navigation");
+      await watch().click();
+      await interceptClipboard(page);
+      try {
+        const expected=`${url}/team/repo/pull/2`;
+        await page.locator('[data-pr-number="2"]').click({button:"right"});
+        await page.locator(".ctx-menu").getByText("Copy URL",{exact:true}).click();
+        await page.waitForFunction(expected=>window.__namePathCopies.at(-1)===expected,expected);
+        if(!await page.locator('[data-pr-detail="1"]').isVisible())throw Error("Copying a PR URL changed the selection");
+      } finally {
+        await page.evaluate(()=>window.__restoreNamePathClipboard?.());
+      }
     });
     await check("long PR descriptions expand without rendering provider HTML or unsafe browser URLs",async()=>{
       await page.getByRole("button",{name:"Expand description",exact:true}).click();const text=await page.locator(".pr-description-expanded").innerText();if(!text.includes("must-not-load.invalid")||await page.locator(".pr-description-expanded img").count())throw Error("Description was truncated or rendered unsafe HTML");await button("Close").click();
@@ -124,7 +186,38 @@ export async function prCenterSmoke({page,check,shot,work}) {
       await page.getByRole("button",{name:"Edit PR",exact:true}).click();await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Preserved stale draft");pulls.get(100).updated_at="changed-by-reviewer";const before=requests.filter(r=>r.method==="PATCH").length;await button("Save pull request").click();await page.locator(".modal").getByRole("alert").filter({hasText:/pull request changed/i}).waitFor();if(await page.getByRole("textbox",{name:"PR title",exact:true}).inputValue()!=="Preserved stale draft"||requests.filter(r=>r.method==="PATCH").length!==before)throw Error("Stale edit was sent or draft was lost");await button("Cancel").click();await button("Discard edits").click();await page.waitForSelector("[data-pr-editor]",{state:"detached"});await page.getByRole("button",{name:"Reload request",exact:true}).click();await detail(100);
     });
     await check("PR file snapshots show rename, binary, mode changes and long lines in unified and split views",async()=>{
-      await page.getByRole("button",{name:"Files (4)",exact:true}).click();await page.locator('[data-pr-file="src/new.ts"]').click();await page.locator(".pr-diff .diff-body").filter({hasText:"after"}).waitFor();await page.locator('[data-pr-file="asset.bin"]').click();await page.locator(".pr-diff .diff-body").filter({hasText:/binary/i}).waitFor();await page.locator('[data-pr-file="mode.txt"]').click();await page.getByText("Only the file mode changed.",{exact:true}).waitFor();await page.locator('[data-pr-file="long.txt"]').click();await page.locator(".pr-diff .diff-body").filter({hasText:"long-line-"}).waitFor();await page.getByTitle("Side by side",{exact:true}).click();await page.getByTitle("Unified",{exact:true}).click();const wrap=page.getByRole("button",{name:"Wrap lines",exact:true});await wrap.click();await wrap.click();if(await page.getByTitle("Show the whole file",{exact:true}).count())throw Error("Local Git options were shown for server-selected context");await shot("107-pr-file-diff");
+      await page.getByRole("button",{name:"Files (4)",exact:true}).click();
+      await page.locator('[data-pr-file="src/new.ts"]').click();await page.keyboard.press("End");
+      await page.locator('[data-pr-file="mode.txt"].selected').waitFor();await page.keyboard.press("Home");
+      await page.locator('[data-pr-file="src/new.ts"].selected').waitFor();await page.keyboard.press("ArrowDown");
+      await page.locator('[data-pr-file="long.txt"].selected').waitFor();await page.keyboard.press("ArrowDown");
+      await page.locator('[data-pr-file="asset.bin"].selected').waitFor();
+      const search=page.getByRole("textbox",{name:"Search loaded PR files",exact:true});await search.focus();await page.keyboard.press("ArrowDown");
+      if(await page.locator('[data-pr-file="asset.bin"].selected').count()!==1)throw Error("PR file search keys changed the file selection");
+      await search.fill("mode");await search.press("Tab");await page.keyboard.press("ArrowDown");
+      await page.locator('[data-pr-file="mode.txt"].selected').waitFor();await search.fill("");
+      await page.locator('[data-pr-file="src/new.ts"]').click();
+      await page.locator(".pr-diff .diff-body").filter({hasText:"after"}).waitFor();
+      await page.locator('[data-pr-file="asset.bin"]').click();
+      await page.locator(".pr-diff .diff-body").filter({hasText:/binary/i}).waitFor();
+      await page.locator('[data-pr-file="mode.txt"]').click();
+      await page.getByText("Only the file mode changed.",{exact:true}).waitFor();
+      await page.locator('[data-pr-file="long.txt"]').click();
+      await page.locator(".pr-diff .diff-body").filter({hasText:"long-line-"}).waitFor();
+      await withViewport(page, {width:1028,height:749}, async () => {
+        await page.getByTitle("Side by side", {exact:true}).click();
+        await page.locator(".pr-diff .split-dl .half.add").first().waitFor();
+        await page.getByTitle("Unified", {exact:true}).click();
+        await page.locator(".pr-diff .dl.add").first().waitFor();
+        const wrap = page.getByRole("button", {name:"Wrap lines",exact:true});
+        await wrap.click();
+        await wrap.click();
+        const whitespace = page.getByRole("button", {name:"Show whitespace",exact:true});
+        await whitespace.click();
+        await whitespace.click();
+        if (await page.getByTitle("Show the whole file", {exact:true}).count()) throw Error("Local Git options were shown for server-selected context");
+        await shot("107-pr-file-diff");
+      });
     });
     await check("late PR metadata cannot replace a newer selected request",async()=>{
       let release,started;const promise=new Promise(r=>release=r),ready=new Promise(r=>started=r);hold={number:2,promise,started};await page.getByRole("textbox",{name:"Search loaded pull requests",exact:true}).fill("#2");await page.getByRole("button",{name:"Open #2",exact:true}).click();await ready;await openNumber(3);release();await page.getByRole("button",{name:"Overview",exact:true}).click();await detail(3);if(await page.locator('[data-pr-detail="2"]').count())throw Error("Late metadata replaced current PR");
