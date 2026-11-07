@@ -72,11 +72,11 @@ export async function editWorkspaceRepositories(id: string, roots: string[]): Pr
 
 async function applyWorkspace(saved: SavedWorkspace, add: boolean): Promise<string[]> {
   if (workspaceBusy()) throw new Error("Wait for the current operation to finish before switching workspaces.");
-  const library = useLibrary.getState();
-  const target = structuredClone(saved), original = [...useRepos.getState().order], previous = library.activeWorkspaceId;
+  const target = structuredClone(saved), original = [...useRepos.getState().order];
   const originalRoots = new Map(original.map((root) => [repositoryKey(root), root]));
   capture(); switching = true;
   const busy = newOpId(), errors: string[] = [], opened: string[] = [], mapped = new Map<string, string>();
+  let keepAsUnsaved = false;
   startBusy(busy, `Opening workspace ${target.name}`);
   try {
     if (!add) {
@@ -84,7 +84,9 @@ async function applyWorkspace(saved: SavedWorkspace, add: boolean): Promise<stri
       if (reports.some(validationRunning)) throw new Error("Finish or cancel running validation before switching workspaces.");
       if (useRepos.getState().order.some((r) => useRepos.getState().tabs[r].pendingMutations) || useUi.getState().repositoryOperations.length) throw new Error("An operation started. Wait for it to finish.");
     }
-    library.select(null);
+    // Keep the previous workspace selected during discovery. If the switch
+    // fails after opening tabs, keep the partial session without saving it.
+    keepAsUnsaved = true;
     await Promise.all(target.roots.map(async root => {
       try {
         const existing = originalRoots.get(repositoryKey(root));
@@ -97,7 +99,7 @@ async function applyWorkspace(saved: SavedWorkspace, add: boolean): Promise<stri
     }));
     // Keep the original session and saved layout intact on any partial failure.
     if (errors.length) return errors;
-    if (add) { useLibrary.getState().select(previous); return errors; }
+    if (add) { keepAsUnsaved = false; return errors; }
     const reports = await Promise.all(useRepos.getState().order.map((root) => api.validationReport(root)));
     if (reports.some(validationRunning) || useRepos.getState().order.some((r) => useRepos.getState().tabs[r].pendingMutations) || useUi.getState().repositoryOperations.length) {
       errors.push("An operation started while repositories were opening. No repositories were closed."); return errors;
@@ -109,6 +111,10 @@ async function applyWorkspace(saved: SavedWorkspace, add: boolean): Promise<stri
     useSettings.getState().set({ layouts: structuredClone(target.layouts), historyMode: target.historyMode });
     useUi.setState({ overlay: null, repositoryOverview: false });
     useLibrary.getState().select(target.id);
+    keepAsUnsaved = false;
     return errors;
-  } finally { switching = false; endBusy(busy); capture(); }
+  } finally {
+    if (keepAsUnsaved) useLibrary.getState().select(null);
+    switching = false; endBusy(busy); capture();
+  }
 }

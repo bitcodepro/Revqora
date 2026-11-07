@@ -1,4 +1,4 @@
-import { useLibrary, uniqueRoots, repositoryKey } from "../lib/repositoryLibrary";
+import { useLibrary, uniqueRoots, repositoryKey, type SavedWorkspace } from "../lib/repositoryLibrary";
 import { FavoriteButton, openLibraryRepository, repositoryLibraryDialog } from "./RepositoryLibrary";
 import { SyncButton } from "./SyncRepositories";
 import { useEffect, useState } from "react";
@@ -149,6 +149,12 @@ function SyncButtons({ roots, scoped = false }: { roots: string[]; scoped?: bool
   );
 }
 
+function workspaceOrder(order: string[], workspace?: SavedWorkspace) {
+  if (!workspace) return order;
+  const members = new Set(workspace.roots.map(repositoryKey));
+  return order.filter((root) => members.has(repositoryKey(root)));
+}
+
 export function RepositorySidebar() {
   const order = useRepos((s) => s.order);
   const tabs = useRepos((s) => s.tabs);
@@ -162,9 +168,10 @@ export function RepositorySidebar() {
   const { mode, layout: { repositoriesWidth: width }, setLayout: set } = useWorkspaceLayout();
   const [w, setW] = useState(width);
   useEffect(() => setW(width), [mode, width]);
-  const count = order.filter((r) => (repositorySidebarStatus(tabs[r])?.behind ?? 0) > 0).length;
   const workspace = library.workspaces.find((item) => item.id === library.activeWorkspaceId);
-  const candidates = workspace ? order : uniqueRoots([...order, ...library.knownRoots, ...library.favorites, ...library.groups.flatMap((g) => g.roots)]);
+  const open = workspaceOrder(order, workspace);
+  const count = open.filter((r) => (repositorySidebarStatus(tabs[r])?.behind ?? 0) > 0).length;
+  const candidates = workspace ? open : uniqueRoots([...order, ...library.knownRoots, ...library.favorites, ...library.groups.flatMap((g) => g.roots)]);
   const candidateKeys = new Set(candidates.map(repositoryKey));
   const groups = workspace ? library.groups.filter((g) => g.roots.some((root) => candidateKeys.has(repositoryKey(root)))) : library.groups;
   const favorite = (r: string) => library.favorites.some((p) => repositoryKey(p) === repositoryKey(r));
@@ -173,7 +180,7 @@ export function RepositorySidebar() {
   const sections = [...groups.map((g) => ({ ...g, roots: visible.filter((r) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r))) })), { id: "ungrouped", name: "Ungrouped", collapsed: false, roots: visible.filter((r) => !groups.some((g) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r)))) }];
   return (
     <div className="repository-sidebar" style={{ width: w }}>
-      <header><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{order.length}</span><div className="spacer" /><button className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
+      <header><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{open.length}</span><div className="spacer" /><button className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
       <div className="repository-filter input-wrap"><Search size={13} /><input className="input sm" placeholder="Find repository…" aria-label="Find repository" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupFilter?.id ?? ""} onChange={(e) => setGroupId(e.target.value)}><option value="">All groups</option>{groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select>}
       <SyncButtons roots={visible.filter((r) => !!tabs[r])} scoped={!!query.trim() || updatesOnly || favoritesOnly || !!groupFilter} />
@@ -209,7 +216,9 @@ export function RepositorySidebar() {
 }
 
 export function RepositoryOverview() {
-  const order = useRepos((s) => s.order);
+  const open = useRepos((s) => s.order);
+  const workspace = useLibrary((s) => s.workspaces.find((item) => item.id === s.activeWorkspaceId));
+  const order = workspaceOrder(open, workspace);
   const tabs = useRepos((s) => s.tabs);
   const busy = useUi((s) => s.busy.length > 0);
   const [query, setQuery] = useState("");

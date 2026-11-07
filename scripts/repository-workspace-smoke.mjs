@@ -97,7 +97,29 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     await save("Stage8 all");
     const ids = await page.evaluate(() => Object.fromEntries(JSON.parse(localStorage.getItem("revqora.repositories")).state.workspaces.map((w) => [w.name, w.id])));
     await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 focused"]); await waitActive("stage8-workspace");
-    await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 all"]); await waitActive("stage8-tools");
+    await page.evaluate(() => {
+      const original = window.fetch;
+      const gate = {
+        release: null,
+        restore() { window.fetch = original; gate.release?.(); delete window.__workspaceOpenGate; },
+      };
+      window.__workspaceOpenGate = gate;
+      window.fetch = async function(input, init) {
+        const url = typeof input === "string" ? input : input?.url ?? String(input);
+        const response = await Reflect.apply(original, window, [input, init]);
+        if (/\/repo_open$/.test(url) && JSON.parse(init.body).path.replaceAll("\\", "/").endsWith("/stage8-tools")) {
+          await new Promise(resolve => { gate.release = resolve; });
+        }
+        return response;
+      };
+    });
+    try {
+      await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 all"]);
+      await page.waitForFunction(() => !!window.__workspaceOpenGate.release);
+      const visible = await page.locator(".repository-sidebar .repository-label").allTextContents();
+      if (visible.length !== 1 || visible[0] !== "stage8-workspace") throw new Error(`Repository list changed before the workspace finished opening: ${visible.join(", ")}`);
+    } finally { await page.evaluate(() => window.__workspaceOpenGate.restore()); }
+    await waitActive("stage8-tools");
     if (await page.locator(".history-mode button.on").innerText() !== "Graph") throw new Error("workspace did not restore history mode");
     await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 focused"]); await waitActive("stage8-workspace");
     if (await page.locator(".repository-close").count() !== 1 || await page.locator(".history-mode button.on").innerText() !== "Columns") throw new Error("workspace did not restore repository set");
