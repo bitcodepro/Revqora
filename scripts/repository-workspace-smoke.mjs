@@ -91,10 +91,17 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     });
     const excluded = page.locator(".repository-sidebar .repository-item", { hasText: "stage8-tools" });
     await excluded.waitFor({ state: "detached" });
-    await page.getByLabel("Workspace", { exact: true }).selectOption("");
+    await page.getByLabel("Workspace", { exact: true }).selectOption({ label: "All Workspaces" });
+    if (await page.locator('.repository-sidebar .repository-item[data-repository-state="closed"]').count()) throw new Error("All Workspaces briefly left library repositories closed");
+    await page.locator('.repository-sidebar .repository-item[data-repository-state="open"]', { hasText: "stage8-tools" }).waitFor();
+    await waitActive("stage8-workspace");
     await open(second); await page.locator(".history-mode").getByRole("button", { name: "Graph", exact: true }).click();
     if (await branches.getAttribute("aria-expanded") === "false") await branches.click();
-    await save("Stage8 all");
+    await save("Stage8 all", async (editor) => {
+      await editor.getByRole("button", { name: "Clear shown", exact: true }).click();
+      await editor.getByRole("checkbox", { name: /stage8-workspace/ }).check();
+      await editor.getByRole("checkbox", { name: /stage8-tools/ }).check();
+    });
     const ids = await page.evaluate(() => Object.fromEntries(JSON.parse(localStorage.getItem("revqora.repositories")).state.workspaces.map((w) => [w.name, w.id])));
     await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 focused"]); await waitActive("stage8-workspace");
     await page.evaluate(() => {

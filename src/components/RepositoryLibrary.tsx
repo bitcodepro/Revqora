@@ -5,7 +5,7 @@ import { basename } from "../lib/format";
 import { errorMessage } from "../lib/api";
 import { useLibrary, repositoryKey, uniqueRoots, type SavedWorkspace } from "../lib/repositoryLibrary";
 import { useRepos } from "../lib/store";
-import { editWorkspaceRepositories, switchWorkspace, workspaceSnapshot, workspaceWithRepositories } from "../lib/repositoryWorkspaces";
+import { editWorkspaceRepositories, openAllWorkspaces, switchWorkspace, workspaceSnapshot, workspaceWithRepositories } from "../lib/repositoryWorkspaces";
 import { retainedConflictDrafts } from "../lib/conflictStudio";
 import { contextMenu, showDialog, toast, useUi } from "../lib/ui";
 import { confirmDialog, promptDialog } from "./dialogs";
@@ -125,7 +125,7 @@ export function WorkspacePicker() {
   const workspaces = useLibrary((s) => s.workspaces), active = useLibrary((s) => s.activeWorkspaceId);
   const busy = useUi((s) => s.busy.length > 0);
   if (!workspaces.length) return null;
-  return <select className="input sm workspace-picker" aria-label="Workspace" disabled={busy} value={active ?? ""} onChange={(e) => e.target.value ? void openWorkspace(e.target.value) : useLibrary.getState().select(null)}><option value="">Unsaved session</option>{workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select>;
+  return <select className="input sm workspace-picker" aria-label="Workspace" disabled={busy} value={active ?? ""} onChange={(e) => e.target.value ? void openWorkspace(e.target.value) : openAllWorkspaces()}><option value="">All Workspaces</option>{workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select>;
 }
 export function repositoryLibraryDialog() { return showDialog<void>((close) => <RepositoryLibrary close={close} />); }
 export function RepositoryLibraryButton() { return <button type="button" className="icon-btn" title="Repository library and workspaces" aria-label="Repository library and workspaces" onClick={() => void repositoryLibraryDialog()}><Library size={16} /></button>; }

@@ -67,7 +67,8 @@ repositories outside the active workspace.
 
 The active workspace automatically tracks its open repository set and order, active
 repository, History/Changes/PR view, history mode and panel visibility and sizes
-in every mode. Select **Unsaved session** to make temporary changes to the open tabs.
+in every mode. Select **All Workspaces** to open the full repository library in one
+session. Changes to the open tabs in this view are separate from named workspaces.
 
 **Switch** opens the saved set, closes other repository tabs and restores layout.
 **Add to session** adds the saved set to the current session without replacing

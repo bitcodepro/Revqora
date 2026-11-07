@@ -51,6 +51,21 @@ export function workspaceBusy(): boolean {
   const r = useRepos.getState();
   return switching || useUi.getState().busy.length > 0 || useUi.getState().repositoryOperations.length > 0 || r.order.some((root) => r.tabs[root].pendingMutations > 0);
 }
+export function openAllWorkspaces() {
+  if (switching) return;
+  const library = useLibrary.getState();
+  const repos = useRepos.getState();
+  const roots = uniqueRoots([...repos.order, ...library.knownRoots]);
+  capture();
+  switching = true;
+  try {
+    // Register the full roster before showing the library. Keep the outgoing
+    // workspace's snapshot separate from the newly opened tabs.
+    void repos.openMany(roots, repos.active ? undefined : roots[0]);
+    library.select(null);
+  } finally { switching = false; }
+}
+
 export async function switchWorkspace(id: string, add = false): Promise<string[]> {
   const saved = useLibrary.getState().workspaces.find((w) => w.id === id);
   if (!saved) throw new Error("This workspace no longer exists.");
