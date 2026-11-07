@@ -61,6 +61,10 @@ remains available in the library, and can belong to several workspaces.
 Edits to the active workspace also update its open tabs. You can edit inactive
 workspaces while leaving the current session open.
 
+The repository panel for a named workspace shows its members. Background Git and
+pull request checks run for open repositories. Use **Manage library** to find
+repositories outside the active workspace.
+
 The active workspace automatically tracks its open repository set and order, active
 repository, History/Changes/PR view, history mode and panel visibility and sizes
 in every mode. Select **Unsaved session** to make temporary changes to the open tabs.

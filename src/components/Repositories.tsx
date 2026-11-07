@@ -163,21 +163,24 @@ export function RepositorySidebar() {
   const [w, setW] = useState(width);
   useEffect(() => setW(width), [mode, width]);
   const count = order.filter((r) => (repositorySidebarStatus(tabs[r])?.behind ?? 0) > 0).length;
-  const candidates = uniqueRoots([...order, ...library.knownRoots, ...library.favorites, ...library.groups.flatMap((g) => g.roots)]);
+  const workspace = library.workspaces.find((item) => item.id === library.activeWorkspaceId);
+  const candidates = workspace ? order : uniqueRoots([...order, ...library.knownRoots, ...library.favorites, ...library.groups.flatMap((g) => g.roots)]);
+  const candidateKeys = new Set(candidates.map(repositoryKey));
+  const groups = workspace ? library.groups.filter((g) => g.roots.some((root) => candidateKeys.has(repositoryKey(root)))) : library.groups;
   const favorite = (r: string) => library.favorites.some((p) => repositoryKey(p) === repositoryKey(r));
-  const groupFilter = library.groups.find((g) => g.id === groupId);
+  const groupFilter = groups.find((g) => g.id === groupId);
   const visible = candidates.filter((r) => (r + " " + tabs[r]?.info?.name).toLowerCase().includes(query.trim().toLowerCase()) && (!updatesOnly || !!repositorySidebarStatus(tabs[r])?.behind) && (!favoritesOnly || favorite(r)) && (!groupFilter || groupFilter.roots.some((p) => repositoryKey(p) === repositoryKey(r))));
-  const sections = [...library.groups.map((g) => ({ ...g, roots: visible.filter((r) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r))) })), { id: "ungrouped", name: "Ungrouped", collapsed: false, roots: visible.filter((r) => !library.groups.some((g) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r)))) }];
+  const sections = [...groups.map((g) => ({ ...g, roots: visible.filter((r) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r))) })), { id: "ungrouped", name: "Ungrouped", collapsed: false, roots: visible.filter((r) => !groups.some((g) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r)))) }];
   return (
     <div className="repository-sidebar" style={{ width: w }}>
       <header><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{order.length}</span><div className="spacer" /><button className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
       <div className="repository-filter input-wrap"><Search size={13} /><input className="input sm" placeholder="Find repository…" aria-label="Find repository" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
-      {library.groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupFilter?.id ?? ""} onChange={(e) => setGroupId(e.target.value)}><option value="">All groups</option>{library.groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select>}
+      {groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupFilter?.id ?? ""} onChange={(e) => setGroupId(e.target.value)}><option value="">All groups</option>{groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select>}
       <SyncButtons roots={visible.filter((r) => !!tabs[r])} scoped={!!query.trim() || updatesOnly || favoritesOnly || !!groupFilter} />
       <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites{favoritesOnly ? " · Show all" : ""}</button>
       <button className={`repository-overview-link ${overview ? "active" : ""}`} onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={14} /> All repositories</button>
       <div className="repository-list" role="list" aria-label="Open repositories">
-        {sections.map((group) => <div key={group.id}>{library.groups.length > 0 && <button type="button" className="repository-group" aria-expanded={!group.collapsed} onClick={() => group.id !== "ungrouped" && library.collapse(group.id)}>{group.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{group.name}<span className="faint">{group.roots.length}</span></button>}{(!group.collapsed || !!query) && group.roots.map((r) => {
+        {sections.filter((group) => !workspace || group.roots.length > 0).map((group) => <div key={group.id}>{groups.length > 0 && <button type="button" className="repository-group" aria-expanded={!group.collapsed} onClick={() => group.id !== "ungrouped" && library.collapse(group.id)}>{group.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{group.name}<span className="faint">{group.roots.length}</span></button>}{(!group.collapsed || !!query) && group.roots.map((r) => {
           const t = tabs[r];
           return (
             <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""}`} key={r} onContextMenu={e => contextMenu(e, namePathMenu(t?.info?.name ?? basename(r), r, null))}>

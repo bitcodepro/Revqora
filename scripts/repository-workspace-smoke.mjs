@@ -89,7 +89,8 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
       await editor.getByLabel("Find repository", { exact: true }).fill("stage8-tools");
       await editor.getByRole("checkbox", { name: /stage8-tools/ }).uncheck();
     });
-    await page.getByRole("button", { name: "Close stage8-tools", exact: true }).waitFor({ state: "detached" });
+    const excluded = page.locator(".repository-sidebar .repository-item", { hasText: "stage8-tools" });
+    await excluded.waitFor({ state: "detached" });
     await page.getByLabel("Workspace", { exact: true }).selectOption("");
     await open(second); await page.locator(".history-mode").getByRole("button", { name: "Graph", exact: true }).click();
     if (await branches.getAttribute("aria-expanded") === "false") await branches.click();
@@ -100,13 +101,27 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     if (await page.locator(".history-mode button.on").innerText() !== "Graph") throw new Error("workspace did not restore history mode");
     await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 focused"]); await waitActive("stage8-workspace");
     if (await page.locator(".repository-close").count() !== 1 || await page.locator(".history-mode button.on").innerText() !== "Columns") throw new Error("workspace did not restore repository set");
+    await excluded.waitFor({ state: "detached" });
     if (await branches.getAttribute("aria-expanded") !== "false") throw new Error("workspace did not restore panel visibility");
     await edit("Stage8 all", "stage8-tools", false);
     if (await page.getByLabel("Workspace", { exact: true }).inputValue() !== ids["Stage8 focused"]) throw new Error("editing another workspace switched the current session");
     await edit("Stage8 focused · Active", "stage8-tools", true, "Ungrouped");
     await page.getByRole("button", { name: "Close stage8-tools", exact: true }).waitFor();
-    await edit("Stage8 focused · Active", "stage8-tools", false);
-    await page.getByRole("button", { name: "Close stage8-tools", exact: true }).waitFor({ state: "detached" });
+    await page.evaluate(() => {
+      const original = window.fetch, removed = [];
+      window.__workspaceWatchProbe = { removed, restore: () => { window.fetch = original; delete window.__workspaceWatchProbe; } };
+      window.fetch = async function(input, init) {
+        const url = typeof input === "string" ? input : input?.url ?? String(input);
+        const response = await Reflect.apply(original, window, [input, init]);
+        if (/\/unwatch_repo$/.test(url) && response.ok) removed.push(JSON.parse(init.body).repo);
+        return response;
+      };
+    });
+    try {
+      await edit("Stage8 focused · Active", "stage8-tools", false);
+      await excluded.waitFor({ state: "detached" });
+      await page.waitForFunction(() => window.__workspaceWatchProbe.removed.some((root) => root.replaceAll("\\", "/").endsWith("/stage8-tools")));
+    } finally { await page.evaluate(() => window.__workspaceWatchProbe.restore()); }
     await library("Repositories");
     await page.locator(".library-row", { has: page.getByText("stage8-tools", { exact: true }) }).getByRole("button", { name: "Open", exact: true }).waitFor();
     await done();
@@ -114,7 +129,17 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     if (savedSets.some(([name, count]) => name.startsWith("Stage8 ") && count !== 1)) throw new Error("workspace membership edits were not saved");
     if (fs.readFileSync(toolsFile, "utf8") !== toolsContents) throw new Error("removing the repository changed its working file");
     if (git(root, "branch", "--show-current") !== "main" || git(second, "branch", "--show-current") !== "main") throw new Error("workspace checked out a branch");
-    await page.reload(); await waitActive("stage8-workspace"); await shot("76-saved-workspace");
+    // Settings and membership are persisted separately. A stale session entry
+    // must not reopen an excluded repository.
+    await page.evaluate((excludedRoot) => {
+      const settings = JSON.parse(localStorage.getItem("revqora.settings"));
+      settings.state.openTabs.push(excludedRoot);
+      settings.state.activeTab = excludedRoot;
+      localStorage.setItem("revqora.settings", JSON.stringify(settings));
+    }, second);
+    await page.reload(); await waitActive("stage8-workspace");
+    await excluded.waitFor({ state: "detached" });
+    await shot("76-saved-workspace");
     if (await branches.getAttribute("aria-expanded") !== "false") throw new Error("restart lost workspace panel visibility");
   });
   await check("Sync reviews exact incoming revisions and requires opt-in before publishing outgoing commits", async () => {
