@@ -1,7 +1,7 @@
 import { api, errorMessage, newOpId } from "./api";
 import { useRepos } from "./store";
 import { useSettings } from "./settings";
-import { repositoryKey, useLibrary, type WorkspaceSnapshot } from "./repositoryLibrary";
+import { repositoryKey, uniqueRoots, useLibrary, type SavedWorkspace, type WorkspaceSnapshot } from "./repositoryLibrary";
 import { endBusy, startBusy, useUi } from "./ui";
 import { validationRunning } from "./validation";
 
@@ -10,6 +10,20 @@ let switching = false;
 export function workspaceSnapshot(): WorkspaceSnapshot {
   const r = useRepos.getState(), s = useSettings.getState();
   return structuredClone({ roots: r.order, activeRoot: r.active, views: Object.fromEntries(r.order.map((root) => [root, r.tabs[root].view])), layouts: s.layouts, historyMode: s.historyMode });
+}
+export function workspaceWithRepositories(snapshot: WorkspaceSnapshot, paths: string[]): WorkspaceSnapshot {
+  const roots = uniqueRoots(paths);
+  const views = new Map(Object.entries(snapshot.views).map(([root, view]) => [repositoryKey(root), view]));
+  return {
+    roots,
+    activeRoot: roots.find((root) => snapshot.activeRoot && repositoryKey(root) === repositoryKey(snapshot.activeRoot)) ?? roots[0] ?? null,
+    views: Object.fromEntries(roots.flatMap((root) => {
+      const view = views.get(repositoryKey(root));
+      return view ? [[root, view]] : [];
+    })),
+    layouts: snapshot.layouts,
+    historyMode: snapshot.historyMode,
+  };
 }
 function capture() {
   if (!ready || switching) return;
@@ -38,10 +52,29 @@ export function workspaceBusy(): boolean {
   return switching || useUi.getState().busy.length > 0 || useUi.getState().repositoryOperations.length > 0 || r.order.some((root) => r.tabs[root].pendingMutations > 0);
 }
 export async function switchWorkspace(id: string, add = false): Promise<string[]> {
-  if (workspaceBusy()) throw new Error("Wait for the current operation to finish before switching workspaces.");
+  const saved = useLibrary.getState().workspaces.find((w) => w.id === id);
+  if (!saved) throw new Error("This workspace no longer exists.");
+  return applyWorkspace(saved, add);
+}
+
+export async function editWorkspaceRepositories(id: string, roots: string[]): Promise<string[]> {
   const library = useLibrary.getState(), saved = library.workspaces.find((w) => w.id === id);
   if (!saved) throw new Error("This workspace no longer exists.");
+  if (workspaceBusy()) throw new Error("Wait for the current operation to finish before editing workspaces.");
+  const active = library.activeWorkspaceId === id;
+  const updated = workspaceWithRepositories(active ? workspaceSnapshot() : saved, roots);
+  if (!active) {
+    library.update(id, updated);
+    return [];
+  }
+  return applyWorkspace({ ...saved, ...updated }, false);
+}
+
+async function applyWorkspace(saved: SavedWorkspace, add: boolean): Promise<string[]> {
+  if (workspaceBusy()) throw new Error("Wait for the current operation to finish before switching workspaces.");
+  const library = useLibrary.getState();
   const target = structuredClone(saved), original = [...useRepos.getState().order], previous = library.activeWorkspaceId;
+  const originalRoots = new Map(original.map((root) => [repositoryKey(root), root]));
   capture(); switching = true;
   const busy = newOpId(), errors: string[] = [], opened: string[] = [], mapped = new Map<string, string>();
   startBusy(busy, `Opening workspace ${target.name}`);
@@ -53,7 +86,13 @@ export async function switchWorkspace(id: string, add = false): Promise<string[]
     }
     library.select(null);
     await Promise.all(target.roots.map(async root => {
-      try { const actual = await useRepos.getState().open(root, false); if (actual) { opened.push(actual); mapped.set(root, actual); } else errors.push(`${root}: Could not open repository`); }
+      try {
+        const existing = originalRoots.get(repositoryKey(root));
+        const repos = useRepos.getState();
+        const actual = existing && repos.tabs[existing]?.info ? existing : await repos.open(root, false);
+        if (actual) { opened.push(actual); mapped.set(root, actual); }
+        else errors.push(`${root}: Could not open repository`);
+      }
       catch (e) { errors.push(`${root}: ${errorMessage(e)}`); }
     }));
     // Keep the original session and saved layout intact on any partial failure.
@@ -69,7 +108,7 @@ export async function switchWorkspace(id: string, add = false): Promise<string[]
     useRepos.getState().arrange(target.roots.map(root => mapped.get(root)!).filter(Boolean), active);
     useSettings.getState().set({ layouts: structuredClone(target.layouts), historyMode: target.historyMode });
     useUi.setState({ overlay: null, repositoryOverview: false });
-    useLibrary.getState().select(id);
+    useLibrary.getState().select(target.id);
     return errors;
   } finally { switching = false; endBusy(busy); capture(); }
 }

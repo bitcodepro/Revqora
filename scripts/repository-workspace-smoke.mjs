@@ -25,7 +25,27 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
   const open = async (dir) => { await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), dir); await waitActive(path.basename(dir)); };
   const library = async (tab) => { await page.getByRole("button", { name: "Repository library and workspaces", exact: true }).click(); await page.locator(".library-tabs").getByRole("button", { name: tab, exact: true }).click(); };
   const done = () => page.locator(".modal").last().getByRole("button", { name: "Done", exact: true }).click();
-  const save = async (name) => { await library("Workspaces"); await page.getByRole("button", { name: "Save current as…", exact: true }).click(); await page.locator(".modal").last().locator("input").fill(name); await page.locator(".modal").last().getByRole("button", { name: "OK", exact: true }).click(); await page.waitForSelector(`.library-row:has-text('${name} · Active')`); await done(); };
+  const save = async (name, choose = async () => {}) => {
+    await library("Workspaces");
+    await page.getByRole("button", { name: "New workspace…", exact: true }).click();
+    const editor = page.locator(".modal").last();
+    await editor.getByLabel("Workspace name", { exact: true }).fill(name);
+    await choose(editor);
+    await editor.getByRole("button", { name: "Create workspace", exact: true }).click();
+    await page.waitForSelector(`.library-row:has-text('${name} · Active')`);
+    await done();
+  };
+  const edit = async (workspace, repository, included, group) => {
+    await library("Workspaces");
+    const row = page.locator(".library-row", { has: page.getByText(workspace, { exact: true }) });
+    await row.getByRole("button", { name: "Edit repositories…", exact: true }).click();
+    const editor = page.locator(".modal").last();
+    if (group) await editor.getByLabel("Filter repositories by group").selectOption({ label: group });
+    await editor.getByLabel("Find repository", { exact: true }).fill(repository);
+    await editor.getByRole("checkbox", { name: new RegExp(repository) }).setChecked(included);
+    await editor.getByRole("button", { name: "Save changes", exact: true }).click();
+    await done();
+  };
   await check("repository favorites and groups retain closed bookmarks and collapse state", async () => {
     // Exercise the opt-out through Settings: these bookmark/workspace scenarios
     // intentionally restore only open tabs. The 40-repository fixture below
@@ -57,10 +77,19 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     await repositorySessionSmoke({ page, work, shot, template: second });
   });
   await check("saved workspaces restore repository sets, views and panel layout without switching Git branches", async () => {
+    const toolsFile = path.join(second, "file.txt");
+    fs.appendFileSync(toolsFile, "\nlocal workspace changes\n");
+    const toolsContents = fs.readFileSync(toolsFile, "utf8");
+    await open(second);
+    await open(root);
     await page.locator(".history-mode").getByRole("button", { name: "Columns", exact: true }).click();
     const branches = page.getByRole("button", { name: "Branches", exact: true });
     if (await branches.getAttribute("aria-expanded") === "true") await branches.click();
-    await save("Stage8 focused");
+    await save("Stage8 focused", async (editor) => {
+      await editor.getByLabel("Find repository", { exact: true }).fill("stage8-tools");
+      await editor.getByRole("checkbox", { name: /stage8-tools/ }).uncheck();
+    });
+    await page.getByRole("button", { name: "Close stage8-tools", exact: true }).waitFor({ state: "detached" });
     await page.getByLabel("Workspace", { exact: true }).selectOption("");
     await open(second); await page.locator(".history-mode").getByRole("button", { name: "Graph", exact: true }).click();
     if (await branches.getAttribute("aria-expanded") === "false") await branches.click();
@@ -72,6 +101,18 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 focused"]); await waitActive("stage8-workspace");
     if (await page.locator(".repository-close").count() !== 1 || await page.locator(".history-mode button.on").innerText() !== "Columns") throw new Error("workspace did not restore repository set");
     if (await branches.getAttribute("aria-expanded") !== "false") throw new Error("workspace did not restore panel visibility");
+    await edit("Stage8 all", "stage8-tools", false);
+    if (await page.getByLabel("Workspace", { exact: true }).inputValue() !== ids["Stage8 focused"]) throw new Error("editing another workspace switched the current session");
+    await edit("Stage8 focused · Active", "stage8-tools", true, "Ungrouped");
+    await page.getByRole("button", { name: "Close stage8-tools", exact: true }).waitFor();
+    await edit("Stage8 focused · Active", "stage8-tools", false);
+    await page.getByRole("button", { name: "Close stage8-tools", exact: true }).waitFor({ state: "detached" });
+    await library("Repositories");
+    await page.locator(".library-row", { has: page.getByText("stage8-tools", { exact: true }) }).getByRole("button", { name: "Open", exact: true }).waitFor();
+    await done();
+    const savedSets = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.repositories")).state.workspaces.map((w) => [w.name, w.roots.length]));
+    if (savedSets.some(([name, count]) => name.startsWith("Stage8 ") && count !== 1)) throw new Error("workspace membership edits were not saved");
+    if (fs.readFileSync(toolsFile, "utf8") !== toolsContents) throw new Error("removing the repository changed its working file");
     if (git(root, "branch", "--show-current") !== "main" || git(second, "branch", "--show-current") !== "main") throw new Error("workspace checked out a branch");
     await page.reload(); await waitActive("stage8-workspace"); await shot("76-saved-workspace");
     if (await branches.getAttribute("aria-expanded") !== "false") throw new Error("restart lost workspace panel visibility");

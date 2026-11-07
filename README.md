@@ -134,9 +134,10 @@ Use **Fetch all** to refresh matching open repositories, **Pull all** to receive
 updates, or **Sync all** to review receiving and publishing together. Closed library
 bookmarks do not run background Git operations. Configure auto-fetch in Settings.
 
-Save a named workspace to keep a repository set and its layout. **Switch** replaces
-the open set; **Add repositories** adds the saved set to the current session.
-These actions change the application's workspace, not checked-out Git branches.
+In **Manage library → Workspaces**, choose **New workspace** and select repositories
+from the library. Use **Edit repositories** to update a saved set. **Switch** opens
+that set with its saved layout. **Add to session** opens the whole set alongside
+your current repositories. Removing a repository from a workspace keeps it in the library.
 See [repository workspaces](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md).
 
 ### Give the code more room

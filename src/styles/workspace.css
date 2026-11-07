@@ -160,6 +160,13 @@
 .library-row { display: flex; align-items: center; gap: 8px; padding: 9px 4px; border-bottom: 1px solid var(--border); }
 .library-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .library-group-select { flex: 0 0 135px; width: 135px; }
+.workspace-editor-filters, .workspace-editor-selection { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.workspace-editor-filters > input { flex: 1; min-width: min(160px, 100%); }
+.workspace-editor-selection { justify-content: space-between; }
+.workspace-editor-list { max-height: 36vh; min-height: 0; margin: 0; overscroll-behavior: contain; }
+.workspace-editor-list .library-row { flex-wrap: nowrap; cursor: pointer; }
+.workspace-editor-list .library-path { display: block; }
+.workspace-editor-error { white-space: pre-wrap; overflow-wrap: anywhere; }
 .workspace-picker { width: 140px; max-width: 15vw; flex: 0 1 140px; }
 .sync-review-row { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .sync-review-row > div:first-child { flex: 1; min-width: 0; }
