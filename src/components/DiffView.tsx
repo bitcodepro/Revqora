@@ -398,6 +398,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
         {dirname(path) && <span className="dir">{dirname(path)}/</span>}
         {basename(path)}
       </div>
+      <div className="diff-controls">
       {diff?.oldPath && <span className="pill blue">renamed from {basename(diff.oldPath)}</span>}
       {diff?.isNew && <span className="pill green">new</span>}
       {diff?.isDeleted && <span className="pill red">deleted</span>}
@@ -413,7 +414,6 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
           <span className="d">−{diff.deletions}</span>
         </span>
       )}
-      <div className="diff-controls">
       {actions}
       {diff && diff.hunks.length > 1 && (
         <>

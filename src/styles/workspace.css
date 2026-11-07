@@ -110,14 +110,11 @@
 .batch-note { color: var(--text-faint); font-size: var(--fs-xs); white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 3px; }
 
 /* Long lines expand the scrollable content, never the surrounding app layout. */
-.diff-head { flex-wrap: wrap; height: auto; min-height: 42px; padding-top: 6px; padding-bottom: 6px; row-gap: 6px; }
+.diff-head { height: auto; min-height: 42px; padding-top: 6px; padding-bottom: 6px; }
+.diff-head > .path { flex: 0 1 150px; max-width: 40%; }
+/* Metadata shares the scroll row so badges cannot squeeze the controls out. */
 .diff-controls { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; max-width: 100%; overflow-x: auto; white-space: nowrap; }
 .diff-controls > * { flex: none; }
-.diff-head:has(.diff-controls) { flex-wrap: nowrap; }
-.diff-head:has(.diff-controls) > .path { flex: 0 1 150px; }
-.diff-head > .path { flex: 1 1 150px; }
-.diff-head > .spacer { display: none; }
-.diff-head .seg, .diff-head > button { flex: none; }
 .diff-body { min-width: 0; min-height: 0; }
 .diff .diff-body .code { tab-size: var(--diff-tab-size, 4); }
 .diff-content { width: max-content; min-width: 100%; }

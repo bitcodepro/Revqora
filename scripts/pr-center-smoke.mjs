@@ -5,6 +5,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
+import {withViewport} from "./ui-driver.mjs";
 
 export async function prCenterSmoke({page,check,shot,work}) {
   const root=path.join(work,"stage13-pr-center"),requests=[],token="stage13-public-fixture-token",a="a".repeat(40),b="b".repeat(40);
@@ -134,7 +135,28 @@ export async function prCenterSmoke({page,check,shot,work}) {
       if(await page.locator('[data-pr-file="asset.bin"].selected').count()!==1)throw Error("PR file search keys changed the file selection");
       await search.fill("mode");await search.press("Tab");await page.keyboard.press("ArrowDown");
       await page.locator('[data-pr-file="mode.txt"].selected').waitFor();await search.fill("");
-      await page.locator('[data-pr-file="src/new.ts"]').click();await page.locator(".pr-diff .diff-body").filter({hasText:"after"}).waitFor();await page.locator('[data-pr-file="asset.bin"]').click();await page.locator(".pr-diff .diff-body").filter({hasText:/binary/i}).waitFor();await page.locator('[data-pr-file="mode.txt"]').click();await page.getByText("Only the file mode changed.",{exact:true}).waitFor();await page.locator('[data-pr-file="long.txt"]').click();await page.locator(".pr-diff .diff-body").filter({hasText:"long-line-"}).waitFor();await page.getByTitle("Side by side",{exact:true}).click();await page.getByTitle("Unified",{exact:true}).click();const wrap=page.getByRole("button",{name:"Wrap lines",exact:true});await wrap.click();await wrap.click();if(await page.getByTitle("Show the whole file",{exact:true}).count())throw Error("Local Git options were shown for server-selected context");await shot("107-pr-file-diff");
+      await page.locator('[data-pr-file="src/new.ts"]').click();
+      await page.locator(".pr-diff .diff-body").filter({hasText:"after"}).waitFor();
+      await page.locator('[data-pr-file="asset.bin"]').click();
+      await page.locator(".pr-diff .diff-body").filter({hasText:/binary/i}).waitFor();
+      await page.locator('[data-pr-file="mode.txt"]').click();
+      await page.getByText("Only the file mode changed.",{exact:true}).waitFor();
+      await page.locator('[data-pr-file="long.txt"]').click();
+      await page.locator(".pr-diff .diff-body").filter({hasText:"long-line-"}).waitFor();
+      await withViewport(page, {width:1028,height:749}, async () => {
+        await page.getByTitle("Side by side", {exact:true}).click();
+        await page.locator(".pr-diff .split-dl .half.add").first().waitFor();
+        await page.getByTitle("Unified", {exact:true}).click();
+        await page.locator(".pr-diff .dl.add").first().waitFor();
+        const wrap = page.getByRole("button", {name:"Wrap lines",exact:true});
+        await wrap.click();
+        await wrap.click();
+        const whitespace = page.getByRole("button", {name:"Show whitespace",exact:true});
+        await whitespace.click();
+        await whitespace.click();
+        if (await page.getByTitle("Show the whole file", {exact:true}).count()) throw Error("Local Git options were shown for server-selected context");
+        await shot("107-pr-file-diff");
+      });
     });
     await check("late PR metadata cannot replace a newer selected request",async()=>{
       let release,started;const promise=new Promise(r=>release=r),ready=new Promise(r=>started=r);hold={number:2,promise,started};await page.getByRole("textbox",{name:"Search loaded pull requests",exact:true}).fill("#2");await page.getByRole("button",{name:"Open #2",exact:true}).click();await ready;await openNumber(3);release();await page.getByRole("button",{name:"Overview",exact:true}).click();await detail(3);if(await page.locator('[data-pr-detail="2"]').count())throw Error("Late metadata replaced current PR");

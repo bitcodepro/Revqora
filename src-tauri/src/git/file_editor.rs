@@ -267,10 +267,7 @@ fn save_at_boundary(root: &Path, path: &str, expected_revision: &str, content: &
                     Ok(())
                 })();
                 if let Err(error) = result {
-                    // No replace/rollback: another process may already own the
-                    // working path. Restore only if that name is still absent.
-                    let _ = fs::hard_link(&preserved, &disk.full);
-                    return Err(recovery_error(error, &backup));
+                    return Err(restore_capture(error, &preserved, &disk.full, &backup));
                 }
                 backup
             };
@@ -281,6 +278,55 @@ fn save_at_boundary(root: &Path, path: &str, expected_revision: &str, content: &
         },
     )
 }
+
+#[cfg(not(windows))]
+fn restore_capture(mut error: GitError, preserved: &Path, destination: &Path, backup: &Path) -> GitError {
+    let metadata = fs::symlink_metadata(preserved);
+    let directory = metadata.as_ref().is_ok_and(fs::Metadata::is_dir);
+    let restored = metadata.and_then(|_| if directory { rename_directory_noclobber(preserved, destination) } else { fs::hard_link(preserved, destination) });
+    match restored {
+        Ok(()) if directory => {
+            // Only remove empty recovery directories created by this save.
+            for parent in preserved.ancestors().skip(1).take_while(|path| path.starts_with(backup)) {
+                if fs::remove_dir(parent).is_err() {
+                    break;
+                }
+            }
+            error.message.push_str(" The directory was restored to its working-tree path.");
+            error
+        }
+        Ok(()) => recovery_error(error, backup),
+        Err(restore_error) => {
+            error.message.push_str(&format!(" Could not restore the captured item to {}: {restore_error}.", destination.display()));
+            error.details.push(format!("restore-error={restore_error}"));
+            recovery_error(error, backup)
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn rename_directory_noclobber(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let source = CString::new(source.as_os_str().as_bytes())?;
+    let destination = CString::new(destination.as_os_str().as_bytes())?;
+    // The kernel checks destination absence as part of the rename. A separate
+    // existence check would let another process create a directory in between.
+    #[cfg(target_os = "linux")]
+    let result = unsafe { libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, source.as_ptr(), libc::AT_FDCWD, destination.as_ptr(), libc::RENAME_NOREPLACE) };
+    #[cfg(target_os = "macos")]
+    let result = unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn rename_directory_noclobber(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "No safe directory rename is available on this platform"))
+}
+
 fn save_error(error: std::io::Error) -> GitError {
     let mut error = GitError::from(error);
     error.message = format!(
@@ -292,7 +338,7 @@ fn save_error(error: std::io::Error) -> GitError {
 fn recovery_error(mut error: GitError, backup: &Path) -> GitError {
     error
         .message
-        .push_str(&format!(" Your draft is kept. The pre-save file is retained in recovery: {}. Inspect the working file before retrying.", backup.display()));
+        .push_str(&format!(" Your draft is kept. The captured item is retained in recovery: {}. Inspect the working path before retrying.", backup.display()));
     error.details.push(format!("backup-path={}", backup.display()));
     error
 }
@@ -301,6 +347,70 @@ fn recovery_error(mut error: GitError, backup: &Path) -> GitError {
 mod race_tests {
     use super::*;
     use std::sync::{Arc, Barrier};
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn checkout_directory_during_save(destination_recreated: bool) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let git = |args: &[&str]| super::super::runner::run(root, args.iter().copied()).unwrap();
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "Editor test"]);
+        git(&["config", "user.email", "editor@example.invalid"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        git(&["config", "core.hooksPath", ".git/hooks"]);
+        let path = root.join("item");
+        fs::write(&path, "original").unwrap();
+        git(&["add", "item"]);
+        git(&["commit", "-qm", "regular file"]);
+        git(&["switch", "-qc", "directory"]);
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("nested.txt"), "checked-out content").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "directory"]);
+        git(&["switch", "-q", "main"]);
+        let loaded = read(root, "item").unwrap();
+        let mut competing_inode = None;
+        let error = save_at_boundary(root, "item", &loaded.revision, "editor draft", |phase| {
+            if phase == "before-write" {
+                git(&["switch", "-q", "directory"]);
+            } else if phase == "after-capture" && destination_recreated {
+                // Plain rename could silently replace this empty directory.
+                use std::os::unix::fs::MetadataExt;
+                fs::create_dir(&path).unwrap();
+                competing_inode = Some(fs::metadata(&path).unwrap().ino());
+            }
+        })
+        .err()
+        .expect("A checkout replaced the file with a directory");
+        assert_eq!(error.kind, "stale-file");
+        assert_eq!(git(&["branch", "--show-current"]).trim(), "directory");
+        if let Some(inode) = competing_inode {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+            assert!(error.message.contains("Could not restore the captured item"));
+            assert!(error.details.iter().any(|detail| detail.starts_with("restore-error=")));
+            let backup = error.details.iter().find_map(|detail| detail.strip_prefix("backup-path=")).unwrap();
+            assert_eq!(fs::read_to_string(Path::new(backup).join("item/nested.txt")).unwrap(), "checked-out content");
+        } else {
+            assert!(!destination_recreated, "The save must reach the capture boundary");
+            assert!(error.message.contains("The directory was restored"));
+            assert_eq!(fs::read_to_string(path.join("nested.txt")).unwrap(), "checked-out content");
+            assert!(git(&["status", "--porcelain"]).trim().is_empty());
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_checkout_to_a_directory_is_restored_on_stale_save() {
+        checkout_directory_during_save(false);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn directory_rollback_keeps_a_competing_empty_directory_and_reports_recovery() {
+        checkout_directory_during_save(true);
+    }
 
     #[test]
     fn external_write_and_replace_at_the_final_save_boundary_cannot_be_lost() {
