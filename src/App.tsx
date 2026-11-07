@@ -150,7 +150,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
           {tab.view === "history" && (
             <div className="seg history-mode" title={`History layout (${prettyCombo(bindingFor("reviewMode"))})`}>
               {HISTORY_MODES.map((m) => (
-                <button key={m} type="button" className={historyMode === m ? "on" : ""} onClick={() => setS({ historyMode: m })}>
+                <button key={m} type="button" className={historyMode === m ? "on" : ""} aria-pressed={historyMode === m} onClick={() => setS({ historyMode: m })}>
                   {m === "graph" ? <GitGraph size={13} /> : m === "review" ? <Rows3 size={13} /> : <Columns3 size={13} />} {m === "graph" ? "Graph" : m === "review" ? "Review" : "Columns"}
                 </button>
               ))}
@@ -168,17 +168,22 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
               <GraphView tab={tab} compact onEnterChanges={() => patch(root, { view: "changes" })} />
             </div>
             {!focusMode && commitSelected && <div className="review-resizer"><Splitter dir="h" onDrag={(d) => setRh((h) => Math.max(100, Math.min(400, h + d)))} onEnd={() => setLayout({ reviewListHeight: rh })} /></div>}
-            {commitSelected && <div className="details review-details">
+            {commitSelected && <div key="commit-preview" className="details review-details">
               <CommitDetails root={root} oid={commitSelected} onClose={closePreview} />
             </div>}
           </div>
         ) : tab.view === "history" && historyMode === "columns" ? (
-          <div className="columns-history" style={{ ["--history-list-w" as string]: `${cw}px`, gridTemplateColumns: commitSelected ? "clamp(180px, var(--history-list-w), 35%) minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+          <div className="columns-history" style={{ ["--history-list-w" as string]: `${cw}px` }}>
             <div className="columns-commits"><GraphView tab={tab} compact onEnterChanges={() => patch(root, { view: "changes" })} /></div>
-            {commitSelected && <>
-              <Splitter dir="v" style={{ left: "clamp(180px, var(--history-list-w), 35%)" }} onDrag={(d) => setCw((w) => Math.max(180, Math.min(600, w + d)))} onEnd={() => setLayout({ historyListWidth: cw })} />
-              <div className="details columns-details"><CommitDetails root={root} oid={commitSelected} compactMeta onClose={closePreview} /></div>
-            </>}
+            <Splitter dir="v" style={{ left: "var(--history-list-size)" }} onDrag={(d) => setCw((w) => Math.max(180, Math.min(600, w + d)))} onEnd={() => setLayout({ historyListWidth: cw })} />
+            {commitSelected ? (
+              <div key="commit-preview" className="details columns-details"><CommitDetails root={root} oid={commitSelected} compactMeta onClose={closePreview} /></div>
+            ) : (
+              <div className="empty columns-placeholder">
+                <span className="big"><GitCommitHorizontal size={24} /></span>
+                <span>Select a commit to see its files and changes.</span>
+              </div>
+            )}
           </div>
         ) : tab.view === "history" ? (
           <div className="history">

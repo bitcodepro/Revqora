@@ -49,11 +49,20 @@
 .details { display: flex; min-width: 0; }
 .details.review-details { grid-area: 2 / 1; display: flex; grid-template-columns: none; }
 .review-focused > .details.review-details { grid-area: 1 / 1; }
-.columns-history { display: grid; position: relative; flex: 1; min-width: 0; min-height: 0; }
+.columns-history {
+  --history-list-size: clamp(180px, var(--history-list-w), 35%);
+  display: grid;
+  grid-template-columns: var(--history-list-size) minmax(0, 1fr);
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
 .columns-commits { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--border); }
 .columns-commits .graph-panel { flex: 1; min-height: 0; }
 .columns-commits .search-box { width: 100% !important; }
 .details.columns-details { grid-column: 2; min-height: 0; border-top: 0; }
+.columns-placeholder { grid-column: 2; min-width: 0; min-height: 0; }
 .commit-details { position: relative; flex: 1; display: grid; min-height: 0; min-width: 0; grid-template-columns: clamp(140px, var(--commit-files-w, 240px), 45%) minmax(0, 1fr); }
 .details-left { min-width: 0; }
 .details-meta { padding: 12px; }
