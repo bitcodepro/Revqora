@@ -158,6 +158,25 @@ fn branch_web_target(repo: &Path, reference: &str) -> GitResult<Option<(String, 
 
 /// Resolve the shareable URL locally from Git configuration and tracking refs.
 pub fn web_link(repo: &Path, reference: Option<&str>) -> GitResult<Option<String>> {
+    if !repo.is_dir() {
+        return Ok(None);
+    }
+    let root = match super::repo::discover(repo) {
+        Ok(root) => root,
+        Err(error) if error.kind == "not-a-repo" => {
+            let bare = runner::exec(repo, ["rev-parse", "--is-bare-repository"])?;
+            if !bare.ok() || bare.text().trim() != "true" {
+                return Ok(None);
+            }
+            super::repo::git_dir(repo)?
+        }
+        Err(error) => return Err(error),
+    };
+    // Git walks up from an uninitialized submodule to its enclosing repository.
+    if root.canonicalize()? != repo.canonicalize()? {
+        return Ok(None);
+    }
+    let repo = root.as_path();
     let target = match reference {
         Some(reference) => match branch_web_target(repo, reference)? {
             Some(target) => Some(target),
@@ -884,6 +903,36 @@ mod tests {
         );
         assert!(browser_link(None, "file:///local/repo", None).is_none());
         assert!(browser_link(None, "https://git.example/team/repo", Some("main")).is_none());
+    }
+
+    #[test]
+    fn copy_url_never_uses_the_parent_of_an_uninitialized_submodule() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let parent = tmp.path().join("parent");
+        let checkout = tmp.path().join("checkout");
+        for r in [&source, &parent] {
+            std::fs::create_dir(r).unwrap();
+            runner::run(r, ["init", "-qb", "main"]).unwrap();
+            runner::run(r, ["config", "user.name", "Test"]).unwrap();
+            runner::run(r, ["config", "user.email", "test@example.invalid"]).unwrap();
+            runner::run(r, ["config", "commit.gpgsign", "false"]).unwrap();
+            runner::run(r, ["commit", "--allow-empty", "-qm", "root"]).unwrap();
+        }
+        runner::run(&parent, ["-c", "protocol.file.allow=always", "submodule", "add", source.to_str().unwrap(), "child"]).unwrap();
+        runner::run(&parent, ["commit", "-qm", "Add gitlink"]).unwrap();
+        runner::run(tmp.path(), ["clone", "-q", "--no-recurse-submodules", "parent", "checkout"]).unwrap();
+        runner::run(&checkout, ["remote", "set-url", "origin", "https://github.com/example/parent.git"]).unwrap();
+        let child = checkout.join("child");
+        assert!(child.is_dir() && !child.join(".git").exists());
+        assert_eq!(super::super::repo::discover(&child).unwrap().canonicalize().unwrap(), checkout.canonicalize().unwrap());
+        assert_eq!(web_link(&checkout, None).unwrap().as_deref(), Some("https://github.com/example/parent"));
+        assert_eq!(web_link(&child, None).unwrap(), None);
+        assert_eq!(web_link(&checkout.join("missing"), None).unwrap(), None);
+
+        runner::run(&checkout, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "child"]).unwrap();
+        runner::run(&child, ["remote", "set-url", "origin", "https://github.com/example/child.git"]).unwrap();
+        assert_eq!(web_link(&child, None).unwrap().as_deref(), Some("https://github.com/example/child"));
     }
 
     #[test]

@@ -8,7 +8,10 @@ import { useUi } from "./ui";
 
 export const EMPTY_PR_WATCH: PullRequestWatch = { mineSince: null, selected: {} };
 export const PR_PAGE_REFRESHED = "revqora:pr-page-refreshed";
-export type PrPageRefresh = { root: string; page: PrPage };
+export type PrPageRefresh = { root: string; page: PrPage; readId: number };
+let prListReadId = 0;
+// Order reads at initiation, including polls started before PR Center mounted.
+export const nextPrListRead = () => ++prListReadId;
 
 export function updatePrWatch(root: string, scope: string, update: (watch: PullRequestWatch) => PullRequestWatch) {
   useSettings.setState(state => {
@@ -183,10 +186,11 @@ export async function checkPullRequestActivity(running: () => boolean) {
     if (!tab?.info || (!watches[root] && !visible)) continue;
     const stillOpen = () => current() && !!useRepos.getState().tabs[root];
     try {
+      const readId = nextPrListRead();
       const page = await api.prPage(root, "open");
       if (!stillOpen()) continue;
       failures.delete(root);
-      window.dispatchEvent(new CustomEvent<PrPageRefresh>(PR_PAGE_REFRESHED, { detail: { root, page } }));
+      window.dispatchEvent(new CustomEvent<PrPageRefresh>(PR_PAGE_REFRESHED, { detail: { root, page, readId } }));
       const scope = authorScope(page.forge, page.viewer);
       const watch = watches[root]?.[scope];
       if (!watch || !page.forge.connectionRevision) continue;

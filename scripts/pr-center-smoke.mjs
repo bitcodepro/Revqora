@@ -38,8 +38,10 @@ export async function prCenterSmoke({page,check,shot,work}) {
     }
     if(url.pathname.endsWith("/pulls")){
       if(req.method==="POST"){const n=nextCreated++;const p={...pulls.get(1),...entry.body,number:n,head:{ref:entry.body.head,sha:a},base:{ref:entry.body.base,sha:b},updated_at:"created"};pulls.set(n,p);if(loseCreateResponse){loseCreateResponse=false;res.writeHead(503);res.end("{}");return;}return send(p);}
+      const state=url.searchParams.get("state"),rows=[...pulls.values()].filter(p=>state==="all"||p.state===state),offset=(Number(url.searchParams.get("page")||1)-1)*50;
+      const list=structuredClone(rows.slice(offset,offset+50));
       if(holdList){const gate=holdList;holdList=null;gate.started();await gate.response;}
-      const state=url.searchParams.get("state"),rows=[...pulls.values()].filter(p=>state==="all"||p.state===state),offset=(Number(url.searchParams.get("page")||1)-1)*50;return send(rows.slice(offset,offset+50));
+      return send(list);
     }
     res.writeHead(404);res.end("{}");
   });await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));const url=`http://127.0.0.1:${server.address().port}`;git("remote","add","origin",`${url}/team/repo.git`);
@@ -69,8 +71,11 @@ export async function prCenterSmoke({page,check,shot,work}) {
       let started, release, timeout;
       const request=new Promise((resolve,reject)=>{started=resolve;timeout=setTimeout(()=>reject(Error("The PR watch did not start a background request")),15000);});
       const response=new Promise(resolve=>{release=resolve;});
+      const oldTitle=pulls.get(2).title, freshTitle="Updated while the background list was held";
+      pulls.get(3).state="closed";
       holdList={started,response};
       const watch=()=>page.getByRole("button",{name:"Watch PR",exact:true});
+      const row=n=>page.locator(`[data-pr-number="${n}"]`);
       try{
         await Promise.all([watch().click(),request]);
         if(await watch().getAttribute("aria-pressed")!=="true")throw Error("The selected PR was not marked as watched");
@@ -78,8 +83,34 @@ export async function prCenterSmoke({page,check,shot,work}) {
         await page.getByRole("button",{name:"History",exact:true}).click();
         await page.locator(".graph-scroll .grow").first().waitFor();
         console.log(`History rendered during held PR activity request in ${Math.round(performance.now()-historyStart)} ms`);
-      }finally{clearTimeout(timeout);holdList=null;release();}
-      await page.getByRole("button",{name:"Pull requests",exact:true}).click();await detail(1);
+        pulls.get(2).title=freshTitle;
+        pulls.get(3).state="open";
+        await page.getByRole("button",{name:"Pull requests",exact:true}).click();await detail(1);
+        await row(2).getByText(freshTitle,{exact:true}).waitFor();
+        await row(3).waitFor();
+        await page.evaluate(root=>{
+          window.__prListPoll=new Promise(resolve=>{
+            const listener=event=>{
+              if(event.detail.root.toLowerCase().replaceAll("\\","/")!==root.toLowerCase().replaceAll("\\","/"))return;
+              window.removeEventListener("revqora:pr-page-refreshed",listener);
+              clearTimeout(timer);
+              const {items}=event.detail.page;
+              resolve({title:items.find(p=>p.number===2)?.title, hasThird:items.some(p=>p.number===3)});
+            };
+            const timer=setTimeout(()=>{window.removeEventListener("revqora:pr-page-refreshed",listener);resolve(null);},15000);
+            window.addEventListener("revqora:pr-page-refreshed",listener);
+          });
+        },root);
+        release();
+        const stale=await page.evaluate(async()=>{
+          const proof=await window.__prListPoll;
+          delete window.__prListPoll;
+          await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+          return proof;
+        });
+        if(stale?.title!==oldTitle||stale.hasThird)throw Error("The delayed background poll did not deliver the older list");
+        if(!await row(2).getByText(freshTitle,{exact:true}).isVisible()||!await row(3).isVisible())throw Error("An older background poll replaced the fresh PR list");
+      }finally{clearTimeout(timeout);holdList=null;release();pulls.get(2).title=oldTitle;pulls.get(3).state="open";}
       if(await watch().getAttribute("aria-pressed")!=="true")throw Error("The watch was lost during navigation");
       await watch().click();
       await interceptClipboard(page);

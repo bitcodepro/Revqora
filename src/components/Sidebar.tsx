@@ -377,7 +377,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
                     onDoubleClick={() => sm.state !== "uninitialized" && A.openRepoPath(joinPath(root, sm.path))}
                     onContextMenu={(e) =>
                       contextMenu(e, [
-                        ...namePathMenu(sm.path, joinPath(root, sm.path), null),
+                        ...namePathMenu(sm.path, joinPath(root, sm.path)),
                         { separator: true },
                         { label: sm.state === "uninitialized" ? "Initialize and update" : "Update", icon: <RefreshCw size={14} />, onClick: () => X.updateSubmodules(root, [sm.path]) },
                         { label: "Open in a new tab", icon: <FolderGit2 size={14} />, disabled: sm.state === "uninitialized", onClick: () => A.openRepoPath(joinPath(root, sm.path)) },

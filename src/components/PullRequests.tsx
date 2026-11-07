@@ -19,7 +19,7 @@ import { virtualRange } from "../lib/virtualRange";
 import {authorSelectionValue,authorScope,authorPreferencesKey,mergePrAuthors,matchesPrAuthor,restoreAuthorPreferences,type PrAuthor,type AuthorPreferences} from "../lib/prAuthors";
 import { useSettings } from "../lib/settings";
 import { copyUrlMenu } from "./NamePathMenu";
-import { EMPTY_PR_WATCH, PR_PAGE_REFRESHED, updatePrWatch, viewerAuthor, type PrPageRefresh } from "../lib/prTracking";
+import { EMPTY_PR_WATCH, PR_PAGE_REFRESHED, nextPrListRead, updatePrWatch, viewerAuthor, type PrPageRefresh } from "../lib/prTracking";
 
 const FORGE_NAMES: Record<string, string> = { github: "GitHub", azure: "Azure DevOps", gitlab: "GitLab", bitbucket: "Bitbucket Cloud", "bitbucket-server": "Bitbucket Server" };
 const prUrlMenu = (p: PullRequest) => [copyUrlMenu(() => p.url, "The provider did not supply a web address for this pull request.")];
@@ -49,6 +49,7 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
   const mine=authors.viewer??authors.prefs.mine;
   const watch = useSettings(s => s.prWatches[root]?.[authors.scope] ?? EMPTY_PR_WATCH);
   const firstPage = useRef<PullRequest[]>([]);
+  const latestListRead = useRef(0);
   const toggleMine = () => updatePrWatch(root, authors.scope, old => ({
     ...old, mineSince: old.mineSince ? null : Date.now(),
   }));
@@ -65,6 +66,7 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
   useEffect(() => { try { localStorage.setItem(prPreferencesKey(root), JSON.stringify(prefs)); } catch { toast.warning("PR Center preferences could not be saved"); } }, [root, prefs]);
   const load = useCallback(async (next: string | null = null) => {
     if (next && busy.current) return;
+    latestListRead.current = nextPrListRead();
     const id = next ? generation.current : ++generation.current;
     busy.current = true; setLoading(true); setError("");
     if (!next) { setItems([]); setCursor(null); setForge(null); setSelected(null); setEpoch(e => e + 1); }
@@ -82,9 +84,10 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
   useEffect(() => { void load(); const changed = () => { preferred.current = null; void load(); }; window.addEventListener("revqora:forge-accounts", changed); return () => { generation.current++; busy.current = false; window.removeEventListener("revqora:forge-accounts", changed); }; }, [load]);
   useEffect(() => {
     const update = (event: Event) => {
-      const { root: refreshed, page } = (event as CustomEvent<PrPageRefresh>).detail;
-      if (root !== refreshed || prefs.state !== "open" || busy.current || !forge?.connectionRevision ||
+      const { root: refreshed, page, readId } = (event as CustomEvent<PrPageRefresh>).detail;
+      if (root !== refreshed || prefs.state !== "open" || readId <= latestListRead.current || busy.current || !forge?.connectionRevision ||
           forge.connectionRevision !== page.forge.connectionRevision || authors.scope !== authorScope(page.forge, page.viewer)) return;
+      latestListRead.current = readId;
       const previous = firstPage.current;
       if (JSON.stringify(previous) === JSON.stringify(page.items)) return;
       firstPage.current = page.items;
@@ -113,7 +116,10 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
   useEffect(()=>{const key=`${authors.scope}:${authors.prefs.selection}:${prefs.state}`;if(authorScan.current.key!==key)authorScan.current={key,pages:0};if(selectedAuthor&&!visible.length&&cursor&&!loading&&!error&&authorScan.current.pages<4){authorScan.current.pages++;void load(cursor);}},[authors.scope,authors.prefs.selection,prefs.state,selectedAuthor,visible.length,cursor,loading,error,load]);
   const refresh = () => { preferred.current = selected; void load(); };
   const created = async () => { const p = await createPullRequest(root, forge); if (p) { preferred.current = p.number; if (prefs.state !== "open") savePreferences({ state: "open" }); else void load(); } };
-  const updated = useCallback((p: PullRequest) => setItems(old => old.map(row => row.number === p.number ? p : row)), []);
+  const updated = useCallback((p: PullRequest) => {
+    latestListRead.current = nextPrListRead();
+    setItems(old => old.map(row => row.number === p.number ? p : row));
+  }, []);
   return <section className={`pr-center ${!prefs.listOpen ? "pr-list-hidden" : ""}`} aria-label="Pull Request Center" style={{ "--pr-list-width": `${listWidth}px` } as CSSProperties}>
     {prefs.listOpen && <aside className="pr-list-panel" aria-label="Pull request list">
       <div className="pr-list-heading"><GitPullRequest size={17} /><b>Pull requests</b><span className="pill" data-pr-loaded={items.length}>{items.length}</span><div className="spacer" /><button className="icon-btn" title="Hide pull request list" aria-label="Hide pull request list" onClick={() => savePreferences({ listOpen: false })}><ChevronLeft size={16} /></button></div>
