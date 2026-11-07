@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { namePathMenu } from "./NamePathMenu";
 import { ChevronDown, ChevronRight, Library, Star } from "lucide-react";
 import { basename } from "../lib/format";
@@ -39,8 +40,12 @@ export async function openWorkspace(id: string, add = false) {
   } catch (e) { toast.error("Could not switch workspace", errorMessage(e)); }
 }
 
+const discoveringRepositories = (state: ReturnType<typeof useRepos.getState>) => state.order.some((root) => state.tabs[root]?.opening);
+
 function WorkspaceEditor({ workspace, close }: { workspace?: SavedWorkspace; close: () => void }) {
   const order = useRepos((s) => s.order);
+  const openAliases = useRepos(useShallow((s) => s.order.map((root) => s.tabs[root]?.openAliases)));
+  const discovering = useRepos(discoveringRepositories);
   const known = useLibrary((s) => s.knownRoots), groups = useLibrary((s) => s.groups);
   const busy = useUi((s) => s.busy.length > 0);
   const [name, setName] = useState("");
@@ -50,24 +55,29 @@ function WorkspaceEditor({ workspace, close }: { workspace?: SavedWorkspace; clo
   const [selected, setSelected] = useState(() => new Set((workspace?.roots ?? order).map(repositoryKey)));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const roots = uniqueRoots([...(workspace?.roots ?? []), ...order, ...known]);
-  const groupByRoot = new Map(groups.flatMap((item) => item.roots.map((root) => [repositoryKey(root), item.id] as const)));
+  const aliases = new Map(order.flatMap((root, i) => (openAliases[i] ?? []).map((alias) => [repositoryKey(alias), root] as const)));
+  const canonical = (path: string) => aliases.get(repositoryKey(path)) ?? path;
+  const canonicalKeys = (paths: Iterable<string>) => new Set(Array.from(paths, (path) => repositoryKey(canonical(path))));
+  const included = canonicalKeys(selected);
+  const original = canonicalKeys(workspace?.roots ?? []);
+  const roots = uniqueRoots([...(workspace?.roots ?? []), ...order, ...known].map(canonical));
+  const paths = roots.filter((root) => included.has(repositoryKey(root)));
+  const groupByRoot = new Map(groups.flatMap((item) => item.roots.map((root) => [repositoryKey(canonical(root)), item.id] as const)));
   const search = query.trim().toLowerCase();
   const shown = roots.filter((root) => root.toLowerCase().includes(search) && (!group || (groupByRoot.get(repositoryKey(root)) ?? "ungrouped") === group));
-  const allShownSelected = shown.every((root) => selected.has(repositoryKey(root)));
-  const changed = workspace && (selected.size !== workspace.roots.length || workspace.roots.some((root) => !selected.has(repositoryKey(root))));
-  const canSave = !busy && !submitting && (workspace ? changed : !!name.trim());
-  const setIncluded = (paths: string[], included: boolean) => setSelected((current) => {
-    const next = new Set(current);
-    for (const root of paths) {
-      if (included) next.add(repositoryKey(root));
+  const allShownSelected = shown.every((root) => included.has(repositoryKey(root)));
+  const changed = paths.length !== original.size || paths.some((root) => !original.has(repositoryKey(root)));
+  const canSave = !busy && !submitting && !discovering && (workspace ? changed : !!name.trim());
+  const setIncluded = (rows: string[], checked: boolean) => setSelected((current) => {
+    const next = canonicalKeys(current);
+    for (const root of rows) {
+      if (checked) next.add(repositoryKey(root));
       else next.delete(repositoryKey(root));
     }
     return next;
   });
   const submit = async () => {
-    if (!canSave) return;
-    const paths = roots.filter((root) => selected.has(repositoryKey(root)));
+    if (!canSave || discoveringRepositories(useRepos.getState())) return;
     setError(null);
     if (!workspace) {
       try {
@@ -82,7 +92,9 @@ function WorkspaceEditor({ workspace, close }: { workspace?: SavedWorkspace; clo
     }
     setSubmitting(true);
     try {
-      if (useLibrary.getState().activeWorkspaceId === workspace.id && !await confirmWorkspaceDrafts(paths)) return;
+      if (useLibrary.getState().activeWorkspaceId === workspace.id) {
+        if (!await confirmWorkspaceDrafts(paths) || discoveringRepositories(useRepos.getState())) return;
+      }
       const errors = await editWorkspaceRepositories(workspace.id, paths);
       if (errors.length) {
         setError(["The saved workspace was preserved. Repositories opened during the attempt remain in an unsaved session.", ...errors].join("\n"));
@@ -102,17 +114,18 @@ function WorkspaceEditor({ workspace, close }: { workspace?: SavedWorkspace; clo
       {groups.length > 0 && <select className="input" aria-label="Filter repositories by group" value={group} onChange={(e) => setGroup(e.target.value)}><option value="">All groups</option>{groups.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}<option value="ungrouped">Ungrouped</option></select>}
     </div>
     <div className="workspace-editor-selection">
-      <span className="batch-note">{selected.size} selected</span>
+      <span className="batch-note">{paths.length} selected</span>
       <button type="button" className="btn sm" disabled={submitting || !shown.length} onClick={() => setIncluded(shown, !allShownSelected)}>{shown.length > 0 && allShownSelected ? "Clear shown" : "Select shown"}</button>
     </div>
     <div className="library-list workspace-editor-list">
       {shown.map((root) => <label className="library-row" key={repositoryKey(root)}>
-        <input type="checkbox" checked={selected.has(repositoryKey(root))} disabled={submitting} onChange={(e) => setIncluded([root], e.target.checked)} />
+        <input type="checkbox" checked={included.has(repositoryKey(root))} disabled={submitting} onChange={(e) => setIncluded([root], e.target.checked)} />
         <span className="grow-text"><b>{basename(root)}</b><span className="batch-note library-path" title={root}>{root}</span></span>
       </label>)}
       {!shown.length && <div className="cg-empty">{roots.length ? "No matching repositories." : "Open a repository to add it to the library."}</div>}
     </div>
     {!workspace && <label className="check-row"><input type="checkbox" checked={openAfter} onChange={(e) => setOpenAfter(e.target.checked)} />Open after creating</label>}
+    {discovering && <div className="batch-note" role="status">Opening repositories… You can save when they are ready.</div>}
     {error && <div className="callout warn workspace-editor-error" role="alert">{error}</div>}
   </Modal>;
 }

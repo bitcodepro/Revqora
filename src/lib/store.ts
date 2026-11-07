@@ -23,6 +23,7 @@ export type ChangeSel =
 export interface RepoTab {
   pendingMutations: number;
   root: string;
+  openAliases?: string[];
   info: RepoInfo | null;
   status: StatusSummary | null;
   /** Display-only observation; never supplies mutation or diff preconditions. */
@@ -159,8 +160,12 @@ function hydrate(root: string): Promise<string | null> {
       const state = useRepos.getState();
       if (actual !== root) {
         const tabs = { ...state.tabs }, original = tabs[root];
+        const existing = tabs[actual];
         delete tabs[root];
-        tabs[actual] = tabs[actual] ?? { ...original, root: actual };
+        tabs[actual] = {
+          ...(existing ?? { ...original, root: actual }),
+          openAliases: uniqueRoots([...(existing?.openAliases ?? []), ...(original.openAliases ?? []), root]),
+        };
         lifetimes.delete(root);
         if (!lifetimes.has(actual)) lifetimes.set(actual, lifetime ?? Symbol(actual));
         useRepos.setState({ tabs, order: [...new Set(state.order.map(r => r === root ? actual : r))], active: state.active === root ? actual : state.active });

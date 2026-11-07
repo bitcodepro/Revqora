@@ -25,6 +25,32 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
   const open = async (dir) => { await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), dir); await waitActive(path.basename(dir)); };
   const library = async (tab) => { await page.getByRole("button", { name: "Repository library and workspaces", exact: true }).click(); await page.locator(".library-tabs").getByRole("button", { name: tab, exact: true }).click(); };
   const done = () => page.locator(".modal").last().getByRole("button", { name: "Done", exact: true }).click();
+  const holdRepositoryOpen = async (folder) => {
+    await page.evaluate((folder) => {
+      const original = window.fetch;
+      const key = (value) => value.replaceAll("\\", "/").toLowerCase();
+      let resolve, released = false;
+      const gate = {
+        held: false,
+        release() { released = true; resolve?.(); },
+        restore() { window.fetch = original; gate.release(); delete window.__workspaceOpenGate; },
+      };
+      window.__workspaceOpenGate = gate;
+      window.fetch = async function(input, init) {
+        const url = typeof input === "string" ? input : input?.url ?? String(input);
+        const response = await Reflect.apply(original, window, [input, init]);
+        if (!released && /\/repo_open$/.test(url) && key(JSON.parse(init.body).path) === key(folder)) {
+          await new Promise(unblock => { resolve = unblock; gate.held = true; });
+        }
+        return response;
+      };
+    }, folder);
+    return {
+      wait: () => page.waitForFunction(() => window.__workspaceOpenGate?.held),
+      release: () => page.evaluate(() => window.__workspaceOpenGate.release()),
+      restore: () => page.evaluate(() => window.__workspaceOpenGate.restore()),
+    };
+  };
   const save = async (name, choose = async () => {}) => {
     await library("Workspaces");
     await page.getByRole("button", { name: "New workspace…", exact: true }).click();
@@ -81,14 +107,27 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     fs.appendFileSync(toolsFile, "\nlocal workspace changes\n");
     const toolsContents = fs.readFileSync(toolsFile, "utf8");
     await open(second);
-    await open(root);
     await page.locator(".history-mode").getByRole("button", { name: "Columns", exact: true }).click();
     const branches = page.getByRole("button", { name: "Branches", exact: true });
     if (await branches.getAttribute("aria-expanded") === "true") await branches.click();
-    await save("Stage8 focused", async (editor) => {
-      await editor.getByLabel("Find repository", { exact: true }).fill("stage8-tools");
-      await editor.getByRole("checkbox", { name: /stage8-tools/ }).uncheck();
-    });
+    const closeRoot = page.getByRole("button", { name: "Close stage8-workspace", exact: true });
+    if (await closeRoot.count()) await closeRoot.click();
+    const workspaceSubdir = path.join(root, "workspace-subdir");
+    fs.mkdirSync(workspaceSubdir);
+    const createGate = await holdRepositoryOpen(workspaceSubdir);
+    try {
+      await open(workspaceSubdir); await createGate.wait();
+      await save("Stage8 focused", async (editor) => {
+        const alias = editor.getByRole("checkbox", { name: /workspace-subdir/ });
+        if (!await alias.isChecked()) throw new Error("The opening repository was not preselected");
+        if (!await editor.getByRole("button", { name: "Create workspace", exact: true }).isDisabled()) throw new Error("Workspace creation could save before the root was resolved");
+        await editor.getByRole("checkbox", { name: /stage8-tools/ }).uncheck();
+        await createGate.release();
+        await alias.waitFor({ state: "detached" });
+        if (!await editor.getByRole("checkbox", { name: /^stage8-workspace\b/ }).isChecked()) throw new Error("Workspace creation lost the selected repository after root resolution");
+        await editor.getByText("1 selected", { exact: true }).waitFor();
+      });
+    } finally { await createGate.restore(); }
     const excluded = page.locator(".repository-sidebar .repository-item", { hasText: "stage8-tools" });
     await excluded.waitFor({ state: "detached" });
     await page.getByLabel("Workspace", { exact: true }).selectOption({ label: "All Workspaces" });
@@ -104,28 +143,13 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     });
     const ids = await page.evaluate(() => Object.fromEntries(JSON.parse(localStorage.getItem("revqora.repositories")).state.workspaces.map((w) => [w.name, w.id])));
     await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 focused"]); await waitActive("stage8-workspace");
-    await page.evaluate(() => {
-      const original = window.fetch;
-      const gate = {
-        release: null,
-        restore() { window.fetch = original; gate.release?.(); delete window.__workspaceOpenGate; },
-      };
-      window.__workspaceOpenGate = gate;
-      window.fetch = async function(input, init) {
-        const url = typeof input === "string" ? input : input?.url ?? String(input);
-        const response = await Reflect.apply(original, window, [input, init]);
-        if (/\/repo_open$/.test(url) && JSON.parse(init.body).path.replaceAll("\\", "/").endsWith("/stage8-tools")) {
-          await new Promise(resolve => { gate.release = resolve; });
-        }
-        return response;
-      };
-    });
+    const switchGate = await holdRepositoryOpen(second);
     try {
       await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 all"]);
-      await page.waitForFunction(() => !!window.__workspaceOpenGate.release);
+      await switchGate.wait();
       const visible = await page.locator(".repository-sidebar .repository-label").allTextContents();
       if (visible.length !== 1 || visible[0] !== "stage8-workspace") throw new Error(`Repository list changed before the workspace finished opening: ${visible.join(", ")}`);
-    } finally { await page.evaluate(() => window.__workspaceOpenGate.restore()); }
+    } finally { await switchGate.restore(); }
     await waitActive("stage8-tools");
     if (await page.locator(".history-mode button.on").innerText() !== "Graph") throw new Error("workspace did not restore history mode");
     await page.getByLabel("Workspace", { exact: true }).selectOption(ids["Stage8 focused"]); await waitActive("stage8-workspace");
@@ -134,7 +158,30 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     if (await branches.getAttribute("aria-expanded") !== "false") throw new Error("workspace did not restore panel visibility");
     await edit("Stage8 all", "stage8-tools", false);
     if (await page.getByLabel("Workspace", { exact: true }).inputValue() !== ids["Stage8 focused"]) throw new Error("editing another workspace switched the current session");
-    await edit("Stage8 focused · Active", "stage8-tools", true, "Ungrouped");
+    const toolsSubdir = path.join(second, "tools-subdir");
+    fs.mkdirSync(toolsSubdir);
+    const editGate = await holdRepositoryOpen(toolsSubdir);
+    try {
+      await open(toolsSubdir); await editGate.wait();
+      await library("Workspaces");
+      await page.locator(".library-row", { has: page.getByText("Stage8 all", { exact: true }) }).getByRole("button", { name: "Edit repositories…", exact: true }).click();
+      const editor = page.locator(".modal").last();
+      await editor.getByLabel("Filter repositories by group").selectOption({ label: "Ungrouped" });
+      const alias = editor.getByRole("checkbox", { name: /tools-subdir/ });
+      await alias.check();
+      const saveChanges = editor.getByRole("button", { name: "Save changes", exact: true });
+      if (!await saveChanges.isDisabled()) throw new Error("Workspace edits could save before the root was resolved");
+      await editGate.release();
+      await alias.waitFor({ state: "detached" });
+      if (!await editor.getByRole("checkbox", { name: /stage8-tools/ }).isChecked()) throw new Error("Workspace edits lost the selected repository after root resolution");
+      await editor.getByText("2 selected", { exact: true }).waitFor();
+      await saveChanges.click();
+      await done();
+    } finally { await editGate.restore(); }
+    const editedRoots = await page.evaluate(id => JSON.parse(localStorage.getItem("revqora.repositories")).state.workspaces.find(w => w.id === id).roots, ids["Stage8 all"]);
+    if (!editedRoots.some(repo => repo.replaceAll("\\", "/").endsWith("/stage8-tools"))) throw new Error("The edited workspace did not save the canonical root");
+    await edit("Stage8 all", "stage8-tools", false);
+    await open(root);
     await page.getByRole("button", { name: "Close stage8-tools", exact: true }).waitFor();
     await page.evaluate(() => {
       const original = window.fetch, removed = [];
