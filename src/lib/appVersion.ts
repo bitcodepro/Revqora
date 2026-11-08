@@ -1,21 +1,31 @@
 import { getVersion } from "@tauri-apps/api/app";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 
-let request: Promise<string> | undefined;
+export const appVersion = createStore<{
+  version: string | null | undefined;
+  load: () => Promise<void>;
+}>((set, get) => {
+  let request: Promise<void> | undefined;
+  return {
+    version: undefined,
+    load: async () => {
+      if (get().version != null) return;
+      if (!request) {
+        request = getVersion().then(
+          (version) => set({ version }),
+          () => set({ version: null }),
+        ).finally(() => { request = undefined; });
+        if (get().version === null) set({ version: undefined });
+      }
+      await request;
+    },
+  };
+});
 
 export function useAppVersion() {
-  const [version, setVersion] = useState<string | null>();
-  useEffect(() => {
-    let active = true;
-    request ??= getVersion().catch((error) => {
-      request = undefined;
-      throw error;
-    });
-    void request.then(
-      (value) => { if (active) setVersion(value); },
-      () => { if (active) setVersion(null); },
-    );
-    return () => { active = false; };
-  }, []);
+  const version = useStore(appVersion, (state) => state.version);
+  useEffect(() => { void appVersion.getState().load(); }, []);
   return version;
 }
