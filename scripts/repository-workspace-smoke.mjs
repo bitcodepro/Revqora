@@ -25,6 +25,14 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
   const open = async (dir) => { await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), dir); await waitActive(path.basename(dir)); };
   const library = async (tab) => { await page.getByRole("button", { name: "Repository library and workspaces", exact: true }).click(); await page.locator(".library-tabs").getByRole("button", { name: tab, exact: true }).click(); };
   const done = () => page.locator(".modal").last().getByRole("button", { name: "Done", exact: true }).click();
+  const closeActiveTab = async (root) => {
+    await page.keyboard.press("Control+w");
+    await page.waitForFunction((root) => {
+      const key = (path) => path.replaceAll("\\", "/").toLowerCase();
+      const { openTabs } = JSON.parse(localStorage.getItem("revqora.settings")).state;
+      return !openTabs.some((path) => key(path) === key(root));
+    }, root);
+  };
   const holdRepositoryOpen = async (folder) => {
     await page.evaluate((folder) => {
       const original = window.fetch;
@@ -124,7 +132,15 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
         await editor.getByRole("checkbox", { name: /stage8-tools/ }).uncheck();
         await createGate.release();
         await alias.waitFor({ state: "detached" });
-        if (!await editor.getByRole("checkbox", { name: /^stage8-workspace\b/ }).isChecked()) throw new Error("Workspace creation lost the selected repository after root resolution");
+        const canonical = editor.getByRole("checkbox", { name: /^stage8-workspace\b/ });
+        if (!await canonical.isChecked()) throw new Error("Workspace creation lost the selected repository after root resolution");
+        await waitActive("stage8-workspace");
+        await closeActiveTab(root);
+        if (!await canonical.isChecked()) throw new Error("Closing the resolved tab cleared the workspace selection");
+        await open(root);
+        await page.locator('.repository-item[data-repository-state="open"]', { hasText: "stage8-workspace" }).waitFor();
+        if (!await canonical.isChecked()) throw new Error("Reopening the tab cleared the workspace selection");
+        await closeActiveTab(root);
         await editor.getByText("1 selected", { exact: true }).waitFor();
       });
     } finally { await createGate.restore(); }
@@ -173,7 +189,11 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
       if (!await saveChanges.isDisabled()) throw new Error("Workspace edits could save before the root was resolved");
       await editGate.release();
       await alias.waitFor({ state: "detached" });
-      if (!await editor.getByRole("checkbox", { name: /stage8-tools/ }).isChecked()) throw new Error("Workspace edits lost the selected repository after root resolution");
+      const canonical = editor.getByRole("checkbox", { name: /stage8-tools/ });
+      if (!await canonical.isChecked()) throw new Error("Workspace edits lost the selected repository after root resolution");
+      await waitActive("stage8-tools");
+      await closeActiveTab(second);
+      if (!await canonical.isChecked()) throw new Error("Closing the resolved tab cleared the workspace edit");
       await editor.getByText("2 selected", { exact: true }).waitFor();
       await saveChanges.click();
       await done();
@@ -181,7 +201,7 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     const editedRoots = await page.evaluate(id => JSON.parse(localStorage.getItem("revqora.repositories")).state.workspaces.find(w => w.id === id).roots, ids["Stage8 all"]);
     if (!editedRoots.some(repo => repo.replaceAll("\\", "/").endsWith("/stage8-tools"))) throw new Error("The edited workspace did not save the canonical root");
     await edit("Stage8 all", "stage8-tools", false);
-    await open(root);
+    await edit("Stage8 focused · Active", "stage8-tools", true, "Ungrouped");
     await page.getByRole("button", { name: "Close stage8-tools", exact: true }).waitFor();
     await page.evaluate(() => {
       const original = window.fetch, removed = [];

@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { useShallow } from "zustand/react/shallow";
+import { useLayoutEffect, useState } from "react";
 import { namePathMenu } from "./NamePathMenu";
 import { ChevronDown, ChevronRight, Library, Star } from "lucide-react";
 import { basename } from "../lib/format";
@@ -44,32 +43,45 @@ const discoveringRepositories = (state: ReturnType<typeof useRepos.getState>) =>
 
 function WorkspaceEditor({ workspace, close }: { workspace?: SavedWorkspace; close: () => void }) {
   const order = useRepos((s) => s.order);
-  const openAliases = useRepos(useShallow((s) => s.order.map((root) => s.tabs[root]?.openAliases)));
   const discovering = useRepos(discoveringRepositories);
   const known = useLibrary((s) => s.knownRoots), groups = useLibrary((s) => s.groups);
+  const savedRoots = useLibrary((s) => s.workspaces.find((item) => item.id === workspace?.id)?.roots);
   const busy = useUi((s) => s.busy.length > 0);
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("");
   const [openAfter, setOpenAfter] = useState(true);
-  const [selected, setSelected] = useState(() => new Set((workspace?.roots ?? order).map(repositoryKey)));
+  const [selected, setSelected] = useState(() => new Set((savedRoots ?? workspace?.roots ?? order).map(repositoryKey)));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const aliases = new Map(order.flatMap((root, i) => (openAliases[i] ?? []).map((alias) => [repositoryKey(alias), root] as const)));
-  const canonical = (path: string) => aliases.get(repositoryKey(path)) ?? path;
-  const canonicalKeys = (paths: Iterable<string>) => new Set(Array.from(paths, (path) => repositoryKey(canonical(path))));
-  const included = canonicalKeys(selected);
-  const original = canonicalKeys(workspace?.roots ?? []);
-  const roots = uniqueRoots([...(workspace?.roots ?? []), ...order, ...known].map(canonical));
-  const paths = roots.filter((root) => included.has(repositoryKey(root)));
-  const groupByRoot = new Map(groups.flatMap((item) => item.roots.map((root) => [repositoryKey(canonical(root)), item.id] as const)));
+  useLayoutEffect(() => {
+    const reconcile = (state: ReturnType<typeof useRepos.getState>) => {
+      const aliases = new Map(state.order.flatMap((root) =>
+        (state.tabs[root]?.openAliases ?? []).map((alias) => [repositoryKey(alias), repositoryKey(root)] as const)));
+      if (!aliases.size) return;
+      // Update the draft at relink time. Closing a tab discards its aliases,
+      // but the selected repository must stay selected in the library.
+      setSelected((current) => [...current].some((key) => aliases.has(key))
+        ? new Set([...current].map((key) => aliases.get(key) ?? key))
+        : current);
+    };
+    const unsubscribe = useRepos.subscribe((state, previous) => {
+      if (state.order !== previous.order) reconcile(state);
+    });
+    reconcile(useRepos.getState());
+    return unsubscribe;
+  }, []);
+  const original = new Set((savedRoots ?? []).map(repositoryKey));
+  const roots = uniqueRoots([...(savedRoots ?? []), ...order, ...known]);
+  const paths = roots.filter((root) => selected.has(repositoryKey(root)));
+  const groupByRoot = new Map(groups.flatMap((item) => item.roots.map((root) => [repositoryKey(root), item.id] as const)));
   const search = query.trim().toLowerCase();
   const shown = roots.filter((root) => root.toLowerCase().includes(search) && (!group || (groupByRoot.get(repositoryKey(root)) ?? "ungrouped") === group));
-  const allShownSelected = shown.every((root) => included.has(repositoryKey(root)));
+  const allShownSelected = shown.every((root) => selected.has(repositoryKey(root)));
   const changed = paths.length !== original.size || paths.some((root) => !original.has(repositoryKey(root)));
   const canSave = !busy && !submitting && !discovering && (workspace ? changed : !!name.trim());
   const setIncluded = (rows: string[], checked: boolean) => setSelected((current) => {
-    const next = canonicalKeys(current);
+    const next = new Set(current);
     for (const root of rows) {
       if (checked) next.add(repositoryKey(root));
       else next.delete(repositoryKey(root));
@@ -119,7 +131,7 @@ function WorkspaceEditor({ workspace, close }: { workspace?: SavedWorkspace; clo
     </div>
     <div className="library-list workspace-editor-list">
       {shown.map((root) => <label className="library-row" key={repositoryKey(root)}>
-        <input type="checkbox" checked={included.has(repositoryKey(root))} disabled={submitting} onChange={(e) => setIncluded([root], e.target.checked)} />
+        <input type="checkbox" checked={selected.has(repositoryKey(root))} disabled={submitting} onChange={(e) => setIncluded([root], e.target.checked)} />
         <span className="grow-text"><b>{basename(root)}</b><span className="batch-note library-path" title={root}>{root}</span></span>
       </label>)}
       {!shown.length && <div className="cg-empty">{roots.length ? "No matching repositories." : "Open a repository to add it to the library."}</div>}
