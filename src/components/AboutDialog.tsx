@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
-import { getVersion } from "@tauri-apps/api/app";
 import { BookOpen, CodeXml, ExternalLink, FolderGit2, Info, MessageSquare } from "lucide-react";
 import { Modal } from "./Modal";
 import { api } from "../lib/api";
+import { useAppVersion } from "../lib/appVersion";
 import { showDialog, toast } from "../lib/ui";
 
 const PROJECT = "https://github.com/bitcodepro/Revqora";
@@ -13,15 +12,7 @@ export function aboutDialog() {
 }
 
 function AboutBody({ close }: { close: () => void }) {
-  const [version, setVersion] = useState("Loading…");
-  useEffect(() => {
-    let active = true;
-    getVersion().then(
-      (value) => { if (active) setVersion(value); },
-      () => { if (active) setVersion("Unavailable"); },
-    );
-    return () => { active = false; };
-  }, []);
+  const version = useAppVersion();
 
   return (
     <Modal title="About Revqora" icon={<Info size={18} />} onClose={close}
@@ -31,7 +22,7 @@ function AboutBody({ close }: { close: () => void }) {
         <div><h4>Revqora</h4><p className="muted">A desktop workspace for Git, code review and agents.</p></div>
       </div>
       <dl className="about-details" aria-label="Application information">
-        <dt>Version</dt><dd aria-live="polite">{version}</dd>
+        <dt>Version</dt><dd aria-live="polite">{version === undefined ? "Loading…" : version ?? "Unavailable"}</dd>
         <dt>Created by</dt><dd><button type="button" className="btn sm ghost" onClick={() => openLink("https://github.com/bitcodepro")}>bitcodepro <ExternalLink size={12} /></button></dd>
         <dt>License</dt><dd><button type="button" className="btn sm ghost" onClick={() => openLink(`${PROJECT}/blob/main/LICENSE`)}>MIT <ExternalLink size={12} /></button></dd>
       </dl>

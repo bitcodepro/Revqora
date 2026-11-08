@@ -57,6 +57,7 @@ import * as XA from "../lib/extraActions";
 import { bindingFor, prettyCombo } from "../lib/shortcuts";
 import { jumpToCommit } from "./GraphView";
 import { api } from "../lib/api";
+import { useAppVersion } from "../lib/appVersion";
 import { basename, plural, shortOid } from "../lib/format";
 import { AheadBehind } from "./bits";
 import { UpdateChip } from "./UpdateChip";
@@ -342,6 +343,7 @@ function BusyItem({ label, line }: { label: string; line: string }) {
 const QUIET_OPERATIONS: ReturnType<typeof useUi.getState>["repositoryOperations"] = [];
 
 export function StatusBar() {
+  const version = useAppVersion();
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   const busy = useUi((s) => s.busy);
   const operations = useUi((s) => s.repositoryOperations.some(op => op.command !== "fetch_background") ? s.repositoryOperations : QUIET_OPERATIONS);
@@ -357,46 +359,51 @@ export function StatusBar() {
   const st = tab?.status;
   return (
     <div className="statusbar">
-      {tab && head && (
-        <span className="item" onContextMenu={e => { if (head.branch) contextMenu(e, namePathMenu(head.branch, tab.root, `refs/heads/${head.branch}`)); }}>
-          <GitBranch size={12} />
-          {head.branch ?? (head.detached ? `detached at ${shortOid(head.oid)}` : "no branch")}
-          {st?.upstream && <span className="faint" onContextMenu={e => contextMenu(e, namePathMenu(st.upstream!, tab.root, tab.refs?.local.find(branch => branch.name === head.branch)?.upstreamFullName ?? undefined))}>→ {st.upstream}</span>}
-          {st && <AheadBehind ahead={st.ahead} behind={st.behind} />}
-        </span>
-      )}
-      {tab?.status && (
-        <span className="item">
-          {tab.status.files.length === 0 ? (
-            <>
-              <Check size={12} style={{ color: "var(--green)" }} /> clean
-            </>
-          ) : (
-            <>
-              <FilePlus2 size={12} /> {tab.status.stagedCount} staged · {tab.status.unstagedCount} changed
-              {tab.status.conflictCount ? <span style={{ color: "var(--red)" }}> · {tab.status.conflictCount} conflicts</span> : null}
-            </>
-          )}
-        </span>
-      )}
-      {tab?.layers?.active && (
-        <span className="item" style={{ color: "var(--accent)" }}>
-          {plural(tab.layers.layers.length, "stage layer")}
-        </span>
-      )}
-      {b && <BusyItem label={b.label} line={b.line} />}
-      {!b && operations.length === 0 && (tab?.pendingMutations ?? 0) > 0 && <BusyItem label="Updating changes" line="" />}
-      {operations.length > 0 && <button type="button" className="item repository-queue" aria-live="polite" title={operations.map((o) => `${o.repo}: ${o.command.replaceAll("_", " ")} (${o.phase})`).join("\n")} onClick={() => void operationLogDialog(tab?.root ?? null)}>
-        {operations.filter((o) => o.phase === "running").length} running · {operations.filter((o) => o.phase === "queued").length} queued
-      </button>}
-      <div className="spacer" />
-      {tab?.error && (
-        <span className="item" style={{ color: "var(--red)" }} title={tab.error}>
-          {tab.error.slice(0, 80)}
-        </span>
-      )}
+      <div className="statusbar-context">
+        {tab && head && (
+          <span className="item" onContextMenu={e => { if (head.branch) contextMenu(e, namePathMenu(head.branch, tab.root, `refs/heads/${head.branch}`)); }}>
+            <GitBranch size={12} />
+            {head.branch ?? (head.detached ? `detached at ${shortOid(head.oid)}` : "no branch")}
+            {st?.upstream && <span className="faint" onContextMenu={e => contextMenu(e, namePathMenu(st.upstream!, tab.root, tab.refs?.local.find(branch => branch.name === head.branch)?.upstreamFullName ?? undefined))}>→ {st.upstream}</span>}
+            {st && <AheadBehind ahead={st.ahead} behind={st.behind} />}
+          </span>
+        )}
+        {tab?.status && (
+          <span className="item">
+            {tab.status.files.length === 0 ? (
+              <>
+                <Check size={12} style={{ color: "var(--green)" }} /> clean
+              </>
+            ) : (
+              <>
+                <FilePlus2 size={12} /> {tab.status.stagedCount} staged · {tab.status.unstagedCount} changed
+                {tab.status.conflictCount ? <span style={{ color: "var(--red)" }}> · {tab.status.conflictCount} conflicts</span> : null}
+              </>
+            )}
+          </span>
+        )}
+        {tab?.layers?.active && (
+          <span className="item" style={{ color: "var(--accent)" }}>
+            {plural(tab.layers.layers.length, "stage layer")}
+          </span>
+        )}
+        {b && <BusyItem label={b.label} line={b.line} />}
+        {!b && operations.length === 0 && (tab?.pendingMutations ?? 0) > 0 && <BusyItem label="Updating changes" line="" />}
+        {operations.length > 0 && <button type="button" className="item repository-queue" aria-live="polite" title={operations.map((o) => `${o.repo}: ${o.command.replaceAll("_", " ")} (${o.phase})`).join("\n")} onClick={() => void operationLogDialog(tab?.root ?? null)}>
+          {operations.filter((o) => o.phase === "running").length} running · {operations.filter((o) => o.phase === "queued").length} queued
+        </button>}
+        <div className="spacer" />
+        {tab?.error && (
+          <span className="item" style={{ color: "var(--red)" }} title={tab.error}>
+            {tab.error.slice(0, 80)}
+          </span>
+        )}
+      </div>
       <UpdateChip />
       <span className="item">{git}</span>
+      <button type="button" className="item app-version" title="About Revqora" onClick={() => void aboutDialog()}>
+        {version ? `Revqora v${version}` : "Revqora"}
+      </button>
     </div>
   );
 }
