@@ -50,13 +50,28 @@ opens the correct location. An empty, deinitialized module remains uninitialized
 
 ## Workspaces
 
-**Save current as** creates a named workspace. The active workspace automatically
-tracks its repository set/order, active repository, History/Changes/PR view, history
-mode and panel visibility/sizes in every mode. Select **Unsaved session** before
-changing the current set when you want to preserve the named snapshot unchanged.
+In **Manage library → Workspaces**, choose **New workspace**, enter a name and
+check the repositories to include. The currently open repositories are preselected.
+Search by name or path, or filter by group and select or clear the shown rows.
+Clear **Open after creating** to save the new workspace while keeping your current session.
+
+Choose **Edit repositories** on any workspace to add or remove individual
+repositories. Clearing a checkbox affects only that workspace. The repository
+remains available in the library, and can belong to several workspaces.
+Edits to the active workspace also update its open tabs. You can edit inactive
+workspaces while leaving the current session open.
+
+The repository panel for a named workspace shows its members. Background Git and
+pull request checks run for open repositories. Use **Manage library** to find
+repositories outside the active workspace.
+
+The active workspace automatically tracks its open repository set and order, active
+repository, History/Changes/PR view, history mode and panel visibility and sizes
+in every mode. Select **All Workspaces** to open the full repository library in one
+session. Changes to the open tabs in this view are separate from named workspaces.
 
 **Switch** opens the saved set, closes other repository tabs and restores layout.
-**Add repositories** adds the saved set to the current session without replacing
+**Add to session** adds the saved set to the current session without replacing
 its layout. These actions do not check out Git branches or change working files.
 Running Git operations and validation block replacement. Unsaved conflict buffers
 in closing tabs require confirmation and remain available for the app session.

@@ -61,7 +61,7 @@ interface LibraryStore extends LibraryData {
   move: (root: string, id: string | null) => void;
   collapse: (id: string) => void;
   removeGroup: (id: string) => void;
-  save: (name: string, snapshot: WorkspaceSnapshot) => string;
+  save: (name: string, snapshot: WorkspaceSnapshot, activate?: boolean) => string;
   update: (id: string, snapshot: WorkspaceSnapshot) => void;
   rename: (id: string, name: string) => void;
   remove: (id: string) => void;
@@ -87,7 +87,7 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
   move: (root, id) => { const s = get(); if (id && !s.groups.some((g) => g.id === id)) return; set({ knownRoots: uniqueRoots([...s.knownRoots, root]), groups: s.groups.map((g) => ({ ...g, roots: [...g.roots.filter((r) => repositoryKey(r) !== repositoryKey(root)), ...(g.id === id ? [root] : [])] })) }); },
   collapse: (id) => set({ groups: get().groups.map((g) => g.id === id ? { ...g, collapsed: !g.collapsed } : g) }),
   removeGroup: (id) => set({ groups: get().groups.filter((g) => g.id !== id) }),
-  save: (name, snapshot) => { const s = get(), id = newId(); const next = checkedName(name, s.workspaces.map((w) => w.name)); set({ workspaces: [...s.workspaces, { ...structuredClone(snapshot), id, name: next }], activeWorkspaceId: id }); return id; },
+  save: (name, snapshot, activate = true) => { const s = get(), id = newId(); const next = checkedName(name, s.workspaces.map((w) => w.name)); set({ workspaces: [...s.workspaces, { ...structuredClone(snapshot), id, name: next }], activeWorkspaceId: activate ? id : s.activeWorkspaceId }); return id; },
   update: (id, snapshot) => set({ workspaces: get().workspaces.map((w) => w.id === id ? { ...w, ...structuredClone(snapshot) } : w) }),
   rename: (id, name) => { const s = get(), old = s.workspaces.find((w) => w.id === id); if (!old) return; const next = checkedName(name, s.workspaces.map((w) => w.name), old.name); set({ workspaces: s.workspaces.map((w) => w.id === id ? { ...w, name: next } : w) }); },
   remove: (id) => set({ workspaces: get().workspaces.filter((w) => w.id !== id), activeWorkspaceId: get().activeWorkspaceId === id ? null : get().activeWorkspaceId }),
