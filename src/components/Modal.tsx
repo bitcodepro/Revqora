@@ -32,6 +32,7 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if ((e.target as HTMLElement)?.closest?.("[data-shortcut-capture]")) return;
         if(document.querySelector(".ctx-menu"))return;
         // A confirmation can sit above an editor. Only the top dialog handles Escape.
         const dialogs = document.querySelectorAll(".modal");

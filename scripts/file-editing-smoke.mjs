@@ -79,19 +79,40 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     const commitFiles=page.getByLabel("Commit files",{exact:true});await commitFiles.locator("[data-file-nav]").first().click();await page.keyboard.press("ArrowDown");
     await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="b.txt");
     await page.keyboard.press("Alt+ArrowDown");await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="c.txt");
-    const historyBinding=()=>page.getByText("Show history",{exact:true}).locator("xpath=following-sibling::button[1]");
+    const settings=page.locator(".modal").last();
+    const openShortcuts=async()=>{
+      await page.getByTitle("Settings",{exact:true}).click();
+      await settings.getByRole("button",{name:"Shortcuts",exact:true}).click();
+      await settings.getByRole("textbox",{name:"Find shortcut",exact:true}).fill("Show history");
+    };
+    const historyBinding=settings.getByRole("button",{name:"Change shortcut for Show history",exact:true});
+    const done=()=>settings.getByRole("button",{name:"Done",exact:true}).click();
+    await openShortcuts();
+    const originalBinding=await historyBinding.textContent();
     for(const key of ["Home","End","ArrowUp","ArrowDown"]) {
-      await page.getByTitle("Settings",{exact:true}).click();await historyBinding().click();await historyBinding().press(key);
-      await page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
-      await changes();await page.getByLabel("Changed files",{exact:true}).focus();await page.keyboard.press(key);
+      await historyBinding.click();
+      await historyBinding.press(key);
+      await settings.getByRole("alert").filter({hasText:"Use Ctrl, Command or Alt with a key, or use a function key."}).waitFor();
+      await historyBinding.getByText("Press keys…",{exact:true}).waitFor();
+      await historyBinding.press("Escape");
+      await historyBinding.getByText(originalBinding,{exact:true}).waitFor();
+    }
+    await done();
+
+    for(const [key,label] of [["Home","Home"],["End","End"],["ArrowUp","↑"],["ArrowDown","↓"]]) {
+      await openShortcuts();await historyBinding.click();await historyBinding.press(`Control+Alt+${key}`);
+      await historyBinding.getByText(`Ctrl+Alt+${label}`,{exact:true}).waitFor();
+      await done();
+      await changes();await page.getByLabel("Changed files",{exact:true}).focus();await page.keyboard.press(`Control+Alt+${key}`);
       await page.locator(".changes").waitFor({state:"detached"});
     }
-    await page.getByTitle("Settings",{exact:true}).click();
-    if(prefs.shortcuts?.history) {await historyBinding().click();await historyBinding().press(prefs.shortcuts.history.replaceAll("Ctrl","Control"));}
-    else await historyBinding().locator("xpath=following-sibling::button[1]").click();
-    await page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
+    await openShortcuts();
+    if(prefs.shortcuts?.history===undefined) await settings.getByTitle("Reset shortcut for Show history",{exact:true}).click();
+    else {await historyBinding.click();await historyBinding.press(prefs.shortcuts.history.replaceAll("Ctrl","Control")||"Backspace");}
+    await historyBinding.getByText(originalBinding,{exact:true}).waitFor();
+    await done();
     assert.equal(git("rev-parse","HEAD"),head);assert(index.equals(fs.readFileSync(path.join(root,".git/index"))));
-    console.log("File navigation/editor: stage-side identity, collapsed folders, whitespace, undo, CRLF/BOM, stale-save rejection and index/HEAD preservation passed");
+    console.log("File navigation/editor: stage-side identity, collapsed folders, shortcut validation and rebinding, whitespace, undo, CRLF/BOM, stale-save rejection and index/HEAD preservation passed");
   } catch(error) {
     // Retain the actual UI and original failure for the caller's screenshot.
     throw error;

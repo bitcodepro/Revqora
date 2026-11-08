@@ -523,7 +523,7 @@ version, author and links to this guide, the project and issue reporting.
 
 ## Keyboard shortcuts
 
-These are defaults; change them in **Settings**. On macOS, shortcut matching also
+These are defaults. Change them in **Settings → Shortcuts**. On macOS, shortcut matching also
 accepts Command for Ctrl-based actions.
 
 | Keys | Action |

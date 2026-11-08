@@ -13,6 +13,7 @@ import {cachedGraphRows,rememberGraphRows,rememberGraphPosition} from "../lib/gr
 import * as A from "../lib/actions";
 import { loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
+import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
 import type { GraphRow, SearchMode, Seg } from "../lib/types";
 import { WORKTREE } from "../lib/types";
@@ -688,8 +689,7 @@ export function GraphView({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (
-        (e.ctrlKey || e.metaKey) &&
-        e.key.toLowerCase() === "f" &&
+        matchesShortcut(e, "historyFind") &&
         useRepos.getState().active === root &&
         tab.view === "history"
       ) {
@@ -703,9 +703,8 @@ export function GraphView({
   }, [root, tab.view]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    // Alt+arrows belong to the file list of the commit details (and Alt+Left/Right to the
-    // web view); only plain arrows move between commits.
-    if (e.altKey && e.key.startsWith("Arrow")) return;
+    // Leave modified navigation keys to file previews and other shortcuts.
+    if ((e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) && (e.key.startsWith("Arrow") || ["PageUp", "PageDown", "Home", "End"].includes(e.key))) return;
     const cur =
       selectedIndex >= 0 ? selectedIndex : tab.selected === WORKTREE ? 0 : -1;
     const pageRows = Math.max(1, Math.floor(viewH / rowH) - 1);
@@ -802,7 +801,7 @@ export function GraphView({
           <input
             ref={searchRef}
             value={query}
-            placeholder="Search commits  (Ctrl+F)"
+            placeholder={shortcutTitle("Search commits", "historyFind")}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") gotoResult(e.shiftKey ? -1 : 1);

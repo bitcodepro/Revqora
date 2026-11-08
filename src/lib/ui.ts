@@ -147,16 +147,17 @@ export function startBusy(id: string, label: string) {
 const lastBusyUpdate = new Map<string, number>();
 
 /** Git prints progress many times a second; apply at most a few updates per second. */
-export function updateBusy(id: string, line: string) {
+export function updateBusy(id: string, line: string, immediate = false) {
   const now = Date.now();
-  if (now - (lastBusyUpdate.get(id) ?? 0) < 250 && !/100%|done/.test(line)) return;
-  lastBusyUpdate.set(id, now);
+  if (!immediate && now - (lastBusyUpdate.get(id) ?? 0) < 250 && !/100%|done/.test(line)) return;
   const busy = useUi.getState().busy;
   if (!busy.some((b) => b.id === id)) return;
+  lastBusyUpdate.set(id, now);
   useUi.setState({ busy: busy.map((b) => (b.id === id ? { ...b, line } : b)) });
 }
 
 export function endBusy(id: string) {
+  lastBusyUpdate.delete(id);
   useUi.setState({ busy: useUi.getState().busy.filter((b) => b.id !== id) });
 }
 

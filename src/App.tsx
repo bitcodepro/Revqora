@@ -17,7 +17,7 @@ import { PullRequestsView } from "./components/PullRequests";
 import { useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
 import { openOverlay, toast, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
-import { actionFor, comboFromEvent } from "./lib/shortcuts";
+import { actionFor, comboFromEvent, shortcutTitle } from "./lib/shortcuts";
 import { settingsDialog } from "./components/dialogs";
 import { repoToolsDialog } from "./components/RepoTools";
 import { Onboarding } from "./components/Onboarding";
@@ -133,16 +133,16 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
         <div className="main-head">
           <button className={`btn sm branches-toggle ${showBranches ? "active" : ""}`} aria-expanded={showBranches} title="Toggle branches panel" onClick={() => setLayout({ branchesOpen: !showBranches, focusMode: false })}><GitBranch size={13} /> Branches</button>
           <div className="view-tabs">
-            <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onClick={() => patch(root, { view: "history" })} title="Ctrl+1">
+            <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onClick={() => patch(root, { view: "history" })} title={shortcutTitle("History", "history")}>
               <GitCommitHorizontal size={15} /> History
             </button>
-            <button className={`view-tab ${tab.view === "changes" ? "on" : ""}`} onClick={() => patch(root, { view: "changes" })} title="Ctrl+2">
+            <button className={`view-tab ${tab.view === "changes" ? "on" : ""}`} onClick={() => patch(root, { view: "changes" })} title={shortcutTitle("Changes", "changes")}>
               <FilePlus2 size={15} /> Changes
               {changesCount > 0 && <span className={`pill ${conflicts ? "red" : "accent"}`}>{changesCount}</span>}
             </button>
           </div>
           {forgeKind && (
-            <button className={`view-tab ${tab.view === "pulls" ? "on" : ""}`} onClick={() => patch(root, { view: "pulls" })} title="Ctrl+3">
+            <button className={`view-tab ${tab.view === "pulls" ? "on" : ""}`} onClick={() => patch(root, { view: "pulls" })} title={shortcutTitle("Pull requests", "pulls")}>
               <GitPullRequest size={15} /> {forgeKind === "gitlab" ? "Merge requests" : "Pull requests"}
             </button>
           )}
@@ -157,7 +157,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
             </div>
           )}
           <button className={`icon-btn focus-toggle ${focusMode ? "active" : ""}`} title={focusMode ? "Exit focus mode" : "Focus on code"} aria-label={focusMode ? "Exit focus mode" : "Focus on code"} aria-pressed={focusMode} onClick={() => setLayout({ focusMode: !focusMode })}>{focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
-          <button className="icon-btn" title="Refresh (F5)" onClick={() => useRepos.getState().refresh(root)}>
+          <button className="icon-btn" title={shortcutTitle("Refresh", "refresh")} onClick={() => useRepos.getState().refresh(root)}>
             <RefreshCw size={15} />
           </button>
         </div>
@@ -340,11 +340,12 @@ export default function App() {
   // Global shortcuts (rebindable in Settings).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return;
       const combo = comboFromEvent(e);
       if (!combo) return;
       const typing = (e.target as HTMLElement)?.closest?.("input, textarea, .cm-editor");
       if (typing && !e.ctrlKey && !e.metaKey && !e.altKey && !/^F\d+$/.test(e.key)) return;
-      const id = actionFor(combo) ?? (combo === "Ctrl+Shift+P" ? "palette" : null);
+      const id = actionFor(combo);
       if (!id) return;
       const st = useRepos.getState();
       const a = st.active;
@@ -353,6 +354,7 @@ export default function App() {
       const layout = useSettings.getState().layouts[mode];
       const run: Record<string, () => void> = {
         palette: () => useUi.getState().setPalette(true),
+        paletteAlternate: () => useUi.getState().setPalette(true),
         open: () => A.openRepoDialog(),
         refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && st.refresh(a),
         overview: () => useUi.setState({ repositoryOverview: true }),

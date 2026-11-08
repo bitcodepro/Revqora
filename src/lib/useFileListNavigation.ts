@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type KeyboardEvent, type MouseEvent } from "react";
-import { actionFor, comboFromEvent } from "./shortcuts";
+import { actionFor, comboFromEvent, matchesShortcut } from "./shortcuts";
 
 const editable = "input,textarea,select,[role='textbox'],[contenteditable]:not([contenteditable='false']),.cm-editor";
 
@@ -30,13 +30,14 @@ export function useFileListNavigation() {
   }, []);
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.defaultPrevented || e.isComposing || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !["ArrowDown", "ArrowUp"].includes(e.key)) return;
+      const next = matchesShortcut(e, "previewNextFile");
+      if (!next && !matchesShortcut(e, "previewPreviousFile")) return;
       const combo=comboFromEvent(e);if(combo&&actionFor(combo))return;
       if (document.activeElement?.closest(editable) || document.querySelector(".modal-backdrop,.ctx-menu,.conflict-overlay")) return;
-      if (move(e.key)) e.preventDefault();
+      if (move(next ? "ArrowDown" : "ArrowUp")) e.preventDefault();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [move]);
-  return { ref, onKeyDown, onClickCapture, tabIndex: 0, "aria-description": "Use Up/Down to preview files; Home/End jump to the first/last visible file. Alt+Up/Down also works from the diff." };
+  return { ref, onKeyDown, onClickCapture, tabIndex: 0, "aria-description": "Use Up/Down to preview files; Home/End jump to the first/last visible file." };
 }

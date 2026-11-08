@@ -2728,6 +2728,22 @@ select[size="1"]:not([multiple]) {
   color: var(--text-dim);
   font-size: var(--fs-sm);
 }
+.settings-sections { align-self: flex-start; }
+.shortcut-settings { display: grid; gap: 2px; }
+.shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(100px, max-content) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.shortcut-row small { display: block; margin-top: 3px; }
+.shortcut-row .btn { font-family: var(--font-code); }
+.large-file-list { display: grid; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.large-file-list li { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.large-file-list code { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.large-file-list .pill { flex: none; }
 .section-title {
   font-size: var(--fs-xs);
   font-weight: 800;

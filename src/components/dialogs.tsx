@@ -3,9 +3,9 @@ import { aboutDialog } from "./AboutDialog";
 import { parseCloneInput, repoNameFromUrl } from "../lib/cloneInput";
 import {GitConnectionFields,defaultGitConnection,gitTransport} from "./GitConnections";
 import type {GitConnectionOptions} from "../lib/types";
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useUpdate } from "../lib/update";
-import { SHORTCUTS, bindingFor, comboFromEvent, prettyCombo } from "../lib/shortcuts";
+import { SHORTCUTS, bindingFor, comboFromEvent, prettyCombo, shortcutConflict } from "../lib/shortcuts";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
@@ -668,6 +668,7 @@ function UpdateSettings() {
 
 function SettingsBody({ root, close }: { root: string | null; close: () => void }) {
   const s = useSettings();
+  const [section, setSection] = useState<"general" | "shortcuts">("general");
   const [sel, setSel] = useState<GitSelection | null>(null);
   const [gitErr, setGitErr] = useState("");
   useEffect(() => {
@@ -696,6 +697,11 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
         </>
       }
     >
+      <div className="seg settings-sections" aria-label="Settings sections">
+        <button type="button" className={section === "general" ? "on" : ""} aria-pressed={section === "general"} onClick={() => setSection("general")}>General</button>
+        <button type="button" className={section === "shortcuts" ? "on" : ""} aria-pressed={section === "shortcuts"} onClick={() => setSection("shortcuts")}>Shortcuts</button>
+      </div>
+      {section === "shortcuts" ? <ShortcutSettings /> : <>
       <div className="section-title">Appearance</div>
       <div className="settings-grid">
         <label>Theme</label>
@@ -815,20 +821,8 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
         <label>Startup</label>
         <div><label className="hstack"><input type="checkbox" checked={s.openLibraryOnStartup} onChange={(e) => s.set({ openLibraryOnStartup: e.target.checked })} /> Open all saved repositories</label>
           <small className="muted">Turn off to restore only previously open repositories. Named workspaces keep their own repository set.</small></div>
-        <label>Large files</label>
-        <div className="hstack">
-          <span className="faint">Warn when a staged file is bigger than</span>
-          <input
-            className="input"
-            type="number"
-            min={1}
-            max={2000}
-            style={{ width: 90 }}
-            value={s.largeFileMb}
-            onChange={(e) => s.set({ largeFileMb: Math.max(1, Number(e.target.value) || 50) })}
-          />
-          <span className="faint">MB</span>
-        </div>
+        <label htmlFor="commit-file-limit">Commit file warning</label>
+        <LargeFileSettings />
         <label>Safety</label>
         <label className="check">
           <input type="checkbox" checked={s.confirmDiscard} onChange={(e) => s.set({ confirmDiscard: e.target.checked })} /> Ask before discarding changes
@@ -839,7 +833,6 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
         </label>
       </div>
       {root && <SigningSettings root={root} />}
-      <ShortcutSettings />
       <UpdateSettings />
       <div className="section-title">Git</div>
       <div className="settings-grid">
@@ -870,6 +863,7 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
           </button>
         </div>
       </div>
+      </>}
     </Modal>
   );
 }
@@ -941,36 +935,67 @@ function SigningSettings({ root }: { root: string }) {
   );
 }
 
+function LargeFileSettings() {
+  const [value, setValue] = useState(() => String(useSettings.getState().largeFileMb));
+  return <div>
+    <div className="hstack">
+      <input id="commit-file-limit" className="input" type="number" min={1} max={2000} step={1} style={{ width: 90 }}
+        value={value} onChange={(e) => {
+          setValue(e.target.value);
+          const next = e.target.valueAsNumber;
+          if (Number.isInteger(next) && next >= 1 && next <= 2000) useSettings.getState().set({ largeFileMb: next });
+        }} onBlur={() => setValue(String(useSettings.getState().largeFileMb))} />
+      <span className="faint">MB</span>
+    </div>
+    <small className="muted">Ask for confirmation before committing a staged file larger than this limit.</small>
+  </div>;
+}
+
 function ShortcutSettings() {
   const overrides = useSettings((s) => s.shortcuts);
   const set = useSettings((s) => s.set);
   const [capturing, setCapturing] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState("");
+  const search = query.trim().toLowerCase();
+  const filtered = SHORTCUTS.filter((sc) => `${sc.label} ${sc.description} ${prettyCombo(bindingFor(sc.id, overrides))}`.toLowerCase().includes(search));
   return (
     <>
-      <div className="section-title">Keyboard shortcuts</div>
-      <div className="settings-grid" style={{ gridTemplateColumns: "1fr auto auto", rowGap: 6 }}>
-        {SHORTCUTS.map((sc) => {
+      <input className="input" aria-label="Find shortcut" placeholder="Find an action or shortcut…" value={query} onChange={(e) => { setQuery(e.target.value); setError(""); }} />
+      <div className="batch-note">Select a shortcut and press a new combination. Press Escape to cancel or Backspace to clear it.</div>
+      {error && <div className="callout warn" role="alert">{error}</div>}
+      <div className="shortcut-settings">
+        {filtered.map((sc) => {
           const cur = bindingFor(sc.id, overrides);
           return (
-            <Fragment key={sc.id}>
-              <label>{sc.label}</label>
+            <div className="shortcut-row" key={sc.id}>
+              <div><b>{sc.label}</b><small className="muted">{sc.description}</small></div>
               <button
                 type="button"
                 className={`btn sm ${capturing === sc.id ? "primary" : ""}`}
-                style={{ minWidth: 150, fontFamily: "var(--font-code)" }}
-                onClick={() => setCapturing(sc.id)}
+                aria-label={`Change shortcut for ${sc.label}`}
+                aria-description={cur ? prettyCombo(cur) : "Unassigned"}
+                data-shortcut-capture={capturing === sc.id ? "" : undefined}
+                onClick={() => { setCapturing(sc.id); setError(""); }}
                 onKeyDown={(e) => {
                   if (capturing !== sc.id) return;
                   e.preventDefault();
                   e.stopPropagation();
-                  if (e.key === "Escape") return setCapturing(null);
-                  if (e.key === "Backspace" || e.key === "Delete") {
+                  if (e.key === "Escape") { setError(""); return setCapturing(null); }
+                  if ((e.key === "Backspace" || e.key === "Delete") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
                     set({ shortcuts: { ...overrides, [sc.id]: "" } });
                     return setCapturing(null);
                   }
                   const combo = comboFromEvent(e);
                   if (!combo) return;
+                  if (!e.ctrlKey && !e.metaKey && !e.altKey && !/^F\d+$/.test(e.key)) {
+                    setError("Use Ctrl, Command or Alt with a key, or use a function key.");
+                    return;
+                  }
+                  const conflict = shortcutConflict(sc.id, combo, overrides);
+                  if (conflict) { setError(`${prettyCombo(combo)} is already assigned to ${conflict.label}.`); return; }
                   set({ shortcuts: { ...overrides, [sc.id]: combo } });
+                  setError("");
                   setCapturing(null);
                 }}
                 onBlur={() => setCapturing((c) => (c === sc.id ? null : c))}
@@ -980,20 +1005,24 @@ function ShortcutSettings() {
               <button
                 type="button"
                 className="icon-btn sm"
-                title="Reset to default"
+                title={`Reset shortcut for ${sc.label}`}
                 disabled={!(sc.id in overrides)}
                 onClick={() => {
                   const next = { ...overrides };
                   delete next[sc.id];
+                  const conflict = sc.default && shortcutConflict(sc.id, sc.default, next);
+                  if (conflict) { setError(`${prettyCombo(sc.default)} is assigned to ${conflict.label}. Clear that shortcut first.`); return; }
                   set({ shortcuts: next });
+                  setError("");
                 }}
               >
                 <RotateCcw size={12} />
               </button>
-            </Fragment>
+            </div>
           );
         })}
       </div>
+      {!filtered.length && <div className="cg-empty">No matching shortcuts.</div>}
     </>
   );
 }

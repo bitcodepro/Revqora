@@ -54,7 +54,7 @@ import { contextMenu, openOverlay, useUi } from "../lib/ui";
 import { namePathMenu } from "./NamePathMenu";
 import * as A from "../lib/actions";
 import * as XA from "../lib/extraActions";
-import { bindingFor, prettyCombo } from "../lib/shortcuts";
+import { bindingFor, prettyCombo, shortcutTitle } from "../lib/shortcuts";
 import { jumpToCommit } from "./GraphView";
 import { api } from "../lib/api";
 import { useAppVersion } from "../lib/appVersion";
@@ -97,7 +97,7 @@ export function TopBar() {
         <b>{overview ? "All repositories" : tab?.info?.name ?? (root ? basename(root) : "Repositories")}</b>
         {!overview && tab?.info && <span onContextMenu={e => { if (root && tab.info?.head.branch) contextMenu(e, namePathMenu(tab.info.head.branch, root, `refs/heads/${tab.info.head.branch}`)); }}><GitBranch size={12} />{tab.info.head.branch ?? shortOid(tab.info.head.oid ?? "")}</span>}
       </div>
-      <button className="icon-btn" title="Open repository (Ctrl+O)" aria-label="Open repositories" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>
+      <button className="icon-btn" title={shortcutTitle("Open repository", "open")} aria-label="Open repositories" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>
       {root && tab?.info && !overview && (
         <div className="toolbar">
           <SyncButton roots={[root]} />
@@ -143,7 +143,7 @@ export function TopBar() {
         </div>
       )}
       <div className="tb-sep" />
-      <button className="icon-btn" title="Command palette (Ctrl+K)" onClick={() => useUi.getState().setPalette(true)}>
+      <button className="icon-btn" title={shortcutTitle("Command palette", "palette")} onClick={() => useUi.getState().setPalette(true)}>
         <Command size={16} />
       </button>
       <OperationLogButton root={root} />
@@ -390,6 +390,7 @@ export function StatusBar() {
         {b && <BusyItem label={b.label} line={b.line} />}
         {!b && operations.length === 0 && (tab?.pendingMutations ?? 0) > 0 && <BusyItem label="Updating changes" line="" />}
         {operations.length > 0 && <button type="button" className="item repository-queue" aria-live="polite" title={operations.map((o) => `${o.repo}: ${o.command.replaceAll("_", " ")} (${o.phase})`).join("\n")} onClick={() => void operationLogDialog(tab?.root ?? null)}>
+          {!b && <span className="busy-dot" aria-hidden="true" />}
           {operations.filter((o) => o.phase === "running").length} running · {operations.filter((o) => o.phase === "queued").length} queued
         </button>}
         <div className="spacer" />
@@ -427,7 +428,7 @@ export function Welcome() {
               </span>
               <span>
                 <div className="bt">Open repository</div>
-                <div className="bd">Pick a folder with a Git repository · Ctrl+O</div>
+                <div className="bd">{shortcutTitle("Pick a folder with a Git repository", "open")}</div>
               </span>
             </button>
             <button className="big-action" onClick={() => A.cloneRepo()}>
