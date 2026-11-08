@@ -49,11 +49,20 @@
 .details { display: flex; min-width: 0; }
 .details.review-details { grid-area: 2 / 1; display: flex; grid-template-columns: none; }
 .review-focused > .details.review-details { grid-area: 1 / 1; }
-.columns-history { display: grid; position: relative; flex: 1; min-width: 0; min-height: 0; }
+.columns-history {
+  --history-list-size: clamp(180px, var(--history-list-w), 35%);
+  display: grid;
+  grid-template-columns: var(--history-list-size) minmax(0, 1fr);
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
 .columns-commits { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--border); }
 .columns-commits .graph-panel { flex: 1; min-height: 0; }
 .columns-commits .search-box { width: 100% !important; }
 .details.columns-details { grid-column: 2; min-height: 0; border-top: 0; }
+.columns-placeholder { grid-column: 2; min-width: 0; min-height: 0; }
 .commit-details { position: relative; flex: 1; display: grid; min-height: 0; min-width: 0; grid-template-columns: clamp(140px, var(--commit-files-w, 240px), 45%) minmax(0, 1fr); }
 .details-left { min-width: 0; }
 .details-meta { padding: 12px; }
@@ -427,3 +436,4 @@
 .semantic-panel{display:flex;flex-direction:column;flex:0 1 auto;min-height:34px;max-height:40%;padding:6px 12px;border-bottom:1px solid var(--border)}.semantic-panel>.btn{flex:none;align-self:flex-start}.semantic-content{flex:1;min-height:0;overflow:auto}.semantic-rows{display:grid;gap:6px}.semantic-change{padding:6px;border:1px solid var(--border);border-radius:6px}.semantic-change summary{cursor:pointer;overflow-wrap:anywhere}.semantic-sides{display:grid;grid-template-columns:1fr 1fr;gap:8px}.semantic-sides pre{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:8px;background:var(--panel)}.history-search-form{display:flex;align-items:end;gap:12px;padding:16px;flex-wrap:wrap}.history-search-form label{display:grid;gap:6px;flex:1;min-width:180px}.history-results{padding:16px;overflow:auto}.history-result{display:flex;flex-direction:column;align-items:start;gap:5px;padding:12px;width:100%;text-align:left;border-bottom:1px solid var(--border);background:transparent;color:var(--text);cursor:pointer}.history-result:hover{background:var(--hover)}
 
 .stack-layout{display:grid;grid-template-columns:minmax(180px,240px) minmax(0,1fr);flex:1;min-height:0;overflow:hidden}.stack-layout>nav{overflow:auto;border-right:1px solid var(--border);padding:10px}.stack-main{padding:16px;overflow:auto;min-width:0}.stack-chain{padding-left:24px;display:grid;gap:8px}.stack-chain button{display:flex;align-items:center;gap:12px;flex-wrap:wrap;width:100%;padding:12px;background:var(--panel);border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;text-align:left}.stack-chain button.selected{border-color:var(--accent);background:var(--accent-soft)}.stack-detail{margin-top:20px;padding:16px;border:1px solid var(--border);border-radius:10px}.stack-detail>div{margin:12px 0}.stack-detail code,.stack-main>p code{overflow-wrap:anywhere}@media(max-width:800px){.stack-layout{grid-template-columns:160px minmax(0,1fr)}.semantic-sides{grid-template-columns:1fr}}
+
