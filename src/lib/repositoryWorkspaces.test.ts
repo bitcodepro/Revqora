@@ -14,7 +14,7 @@ import { useRepos } from "./store";
 import { useSettings } from "./settings";
 import { useLibrary, restoreLibrary } from "./repositoryLibrary";
 import { useUi } from "./ui";
-import { finishWorkspaceStartup, startWorkspaceTracking, switchWorkspace, workspaceSnapshot } from "./repositoryWorkspaces";
+import { editWorkspaceRepositories, finishWorkspaceStartup, startWorkspaceTracking, switchWorkspace, workspaceSnapshot, workspaceWithRepositories } from "./repositoryWorkspaces";
 
 beforeEach(async () => {
   useRepos.setState({ order: [], tabs: {}, active: null }); useUi.setState({ busy: [], repositoryOperations: [] }); useLibrary.setState(restoreLibrary({}));
@@ -23,7 +23,8 @@ beforeEach(async () => {
 });
 describe("workspace transitions", () => {
   it("keeps saved order and selection when independent repository opens finish out of order", async () => {
-    const id = useLibrary.getState().save("Parallel target", { ...workspaceSnapshot(), roots: ["/first", "/second"], activeRoot: "/second" });
+    const current = useLibrary.getState().save("Current", workspaceSnapshot());
+    const id = useLibrary.getState().save("Parallel target", { ...workspaceSnapshot(), roots: ["/first", "/second"], activeRoot: "/second" }, false);
     const original = useRepos.getState().open;
     let first!: () => void, second!: () => void;
     const a = new Promise<void>(resolve => { first = resolve; }), b = new Promise<void>(resolve => { second = resolve; });
@@ -31,8 +32,11 @@ describe("workspace transitions", () => {
     try {
       const switching = switchWorkspace(id);
       await vi.waitFor(() => expect(mock).toHaveBeenCalledTimes(2));
-      second(); await vi.waitFor(() => expect(useRepos.getState().order).toContain("/second")); first();
+      second(); await vi.waitFor(() => expect(useRepos.getState().order).toContain("/second"));
+      expect(useLibrary.getState().activeWorkspaceId).toBe(current);
+      first();
       expect(await switching).toEqual([]);
+      expect(useLibrary.getState().activeWorkspaceId).toBe(id);
       expect(useRepos.getState().order).toEqual(["/first", "/second"]);
       expect(useRepos.getState().active).toBe("/second");
     } finally { first(); second(); useRepos.setState({ open: original }); }
@@ -44,12 +48,13 @@ describe("workspace transitions", () => {
     expect(useRepos.getState().order).toEqual(["/target"]); expect(useRepos.getState().tabs["/target"].view).toBe("changes"); expect(useSettings.getState().historyMode).toBe("columns");
   });
   it("preserves the original session and named snapshot when any folder is missing", async () => {
-    const id = useLibrary.getState().save("Missing", { ...workspaceSnapshot(), roots: ["/target", "/missing"] });
-    useLibrary.getState().select(null);
+    const current = useLibrary.getState().save("Current", workspaceSnapshot());
+    const id = useLibrary.getState().save("Missing", { ...workspaceSnapshot(), roots: ["/target", "/missing"] }, false);
     const stop = startWorkspaceTracking();
     expect(await switchWorkspace(id)).toHaveLength(1);
     expect(useRepos.getState().order).toEqual(["/original", "/target"]);
-    expect(useLibrary.getState().workspaces[0].roots).toEqual(["/target", "/missing"]); expect(useLibrary.getState().activeWorkspaceId).toBeNull(); stop();
+    expect(useLibrary.getState().workspaces.find((w) => w.id === current)?.roots).toEqual(["/original"]);
+    expect(useLibrary.getState().workspaces.find((w) => w.id === id)?.roots).toEqual(["/target", "/missing"]); expect(useLibrary.getState().activeWorkspaceId).toBeNull(); stop();
   });
   it("adds repositories without replacing layout and automatically saves the active workspace", async () => {
     const first = useLibrary.getState().save("First", workspaceSnapshot());
@@ -57,6 +62,41 @@ describe("workspace transitions", () => {
     useLibrary.getState().select(first); useSettings.getState().set({ historyMode: "columns" });
     const stop = startWorkspaceTracking(); await switchWorkspace(second, true);
     expect(useLibrary.getState().activeWorkspaceId).toBe(first); expect(useLibrary.getState().workspaces.find((w) => w.id === first)?.roots).toEqual(["/original", "/second"]); expect(useSettings.getState().historyMode).toBe("columns"); stop();
+  });
+  it("creates and edits an inactive workspace without changing the current session", async () => {
+    const library = useLibrary.getState();
+    library.remember("/original"); library.remember("/saved");
+    const current = library.save("Current", workspaceSnapshot());
+    const id = library.save("Selected repositories", workspaceWithRepositories(workspaceSnapshot(), ["/saved"]), false);
+    expect(useLibrary.getState().activeWorkspaceId).toBe(current);
+    expect(useLibrary.getState().workspaces.find((w) => w.id === id)).toMatchObject({ roots: ["/saved"], activeRoot: "/saved", views: {} });
+    expect(await editWorkspaceRepositories(id, ["/original"])).toEqual([]);
+    expect(useRepos.getState().order).toEqual(["/original"]);
+    expect(useLibrary.getState().activeWorkspaceId).toBe(current);
+    expect(useLibrary.getState().workspaces.find((w) => w.id === id)?.roots).toEqual(["/original"]);
+    expect(useLibrary.getState().knownRoots).toEqual(["/original", "/saved"]);
+  });
+  it("applies active membership edits and preserves the library, other workspaces and layout", async () => {
+    const library = useLibrary.getState();
+    library.remember("/original"); library.remember("/saved");
+    await useRepos.getState().open("/saved");
+    useRepos.getState().patch("/saved", { view: "changes" });
+    const current = library.save("Current", workspaceSnapshot());
+    const other = library.save("Other", workspaceSnapshot(), false);
+    const layouts = useSettings.getState().layouts;
+    expect(await editWorkspaceRepositories(current, ["/saved"])).toEqual([]);
+    expect(useRepos.getState().order).toEqual(["/saved"]);
+    expect(useRepos.getState().active).toBe("/saved");
+    expect(useRepos.getState().tabs["/saved"].view).toBe("changes");
+    expect(useLibrary.getState().workspaces.find((w) => w.id === current)).toMatchObject({ roots: ["/saved"], layouts });
+    expect(useLibrary.getState().workspaces.find((w) => w.id === other)?.roots).toEqual(["/original", "/saved"]);
+    expect(useLibrary.getState().knownRoots).toEqual(["/original", "/saved"]);
+  });
+  it("keeps the saved membership and original tabs if an active edit cannot open a folder", async () => {
+    const id = useLibrary.getState().save("Current", workspaceSnapshot());
+    expect(await editWorkspaceRepositories(id, ["/missing"])).toHaveLength(1);
+    expect(useRepos.getState().order).toEqual(["/original"]);
+    expect(useLibrary.getState().workspaces.find((w) => w.id === id)?.roots).toEqual(["/original"]);
   });
   it("blocks replace during validation and prevents concurrent switches", async () => {
     const id = useLibrary.getState().save("Target", { ...workspaceSnapshot(), roots: ["/target"] });

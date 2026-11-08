@@ -1,11 +1,9 @@
 import { useSettings } from "./settings";
 import { useRepos } from "./store";
-import { uniqueRoots, useLibrary } from "./repositoryLibrary";
+import { uniqueRoots, useLibrary, type SavedWorkspace } from "./repositoryLibrary";
 
-export function startupRepositoryRoots(openTabs: string[], knownRoots: string[], openLibrary: boolean, activeWorkspaceId: string | null) {
-  // A named workspace owns its repository set. Opening the entire library would
-  // silently expand its saved snapshot during workspace startup.
-  return uniqueRoots(openLibrary && !activeWorkspaceId ? [...openTabs, ...knownRoots] : openTabs);
+export function startupRepositoryRoots(openTabs: string[], knownRoots: string[], openLibrary: boolean, workspace?: Pick<SavedWorkspace, "roots">) {
+  return uniqueRoots(workspace?.roots ?? (openLibrary ? [...openTabs, ...knownRoots] : openTabs));
 }
 
 let restoring: Promise<PromiseSettledResult<string | null>[]> | undefined;
@@ -17,8 +15,9 @@ let restoring: Promise<PromiseSettledResult<string | null>[]> | undefined;
 export function restoreRepositorySession() {
   if (!restoring) {
     const { openTabs, activeTab, openLibraryOnStartup } = useSettings.getState();
-    const { knownRoots, activeWorkspaceId } = useLibrary.getState();
-    restoring = useRepos.getState().openMany(startupRepositoryRoots(openTabs, knownRoots, openLibraryOnStartup, activeWorkspaceId), activeTab);
+    const { knownRoots, workspaces, activeWorkspaceId } = useLibrary.getState();
+    const workspace = workspaces.find((item) => item.id === activeWorkspaceId);
+    restoring = useRepos.getState().openMany(startupRepositoryRoots(openTabs, knownRoots, openLibraryOnStartup, workspace), workspace ? workspace.activeRoot : activeTab);
   }
   return restoring;
 }

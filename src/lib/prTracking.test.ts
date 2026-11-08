@@ -54,6 +54,14 @@ describe("PR background activity", () => {
     expect(mocks.toast).not.toHaveBeenCalled();
   });
 
+  it("skips saved PR watches from repositories outside the open session", async () => {
+    watch([1]);
+    updatePrWatch("closed-workspace-repo", scope, () => ({ mineSince: 1, selected: { 2: 1 } }));
+    await checkPullRequestActivity(() => true);
+    expect(mocks.prPage).toHaveBeenCalledExactlyOnceWith("repo", "open");
+    expect(mocks.prDetail).toHaveBeenCalledExactlyOnceWith("repo", 1, "connection");
+  });
+
   it("reports new feedback once in History and ignores own comments despite a failed inline feed", async () => {
     watch([1]);
     let incoming = false;
