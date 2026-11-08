@@ -87,11 +87,21 @@ export function matchesShortcut(event: KeyboardEvent | React.KeyboardEvent, id: 
   return !!binding && comboFromEvent(event)?.toLowerCase() === binding.toLowerCase();
 }
 
+// History can show a file list and a focused diff at the same time.
+const previewScopes = new Set(["history", "files", "diff"]);
+
 export function shortcutConflict(id: string, combo: string, overrides: Record<string, string>) {
+  const key = combo.toLowerCase();
+  if (!key) return undefined;
   const scope = SHORTCUTS.find((shortcut) => shortcut.id === id)?.scope;
-  return SHORTCUTS.find((shortcut) => shortcut.id !== id
-    && (!scope || !shortcut.scope || scope === shortcut.scope)
-    && bindingFor(shortcut.id, overrides).toLowerCase() === combo.toLowerCase());
+  return SHORTCUTS.find((shortcut) => {
+    if (shortcut.id === id || bindingFor(shortcut.id, overrides).toLowerCase() !== key) return false;
+    // Ctrl+F is shared by design: the focused diff handles it before History does.
+    if (key === "ctrl+f" && ((id === "diffFind" && shortcut.id === "historyFind")
+      || (id === "historyFind" && shortcut.id === "diffFind"))) return false;
+    return !scope || !shortcut.scope || scope === shortcut.scope
+      || (previewScopes.has(scope) && previewScopes.has(shortcut.scope));
+  });
 }
 
 /** Display form, e.g. "Ctrl+Shift+↑". */

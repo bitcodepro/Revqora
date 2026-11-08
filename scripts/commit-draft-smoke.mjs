@@ -168,6 +168,43 @@ export async function commitDraftSmoke({ page, work, returnRoot, shot }) {
     await settings.getByTitle("Reset shortcut for Commit from the message fields", { exact: true }).click();
     await settings.getByRole("button", { name: "Done", exact: true }).click();
     console.log("Verified shortcut rebinding, large-file cancellation and confirmation, and committing only staged files with progress");
+
+    const navigationFile = "a-navigation.txt";
+    const navigationPath = path.join(root, navigationFile);
+    const lines = Array.from({ length: 160 }, (_, index) => `Line ${index + 1}\n`);
+    fs.writeFileSync(navigationPath, lines.join(""));
+    git("add", "--", navigationFile);
+    git("commit", "-qm", "Add navigation fixture");
+    fs.writeFileSync(navigationPath, lines.map((line, index) => index % 70 < 25 ? `Changed ${line}` : line).join(""));
+    put("Another changed file\n");
+
+    await page.getByTitle("Settings", { exact: true }).click();
+    await settings.getByRole("button", { name: "Shortcuts", exact: true }).click();
+    await settings.getByRole("textbox", { name: "Find shortcut" }).fill("Next changed file");
+    const rebindNextFile = settings.getByRole("button", { name: "Change shortcut for Next changed file" });
+    await rebindNextFile.click();
+    await rebindNextFile.press("F7");
+    await settings.getByRole("alert").getByText("F7 is already assigned to Next change.", { exact: true }).waitFor({ timeout: 5000 });
+    await rebindNextFile.press("F8");
+    await rebindNextFile.getByText("F8", { exact: true }).waitFor();
+    await settings.getByRole("button", { name: "Done", exact: true }).click();
+
+    const diff = page.locator(".changes .diff");
+    await page.locator(`.changes .file-row[title="${navigationFile}"]`).click();
+    await diff.locator('[data-hunk="1"]').waitFor();
+    await diff.focus();
+    await diff.locator(".diff-body").evaluate(body => { body.scrollTop = 0; });
+    await page.keyboard.press("F7");
+    await page.waitForFunction(() => document.querySelector(".changes .diff-body")?.scrollTop > 0);
+    await diff.locator(".diff-head .path").getByText(navigationFile, { exact: true }).waitFor();
+    await page.keyboard.press("F8");
+    await diff.locator(".diff-head .path").getByText("file.txt", { exact: true }).waitFor();
+
+    await page.getByTitle("Settings", { exact: true }).click();
+    await settings.getByRole("button", { name: "Shortcuts", exact: true }).click();
+    await settings.getByTitle("Reset shortcut for Next changed file", { exact: true }).click();
+    await settings.getByRole("button", { name: "Done", exact: true }).click();
+    console.log("Verified overlapping shortcut rejection and separate hunk/file navigation from the focused diff");
   } finally {
     await restore();
     await openRepository(page, returnRoot);
