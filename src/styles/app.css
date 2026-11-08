@@ -721,6 +721,27 @@ select[size="1"]:not([multiple]) {
   align-items: center;
   gap: 5px;
 }
+.statusbar-context {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: inherit;
+  overflow: hidden;
+}
+.statusbar .app-version {
+  flex: none;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  background: transparent;
+  font: inherit;
+}
+.statusbar .app-version:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
 .statusbar .busy-line {
   overflow: hidden;
   text-overflow: ellipsis;

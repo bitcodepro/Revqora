@@ -137,6 +137,9 @@ try {
   });
 
   await check("a newer release shows the update chip, which can be skipped", async () => {
+    const runningVersion = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("plugin:app|version"));
+    const version = page.locator(".statusbar .app-version");
+    await version.filter({ hasText: `Revqora v${runningVersion}` }).waitFor();
     const chip = page.locator(".update-chip");
     await chip.waitFor({ timeout: 20000 });
     if (!/Update 99\.0\.0/.test(await chip.innerText())) throw new Error(`chip shows: ${await chip.innerText()}`);
@@ -150,6 +153,10 @@ try {
     await shot("17-update");
     await card.locator("button:has-text('Skip this version')").click();
     await chip.waitFor({ state: "detached" });
+    await version.click();
+    const about = page.locator(".modal").filter({ hasText: "About Revqora" });
+    if (await about.locator(".about-details dd").first().innerText() !== runningVersion) throw new Error("About did not show the version of the running executable");
+    await about.getByRole("button", { name: "Close", exact: true }).click();
   });
 
   await check("portable profile writes are ignored and unrelated WAL activity keeps the selected diff", async () => {
