@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { ChevronDown, ChevronUp, Loader2, RotateCcw, Save, Swords, X, FileQuestion, Trash2, ArrowUp, ArrowDown } from "lucide-react";
 import { Compartment, EditorState, RangeSetBuilder, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, type DecorationSet } from "@codemirror/view";
@@ -405,9 +406,6 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
       editability.of([EditorState.readOnly.of(locked.current), EditorView.editable.of(!locked.current)]),
       indentOnInput(),
       keymap.of([
-        { key: "Alt-ArrowDown", run: () => (gotoRef.current(currentRef.current + 1), true) },
-        { key: "Alt-ArrowUp", run: () => (gotoRef.current(currentRef.current - 1), true) },
-        { key: "Mod-s", run: () => (saveRef.current(), true) },
         indentWithTab,
         ...defaultKeymap,
         ...historyKeymap,
@@ -452,10 +450,6 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, initial, syncScroll, showBase]);
 
-  const currentRef = useRef(0);
-  currentRef.current = current;
-  const gotoRef = useRef(goto);
-  gotoRef.current = goto;
 
   useEffect(() => {
     if (!ready || initial === null) return;
@@ -492,8 +486,6 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
       busy.current = false;
     }
   };
-  const saveRef = useRef(save);
-  saveRef.current = save;
 
   const take = async (which: "ours" | "theirs" | "delete") => {
     if (busy.current || locked.current) return;
@@ -528,12 +520,20 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
   };
 
   return (
-    <div className="conflict-overlay" onKeyDown={(e) => {
-      if (!e.altKey || !onNavigate || !files?.length || locked.current) return;
-      if (e.key !== "PageDown" && e.key !== "PageUp") return;
-      e.preventDefault();
-      const index = files.indexOf(path);
-      onNavigate(files[(index + (e.key === "PageDown" ? 1 : files.length - 1)) % files.length]);
+    <div className="conflict-overlay" onKeyDownCapture={(e) => {
+      const nextConflict = matchesShortcut(e, "conflictNext");
+      const nextFile = matchesShortcut(e, "conflictNextFile");
+      if (matchesShortcut(e, "conflictSave")) {
+        e.preventDefault(); e.stopPropagation();
+        if (textual) void save();
+      } else if ((nextConflict || matchesShortcut(e, "conflictPrevious")) && (e.target as HTMLElement).closest(".cm-editor")) {
+        e.preventDefault(); e.stopPropagation();
+        goto(current + (nextConflict ? 1 : -1));
+      } else if ((nextFile || matchesShortcut(e, "conflictPreviousFile")) && onNavigate && files?.length && !locked.current) {
+        e.preventDefault(); e.stopPropagation();
+        const index = files.indexOf(path);
+        onNavigate(files[(index + (nextFile ? 1 : files.length - 1)) % files.length]);
+      }
     }}>
       <div className="cf-head">
         <Swords size={18} style={{ color: "var(--red)" }} />
@@ -545,17 +545,17 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
           </span>
         </div>
         {onNavigate && files && files.length > 0 && <div className="cf-file-nav" aria-label="Conflicted files">
-          <button className="icon-btn sm" title="Previous file (Alt+PageUp)" disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + files.length - 1) % files.length])}><ChevronUp size={14} /></button>
+          <button className="icon-btn sm" title={shortcutTitle("Previous file", "conflictPreviousFile")} disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + files.length - 1) % files.length])}><ChevronUp size={14} /></button>
           <select className="input" aria-label="Conflict file" value={path} disabled={saving || blocked} onChange={(e) => onNavigate(e.target.value)}>{!files.includes(path) && <option value={path}>{path}</option>}{files.map((file) => <option key={file} value={file}>{file}</option>)}</select>
-          <button className="icon-btn sm" title="Next file (Alt+PageDown)" disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + 1) % files.length])}><ChevronDown size={14} /></button>
+          <button className="icon-btn sm" title={shortcutTitle("Next file", "conflictNextFile")} disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + 1) % files.length])}><ChevronDown size={14} /></button>
         </div>}
         {textual && (
           <div className="cf-nav">
-            <button className="icon-btn sm" onClick={() => goto(current - 1)} title="Previous conflict (Alt+↑)">
+            <button className="icon-btn sm" onClick={() => goto(current - 1)} title={shortcutTitle("Previous conflict", "conflictPrevious")}>
               <ChevronUp size={15} />
             </button>
             <span className="cnt">{remaining ? `${Math.min(current + 1, remaining)} of ${remaining} left` : "All resolved"}</span>
-            <button className="icon-btn sm" onClick={() => goto(current + 1)} title="Next conflict (Alt+↓)">
+            <button className="icon-btn sm" onClick={() => goto(current + 1)} title={shortcutTitle("Next conflict", "conflictNext")}>
               <ChevronDown size={15} />
             </button>
           </div>
@@ -586,7 +586,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
           <X size={14} /> Close
         </button>
         {textual && (
-          <button className={`btn ${remaining ? "" : "primary"}`} onClick={() => save()} disabled={saving || blocked} title="Ctrl+S">
+          <button className={`btn ${remaining ? "" : "primary"}`} onClick={() => save()} disabled={saving || blocked} title={shortcutTitle("Save result", "conflictSave")}>
             {saving ? <Loader2 size={14} className="spin" /> : <Save size={14} />} {saveLabel}
           </button>
         )}

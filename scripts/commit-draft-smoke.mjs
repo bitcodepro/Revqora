@@ -111,6 +111,63 @@ export async function commitDraftSmoke({ page, work, returnRoot, shot }) {
     await page.waitForFunction(() => document.querySelector(".commit-box .summary-wrap input")?.value === "");
     if (git("log", "-1", "--format=%B") !== "Edited continuation summary\n\nEdited continuation body" || git("rev-parse", "HEAD^") !== head || await body().inputValue() !== "") throw Error("Successful Continue did not commit the preserved message and reset its draft");
     console.log("Verified conflict/busy gating, one Continue on repeated input, hook failure draft retention and successful retry");
+
+    await page.getByTitle("Settings", { exact: true }).click();
+    const settings = page.locator(".modal").last();
+    const limit = settings.getByRole("spinbutton", { name: "Commit file warning" });
+    const previousLimit = await limit.inputValue();
+    await limit.fill("1");
+    await settings.getByRole("button", { name: "Shortcuts", exact: true }).click();
+    await settings.getByRole("textbox", { name: "Find shortcut" }).fill("Commit from the message fields");
+    const rebind = settings.getByRole("button", { name: "Change shortcut for Commit from the message fields" });
+    await rebind.click();
+    await rebind.press("Control+o");
+    await settings.getByRole("alert").filter({ hasText: "already assigned to Open repository" }).waitFor();
+    await rebind.press("Escape");
+    await rebind.click();
+    await rebind.press("Control+Alt+m");
+    await rebind.getByText("Ctrl+Alt+M", { exact: true }).waitFor();
+    await settings.getByRole("button", { name: "Done", exact: true }).click();
+
+    const base = git("rev-parse", "HEAD");
+    const big = "large fixture.bin";
+    fs.writeFileSync(path.join(root, big), Buffer.alloc(2 * 1024 * 1024, 7));
+    put("selected edit\n"); git("add", "--", big, "file.txt");
+    const primary = page.locator(".commit-box .split-btn > button").first();
+    await primary.getByText("Commit 2 files", { exact: true }).waitFor();
+    await summary().fill("Commit just the selected file");
+    await summary().press("Control+Alt+m");
+    const warning = page.locator(".modal").filter({ hasText: "Large file in this commit" });
+    await warning.getByText(big, { exact: true }).waitFor();
+    await warning.getByText("2.0 MB", { exact: true }).waitFor();
+    if (!(await warning.innerText()).includes("1 MB warning threshold")) throw Error("The large-file dialog did not show the configured threshold");
+    await warning.getByRole("button", { name: "Back to staged files" }).click();
+    if (git("rev-parse", "HEAD") !== base || !git("diff", "--cached", "--name-only").includes(big)) throw Error("Returning from the large-file warning changed HEAD or unstaged the file");
+    await page.locator(`.changes .file-row[title="${big}"]`).dblclick();
+    await primary.getByText("Commit 1 file", { exact: true }).waitFor();
+    await page.evaluate(installCommitDraftGate, "commit");
+    await summary().press("Control+Alt+m");
+    await held();
+    await page.locator(".statusbar .busy-item").getByText("Running Git commit", { exact: true }).waitFor();
+    if (await primary.getAttribute("aria-busy") !== "true") throw Error("The commit button did not show its active state");
+    await restore();
+    await page.waitForFunction(() => document.querySelector(".commit-box .summary-wrap input")?.value === "");
+    if (git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD") !== "file.txt" || !fs.existsSync(path.join(root, big))) throw Error("The commit did not contain exactly the staged file");
+
+    await page.locator(`.changes .file-row[title="${big}"]`).dblclick();
+    await primary.getByText("Commit 1 file", { exact: true }).waitFor();
+    await summary().fill("Confirm the large file");
+    await summary().press("Control+Alt+m");
+    await warning.getByRole("button", { name: "Commit anyway" }).click();
+    await page.waitForFunction(() => document.querySelector(".commit-box .summary-wrap input")?.value === "");
+    if (git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD") !== big) throw Error("Confirming the warning did not commit the reviewed file");
+
+    await page.getByTitle("Settings", { exact: true }).click();
+    await limit.fill(previousLimit);
+    await settings.getByRole("button", { name: "Shortcuts", exact: true }).click();
+    await settings.getByTitle("Reset shortcut for Commit from the message fields", { exact: true }).click();
+    await settings.getByRole("button", { name: "Done", exact: true }).click();
+    console.log("Verified shortcut rebinding, large-file cancellation and confirmation, and committing only staged files with progress");
   } finally {
     await restore();
     await openRepository(page, returnRoot);

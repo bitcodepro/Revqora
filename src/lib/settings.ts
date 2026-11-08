@@ -89,7 +89,7 @@ export const useSettings = create<Settings>()(
       fileView: "list",
       graphWidth: 0,
       graphColumns: { author: true, date: true, hash: true },
-      largeFileMb: 50,
+      largeFileMb: 20,
       conventionalCommits: false,
       shortcuts: {},
       onboarded: false,

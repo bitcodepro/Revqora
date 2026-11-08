@@ -173,7 +173,7 @@ export const api = {
   stage: (repo: string, paths: string[]) => call<void>("stage", { repo, paths }),
   unstage: (repo: string, paths: string[]) => call<void>("unstage", { repo, paths }),
   discard: (repo: string, tracked: string[], untracked: string[], expectedState?: string | null) => call<string>("discard", { repo, tracked, untracked, expectedState }),
-  commit: (repo: string, message: string, opts?: CommitOptions) => call<string>("commit", { repo, message, opts }),
+  commit: (repo: string, message: string, opts?: CommitOptions, expectedState?: string | null) => call<string>("commit", { repo, message, opts, expectedState }),
   lastMessage: (repo: string) => call<string>("last_message", { repo }),
 
   graphLoad: (repo: string, branch: string | null, includeWorktree: boolean, limit?: number, fast?: boolean) =>

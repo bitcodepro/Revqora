@@ -65,31 +65,45 @@ pub struct LargeFile {
     pub size: u64,
 }
 
-/// Staged files bigger than `threshold` bytes that Git LFS does not handle.
+/// Staged blobs bigger than `threshold` bytes. LFS pointers are already small;
+/// attributes alone do not prove the staged blob was converted to a pointer.
 pub fn large_staged_files(repo: &Path, threshold: u64) -> GitResult<Vec<LargeFile>> {
-    let names = runner::run(repo, ["diff", "--cached", "--name-only", "--diff-filter=AM", "-z"])?;
-    let paths: Vec<&str> = runner::split_nul(&names).collect();
+    let raw = runner::run_bytes(repo, ["diff", "--cached", "--raw", "--no-abbrev", "--no-renames", "--diff-filter=AMT", "-z", "--"])?;
+    let invalid = || GitError::new("Git returned an incomplete staged file size check.");
+    let raw = String::from_utf8_lossy(&raw);
+    let mut entries = runner::split_nul(&raw);
+    let mut paths = Vec::new();
+    let mut input = String::new();
+    while let Some(metadata) = entries.next() {
+        let mut fields = metadata.split_whitespace();
+        let mode = fields.nth(1).ok_or_else(invalid)?;
+        let oid = fields.nth(1).ok_or_else(invalid)?;
+        let path = entries.next().ok_or_else(invalid)?;
+        if mode == "160000" {
+            continue; // A staged submodule points to a commit, not a local blob.
+        }
+        if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid());
+        }
+        paths.push(path);
+        input.push_str(oid);
+        input.push('\n');
+    }
     if paths.is_empty() {
         return Ok(Vec::new());
     }
-    let mut input = String::new();
-    for p in &paths {
-        input.push_str(&format!(":{p}\n"));
-    }
     let sizes = runner::run_env(repo, ["cat-file", "--batch-check=%(objectsize)"], &[], Some(input.as_bytes()))?;
-    let mut big: Vec<LargeFile> = sizes
-        .lines()
-        .zip(paths.iter())
-        .filter_map(|(sz, p)| sz.trim().parse::<u64>().ok().filter(|n| *n > threshold).map(|n| LargeFile { path: p.to_string(), size: n }))
-        .collect();
-    if big.is_empty() {
-        return Ok(big);
+    let mut sizes = sizes.lines();
+    let mut big = Vec::new();
+    for path in paths {
+        let size = sizes.next().and_then(|size| size.trim().parse::<u64>().ok()).ok_or_else(invalid)?;
+        if size > threshold {
+            big.push(LargeFile { path: path.to_string(), size });
+        }
     }
-    // Drop files already routed through LFS (their blob is a tiny pointer anyway, but be safe).
-    let mut args = vec!["check-attr".to_string(), "filter".into(), "--".into()];
-    args.extend(big.iter().map(|f| f.path.clone()));
-    let attrs = runner::run(repo, &args).unwrap_or_default();
-    big.retain(|f| !attrs.lines().any(|l| l.starts_with(&format!("{}: filter: lfs", f.path))));
+    if sizes.next().is_some() {
+        return Err(invalid());
+    }
     Ok(big)
 }
 

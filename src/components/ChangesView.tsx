@@ -17,6 +17,7 @@ import {
   History,
   Layers,
   ListPlus,
+  Loader2,
   Merge,
   Minus,
   MoreHorizontal,
@@ -32,11 +33,12 @@ import {
   FolderTree,
   HardDrive,
 } from "lucide-react";
-import { api, errorMessage, isGitError } from "../lib/api";
+import { api, errorMessage, isGitError, newOpId } from "../lib/api";
 import { useRepos, type ChangeSel, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
+import { bindingFor, matchesShortcut, prettyCombo } from "../lib/shortcuts";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { contextMenu, copyText, openOverlay, showDialog, toast, type MenuItem } from "../lib/ui";
+import { contextMenu, copyText, endBusy, openOverlay, showDialog, startBusy, toast, updateBusy, type MenuItem } from "../lib/ui";
 import * as A from "../lib/actions";
 import type { CommitHelpers, FileDiff, FileStatus, GitError, LargeFile, LayerConflict, LayerOp, LayerView } from "../lib/types";
 import { MergeEditor } from "./ConflictEditor";
@@ -902,8 +904,13 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
         if (out?.status === "done") reset();
         else A.handleOutcome(root, out, "Continue");
       } else {
-        const ok = await commitChecked(push, noVerify);
-        if (ok) reset();
+        const id = newOpId();
+        startBusy(id, "Committing");
+        const committed = await commitChecked(noVerify, id).finally(() => endBusy(id));
+        if (committed) {
+          if (push) await A.quickPush(root);
+          reset();
+        }
       }
     } finally {
       submitting.current = false;
@@ -912,13 +919,28 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   };
 
   /** Commit with the large-file check and readable hook failures. */
-  const commitChecked = async (push: boolean, skipHooks: boolean): Promise<boolean> => {
+  const commitChecked = async (skipHooks: boolean, id: string): Promise<boolean> => {
     const finalMessage = conventional && ccType ? `${ccType}${ccScope.trim() ? `(${ccScope.trim()})` : ""}${ccBreaking ? "!" : ""}: ${message}` : message;
-    if (!amend) {
-      const limit = useSettings.getState().largeFileMb * 1024 * 1024;
-      const big = await api.largeStagedFiles(root, limit).catch(() => []);
+    const current = useRepos.getState().tabs[root];
+    const head = current?.info?.head, status = current?.status;
+    const expectedState = status && (!head || (head.branch === status.branch && head.oid === status.oid)) ? status.stateToken : undefined;
+    if (!amend || stagedCount > 0) {
+      updateBusy(id, "Checking staged files", true);
+      const limitMb = useSettings.getState().largeFileMb;
+      let big: LargeFile[];
+      try {
+        big = await api.largeStagedFiles(root, limitMb * 1024 * 1024);
+      } catch (e) {
+        toast.error(e, "Could not check staged file sizes");
+        return false;
+      }
       if (big.length) {
-        const choice = await largeFilesDialog(big);
+        if (!expectedState) {
+          toast.warning("Refresh before committing", "Review the staged files after the repository status has loaded.");
+          return false;
+        }
+        updateBusy(id, "Waiting for large-file review", true);
+        const choice = await largeFilesDialog(big, limitMb);
         if (choice === "cancel") return false;
         if (choice === "lfs") {
           const patterns = [...new Set(big.map((f) => (f.path.includes(".") ? `*.${f.path.split(".").pop()}` : f.path)))];
@@ -926,6 +948,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
             for (const pt of patterns) await api.lfsTrack(root, pt, true);
             await api.stage(root, [...big.map((f) => f.path), ".gitattributes"]);
             toast.success("Moved to Git LFS", patterns.join(", "));
+            return commitChecked(skipHooks, id);
           } catch (e) {
             toast.error(e, "Could not set up Git LFS");
             return false;
@@ -934,21 +957,27 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
       }
     }
     try {
-      const oid = await api.commit(root, finalMessage, { amend, signOff, noVerify: skipHooks, sign });
+      updateBusy(id, "Running Git commit", true);
+      const oid = await api.commit(root, finalMessage, { amend, signOff, noVerify: skipHooks, sign }, expectedState);
+      // The operation client refreshes the index and HEAD before resolving.
+      // The repository event refreshes history independently of this form.
       toast.success(`Committed ${oid.slice(0, 8)}`);
-      await useRepos.getState().refresh(root);
-      if (push) await A.quickPush(root);
       return true;
     } catch (e) {
-      await useRepos.getState().refresh(root);
       if (isGitError(e) && e.kind === "identity") {
-        if (await identityDialog(root)) return commitChecked(push, skipHooks);
+        updateBusy(id, "Waiting for Git identity", true);
+        if (await identityDialog(root)) return commitChecked(skipHooks, id);
+        return false;
+      }
+      if (isGitError(e) && e.kind === "stale-operation") {
+        toast.error(e, "Repository changed before commit");
         return false;
       }
       if (!skipHooks && helpers?.hooks.some((h) => h === "pre-commit" || h === "commit-msg" || h === "prepare-commit-msg")) {
+        updateBusy(id, "Waiting for hook review", true);
         const choice = await hookFailedDialog(e, helpers.hooks);
-        if (choice === "retry") return commitChecked(push, false);
-        if (choice === "skip") return commitChecked(push, true);
+        if (choice === "retry") return commitChecked(false, id);
+        if (choice === "skip") return commitChecked(true, id);
         return false;
       }
       toast.error(e, "Commit failed");
@@ -957,6 +986,12 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   };
 
   const label = merging ? (kind === "merge" ? "Confirm merge" : "Commit squash") : picking ? `Continue ${kind}` : amend ? "Amend commit" : stagedCount ? `Commit ${plural(stagedCount, "file")}` : "Commit";
+  const submitShortcut = (e: React.KeyboardEvent) => {
+    if (!matchesShortcut(e, "commit")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void doCommit();
+  };
 
   if (rebasing) {
     return (
@@ -991,9 +1026,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
           placeholder={merging ? "Merge commit message" : conventional ? "short description" : "Summary (required)"}
           value={summary}
           onChange={(e) => setSummary(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) doCommit();
-          }}
+          onKeyDown={submitShortcut}
           style={{ paddingRight: 40, fontWeight: 500 }}
         />
         <span className={`counter ${summary.length > 72 ? "over" : ""}`}>{summary.length || ""}</span>
@@ -1004,9 +1037,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
         placeholder="Description"
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) doCommit();
-        }}
+        onKeyDown={submitShortcut}
       />
       {!merging && !picking && (
         <div className="commit-opts">
@@ -1034,8 +1065,8 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
         </div>
       )}
       <div className="split-btn">
-        <button className="btn primary" disabled={!canSubmit} onClick={() => doCommit()} title="Ctrl+Enter">
-          {merging ? <GitMerge size={15} /> : <Check size={15} />} {label}
+        <button className="btn primary" disabled={!canSubmit} aria-busy={busy} onClick={() => doCommit()} title={prettyCombo(bindingFor("commit")) || undefined}>
+          {busy ? <Loader2 size={15} className="spin" aria-hidden="true" /> : merging ? <GitMerge size={15} /> : <Check size={15} />} {label}
         </button>
         <button
           className="btn primary"
@@ -1058,30 +1089,33 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   );
 }
 
-function largeFilesDialog(files: LargeFile[]): Promise<"lfs" | "commit" | "cancel"> {
+function largeFilesDialog(files: LargeFile[], limitMb: number): Promise<"lfs" | "commit" | "cancel"> {
   const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`;
   return showDialog((close) => (
     <Modal
-      title="Large files staged"
-      subtitle="Big binaries bloat the repository forever. Git LFS stores them outside the history."
+      title={files.length === 1 ? "Large file in this commit" : "Large files in this commit"}
+      subtitle={`${plural(files.length, "staged file")} exceed${files.length === 1 ? "s" : ""} your ${limitMb} MB warning threshold.`}
       icon={<HardDrive size={18} />}
       tone="warn"
       onClose={() => close("cancel")}
       footer={
         <>
           <button type="button" className="btn" onClick={() => close("cancel")}>
-            Cancel
+            Back to staged files
           </button>
-          <button type="button" className="btn" onClick={() => close("commit")}>
-            Commit anyway
-          </button>
-          <button type="button" className="btn primary" onClick={() => close("lfs")}>
+          <button type="button" className="btn" onClick={() => close("lfs")}>
             Track with Git LFS
+          </button>
+          <button type="button" className="btn primary" onClick={() => close("commit")}>
+            Commit anyway
           </button>
         </>
       }
     >
-      <div className="code-list">{files.map((f) => `${mb(f.size).padStart(9)}  ${f.path}`).join("\n")}</div>
+      <p className="muted">These files will be added to Git history. Go back to unstage them, or confirm to include them in this commit.</p>
+      <ul className="large-file-list" aria-label="Files over the commit warning threshold">
+        {files.map((file) => <li key={file.path}><code>{file.path}</code><span className="pill" title={`${file.size} bytes`}>{mb(file.size)}</span></li>)}
+      </ul>
     </Modal>
   ));
 }

@@ -245,6 +245,8 @@ fn large_files_and_maintenance() {
     fs::write(r.join("big.bin"), vec![7u8; 4096]).unwrap();
     fs::write(r.join("small.txt"), "s\n").unwrap();
     runner::run(&r, ["add", "-A"]).unwrap();
+    // A rule added after staging does not convert the existing blob into a pointer.
+    fs::write(r.join(".gitattributes"), "big.bin filter=lfs\n").unwrap();
     let big = maint::large_staged_files(&r, 1000).unwrap();
     assert_eq!(big.len(), 1);
     assert_eq!(big[0].path, "big.bin");

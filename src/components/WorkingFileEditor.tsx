@@ -8,6 +8,7 @@ import { api, errorMessage, isGitError } from "../lib/api";
 import { editorDocument, tabsToSpaces } from "../lib/textEditing";
 import { languageFor } from "../lib/languages";
 import { useSettings } from "../lib/settings";
+import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { useRepos } from "../lib/store";
 import { showDialog, useUi } from "../lib/ui";
 import { Modal } from "./Modal";
@@ -53,7 +54,7 @@ function WorkingFileEditor({root,path,close}: {root:string;path:string;close:()=
   };
   return <Modal title={`Edit working file · ${path}`} subtitle="Changes stay in your working copy until you stage them." wide onClose={()=>void onClose()} footer={<>
     <span className="muted" role="status">{loading?"Loading…":!file?"File not loaded":dirty?"Unsaved changes":"Saved"}</span><button type="button" className="btn" disabled={saving||loading} onClick={()=>void reload()}>Reload from disk</button><button type="button" className="btn" disabled={saving} onClick={()=>void onClose()}>Close</button><button type="button" className="btn primary" disabled={!dirty||loading||saving} onClick={()=>void save()}>{saving?"Saving…":"Save file"}</button>
-  </>}><section className="working-file-editor" onKeyDownCapture={e=>{if((e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==="s"){e.preventDefault();e.stopPropagation();void save();}}}>
+  </>}><section className="working-file-editor" onKeyDownCapture={e=>{if(matchesShortcut(e,"workingFileSave")){e.preventDefault();e.stopPropagation();void save();}}}>
     {error&&<div className="callout warn" role="alert">{error}</div>}
     {recovery&&<button type="button" className="btn sm" onClick={()=>void api.openPath(recovery)}>Open recovery copy</button>}
     {loading?<div className="loading-center">Loading working file…</div>:file&&<WorkingCode key={epoch} path={path} initial={text} disabled={saving||confirmationOpen} changed={setText}/>}
@@ -94,6 +95,6 @@ function WorkingCode({path,initial,disabled,changed}: {path:string;initial:strin
     <button type="button" className={`btn sm ${whitespace?"active":""}`} aria-pressed={whitespace} onClick={()=>useSettings.getState().set({showWhitespace:!whitespace})}>Show whitespace</button>
     <label>Spaces per tab <select className="select" aria-label="Spaces per tab" value={size} disabled={disabled} onChange={e=>setSize(Number(e.target.value))}>{[2,4,8].map(n=><option key={n} value={n}>{n}</option>)}</select></label>
     <label>Convert <select className="select" aria-label="Tab conversion scope" value={all?"all":"indent"} disabled={disabled} onChange={e=>setAll(e.target.value==="all")}><option value="indent">Leading indentation only</option><option value="all">All tabs in the file</option></select></label>
-    <button type="button" className="btn sm" disabled={disabled} onClick={convert}>Tabs → spaces</button><span className="muted">Ctrl+S saves · Ctrl+Z undoes</span>
+    <button type="button" className="btn sm" disabled={disabled} onClick={convert}>Tabs → spaces</button><span className="muted">{shortcutTitle("Save", "workingFileSave")} · Ctrl+Z undoes</span>
   </div><div className="working-code" ref={host}/></>;
 }

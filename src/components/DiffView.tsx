@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import type { DiffHunk, DiffLine, FileDiff } from "../lib/types";
 import { useSettings } from "../lib/settings";
+import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { highlightLines, languageFor, type Tok } from "../lib/languages";
 import { wordDiff, type Span } from "../lib/worddiff";
 import { basename, dirname } from "../lib/format";
@@ -292,10 +293,12 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "F7") {
+    const next = matchesShortcut(e, "diffNext");
+    if (next || matchesShortcut(e, "diffPrevious")) {
       e.preventDefault();
-      jumpChange(e.shiftKey ? -1 : 1);
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+      e.stopPropagation();
+      jumpChange(next ? 1 : -1);
+    } else if (matchesShortcut(e, "diffFind")) {
       e.preventDefault();
       e.stopPropagation();
       setFindOpen(true);
@@ -417,17 +420,17 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       {actions}
       {diff && diff.hunks.length > 1 && (
         <>
-          <button className="icon-btn" title="Previous change (Shift+F7)" onClick={() => jumpChange(-1)}>
+          <button className="icon-btn" title={shortcutTitle("Previous change", "diffPrevious")} onClick={() => jumpChange(-1)}>
             <ChevronsUp size={15} />
           </button>
-          <button className="icon-btn" title="Next change (F7)" onClick={() => jumpChange(1)}>
+          <button className="icon-btn" title={shortcutTitle("Next change", "diffNext")} onClick={() => jumpChange(1)}>
             <ChevronsDown size={15} />
           </button>
         </>
       )}
       <button
         className={`icon-btn ${findOpen ? "active" : ""}`}
-        title="Find in diff (Ctrl+F)"
+        title={shortcutTitle("Find in diff", "diffFind")}
         onClick={() => {
           setFindOpen((v) => !v);
           setTimeout(() => findRef.current?.focus(), 0);
