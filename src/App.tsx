@@ -36,6 +36,7 @@ import { ConflictEditor } from "./components/ConflictEditor";
 import { AskpassHost } from "./components/Askpass";
 import { BlameView } from "./components/BlameView";
 import { CompareView } from "./components/CompareView";
+import { branchCommitCompare } from "./components/BranchCommitCompare";
 import { BranchManager } from "./components/BranchManager";
 import { RebaseView } from "./components/RebaseView";
 import { StashView } from "./components/StashView";
@@ -384,11 +385,7 @@ export default function App() {
         push: () => a && A.push(a),
         branch: () => a && A.createBranch(a, null, t?.info?.head.branch ?? "HEAD"),
         stash: () => a && A.stash(a),
-        compare: () => {
-          if (!a) return;
-          const cur = t?.info?.head.branch ?? "HEAD";
-          openOverlay({ kind: "compare", root: a, from: cur, to: t?.refs?.local.find((b) => b.name !== cur)?.name ?? "HEAD" });
-        },
+        compare: () => a && void branchCommitCompare(a),
         browse: () => a && openOverlay({ kind: "tree", root: a, rev: "HEAD" }),
         tools: () => a && repoToolsDialog(a),
         theme: () => {

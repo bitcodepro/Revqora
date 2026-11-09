@@ -1,5 +1,6 @@
 import { renameRemoteBranch } from "./RemoteRename";
 import { namePathMenu } from "./NamePathMenu";
+import { branchCommitCompare } from "./BranchCommitCompare";
 import {
   ArrowDown,
   ArrowUp,
@@ -55,8 +56,9 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote")
   items.push({ label: "Branch details…", icon: <GitBranch size={I} />, onClick: () => branchCard(root, name, reference) });
   items.push({ label: "Branch history (reflog)…", icon: <History size={I} />, onClick: () => branchReflogDialog(root, name) });
   items.push({ label: "Browse files", icon: <FolderTree size={I} />, onClick: () => openOverlay({ kind: "tree", root, rev: name }) });
-  items.push({ label: "Compare with working tree", icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: name, to: WORKTREE }) });
-  if (!isCurrent) items.push({ label: `Compare with ${current ?? "HEAD"}`, icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: current ?? "HEAD", to: name }) });
+  items.push({ label: "Compare branch commits…", icon: <GitCompareArrows size={I} />, onClick: () => branchCommitCompare(root, reference) });
+  items.push({ label: "Compare with working tree", icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: reference, to: WORKTREE }) });
+  if (!isCurrent) items.push({ label: `Compare with ${current ?? "HEAD"}`, icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: current ? `refs/heads/${current}` : "HEAD", to: reference }) });
   if (!isCurrent && current) {
     items.push({ separator: true });
     items.push({ label: `Merge ${name} into ${current}…`, icon: <GitMerge size={I} />, onClick: () => A.mergeInto(root, name) });

@@ -1106,6 +1106,18 @@ select[size="1"]:not([multiple]) {
 .workspace-search-group h4, .workspace-search-group p { margin: 0; padding: 8px 10px; }
 .workspace-search-hit { display: grid; gap: 4px; width: 100%; text-align: left; padding: 8px 10px; border-top: 1px solid var(--border-soft); overflow-wrap: anywhere; }
 .workspace-search-hit:hover, .workspace-search-hit:focus-visible { background: var(--bg-hover); }
+.branch-compare-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.branch-compare-select { display: grid; gap: 5px; min-width: 0; }
+.branch-compare-select select { width: 100%; }
+.branch-compare-column { min-width: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.branch-compare-column > header { min-width: 0; padding: 8px 10px; gap: 8px; background: var(--bg-elev2); }
+.branch-compare-column > header b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-compare-column > header code { margin-left: auto; color: var(--muted); font-size: var(--fs-xs); }
+.branch-compare-list { max-height: min(48vh, 480px); overflow: auto; overscroll-behavior: contain; }
+.branch-compare-commit { padding: 8px 10px; border-top: 1px solid var(--border-soft); display: grid; gap: 5px; overflow-wrap: anywhere; }
+.branch-compare-commit .hstack { gap: 6px; flex-wrap: wrap; font-size: var(--fs-xs); }
+.branch-compare-list > p, .branch-compare-more { margin: 0; padding: 8px 10px; }
+@media (max-width: 620px) { .branch-compare-grid { grid-template-columns: minmax(0, 1fr); } }
 .graph-toolbar .search-box { min-width: 0; max-width: 100%; }
 .graph-branch-filter { height: 24px; gap: 6px; min-width: 0; max-width: 100%; }
 .graph-branch-filter > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -820,6 +820,16 @@ async fn compare(repo: String, from: String, to: String, three_dot: bool) -> Git
 }
 
 #[tauri::command]
+async fn compare_branch_commits(repo: String, from: String, to: String) -> GitResult<git::inspect::BranchCommitComparison> {
+    blocking(move || git::inspect::branch_commit_comparison(&p(&repo), &from, &to)).await
+}
+
+#[tauri::command]
+async fn branch_commit_page(repo: String, from: String, to: String, offset: usize) -> GitResult<Vec<git::inspect::RangeCommit>> {
+    blocking(move || git::inspect::branch_commit_page(&p(&repo), &from, &to, offset)).await
+}
+
+#[tauri::command]
 async fn blob(repo: String, spec: git::inspect::BlobSpec) -> GitResult<Option<git::inspect::BlobData>> {
     blocking(move || git::inspect::blob(&p(&repo), &spec)).await
 }
@@ -2177,6 +2187,8 @@ pub fn run() {
             reflog,
             blame,
             compare,
+            compare_branch_commits,
+            branch_commit_page,
             blob,
             refs_snapshot,
             fetch_background,

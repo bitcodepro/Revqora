@@ -1,5 +1,6 @@
 import {forgeAccountsDialog} from "./ForgeAccounts";
 import { aboutDialog } from "./AboutDialog";
+import { branchCommitCompare } from "./BranchCommitCompare";
 import { SyncButton } from "./SyncRepositories";
 import { RepositoryLibraryButton, WorkspacePicker } from "./RepositoryLibrary";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -567,11 +568,7 @@ export function CommandPalette() {
           label: "Compare branches…",
           group: "History",
           icon: <GitMerge size={15} />,
-          run: () => {
-            const cur = tab.info?.head.branch ?? "HEAD";
-            const other = tab.refs?.local.find((b) => b.name !== cur)?.name ?? "HEAD";
-            openOverlay({ kind: "compare", root, from: cur, to: other });
-          },
+          run: () => void branchCommitCompare(root),
         },
         { id: "history", label: "Show history", group: "View", icon: <History size={15} />, run: () => useRepos.getState().patch(root, { view: "history" }) },
         { id: "changes", label: "Show changes", group: "View", icon: <FilePlus2 size={15} />, run: () => useRepos.getState().patch(root, { view: "changes" }) },

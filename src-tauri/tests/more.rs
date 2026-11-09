@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use revqora_lib::git::{graph, maint, more, ops, runner};
+use revqora_lib::git::{graph, inspect, maint, more, ops, runner};
 
 fn repo(dir: &Path) -> PathBuf {
     let r = dir.join("r");
@@ -33,6 +33,42 @@ fn commit(r: &Path, file: &str, content: &str, msg: &str) -> String {
 
 fn git(r: &Path, a: &[&str]) -> String {
     runner::run(r, a).unwrap().trim().to_string()
+}
+
+#[test]
+fn branch_commit_comparison_resolves_qualified_refs_and_keeps_both_sides() {
+    let t = tempfile::tempdir().unwrap();
+    let r = repo(t.path());
+    let base = commit(&r, "base.txt", "base\n", "Shared base");
+    git(&r, &["switch", "-qc", "feature"]);
+    let feature = commit(&r, "feature.txt", "feature\n", "Feature only");
+    git(&r, &["tag", "feature", &base]);
+    git(&r, &["switch", "-q", "main"]);
+    // A reachable ancestor can have a later timestamp than its descendants.
+    // Compare must still agree with rev-list's left/right reachability counts.
+    for index in 0..12 {
+        let date = format!("{} +0000", 1_700_000_000 + index);
+        runner::run_env(&r, ["commit", "--allow-empty", "-qm", "Main only"], &[("GIT_AUTHOR_DATE", &date), ("GIT_COMMITTER_DATE", &date)], None).unwrap();
+    }
+    let main = git(&r, &["rev-parse", "HEAD"]);
+    git(&r, &["update-ref", "refs/remotes/origin/feature", &feature]);
+
+    let result = inspect::branch_commit_comparison(&r, "refs/heads/main", "refs/remotes/origin/feature").unwrap();
+    assert_eq!((result.from_count, result.to_count), (12, 1));
+    assert_eq!((result.from_only.len(), result.to_only.len()), (12, 1));
+    assert_eq!((&result.from_oid, &result.to_oid), (&main, &feature));
+    assert_eq!(result.from_only[0].subject, "Main only");
+    assert_eq!(result.to_only[0].oid, feature);
+    assert!(result.to_only[0].time > 0);
+    assert!(inspect::branch_commit_comparison(&r, "refs/heads/main", "refs/heads/feature~1").is_err());
+    assert!(inspect::branch_commit_comparison(&r, "refs/heads/main", "refs/tags/feature").is_err());
+    let same = inspect::branch_commit_comparison(&r, "refs/heads/feature", "refs/remotes/origin/feature").unwrap();
+    assert_eq!((same.from_count, same.to_count), (0, 0));
+
+    git(&r, &["update-ref", "refs/remotes/origin/feature", &main]);
+    let original = inspect::branch_commit_page(&r, &result.from_oid, &result.to_oid, 0).unwrap();
+    assert_eq!(original[0].oid, feature);
+    assert!(inspect::branch_commit_page(&r, &result.from_oid, &result.to_oid, 1).unwrap().is_empty());
 }
 
 #[test]

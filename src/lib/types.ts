@@ -453,6 +453,15 @@ export interface RangeCommit {
   subject: string;
 }
 
+export interface BranchCommitComparison {
+  fromOid: string;
+  toOid: string;
+  fromCount: number;
+  toCount: number;
+  fromOnly: RangeCommit[];
+  toOnly: RangeCommit[];
+}
+
 export interface Comparison {
   from: string;
   to: string;

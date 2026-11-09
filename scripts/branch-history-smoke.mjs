@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 import { openRepository } from "./ui-readiness.mjs";
+import { interceptClipboard } from "./name-path-copy-smoke.mjs";
 
 export async function branchHistorySmoke({ page, work, returnRoot }) {
   const root = path.join(work, "branch-history");
@@ -12,7 +13,7 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   for (const repo of [root, other]) {
     fs.mkdirSync(repo);
     git(repo, "init", "-qb", "main");
-    for (const [key, value] of [["user.name", "History Fixture"], ["user.email", "fixture@example.test"], ["core.autocrlf", "false"], ["commit.gpgsign", "false"]]) git(repo, "config", key, value);
+    for (const [key, value] of [["user.name", "History Fixture"], ["user.email", "fixture@example.test"], ["core.autocrlf", "false"], ["commit.gpgsign", "false"], ["core.hooksPath", ".git/hooks"]]) git(repo, "config", key, value);
     put(repo, "file.txt", "base");
     git(repo, "add", ".");
     git(repo, "commit", "-qm", `Shared searchable ${path.basename(repo)}`);
@@ -23,7 +24,7 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
     return `commit refs/heads/main\ncommitter History Fixture <fixture@example.test> ${1700000000 + i} +0000\ndata ${Buffer.byteLength(message)}\n${message}${i ? "" : `from ${base}\n`}\n`;
   });
   execFileSync("git", ["-C", root, "fast-import", "--quiet"], { input: records.join("") });
-  git(root, "switch", "-qc", "target");
+  git(root, "switch", "-qc", "target", base);
   put(root, "file.txt", "destination");
   git(root, "commit", "-qam", "Destination change");
   git(root, "switch", "-q", "main");
@@ -38,13 +39,17 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await openRepository(page, root);
   await page.locator(".view-tab").filter({ hasText: "History" }).click();
   await page.locator(".history-mode").getByRole("button", { name: "Graph", exact: true }).click();
+  const toggle = page.getByTitle("Toggle branches panel", { exact: true });
+  if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
   const graph = page.locator(".graph-scroll");
-  const line = graph.locator(".lane-hit").first();
+  const line = graph.locator(".grow").filter({ has: page.getByText("History line 99", { exact: true }) }).locator(".lane-hit").last();
   const point = await line.evaluate((path) => {
-    const point = path.getPointAtLength(path.getTotalLength() / 2).matrixTransform(path.getScreenCTM());
+    // The HEAD node sits on top of the path. Hit the segment below the node.
+    const point = path.getPointAtLength(path.getTotalLength() * 0.85).matrixTransform(path.getScreenCTM());
     return { x: point.x, y: point.y };
   });
   await page.mouse.click(point.x, point.y);
+  await page.waitForFunction(() => document.querySelector(".graph-scroll")?.hasAttribute("data-pinned-lane"));
   const pinned = await graph.getAttribute("data-pinned-lane");
   assert(pinned !== null, "Clicking the line must pin its identity");
   await page.getByRole("button", { name: "Search all repositories", exact: true }).hover();
@@ -54,6 +59,31 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   assert(await graph.locator(".lane-line.hl").count(), "Newly visible segments must still be highlighted");
   await page.getByRole("button", { name: "Clear line highlight", exact: true }).click();
   assert.equal(await graph.getAttribute("data-pinned-lane"), null);
+
+  // The currently checked-out branch has the same Compare entry as any other branch.
+  await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="main"]').click({ button: "right" });
+  await page.locator(".ctx-menu").getByText("Compare branch commits…", { exact: true }).click();
+  const comparison = page.getByRole("dialog").filter({ hasText: "Compare branch commits" });
+  assert.equal(await comparison.getByLabel("Branch A").inputValue(), "refs/heads/main");
+  await comparison.getByLabel("Compare with").selectOption("refs/heads/target");
+  await comparison.getByRole("button", { name: "Compare", exact: true }).click();
+  const mainOnly = comparison.getByRole("region", { name: "Only in main", exact: true });
+  const targetOnly = comparison.getByRole("region", { name: "Only in target", exact: true });
+  const destination = targetOnly.locator("article").filter({ hasText: "Destination change" });
+  await destination.waitFor();
+  assert.equal(await destination.locator("time").getAttribute("datetime"), new Date(Number(git(root, "show", "-s", "--format=%at", "target")) * 1000).toISOString());
+  await interceptClipboard(page);
+  try {
+    await destination.getByRole("button", { name: /^Copy SHA / }).click();
+    await page.waitForFunction((oid) => window.__namePathCopies.at(-1) === oid, git(root, "rev-parse", "target"));
+  } finally { await page.evaluate(() => window.__restoreNamePathClipboard()); }
+  await mainOnly.getByRole("button", { name: "Load more (50 of 100)", exact: true }).click();
+  await mainOnly.getByText("History line 0", { exact: true }).waitFor({ state: "attached" });
+  assert.equal(await mainOnly.locator("article").count(), 100);
+  assert.equal(await targetOnly.locator("article").count(), 1);
+  assert.equal(await comparison.getByText(/Shared searchable/).count(), 0);
+  await comparison.getByRole("button", { name: "Close", exact: true }).click();
+  assert.equal(git(root, "branch", "--show-current"), "main");
 
   await page.getByRole("button", { name: "Search all repositories", exact: true }).click();
   const search = page.getByRole("dialog").filter({ hasText: "Search all repositories" });
@@ -65,7 +95,6 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
 
   await openRepository(page, root);
   await active("branch-history");
-  const toggle = page.getByTitle("Toggle branches panel", { exact: true });
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
   put(root, "file.txt", "staged");
   git(root, "add", "file.txt");
@@ -100,5 +129,5 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   assert(git(root, "stash", "list").includes("Revqora switch refs/heads/main"));
   await openRepository(page, returnRoot);
   for (const name of ["branch-history", "branch-history-other"]) await page.getByRole("button", { name: `Close ${name}`, exact: true }).click();
-  console.log("Verified pinned graph lines, grouped cross-repository search, stash/restore and move conflicts in the destination branch");
+  console.log("Verified pinned graph lines, grouped repository search, two-sided branch comparison, stash/restore and move conflicts");
 }

@@ -190,6 +190,8 @@ export const api = {
   reflog: (repo: string) => call<ReflogEntry[]>("reflog", { repo }),
   blame: (repo: string, path: string, rev: string | null) => call<Blame>("blame", { repo, path, rev }),
   compare: (repo: string, from: string, to: string, threeDot: boolean) => call<Comparison>("compare", { repo, from, to, threeDot }),
+  compareBranchCommits: (repo: string, from: string, to: string) => call<import("./types").BranchCommitComparison>("compare_branch_commits", { repo, from, to }),
+  branchCommitPage: (repo: string, from: string, to: string, offset: number) => call<import("./types").RangeCommit[]>("branch_commit_page", { repo, from, to, offset }),
   blob: (repo: string, spec: BlobSpec) => call<BlobData | null>("blob", { repo, spec }),
 
   refs: (repo: string) => call<RefsSnapshot>("refs_snapshot", { repo }),
