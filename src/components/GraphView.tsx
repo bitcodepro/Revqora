@@ -323,7 +323,7 @@ ${r.oid}`
         </div>
       )}
       {p.columns.hash && (
-        <div className="g-hash">{wip ? "" : r.oid.slice(0, 7)}</div>
+        <div className="g-hash">{!wip && <span title={r.oid}>{r.oid.slice(0, 7)}</span>}</div>
       )}
     </div>
   );
