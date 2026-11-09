@@ -166,12 +166,18 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
         }
         let state = Arc::new(Mutex::new(initial));
         let current = state.clone();
+        let denied_status = Arc::new(std::sync::atomic::AtomicU16::new(0));
+        let denied = denied_status.clone();
         let wrong_resolution = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let wrong = wrong_resolution.clone();
         let fail_after_save = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let fail_save = fail_after_save.clone();
         let h = Http::new(move |r| {
             let json_headers = "Content-Type: application/json\r\n".to_string();
+            let denied = denied.load(std::sync::atomic::Ordering::SeqCst);
+            if denied != 0 && r.path.split('?').next().unwrap_or_default().ends_with("/pullrequests") {
+                return (denied, json_headers, json!({"error":"fixture access denied"}).to_string());
+            }
             if short_ids && r.path == format!("/2.0/repositories/fork-owner/fork-repo/commit/{}", "a".repeat(12)) {
                 return (200, json_headers, json!({"hash":if wrong.load(std::sync::atomic::Ordering::SeqCst){"c".repeat(40)}else{"a".repeat(40)}}).to_string());
             }
@@ -310,6 +316,20 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
         .unwrap();
         let before_head = runner::run(repo, ["rev-parse", "HEAD"]).unwrap();
         let index = fs::read(repo.join(".git/index")).unwrap();
+        if matches!(kind, "azure" | "bitbucket") {
+            for status in [401, 403] {
+                denied_status.store(status, std::sync::atomic::Ordering::SeqCst);
+                let error = page(repo, "open", None).err().expect("The provider must refuse the request");
+                assert_eq!(error.kind, "auth");
+                assert!(error.message.contains("Accounts"));
+                if kind == "azure" {
+                    assert!(error.message.contains("Code (Read)") && error.message.contains("vso.code"));
+                } else {
+                    assert!(error.message.contains("read:pullrequest:bitbucket") && error.message.contains("read:repository:bitbucket"));
+                }
+            }
+            denied_status.store(0, std::sync::atomic::Ordering::SeqCst);
+        }
         let p = page(repo, "open", None).unwrap();
         assert_eq!(p.items.len(), 1);
         assert!(p.next_cursor.is_none());

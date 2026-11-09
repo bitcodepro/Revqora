@@ -465,7 +465,7 @@ impl Manager {
     pub fn add(&self, input: Add, expected: &str) -> GitResult<Snapshot> {
         let server = Server::new(&input.kind, &input.server)?;
         let imported = if let Some(source) = &input.git_source {
-            if !input.token.is_empty() || server.kind != "bitbucket" {
+            if !input.token.is_empty() || server.kind != "bitbucket" || !matches!(input.auth_mode.as_str(), "basic" | "bearer") {
                 return Err(fail("Choose one Bitbucket token source."));
             }
             let r = refs::remotes(Path::new(&source.repo))?.into_iter().find(|r| r.name == source.remote).ok_or_else(stale)?;
@@ -485,17 +485,22 @@ impl Manager {
                 actor_namespace: None,
             };
             info_for_profile(&destination, &r.fetch_url, &source.remote, false)?;
-            let mut c = forge::token(Path::new(&source.repo), &r.fetch_url)?;
-            c.mode = "bearer".into();
+            let c = forge::token(Path::new(&source.repo), &r.fetch_url)?;
             Some((c, r.fetch_url))
         } else {
             None
         };
-        let c = imported.as_ref().map(|(c, _)| c.clone()).unwrap_or_else(|| Credential {
-            username: input.username.clone(),
-            token: input.token,
-            mode: input.auth_mode.clone(),
-        });
+        let c = imported
+            .as_ref()
+            .map(|(c, _)| {
+                let mut credential = c.clone();
+                credential.mode = input.auth_mode.clone();
+                if credential.mode == "basic" {
+                    credential.username = input.username.trim().to_owned();
+                }
+                credential
+            })
+            .unwrap_or_else(|| Credential { username: input.username.clone(), token: input.token, mode: input.auth_mode.clone() });
         if !valid_text(&c.token, 4096) || c.token.len() < 8 || c.token.chars().any(char::is_whitespace) {
             return Err(fail("Enter a token without whitespace (8–4096 bytes)."));
         }
@@ -770,7 +775,7 @@ pub(super) fn request_content(
     if kind == "gitlab" && c.mode != "bearer" {
         req = req.set("PRIVATE-TOKEN", &c.token);
     } else {
-        let auth = Zeroizing::new(if kind == "azure" || kind == "bitbucket" && c.mode == "basic" || kind == "bitbucket-server" && c.mode == "basic" {
+        let auth = Zeroizing::new(if kind == "azure" && c.mode != "bearer" || matches!(kind, "bitbucket" | "bitbucket-server") && c.mode == "basic" {
             format!("Basic {}", forge::base64(format!("{}:{}", c.username, c.token).as_bytes()))
         } else {
             format!("Bearer {}", c.token)
@@ -795,7 +800,7 @@ pub(super) fn request_content(
             return Err(fail("API rate limit reached. Wait before trying again.").kind("forge-rate-limit"))
         }
         Err(ureq::Error::Status(code, _)) => {
-            return Err(fail(match code {
+            let mut error = fail(match code {
                 401 => "Token rejected. Reconnect this account.".into(),
                 403 => "Access denied. Check token permissions and organization SSO authorization.".into(),
                 429 => "API rate limit reached. Wait and try again.".into(),
@@ -807,7 +812,11 @@ pub(super) fn request_content(
                 "forge-server"
             } else {
                 "forge-http"
-            }))
+            });
+            if matches!(kind, "bitbucket" | "bitbucket-server" | "azure") && matches!(code, 401 | 403) {
+                error.details.push(format!("forge_http_status={kind}:{code}"));
+            }
+            return Err(error);
         }
         Err(_) => return Err(fail("API connection failed. Check the server URL, network, proxy and TLS certificate.").kind("forge-network")),
     };

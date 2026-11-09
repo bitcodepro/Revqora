@@ -325,6 +325,7 @@
 .pr-connection {display:flex;flex:1;flex-direction:column;gap:4px;min-width:120px;max-width:100%;overflow:hidden}
 .pr-connection small {color:var(--text-faint);font-size:var(--fs-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pr-empty {display:flex;flex:1;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;color:var(--text-faint);min-width:0;min-height:0;text-align:center}
+.pr-local-description {max-width:48ch;margin:0;line-height:1.5}
 .pr-detail {display:flex;flex:1;flex-direction:column;min-height:0;min-width:0;overflow:hidden}
 .pr-detail-heading {display:flex;flex-direction:column;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border);min-width:0;flex-shrink:0}
 .pr-title-line {display:flex;align-items:center;gap:8px;min-width:0}

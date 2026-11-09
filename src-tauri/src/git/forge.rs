@@ -430,18 +430,33 @@ fn authorized<T>(repo: &Path, f: &ForgeInfo, send: impl Fn(&super::forge_account
     if context.info != *f {
         return Err(GitError::new("The API connection changed. Refresh before trying again.").kind("stale-operation"));
     }
-    let explicit = context.profile.is_some();
-    let mut credential = match context.credential {
+    let credential = match context.credential {
         Some(c) => c,
         None => token(repo, &context.git_url)?,
     };
-    let result = send(&credential);
-    if is_bitbucket(f)
-        && !explicit
-        && !credential.username.is_empty()
-        && matches!(&result,Err(e) if e.kind=="auth"&&e.message=="Token rejected. Reconnect this account.")
-    {
+    if context.profile.is_some() {
+        return send(&credential);
+    }
+    send_with_git_credential(&f.kind, credential, send)
+}
+
+fn send_with_git_credential<T>(
+    kind: &str,
+    mut credential: super::forge_accounts::Credential,
+    send: impl Fn(&super::forge_accounts::Credential) -> GitResult<T>,
+) -> GitResult<T> {
+    if kind == "azure" {
+        // GCM returns both PATs and Entra access tokens in the Git password field.
         credential.mode = "basic".into();
+    }
+    let result = send(&credential);
+    let rejected = format!("forge_http_status={kind}:401");
+    if matches!(&result, Err(e) if e.details.contains(&rejected)) {
+        match kind {
+            "bitbucket" | "bitbucket-server" if !credential.username.is_empty() => credential.mode = "basic".into(),
+            "azure" if credential.token.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~+/=".contains(&b)) => credential.mode = "bearer".into(),
+            _ => return result,
+        }
         return send(&credential);
     }
     result
@@ -892,6 +907,24 @@ pub fn bitbucket_statuses(f: &ForgeInfo, sha: &str, mut get: impl FnMut(&str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn azure_git_credentials_try_entra_bearer_only_after_a_rejected_pat() {
+        for (status, expected) in [(401, vec!["basic", "bearer"]), (403, vec!["basic"])] {
+            let modes = std::cell::RefCell::new(Vec::new());
+            let credential = super::super::forge_accounts::Credential { username: "account".into(), token: "fixture-token".into(), mode: "bearer".into() };
+            let result = send_with_git_credential("azure", credential, |c| {
+                assert_eq!(c.token, "fixture-token");
+                modes.borrow_mut().push(c.mode.clone());
+                if c.mode == "bearer" {
+                    return Ok(());
+                }
+                Err(GitError::new("Fixture").kind("auth").details(vec![format!("forge_http_status=azure:{status}")]))
+            });
+            assert_eq!(result.is_ok(), status == 401);
+            assert_eq!(modes.into_inner(), expected);
+        }
+    }
 
     #[test]
     fn copy_urls_encode_provider_routes_and_drop_remote_credentials() {

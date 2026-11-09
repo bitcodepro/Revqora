@@ -148,11 +148,9 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
               {changesCount > 0 && <span className={`pill ${conflicts ? "red" : "accent"}`}>{changesCount}</span>}
             </button>
           </div>
-          {forgeKind && (
-            <button className={`view-tab ${tab.view === "pulls" ? "on" : ""}`} onClick={() => patch(root, { view: "pulls" })} title={shortcutTitle("Pull requests", "pulls")}>
-              <GitPullRequest size={15} /> {forgeKind === "gitlab" ? "Merge requests" : "Pull requests"}
-            </button>
-          )}
+          <button className={`view-tab ${tab.view === "pulls" ? "on" : ""}`} onClick={() => patch(root, { view: "pulls" })} title={shortcutTitle("Pull requests", "pulls")}>
+            <GitPullRequest size={15} /> {forgeKind === "gitlab" ? "Merge requests" : "Pull requests"}
+          </button>
           <div className="spacer" />
           {tab.view === "history" && (
             <div className="seg history-mode" title={`History layout (${prettyCombo(bindingFor("reviewMode"))})`}>
@@ -212,7 +210,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
             )}
           </div>
         ) : tab.view === "pulls" ? (
-          <PullRequestsView tab={tab} />
+          <PullRequestsView tab={tab} remotesKey={remotesKey} />
         ) : (
           <ChangesView tab={tab} onOpenConflict={openConflict} />
         )}

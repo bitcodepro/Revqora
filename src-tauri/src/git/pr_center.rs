@@ -26,6 +26,31 @@ fn fail(message: &str) -> GitError {
 fn stale() -> GitError {
     GitError::new("The pull request changed. Refresh it before continuing; your edit was not sent.").kind("stale-operation")
 }
+fn pr_read_error(mut error: GitError) -> GitError {
+    let Some((provider, status)) = error.details.iter().find_map(|detail| detail.strip_prefix("forge_http_status=")?.split_once(':')) else {
+        return error;
+    };
+    let (provider, scopes) = match provider {
+        "bitbucket" => (
+            "Bitbucket Cloud",
+            "For an API token, grant Pull requests Read (read:pullrequest:bitbucket) to list requests and Repositories Read (read:repository:bitbucket) to view commits and files.",
+        ),
+        "azure" => ("Azure DevOps", "For a personal access token, grant Code (Read), corresponding to vso.code, in the repository's organization."),
+        _ => return error,
+    };
+    let reason = match status {
+        "401" => "could not authorize this token. Check that the token is current.",
+        "403" => "denied access. Check that the token's account has Read access to this repository.",
+        _ => return error,
+    };
+    let next = if provider == "Bitbucket Cloud" && status == "401" {
+        "In Accounts, you can reuse the Git token with your Atlassian email or choose another token."
+    } else {
+        "Review the connection in Accounts."
+    };
+    error.message = format!("{provider} {reason} {scopes} {next}");
+    error
+}
 pub(super) fn hash(value: impl AsRef<[u8]>) -> String {
     format!("{:x}", Sha256::digest(value.as_ref()))
 }
@@ -189,7 +214,7 @@ pub fn page(repo: &Path, state: &str, cursor: Option<&str>) -> GitResult<Page> {
             }
         ),
     };
-    let v = forge::request(repo, &f, "GET", &route, None)?;
+    let v = forge::request(repo, &f, "GET", &route, None).map_err(pr_read_error)?;
     let rows = match f.kind.as_str() {
         "github" | "gitlab" => v.as_array(),
         "bitbucket" | "bitbucket-server" => v.get("values").and_then(Value::as_array),
@@ -379,7 +404,7 @@ fn resolve_bitbucket_oid(repo: &Path, f: &ForgeInfo, short: &str, project: impl 
 }
 pub fn detail(repo: &Path, n: u64, connection: &str) -> GitResult<Detail> {
     let f = forge::reviewed_connection(repo, connection)?;
-    load_detail(repo, &f, n).map(|x| x.0)
+    load_detail(repo, &f, n).map(|x| x.0).map_err(pr_read_error)
 }
 
 pub fn checks(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Vec<forge::Check>> {
@@ -943,7 +968,7 @@ pub fn files(repo: &Path, n: u64, connection: &str, revision: &str, offset: u32)
     let bundle = if let Some(b) = cache_get(&key) {
         b
     } else {
-        let (d, metadata) = load_detail(repo, &f, n)?;
+        let (d, metadata) = load_detail(repo, &f, n).map_err(pr_read_error)?;
         if d.revision != revision {
             return Err(stale());
         }
@@ -957,10 +982,11 @@ pub fn files(repo: &Path, n: u64, connection: &str, revision: &str, offset: u32)
             return Err(fail("The provider has not prepared complete PR commit IDs yet. Refresh shortly."));
         }
         let b = if f.kind == "azure" {
-            azure_bundle(repo, &f, &d, snapshot.clone(), key, offset)?
+            azure_bundle(repo, &f, &d, snapshot.clone(), key, offset)
         } else {
-            raw_bundle(repo, &f, n, &d, &metadata, snapshot.clone(), key)?
-        };
+            raw_bundle(repo, &f, n, &d, &metadata, snapshot.clone(), key)
+        }
+        .map_err(pr_read_error)?;
         forge::reviewed_connection(repo, connection)?;
         cache_put(b)
     };
@@ -1068,7 +1094,7 @@ pub fn file(repo: &Path, n: u64, connection: &str, revision: &str, id: &str) -> 
         }
         return Ok(FileView { diff: Some(diff::to_display(raw, &entry.meta.path, entry.meta.id.clone())), notice: None });
     }
-    let result = azure_diff(repo, &f, entry)?;
+    let result = azure_diff(repo, &f, entry).map_err(pr_read_error)?;
     forge::reviewed_connection(repo, connection)?;
     Ok(result)
 }
