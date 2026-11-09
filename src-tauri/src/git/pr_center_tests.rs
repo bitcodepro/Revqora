@@ -60,47 +60,63 @@ fn incomplete_hunks_are_not_represented_as_complete_diffs() {
 #[test]
 fn bitbucket_diff_redirect_is_limited_to_the_same_repo_and_reviewed_pair() {
     let f = f("bitbucket");
-    let d = Detail {
-        pull: PullRequest {
-            number: 7,
-            title: "T".into(),
-            author: "A".into(),
-            author_id: String::new(),
-            author_login: String::new(),
-            head: "topic".into(),
-            base: "main".into(),
-            url: String::new(),
-            draft: false,
-            state: "open".into(),
-            created: String::new(),
-            head_sha: "a".repeat(40),
-        },
-        body: String::new(),
-        updated: String::new(),
-        base_sha: "b".repeat(40),
-        diff_base_sha: String::new(),
-        revision: "r".into(),
-        file_count: None,
-    };
-    let good = format!("https://api.bitbucket.org/2.0/repositories/team/repo/diff/{}..{}?topic=true&from_pullrequest_id=7", d.pull.head_sha, d.base_sha);
-    assert!(bitbucket_redirect(&f, 7, &d, &good).unwrap().starts_with("/repositories/team/repo/diff/"));
-    let abbreviated = good.replace(&d.pull.head_sha, &d.pull.head_sha[..12]).replace(&d.base_sha, &d.base_sha[..12]);
-    assert_eq!(
-        bitbucket_redirect(&f, 7, &d, &abbreviated).unwrap(),
-        bitbucket_redirect(&f, 7, &d, &good).unwrap(),
-        "Short redirect IDs must be replaced with the reviewed full IDs"
-    );
-    let mut ambiguous = d.clone();
-    ambiguous.base_sha = format!("{}{}", "a".repeat(12), "b".repeat(28));
-    assert!(bitbucket_redirect(&f, 7, &ambiguous, &format!("/2.0/repositories/team/repo/diff/{}..{}", "a".repeat(12), "a".repeat(12))).is_err());
+    let source = "a".repeat(40);
+    let destination = "b".repeat(40);
+    let good = format!("https://api.bitbucket.org/2.0/repositories/team/repo/diff/{source}..{destination}?topic=true&from_pullrequest_id=7");
+    let validate = |url: &str| bitbucket_redirect(&f, 7, &source, &destination, "fork/project", url);
+    assert!(validate(&good).unwrap().starts_with("/repositories/team/repo/diff/"));
+    let abbreviated = good.replace(&source, &source[..12]).replace(&destination, &destination[..12]);
+    assert_eq!(validate(&abbreviated).unwrap(), validate(&good).unwrap(), "Short redirect IDs must be replaced with the reviewed full IDs");
+    let qualified = format!("/2.0/repositories/team/repo/diff/fork/project:{}%0D{}?from_pullrequest_id=7&topic=true", &source[..12], &destination[..12]);
+    assert_eq!(validate(&qualified).unwrap(), format!("/repositories/team/repo/diff/fork/project:{source}%0D{destination}?from_pullrequest_id=7&topic=true"));
+    let ambiguous = format!("{}{}", "a".repeat(12), "b".repeat(28));
+    assert!(bitbucket_redirect(
+        &f,
+        7,
+        &source,
+        &ambiguous,
+        "fork/project",
+        &format!("/2.0/repositories/team/repo/diff/{}..{}", "a".repeat(12), "a".repeat(12))
+    )
+    .is_err());
     for bad in [
         good.replace("api.bitbucket.org", "third-party.invalid"),
         good.replace("team/repo/", "team/other/"),
-        good.replace(&d.base_sha, &"c".repeat(40)),
+        good.replace(&destination, &"c".repeat(40)),
         format!("{good}&access_token=bad"),
+        qualified.replace("fork/project:", "fork/other:"),
+        qualified.replace("pullrequest_id=7", "pullrequest_id=8"),
+        qualified.replace("%0D", "%0D%0A"),
+        format!("/2.0/repositories/team/repo/diff/{destination}..{source}"),
     ] {
-        assert!(bitbucket_redirect(&f, 7, &d, &bad).is_err());
+        assert!(validate(&bad).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn bitbucket_detail_separates_review_votes_from_the_declined_state() {
+    let f = f("bitbucket");
+    let mut v = metadata("bitbucket", "PR", "", "main", 1);
+    v["participants"] = json!([
+        {"user":{"display_name":"Alex"},"approved":true},
+        {"user":{"display_name":"Sam"},"state":"changes_requested"},
+        {"user":{"display_name":"Pat"},"state":null,"approved":false}
+    ]);
+    let open = detail_value(&f, &v).unwrap();
+    assert!(!open.declined);
+    assert_eq!(
+        serde_json::to_value(open.review_decisions).unwrap(),
+        json!([
+            {"reviewer":"Alex","state":"approved"},
+            {"reviewer":"Sam","state":"changes_requested"}
+        ])
+    );
+    v["state"] = json!("DECLINED");
+    v["source"] = Value::Null;
+    let closed = detail_value(&f, &v).unwrap();
+    assert!(closed.declined);
+    assert_eq!(closed.pull.state, "closed");
+    assert_eq!(closed.pull.head, "Unavailable source");
 }
 
 #[test]
@@ -162,15 +178,21 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
             if short_ids && r.path == format!("/2.0/repositories/team/repo/commit/{}", "b".repeat(12)) {
                 return (200, json_headers, json!({"hash":"b".repeat(40)}).to_string());
             }
+            if short_ids && r.path == format!("/2.0/repositories/team/repo/commit/{}", "c".repeat(12)) {
+                return (200, json_headers, json!({"hash":"c".repeat(40)}).to_string());
+            }
             if short_ids && r.path.ends_with("/pullrequests/7/diff") {
+                let merged = current.lock()["state"] == "MERGED";
+                let (project, source, topic) = if merged { ("team/repo", "c", "") } else { ("fork-owner/fork-repo", "a", "&topic=true") };
                 return (
                     302,
-                    format!("Location: /2.0/repositories/team/repo/diff/{}..{}?topic=true&from_pullrequest_id=7\r\n", "a".repeat(12), "b".repeat(12)),
+                    format!("Location: /2.0/repositories/team/repo/diff/{project}:{}%0D{}?from_pullrequest_id=7{topic}\r\n", source.repeat(12), "b".repeat(12)),
                     String::new(),
                 );
             }
             if short_ids && r.path.contains("/diff/") {
-                assert!(r.path.contains(&format!("{}..{}", "a".repeat(40), "b".repeat(40))));
+                let (project, source) = if current.lock()["state"] == "MERGED" { ("team/repo", "c") } else { ("fork-owner/fork-repo", "a") };
+                assert!(r.path.contains(&format!("{project}:{}%0D{}", source.repeat(40), "b".repeat(40))));
                 return (200, "Content-Type: text/plain\r\n".into(), PATCH.into());
             }
             if r.path.ends_with("/user") || r.path.contains("connectionData") || r.path.contains("whoami") {
@@ -351,6 +373,25 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
             assert_eq!(h.seen.lock().iter().filter(|r| r.method == "PUT").count(), writes + 1);
             fail_after_save.store(false, std::sync::atomic::Ordering::SeqCst);
             wrong_resolution.store(false, std::sync::atomic::Ordering::SeqCst);
+            let open_metadata = state.lock().clone();
+            {
+                let mut metadata = state.lock();
+                metadata["state"] = json!("MERGED");
+                metadata["merge_commit"] = json!({"hash":"c".repeat(12)});
+            }
+            let merged = detail(repo, 7, &connection).unwrap();
+            let merged_files = super::files(repo, 7, &connection, &merged.revision, 0).unwrap();
+            assert_eq!(merged_files.items.len(), 1);
+            assert_eq!(merged.pull.head_sha, "a".repeat(40), "Merge diff must not overwrite the source commit used by checkout");
+            {
+                let mut metadata = state.lock();
+                metadata["state"] = json!("DECLINED");
+                metadata["source"] = Value::Null;
+            }
+            let declined = detail(repo, 7, &connection).unwrap();
+            assert!(declined.declined && declined.pull.head_sha.is_empty());
+            assert!(super::files(repo, 7, &connection, &declined.revision, 0).err().unwrap().message.contains("source commit"));
+            *state.lock() = open_metadata;
         }
         let count = h.seen.lock().iter().filter(|r| r.method != "GET").count();
         assert!(edit(repo, 7, &connection, &d.revision, Edit { title: "Stale".into(), body: "".into(), base: "main".into() }).is_err());

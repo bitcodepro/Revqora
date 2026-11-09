@@ -86,6 +86,9 @@ fn summary(f: &ForgeInfo, v: &Value) -> GitResult<PullRequest> {
         _ => forge::azure_pr(v, f),
     };
     number(p.number)?;
+    if f.kind == "bitbucket" && p.state == "declined" && p.head.is_empty() {
+        p.head = "Unavailable source".into();
+    }
     if p.title.is_empty() || p.head.is_empty() || p.base.is_empty() {
         return Err(fail("The provider returned incomplete pull request metadata."));
     }
@@ -238,6 +241,13 @@ pub fn page(repo: &Path, state: &str, cursor: Option<&str>) -> GitResult<Page> {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReviewDecision {
+    pub reviewer: String,
+    pub state: &'static str,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Detail {
     pub pull: PullRequest,
     pub body: String,
@@ -246,6 +256,34 @@ pub struct Detail {
     pub diff_base_sha: String,
     pub revision: String,
     pub file_count: Option<usize>,
+    pub review_decisions: Option<Vec<ReviewDecision>>,
+    pub declined: bool,
+}
+fn bitbucket_decisions(v: &Value) -> Option<Vec<ReviewDecision>> {
+    let participants = v.get("participants")?.as_array()?;
+    Some(
+        participants
+            .iter()
+            .filter_map(|participant| {
+                let state = match text(participant, "/state").to_ascii_lowercase().as_str() {
+                    "changes_requested" => "changes_requested",
+                    "approved" => "approved",
+                    _ if participant.get("approved").and_then(Value::as_bool) == Some(true) => "approved",
+                    _ => return None,
+                };
+                let name = text(participant, "/user/display_name");
+                let nickname = text(participant, "/user/nickname");
+                let reviewer = if !name.is_empty() {
+                    name
+                } else if !nickname.is_empty() {
+                    nickname
+                } else {
+                    "Reviewer".into()
+                };
+                Some(ReviewDecision { reviewer, state })
+            })
+            .collect(),
+    )
 }
 fn detail_value(f: &ForgeInfo, v: &Value) -> GitResult<Detail> {
     let pull = summary(f, v)?;
@@ -267,10 +305,23 @@ fn detail_value(f: &ForgeInfo, v: &Value) -> GitResult<Detail> {
         _ => (text(v, "/description"), text(v, "/creationDate"), text(v, "/lastMergeTargetCommit/commitId"), String::new(), None),
     };
     let revision = hash(
-        serde_json::to_vec(&json!([f.connection_revision, pull, body, updated, base_sha, diff_base_sha, v.get("version"), v.pointer("/diff_refs/head_sha")]))
-            .map_err(|_| fail("Could not fingerprint PR metadata."))?,
+        serde_json::to_vec(&json!([
+            f.connection_revision,
+            pull,
+            body,
+            updated,
+            base_sha,
+            diff_base_sha,
+            v.get("version"),
+            v.pointer("/diff_refs/head_sha"),
+            v.pointer("/merge_commit/hash"),
+            v.pointer("/source/repository/full_name")
+        ]))
+        .map_err(|_| fail("Could not fingerprint PR metadata."))?,
     );
-    Ok(Detail { pull, body, updated, base_sha, diff_base_sha, revision, file_count: count })
+    let review_decisions = (f.kind == "bitbucket").then(|| bitbucket_decisions(v)).flatten();
+    let declined = matches!(f.kind.as_str(), "bitbucket" | "bitbucket-server") && text(v, "/state").eq_ignore_ascii_case("declined");
+    Ok(Detail { pull, body, updated, base_sha, diff_base_sha, revision, file_count: count, review_decisions, declined })
 }
 pub(super) fn load_detail(repo: &Path, f: &ForgeInfo, n: u64) -> GitResult<(Detail, Value)> {
     number(n)?;
@@ -283,32 +334,48 @@ pub(super) fn load_detail(repo: &Path, f: &ForgeInfo, n: u64) -> GitResult<(Deta
     Ok((d, v))
 }
 pub(super) fn normalize_commits(repo: &Path, f: &ForgeInfo, v: &mut Value) -> GitResult<()> {
-    if f.kind == "bitbucket" {
-        for side in ["source", "destination"] {
-            let path = format!("/{side}/commit/hash");
-            let short = text(v, &path);
-            if oid(&short) {
-                continue;
-            }
-            if !(4..40).contains(&short.len()) || !short.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(fail("Bitbucket omitted a valid PR commit ID. Refresh the request details."));
-            }
-            let project = text(v, &format!("/{side}/repository/full_name"));
-            let project = if project.is_empty() { &f.project } else { &project };
-            if project.split('/').count() != 2
-                || project.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p.chars().any(char::is_control) || p.contains('\\'))
-            {
-                return Err(fail("Bitbucket returned an invalid PR repository path."));
-            }
-            let commit = forge::request(repo, f, "GET", &format!("/repositories/{}/commit/{}", forge::project_path(project), short), None)?;
-            let full = text(&commit, "/hash");
-            if !oid(&full) || !full.to_ascii_lowercase().starts_with(&short.to_ascii_lowercase()) {
-                return Err(fail("Bitbucket returned a different commit while resolving the PR revision. Refresh the request."));
-            }
-            *v.pointer_mut(&path).ok_or_else(|| fail("Bitbucket omitted the PR commit."))? = json!(full);
-        }
+    if f.kind != "bitbucket" {
+        return Ok(());
     }
+    let metadata: &Value = v;
+    let source = text(metadata, "/source/commit/hash");
+    let target = text(metadata, "/destination/commit/hash");
+    let missing_declined_source = source.is_empty() && text(metadata, "/state").eq_ignore_ascii_case("declined");
+    // Checkout and other writes call this inside a thread-local Git transaction.
+    let source = if missing_declined_source { String::new() } else { resolve_bitbucket_oid(repo, f, &source, || bitbucket_project(f, metadata, "source"))? };
+    let target = resolve_bitbucket_oid(repo, f, &target, || bitbucket_project(f, metadata, "destination"))?;
+    if !source.is_empty() {
+        *v.pointer_mut("/source/commit/hash").ok_or_else(|| fail("Bitbucket omitted the PR source commit."))? = json!(source);
+    }
+    *v.pointer_mut("/destination/commit/hash").ok_or_else(|| fail("Bitbucket omitted the PR target commit."))? = json!(target);
     Ok(())
+}
+
+fn bitbucket_project(f: &ForgeInfo, metadata: &Value, side: &str) -> GitResult<String> {
+    let project = text(metadata, &format!("/{side}/repository/full_name"));
+    let project = if project.is_empty() { f.project.clone() } else { project };
+    if project.split('/').count() != 2
+        || project.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p.chars().any(char::is_control) || p.contains('\\'))
+    {
+        return Err(fail("Bitbucket returned an invalid PR repository path."));
+    }
+    Ok(project)
+}
+
+fn resolve_bitbucket_oid(repo: &Path, f: &ForgeInfo, short: &str, project: impl FnOnce() -> GitResult<String>) -> GitResult<String> {
+    if oid(short) {
+        return Ok(short.into());
+    }
+    if !(4..40).contains(&short.len()) || !short.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(fail("Bitbucket omitted a valid PR commit ID. Refresh the request details."));
+    }
+    let project = project()?;
+    let commit = forge::request(repo, f, "GET", &format!("/repositories/{}/commit/{}", forge::project_path(&project), short), None)?;
+    let full = text(&commit, "/hash");
+    if !oid(&full) || !full.to_ascii_lowercase().starts_with(&short.to_ascii_lowercase()) {
+        return Err(fail("Bitbucket returned a different commit while resolving the PR revision. Refresh the request."));
+    }
+    Ok(full)
 }
 pub fn detail(repo: &Path, n: u64, connection: &str) -> GitResult<Detail> {
     let f = forge::reviewed_connection(repo, connection)?;
@@ -705,7 +772,7 @@ fn complete(raw: &diff::RawFileDiff) -> bool {
     })
 }
 
-fn bitbucket_redirect(f: &ForgeInfo, n: u64, d: &Detail, location: &str) -> GitResult<String> {
+fn bitbucket_redirect(f: &ForgeInfo, n: u64, source: &str, destination: &str, source_project: &str, location: &str) -> GitResult<String> {
     let base = url::Url::parse(&f.api).map_err(|_| fail("Invalid API base."))?;
     let target = base.join(location).map_err(|_| fail("Invalid PR diff redirect."))?;
     if target.origin() != base.origin() || !target.username().is_empty() || target.password().is_some() || target.fragment().is_some() {
@@ -713,34 +780,46 @@ fn bitbucket_redirect(f: &ForgeInfo, n: u64, d: &Detail, location: &str) -> GitR
     }
     let prefix = format!("{}/repositories/{}/diff/", base.path().trim_end_matches('/'), forge::project_path(&f.project));
     let spec = target.path().strip_prefix(&prefix).ok_or_else(|| fail("PR diff redirect leaves the selected repository."))?;
-    let (left, right) = spec.split_once("..").ok_or_else(|| fail("Invalid PR diff revision pair."))?;
+    let source_project = forge::project_path(source_project);
+    let (pair, separator, qualifier) = if let Some((project, pair)) = spec.rsplit_once(':') {
+        if project != source_project {
+            return Err(fail("PR diff redirect changed the reviewed source repository."));
+        }
+        // Cloud uses an encoded CR as the separator in repository-qualified
+        // PR redirects. Keep it encoded in the request path.
+        (pair.split_once("%0D").or_else(|| pair.split_once("%0d")), "%0D", format!("{source_project}:"))
+    } else {
+        (spec.split_once(".."), "..", String::new())
+    };
+    let (left, right) =
+        pair.ok_or_else(|| fail("Bitbucket returned an unsupported PR diff address. Open this pull request in Bitbucket to view its files."))?;
     let matches = |short: &str, full: &str| {
         short.len() >= 4
             && short.len() <= full.len()
             && short.bytes().all(|b| b.is_ascii_hexdigit())
             && full.to_ascii_lowercase().starts_with(&short.to_ascii_lowercase())
     };
-    if !d.pull.head_sha.eq_ignore_ascii_case(&d.base_sha)
-        && ((matches(left, &d.pull.head_sha) && matches(left, &d.base_sha)) || (matches(right, &d.pull.head_sha) && matches(right, &d.base_sha)))
+    if !source.eq_ignore_ascii_case(destination)
+        && ((matches(left, source) && matches(left, destination)) || (matches(right, source) && matches(right, destination)))
     {
         return Err(fail("PR diff redirect contains ambiguous commit IDs."));
     }
-    let pair = if matches(left, &d.pull.head_sha) && matches(right, &d.base_sha) {
-        (&d.pull.head_sha, &d.base_sha)
-    } else if matches(left, &d.base_sha) && matches(right, &d.pull.head_sha) {
-        (&d.base_sha, &d.pull.head_sha)
-    } else {
+    if !matches(left, source) || !matches(right, destination) {
         return Err(fail("PR diff redirect changed the reviewed commits."));
-    };
+    }
     for (k, v) in target.query_pairs() {
         if !matches!((k.as_ref(), v.as_ref()), ("topic", "true") | ("context", "3")) && !(k == "from_pullrequest_id" && v == n.to_string()) {
             return Err(fail("Unsupported PR diff redirect parameters."));
         }
     }
-    Ok(format!("/repositories/{}/diff/{}..{}{}", forge::project_path(&f.project), pair.0, pair.1, target.query().map(|q| format!("?{q}")).unwrap_or_default()))
+    Ok(format!(
+        "/repositories/{}/diff/{qualifier}{source}{separator}{destination}{}",
+        forge::project_path(&f.project),
+        target.query().map(|q| format!("?{q}")).unwrap_or_default()
+    ))
 }
 
-fn raw_bundle(repo: &Path, f: &ForgeInfo, n: u64, d: &Detail, snapshot: String, key: String) -> GitResult<Bundle> {
+fn raw_bundle(repo: &Path, f: &ForgeInfo, n: u64, d: &Detail, metadata: &Value, snapshot: String, key: String) -> GitResult<Bundle> {
     let route = match f.kind.as_str() {
         "github" => item_endpoint(f, n),
         "gitlab" => format!("{}/{n}/raw_diffs", endpoint(f)),
@@ -751,7 +830,14 @@ fn raw_bundle(repo: &Path, f: &ForgeInfo, n: u64, d: &Detail, snapshot: String, 
     let mut response = forge::raw_request(repo, f, &route, accept, PATCH_LIMIT, f.kind == "bitbucket")?;
     if (300..400).contains(&response.status) {
         let location = response.location.as_deref().ok_or_else(|| fail("The provider omitted the PR diff redirect location."))?;
-        let path = bitbucket_redirect(f, n, d, location)?;
+        let merge = text(metadata, "/merge_commit/hash");
+        let (source, source_project) = if d.pull.state == "merged" && !merge.is_empty() {
+            // A merged PR compares the actual merge result against the original destination.
+            (resolve_bitbucket_oid(repo, f, &merge, || Ok(f.project.clone()))?, f.project.clone())
+        } else {
+            (d.pull.head_sha.clone(), bitbucket_project(f, metadata, "source")?)
+        };
+        let path = bitbucket_redirect(f, n, &source, &d.base_sha, &source_project, location)?;
         response = forge::raw_request(repo, f, &path, accept, PATCH_LIMIT, false)?;
     }
     if response.bytes.iter().filter(|b| **b == b'\n').count() > 100_000 {
@@ -865,10 +951,16 @@ pub fn files(repo: &Path, n: u64, connection: &str, revision: &str, offset: u32)
             return Err(fail("GitLab is still preparing the diff for this source commit. Refresh shortly."));
         }
         if !oid(&d.pull.head_sha) || !oid(&d.base_sha) {
+            if d.declined && f.kind == "bitbucket" && d.pull.head_sha.is_empty() {
+                return Err(fail("The source commit of this declined PR is unavailable on Bitbucket."));
+            }
             return Err(fail("The provider has not prepared complete PR commit IDs yet. Refresh shortly."));
         }
-        let b =
-            if f.kind == "azure" { azure_bundle(repo, &f, &d, snapshot.clone(), key, offset)? } else { raw_bundle(repo, &f, n, &d, snapshot.clone(), key)? };
+        let b = if f.kind == "azure" {
+            azure_bundle(repo, &f, &d, snapshot.clone(), key, offset)?
+        } else {
+            raw_bundle(repo, &f, n, &d, &metadata, snapshot.clone(), key)?
+        };
         forge::reviewed_connection(repo, connection)?;
         cache_put(b)
     };

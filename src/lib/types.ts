@@ -662,7 +662,8 @@ export interface PullRequest {
 
 export type PrState = "open" | "closed" | "merged" | "all";
 export interface PrPage { forge: ForgeInfo; items: PullRequest[]; nextCursor: string | null; viewer?: {id:string;login:string}|null }
-export interface PrDetail { pull: PullRequest; body: string; updated: string; baseSha: string; diffBaseSha: string; revision: string; fileCount: number | null }
+export interface PrReviewDecision { reviewer: string; state: "approved" | "changes_requested" }
+export interface PrDetail { pull: PullRequest; body: string; updated: string; baseSha: string; diffBaseSha: string; revision: string; fileCount: number | null; reviewDecisions: PrReviewDecision[] | null; declined: boolean }
 export interface PrEdit { title: string; body: string; base: string }
 export interface PrEditResult { detail: PrDetail; notice: string | null }
 export interface PrTemplate { path: string; body: string }

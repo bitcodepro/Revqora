@@ -297,8 +297,8 @@
 .pr-author-filter .select {flex:1;min-width:0;width:100%}
 .sb-branch-filters {display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px}
 .sb-branch-filters .select {flex:1;min-width:100px;font-size:var(--fs-xs);height:28px}
-.pr-search {display:flex;align-items:center;gap:5px;padding:0 10px 8px;min-width:0}
-.pr-search .input {min-width:0;flex:1;width:100%}
+.pr-search {padding:0 10px 8px;min-width:0}
+.pr-search .input {display:block;min-width:0;width:100%}
 .pr-direct {align-self:flex-start;margin:0 10px 6px}
 .pr-request-rows {flex:1;min-height:0;overflow:auto;outline:none}
 .pr-request-row {display:flex;flex-direction:column;gap:6px;width:100%;height:82px;min-width:0;border:0;border-bottom:1px solid var(--border-soft);background:transparent;color:var(--text);padding:9px 12px;text-align:left;cursor:pointer}
@@ -326,6 +326,7 @@
 .pr-watch-toggle {flex:none}
 .pr-branch-line {display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
 .pr-branch-line .ref {max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pr-review-summary {display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 .pr-detail-actions {display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .pr-snapshot {display:block;color:var(--text-faint);font-size:var(--fs-xs);overflow-wrap:anywhere}
 .pr-overview {padding:16px;min-width:0;overflow:auto;display:flex;flex-direction:column;gap:14px}
