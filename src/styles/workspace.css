@@ -176,6 +176,12 @@
 .workspace-editor-list .library-row { flex-wrap: nowrap; cursor: pointer; }
 .workspace-editor-list .library-path { display: block; }
 .workspace-editor-error { white-space: pre-wrap; overflow-wrap: anywhere; }
+.repository-import-progress, .repository-import-option, .repository-import-heading { display: flex; align-items: center; gap: 8px; }
+.repository-import-option { cursor: pointer; }
+.repository-import-heading { padding: 6px 8px; cursor: pointer; }
+.repository-import-heading b { overflow-wrap: anywhere; }
+.repository-import-group + .repository-import-group { margin-top: 6px; }
+.repository-import-group .library-row { padding-inline-start: 22px; }
 .workspace-picker { width: 140px; max-width: 15vw; flex: 0 1 140px; }
 .sync-review-row { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .sync-review-row > div:first-child { flex: 1; min-width: 0; }

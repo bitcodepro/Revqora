@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { restoreWorkspaceLayouts, type HistoryMode, type WorkspaceLayout, type WorkspaceMode } from "./workspaceLayouts";
+import { basename } from "./format";
 
 export type RepositoryView = "history" | "changes" | "pulls";
 export interface RepositoryGroup { id: string; name: string; roots: string[]; collapsed: boolean }
@@ -11,7 +12,8 @@ export interface WorkspaceSnapshot {
   layouts: Record<WorkspaceMode, WorkspaceLayout>;
   historyMode: HistoryMode;
 }
-export interface SavedWorkspace extends WorkspaceSnapshot { id: string; name: string }
+export interface SavedWorkspace extends WorkspaceSnapshot { id: string; name: string; importedFrom?: string }
+export interface FolderWorkspace { folder: string; roots: string[] }
 export interface LibraryData {
   knownRoots: string[];
   favorites: string[];
@@ -49,10 +51,25 @@ export function restoreLibrary(value: unknown): LibraryData {
   const workspaces = entries(raw.workspaces, (v, id, name): SavedWorkspace => {
     const roots = uniqueRoots(v.roots), views: Record<string, RepositoryView> = {};
     for (const root of roots) { const view = record(v.views)[root]; if (view === "history" || view === "changes" || view === "pulls") views[root] = view; }
-    return { id, name, roots, activeRoot: roots.find((r) => typeof v.activeRoot === "string" && repositoryKey(r) === repositoryKey(v.activeRoot)) ?? roots[0] ?? null, views, layouts: restoreWorkspaceLayouts(v), historyMode: v.historyMode === "review" || v.historyMode === "columns" ? v.historyMode : "graph" };
+    return { id, name, roots, activeRoot: roots.find((r) => typeof v.activeRoot === "string" && repositoryKey(r) === repositoryKey(v.activeRoot)) ?? roots[0] ?? null, views, layouts: restoreWorkspaceLayouts(v), historyMode: v.historyMode === "review" || v.historyMode === "columns" ? v.historyMode : "graph", ...(pathValid(v.importedFrom) ? { importedFrom: v.importedFrom } : {}) };
   });
   const favorites = uniqueRoots(raw.favorites);
   return { knownRoots: uniqueRoots([...uniqueRoots(raw.knownRoots), ...favorites, ...groups.flatMap((g) => g.roots), ...workspaces.flatMap((w) => w.roots)]), favorites, groups, workspaces, activeWorkspaceId: workspaces.some((w) => w.id === raw.activeWorkspaceId) ? raw.activeWorkspaceId as string : null };
+}
+
+export function planFolderWorkspaces(workspaces: SavedWorkspace[], groups: FolderWorkspace[]) {
+  const names = new Set(workspaces.map((workspace) => workspace.name.toLowerCase()));
+  return groups.map(({ folder, roots }) => {
+    const existing = workspaces.find((workspace) => workspace.importedFrom && repositoryKey(workspace.importedFrom) === repositoryKey(folder));
+    const base = validName(basename(folder)) || "Imported workspace";
+    let name = existing?.name ?? base;
+    for (let i = 2; !existing && names.has(name.toLowerCase()); i++) {
+      const suffix = ` (${i})`;
+      name = base.slice(0, 80 - suffix.length) + suffix;
+    }
+    names.add(name.toLowerCase());
+    return { folder, roots, existing, name };
+  });
 }
 interface LibraryStore extends LibraryData {
   remember: (root: string, alias?: string) => void;
@@ -78,6 +95,7 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
   ...restoreLibrary({}),
   remember: (root, alias) => {
     const s = get();
+    if ((!alias || alias === root) && s.knownRoots.includes(root)) return;
     const remap = (r: string) => repositoryKey(r) === repositoryKey(alias ?? root) ? root : r;
     const list = (roots: string[]) => uniqueRoots(roots.map(remap));
     set({ knownRoots: uniqueRoots([...list(s.knownRoots), root]), favorites: list(s.favorites), groups: s.groups.map((g) => ({ ...g, roots: list(g.roots) })), workspaces: s.workspaces.map((w) => ({ ...w, roots: list(w.roots), activeRoot: w.activeRoot ? remap(w.activeRoot) : null, views: Object.fromEntries(Object.entries(w.views).map(([r, v]) => [remap(r), v])) })) });

@@ -14,7 +14,7 @@ import { useRepos } from "./store";
 import { useSettings } from "./settings";
 import { useLibrary, restoreLibrary } from "./repositoryLibrary";
 import { useUi } from "./ui";
-import { editWorkspaceRepositories, finishWorkspaceStartup, startWorkspaceTracking, switchWorkspace, workspaceSnapshot, workspaceWithRepositories } from "./repositoryWorkspaces";
+import { editWorkspaceRepositories, finishWorkspaceStartup, moveWorkspaceRepositories, startWorkspaceTracking, switchWorkspace, workspaceSnapshot, workspaceWithRepositories } from "./repositoryWorkspaces";
 
 beforeEach(async () => {
   useRepos.setState({ order: [], tabs: {}, active: null }); useUi.setState({ busy: [], repositoryOperations: [] }); useLibrary.setState(restoreLibrary({}));
@@ -97,6 +97,40 @@ describe("workspace transitions", () => {
     expect(await editWorkspaceRepositories(id, ["/missing"])).toHaveLength(1);
     expect(useRepos.getState().order).toEqual(["/original"]);
     expect(useLibrary.getState().workspaces.find((w) => w.id === id)?.roots).toEqual(["/original"]);
+  });
+  it("moves only selected repositories out of the active workspace and carries their views", async () => {
+    const library = useLibrary.getState();
+    await useRepos.getState().open("/stay");
+    useRepos.getState().patch("/original", { view: "changes" });
+    const source = library.save("Source", workspaceSnapshot());
+    const destination = library.save("Destination", workspaceWithRepositories(workspaceSnapshot(), ["/elsewhere"]), false);
+    expect(await moveWorkspaceRepositories(source, destination, ["/original"])).toEqual([]);
+    expect(useRepos.getState().order).toEqual(["/stay"]);
+    expect(useLibrary.getState().activeWorkspaceId).toBe(source);
+    expect(useLibrary.getState().workspaces).toMatchObject([
+      { id: source, roots: ["/stay"], activeRoot: "/stay", views: { "/stay": "history" } },
+      { id: destination, roots: ["/elsewhere", "/original"], views: { "/original": "changes" } },
+    ]);
+    expect(useLibrary.getState().knownRoots).toContain("/original");
+  });
+  it("does not duplicate a repository already in the destination or change its view", async () => {
+    const library = useLibrary.getState();
+    const source = library.save("Source", { ...workspaceSnapshot(), roots: ["E:\\Code\\Repo"], views: { "E:\\Code\\Repo": "changes" } }, false);
+    const destination = library.save("Destination", { ...workspaceSnapshot(), roots: ["e:/code/repo"], views: { "e:/code/repo": "pulls" } }, false);
+    expect(await moveWorkspaceRepositories(source, destination, ["e:/code/repo"])).toEqual([]);
+    expect(useRepos.getState().order).toEqual(["/original"]);
+    expect(useLibrary.getState().workspaces).toMatchObject([
+      { id: source, roots: [], activeRoot: null, views: {} },
+      { id: destination, roots: ["e:/code/repo"], views: { "e:/code/repo": "pulls" } },
+    ]);
+  });
+  it("leaves both saved memberships intact if the active destination cannot open a moved repository", async () => {
+    const library = useLibrary.getState();
+    const source = library.save("Source", workspaceWithRepositories(workspaceSnapshot(), ["/missing"]), false);
+    const destination = library.save("Destination", workspaceSnapshot());
+    const before = structuredClone(useLibrary.getState().workspaces);
+    expect(await moveWorkspaceRepositories(source, destination, ["/missing"])).toHaveLength(1);
+    expect(useLibrary.getState().workspaces).toEqual(before);
   });
   it("blocks replace during validation and prevents concurrent switches", async () => {
     const id = useLibrary.getState().save("Target", { ...workspaceSnapshot(), roots: ["/target"] });
