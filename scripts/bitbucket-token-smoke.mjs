@@ -6,7 +6,7 @@ import http from "node:http";
 import assert from "node:assert/strict";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
 import {launch} from "./ui-driver.mjs";
-import {repositoryIsActive} from "./ui-readiness.mjs";
+import {openRepository,repositoryIsActive} from "./ui-readiness.mjs";
 
 export async function bitbucketTokenSmoke({exe,work,check,out}) {
   await check("an authenticated Git clone token connects Bitbucket PRs without re-entry or profile permission and persists only in the encrypted vault",async()=>{
@@ -143,7 +143,19 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       // never an artificial recreation of task/account data or helper cache.
       await app.close();app=null;await start();
       const locked=await invoke("forge_accounts_snapshot");assert.equal(locked.accounts[0].status,"locked");
-      await invoke("forge_vault_password",{password,expected:locked.revision,unlock:true});
+      await openRepository(page,root);
+      const prTab=page.locator(".main-head").getByRole("button",{name:"Pull requests",exact:true});
+      await prTab.click();
+      const center=page.getByRole("region",{name:"Pull Request Center",exact:true});
+      await center.getByRole("alert").filter({hasText:"Unlock the account vault"}).waitFor();
+      await prTab.waitFor();
+      await center.getByRole("button",{name:"Accounts…",exact:true}).click();
+      await modal().getByLabel("Vault password",{exact:true}).fill(password);
+      await button("Unlock vault").click();
+      await page.locator('.fa-workspace[aria-busy="false"]').waitFor();
+      assert.equal((await invoke("forge_accounts_snapshot")).vaultUnlocked,true);
+      await button("Close").click();
+      await center.locator('[data-pr-detail="7"]').waitFor();
       const restored=await invoke("pr_page",{repo:root,state:"open",cursor:null});assert.equal(restored.items[0].title,pr.title);assert.equal(seen.filter(r=>r.path==="/2.0/user").length,0);
     }catch(error){if(out)await page?.screenshot({path:path.join(out,"bitbucket-token-failure.png")}).catch(()=>{});throw error;}
     finally{if(app){await invoke("unwatch_repo",{repo:root}).catch(()=>{});await app.close();}server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}

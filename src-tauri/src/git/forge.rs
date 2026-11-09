@@ -93,6 +93,16 @@ pub fn detect(repo: &Path) -> GitResult<Option<ForgeInfo>> {
     Ok(super::forge_accounts::context(repo)?.map(|c| c.info))
 }
 
+/// Provider discovery for navigation uses public remote and account metadata.
+pub fn browse_kind(repo: &Path) -> GitResult<Option<String>> {
+    let remotes = super::refs::remotes(repo)?;
+    if remotes.is_empty() {
+        return Ok(None);
+    }
+    let selected = super::forge_accounts::web_target(repo, &remotes, None).and_then(|(_, forge)| forge);
+    Ok(selected.or_else(|| remotes.iter().find_map(|remote| forge_for(&remote.fetch_url, &remote.name))).map(|forge| forge.kind))
+}
+
 fn browser_link(known: Option<&ForgeInfo>, raw_remote: &str, branch: Option<&str>) -> Option<String> {
     let mut url = url::Url::parse(known.map_or(raw_remote, |f| f.web_url.as_str())).ok()?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -974,6 +984,23 @@ mod tests {
         let ssh = forge_for("ssh://git@bitbucket.corp.example:7999/PROJ/service.git", "origin").unwrap();
         assert_eq!((ssh.kind.as_str(), ssh.project.as_str()), ("bitbucket-server", "PROJ/service"));
         assert!(forge_for("https://example.com/a/b.git", "origin").is_none());
+    }
+
+    #[test]
+    fn pr_navigation_recognizes_bitbucket_before_git_credentials_are_available() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        runner::run(root, ["init", "-qb", "main"]).unwrap();
+        runner::run(root, ["config", "credential.helper", ""]).unwrap();
+        runner::run(root, ["remote", "add", "origin", "https://fixture-user@bitbucket.org/example/pr-navigation.git"]).unwrap();
+        assert_eq!(browse_kind(root).unwrap().as_deref(), Some("bitbucket"));
+        assert_eq!(detect(root).unwrap_err().kind, "auth");
+
+        runner::run(root, ["remote", "rename", "origin", "upstream"]).unwrap();
+        runner::run(root, ["remote", "add", "origin", "https://example.invalid/team/repo.git"]).unwrap();
+        assert_eq!(browse_kind(root).unwrap().as_deref(), Some("bitbucket"));
+        runner::run(root, ["remote", "remove", "upstream"]).unwrap();
+        assert_eq!(browse_kind(root).unwrap(), None);
     }
 
     #[test]

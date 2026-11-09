@@ -107,10 +107,13 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
   const showBranches = branchesOpen && !focusMode;
   const changesCount = tab.status?.files.length ?? 0;
   const [forgeKind, setForgeKind] = useState<string | null>(null);
-  const remotesKey = tab.refs?.remotes.map((r) => r.fetchUrl).join("|") ?? "";
+  const remotesKey = JSON.stringify(tab.refs?.remotes.map(({ name, fetchUrl }) => [name, fetchUrl]) ?? []);
   useEffect(() => {
     let generation = 0;
-    const refresh = () => { const id = ++generation; api.forgeInfo(root).then(f => { if (id === generation) setForgeKind(f?.kind ?? null); }, () => { if (id === generation) setForgeKind(null); }); };
+    const refresh = () => {
+      const id = ++generation;
+      api.forgeKind(root).then(kind => { if (id === generation) setForgeKind(kind); }, () => { /* Keep the last known provider if discovery fails. */ });
+    };
     refresh();
     window.addEventListener("revqora:forge-accounts", refresh);
     return () => { generation++; window.removeEventListener("revqora:forge-accounts", refresh); };
