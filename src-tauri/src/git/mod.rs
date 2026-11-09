@@ -27,6 +27,7 @@ pub(super) mod pull_guard;
 pub mod recovery;
 pub mod refs;
 pub mod repo;
+pub mod repository_import;
 pub mod runner;
 pub mod status;
 pub mod storage;

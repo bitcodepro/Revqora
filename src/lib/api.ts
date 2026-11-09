@@ -1,4 +1,5 @@
 import type { BranchCleanupRequest, BranchCleanupSelection, BranchCleanupReview, BranchCleanupReport } from "./types";
+import type { RepositoryFolderScan } from "./types";
 import type { SyncPlan, SyncResult } from "./types";
 import type { RebaseItem, StudioReview, StudioReport, StudioComparison, ValidationReport } from "./types";
 import type { IgnoredFiles, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
@@ -142,6 +143,7 @@ export const api = {
   gitConfigure: () => call<GitSelection>("git_configure"),
   askpassRespond: (id: number, value: string | null) => call<boolean>("askpass_respond", { id, value }),
   repoOpen: (path: string) => call<RepoInfo>("repo_open", { path }),
+  repoScanFolder: (path: string) => call<RepositoryFolderScan>("repo_scan_folder", { path }),
   repositorySidebarStatus: (repo: string) => call<StatusSummary>("repository_sidebar_status", { repo }),
   repoInit: (path: string, branch?: string) => call<RepoInfo>("repo_init", { path, branch }),
   repoClone: (parent: string, url: string, name: string, opId: string,connection?:import("./types").GitConnectionOptions) => call<RepoInfo&{connectionWarning:string|null}>("repo_clone", { parent, url, name, opId,connection:connection??null }),

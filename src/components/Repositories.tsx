@@ -1,8 +1,9 @@
 import { useLibrary, uniqueRoots, repositoryKey, type SavedWorkspace } from "../lib/repositoryLibrary";
 import { FavoriteButton, openLibraryRepository, repositoryLibraryDialog } from "./RepositoryLibrary";
+import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
 import { SyncButton } from "./SyncRepositories";
 import { useEffect, useState } from "react";
-import { ArrowDownToLine, ChevronDown, ChevronRight, Check, CircleAlert, FolderGit2, GitBranch, LayoutGrid, Plus, RefreshCw, Search, X } from "lucide-react";
+import { ArrowDownToLine, ChevronDown, ChevronRight, Check, CircleAlert, FolderGit2, FolderSearch, GitBranch, LayoutGrid, Plus, RefreshCw, Search, X } from "lucide-react";
 import { api, errorMessage, newOpId } from "../lib/api";
 import * as A from "../lib/actions";
 import { basename, relativeTime } from "../lib/format";
@@ -210,6 +211,7 @@ export function RepositorySidebar() {
       <button className={`repository-updates ${updatesOnly ? "active" : ""}`} aria-pressed={updatesOnly} onClick={() => setUpdatesOnly(!updatesOnly)}>{count} with incoming commits{updatesOnly ? " · Show all" : ""}</button>
       <button type="button" className="btn sm repository-add" onClick={() => void repositoryLibraryDialog()}>Manage library…</button>
       <button className="btn sm repository-add" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open repositories…</button>
+      <button type="button" className="btn sm repository-add" onClick={() => void repositoryFolderImportDialog()}><FolderSearch size={14} /> Import folder…</button>
       <Splitter dir="v" style={{ right: -3, left: "auto" }} onDrag={(d) => setW((v) => Math.max(180, Math.min(360, v + d)))} onEnd={() => set({ repositoriesWidth: w })} />
     </div>
   );

@@ -1,11 +1,11 @@
-import { useLayoutEffect, useState } from "react";
+import { useId, useLayoutEffect, useState } from "react";
 import { namePathMenu } from "./NamePathMenu";
-import { ChevronDown, ChevronRight, Library, Star } from "lucide-react";
+import { ArrowRightLeft, ChevronDown, ChevronRight, Library, Star } from "lucide-react";
 import { basename } from "../lib/format";
 import { errorMessage } from "../lib/api";
 import { useLibrary, repositoryKey, uniqueRoots, type SavedWorkspace } from "../lib/repositoryLibrary";
 import { useRepos } from "../lib/store";
-import { editWorkspaceRepositories, openAllWorkspaces, switchWorkspace, workspaceSnapshot, workspaceWithRepositories } from "../lib/repositoryWorkspaces";
+import { editWorkspaceRepositories, moveWorkspaceRepositories, openAllWorkspaces, switchWorkspace, workspaceSnapshot, workspaceWithRepositories } from "../lib/repositoryWorkspaces";
 import { retainedConflictDrafts } from "../lib/conflictStudio";
 import { contextMenu, showDialog, toast, useUi } from "../lib/ui";
 import { confirmDialog, promptDialog } from "./dialogs";
@@ -146,6 +146,85 @@ function workspaceEditorDialog(workspace?: SavedWorkspace) {
   return showDialog<void>((close) => <WorkspaceEditor workspace={workspace} close={close} />);
 }
 
+function WorkspaceMove({ fromId, close }: { fromId: string; close: () => void }) {
+  const workspaces = useLibrary((s) => s.workspaces);
+  const discovering = useRepos(discoveringRepositories);
+  const destinationId = useId();
+  const source = workspaces.find((workspace) => workspace.id === fromId);
+  const [destination, setDestination] = useState("");
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(new Set<string>());
+  const [moving, setMoving] = useState(false);
+  const [error, setError] = useState("");
+  const roots = source?.roots ?? [];
+  const paths = roots.filter((root) => selected.has(repositoryKey(root)));
+  const shown = roots.filter((root) => root.toLowerCase().includes(query.trim().toLowerCase()));
+  const allShownSelected = shown.every((root) => selected.has(repositoryKey(root)));
+  const canMove = !moving && !discovering && paths.length > 0 && workspaces.some((workspace) => workspace.id === destination);
+
+  function select(rows: string[], checked: boolean) {
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const root of rows) {
+        const key = repositoryKey(root);
+        if (checked) next.add(key);
+        else next.delete(key);
+      }
+      return next;
+    });
+  }
+
+  async function submit() {
+    if (!canMove) return;
+    setMoving(true);
+    setError("");
+    try {
+      if (useLibrary.getState().activeWorkspaceId === fromId) {
+        const remaining = roots.filter((root) => !selected.has(repositoryKey(root)));
+        if (!await confirmWorkspaceDrafts(remaining)) return;
+      }
+      if (discoveringRepositories(useRepos.getState())) throw new Error("Wait for the repositories to finish opening.");
+      const errors = await moveWorkspaceRepositories(fromId, destination, paths);
+      if (errors.length) {
+        setError(errors.join("\n"));
+        return;
+      }
+      close();
+      toast.success(paths.length === 1 ? "Repository moved" : `${paths.length} repositories moved`);
+    } catch (cause) { setError(errorMessage(cause)); }
+    finally { setMoving(false); }
+  }
+
+  return <Modal title={`Move repositories · ${source?.name ?? "Workspace"}`} icon={<ArrowRightLeft size={20} />} wide
+    subtitle="Move the selected repositories to another workspace. Working folders stay on disk."
+    onClose={() => { if (!moving) close(); }} onSubmit={() => void submit()}
+    footer={<><button type="button" className="btn" disabled={moving} onClick={close}>Cancel</button>
+      <button type="submit" className="btn primary" disabled={!canMove}>{moving ? "Moving…" : `Move ${paths.length} ${paths.length === 1 ? "repository" : "repositories"}`}</button></>}>
+    <div className="field">
+      <label htmlFor={destinationId}>Destination workspace</label>
+      <select id={destinationId} className="input" value={destination} disabled={moving} onChange={(event) => setDestination(event.target.value)}>
+        <option value="">Choose a workspace…</option>
+        {workspaces.filter((workspace) => workspace.id !== fromId).map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+      </select>
+    </div>
+    <div className="workspace-editor-filters"><input className="input" aria-label="Find repository to move" placeholder="Find by name or path…" value={query} disabled={moving} onChange={(event) => setQuery(event.target.value)} /></div>
+    <div className="workspace-editor-selection">
+      <span className="batch-note">{paths.length} of {roots.length} selected</span>
+      <button type="button" className="btn sm" disabled={moving || !shown.length} onClick={() => select(shown, !allShownSelected)}>
+        {shown.length && allShownSelected ? "Clear selection" : query.trim() ? "Select shown" : "Select all"}
+      </button>
+    </div>
+    <div className="library-list workspace-editor-list">
+      {shown.map((root) => <label className="library-row" key={repositoryKey(root)}>
+        <input type="checkbox" checked={selected.has(repositoryKey(root))} disabled={moving} onChange={(event) => select([root], event.target.checked)} />
+        <div className="grow-text"><b>{basename(root)}</b><div className="batch-note library-path" title={root}>{root}</div></div>
+      </label>)}
+      {!shown.length && <div className="cg-empty">No matching repositories</div>}
+    </div>
+    {error && <div className="callout warn workspace-editor-error" role="alert">{error}</div>}
+  </Modal>;
+}
+
 export function WorkspacePicker() {
   const workspaces = useLibrary((s) => s.workspaces), active = useLibrary((s) => s.activeWorkspaceId);
   const busy = useUi((s) => s.busy.length > 0);
@@ -174,9 +253,11 @@ function RepositoryLibrary({ close }: { close: () => void }) {
     </div>)}</div><div className="batch-note">Assign repositories to groups on the Repositories tab.</div></>}
     {section === "workspaces" && <><div className="callout">Each workspace remembers its repository set, active repository, selected views and panel sizes for every mode. Changes are saved automatically. Switching opens folders and restores the layout; Git branches and working files stay as they are.</div>
       <button type="button" className="btn sm" disabled={busy} onClick={() => void workspaceEditorDialog()}>New workspace…</button>
-      <div className="library-list">{lib.workspaces.map((w) => <div className="library-row" key={w.id}><div className="grow-text"><b>{w.name}{w.id === lib.activeWorkspaceId ? " · Active" : ""}</b><div className="batch-note">{w.roots.length} repositories · {w.historyMode}</div></div>
+      <div className="library-list">{lib.workspaces.map((w) => <div className="library-row" key={w.id}><div className="grow-text"><b>{w.name}{w.id === lib.activeWorkspaceId ? " · Active" : ""}</b><div className="batch-note">{w.roots.length} {w.roots.length === 1 ? "repository" : "repositories"} · {w.historyMode}</div></div>
         <button type="button" className="btn sm" disabled={busy} onClick={() => { close(); void openWorkspace(w.id); }}>Switch</button>
         <button type="button" className="btn sm" disabled={busy} onClick={() => void workspaceEditorDialog(w)}>Edit repositories…</button>
+        <button type="button" className="btn sm" title="Move repositories to another workspace" disabled={busy || !w.roots.length || lib.workspaces.length < 2}
+          onClick={() => void showDialog<void>((done) => <WorkspaceMove fromId={w.id} close={done} />)}>Move repositories…</button>
         <button type="button" className="btn sm" disabled={busy} onClick={() => { close(); void openWorkspace(w.id, true); }} title="Open all repositories from this workspace in the current session">Add to session</button>
         <button type="button" className="btn sm" onClick={() => void named("Rename workspace", w.name, (name) => lib.rename(w.id, name))}>Rename</button><button type="button" className="btn sm" onClick={async () => { if (await confirmDialog({ title: "Delete saved workspace?", message: "Open repositories and their files stay as they are.", confirm: "Delete workspace" })) lib.remove(w.id); }}>Delete</button>
       </div>)}</div></>}

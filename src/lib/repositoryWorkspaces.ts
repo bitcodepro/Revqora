@@ -1,7 +1,7 @@
 import { api, errorMessage, newOpId } from "./api";
 import { useRepos } from "./store";
 import { useSettings } from "./settings";
-import { repositoryKey, uniqueRoots, useLibrary, type SavedWorkspace, type WorkspaceSnapshot } from "./repositoryLibrary";
+import { planFolderWorkspaces, repositoryKey, uniqueRoots, useLibrary, type FolderWorkspace, type SavedWorkspace, type WorkspaceSnapshot } from "./repositoryLibrary";
 import { endBusy, startBusy, useUi } from "./ui";
 import { validationRunning } from "./validation";
 
@@ -30,7 +30,7 @@ function capture() {
   const library = useLibrary.getState(), saved = library.workspaces.find((w) => w.id === library.activeWorkspaceId);
   if (!saved) return;
   const snapshot = workspaceSnapshot();
-  const { id: _id, name: _name, ...old } = saved;
+  const { id: _id, name: _name, importedFrom: _importedFrom, ...old } = saved;
   if (JSON.stringify(old) !== JSON.stringify(snapshot)) library.update(saved.id, snapshot);
 }
 export function finishWorkspaceStartup() {
@@ -53,18 +53,43 @@ export function workspaceBusy(): boolean {
 }
 export function openAllWorkspaces() {
   if (switching) return;
+  capture();
+  switching = true;
+  try {
+    registerAllWorkspaceRepositories();
+  } finally { switching = false; }
+}
+
+function registerAllWorkspaceRepositories(preferred?: string) {
   const library = useLibrary.getState();
   const repos = useRepos.getState();
   const overview = useUi.getState().repositoryOverview;
   const roots = uniqueRoots([...repos.order, ...library.knownRoots]);
+  // Publish the full roster while workspace capture is suspended.
+  void repos.openMany(roots, repos.active ? undefined : preferred ?? roots[0]);
+  library.select(null);
+  if (overview && !repos.active && roots.length) useUi.setState({ repositoryOverview: true });
+}
+
+export function importFolderRepositories(roots: string[], groups: FolderWorkspace[]) {
+  if (switching) throw new Error("Wait for the workspace switch to finish before importing repositories.");
+  if (!roots.length) return;
   capture();
   switching = true;
   try {
-    // Register the full roster before showing the library. Keep the outgoing
-    // workspace's snapshot separate from the newly opened tabs.
-    void repos.openMany(roots, repos.active ? undefined : roots[0]);
-    library.select(null);
-    if (overview && !repos.active && roots.length) useUi.setState({ repositoryOverview: true });
+    const snapshot = workspaceSnapshot();
+    const library = useLibrary.getState();
+    const workspaces = [...library.workspaces];
+    for (const { folder, roots, existing, name } of planFolderWorkspaces(workspaces, groups)) {
+      const members = uniqueRoots([...(existing?.roots ?? []), ...roots]);
+      const layout = workspaceWithRepositories(existing ?? snapshot, members);
+      const imported = { ...layout, id: existing?.id ?? crypto.randomUUID(), name, importedFrom: folder };
+      if (existing) workspaces[workspaces.indexOf(existing)] = imported;
+      else workspaces.push(imported);
+    }
+    useLibrary.setState({ knownRoots: uniqueRoots([...library.knownRoots, ...roots]), workspaces });
+    registerAllWorkspaceRepositories(roots[0]);
+    useUi.setState({ repositoryOverview: true });
   } finally { switching = false; }
 }
 
@@ -87,7 +112,39 @@ export async function editWorkspaceRepositories(id: string, roots: string[]): Pr
   return applyWorkspace({ ...saved, ...updated }, false);
 }
 
-async function applyWorkspace(saved: SavedWorkspace, add: boolean): Promise<string[]> {
+export async function moveWorkspaceRepositories(fromId: string, toId: string, paths: string[]): Promise<string[]> {
+  if (workspaceBusy()) throw new Error("Wait for the current operation to finish before moving repositories.");
+  const library = useLibrary.getState();
+  const source = library.workspaces.find((workspace) => workspace.id === fromId);
+  const destination = library.workspaces.find((workspace) => workspace.id === toId);
+  if (!source || !destination || fromId === toId) throw new Error("Choose two different workspaces.");
+  const active = library.activeWorkspaceId;
+  const current = workspaceSnapshot();
+  const from = active === fromId ? current : source;
+  const to = active === toId ? current : destination;
+  const selected = new Set(paths.map(repositoryKey));
+  const moving = from.roots.filter((root) => selected.has(repositoryKey(root)));
+  if (!moving.length || moving.length !== selected.size) throw new Error("Review the current repository selection and try again.");
+  const nextSource = workspaceWithRepositories(from, from.roots.filter((root) => !selected.has(repositoryKey(root))));
+  const nextDestination = workspaceWithRepositories({ ...to, views: { ...from.views, ...to.views } }, [...to.roots, ...moving]);
+
+  const saveMove = (applied?: WorkspaceSnapshot) => {
+    useLibrary.setState((state) => ({
+      knownRoots: uniqueRoots([...state.knownRoots, ...moving]),
+      workspaces: state.workspaces.map((workspace) => {
+        if (workspace.id === fromId) return { ...workspace, ...(active === fromId && applied ? applied : nextSource) };
+        if (workspace.id === toId) return { ...workspace, ...(active === toId && applied ? applied : nextDestination) };
+        return workspace;
+      }),
+    }));
+  };
+  if (active === fromId) return applyWorkspace({ ...source, ...nextSource }, false, saveMove);
+  if (active === toId) return applyWorkspace({ ...destination, ...nextDestination }, false, saveMove);
+  saveMove();
+  return [];
+}
+
+async function applyWorkspace(saved: SavedWorkspace, add: boolean, onApplied?: (snapshot: WorkspaceSnapshot) => void): Promise<string[]> {
   if (workspaceBusy()) throw new Error("Wait for the current operation to finish before switching workspaces.");
   const target = structuredClone(saved), original = [...useRepos.getState().order];
   const originalRoots = new Map(original.map((root) => [repositoryKey(root), root]));
@@ -121,12 +178,20 @@ async function applyWorkspace(saved: SavedWorkspace, add: boolean): Promise<stri
     if (reports.some(validationRunning) || useRepos.getState().order.some((r) => useRepos.getState().tabs[r].pendingMutations) || useUi.getState().repositoryOperations.length) {
       errors.push("An operation started while repositories were opening. No repositories were closed."); return errors;
     }
+    if (onApplied) {
+      const expected = new Set([...original, ...opened]);
+      const current = useRepos.getState().order;
+      if (current.length !== expected.size || current.some((root) => !expected.has(root))) {
+        return ["Open repositories changed while the move was in progress. Review the selection and try again."];
+      }
+    }
     for (const root of original) if (!opened.includes(root)) useRepos.getState().close(root);
     for (const [root, view] of Object.entries(target.views)) { const actual = mapped.get(root); if (actual) useRepos.getState().patch(actual, { view }); }
     const active = mapped.get(target.activeRoot ?? "") ?? opened[0] ?? null;
     useRepos.getState().arrange(target.roots.map(root => mapped.get(root)!).filter(Boolean), active);
     useSettings.getState().set({ layouts: structuredClone(target.layouts), historyMode: target.historyMode });
     useUi.setState({ overlay: null, repositoryOverview: false });
+    onApplied?.(workspaceSnapshot());
     useLibrary.getState().select(target.id);
     keepAsUnsaved = false;
     return errors;

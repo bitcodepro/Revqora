@@ -3,6 +3,7 @@ import { aboutDialog } from "./AboutDialog";
 import { branchCommitCompare } from "./BranchCommitCompare";
 import { SyncButton } from "./SyncRepositories";
 import { RepositoryLibraryButton, WorkspacePicker } from "./RepositoryLibrary";
+import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { validationDialog } from "./ConflictValidation";
 import { useValidation, validationFresh, validationRunning } from "../lib/validation";
@@ -18,6 +19,7 @@ import {
   Download,
   FolderGit2,
   FolderOpen,
+  FolderSearch,
   GitBranch,
   GitBranchPlus,
   GitMerge,
@@ -432,6 +434,13 @@ export function Welcome() {
                 <div className="bd">{shortcutTitle("Pick a folder with a Git repository", "open")}</div>
               </span>
             </button>
+            <button className="big-action" onClick={() => void repositoryFolderImportDialog()}>
+              <span className="bi"><FolderSearch size={19} /></span>
+              <span>
+                <div className="bt">Import folder…</div>
+                <div className="bd">Find repositories and create Workspaces</div>
+              </span>
+            </button>
             <button className="big-action" onClick={() => A.cloneRepo()}>
               <span className="bi">
                 <Download size={19} />
@@ -522,6 +531,7 @@ export function CommandPalette() {
   const cmds = useMemo<Cmd[]>(() => {
     const list: Cmd[] = [
       { id: "open", label: "Open repository…", group: "Repository", icon: <FolderOpen size={15} />, run: () => A.openRepoDialog() },
+      { id: "import-folder", label: "Import repositories from a folder…", group: "Repository", icon: <FolderSearch size={15} />, run: () => void repositoryFolderImportDialog() },
       { id: "clone", label: "Clone repository…", group: "Repository", icon: <Download size={15} />, run: () => A.cloneRepo() },
       { id: "init", label: "New repository…", group: "Repository", icon: <Plus size={15} />, run: () => A.initRepoDialog() },
       {id:"forge-accounts",label:"Accounts and API connections",group:"App",icon:<UserRound size={15}/>,run:()=>forgeAccountsDialog(tab?.root??null)},

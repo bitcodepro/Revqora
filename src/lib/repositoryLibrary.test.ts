@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { repositoryKey, restoreLibrary, uniqueRoots, useLibrary } from "./repositoryLibrary";
+import { planFolderWorkspaces, repositoryKey, restoreLibrary, uniqueRoots, useLibrary } from "./repositoryLibrary";
 import { restoreWorkspaceLayouts } from "./workspaceLayouts";
 
 beforeEach(() => useLibrary.setState(restoreLibrary({})));
@@ -29,5 +29,19 @@ describe("portable repository library", () => {
     s.remember("E:\\actual", "e:/old");
     const lib = useLibrary.getState(); expect(lib.favorites).toEqual(["E:\\actual"]); expect(lib.groups[0].roots).toEqual(["E:\\actual"]);
     expect(lib.workspaces[0]).toMatchObject({ roots: ["E:\\actual"], activeRoot: "E:\\actual", views: { "E:\\actual": "changes" } });
+  });
+  it("preserves folder provenance and keeps unrelated workspaces with the same name separate", () => {
+    const library = restoreLibrary({ workspaces: [
+      { id: "manual", name: "Backend", roots: ["/other/project"] },
+      { id: "imported", name: "My services", importedFrom: "E:\\Projects\\backend", roots: ["E:\\Projects\\backend\\one"] },
+    ] });
+    const plans = planFolderWorkspaces(library.workspaces, [
+      { folder: "e:/projects/backend", roots: ["E:/Projects/backend/two"] },
+      { folder: "/first/backend", roots: ["/first/backend/repo"] },
+      { folder: "/second/Backend", roots: ["/second/Backend/repo"] },
+    ]);
+    expect(plans.map(({ name, existing }) => [name, existing?.id])).toEqual([
+      ["My services", "imported"], ["backend (2)", undefined], ["Backend (3)", undefined],
+    ]);
   });
 });
