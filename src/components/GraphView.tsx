@@ -16,7 +16,7 @@ import { loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
 import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
-import type { GraphRow, SearchMode, Seg } from "../lib/types";
+import type { GraphLaneAnchor, GraphRow, SearchMode, Seg } from "../lib/types";
 import { WORKTREE } from "../lib/types";
 import { absoluteTime, fullTime, relativeTime } from "../lib/format";
 import { Avatar, RefBadge } from "./bits";
@@ -32,6 +32,12 @@ const PAD = 10;
 const MAX_LANES = 64;
 const MIN_GRAPH_W = 76;
 const PAGE = 250;
+
+interface LanePin {
+  key: string;
+  id: number;
+  anchor?: GraphLaneAnchor;
+}
 
 const x = (c: number) => PAD + c * LANE_W + LANE_W / 2;
 
@@ -341,6 +347,7 @@ export function GraphView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [restoredRows]=useState(()=>cachedGraphRows(root,tab.graphVersion));
   const cache = useRef(restoredRows?.rows??new Map<number, GraphRow>());
+  const cacheKey = useRef(restoredRows ? summary?.key : undefined);
   const loadingPages = useRef(new Set<number>());
   const [, force] = useState(0);
   const [scrollTop, setScrollTop] = useState(restoredRows?.top??0);
@@ -348,12 +355,33 @@ export function GraphView({
   useEffect(()=>{rememberGraphPosition(root,tab.graphVersion,scrollTop);},[root,tab.graphVersion,scrollTop]);
   const [viewH, setViewH] = useState(600);
   const [hoveredLane, setHl] = useState<number | null>(null);
-  const [pinned, setPinnedLane] = useState<number | null>(null);
+  const [pin, setPin] = useState<LanePin | null>(null);
+  const pinned = pin && pin.key === cacheKey.current ? pin.id : null;
   const hl = pinned ?? hoveredLane;
   const pinLane = useCallback((lane: number) => {
-    setPinnedLane((current) => current === lane ? null : lane);
+    const key = cacheKey.current;
+    if (!key) return;
     scrollRef.current?.focus({ preventScroll: true });
-  }, []);
+    if (pin?.key === key && pin.id === lane) {
+      setPin(null);
+      return;
+    }
+    const clicked = { key, id: lane };
+    setPin(clicked);
+    void api.graphLaneAnchor(root, key, lane).then((anchor) => {
+      setPin((current) => current === clicked ? anchor ? { ...clicked, anchor } : null : current);
+    }).catch(() => setPin((current) => current === clicked ? null : current));
+  }, [root, pin]);
+  useEffect(() => {
+    const key = summary?.key;
+    if (!key || !pin?.anchor || pin.key === key) return;
+    let current = true;
+    void api.graphResolveLane(root, key, pin.anchor).then((id) => {
+      if (!current || useRepos.getState().tabs[root]?.graph?.key !== key) return;
+      setPin((latest) => latest === pin ? id == null ? null : { ...pin, key, id } : latest);
+    }).catch(() => {}); // A superseded graph will be resolved after its replacement arrives.
+    return () => { current = false; };
+  }, [root, summary?.key, pin]);
   const [drawing, setDrawing] = useState(false);
   const firstDrawKey = useRef<string | null>(tab.loaded?root:null);
   const anchor = useRef<number | null>(null);
@@ -439,6 +467,8 @@ export function GraphView({
         if (cacheVersion.current !== version) {
           cache.current = new Map();
           cacheVersion.current = version;
+          cacheKey.current = key;
+          setHl(null);
         }
         for (const r of rows) cache.current.set(r.index, r);
         rememberGraphRows(root,version,cache.current);
@@ -512,33 +542,42 @@ export function GraphView({
   const scrollToIndex = useCallback(
     (idx: number, center = false) => {
       const el = scrollRef.current;
-      if (!el) return;
+      if (!el) return false;
       const pos = indexList ? indexList.indexOf(idx) : idx;
-      if (pos < 0) return;
+      if (pos < 0) return false;
       const y = pos * rowH;
       if (center)
         el.scrollTop = Math.max(0, y - el.clientHeight / 2 + rowH / 2);
       else if (y < el.scrollTop) el.scrollTop = y;
       else if (y + rowH > el.scrollTop + el.clientHeight)
         el.scrollTop = y + rowH - el.clientHeight;
+      return true;
     },
-    [indexList],
+    [indexList, rowH],
   );
 
   useEffect(() => {
     const oid = tab.historyJump;
-    if (!oid || !summary || tab.graphLoading || tab.branchFilter) return;
+    if (!oid) return;
+    // An external selection takes precedence over the local search and its pending scroll.
+    if (query || filterOnly) {
+      setQuery("");
+      setFilterOnly(false);
+      return;
+    }
+    if (!summary || tab.graphLoading || tab.branchFilter) return;
     let current = true;
-    void api.graphFind(root, oid).then((index) => {
+    void api.graphFind(root, oid, summary.key).then((index) => {
       const latest = useRepos.getState().tabs[root];
       if (!current || latest?.graph?.key !== summary.key || latest.historyJump !== oid) return;
+      if (latest.selected === oid && index != null) {
+        if (!scrollToIndex(index, true)) return;
+        anchor.current = index;
+      }
       patch(root, { historyJump: null });
-      if (latest.selected !== oid || index == null) return;
-      anchor.current = index;
-      scrollToIndex(index, true);
     }).catch(() => {});
     return () => { current = false; };
-  }, [root, summary, tab.historyJump, tab.graphLoading, tab.branchFilter, patch, scrollToIndex]);
+  }, [root, summary, tab.historyJump, tab.graphLoading, tab.branchFilter, query, filterOnly, patch, scrollToIndex]);
 
   const selectIndex = useCallback(
     async (idx: number) => {
@@ -742,9 +781,9 @@ export function GraphView({
     const cur =
       selectedIndex >= 0 ? selectedIndex : tab.selected === WORKTREE ? 0 : -1;
     const pageRows = Math.max(1, Math.floor(viewH / rowH) - 1);
-    if (e.key === "Escape" && pinned !== null) {
+    if (e.key === "Escape" && pin) {
       e.preventDefault();
-      setPinnedLane(null);
+      setPin(null);
     } else if (e.key === "Escape" && tab.selected) {
       e.preventDefault();
       useRepos.getState().patch(tab.root, { selected: null, multi: [] });
@@ -906,7 +945,7 @@ export function GraphView({
         <button type="button" className="btn sm" onClick={() => void workspaceCommitSearch(query, mode)}>
           <FolderSearch size={14} /> Search all repositories
         </button>
-        {pinned !== null && <button type="button" className="btn sm" onClick={() => setPinnedLane(null)}>Clear line highlight</button>}
+        {pin && <button type="button" className="btn sm" onClick={() => setPin(null)}>Clear line highlight</button>}
         {tab.branchFilter && (
           <span className="pill accent graph-branch-filter" title={tab.branchFilter} data-branch-filter={tab.branchFilter}>
             <span>Only {tab.branchFilter.replace(/^refs\/(heads|remotes)\//, "")}</span>

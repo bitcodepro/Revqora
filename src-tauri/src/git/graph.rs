@@ -1,10 +1,11 @@
 //! Commit history loading and lane layout for the graph view.
 
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::refs::{self, RefLabel};
 use super::runner::{self, GitError, GitResult};
@@ -71,6 +72,14 @@ struct Line {
     color: u16,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaneAnchor {
+    commit: String,
+    parent: Option<String>,
+}
+
+type LaneAnchors = HashMap<u64, LaneAnchor>;
+
 impl Line {
     fn segment(self, a: usize, b: usize, t: u8) -> Seg {
         Seg { a: a as u16, b: b as u16, t, c: self.color, id: self.id }
@@ -78,9 +87,9 @@ impl Line {
 }
 
 /// Assigns lanes to commits given in display order (children before parents).
-pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
+fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16, LaneAnchors) {
     let mut lanes: Vec<Option<(String, Line)>> = Vec::new();
-    let mut ids = HashSet::new();
+    let mut anchors = HashMap::new();
     let mut next_color = 0;
     let mut out = Vec::with_capacity(commits.len());
     let mut max_lanes: u16 = 1;
@@ -91,9 +100,10 @@ pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
         let mut hash = DefaultHasher::new();
         (start, parent).hash(&mut hash);
         let mut id = hash.finish() & SAFE_MASK;
-        while !ids.insert(id) {
+        while anchors.contains_key(&id) {
             id = (id + 1) & SAFE_MASK;
         }
+        anchors.insert(id, LaneAnchor { commit: start.to_owned(), parent: parent.map(str::to_owned) });
         let line = Line { id, color: next_color };
         next_color = (next_color + 1) % 12;
         line
@@ -156,7 +166,7 @@ pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
         max_lanes = max_lanes.max(width);
         out.push(Layout { col: col as u16, color: line.color, lane_id: line.id, segs });
     }
-    (out, max_lanes)
+    (out, max_lanes, anchors)
 }
 
 #[derive(Debug, Clone)]
@@ -173,13 +183,45 @@ pub struct GraphCache {
     pub limit: usize,
     /// How the commit list was obtained: "full" | "reused" | "incremental" | "fast".
     pub source: String,
+    lane_anchors: Arc<LaneAnchors>,
+    previous_anchors: Option<(String, Arc<LaneAnchors>)>,
 }
 
 impl GraphCache {
-    pub fn page(&self, start: usize, count: usize, expected_key: Option<&str>) -> GitResult<Vec<GraphRow>> {
+    pub fn lane_anchor(&self, key: &str, id: u64) -> Option<LaneAnchor> {
+        let anchors = if key == self.key {
+            &self.lane_anchors
+        } else {
+            let (previous_key, anchors) = self.previous_anchors.as_ref()?;
+            if key != previous_key {
+                return None;
+            }
+            anchors
+        };
+        anchors.get(&id).cloned()
+    }
+
+    pub fn resolve_lane(&self, anchor: &LaneAnchor) -> Option<u64> {
+        let row = self.rows.get(*self.index.get(&anchor.commit)?)?;
+        match &anchor.parent {
+            None => Some(row.lane_id),
+            Some(parent) => {
+                // Layout emits one outgoing segment per parent retained in the graph, in parent order.
+                let position = row.parents.iter().filter(|oid| self.index.contains_key(*oid)).position(|oid| oid == parent)?;
+                row.segs.iter().filter(|segment| segment.t == 2).nth(position).map(|segment| segment.id)
+            }
+        }
+    }
+
+    pub fn check_key(&self, expected_key: Option<&str>) -> GitResult<()> {
         if expected_key.is_some_and(|key| key != self.key) {
             return Err(super::runner::GitError::new("History changed. Refresh the graph rows.").kind("stale-operation"));
         }
+        Ok(())
+    }
+
+    pub fn page(&self, start: usize, count: usize, expected_key: Option<&str>) -> GitResult<Vec<GraphRow>> {
+        self.check_key(expected_key)?;
         let end = start.saturating_add(count).min(self.rows.len());
         Ok(if start >= end { Vec::new() } else { self.rows[start..end].to_vec() })
     }
@@ -407,7 +449,7 @@ pub fn build_with(
         let parents: Vec<String> = c.parents.iter().filter(|p| known.contains_key(p.as_str())).cloned().collect();
         order.push((c.oid.clone(), parents));
     }
-    let (lay, max_lanes) = layout(&order);
+    let (lay, max_lanes, lane_anchors) = layout(&order);
     let commit_list = commits.clone();
 
     let mut rows = Vec::with_capacity(order.len());
@@ -467,7 +509,22 @@ pub fn build_with(
     static BUILDS: AtomicU64 = AtomicU64::new(0);
     let key = format!("graph-{}", BUILDS.fetch_add(1, Ordering::Relaxed));
     let source = if fast { "fast" } else { reused.as_ref().map(|(_, s)| *s).unwrap_or("full") }.to_string();
-    Ok(GraphCache { head_oid, key, rows, max_lanes, index, commits: std::sync::Arc::new(commit_list), refs, filter, limit, source })
+    // Rows from the previous build can still be displayed until the first new page arrives.
+    let previous_anchors = prev.map(|cache| (cache.key.clone(), Arc::clone(&cache.lane_anchors)));
+    Ok(GraphCache {
+        head_oid,
+        key,
+        rows,
+        max_lanes,
+        index,
+        commits: Arc::new(commit_list),
+        refs,
+        filter,
+        limit,
+        source,
+        lane_anchors: Arc::new(lane_anchors),
+        previous_anchors,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -595,7 +652,7 @@ mod tests {
 
     #[test]
     fn linear_history_uses_one_lane() {
-        let (l, max) = layout(&[c("c", &["b"]), c("b", &["a"]), c("a", &[])]);
+        let (l, max, _) = layout(&[c("c", &["b"]), c("b", &["a"]), c("a", &[])]);
         assert_eq!(max, 1);
         assert!(l.iter().all(|x| x.col == 0));
     }
@@ -603,7 +660,7 @@ mod tests {
     #[test]
     fn branch_and_merge() {
         // m merges f into b; f and b both come from a.
-        let (l, max) = layout(&[c("m", &["b", "f"]), c("f", &["a"]), c("b", &["a"]), c("a", &[])]);
+        let (l, max, _) = layout(&[c("m", &["b", "f"]), c("f", &["a"]), c("b", &["a"]), c("a", &[])]);
         assert_eq!(max, 2);
         assert_eq!(l[0].col, 0);
         assert_eq!(l[1].col, 1); // feature lane
@@ -619,7 +676,7 @@ mod tests {
     fn main_merged_into_branch_then_branch_merged_back() {
         // f1 branches from a; s merges main (m1) into the branch; M merges the branch into main.
         let rows = [c("M", &["m2", "s"]), c("s", &["f1", "m1"]), c("m2", &["m1"]), c("f1", &["a"]), c("m1", &["a"]), c("a", &[])];
-        let (l, _) = layout(&rows);
+        let (l, _, _) = layout(&rows);
         let (main, feature) = (l[0].col, l[1].col);
         assert_ne!(main, feature);
         assert_eq!((l[2].col, l[3].col, l[4].col, l[5].col), (main, feature, main, main));
@@ -634,7 +691,7 @@ mod tests {
 
     #[test]
     fn independent_tips_get_separate_lanes() {
-        let (l, _) = layout(&[c("x", &["a"]), c("y", &["a"]), c("a", &[])]);
+        let (l, _, _) = layout(&[c("x", &["a"]), c("y", &["a"]), c("a", &[])]);
         assert_eq!(l[0].col, 0);
         assert_eq!(l[1].col, 1);
         assert_eq!(l[2].col, 0);
@@ -643,7 +700,7 @@ mod tests {
     #[test]
     fn unrelated_lines_can_share_a_palette_color_without_sharing_identity() {
         let rows: Vec<_> = (0..25).map(|i| (format!("tip-{i}"), vec!["base".to_string()])).chain([c("base", &[])]).collect();
-        let (layout, _) = layout(&rows);
+        let (layout, _, _) = layout(&rows);
         assert_eq!(layout[0].color, layout[12].color);
         assert_ne!(layout[0].lane_id, layout[12].lane_id);
         assert!(layout[25].segs.iter().any(|seg| seg.id == layout[12].lane_id));
@@ -651,10 +708,52 @@ mod tests {
 
     #[test]
     fn a_line_keeps_its_identity_when_other_lanes_change() {
-        let (before, _) = layout(&[c("tip", &["root"]), c("root", &[])]);
-        let (after, _) = layout(&[c("other", &["root"]), c("tip", &["root"]), c("root", &[])]);
+        let (before, _, _) = layout(&[c("tip", &["root"]), c("root", &[])]);
+        let (after, _, _) = layout(&[c("other", &["root"]), c("tip", &["root"]), c("root", &[])]);
         assert_ne!(before[0].col, after[1].col);
         assert_eq!(before[0].lane_id, after[1].lane_id);
+    }
+
+    #[test]
+    fn pinned_tip_resolves_after_advancing_and_disappears_outside_the_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        runner::run(repo, ["init", "-qb", "main"]).unwrap();
+        let commit = |message| {
+            runner::run(
+                repo,
+                [
+                    "-c",
+                    "user.name=Graph Fixture",
+                    "-c",
+                    "user.email=history@example.test",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--allow-empty",
+                    "-qm",
+                    message,
+                ],
+            )
+            .unwrap();
+            runner::run(repo, ["rev-parse", "HEAD"]).unwrap().trim().to_owned()
+        };
+        let base = commit("Base");
+        let tip = commit("Original tip");
+        let before = build(repo, None, false, 100, false).unwrap();
+        let id = before.rows[before.index[&tip]].lane_id;
+        let anchor = before.lane_anchor(&before.key, id).unwrap();
+
+        let advanced = commit("New tip");
+        let after = build_with(repo, None, false, 100, false, Some(&before)).unwrap();
+        let updated = after.rows[after.index[&advanced]].lane_id;
+        assert_ne!(id, updated);
+        assert_eq!(after.resolve_lane(&anchor), Some(updated));
+        // Clicking a still-visible row from the preceding build finds the same anchor.
+        assert_eq!(after.resolve_lane(&after.lane_anchor(&before.key, id).unwrap()), Some(updated));
+
+        let filtered = build(repo, Some(&base), false, 100, false).unwrap();
+        assert_eq!(filtered.resolve_lane(&anchor), None);
     }
 
     #[test]

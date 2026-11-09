@@ -149,6 +149,11 @@ export interface Seg {
   id: number;
 }
 
+export interface GraphLaneAnchor {
+  commit: string;
+  parent: string | null;
+}
+
 export interface RefLabel {
   name: string;
   kind: "head" | "local" | "remote" | "tag" | "detached" | "bisect";

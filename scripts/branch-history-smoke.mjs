@@ -57,6 +57,15 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await graph.locator(".grow").getByText(/History line [45]\d/).first().waitFor();
   assert.equal(await graph.getAttribute("data-pinned-lane"), pinned);
   assert(await graph.locator(".lane-line.hl").count(), "Newly visible segments must still be highlighted");
+  git(root, "commit", "--allow-empty", "-qm", "Advance pinned history line");
+  await page.getByTitle("Refresh (F5)", { exact: true }).click();
+  await graph.evaluate((el) => { el.scrollTop = 0; });
+  const advanced = graph.locator(".grow").filter({ has: page.getByText("Advance pinned history line", { exact: true }) });
+  const highlighted = advanced.locator(".lane-line.hl + .lane-hit").first();
+  await highlighted.waitFor({ state: "attached" });
+  const remapped = await highlighted.getAttribute("data-lane");
+  assert.notEqual(remapped, pinned, "Advancing the tip should change the layout ID in this fixture");
+  assert.equal(await graph.getAttribute("data-pinned-lane"), remapped);
   await page.getByRole("button", { name: "Clear line highlight", exact: true }).click();
   assert.equal(await graph.getAttribute("data-pinned-lane"), null);
 
@@ -77,18 +86,39 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
     await destination.getByRole("button", { name: /^Copy SHA / }).click();
     await page.waitForFunction((oid) => window.__namePathCopies.at(-1) === oid, git(root, "rev-parse", "target"));
   } finally { await page.evaluate(() => window.__restoreNamePathClipboard()); }
-  await mainOnly.getByRole("button", { name: "Load more (50 of 100)", exact: true }).click();
+  await mainOnly.getByRole("button", { name: "Load more (50 of 101)", exact: true }).click();
+  await mainOnly.getByRole("button", { name: "Load more (100 of 101)", exact: true }).click();
   await mainOnly.getByText("History line 0", { exact: true }).waitFor({ state: "attached" });
-  assert.equal(await mainOnly.locator("article").count(), 100);
+  assert.equal(await mainOnly.locator("article").count(), 101);
   assert.equal(await targetOnly.locator("article").count(), 1);
   assert.equal(await comparison.getByText(/Shared searchable/).count(), 0);
   await comparison.getByRole("button", { name: "Close", exact: true }).click();
   assert.equal(git(root, "branch", "--show-current"), "main");
 
+  const localQuery = page.getByPlaceholder(/^Search commits/);
+  await localQuery.fill("History line 99");
+  await page.locator(".search-box .count").getByText("1 / 1", { exact: true }).waitFor();
+  await page.getByTitle("Show only matching commits", { exact: true }).click();
+  assert.equal(await graph.locator(".grow").count(), 1);
   await page.getByRole("button", { name: "Search all repositories", exact: true }).click();
   const search = page.getByRole("dialog").filter({ hasText: "Search all repositories" });
   await search.getByRole("textbox", { name: "Search commits across repositories" }).fill("shared searchable");
   for (const name of ["branch-history", "branch-history-other"]) await search.getByRole("heading", { name, exact: true }).waitFor();
+  await search.getByText("Shared searchable branch-history", { exact: true }).click();
+  const selected = graph.locator(".grow.selected").filter({ has: page.getByText("Shared searchable branch-history", { exact: true }) });
+  await selected.waitFor();
+  await page.waitForFunction(() => {
+    const row = document.querySelector(".graph-scroll .grow.selected");
+    const graph = row?.closest(".graph-scroll");
+    if (!row || !graph) return false;
+    const visible = graph.getBoundingClientRect(), bounds = row.getBoundingClientRect();
+    return bounds.top < visible.bottom && bounds.bottom > visible.top;
+  });
+  assert.equal(await localQuery.inputValue(), "");
+  assert(!await page.getByTitle("Show only matching commits", { exact: true }).evaluate((button) => button.classList.contains("active")));
+
+  await page.getByRole("button", { name: "Search all repositories", exact: true }).click();
+  await search.getByRole("textbox", { name: "Search commits across repositories" }).fill("shared searchable");
   await search.getByRole("button", { name: /Shared searchable branch-history-other/ }).click();
   await active("branch-history-other");
   await page.locator(".commit-preview").getByText("Shared searchable branch-history-other", { exact: true }).waitFor();

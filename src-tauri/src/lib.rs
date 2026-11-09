@@ -754,13 +754,27 @@ fn graph_rows(state: State<'_, AppState>, repo: String, start: usize, count: usi
 }
 
 #[tauri::command]
-fn graph_find(state: State<'_, AppState>, repo: String, oid: String) -> Option<usize> {
+fn graph_find(state: State<'_, AppState>, repo: String, oid: String, expected_key: Option<String>) -> GitResult<Option<usize>> {
     let graphs = state.graphs.lock();
-    let cache = graphs.get(&repo)?;
+    let Some(cache) = graphs.get(&repo) else { return Ok(None) };
+    cache.check_key(expected_key.as_deref())?;
     if let Some(i) = cache.index.get(&oid) {
-        return Some(*i);
+        return Ok(Some(*i));
     }
-    cache.rows.iter().position(|r| r.oid.starts_with(&oid))
+    Ok(cache.rows.iter().position(|r| r.oid.starts_with(&oid)))
+}
+
+#[tauri::command]
+fn graph_lane_anchor(state: State<'_, AppState>, repo: String, key: String, id: u64) -> Option<graph::LaneAnchor> {
+    state.graphs.lock().get(&repo)?.lane_anchor(&key, id)
+}
+
+#[tauri::command]
+fn graph_resolve_lane(state: State<'_, AppState>, repo: String, key: String, anchor: graph::LaneAnchor) -> GitResult<Option<u64>> {
+    let graphs = state.graphs.lock();
+    let Some(cache) = graphs.get(&repo) else { return Ok(None) };
+    cache.check_key(Some(&key))?;
+    Ok(cache.resolve_lane(&anchor))
 }
 
 #[tauri::command]
@@ -2170,6 +2184,8 @@ pub fn run() {
             graph_load,
             graph_rows,
             graph_find,
+            graph_lane_anchor,
+            graph_resolve_lane,
             graph_search,
             repository_commit_search,
             commit_details,

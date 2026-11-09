@@ -179,7 +179,9 @@ export const api = {
   graphLoad: (repo: string, branch: string | null, includeWorktree: boolean, limit?: number, fast?: boolean) =>
     call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast }),
   graphRows: (repo: string, start: number, count: number,expectedKey?:string) => call<GraphRow[]>("graph_rows", { repo, start, count,expectedKey }),
-  graphFind: (repo: string, oid: string) => call<number | null>("graph_find", { repo, oid }),
+  graphFind: (repo: string, oid: string, expectedKey?: string) => call<number | null>("graph_find", { repo, oid, expectedKey }),
+  graphLaneAnchor: (repo: string, key: string, id: number) => call<import("./types").GraphLaneAnchor | null>("graph_lane_anchor", { repo, key, id }),
+  graphResolveLane: (repo: string, key: string, anchor: import("./types").GraphLaneAnchor) => call<number | null>("graph_resolve_lane", { repo, key, anchor }),
   graphSearch: (repo: string, query: string, mode: SearchMode) => call<number[]>("graph_search", { repo, query, mode }),
   repositoryCommitSearch: (repo: string, query: string, mode: SearchMode) => call<import("./types").CommitSearchHit[]>("repository_commit_search", { repo, query, mode }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),
