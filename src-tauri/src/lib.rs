@@ -1746,6 +1746,11 @@ async fn forge_info(repo: String) -> GitResult<Option<forge::ForgeInfo>> {
 }
 
 #[tauri::command]
+async fn forge_kind(repo: String) -> GitResult<Option<String>> {
+    blocking(move || forge::browse_kind(&p(&repo))).await
+}
+
+#[tauri::command]
 async fn repository_web_link(repo: String, reference: Option<String>) -> GitResult<Option<String>> {
     blocking(move || forge::web_link(&p(&repo), reference.as_deref())).await
 }
@@ -2317,6 +2322,7 @@ pub fn run() {
             forge_connections,
             forge_connection_select,
             forge_info,
+            forge_kind,
             repository_web_link,
             pull_requests,
             pr_merge_plan,

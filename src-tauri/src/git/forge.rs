@@ -93,6 +93,16 @@ pub fn detect(repo: &Path) -> GitResult<Option<ForgeInfo>> {
     Ok(super::forge_accounts::context(repo)?.map(|c| c.info))
 }
 
+/// Provider discovery for navigation uses public remote and account metadata.
+pub fn browse_kind(repo: &Path) -> GitResult<Option<String>> {
+    let remotes = super::refs::remotes(repo)?;
+    if remotes.is_empty() {
+        return Ok(None);
+    }
+    let selected = super::forge_accounts::web_target(repo, &remotes, None).and_then(|(_, forge)| forge);
+    Ok(selected.or_else(|| remotes.iter().find_map(|remote| forge_for(&remote.fetch_url, &remote.name))).map(|forge| forge.kind))
+}
+
 fn browser_link(known: Option<&ForgeInfo>, raw_remote: &str, branch: Option<&str>) -> Option<String> {
     let mut url = url::Url::parse(known.map_or(raw_remote, |f| f.web_url.as_str())).ok()?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -420,18 +430,33 @@ fn authorized<T>(repo: &Path, f: &ForgeInfo, send: impl Fn(&super::forge_account
     if context.info != *f {
         return Err(GitError::new("The API connection changed. Refresh before trying again.").kind("stale-operation"));
     }
-    let explicit = context.profile.is_some();
-    let mut credential = match context.credential {
+    let credential = match context.credential {
         Some(c) => c,
         None => token(repo, &context.git_url)?,
     };
-    let result = send(&credential);
-    if is_bitbucket(f)
-        && !explicit
-        && !credential.username.is_empty()
-        && matches!(&result,Err(e) if e.kind=="auth"&&e.message=="Token rejected. Reconnect this account.")
-    {
+    if context.profile.is_some() {
+        return send(&credential);
+    }
+    send_with_git_credential(&f.kind, credential, send)
+}
+
+fn send_with_git_credential<T>(
+    kind: &str,
+    mut credential: super::forge_accounts::Credential,
+    send: impl Fn(&super::forge_accounts::Credential) -> GitResult<T>,
+) -> GitResult<T> {
+    if kind == "azure" {
+        // GCM returns both PATs and Entra access tokens in the Git password field.
         credential.mode = "basic".into();
+    }
+    let result = send(&credential);
+    let rejected = format!("forge_http_status={kind}:401");
+    if matches!(&result, Err(e) if e.details.contains(&rejected)) {
+        match kind {
+            "bitbucket" | "bitbucket-server" if !credential.username.is_empty() => credential.mode = "basic".into(),
+            "azure" if credential.token.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~+/=".contains(&b)) => credential.mode = "bearer".into(),
+            _ => return result,
+        }
         return send(&credential);
     }
     result
@@ -884,6 +909,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn azure_git_credentials_try_entra_bearer_only_after_a_rejected_pat() {
+        for (status, expected) in [(401, vec!["basic", "bearer"]), (403, vec!["basic"])] {
+            let modes = std::cell::RefCell::new(Vec::new());
+            let credential = super::super::forge_accounts::Credential { username: "account".into(), token: "fixture-token".into(), mode: "bearer".into() };
+            let result = send_with_git_credential("azure", credential, |c| {
+                assert_eq!(c.token, "fixture-token");
+                modes.borrow_mut().push(c.mode.clone());
+                if c.mode == "bearer" {
+                    return Ok(());
+                }
+                Err(GitError::new("Fixture").kind("auth").details(vec![format!("forge_http_status=azure:{status}")]))
+            });
+            assert_eq!(result.is_ok(), status == 401);
+            assert_eq!(modes.into_inner(), expected);
+        }
+    }
+
+    #[test]
     fn copy_urls_encode_provider_routes_and_drop_remote_credentials() {
         for (remote, expected) in [
             ("https://user:password@github.com/team/repo%23name.git", "https://github.com/team/repo%23name/tree/feature/a%23b"),
@@ -974,6 +1017,23 @@ mod tests {
         let ssh = forge_for("ssh://git@bitbucket.corp.example:7999/PROJ/service.git", "origin").unwrap();
         assert_eq!((ssh.kind.as_str(), ssh.project.as_str()), ("bitbucket-server", "PROJ/service"));
         assert!(forge_for("https://example.com/a/b.git", "origin").is_none());
+    }
+
+    #[test]
+    fn pr_navigation_recognizes_bitbucket_before_git_credentials_are_available() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        runner::run(root, ["init", "-qb", "main"]).unwrap();
+        runner::run(root, ["config", "credential.helper", ""]).unwrap();
+        runner::run(root, ["remote", "add", "origin", "https://fixture-user@bitbucket.org/example/pr-navigation.git"]).unwrap();
+        assert_eq!(browse_kind(root).unwrap().as_deref(), Some("bitbucket"));
+        assert_eq!(detect(root).unwrap_err().kind, "auth");
+
+        runner::run(root, ["remote", "rename", "origin", "upstream"]).unwrap();
+        runner::run(root, ["remote", "add", "origin", "https://example.invalid/team/repo.git"]).unwrap();
+        assert_eq!(browse_kind(root).unwrap().as_deref(), Some("bitbucket"));
+        runner::run(root, ["remote", "remove", "upstream"]).unwrap();
+        assert_eq!(browse_kind(root).unwrap(), None);
     }
 
     #[test]

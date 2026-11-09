@@ -39,8 +39,24 @@ export function ChecksList({ checks }: { checks: Check[] }) {
 }
 export function summarizeChecks(checks: Check[]): Check["state"] | null { return !checks.length ? null : checks.some(c => c.state === "failure") ? "failure" : checks.some(c => c.state === "pending") ? "pending" : "success"; }
 
-export function PullRequestsView({ tab }: { tab: RepoTab }) {
-  const root = tab.root;
+export function PullRequestsView({ tab, remotesKey }: { tab: RepoTab; remotesKey: string }) {
+  const loadingRemotes = !tab.refs && !tab.loaded;
+  if (!loadingRemotes && tab.refs?.remotes.length !== 0) return <ConnectedPullRequests key={JSON.stringify([tab.root, remotesKey])} root={tab.root} />;
+  return <section className="pr-center pr-list-hidden" aria-label="Pull Request Center">
+    <main className="pr-content">
+      <header className="pr-center-head"><b>PR Center</b></header>
+      {loadingRemotes ? <div className="pr-empty" role="status"><Loader2 size={22} className="spin" />Loading repository remotes…</div> :
+        <div className="pr-empty">
+          <GitPullRequest size={24} />
+          <b>No remote configured</b>
+          <p className="pr-local-description">Pull requests are hosted by Git services. Add the URL of a hosted repository to view or create pull requests here.</p>
+          <button type="button" className="btn primary" onClick={() => void A.addRemote(tab.root)}>Add remote…</button>
+        </div>}
+    </main>
+  </section>;
+}
+
+function ConnectedPullRequests({ root }: { root: string }) {
   const [prefs, setPrefs] = useState(() => loadPrPreferences(root)), [listWidth, setListWidth] = useState(prefs.listWidth);
   const [forge, setForge] = useState<ForgeInfo | null>(null), [items, setItems] = useState<PullRequest[]>([]), [cursor, setCursor] = useState<string | null>(null);
   const [error, setError] = useState(""), [loading, setLoading] = useState(false), [query, setQuery] = useState(""), [selected, setSelected] = useState<number | null>(null), [epoch, setEpoch] = useState(0);
@@ -127,7 +143,7 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
       <div className="pr-search"><input className="input" aria-label="Search loaded pull requests" placeholder="Search PRs or enter #…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && direct && forge) setSelected(direct); }} /></div>
       <div className="pr-author-filter"><select className="select" aria-label="Pull request author" title="Authors found in loaded pages. Load more requests to include older PRs." value={authorSelectionValue(authors.prefs,mine)} onChange={e=>void chooseAuthor(e.target.value)}><option value="mine">My pull requests{mine?` — ${mine.label}`:"…"}</option><option value="all">All authors</option>{authors.known.filter(a=>a.key!==mine?.key).map(a=><option key={a.key} value={a.key}>{a.label}{a.login&&a.login!==a.label?` · ${a.login}`:""}</option>)}{authors.prefs.chosen&&!authors.known.some(a=>a.key===authors.prefs.chosen!.key)&&<option value={authors.prefs.chosen.key}>{authors.prefs.chosen.label}</option>}</select>{!authors.viewer&&<button type="button" className="icon-btn" aria-label="Set my PR author" title="Set my PR author without profile permissions" onClick={async()=>{const chosen=await showDialog<PrAuthor|null>(close=><MyPrAuthor authors={authors.known} initial={mine} close={close} bitbucket={forge?.kind==="bitbucket"}/>);if(chosen){setAuthors(a=>({...a,prefs:{...a.prefs,mine:chosen}}));setSelected(null);}}}><Pencil size={14}/></button>}</div>
       {direct && forge && <button className="btn sm pr-direct" onClick={() => setSelected(direct)}>Open #{direct}</button>}
-      {error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connect with token…</button><button type="button" className="btn sm" onClick={refresh}>Try again</button></div>}
+      {error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connection settings…</button><button type="button" className="btn sm" onClick={refresh}>Try again</button></div>}
       <RequestRows watched={watch.selected} rows={visible} selected={selected} select={setSelected} resetKey={`${query}:${prefs.state}:${authors.prefs.selection}`} />
       {!visible.length && !loading && !error && <p className="pr-list-empty">No matching requests in the loaded pages.{cursor ? " Load more or open a request by number." : ""}</p>}
       <footer className="pr-list-footer">{loading ? <span className="loading-status" role="status"><Loader2 size={13} className="spin" /> Loading requests…</span> : cursor ? <button className="btn sm" onClick={() => void load(cursor)}>Load more requests</button> : <span className="faint">{items.length} loaded</span>}</footer>
@@ -135,7 +151,7 @@ export function PullRequestsView({ tab }: { tab: RepoTab }) {
     {prefs.listOpen && <Splitter dir="v" style={{ left: "clamp(200px, var(--pr-list-width), 35%)" }} onDrag={d => setListWidth(w => Math.max(200, Math.min(520, w + d)))} onEnd={() => savePreferences({ listWidth })} />}
     <main className="pr-content">
       <header className="pr-center-head"><button className="icon-btn" title={prefs.listOpen ? "Hide pull request list" : "Show pull request list"} aria-label={prefs.listOpen ? "Collapse pull request list" : "Show pull request list"} onClick={() => savePreferences({ listOpen: !prefs.listOpen })}><List size={16} /></button><div className="pr-connection"><b className="ellipsis" title={forge?.project}>PR Center{forge ? ` · ${forge.project}` : ""}</b><small>{forge ? `${FORGE_NAMES[forge.kind]} · ${forge.remote} · ${forge.accountLogin ?? "Git credentials"}` : "Choose an API account and remote to browse requests"}</small></div><div className="spacer" />{forge?.connectionRevision && <button type="button" className="btn sm" aria-label="Watch my PRs" aria-pressed={!!watch.mineSince} title={mine ? "Watch activity on PRs you opened" : "Set your PR author to watch your pull requests"} disabled={!mine && !watch.mineSince} onClick={toggleMine}><Bell size={14} />My PRs</button>}<button className="btn sm" onClick={() => void forgeAccountsDialog(root)}>Accounts…</button>{!prefs.listOpen && <><button className="icon-btn" aria-label="Refresh pull requests" disabled={loading} onClick={refresh}><RefreshCw size={15} /></button><button className="btn sm primary" disabled={!forge?.connectionRevision || loading} onClick={() => void created()}>New PR</button></>}</header>
-      {!prefs.listOpen && error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connect with token…</button></div>}
+      {!prefs.listOpen && error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connection settings…</button></div>}
       {forge?.connectionRevision && selected ? <RequestDetail key={`${forge.connectionRevision}:${selected}:${epoch}`} root={root} forge={forge} number={selected} prefs={prefs} savePreferences={savePreferences} updated={updated} watched={!!watch.selected[selected]} watchOwn={!!watch.mineSince && !!mine} mine={mine} toggleWatch={() => toggleWatch(selected)} /> : <div className="pr-empty">{loading ? <><Loader2 size={22} className="spin" />Loading pull requests…</> : error ? "Configure the API connection or refresh to continue." : "Select a pull request or open one by number."}</div>}
     </main>
   </section>;

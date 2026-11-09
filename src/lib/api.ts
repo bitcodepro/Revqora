@@ -313,6 +313,7 @@ export const api = {
   commitHelpers: (repo: string) => call<CommitHelpers>("commit_helpers", { repo }),
   saveTextFile: (path: string, content: string) => call<void>("save_text_file", { path, content }),
   forgeInfo: (repo: string) => call<ForgeInfo | null>("forge_info", { repo }),
+  forgeKind: (repo: string) => call<string | null>("forge_kind", { repo }),
   repositoryWebLink: (repo: string, reference: string | null) => call<string | null>("repository_web_link", { repo, reference }),
   pullRequests: (repo: string) => call<{ forge: ForgeInfo; items: PullRequest[] }>("pull_requests", { repo }),
   prPage: (repo: string, state: import("./types").PrState, cursor: string | null = null) => call<import("./types").PrPage>("pr_page", { repo, state, cursor }),

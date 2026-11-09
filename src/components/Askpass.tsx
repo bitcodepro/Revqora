@@ -127,7 +127,7 @@ function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onA
       </div>
       {bitbucket && <>
         <p className="help">For an API token, use your Bitbucket username or <code>x-bitbucket-api-token-auth</code> as the Git username and paste the token when Git asks for a password. For an OAuth access token, use <code>x-token-auth</code>. Git needs repository read permission for Fetch/Pull and write permission for Push.</p>
-        <p className="help">For Pull Requests, add Bitbucket Cloud in Accounts and API connections. API tokens use your Atlassian email there. Unlock the portable vault to use saved tokens.</p>
+        <p className="help">Pull Requests can reuse this credential. If Bitbucket asks for your Atlassian email, open Accounts and API connections, add a Bitbucket account and select Use existing Git token.</p>
       </>}
       {!!available.length&&<div className="field"><label>Use an existing account<select className="select" aria-label="Saved Git account" value={account} disabled={sending} onChange={e=>setAccount(e.target.value)}><option value="">Choose an account…</option>{available.map(a=><option key={a.id} value={a.id}>{a.login} · {a.kind} · {a.server}</option>)}</select></label><button type="button" className="btn" disabled={!account||sending} onClick={()=>void useSaved()}>Use saved account for this request</button><small>The credential goes directly to the matching HTTPS Git server. SSH prompts cannot receive API tokens.</small></div>}
       {error && <p role="alert">{error}</p>}
