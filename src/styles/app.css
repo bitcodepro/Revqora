@@ -1184,6 +1184,10 @@ select[size="1"]:not([multiple]) {
   display: block;
   overflow: visible;
 }
+.g-graph .lane-line,
+.g-graph circle {
+  pointer-events: none;
+}
 .g-graph .lane-line {
   fill: none;
   stroke-width: 2;

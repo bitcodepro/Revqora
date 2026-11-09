@@ -124,6 +124,7 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     if (await closeRoot.count()) await closeRoot.click();
     const workspaceSubdir = path.join(root, "workspace-subdir");
     fs.mkdirSync(workspaceSubdir);
+    const sidebar = page.locator(".repository-sidebar");
     const createGate = await holdRepositoryOpen(workspaceSubdir);
     try {
       await open(workspaceSubdir); await createGate.wait();
@@ -146,12 +147,40 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
         await editor.getByText("1 selected", { exact: true }).waitFor();
       });
     } finally { await createGate.restore(); }
-    const excluded = page.locator(".repository-sidebar .repository-item", { hasText: "stage8-tools" });
+    const excluded = sidebar.locator(".repository-item", { hasText: "stage8-tools" });
     await excluded.waitFor({ state: "detached" });
-    await page.getByLabel("Workspace", { exact: true }).selectOption({ label: "All Workspaces" });
-    if (await page.locator('.repository-sidebar .repository-item[data-repository-state="closed"]').count()) throw new Error("All Workspaces briefly left library repositories closed");
-    await page.locator('.repository-sidebar .repository-item[data-repository-state="open"]', { hasText: "stage8-tools" }).waitFor();
     await waitActive("stage8-workspace");
+    const picker = page.getByLabel("Workspace", { exact: true });
+    const focusedId = await picker.inputValue();
+    if (!focusedId) throw new Error("Create workspace did not activate the new workspace");
+    await sidebar.getByRole("button", { name: "All repositories", exact: true }).click();
+    const overview = page.locator(".repository-overview");
+    const repositoryRows = overview.locator(".repository-name");
+    await overview.getByText(/^Stage8 focused · 1 open/).waitFor();
+    await repositoryRows.getByText("stage8-workspace", { exact: true }).waitFor();
+    if (await repositoryRows.count() !== 1) throw new Error("The new workspace overview did not match its selected repositories");
+    const overviewSearch = overview.getByRole("textbox", { name: "Find repository in overview", exact: true });
+    await overviewSearch.fill("stage8-tools");
+    await overview.getByText("No matching repositories", { exact: true }).waitFor();
+    const allGate = await holdRepositoryOpen(second);
+    try {
+      await picker.selectOption({ label: "All Workspaces" });
+      await allGate.wait();
+      await overview.getByText(/^All Workspaces · /).waitFor();
+      if (await overviewSearch.inputValue() !== "") throw new Error("All Workspaces kept the search from the previous workspace");
+      await repositoryRows.getByText("stage8-workspace", { exact: true }).waitFor();
+      await repositoryRows.getByText("stage8-tools", { exact: true }).waitFor();
+      if (await sidebar.locator('.repository-item[data-repository-state="closed"]').count()) throw new Error("All Workspaces briefly left library repositories closed");
+    } finally { await allGate.restore(); }
+    await sidebar.locator('.repository-item[data-repository-state="open"]', { hasText: "stage8-tools" }).waitFor();
+    await repositoryRows.getByText("stage8-workspace", { exact: true }).click();
+    await waitActive("stage8-workspace");
+    const sidebarSearch = sidebar.getByRole("textbox", { name: "Find repository", exact: true });
+    await sidebarSearch.fill("stage8-tools");
+    await picker.selectOption(focusedId);
+    await sidebar.getByText("stage8-workspace", { exact: true }).waitFor();
+    if (await sidebarSearch.inputValue() !== "") throw new Error("The previous repository search hid the workspace's repositories");
+    await picker.selectOption({ label: "All Workspaces" });
     await open(second); await page.locator(".history-mode").getByRole("button", { name: "Graph", exact: true }).click();
     if (await branches.getAttribute("aria-expanded") === "false") await branches.click();
     await save("Stage8 all", async (editor) => {

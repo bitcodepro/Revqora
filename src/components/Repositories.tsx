@@ -226,7 +226,7 @@ export function RepositoryOverview() {
   const incoming = order.filter((r) => !!repositorySidebarStatus(tabs[r])?.behind).length;
   return (
     <div className="repository-overview">
-      <header><div><h2>Repositories</h2><span className="faint">{order.length} open · {incoming} with incoming commits</span></div><div className="spacer" /><SyncButtons roots={visible} scoped={!!query.trim()} /><button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button></header>
+      <header><div><h2>Repositories</h2><span className="faint">{workspace?.name ?? "All Workspaces"} · {order.length} open · {incoming} with incoming commits</span></div><div className="spacer" /><SyncButtons roots={visible} scoped={!!query.trim()} /><button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button></header>
       <div className="repository-overview-search input-wrap"><Search size={14} /><input className="input" placeholder="Find repository…" aria-label="Find repository in overview" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       <div className="repository-table-scroll">
         <table className="repository-table">
@@ -244,7 +244,7 @@ export function RepositoryOverview() {
             ); })}
           </tbody>
         </table>
-        {!visible.length && <div className="cg-empty">No matching repositories</div>}
+        {!visible.length && <div className="cg-empty">{order.length ? "No matching repositories" : "No open repositories"}</div>}
       </div>
       <div className="repository-overview-note">Counts compare the checked-out branch with its upstream after the latest fetch. Fetch all checks for new commits without changing your working copies.</div>
     </div>
