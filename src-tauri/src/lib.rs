@@ -517,6 +517,11 @@ async fn repo_open(path: String) -> GitResult<RepoInfo> {
 }
 
 #[tauri::command]
+async fn repo_scan_folder(path: String) -> GitResult<git::repository_import::FolderScan> {
+    blocking(move || git::repository_import::scan(&p(&path))).await
+}
+
+#[tauri::command]
 async fn repo_init(app: AppHandle, path: String, branch: Option<String>) -> GitResult<RepoInfo> {
     // Initialization is logged separately because the repository gate does not exist yet.
     blocking(move || {
@@ -2164,6 +2169,7 @@ pub fn run() {
             askpass_respond,
             repository_sidebar_status,
             repo_open,
+            repo_scan_folder,
             repo_init,
             repo_clone,
             git_connection_snapshot,

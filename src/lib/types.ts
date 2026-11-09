@@ -851,3 +851,14 @@ export interface StackOutcome {phase:string;message:string;checkpoint:string}
 export interface SymbolHistoryPage extends CodeHistoryPage {anchor:string;scanned:number;unavailable:number;notices:string[]}
 
 export interface PullOutcome extends OpOutcome { upstreamGone?: { branch: string; remote: string; reference: string; defaultBranch: string | null }; }
+export interface FoundRepository {
+  root: string;
+  relativePath: string;
+  workspaceFolder: string | null;
+}
+
+export interface RepositoryFolderScan {
+  repositories: FoundRepository[];
+  skipped: number;
+  limited: boolean;
+}
