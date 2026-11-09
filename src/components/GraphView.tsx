@@ -204,6 +204,8 @@ ${r.oid}`
         className="g-graph"
         onMouseEnter={() => p.onHover(r.laneId)}
         onMouseLeave={() => p.onHover(null)}
+        onMouseDown={(e) => { if (e.button === 0) e.stopPropagation(); }}
+        onDoubleClick={(e) => e.stopPropagation()}
       >
         <svg width={p.width} height={ROW_H}>
           {r.segs.map((s, i) => {
@@ -224,9 +226,7 @@ ${r.oid}`
                 />
                 <path className="lane-hit" data-lane={s.id} d={d} aria-hidden="true"
                   onMouseEnter={() => p.onHover(s.id)} onMouseLeave={() => p.onHover(null)}
-                  onMouseDown={(e) => { if (e.button === 0) e.stopPropagation(); }}
-                  onClick={(e) => { e.stopPropagation(); p.onPin(s.id); }}
-                  onDoubleClick={(e) => e.stopPropagation()}>
+                  onClick={() => p.onPin(s.id)}>
                   <title>Click to pin or clear this line</title>
                 </path>
               </Fragment>

@@ -42,16 +42,19 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   const toggle = page.getByTitle("Toggle branches panel", { exact: true });
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
   const graph = page.locator(".graph-scroll");
-  const line = graph.locator(".grow").filter({ has: page.getByText("History line 99", { exact: true }) }).locator(".lane-hit").last();
+  const tip = graph.locator(".grow").filter({ has: page.getByText("History line 99", { exact: true }) });
+  const line = tip.locator(".lane-hit").last();
   const point = await line.evaluate((path) => {
-    // The HEAD node sits on top of the path. Hit the segment below the node.
-    const point = path.getPointAtLength(path.getTotalLength() * 0.85).matrixTransform(path.getScreenCTM());
+    // This point on the line also lies within the HEAD marker.
+    const point = path.getPointAtLength(path.getTotalLength() * 0.5).matrixTransform(path.getScreenCTM());
     return { x: point.x, y: point.y };
   });
+  const preview = page.locator(".commit-preview");
   await page.mouse.click(point.x, point.y);
+  assert.equal(await preview.count(), 0, "Clicking the graph must not open the commit preview");
   await page.waitForFunction(() => document.querySelector(".graph-scroll")?.hasAttribute("data-pinned-lane"));
   const pinned = await graph.getAttribute("data-pinned-lane");
-  assert(pinned !== null, "Clicking the line must pin its identity");
+  assert.equal(pinned, await line.getAttribute("data-lane"), "Clicking the line must pin its identity");
   await page.getByRole("button", { name: "Search all repositories", exact: true }).hover();
   await graph.evaluate((el) => { el.scrollTop = 1400; });
   await graph.locator(".grow").getByText(/History line [45]\d/).first().waitFor();
@@ -68,6 +71,9 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   assert.equal(await graph.getAttribute("data-pinned-lane"), remapped);
   await page.getByRole("button", { name: "Clear line highlight", exact: true }).click();
   assert.equal(await graph.getAttribute("data-pinned-lane"), null);
+  await advanced.locator(".g-subject .text").click();
+  await preview.getByText("Advance pinned history line", { exact: true }).waitFor();
+  await preview.getByRole("button", { name: "Close", exact: true }).click();
 
   // The currently checked-out branch has the same Compare entry as any other branch.
   await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="main"]').click({ button: "right" });

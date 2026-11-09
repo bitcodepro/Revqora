@@ -55,6 +55,7 @@ export function openAllWorkspaces() {
   if (switching) return;
   const library = useLibrary.getState();
   const repos = useRepos.getState();
+  const overview = useUi.getState().repositoryOverview;
   const roots = uniqueRoots([...repos.order, ...library.knownRoots]);
   capture();
   switching = true;
@@ -63,6 +64,7 @@ export function openAllWorkspaces() {
     // workspace's snapshot separate from the newly opened tabs.
     void repos.openMany(roots, repos.active ? undefined : roots[0]);
     library.select(null);
+    if (overview && !repos.active && roots.length) useUi.setState({ repositoryOverview: true });
   } finally { switching = false; }
 }
 

@@ -279,6 +279,7 @@ export default function App() {
   const { focusMode, repositoriesOpen } = layout;
   const repositoryCount = useRepos((s) => s.order.length);
   const hasBookmarks = useLibrary((s) => s.knownRoots.length > 0);
+  const repositoryScope = useLibrary((s) => s.activeWorkspaceId) ?? "all";
 
   useEffect(startWorkspaceTracking, []);
   // Restore the tabs from the previous session.
@@ -430,8 +431,8 @@ export default function App() {
       <TopBar />
       <ActivityIndicator active={busy} />
       <div className="app-body">
-        <div className="repository-slot" hidden={!repositoriesOpen || focusMode || (!repositoryCount && !hasBookmarks)}><RepositorySidebar /></div>
-        <div className="workspace-host">{overview && repositoryCount ? <RepositoryOverview /> : tab ? <RepositoryContent key={tab.root} tab={tab} /> : <Welcome />}</div>
+        <div className="repository-slot" hidden={!repositoriesOpen || focusMode || (!repositoryCount && !hasBookmarks)}><RepositorySidebar key={repositoryScope} /></div>
+        <div className="workspace-host">{overview ? <RepositoryOverview key={repositoryScope} /> : tab ? <RepositoryContent key={tab.root} tab={tab} /> : <Welcome />}</div>
       </div>
       <StatusBar />
       <ContextMenuHost />
