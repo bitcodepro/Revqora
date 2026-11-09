@@ -146,6 +146,7 @@ export interface Seg {
   b: number;
   t: 0 | 1 | 2;
   c: number;
+  id: number;
 }
 
 export interface RefLabel {
@@ -167,6 +168,7 @@ export interface GraphRow {
   refs: RefLabel[];
   col: number;
   color: number;
+  laneId: number;
   segs: Seg[];
   isHead: boolean;
   isMerge: boolean;
@@ -176,7 +178,6 @@ export interface GraphRow {
 export interface GraphSummary {
   headOid?: string;
   key: string;
-  layoutKey?: string;
   total: number;
   maxLanes: number;
   headIndex: number | null;

@@ -196,7 +196,7 @@ ${r.oid}`
     >
       <div
         className="g-graph"
-        onMouseEnter={() => p.onHover(r.color)}
+        onMouseEnter={() => p.onHover(r.laneId)}
         onMouseLeave={() => p.onHover(null)}
       >
         <svg width={p.width} height={ROW_H}>
@@ -210,16 +210,16 @@ ${r.oid}`
                   d={d}
                   stroke={`var(--lane-${s.c % 12})`}
                   strokeDasharray={dashed ? "3 3" : undefined}
-                  className={`lane-line ${p.hl === s.c ? "hl" : ""}`}
+                  className={`lane-line ${p.hl === s.id ? "hl" : ""}`}
                   style={{
                     ["--len" as string]: Math.ceil(len),
                     animationDelay: p.animDelay !== null ? `${p.animDelay}ms` : undefined,
                   }}
                 />
-                <path className="lane-hit" data-lane={s.c} d={d} aria-hidden="true"
-                  onMouseEnter={() => p.onHover(s.c)} onMouseLeave={() => p.onHover(null)}
+                <path className="lane-hit" data-lane={s.id} d={d} aria-hidden="true"
+                  onMouseEnter={() => p.onHover(s.id)} onMouseLeave={() => p.onHover(null)}
                   onMouseDown={(e) => { if (e.button === 0) e.stopPropagation(); }}
-                  onClick={(e) => { e.stopPropagation(); p.onPin(s.c); }}
+                  onClick={(e) => { e.stopPropagation(); p.onPin(s.id); }}
                   onDoubleClick={(e) => e.stopPropagation()}>
                   <title>Click to pin or clear this line</title>
                 </path>
@@ -248,7 +248,7 @@ ${r.oid}`
                   stroke={nodeColor}
                 />
                 <circle
-                  className={`node ${p.hl === r.color ? "hl" : ""}`}
+                  className={`node ${p.hl === r.laneId ? "hl" : ""}`}
                   cx={x(r.col)}
                   cy={mid}
                   r={6}
@@ -260,7 +260,7 @@ ${r.oid}`
               </>
             ) : r.isMerge ? (
               <circle
-                className={`node ${p.hl === r.color ? "hl" : ""}`}
+                className={`node ${p.hl === r.laneId ? "hl" : ""}`}
                 cx={x(r.col)}
                 cy={mid}
                 r={3.6}
@@ -270,7 +270,7 @@ ${r.oid}`
               />
             ) : r.localOnly ? (
               <circle
-                className={`node ${p.hl === r.color ? "hl" : ""}`}
+                className={`node ${p.hl === r.laneId ? "hl" : ""}`}
                 cx={x(r.col)}
                 cy={mid}
                 r={4.3}
@@ -280,7 +280,7 @@ ${r.oid}`
               />
             ) : (
               <circle
-                className={`node ${p.hl === r.color ? "hl" : ""}`}
+                className={`node ${p.hl === r.laneId ? "hl" : ""}`}
                 cx={x(r.col)}
                 cy={mid}
                 r={4.6}
@@ -348,14 +348,12 @@ export function GraphView({
   useEffect(()=>{rememberGraphPosition(root,tab.graphVersion,scrollTop);},[root,tab.graphVersion,scrollTop]);
   const [viewH, setViewH] = useState(600);
   const [hoveredLane, setHl] = useState<number | null>(null);
-  const [pinnedLane, setPinnedLane] = useState<{ layout: string | undefined; lane: number } | null>(null);
-  const layoutKey = summary?.layoutKey ?? summary?.key;
-  const pinned = pinnedLane?.layout === layoutKey ? pinnedLane?.lane ?? null : null;
+  const [pinned, setPinnedLane] = useState<number | null>(null);
   const hl = pinned ?? hoveredLane;
   const pinLane = useCallback((lane: number) => {
-    setPinnedLane((current) => current?.layout === layoutKey && current?.lane === lane ? null : { layout: layoutKey, lane });
+    setPinnedLane((current) => current === lane ? null : lane);
     scrollRef.current?.focus({ preventScroll: true });
-  }, [layoutKey]);
+  }, []);
   const [drawing, setDrawing] = useState(false);
   const firstDrawKey = useRef<string | null>(tab.loaded?root:null);
   const anchor = useRef<number | null>(null);
@@ -674,7 +672,7 @@ export function GraphView({
       if (!oid) return setHl(null);
       for (const row of cache.current.values()) {
         if (row.oid === oid) {
-          setHl(row.color);
+          setHl(row.laneId);
           return;
         }
       }

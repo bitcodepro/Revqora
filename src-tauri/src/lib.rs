@@ -741,14 +741,7 @@ async fn graph_load(
     let prev = state.graphs.lock().get(&repo).cloned();
     let cache = blocking(move || graph::build_with(&p(&repo), branch.as_deref(), include_worktree, limit.unwrap_or(150_000), fast, prev.as_deref())).await?;
     let head_index = cache.rows.iter().position(|r| r.is_head);
-    let summary = GraphSummary {
-        head_oid: cache.head_oid.clone(),
-        key: cache.key.clone(),
-        layout_key: cache.layout_key.clone(),
-        total: cache.rows.len(),
-        max_lanes: cache.max_lanes,
-        head_index,
-    };
+    let summary = GraphSummary { head_oid: cache.head_oid.clone(), key: cache.key.clone(), total: cache.rows.len(), max_lanes: cache.max_lanes, head_index };
     state.graphs.lock().insert(key, Arc::new(cache));
     Ok(summary)
 }

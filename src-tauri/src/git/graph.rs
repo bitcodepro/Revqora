@@ -1,6 +1,6 @@
 //! Commit history loading and lane layout for the graph view.
 
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
@@ -30,8 +30,8 @@ pub struct Seg {
     pub a: u16,
     pub b: u16,
     pub t: u8,
-    /// Unique line identity within the layout. The frontend maps it to a palette color.
-    pub c: u32,
+    pub c: u16,
+    pub id: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,7 +48,8 @@ pub struct GraphRow {
     pub subject: String,
     pub refs: Vec<RefLabel>,
     pub col: u16,
-    pub color: u32,
+    pub color: u16,
+    pub lane_id: u64,
     pub segs: Vec<Seg>,
     pub is_head: bool,
     pub is_merge: bool,
@@ -59,44 +60,68 @@ pub struct GraphRow {
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub col: u16,
-    pub color: u32,
+    pub color: u16,
+    pub lane_id: u64,
     pub segs: Vec<Seg>,
+}
+
+#[derive(Clone, Copy)]
+struct Line {
+    id: u64,
+    color: u16,
+}
+
+impl Line {
+    fn segment(self, a: usize, b: usize, t: u8) -> Seg {
+        Seg { a: a as u16, b: b as u16, t, c: self.color, id: self.id }
+    }
 }
 
 /// Assigns lanes to commits given in display order (children before parents).
 pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
-    let mut lanes: Vec<Option<(String, u32)>> = Vec::new();
-    let mut next_color: u32 = 0;
+    let mut lanes: Vec<Option<(String, Line)>> = Vec::new();
+    let mut ids = HashSet::new();
+    let mut next_color = 0;
     let mut out = Vec::with_capacity(commits.len());
     let mut max_lanes: u16 = 1;
-    let alloc_color = |nc: &mut u32| {
-        let c = *nc;
-        *nc += 1;
-        c
+    let mut allocate_line = |start: &str, parent: Option<&str>| {
+        // The same tip or merge edge keeps its identity when the graph is rebuilt
+        // or more history is loaded, regardless of column and palette assignment.
+        const SAFE_MASK: u64 = (1 << 53) - 1;
+        let mut hash = DefaultHasher::new();
+        (start, parent).hash(&mut hash);
+        let mut id = hash.finish() & SAFE_MASK;
+        while !ids.insert(id) {
+            id = (id + 1) & SAFE_MASK;
+        }
+        let line = Line { id, color: next_color };
+        next_color = (next_color + 1) % 12;
+        line
     };
     for (oid, parents) in commits {
         let mut segs = Vec::new();
         let existing = lanes.iter().position(|l| l.as_ref().map(|(o, _)| o == oid).unwrap_or(false));
-        let (col, color) = match existing {
+        let (col, line) = match existing {
             Some(i) => (i, lanes[i].as_ref().unwrap().1),
             None => {
                 let i = lanes.iter().position(|l| l.is_none()).unwrap_or_else(|| {
                     lanes.push(None);
                     lanes.len() - 1
                 });
-                (i, alloc_color(&mut next_color))
+                let tip = if oid == WORKTREE_OID { parents.first().unwrap_or(oid) } else { oid };
+                (i, allocate_line(tip, None))
             }
         };
         // Incoming lines: lanes expecting this commit converge into the node, others pass through.
         for (j, lane) in lanes.iter_mut().enumerate() {
-            if let Some((o, c)) = lane {
+            if let Some((o, incoming)) = lane {
                 if o == oid {
-                    segs.push(Seg { a: j as u16, b: col as u16, t: 1, c: *c });
+                    segs.push(incoming.segment(j, col, 1));
                     if j != col {
                         *lane = None;
                     }
                 } else {
-                    segs.push(Seg { a: j as u16, b: j as u16, t: 0, c: *c });
+                    segs.push(incoming.segment(j, j, 0));
                 }
             }
         }
@@ -104,23 +129,22 @@ pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
         if parents.is_empty() {
             lanes[col] = None;
         } else {
-            lanes[col] = Some((parents[0].clone(), color));
-            segs.push(Seg { a: col as u16, b: col as u16, t: 2, c: color });
+            lanes[col] = Some((parents[0].clone(), line));
+            segs.push(line.segment(col, col, 2));
             for p in parents.iter().skip(1) {
                 let found = lanes.iter().enumerate().position(|(k, l)| k != col && l.as_ref().map(|(o, _)| o == p).unwrap_or(false));
                 match found {
                     Some(k) => {
-                        let c = lanes[k].as_ref().unwrap().1;
-                        segs.push(Seg { a: col as u16, b: k as u16, t: 2, c });
+                        segs.push(lanes[k].as_ref().unwrap().1.segment(col, k, 2));
                     }
                     None => {
                         let k = lanes.iter().enumerate().position(|(k, l)| k != col && l.is_none()).unwrap_or_else(|| {
                             lanes.push(None);
                             lanes.len() - 1
                         });
-                        let c = alloc_color(&mut next_color);
-                        lanes[k] = Some((p.clone(), c));
-                        segs.push(Seg { a: col as u16, b: k as u16, t: 2, c });
+                        let secondary = allocate_line(oid, Some(p));
+                        lanes[k] = Some((p.clone(), secondary));
+                        segs.push(secondary.segment(col, k, 2));
                     }
                 }
             }
@@ -130,7 +154,7 @@ pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
         }
         let width = segs.iter().map(|s| s.a.max(s.b) + 1).max().unwrap_or(1).max(col as u16 + 1);
         max_lanes = max_lanes.max(width);
-        out.push(Layout { col: col as u16, color, segs });
+        out.push(Layout { col: col as u16, color: line.color, lane_id: line.id, segs });
     }
     (out, max_lanes)
 }
@@ -139,7 +163,6 @@ pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
 pub struct GraphCache {
     pub head_oid: String,
     pub key: String,
-    pub layout_key: String,
     pub rows: Vec<GraphRow>,
     pub max_lanes: u16,
     pub index: HashMap<String, usize>,
@@ -255,7 +278,6 @@ fn reuse_history(repo: &Path, prev: &GraphCache, refs: &[(String, String)]) -> O
 pub struct GraphSummary {
     pub head_oid: String,
     pub key: String,
-    pub layout_key: String,
     pub total: usize,
     pub max_lanes: u16,
     pub head_index: Option<usize>,
@@ -386,9 +408,6 @@ pub fn build_with(
         order.push((c.oid.clone(), parents));
     }
     let (lay, max_lanes) = layout(&order);
-    let mut layout_hash = DefaultHasher::new();
-    order.hash(&mut layout_hash);
-    let layout_key = format!("{:016x}", layout_hash.finish());
     let commit_list = commits.clone();
 
     let mut rows = Vec::with_capacity(order.len());
@@ -408,6 +427,7 @@ pub fn build_with(
             refs: Vec::new(),
             col: l.col,
             color: l.color,
+            lane_id: l.lane_id,
             segs: l.segs.clone(),
             is_head: false,
             is_merge: false,
@@ -434,6 +454,7 @@ pub fn build_with(
             refs,
             col: l.col,
             color: l.color,
+            lane_id: l.lane_id,
             segs: l.segs.clone(),
             is_merge,
             local_only: lo,
@@ -446,7 +467,7 @@ pub fn build_with(
     static BUILDS: AtomicU64 = AtomicU64::new(0);
     let key = format!("graph-{}", BUILDS.fetch_add(1, Ordering::Relaxed));
     let source = if fast { "fast" } else { reused.as_ref().map(|(_, s)| *s).unwrap_or("full") }.to_string();
-    Ok(GraphCache { head_oid, key, layout_key, rows, max_lanes, index, commits: std::sync::Arc::new(commit_list), refs, filter, limit, source })
+    Ok(GraphCache { head_oid, key, rows, max_lanes, index, commits: std::sync::Arc::new(commit_list), refs, filter, limit, source })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -623,9 +644,17 @@ mod tests {
     fn unrelated_lines_can_share_a_palette_color_without_sharing_identity() {
         let rows: Vec<_> = (0..25).map(|i| (format!("tip-{i}"), vec!["base".to_string()])).chain([c("base", &[])]).collect();
         let (layout, _) = layout(&rows);
-        assert_eq!(layout[0].color % 12, layout[12].color % 12);
-        assert_ne!(layout[0].color, layout[12].color);
-        assert!(layout[25].segs.iter().any(|seg| seg.c == layout[12].color));
+        assert_eq!(layout[0].color, layout[12].color);
+        assert_ne!(layout[0].lane_id, layout[12].lane_id);
+        assert!(layout[25].segs.iter().any(|seg| seg.id == layout[12].lane_id));
+    }
+
+    #[test]
+    fn a_line_keeps_its_identity_when_other_lanes_change() {
+        let (before, _) = layout(&[c("tip", &["root"]), c("root", &[])]);
+        let (after, _) = layout(&[c("other", &["root"]), c("tip", &["root"]), c("root", &[])]);
+        assert_ne!(before[0].col, after[1].col);
+        assert_eq!(before[0].lane_id, after[1].lane_id);
     }
 
     #[test]
