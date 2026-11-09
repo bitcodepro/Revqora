@@ -1797,6 +1797,15 @@ try {
     await page.click(".toolbar button[title='Repository tools']"); await page.locator(".modal").last().getByRole("button", { name: "Rebase Studio result", exact: true }).click(); await page.waitForSelector(".studio-result");
   };
   const studioStart = () => page.locator(".cf-head").getByRole("button", { name: "Start rebase", exact: true }).click();
+  const dismissStudioResultNotice = async (completionTitle) => {
+    const notice = (title) => page.locator(".toast").filter({ has: page.getByText(title, { exact: true }) });
+    const result = notice("Rebase Studio result available");
+    // This action notice appears after the operation refresh, later than the banner clearing.
+    // Close it as a user would before the next scenario opens a context menu beneath it.
+    await result.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await result.waitFor({ state: "detached" });
+    await notice(completionTitle).waitFor({ state: "detached" });
+  };
 
   await check("Studio review exposes published history and kept refs and invalidates consent after edits", async () => {
     fs.mkdirSync(studioRoot); studioGit("init", "-q", "-b", "main"); studioGit("config", "user.name", "Studio Tester"); studioGit("config", "user.email", "studio@example.com"); studioGit("config", "commit.gpgsign", "false"); studioGit("config", "core.autocrlf", "false"); studioGit("config", "core.hooksPath", ".git/hooks");
@@ -1868,6 +1877,7 @@ try {
     fs.writeFileSync(path.join(studioRoot, "later.txt"), "manual work after edit stop\n");
     await page.locator(".op-banner").getByRole("button", { name: "Abort", exact: true }).click(); await page.locator(".modal").last().getByRole("button", { name: "Abort rebase", exact: true }).click();
     await page.waitForSelector(".op-banner", { state: "detached", timeout: 60000 });
+    await dismissStudioResultNotice("Rebase aborted");
     await until(async () => (await studioReport()).phase === "aborted", "Studio abort report did not finish", 30000);
     if (studioGit("rev-parse", "HEAD") !== studioLater) throw new Error("abort did not restore the original head");
     const catalog = await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("recovery_list", { repo: root }), studioRoot);
@@ -1895,6 +1905,7 @@ try {
     await page.waitForSelector(".conflict-overlay", { state: "detached" });
     if (await page.locator(".op-banner").getByRole("button", { name: "Amend & continue", exact: true }).count()) throw new Error("resolved pick conflict offered an amend of the previous commit");
     await page.locator(".op-banner").getByRole("button", { name: "Continue", exact: true }).click(); await page.waitForSelector(".op-banner", { state: "detached", timeout: 60000 });
+    await dismissStudioResultNotice("Rebase complete");
     const report = await studioReport();
     if (report.phase !== "completed" || report.beforeCheckpoint.head !== before || report.afterHead !== studioGit("rev-parse", "HEAD")) throw new Error("resolved conflict did not record its exact result");
     if (studioGit("rev-parse", "HEAD^") !== studioConflictBase || studioGit("log", "-1", "--format=%s") !== "Studio conflict second" || fs.readFileSync(path.join(studioRoot, "f.txt"), "utf8") !== "base\nB\n") throw new Error("Continue changed the previous commit or lost the picked change");
@@ -1909,6 +1920,7 @@ try {
     await page.click(".view-tab:has-text('Changes')"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".changes .file-row:has-text('f.txt')");
     await page.click(".changes button[title='Stage all']");
     await page.locator(".op-banner").getByRole("button", { name: "Amend & continue", exact: true }).click(); await page.waitForSelector(".op-banner", { state: "detached", timeout: 60000 });
+    await dismissStudioResultNotice("Rebase complete");
     const report = await studioReport();
     if (report.phase !== "completed" || report.afterHead !== studioGit("rev-parse", "HEAD") || report.afterHead === before) throw new Error("Edit amendment was not captured");
     if (studioGit("rev-parse", "HEAD^") !== studioConflictBase || studioGit("log", "-1", "--format=%s") !== "Studio conflict second" || fs.readFileSync(path.join(studioRoot, "f.txt"), "utf8") !== "base\nB\nedit amendment\n") throw new Error("Edit did not amend exactly the intended commit");
