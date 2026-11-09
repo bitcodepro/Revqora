@@ -1,15 +1,16 @@
 //! Commit history loading and lane layout for the graph view.
 
-use std::collections::HashMap;
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::refs::{self, RefLabel};
 use super::runner::{self, GitError, GitResult};
 
 pub const WORKTREE_OID: &str = "WORKTREE";
-const PALETTE_SIZE: u16 = 12;
 
 #[derive(Debug, Clone)]
 pub struct CommitMeta {
@@ -31,6 +32,7 @@ pub struct Seg {
     pub b: u16,
     pub t: u8,
     pub c: u16,
+    pub id: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,6 +50,7 @@ pub struct GraphRow {
     pub refs: Vec<RefLabel>,
     pub col: u16,
     pub color: u16,
+    pub lane_id: u64,
     pub segs: Vec<Seg>,
     pub is_head: bool,
     pub is_merge: bool,
@@ -59,43 +62,76 @@ pub struct GraphRow {
 pub struct Layout {
     pub col: u16,
     pub color: u16,
+    pub lane_id: u64,
     pub segs: Vec<Seg>,
 }
 
+#[derive(Clone, Copy)]
+struct Line {
+    id: u64,
+    color: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaneAnchor {
+    commit: String,
+    parent: Option<String>,
+}
+
+type LaneAnchors = HashMap<u64, LaneAnchor>;
+
+impl Line {
+    fn segment(self, a: usize, b: usize, t: u8) -> Seg {
+        Seg { a: a as u16, b: b as u16, t, c: self.color, id: self.id }
+    }
+}
+
 /// Assigns lanes to commits given in display order (children before parents).
-pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
-    let mut lanes: Vec<Option<(String, u16)>> = Vec::new();
-    let mut next_color: u16 = 0;
+fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16, LaneAnchors) {
+    let mut lanes: Vec<Option<(String, Line)>> = Vec::new();
+    let mut anchors = HashMap::new();
+    let mut next_color = 0;
     let mut out = Vec::with_capacity(commits.len());
     let mut max_lanes: u16 = 1;
-    let alloc_color = |nc: &mut u16| {
-        let c = *nc % PALETTE_SIZE;
-        *nc += 1;
-        c
+    let mut allocate_line = |start: &str, parent: Option<&str>| {
+        // The same tip or merge edge keeps its identity when the graph is rebuilt
+        // or more history is loaded, regardless of column and palette assignment.
+        const SAFE_MASK: u64 = (1 << 53) - 1;
+        let mut hash = DefaultHasher::new();
+        (start, parent).hash(&mut hash);
+        let mut id = hash.finish() & SAFE_MASK;
+        while anchors.contains_key(&id) {
+            id = (id + 1) & SAFE_MASK;
+        }
+        anchors.insert(id, LaneAnchor { commit: start.to_owned(), parent: parent.map(str::to_owned) });
+        let line = Line { id, color: next_color };
+        next_color = (next_color + 1) % 12;
+        line
     };
     for (oid, parents) in commits {
         let mut segs = Vec::new();
         let existing = lanes.iter().position(|l| l.as_ref().map(|(o, _)| o == oid).unwrap_or(false));
-        let (col, color) = match existing {
+        let (col, line) = match existing {
             Some(i) => (i, lanes[i].as_ref().unwrap().1),
             None => {
                 let i = lanes.iter().position(|l| l.is_none()).unwrap_or_else(|| {
                     lanes.push(None);
                     lanes.len() - 1
                 });
-                (i, alloc_color(&mut next_color))
+                let tip = if oid == WORKTREE_OID { parents.first().unwrap_or(oid) } else { oid };
+                (i, allocate_line(tip, None))
             }
         };
         // Incoming lines: lanes expecting this commit converge into the node, others pass through.
         for (j, lane) in lanes.iter_mut().enumerate() {
-            if let Some((o, c)) = lane {
+            if let Some((o, incoming)) = lane {
                 if o == oid {
-                    segs.push(Seg { a: j as u16, b: col as u16, t: 1, c: *c });
+                    segs.push(incoming.segment(j, col, 1));
                     if j != col {
                         *lane = None;
                     }
                 } else {
-                    segs.push(Seg { a: j as u16, b: j as u16, t: 0, c: *c });
+                    segs.push(incoming.segment(j, j, 0));
                 }
             }
         }
@@ -103,23 +139,22 @@ pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
         if parents.is_empty() {
             lanes[col] = None;
         } else {
-            lanes[col] = Some((parents[0].clone(), color));
-            segs.push(Seg { a: col as u16, b: col as u16, t: 2, c: color });
+            lanes[col] = Some((parents[0].clone(), line));
+            segs.push(line.segment(col, col, 2));
             for p in parents.iter().skip(1) {
                 let found = lanes.iter().enumerate().position(|(k, l)| k != col && l.as_ref().map(|(o, _)| o == p).unwrap_or(false));
                 match found {
                     Some(k) => {
-                        let c = lanes[k].as_ref().unwrap().1;
-                        segs.push(Seg { a: col as u16, b: k as u16, t: 2, c });
+                        segs.push(lanes[k].as_ref().unwrap().1.segment(col, k, 2));
                     }
                     None => {
                         let k = lanes.iter().enumerate().position(|(k, l)| k != col && l.is_none()).unwrap_or_else(|| {
                             lanes.push(None);
                             lanes.len() - 1
                         });
-                        let c = alloc_color(&mut next_color);
-                        lanes[k] = Some((p.clone(), c));
-                        segs.push(Seg { a: col as u16, b: k as u16, t: 2, c });
+                        let secondary = allocate_line(oid, Some(p));
+                        lanes[k] = Some((p.clone(), secondary));
+                        segs.push(secondary.segment(col, k, 2));
                     }
                 }
             }
@@ -129,9 +164,9 @@ pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
         }
         let width = segs.iter().map(|s| s.a.max(s.b) + 1).max().unwrap_or(1).max(col as u16 + 1);
         max_lanes = max_lanes.max(width);
-        out.push(Layout { col: col as u16, color, segs });
+        out.push(Layout { col: col as u16, color: line.color, lane_id: line.id, segs });
     }
-    (out, max_lanes)
+    (out, max_lanes, anchors)
 }
 
 #[derive(Debug, Clone)]
@@ -148,13 +183,45 @@ pub struct GraphCache {
     pub limit: usize,
     /// How the commit list was obtained: "full" | "reused" | "incremental" | "fast".
     pub source: String,
+    lane_anchors: Arc<LaneAnchors>,
+    previous_anchors: Option<(String, Arc<LaneAnchors>)>,
 }
 
 impl GraphCache {
-    pub fn page(&self, start: usize, count: usize, expected_key: Option<&str>) -> GitResult<Vec<GraphRow>> {
+    pub fn lane_anchor(&self, key: &str, id: u64) -> Option<LaneAnchor> {
+        let anchors = if key == self.key {
+            &self.lane_anchors
+        } else {
+            let (previous_key, anchors) = self.previous_anchors.as_ref()?;
+            if key != previous_key {
+                return None;
+            }
+            anchors
+        };
+        anchors.get(&id).cloned()
+    }
+
+    pub fn resolve_lane(&self, anchor: &LaneAnchor) -> Option<u64> {
+        let row = self.rows.get(*self.index.get(&anchor.commit)?)?;
+        match &anchor.parent {
+            None => Some(row.lane_id),
+            Some(parent) => {
+                // Layout emits one outgoing segment per parent retained in the graph, in parent order.
+                let position = row.parents.iter().filter(|oid| self.index.contains_key(*oid)).position(|oid| oid == parent)?;
+                row.segs.iter().filter(|segment| segment.t == 2).nth(position).map(|segment| segment.id)
+            }
+        }
+    }
+
+    pub fn check_key(&self, expected_key: Option<&str>) -> GitResult<()> {
         if expected_key.is_some_and(|key| key != self.key) {
             return Err(super::runner::GitError::new("History changed. Refresh the graph rows.").kind("stale-operation"));
         }
+        Ok(())
+    }
+
+    pub fn page(&self, start: usize, count: usize, expected_key: Option<&str>) -> GitResult<Vec<GraphRow>> {
+        self.check_key(expected_key)?;
         let end = start.saturating_add(count).min(self.rows.len());
         Ok(if start >= end { Vec::new() } else { self.rows[start..end].to_vec() })
     }
@@ -382,7 +449,7 @@ pub fn build_with(
         let parents: Vec<String> = c.parents.iter().filter(|p| known.contains_key(p.as_str())).cloned().collect();
         order.push((c.oid.clone(), parents));
     }
-    let (lay, max_lanes) = layout(&order);
+    let (lay, max_lanes, lane_anchors) = layout(&order);
     let commit_list = commits.clone();
 
     let mut rows = Vec::with_capacity(order.len());
@@ -402,6 +469,7 @@ pub fn build_with(
             refs: Vec::new(),
             col: l.col,
             color: l.color,
+            lane_id: l.lane_id,
             segs: l.segs.clone(),
             is_head: false,
             is_merge: false,
@@ -428,6 +496,7 @@ pub fn build_with(
             refs,
             col: l.col,
             color: l.color,
+            lane_id: l.lane_id,
             segs: l.segs.clone(),
             is_merge,
             local_only: lo,
@@ -440,7 +509,22 @@ pub fn build_with(
     static BUILDS: AtomicU64 = AtomicU64::new(0);
     let key = format!("graph-{}", BUILDS.fetch_add(1, Ordering::Relaxed));
     let source = if fast { "fast" } else { reused.as_ref().map(|(_, s)| *s).unwrap_or("full") }.to_string();
-    Ok(GraphCache { head_oid, key, rows, max_lanes, index, commits: std::sync::Arc::new(commit_list), refs, filter, limit, source })
+    // Rows from the previous build can still be displayed until the first new page arrives.
+    let previous_anchors = prev.map(|cache| (cache.key.clone(), Arc::clone(&cache.lane_anchors)));
+    Ok(GraphCache {
+        head_oid,
+        key,
+        rows,
+        max_lanes,
+        index,
+        commits: Arc::new(commit_list),
+        refs,
+        filter,
+        limit,
+        source,
+        lane_anchors: Arc::new(lane_anchors),
+        previous_anchors,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -455,6 +539,77 @@ pub enum SearchMode {
     Content,
     /// Commits touching a path.
     Path,
+}
+
+fn search_arguments(args: &mut Vec<String>, query: &str, mode: SearchMode) {
+    match mode {
+        SearchMode::Message => args.extend(["--regexp-ignore-case".into(), "--fixed-strings".into(), format!("--grep={query}")]),
+        SearchMode::Content => args.push(format!("-S{query}")),
+        _ => {}
+    }
+    args.push("--".into());
+    if mode == SearchMode::Path {
+        args.push(query.to_string());
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitSearchHit {
+    pub oid: String,
+    pub subject: String,
+    pub author: String,
+    pub author_time: i64,
+    pub refs: String,
+}
+
+/// Search independently of the graph cache, including repositories whose History tab was never opened.
+pub fn search_repository(repo: &Path, query: &str, mode: SearchMode) -> GitResult<Vec<CommitSearchHit>> {
+    const MATCH_LIMIT: usize = 31; // Show 30 and use one extra row to detect truncation.
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let in_memory = matches!(mode, SearchMode::Quick | SearchMode::Author | SearchMode::Hash);
+    let mut args = vec![
+        "log".into(),
+        "--no-show-signature".into(),
+        "--no-color".into(),
+        "--format=%H%x00%an%x00%ae%x00%at%x00%s%x00%D".into(),
+        "--decorate=short".into(),
+        "--branches".into(),
+        "--remotes".into(),
+        "--tags".into(),
+        format!("--max-count={}", if in_memory { 150_000 } else { MATCH_LIMIT }),
+    ];
+    if runner::exec(repo, ["rev-parse", "--verify", "--quiet", "HEAD"])?.ok() {
+        args.push("HEAD".into());
+    }
+    search_arguments(&mut args, q, mode);
+    let raw = runner::run(repo, &args)?;
+    let q = q.to_lowercase();
+    Ok(raw
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(6, '\0');
+            let (oid, author, email, time, subject, refs) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?);
+            let by_author = || author.to_lowercase().contains(&q) || email.to_lowercase().contains(&q);
+            let matched = match mode {
+                SearchMode::Quick => oid.starts_with(&q) || by_author() || subject.to_lowercase().contains(&q) || refs.to_lowercase().contains(&q),
+                SearchMode::Author => by_author(),
+                SearchMode::Hash => oid.starts_with(&q),
+                _ => true,
+            };
+            matched.then(|| CommitSearchHit {
+                oid: oid.into(),
+                subject: subject.into(),
+                author: author.into(),
+                author_time: time.parse().unwrap_or_default(),
+                refs: refs.into(),
+            })
+        })
+        .take(MATCH_LIMIT)
+        .collect())
 }
 
 pub fn search(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode) -> GitResult<Vec<usize>> {
@@ -477,21 +632,7 @@ pub fn search(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode) ->
         SearchMode::Hash => in_memory(&|r| r.oid.starts_with(&ql)),
         SearchMode::Message | SearchMode::Content | SearchMode::Path => {
             let mut args: Vec<String> = vec!["log".into(), "--format=%H".into(), "--branches".into(), "--remotes".into(), "--tags".into(), "HEAD".into()];
-            match mode {
-                SearchMode::Message => {
-                    args.push("--regexp-ignore-case".into());
-                    args.push("--fixed-strings".into());
-                    args.push(format!("--grep={q}"));
-                }
-                SearchMode::Content => {
-                    args.push(format!("-S{q}"));
-                }
-                _ => {}
-            }
-            args.push("--".into());
-            if mode == SearchMode::Path {
-                args.push(q.to_string());
-            }
+            search_arguments(&mut args, q, mode);
             let out = runner::run(repo, &args)?;
             let mut v: Vec<usize> = out.lines().filter_map(|l| cache.index.get(l.trim()).copied()).collect();
             v.sort_unstable();
@@ -511,7 +652,7 @@ mod tests {
 
     #[test]
     fn linear_history_uses_one_lane() {
-        let (l, max) = layout(&[c("c", &["b"]), c("b", &["a"]), c("a", &[])]);
+        let (l, max, _) = layout(&[c("c", &["b"]), c("b", &["a"]), c("a", &[])]);
         assert_eq!(max, 1);
         assert!(l.iter().all(|x| x.col == 0));
     }
@@ -519,7 +660,7 @@ mod tests {
     #[test]
     fn branch_and_merge() {
         // m merges f into b; f and b both come from a.
-        let (l, max) = layout(&[c("m", &["b", "f"]), c("f", &["a"]), c("b", &["a"]), c("a", &[])]);
+        let (l, max, _) = layout(&[c("m", &["b", "f"]), c("f", &["a"]), c("b", &["a"]), c("a", &[])]);
         assert_eq!(max, 2);
         assert_eq!(l[0].col, 0);
         assert_eq!(l[1].col, 1); // feature lane
@@ -535,7 +676,7 @@ mod tests {
     fn main_merged_into_branch_then_branch_merged_back() {
         // f1 branches from a; s merges main (m1) into the branch; M merges the branch into main.
         let rows = [c("M", &["m2", "s"]), c("s", &["f1", "m1"]), c("m2", &["m1"]), c("f1", &["a"]), c("m1", &["a"]), c("a", &[])];
-        let (l, _) = layout(&rows);
+        let (l, _, _) = layout(&rows);
         let (main, feature) = (l[0].col, l[1].col);
         assert_ne!(main, feature);
         assert_eq!((l[2].col, l[3].col, l[4].col, l[5].col), (main, feature, main, main));
@@ -550,9 +691,105 @@ mod tests {
 
     #[test]
     fn independent_tips_get_separate_lanes() {
-        let (l, _) = layout(&[c("x", &["a"]), c("y", &["a"]), c("a", &[])]);
+        let (l, _, _) = layout(&[c("x", &["a"]), c("y", &["a"]), c("a", &[])]);
         assert_eq!(l[0].col, 0);
         assert_eq!(l[1].col, 1);
         assert_eq!(l[2].col, 0);
+    }
+
+    #[test]
+    fn unrelated_lines_can_share_a_palette_color_without_sharing_identity() {
+        let rows: Vec<_> = (0..25).map(|i| (format!("tip-{i}"), vec!["base".to_string()])).chain([c("base", &[])]).collect();
+        let (layout, _, _) = layout(&rows);
+        assert_eq!(layout[0].color, layout[12].color);
+        assert_ne!(layout[0].lane_id, layout[12].lane_id);
+        assert!(layout[25].segs.iter().any(|seg| seg.id == layout[12].lane_id));
+    }
+
+    #[test]
+    fn a_line_keeps_its_identity_when_other_lanes_change() {
+        let (before, _, _) = layout(&[c("tip", &["root"]), c("root", &[])]);
+        let (after, _, _) = layout(&[c("other", &["root"]), c("tip", &["root"]), c("root", &[])]);
+        assert_ne!(before[0].col, after[1].col);
+        assert_eq!(before[0].lane_id, after[1].lane_id);
+    }
+
+    #[test]
+    fn pinned_tip_resolves_after_advancing_and_disappears_outside_the_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        runner::run(repo, ["init", "-qb", "main"]).unwrap();
+        let commit = |message| {
+            runner::run(
+                repo,
+                [
+                    "-c",
+                    "user.name=Graph Fixture",
+                    "-c",
+                    "user.email=history@example.test",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--allow-empty",
+                    "-qm",
+                    message,
+                ],
+            )
+            .unwrap();
+            runner::run(repo, ["rev-parse", "HEAD"]).unwrap().trim().to_owned()
+        };
+        let base = commit("Base");
+        let tip = commit("Original tip");
+        let before = build(repo, None, false, 100, false).unwrap();
+        let id = before.rows[before.index[&tip]].lane_id;
+        let anchor = before.lane_anchor(&before.key, id).unwrap();
+
+        let advanced = commit("New tip");
+        let after = build_with(repo, None, false, 100, false, Some(&before)).unwrap();
+        let updated = after.rows[after.index[&advanced]].lane_id;
+        assert_ne!(id, updated);
+        assert_eq!(after.resolve_lane(&anchor), Some(updated));
+        // Clicking a still-visible row from the preceding build finds the same anchor.
+        assert_eq!(after.resolve_lane(&after.lane_anchor(&before.key, id).unwrap()), Some(updated));
+
+        let filtered = build(repo, Some(&base), false, 100, false).unwrap();
+        assert_eq!(filtered.resolve_lane(&anchor), None);
+    }
+
+    #[test]
+    fn repository_search_uses_refs_without_loading_a_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        runner::run(repo, ["init", "-qb", "main"]).unwrap();
+        assert!(search_repository(repo, "empty", SearchMode::Quick).unwrap().is_empty());
+        runner::run(
+            repo,
+            [
+                "-c",
+                "user.name=Graph Fixture",
+                "-c",
+                "user.email=history@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "Searchable subject\n\nExtended body",
+            ],
+        )
+        .unwrap();
+        runner::run(repo, ["branch", "feature/search-this-branch"]).unwrap();
+        let commit = runner::run(repo, ["rev-parse", "HEAD"]).unwrap();
+        for (mode, query) in [
+            (SearchMode::Quick, "search-this-branch"),
+            (SearchMode::Quick, "SEARCHABLE SUBJECT"),
+            (SearchMode::Message, "extended body"),
+            (SearchMode::Author, "history@example.test"),
+            (SearchMode::Hash, &commit[..9]),
+        ] {
+            let hits = search_repository(repo, query, mode).unwrap();
+            assert_eq!(hits.len(), 1, "{query}");
+            assert_eq!(hits[0].oid, commit.trim());
+        }
     }
 }

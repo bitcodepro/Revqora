@@ -8,6 +8,7 @@ import { ignoredPullSmoke } from "./ignored-pull-smoke.mjs";
 import { commitDraftSmoke } from "./commit-draft-smoke.mjs";
 import { namePathCopySmoke } from "./name-path-copy-smoke.mjs";
 import { fileEditingSmoke } from "./file-editing-smoke.mjs";
+import { branchHistorySmoke } from "./branch-history-smoke.mjs";
 
 export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
   const root = path.join(work, "stage8-workspace"), second = path.join(work, "stage8-tools"), bare = path.join(work, "stage8.git"), peer = path.join(work, "stage8-peer");
@@ -96,6 +97,7 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     await fileEditingSmoke({page,work,returnRoot:root,shot});
     await ignoredPullSmoke({ page, work, returnRoot: root, shot });
     await commitDraftSmoke({ page, work, returnRoot: root, shot });
+    await branchHistorySmoke({ page, work, returnRoot: root });
     await page.getByRole("button", { name: "Favorite stage8-workspace", exact: true }).click();
     await library("Groups"); await page.getByRole("button", { name: "New group", exact: true }).click(); await page.locator(".modal").last().locator("input").fill("Stage 8 projects"); await page.locator(".modal").last().getByRole("button", { name: "OK", exact: true }).click();
     await page.locator(".library-tabs").getByRole("button", { name: "Repositories", exact: true }).click();

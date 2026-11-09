@@ -107,6 +107,80 @@ pub struct RangeCommit {
     pub subject: String,
 }
 
+pub const BRANCH_COMPARE_PAGE: usize = 50;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchCommitComparison {
+    pub from_oid: String,
+    pub to_oid: String,
+    pub from_count: usize,
+    pub to_count: usize,
+    pub from_only: Vec<RangeCommit>,
+    pub to_only: Vec<RangeCommit>,
+}
+
+fn range_commits(repo: &Path, from: &str, to: &str, offset: usize, limit: usize) -> GitResult<Vec<RangeCommit>> {
+    // Use the same symmetric range as the counts so clock skew cannot make a shared ancestor appear here.
+    let log = runner::run(
+        repo,
+        [
+            "log",
+            "--no-show-signature",
+            "--right-only",
+            "--format=%H%x00%an%x00%at%x00%s",
+            &format!("--max-count={limit}"),
+            &format!("--skip={offset}"),
+            &format!("{from}...{to}"),
+            "--",
+        ],
+    )?;
+    log.lines()
+        .map(|line| {
+            let fields: Vec<_> = line.splitn(4, '\0').collect();
+            if let [oid, author, time, subject] = fields.as_slice() {
+                let time = time.parse().map_err(|_| GitError::new("Git returned an invalid commit date."))?;
+                Ok(RangeCommit { oid: (*oid).into(), author: (*author).into(), time, subject: (*subject).into() })
+            } else {
+                Err(GitError::new("Git returned an invalid commit record."))
+            }
+        })
+        .collect()
+}
+
+fn branch_tip(repo: &Path, reference: &str) -> GitResult<String> {
+    if !(reference.starts_with("refs/heads/") || reference.starts_with("refs/remotes/")) {
+        return Err(GitError::new("Choose a local or remote branch."));
+    }
+    let output = runner::exec(repo, ["show-ref", "--verify", "--hash", "--", reference])?;
+    if !output.ok() {
+        return Err(GitError::new(format!("Branch '{reference}' no longer exists. Refresh and choose another branch.")));
+    }
+    Ok(output.text().trim().to_string())
+}
+
+pub fn branch_commit_comparison(repo: &Path, from: &str, to: &str) -> GitResult<BranchCommitComparison> {
+    super::operations::read(repo, || {
+        let from_oid = branch_tip(repo, from)?;
+        let to_oid = branch_tip(repo, to)?;
+        let counts = runner::run(repo, ["rev-list", "--left-right", "--count", &format!("{from_oid}...{to_oid}"), "--"])?;
+        let invalid = || GitError::new("Git returned invalid branch comparison counts.");
+        let (from_count, to_count) = counts.trim().split_once('\t').ok_or_else(invalid)?;
+        let from_count = from_count.parse().map_err(|_| invalid())?;
+        let to_count = to_count.parse().map_err(|_| invalid())?;
+        let from_only = if from_count == 0 { Vec::new() } else { range_commits(repo, &to_oid, &from_oid, 0, BRANCH_COMPARE_PAGE)? };
+        let to_only = if to_count == 0 { Vec::new() } else { range_commits(repo, &from_oid, &to_oid, 0, BRANCH_COMPARE_PAGE)? };
+        Ok(BranchCommitComparison { from_oid, to_oid, from_count, to_count, from_only, to_only })
+    })
+}
+
+pub fn branch_commit_page(repo: &Path, from: &str, to: &str, offset: usize) -> GitResult<Vec<RangeCommit>> {
+    if ![from, to].iter().all(|oid| matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+        return Err(GitError::new("Load the branch comparison before requesting more commits."));
+    }
+    range_commits(repo, from, to, offset, BRANCH_COMPARE_PAGE)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Comparison {
@@ -138,14 +212,7 @@ pub fn compare(repo: &Path, from: &str, to: &str, three_dot: bool) -> GitResult<
     let merge_base = if mb.ok() { Some(mb.text().trim().to_string()).filter(|s| !s.is_empty()) } else { None };
     let base = if three_dot { merge_base.clone().unwrap_or_else(|| a.clone()) } else { a.clone() };
     let files = changed_files(repo, &base, &b)?;
-    let log = runner::run(repo, ["log", "--max-count=1000", "--format=%H%x1f%an%x1f%at%x1f%s", &format!("{a}..{b}")])?;
-    let ahead = log
-        .lines()
-        .filter_map(|l| {
-            let f: Vec<&str> = l.splitn(4, '\x1f').collect();
-            (f.len() == 4).then(|| RangeCommit { oid: f[0].into(), author: f[1].into(), time: f[2].parse().unwrap_or(0), subject: f[3].into() })
-        })
-        .collect();
+    let ahead = range_commits(repo, &a, &b, 0, 1000)?;
     let behind = runner::run(repo, ["rev-list", "--count", &format!("{b}..{a}")])?.trim().parse().unwrap_or(0);
     Ok(Comparison { from: a, to: b, base, merge_base, files, ahead, behind })
 }

@@ -36,6 +36,7 @@ import { ConflictEditor } from "./components/ConflictEditor";
 import { AskpassHost } from "./components/Askpass";
 import { BlameView } from "./components/BlameView";
 import { CompareView } from "./components/CompareView";
+import { branchCommitCompare } from "./components/BranchCommitCompare";
 import { BranchManager } from "./components/BranchManager";
 import { RebaseView } from "./components/RebaseView";
 import { StashView } from "./components/StashView";
@@ -115,6 +116,9 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
     return () => { generation++; window.removeEventListener("revqora:forge-accounts", refresh); };
   }, [root, remotesKey]);
   const conflicts = tab.status?.conflictCount ?? 0;
+  const switchSource = tab.info?.head.branch ? `refs/heads/${tab.info.head.branch}` : `HEAD/${tab.info?.head.oid ?? ""}`;
+  const switchStashes = tab.refs?.stashes.filter((stash) => stash.switchSource === switchSource) ?? [];
+  const latestSwitchStash = switchStashes[0];
 
   const openConflict = (path: string) => patch(root, { conflictPath: path, view: "changes", changeSel: { kind: "conflict", path } });
 
@@ -162,6 +166,13 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
           </button>
         </div>
         <OpBanner tab={tab} onResolve={openConflict} />
+        {latestSwitchStash && <div className="branch-switch-stash hstack">
+          <span>{switchStashes.length === 1 ? "This branch has saved changes" : `${switchStashes.length} stashes saved for this branch`}</span>
+          <button type="button" className="btn sm" onClick={() => openOverlay({ kind: "stash", root, index: latestSwitchStash.index, oid: latestSwitchStash.oid })}>View stash</button>
+          <button type="button" className="btn sm" disabled={!!tab.pendingMutations || !!conflicts || !tab.status?.stateToken || tab.status.branch !== tab.info?.head.branch || tab.info?.state.kind !== "none" || tab.status.files.length > 0}
+            title={tab.status?.files.length ? "Save current changes before restoring this stash" : undefined}
+            onClick={() => void A.stashApply(root, latestSwitchStash.index, true, latestSwitchStash.oid)}>Restore stash</button>
+        </div>}
         {tab.view === "history" && historyMode === "review" ? (
           <div className={`review ${focusMode && commitSelected ? "review-focused" : ""}`} style={{ gridTemplateRows: focusMode || !commitSelected ? "minmax(0, 1fr)" : `minmax(100px, min(${rh}px, 45%)) minmax(0, 1fr)` }}>
             <div className="review-list" hidden={focusMode && !!commitSelected}>
@@ -374,11 +385,7 @@ export default function App() {
         push: () => a && A.push(a),
         branch: () => a && A.createBranch(a, null, t?.info?.head.branch ?? "HEAD"),
         stash: () => a && A.stash(a),
-        compare: () => {
-          if (!a) return;
-          const cur = t?.info?.head.branch ?? "HEAD";
-          openOverlay({ kind: "compare", root: a, from: cur, to: t?.refs?.local.find((b) => b.name !== cur)?.name ?? "HEAD" });
-        },
+        compare: () => a && void branchCommitCompare(a),
         browse: () => a && openOverlay({ kind: "tree", root: a, rev: "HEAD" }),
         tools: () => a && repoToolsDialog(a),
         theme: () => {

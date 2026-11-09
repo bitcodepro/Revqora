@@ -1,8 +1,9 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronUp,
   Filter,
+  FolderSearch,
   Loader2,
   Search,
   X,
@@ -15,11 +16,12 @@ import { loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
 import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
-import type { GraphRow, SearchMode, Seg } from "../lib/types";
+import type { GraphLaneAnchor, GraphRow, SearchMode, Seg } from "../lib/types";
 import { WORKTREE } from "../lib/types";
-import { absoluteTime, fullTime, relativeTime } from "../lib/format";
+import { absoluteTime, fullTime, relativeTime, shortOid } from "../lib/format";
 import { Avatar, RefBadge } from "./bits";
 import { branchMenu, commitMenu, tagMenu } from "./menus";
+import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 
 const ROW_H = 30;
 /** Review mode: two-line rows (subject, then author, date and hash) without the graph. */
@@ -30,6 +32,12 @@ const PAD = 10;
 const MAX_LANES = 64;
 const MIN_GRAPH_W = 76;
 const PAGE = 250;
+
+interface LanePin {
+  key: string;
+  id: number;
+  anchor?: GraphLaneAnchor;
+}
 
 const x = (c: number) => PAD + c * LANE_W + LANE_W / 2;
 
@@ -70,6 +78,7 @@ interface RowProps {
   onSelect: (row: GraphRow, e: React.MouseEvent) => void;
   onMenu: (row: GraphRow, e: React.MouseEvent) => void;
   onHover: (c: number | null) => void;
+  onPin: (c: number) => void;
   onRefClick: (name: string) => void;
   compact: boolean;
   rowH: number;
@@ -177,7 +186,7 @@ ${r.oid}`
         {!wip && (
           <div className="c-meta">
             {r.author} · {when} ·{" "}
-            <span className="mono">{r.oid.slice(0, 7)}</span>
+            <span className="mono" title={r.oid}>{shortOid(r.oid)}</span>
           </div>
         )}
       </div>
@@ -193,7 +202,7 @@ ${r.oid}`
     >
       <div
         className="g-graph"
-        onMouseEnter={() => p.onHover(r.color)}
+        onMouseEnter={() => p.onHover(r.laneId)}
         onMouseLeave={() => p.onHover(null)}
       >
         <svg width={p.width} height={ROW_H}>
@@ -202,18 +211,25 @@ ${r.oid}`
             const { d, len } = segPath(s);
             const dashed = wip && s.t === 2;
             return (
-              <path
-                key={i}
-                d={d}
-                stroke={`var(--lane-${s.c % 12})`}
-                strokeDasharray={dashed ? "3 3" : undefined}
-                className={p.hl === s.c ? "hl" : undefined}
-                style={{
-                  ["--len" as string]: Math.ceil(len),
-                  animationDelay:
-                    p.animDelay !== null ? `${p.animDelay}ms` : undefined,
-                }}
-              />
+              <Fragment key={i}>
+                <path
+                  d={d}
+                  stroke={`var(--lane-${s.c % 12})`}
+                  strokeDasharray={dashed ? "3 3" : undefined}
+                  className={`lane-line ${p.hl === s.id ? "hl" : ""}`}
+                  style={{
+                    ["--len" as string]: Math.ceil(len),
+                    animationDelay: p.animDelay !== null ? `${p.animDelay}ms` : undefined,
+                  }}
+                />
+                <path className="lane-hit" data-lane={s.id} d={d} aria-hidden="true"
+                  onMouseEnter={() => p.onHover(s.id)} onMouseLeave={() => p.onHover(null)}
+                  onMouseDown={(e) => { if (e.button === 0) e.stopPropagation(); }}
+                  onClick={(e) => { e.stopPropagation(); p.onPin(s.id); }}
+                  onDoubleClick={(e) => e.stopPropagation()}>
+                  <title>Click to pin or clear this line</title>
+                </path>
+              </Fragment>
             );
           })}
           {r.col < p.lanes &&
@@ -238,7 +254,7 @@ ${r.oid}`
                   stroke={nodeColor}
                 />
                 <circle
-                  className={`node ${p.hl === r.color ? "hl" : ""}`}
+                  className={`node ${p.hl === r.laneId ? "hl" : ""}`}
                   cx={x(r.col)}
                   cy={mid}
                   r={6}
@@ -250,7 +266,7 @@ ${r.oid}`
               </>
             ) : r.isMerge ? (
               <circle
-                className={`node ${p.hl === r.color ? "hl" : ""}`}
+                className={`node ${p.hl === r.laneId ? "hl" : ""}`}
                 cx={x(r.col)}
                 cy={mid}
                 r={3.6}
@@ -260,7 +276,7 @@ ${r.oid}`
               />
             ) : r.localOnly ? (
               <circle
-                className={`node ${p.hl === r.color ? "hl" : ""}`}
+                className={`node ${p.hl === r.laneId ? "hl" : ""}`}
                 cx={x(r.col)}
                 cy={mid}
                 r={4.3}
@@ -270,7 +286,7 @@ ${r.oid}`
               />
             ) : (
               <circle
-                className={`node ${p.hl === r.color ? "hl" : ""}`}
+                className={`node ${p.hl === r.laneId ? "hl" : ""}`}
                 cx={x(r.col)}
                 cy={mid}
                 r={4.6}
@@ -307,7 +323,7 @@ ${r.oid}`
         </div>
       )}
       {p.columns.hash && (
-        <div className="g-hash">{wip ? "" : r.oid.slice(0, 7)}</div>
+        <div className="g-hash">{!wip && <span title={r.oid}>{shortOid(r.oid)}</span>}</div>
       )}
     </div>
   );
@@ -331,13 +347,41 @@ export function GraphView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [restoredRows]=useState(()=>cachedGraphRows(root,tab.graphVersion));
   const cache = useRef(restoredRows?.rows??new Map<number, GraphRow>());
+  const cacheKey = useRef(restoredRows ? summary?.key : undefined);
   const loadingPages = useRef(new Set<number>());
   const [, force] = useState(0);
   const [scrollTop, setScrollTop] = useState(restoredRows?.top??0);
   useLayoutEffect(()=>{if(scrollRef.current&&restoredRows)scrollRef.current.scrollTop=restoredRows.top;},[]);
   useEffect(()=>{rememberGraphPosition(root,tab.graphVersion,scrollTop);},[root,tab.graphVersion,scrollTop]);
   const [viewH, setViewH] = useState(600);
-  const [hl, setHl] = useState<number | null>(null);
+  const [hoveredLane, setHl] = useState<number | null>(null);
+  const [pin, setPin] = useState<LanePin | null>(null);
+  const pinned = pin && pin.key === cacheKey.current ? pin.id : null;
+  const hl = pinned ?? hoveredLane;
+  const pinLane = useCallback((lane: number) => {
+    const key = cacheKey.current;
+    if (!key) return;
+    scrollRef.current?.focus({ preventScroll: true });
+    if (pin?.key === key && pin.id === lane) {
+      setPin(null);
+      return;
+    }
+    const clicked = { key, id: lane };
+    setPin(clicked);
+    void api.graphLaneAnchor(root, key, lane).then((anchor) => {
+      setPin((current) => current === clicked ? anchor ? { ...clicked, anchor } : null : current);
+    }).catch(() => setPin((current) => current === clicked ? null : current));
+  }, [root, pin]);
+  useEffect(() => {
+    const key = summary?.key;
+    if (!key || !pin?.anchor || pin.key === key) return;
+    let current = true;
+    void api.graphResolveLane(root, key, pin.anchor).then((id) => {
+      if (!current || useRepos.getState().tabs[root]?.graph?.key !== key) return;
+      setPin((latest) => latest === pin ? id == null ? null : { ...pin, key, id } : latest);
+    }).catch(() => {}); // A superseded graph will be resolved after its replacement arrives.
+    return () => { current = false; };
+  }, [root, summary?.key, pin]);
   const [drawing, setDrawing] = useState(false);
   const firstDrawKey = useRef<string | null>(tab.loaded?root:null);
   const anchor = useRef<number | null>(null);
@@ -403,7 +447,7 @@ export function GraphView({
     "minmax(220px, 1fr)",
     columns.author ? "minmax(120px, 170px)" : "",
     columns.date ? "116px" : "",
-    columns.hash ? "70px" : "",
+    columns.hash ? "max(70px, calc(var(--fs-code) * 5.5))" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -423,6 +467,8 @@ export function GraphView({
         if (cacheVersion.current !== version) {
           cache.current = new Map();
           cacheVersion.current = version;
+          cacheKey.current = key;
+          setHl(null);
         }
         for (const r of rows) cache.current.set(r.index, r);
         rememberGraphRows(root,version,cache.current);
@@ -496,18 +542,42 @@ export function GraphView({
   const scrollToIndex = useCallback(
     (idx: number, center = false) => {
       const el = scrollRef.current;
-      if (!el) return;
+      if (!el) return false;
       const pos = indexList ? indexList.indexOf(idx) : idx;
-      if (pos < 0) return;
+      if (pos < 0) return false;
       const y = pos * rowH;
       if (center)
         el.scrollTop = Math.max(0, y - el.clientHeight / 2 + rowH / 2);
       else if (y < el.scrollTop) el.scrollTop = y;
       else if (y + rowH > el.scrollTop + el.clientHeight)
         el.scrollTop = y + rowH - el.clientHeight;
+      return true;
     },
-    [indexList],
+    [indexList, rowH],
   );
+
+  useEffect(() => {
+    const oid = tab.historyJump;
+    if (!oid) return;
+    // An external selection takes precedence over the local search and its pending scroll.
+    if (query || filterOnly) {
+      setQuery("");
+      setFilterOnly(false);
+      return;
+    }
+    if (!summary || tab.graphLoading || tab.branchFilter) return;
+    let current = true;
+    void api.graphFind(root, oid, summary.key).then((index) => {
+      const latest = useRepos.getState().tabs[root];
+      if (!current || latest?.graph?.key !== summary.key || latest.historyJump !== oid) return;
+      if (latest.selected === oid && index != null) {
+        if (!scrollToIndex(index, true)) return;
+        anchor.current = index;
+      }
+      patch(root, { historyJump: null });
+    }).catch(() => {});
+    return () => { current = false; };
+  }, [root, summary, tab.historyJump, tab.graphLoading, tab.branchFilter, query, filterOnly, patch, scrollToIndex]);
 
   const selectIndex = useCallback(
     async (idx: number) => {
@@ -641,7 +711,7 @@ export function GraphView({
       if (!oid) return setHl(null);
       for (const row of cache.current.values()) {
         if (row.oid === oid) {
-          setHl(row.color);
+          setHl(row.laneId);
           return;
         }
       }
@@ -652,9 +722,11 @@ export function GraphView({
 
   // Search (debounced for quick mode).
   useEffect(() => {
+    let current = true;
     if (!query.trim()) {
       setResults([]);
       setCursor(0);
+      setSearching(false);
       return;
     }
     const delay =
@@ -663,18 +735,19 @@ export function GraphView({
       setSearching(true);
       try {
         const res = await api.graphSearch(root, query, mode);
+        if (!current) return;
         setResults(res);
         setCursor(0);
         if (res.length) {
           scrollToIndex(res[0], true);
         }
       } catch (e) {
-        toast.error(e, "Search failed");
+        if (current) toast.error(e, "Search failed");
       } finally {
-        setSearching(false);
+        if (current) setSearching(false);
       }
     }, delay);
-    return () => clearTimeout(t);
+    return () => { current = false; clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, mode, root, tab.graphVersion]);
 
@@ -708,7 +781,10 @@ export function GraphView({
     const cur =
       selectedIndex >= 0 ? selectedIndex : tab.selected === WORKTREE ? 0 : -1;
     const pageRows = Math.max(1, Math.floor(viewH / rowH) - 1);
-    if (e.key === "Escape" && tab.selected) {
+    if (e.key === "Escape" && pin) {
+      e.preventDefault();
+      setPin(null);
+    } else if (e.key === "Escape" && tab.selected) {
       e.preventDefault();
       useRepos.getState().patch(tab.root, { selected: null, multi: [] });
     } else if (e.key === "ArrowDown") {
@@ -774,6 +850,7 @@ export function GraphView({
           onSelect={onSelect}
           onMenu={onMenu}
           onHover={setHl}
+          onPin={pinLane}
           onRefClick={onRefClick}
           compact={compact}
           rowH={rowH}
@@ -865,6 +942,10 @@ export function GraphView({
             </button>
           )}
         </div>
+        <button type="button" className="btn sm" onClick={() => void workspaceCommitSearch(query, mode)}>
+          <FolderSearch size={14} /> Search all repositories
+        </button>
+        {pin && <button type="button" className="btn sm" onClick={() => setPin(null)}>Clear line highlight</button>}
         {tab.branchFilter && (
           <span className="pill accent graph-branch-filter" title={tab.branchFilter} data-branch-filter={tab.branchFilter}>
             <span>Only {tab.branchFilter.replace(/^refs\/(heads|remotes)\//, "")}</span>
@@ -1045,6 +1126,7 @@ export function GraphView({
         onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
         onKeyDown={onKeyDown}
         data-hl={hl !== null ? hl : undefined}
+        data-pinned-lane={pinned ?? undefined}
       >
         {!summary && (
           <div className="loading-center" style={{ height: "100%" }}>

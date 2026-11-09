@@ -754,19 +754,38 @@ fn graph_rows(state: State<'_, AppState>, repo: String, start: usize, count: usi
 }
 
 #[tauri::command]
-fn graph_find(state: State<'_, AppState>, repo: String, oid: String) -> Option<usize> {
+fn graph_find(state: State<'_, AppState>, repo: String, oid: String, expected_key: Option<String>) -> GitResult<Option<usize>> {
     let graphs = state.graphs.lock();
-    let cache = graphs.get(&repo)?;
+    let Some(cache) = graphs.get(&repo) else { return Ok(None) };
+    cache.check_key(expected_key.as_deref())?;
     if let Some(i) = cache.index.get(&oid) {
-        return Some(*i);
+        return Ok(Some(*i));
     }
-    cache.rows.iter().position(|r| r.oid.starts_with(&oid))
+    Ok(cache.rows.iter().position(|r| r.oid.starts_with(&oid)))
+}
+
+#[tauri::command]
+fn graph_lane_anchor(state: State<'_, AppState>, repo: String, key: String, id: u64) -> Option<graph::LaneAnchor> {
+    state.graphs.lock().get(&repo)?.lane_anchor(&key, id)
+}
+
+#[tauri::command]
+fn graph_resolve_lane(state: State<'_, AppState>, repo: String, key: String, anchor: graph::LaneAnchor) -> GitResult<Option<u64>> {
+    let graphs = state.graphs.lock();
+    let Some(cache) = graphs.get(&repo) else { return Ok(None) };
+    cache.check_key(Some(&key))?;
+    Ok(cache.resolve_lane(&anchor))
 }
 
 #[tauri::command]
 async fn graph_search(state: State<'_, AppState>, repo: String, query: String, mode: SearchMode) -> GitResult<Vec<usize>> {
     let cache = state.graphs.lock().get(&repo).cloned().ok_or_else(|| GitError::new("History is not loaded."))?;
     blocking(move || graph::search(&p(&repo), &cache, &query, mode)).await
+}
+
+#[tauri::command]
+async fn repository_commit_search(repo: String, query: String, mode: SearchMode) -> GitResult<Vec<graph::CommitSearchHit>> {
+    blocking(move || graph::search_repository(&p(&repo), &query, mode)).await
 }
 
 #[tauri::command]
@@ -808,6 +827,16 @@ async fn compare(repo: String, from: String, to: String, three_dot: bool) -> Git
 }
 
 #[tauri::command]
+async fn compare_branch_commits(repo: String, from: String, to: String) -> GitResult<git::inspect::BranchCommitComparison> {
+    blocking(move || git::inspect::branch_commit_comparison(&p(&repo), &from, &to)).await
+}
+
+#[tauri::command]
+async fn branch_commit_page(repo: String, from: String, to: String, offset: usize) -> GitResult<Vec<git::inspect::RangeCommit>> {
+    blocking(move || git::inspect::branch_commit_page(&p(&repo), &from, &to, offset)).await
+}
+
+#[tauri::command]
 async fn blob(repo: String, spec: git::inspect::BlobSpec) -> GitResult<Option<git::inspect::BlobData>> {
     blocking(move || git::inspect::blob(&p(&repo), &spec)).await
 }
@@ -836,8 +865,19 @@ async fn branch_details(repo: String, name: String, base: String) -> GitResult<r
 }
 
 #[tauri::command]
-async fn checkout(app: AppHandle, expected_state: Option<String>, repo: String, target: String, kind: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "checkout", None, move || ops::checkout(&p(&repo), &target, &kind)).await
+async fn checkout(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    target: String,
+    kind: String,
+    choice: Option<git::branch_switch::SwitchChoice>,
+) -> GitResult<git::branch_switch::SwitchOutcome> {
+    let reviewed_state = expected_state.clone();
+    mutating(repo.clone(), expected_state, app, "checkout", None, move || {
+        git::branch_switch::switch(&p(&repo), &target, &kind, choice, reviewed_state.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2144,7 +2184,10 @@ pub fn run() {
             graph_load,
             graph_rows,
             graph_find,
+            graph_lane_anchor,
+            graph_resolve_lane,
             graph_search,
+            repository_commit_search,
             commit_details,
             commit_graph_status,
             commit_graph_write,
@@ -2153,6 +2196,8 @@ pub fn run() {
             reflog,
             blame,
             compare,
+            compare_branch_commits,
+            branch_commit_page,
             blob,
             refs_snapshot,
             fetch_background,

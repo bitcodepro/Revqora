@@ -146,6 +146,12 @@ export interface Seg {
   b: number;
   t: 0 | 1 | 2;
   c: number;
+  id: number;
+}
+
+export interface GraphLaneAnchor {
+  commit: string;
+  parent: string | null;
 }
 
 export interface RefLabel {
@@ -167,6 +173,7 @@ export interface GraphRow {
   refs: RefLabel[];
   col: number;
   color: number;
+  laneId: number;
   segs: Seg[];
   isHead: boolean;
   isMerge: boolean;
@@ -182,6 +189,14 @@ export interface GraphSummary {
 }
 
 export type SearchMode = "quick" | "message" | "author" | "hash" | "content" | "path";
+
+export interface CommitSearchHit {
+  oid: string;
+  subject: string;
+  author: string;
+  authorTime: number;
+  refs: string;
+}
 
 export interface ChangedFile {
   path: string;
@@ -266,7 +281,13 @@ export interface StashInfo {
   oid: string;
   time: number;
   message: string;
+  switchSource?: string | null;
 }
+
+export type SwitchChoice = { action: "stash" | "move"; targetOid: string };
+export type SwitchOutcome =
+  | { status: "review"; source: string; targetOid: string; stateToken: string; files: number }
+  | { status: "switched"; branch: string; saved: boolean; moved: boolean; conflicts: string[]; warning: string | null };
 
 export interface RemoteInfo {
   name: string;
@@ -436,6 +457,15 @@ export interface RangeCommit {
   author: string;
   time: number;
   subject: string;
+}
+
+export interface BranchCommitComparison {
+  fromOid: string;
+  toOid: string;
+  fromCount: number;
+  toCount: number;
+  fromOnly: RangeCommit[];
+  toOnly: RangeCommit[];
 }
 
 export interface Comparison {

@@ -35,6 +35,7 @@ export interface RepoTab {
   layers: LayersState | null;
   graph: GraphSummary | null;
   graphVersion: number;
+  historyJump?: string | null;
   diffRefreshVersion: number;
   graphLoading: boolean;
   graphHasWorktree: boolean;

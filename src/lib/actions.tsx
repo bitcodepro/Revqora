@@ -8,7 +8,7 @@ import { Modal } from "../components/Modal";
 import { DeleteBranchDialog } from "../components/DeleteBranchDialog";
 import { ignoredCollisionDialog } from "../components/IgnoredCollisionDialog";
 import { useSettings } from "./settings";
-import type { GitError, OpOutcome, PullOutcome } from "./types";
+import type { GitError, OpOutcome, PullOutcome, SwitchChoice } from "./types";
 import { shortOid } from "./format";
 import {
   cloneDialog,
@@ -27,7 +27,7 @@ import {
 
 interface ActOptions<T> {
   success?: string | ((r: T) => string | null);
-  refresh?: Parts;
+  refresh?: Parts | false;
   busy?: string;
   quiet?: boolean;
 }
@@ -78,9 +78,11 @@ export async function act<T>(root: string, fn: () => Promise<T>, o: ActOptions<T
   } finally {
     if (busyId) endBusy(busyId);
     // Status / state first (what the caller acts on); history and refs follow in the background.
-    const parts = o.refresh ?? ALL;
-    await useRepos.getState().refresh(root, { info: parts.info, status: parts.status, layers: parts.layers });
-    if (parts.refs || parts.graph) void useRepos.getState().refresh(root, { refs: parts.refs, graph: parts.graph, info: parts.info });
+    if (o.refresh !== false) {
+      const parts = o.refresh ?? ALL;
+      await useRepos.getState().refresh(root, { info: parts.info, status: parts.status, layers: parts.layers });
+      if (parts.refs || parts.graph) void useRepos.getState().refresh(root, { refs: parts.refs, graph: parts.graph, info: parts.info });
+    }
   }
 }
 
@@ -313,8 +315,51 @@ export async function addRemote(root: string) {
 
 // ───────────── branches ─────────────
 
-export function checkout(root: string, target: string, kind: "local" | "remote" | "commit") {
-  return act(root, () => api.checkout(root, target, kind), { success: (b) => (kind === "commit" ? `Checked out ${shortOid(target)} (detached HEAD)` : `Switched to ${b}`), busy: "Switching branch" });
+const switching = new Set<string>();
+
+export async function checkout(root: string, target: string, kind: "local" | "remote" | "commit") {
+  if (switching.has(root)) return;
+  switching.add(root);
+  try {
+    // The operation client already refreshes HEAD and status before returning.
+    let result = await act(root, () => api.checkout(root, target, kind), { busy: "Switching branch", refresh: false });
+    if (result?.status === "review") {
+      const review = result;
+      const source = review.source.startsWith("HEAD/") ? `detached HEAD (${shortOid(review.source.slice(5))})` : review.source.slice(11);
+      const action = await showDialog<SwitchChoice["action"] | null>((close) => <Modal
+        title="Switch with uncommitted changes" subtitle={`${source} → ${target}`} onClose={() => close(null)}
+        footer={<>
+          <button type="button" className="btn" onClick={() => close(null)}>Cancel</button>
+          <button type="button" className="btn" onClick={() => close("move")}>Move changes</button>
+          <button type="button" className="btn primary" onClick={() => close("stash")}>Stash and switch</button>
+        </>}
+      >
+        <p>You have changes in {review.files} {review.files === 1 ? "file" : "files"}, including any new untracked files.</p>
+        <p><b>Stash and switch</b> saves the changes for {source}. Restore them when you return.</p>
+        <p><b>Move changes</b> applies them on {target}. If there are conflicts, resolve them in Changes. The stash stays available until the move succeeds.</p>
+      </Modal>);
+      if (!action || !getTab(root)) return;
+      result = await act(root, () => api.checkout(root, target, kind, { action, targetOid: review.targetOid }, review.stateToken), {
+        busy: action === "move" ? "Moving changes" : "Stashing and switching",
+        refresh: false,
+      });
+    }
+    void useRepos.getState().refresh(root, { refs: true, graph: true, layers: true });
+    if (result?.status !== "switched") return;
+    if (result.conflicts.length) {
+      showStashConflicts(root, result.conflicts);
+      return;
+    }
+    const label = kind === "commit" ? `Checked out ${shortOid(target)} (detached HEAD)` : `Switched to ${result.branch}`;
+    if (result.warning) {
+      toast.warning(label, result.warning);
+      return;
+    }
+    toast.success(label, result.moved ? "Changes moved to this branch." : result.saved ? "Changes saved for the source branch." : undefined);
+    return result.branch;
+  } finally {
+    switching.delete(root);
+  }
 }
 
 export async function createBranch(root: string, start: string | null, startLabel: string) {
@@ -487,8 +532,13 @@ export async function stash(root: string) {
 export async function stashApply(root: string, index: number, pop: boolean, oid = getTab(root)?.refs?.stashes.find(s => s.index === index)?.oid) {
   if (!oid) return toast.warning("Stash unavailable", "Refresh the stash list before trying again.");
   const out = await act(root, () => api.stashApply(root, index, pop, oid));
-  if (out?.status === "conflicts") handleOutcome(root, out, "Stash");
+  if (out?.status === "conflicts") showStashConflicts(root, out.conflicts);
   else if (out) toast.success(pop ? "Stash popped" : "Stash applied");
+}
+
+function showStashConflicts(root: string, conflicts: string[]) {
+  useRepos.getState().patch(root, { view: "changes", changeSel: conflicts[0] ? { kind: "conflict", path: conflicts[0] } : null });
+  toast.warning("Stash has conflicts", "Resolve them on the current branch in Changes. The stash is still available.");
 }
 
 export async function stashDrop(root: string, index: number, oid = getTab(root)?.refs?.stashes.find(s => s.index === index)?.oid) {
