@@ -1462,8 +1462,23 @@ pub fn stash_save(repo: &Path, message: &str, include_untracked: bool, keep_inde
 
 pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<OpOutcome> {
     let name = format!("stash@{{{index}}}");
+    stash_apply_ref(repo, &name, pop)
+}
+
+pub(super) fn stash_apply_ref(repo: &Path, name: &str, pop: bool) -> GitResult<OpOutcome> {
+    // A stash can add paths over ignored data on the destination branch.
+    // Inspect both tracked snapshots and the optional untracked parent.
+    let base = format!("{name}^1");
+    let index = format!("{name}^2");
+    let untracked = format!("{name}^3");
+    let mut paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &base, name, "--"])?;
+    paths.extend(runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &base, &index, "--"])?);
+    if runner::exec(repo, ["rev-parse", "--verify", "--quiet", &untracked])?.ok() {
+        paths.extend(runner::run_bytes(repo, ["ls-tree", "-r", "--name-only", "-z", &untracked])?);
+    }
+    guard_untracked_paths(repo, &paths)?;
     let before = status::status(repo)?.state_token;
-    let out = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, "--index", &name])?;
+    let out = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, "--index", name])?;
     if out.ok() {
         return Ok(OpOutcome::done(out.text()));
     }
@@ -1481,7 +1496,7 @@ pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<OpOutcome> {
         .details(vec![out.stderr]));
     }
     // A different index strategy is safe only if the first attempt changed nothing.
-    let out2 = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, &name])?;
+    let out2 = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, name])?;
     if out2.ok() {
         return Ok(OpOutcome::done(out2.text()));
     }

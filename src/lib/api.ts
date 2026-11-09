@@ -181,6 +181,7 @@ export const api = {
   graphRows: (repo: string, start: number, count: number,expectedKey?:string) => call<GraphRow[]>("graph_rows", { repo, start, count,expectedKey }),
   graphFind: (repo: string, oid: string) => call<number | null>("graph_find", { repo, oid }),
   graphSearch: (repo: string, query: string, mode: SearchMode) => call<number[]>("graph_search", { repo, query, mode }),
+  repositoryCommitSearch: (repo: string, query: string, mode: SearchMode) => call<import("./types").CommitSearchHit[]>("repository_commit_search", { repo, query, mode }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),
   commitGraphWrite: (repo: string, opId: string) => call<string>("commit_graph_write", { repo, opId }),
   commitDetails: (repo: string, oid: string) => call<CommitDetails>("commit_details", { repo, oid }),
@@ -195,7 +196,8 @@ export const api = {
   fetchBackground: (repo: string) => call<string>("fetch_background", { repo }),
   squashMerged: (repo: string) => call<string[]>("squash_merged", { repo }),
   branchDetails: (repo: string, name: string, base: string) => call<BranchDetails>("branch_details", { repo, name, base }),
-  checkout: (repo: string, target: string, kind: "local" | "remote" | "commit") => call<string>("checkout", { repo, target, kind }),
+  checkout: (repo: string, target: string, kind: "local" | "remote" | "commit", choice?: import("./types").SwitchChoice, expectedState?: string) =>
+    call<import("./types").SwitchOutcome>("checkout", { repo, target, kind, choice, expectedState }),
   branchCreate: (repo: string, name: string, start: string | null, checkout: boolean, expectedState?: string | null) => call<void>("branch_create", { repo, name, start, checkout, expectedState }),
   branchRename: (repo: string, old: string, newName: string, expectedState?: string | null) => call<void>("branch_rename", { repo, old, new: newName, expectedState }),
   branchCleanupReview: (repo: string, requests: BranchCleanupRequest[], base: string, protectionRules: string[], analyze = true) => call<BranchCleanupReview>("branch_cleanup_review", { repo, requests, base, protectionRules, analyze }),

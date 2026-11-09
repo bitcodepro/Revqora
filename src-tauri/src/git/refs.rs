@@ -56,6 +56,7 @@ pub struct StashInfo {
     pub oid: String,
     pub time: i64,
     pub message: String,
+    pub switch_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,7 +181,14 @@ pub fn stashes(repo: &Path) -> GitResult<Vec<StashInfo>> {
                 return None;
             }
             let index = f[0].trim_start_matches("stash@{").trim_end_matches('}').parse().unwrap_or(0);
-            Some(StashInfo { index, name: f[0].to_string(), oid: f[1].to_string(), time: f[2].parse().unwrap_or(0), message: f[3].to_string() })
+            Some(StashInfo {
+                index,
+                name: f[0].to_string(),
+                oid: f[1].to_string(),
+                time: f[2].parse().unwrap_or(0),
+                message: f[3].to_string(),
+                switch_source: super::branch_switch::stash_source(f[3]),
+            })
         })
         .collect())
 }

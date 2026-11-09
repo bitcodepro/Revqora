@@ -176,12 +176,21 @@ export interface GraphRow {
 export interface GraphSummary {
   headOid?: string;
   key: string;
+  layoutKey?: string;
   total: number;
   maxLanes: number;
   headIndex: number | null;
 }
 
 export type SearchMode = "quick" | "message" | "author" | "hash" | "content" | "path";
+
+export interface CommitSearchHit {
+  oid: string;
+  subject: string;
+  author: string;
+  authorTime: number;
+  refs: string;
+}
 
 export interface ChangedFile {
   path: string;
@@ -266,7 +275,13 @@ export interface StashInfo {
   oid: string;
   time: number;
   message: string;
+  switchSource?: string | null;
 }
+
+export type SwitchChoice = { action: "stash" | "move"; targetOid: string };
+export type SwitchOutcome =
+  | { status: "review"; source: string; targetOid: string; stateToken: string; files: number }
+  | { status: "switched"; branch: string; saved: boolean; moved: boolean; conflicts: string[]; warning: string | null };
 
 export interface RemoteInfo {
   name: string;

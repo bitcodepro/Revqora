@@ -741,7 +741,14 @@ async fn graph_load(
     let prev = state.graphs.lock().get(&repo).cloned();
     let cache = blocking(move || graph::build_with(&p(&repo), branch.as_deref(), include_worktree, limit.unwrap_or(150_000), fast, prev.as_deref())).await?;
     let head_index = cache.rows.iter().position(|r| r.is_head);
-    let summary = GraphSummary { head_oid: cache.head_oid.clone(), key: cache.key.clone(), total: cache.rows.len(), max_lanes: cache.max_lanes, head_index };
+    let summary = GraphSummary {
+        head_oid: cache.head_oid.clone(),
+        key: cache.key.clone(),
+        layout_key: cache.layout_key.clone(),
+        total: cache.rows.len(),
+        max_lanes: cache.max_lanes,
+        head_index,
+    };
     state.graphs.lock().insert(key, Arc::new(cache));
     Ok(summary)
 }
@@ -767,6 +774,11 @@ fn graph_find(state: State<'_, AppState>, repo: String, oid: String) -> Option<u
 async fn graph_search(state: State<'_, AppState>, repo: String, query: String, mode: SearchMode) -> GitResult<Vec<usize>> {
     let cache = state.graphs.lock().get(&repo).cloned().ok_or_else(|| GitError::new("History is not loaded."))?;
     blocking(move || graph::search(&p(&repo), &cache, &query, mode)).await
+}
+
+#[tauri::command]
+async fn repository_commit_search(repo: String, query: String, mode: SearchMode) -> GitResult<Vec<graph::CommitSearchHit>> {
+    blocking(move || graph::search_repository(&p(&repo), &query, mode)).await
 }
 
 #[tauri::command]
@@ -836,8 +848,19 @@ async fn branch_details(repo: String, name: String, base: String) -> GitResult<r
 }
 
 #[tauri::command]
-async fn checkout(app: AppHandle, expected_state: Option<String>, repo: String, target: String, kind: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "checkout", None, move || ops::checkout(&p(&repo), &target, &kind)).await
+async fn checkout(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    target: String,
+    kind: String,
+    choice: Option<git::branch_switch::SwitchChoice>,
+) -> GitResult<git::branch_switch::SwitchOutcome> {
+    let reviewed_state = expected_state.clone();
+    mutating(repo.clone(), expected_state, app, "checkout", None, move || {
+        git::branch_switch::switch(&p(&repo), &target, &kind, choice, reviewed_state.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2145,6 +2168,7 @@ pub fn run() {
             graph_rows,
             graph_find,
             graph_search,
+            repository_commit_search,
             commit_details,
             commit_graph_status,
             commit_graph_write,

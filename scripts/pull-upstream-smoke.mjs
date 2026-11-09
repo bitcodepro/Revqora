@@ -55,10 +55,10 @@ export async function pullUpstreamSmoke({page,check,shot,work}) {
     if(git(root,"rev-parse","HEAD")!==before||git(root,"branch","--show-current")!=="feature/completed"||!index.equals(fs.readFileSync(path.join(root,".git/index")))||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="uncommitted user work\n")throw Error("Deleted-upstream reconciliation changed local branch, staging or working files");
     if(git(root,"rev-parse","origin/main")!==merged||git(root,"for-each-ref","--format=%(refname)","refs/remotes/origin/feature/completed"))throw Error("Pull did not refresh main and prune its deleted remote branch");
     await page.getByRole("button",{name:"Continue on main",exact:true}).click();
-    await page.waitForFunction(()=>window.__pullUpstreamTrace.calls.some(c=>c.command==="checkout"&&c.phase!=="pending")||window.__pullUpstreamTrace.toasts.some(t=>/changed|failed|Local changes|Choose an upstream/.test(t)));
-    const continuation=await page.evaluate(()=>window.__pullUpstreamTrace.calls.find(c=>c.command==="checkout"&&c.phase!=="pending"));
-    if(continuation?.phase!=="done")throw Error("Continue did not successfully check out main");
+    await page.getByRole("dialog").filter({hasText:"Switch with uncommitted changes"}).getByRole("button",{name:"Move changes",exact:true}).click();
     await page.getByText("Pulled",{exact:true}).waitFor();
+    const continuation=await page.evaluate(()=>window.__pullUpstreamTrace.calls.find(c=>c.command==="checkout"&&c.result?.status==="switched"));
+    if(continuation?.phase!=="done"||!continuation.result.moved)throw Error("Continue did not switch to main and move the local changes");
     if(git(root,"rev-parse","HEAD")!==merged||git(root,"branch","--show-current")!=="main"||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="uncommitted user work\n"||git(root,"rev-parse","feature/completed")!==before)throw Error("Continuing on the default branch lost local work/history or did not pull main");
     await shot("pull-deleted-upstream-reconciled");
     }catch(error){

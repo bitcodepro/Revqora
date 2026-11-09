@@ -1,6 +1,7 @@
 //! Commit history loading and lane layout for the graph view.
 
-use std::collections::HashMap;
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 use serde::Serialize;
@@ -9,7 +10,6 @@ use super::refs::{self, RefLabel};
 use super::runner::{self, GitError, GitResult};
 
 pub const WORKTREE_OID: &str = "WORKTREE";
-const PALETTE_SIZE: u16 = 12;
 
 #[derive(Debug, Clone)]
 pub struct CommitMeta {
@@ -30,7 +30,8 @@ pub struct Seg {
     pub a: u16,
     pub b: u16,
     pub t: u8,
-    pub c: u16,
+    /// Unique line identity within the layout. The frontend maps it to a palette color.
+    pub c: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,7 +48,7 @@ pub struct GraphRow {
     pub subject: String,
     pub refs: Vec<RefLabel>,
     pub col: u16,
-    pub color: u16,
+    pub color: u32,
     pub segs: Vec<Seg>,
     pub is_head: bool,
     pub is_merge: bool,
@@ -58,18 +59,18 @@ pub struct GraphRow {
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub col: u16,
-    pub color: u16,
+    pub color: u32,
     pub segs: Vec<Seg>,
 }
 
 /// Assigns lanes to commits given in display order (children before parents).
 pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
-    let mut lanes: Vec<Option<(String, u16)>> = Vec::new();
-    let mut next_color: u16 = 0;
+    let mut lanes: Vec<Option<(String, u32)>> = Vec::new();
+    let mut next_color: u32 = 0;
     let mut out = Vec::with_capacity(commits.len());
     let mut max_lanes: u16 = 1;
-    let alloc_color = |nc: &mut u16| {
-        let c = *nc % PALETTE_SIZE;
+    let alloc_color = |nc: &mut u32| {
+        let c = *nc;
         *nc += 1;
         c
     };
@@ -138,6 +139,7 @@ pub fn layout(commits: &[(String, Vec<String>)]) -> (Vec<Layout>, u16) {
 pub struct GraphCache {
     pub head_oid: String,
     pub key: String,
+    pub layout_key: String,
     pub rows: Vec<GraphRow>,
     pub max_lanes: u16,
     pub index: HashMap<String, usize>,
@@ -253,6 +255,7 @@ fn reuse_history(repo: &Path, prev: &GraphCache, refs: &[(String, String)]) -> O
 pub struct GraphSummary {
     pub head_oid: String,
     pub key: String,
+    pub layout_key: String,
     pub total: usize,
     pub max_lanes: u16,
     pub head_index: Option<usize>,
@@ -383,6 +386,9 @@ pub fn build_with(
         order.push((c.oid.clone(), parents));
     }
     let (lay, max_lanes) = layout(&order);
+    let mut layout_hash = DefaultHasher::new();
+    order.hash(&mut layout_hash);
+    let layout_key = format!("{:016x}", layout_hash.finish());
     let commit_list = commits.clone();
 
     let mut rows = Vec::with_capacity(order.len());
@@ -440,7 +446,7 @@ pub fn build_with(
     static BUILDS: AtomicU64 = AtomicU64::new(0);
     let key = format!("graph-{}", BUILDS.fetch_add(1, Ordering::Relaxed));
     let source = if fast { "fast" } else { reused.as_ref().map(|(_, s)| *s).unwrap_or("full") }.to_string();
-    Ok(GraphCache { head_oid, key, rows, max_lanes, index, commits: std::sync::Arc::new(commit_list), refs, filter, limit, source })
+    Ok(GraphCache { head_oid, key, layout_key, rows, max_lanes, index, commits: std::sync::Arc::new(commit_list), refs, filter, limit, source })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -455,6 +461,77 @@ pub enum SearchMode {
     Content,
     /// Commits touching a path.
     Path,
+}
+
+fn search_arguments(args: &mut Vec<String>, query: &str, mode: SearchMode) {
+    match mode {
+        SearchMode::Message => args.extend(["--regexp-ignore-case".into(), "--fixed-strings".into(), format!("--grep={query}")]),
+        SearchMode::Content => args.push(format!("-S{query}")),
+        _ => {}
+    }
+    args.push("--".into());
+    if mode == SearchMode::Path {
+        args.push(query.to_string());
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitSearchHit {
+    pub oid: String,
+    pub subject: String,
+    pub author: String,
+    pub author_time: i64,
+    pub refs: String,
+}
+
+/// Search independently of the graph cache, including repositories whose History tab was never opened.
+pub fn search_repository(repo: &Path, query: &str, mode: SearchMode) -> GitResult<Vec<CommitSearchHit>> {
+    const MATCH_LIMIT: usize = 31; // Show 30 and use one extra row to detect truncation.
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let in_memory = matches!(mode, SearchMode::Quick | SearchMode::Author | SearchMode::Hash);
+    let mut args = vec![
+        "log".into(),
+        "--no-show-signature".into(),
+        "--no-color".into(),
+        "--format=%H%x00%an%x00%ae%x00%at%x00%s%x00%D".into(),
+        "--decorate=short".into(),
+        "--branches".into(),
+        "--remotes".into(),
+        "--tags".into(),
+        format!("--max-count={}", if in_memory { 150_000 } else { MATCH_LIMIT }),
+    ];
+    if runner::exec(repo, ["rev-parse", "--verify", "--quiet", "HEAD"])?.ok() {
+        args.push("HEAD".into());
+    }
+    search_arguments(&mut args, q, mode);
+    let raw = runner::run(repo, &args)?;
+    let q = q.to_lowercase();
+    Ok(raw
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(6, '\0');
+            let (oid, author, email, time, subject, refs) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?);
+            let by_author = || author.to_lowercase().contains(&q) || email.to_lowercase().contains(&q);
+            let matched = match mode {
+                SearchMode::Quick => oid.starts_with(&q) || by_author() || subject.to_lowercase().contains(&q) || refs.to_lowercase().contains(&q),
+                SearchMode::Author => by_author(),
+                SearchMode::Hash => oid.starts_with(&q),
+                _ => true,
+            };
+            matched.then(|| CommitSearchHit {
+                oid: oid.into(),
+                subject: subject.into(),
+                author: author.into(),
+                author_time: time.parse().unwrap_or_default(),
+                refs: refs.into(),
+            })
+        })
+        .take(MATCH_LIMIT)
+        .collect())
 }
 
 pub fn search(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode) -> GitResult<Vec<usize>> {
@@ -477,21 +554,7 @@ pub fn search(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode) ->
         SearchMode::Hash => in_memory(&|r| r.oid.starts_with(&ql)),
         SearchMode::Message | SearchMode::Content | SearchMode::Path => {
             let mut args: Vec<String> = vec!["log".into(), "--format=%H".into(), "--branches".into(), "--remotes".into(), "--tags".into(), "HEAD".into()];
-            match mode {
-                SearchMode::Message => {
-                    args.push("--regexp-ignore-case".into());
-                    args.push("--fixed-strings".into());
-                    args.push(format!("--grep={q}"));
-                }
-                SearchMode::Content => {
-                    args.push(format!("-S{q}"));
-                }
-                _ => {}
-            }
-            args.push("--".into());
-            if mode == SearchMode::Path {
-                args.push(q.to_string());
-            }
+            search_arguments(&mut args, q, mode);
             let out = runner::run(repo, &args)?;
             let mut v: Vec<usize> = out.lines().filter_map(|l| cache.index.get(l.trim()).copied()).collect();
             v.sort_unstable();
@@ -554,5 +617,51 @@ mod tests {
         assert_eq!(l[0].col, 0);
         assert_eq!(l[1].col, 1);
         assert_eq!(l[2].col, 0);
+    }
+
+    #[test]
+    fn unrelated_lines_can_share_a_palette_color_without_sharing_identity() {
+        let rows: Vec<_> = (0..25).map(|i| (format!("tip-{i}"), vec!["base".to_string()])).chain([c("base", &[])]).collect();
+        let (layout, _) = layout(&rows);
+        assert_eq!(layout[0].color % 12, layout[12].color % 12);
+        assert_ne!(layout[0].color, layout[12].color);
+        assert!(layout[25].segs.iter().any(|seg| seg.c == layout[12].color));
+    }
+
+    #[test]
+    fn repository_search_uses_refs_without_loading_a_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        runner::run(repo, ["init", "-qb", "main"]).unwrap();
+        assert!(search_repository(repo, "empty", SearchMode::Quick).unwrap().is_empty());
+        runner::run(
+            repo,
+            [
+                "-c",
+                "user.name=Graph Fixture",
+                "-c",
+                "user.email=history@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "Searchable subject\n\nExtended body",
+            ],
+        )
+        .unwrap();
+        runner::run(repo, ["branch", "feature/search-this-branch"]).unwrap();
+        let commit = runner::run(repo, ["rev-parse", "HEAD"]).unwrap();
+        for (mode, query) in [
+            (SearchMode::Quick, "search-this-branch"),
+            (SearchMode::Quick, "SEARCHABLE SUBJECT"),
+            (SearchMode::Message, "extended body"),
+            (SearchMode::Author, "history@example.test"),
+            (SearchMode::Hash, &commit[..9]),
+        ] {
+            let hits = search_repository(repo, query, mode).unwrap();
+            assert_eq!(hits.len(), 1, "{query}");
+            assert_eq!(hits[0].oid, commit.trim());
+        }
     }
 }
