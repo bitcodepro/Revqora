@@ -18,7 +18,7 @@ import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
 import type { GraphLaneAnchor, GraphRow, SearchMode, Seg } from "../lib/types";
 import { WORKTREE } from "../lib/types";
-import { absoluteTime, fullTime, relativeTime } from "../lib/format";
+import { absoluteTime, fullTime, relativeTime, shortOid } from "../lib/format";
 import { Avatar, RefBadge } from "./bits";
 import { branchMenu, commitMenu, tagMenu } from "./menus";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
@@ -186,7 +186,7 @@ ${r.oid}`
         {!wip && (
           <div className="c-meta">
             {r.author} · {when} ·{" "}
-            <span className="mono">{r.oid.slice(0, 7)}</span>
+            <span className="mono" title={r.oid}>{shortOid(r.oid)}</span>
           </div>
         )}
       </div>
@@ -323,7 +323,7 @@ ${r.oid}`
         </div>
       )}
       {p.columns.hash && (
-        <div className="g-hash">{!wip && <span title={r.oid}>{r.oid.slice(0, 7)}</span>}</div>
+        <div className="g-hash">{!wip && <span title={r.oid}>{shortOid(r.oid)}</span>}</div>
       )}
     </div>
   );
@@ -447,7 +447,7 @@ export function GraphView({
     "minmax(220px, 1fr)",
     columns.author ? "minmax(120px, 170px)" : "",
     columns.date ? "116px" : "",
-    columns.hash ? "70px" : "",
+    columns.hash ? "max(70px, calc(var(--fs-code) * 5.5))" : "",
   ]
     .filter(Boolean)
     .join(" ");

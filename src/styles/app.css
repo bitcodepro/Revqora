@@ -1266,6 +1266,7 @@ select[size="1"]:not([multiple]) {
   font-size: calc(var(--fs-code) - 1px);
   color: var(--text-faint);
   text-align: right;
+  white-space: nowrap;
 }
 .grow:hover .g-hash {
   color: var(--accent);

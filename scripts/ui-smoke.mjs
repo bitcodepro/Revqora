@@ -594,8 +594,9 @@ try {
     await page.click("button[title='Refresh (F5)']");
     await until(async () => {
       const currentMain = await page.locator(".sidebar .sb-item.current", { has: page.locator(".label", { hasText: /^main$/ }) }).count();
-      const head = await page.locator(".grow:has(.head-ring) .g-hash").innerText().catch(() => "");
-      return currentMain === 1 && head === before.slice(0, 7);
+      const hash = page.locator(".grow:has(.head-ring) .g-hash span");
+      const head = await hash.innerText().catch(() => "");
+      return currentMain === 1 && head === before.slice(0, 8) && await hash.getAttribute("title") === before;
     }, "UI did not refresh to main after CLI branch changes");
     await page.locator(".sidebar .sb-item:not(.current)", { has: page.locator(".label", { hasText: /^temp-conflict$/ }) }).click({ button: "right" });
     await page.locator(".ctx-item", { hasText: "Merge temp-conflict into main" }).click();
