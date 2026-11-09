@@ -18,7 +18,7 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
     fs.writeFileSync(path.join(seed,".gitattributes"),"* text eol=lf\n");fs.writeFileSync(path.join(seed,"file.txt"),"credential fixture\n");git(seed,"add",".");git(seed,"commit","-qm","Token clone fixture");git(home,"clone","--bare",seed,bare);git(bare,"update-server-info");const head=git(seed,"rev-parse","HEAD");
     git(bare,"branch","topic",head);git(bare,"update-server-info");
     const token="scoped-bitbucket-fixture-token",secondToken="other-bitbucket-fixture-token",password="portable bitbucket test vault",user="fixture-user",seen=[];
-    const pr={id:7,title:"Scoped Bitbucket PR",description:"Token with repository and PR scopes only",state:"OPEN",author:{display_name:"Fixture Author",nickname:"fixture-author",uuid:"{author}"},source:{branch:{name:"topic"},commit:{hash:head.slice(0,12)}},destination:{branch:{name:"main"},commit:{hash:head.slice(0,12)}},updated_on:"2026-01-01T00:00:00Z",participants:[]};
+    const pr={id:7,title:"Scoped Bitbucket PR",description:"Token with repository and PR scopes only",state:"OPEN",author:{display_name:"Fixture Author",nickname:"fixture-author",uuid:"{author}"},source:{branch:{name:"topic"},commit:{hash:head.slice(0,12)}},destination:{branch:{name:"main"},commit:{hash:head.slice(0,12)}},updated_on:"2026-01-01T00:00:00Z",participants:[{user:{display_name:"Alex Reviewer"},approved:true},{user:{display_name:"Sam Reviewer"},state:"changes_requested"}]};
     const server=http.createServer(async(req,res)=>{
       const url=new URL(req.url,"http://fixture"),auth=req.headers.authorization??"";
       let body="";for await(const chunk of req)body+=chunk;
@@ -34,7 +34,9 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       if(url.pathname==="/2.0/user")return send(403,{error:{message:"Profile permission deliberately unavailable"}});
       if(auth!==`Bearer ${token}`&&auth!==`Bearer ${secondToken}`)return send(401,{error:{message:"Token rejected"}});
       if(url.pathname===`/2.0/repositories/team/repo/commit/${head.slice(0,12)}`)return send(200,{hash:head});
-      if(url.pathname.endsWith("/pullrequests/7/diff")){res.writeHead(200,{"content-type":"text/plain"});res.end("diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-before\n+after\n");return;}
+      if(url.pathname.endsWith("/pullrequests/7/diff")){res.writeHead(302,{location:`/2.0/repositories/team/repo/diff/team/repo:${head.slice(0,12)}%0D${head.slice(0,12)}?from_pullrequest_id=7&topic=true`});res.end();return;}
+      if(url.pathname===`/2.0/repositories/team/repo/diff/team/repo:${head}%0D${head}`){res.writeHead(200,{"content-type":"text/plain"});res.end("diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-before\n+after\n");return;}
+      if(url.pathname===`/2.0/repositories/team/repo/commit/${head}/statuses`)return send(200,{values:[{name:"Build fixture",state:"SUCCESSFUL"}]});
       if(url.pathname==="/2.0/repositories/team/repo/pullrequests")return send(200,{values:[pr]});
       if(url.pathname==="/2.0/repositories/team/other/pullrequests")return send(200,{values:[]});
       if(url.pathname.endsWith("/comments")&&req.method==="POST")return send(201,{id:1,content:{raw:JSON.parse(body).content.raw}});
@@ -79,14 +81,41 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       }
       await button("Close").click();await page.getByRole("button",{name:"Pull requests",exact:true}).click();await page.getByText("Scoped Bitbucket PR",{exact:true}).first().waitFor();
       await page.getByRole("combobox",{name:"Pull request author",exact:true}).selectOption("mine");await page.getByRole("heading",{name:"Your PR author",exact:true}).waitFor();await modal().getByLabel("My PR author",{exact:true}).selectOption("id:{author}");await button("Use as my author").click();await page.locator('[data-pr-detail="7"]').waitFor();
+      const detailPanel=page.locator('[data-pr-detail="7"]');
+      const prButton=name=>detailPanel.getByRole("button",{name,exact:true});
+      await prButton("Overview").click();
+      await detailPanel.getByText("Approved · 1",{exact:true}).waitFor();
+      await detailPanel.getByText("Changes requested · 1",{exact:true}).waitFor();
+      await detailPanel.getByText("Sam Reviewer",{exact:true}).waitFor();
+      await prButton("Merge on Bitbucket").waitFor();
+      if(out)await page.screenshot({path:path.join(out,"bitbucket-review-overview.png")});
+      assert.equal(seen.filter(r=>r.path.endsWith("/statuses")).length,0,"Overview must not request CI checks before the user asks");
+      await prButton("Load checks").click();
+      await detailPanel.getByText("Build fixture",{exact:true}).waitFor();
+      assert.equal(seen.filter(r=>r.path.endsWith("/statuses")).length,1);
+      pr.state="DECLINED";
+      await prButton("Reload request").click();
+      await detailPanel.getByText("Declined",{exact:true}).waitFor();
+      assert.equal(await prButton("Merge on Bitbucket").count(),0);
+      pr.state="OPEN";
+      await prButton("Reload request").click();
+      await prButton("Merge on Bitbucket").waitFor();
       await page.getByRole("button",{name:"Files",exact:true}).click();await page.locator('[data-pr-file="file.txt"]').waitFor();await page.getByText("after",{exact:true}).first().waitFor();
       const result=await invoke("pr_page",{repo:root,state:"open",cursor:null}),connection=result.forge.connectionRevision;
       const detail=await invoke("pr_detail",{repo:root,number:7,expectedConnection:connection});
-      const rejected=await page.evaluate(async args=>{try{await window.__TAURI_INTERNALS__.invoke("pull_request_checkout",args);return null;}catch(e){return {kind:e.kind,message:e.message};}},{repo:root,number:7,expectedConnection:connection,expectedHead:"f".repeat(40)});
-      assert.equal(rejected?.kind,"stale-operation",JSON.stringify(rejected));
+      const checkout=expectedHead=>page.evaluate(async args=>{
+        let timeout;
+        try {
+          const result=window.__TAURI_INTERNALS__.invoke("pull_request_checkout",args).then(branch=>({branch}),error=>({error:{kind:error.kind,message:error.message}}));
+          return await Promise.race([result,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error("Bitbucket PR checkout did not return within 30 seconds")),30000);})]);
+        } finally { clearTimeout(timeout); }
+      },{repo:root,number:7,expectedConnection:connection,expectedHead});
+      const rejected=await checkout("f".repeat(40));
+      assert.equal(rejected.error?.kind,"stale-operation",JSON.stringify(rejected));
       console.log("Bitbucket short SHA: changed-head checkout rejected before fetch");
       assert.equal(git(root,"branch","--show-current"),"main");
-      const checked=await invoke("pull_request_checkout",{repo:root,number:7,expectedConnection:connection,expectedHead:detail.pull.headSha});
+      const {branch:checked,error:checkoutError}=await checkout(detail.pull.headSha);
+      assert(checked,JSON.stringify(checkoutError));
       assert(checked.startsWith("pr/7-"));assert.equal(git(root,"rev-parse","HEAD"),head);assert.equal(git(root,"branch","--show-current"),checked);assert.equal(git(root,"status","--porcelain"),"");
       console.log("Bitbucket short SHA: reviewed checkout completed at the exact commit");
       const args={repo:root,number:7,expectedConnection:connection,expectedRevision:detail.revision},caps=await invoke("pr_review_capabilities",args);
