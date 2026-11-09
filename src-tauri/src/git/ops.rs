@@ -1476,7 +1476,7 @@ pub(super) fn stash_apply_ref(repo: &Path, name: &str, pop: bool) -> GitResult<O
     if runner::exec(repo, ["rev-parse", "--verify", "--quiet", &untracked])?.ok() {
         paths.extend(runner::run_bytes(repo, ["ls-tree", "-r", "--name-only", "-z", &untracked])?);
     }
-    guard_untracked_paths(repo, &paths)?;
+    check_ignored_paths(repo, &super::workspace_files::ignored(repo)?, &paths, "ignored")?;
     let before = status::status(repo)?.state_token;
     let out = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, "--index", name])?;
     if out.ok() {
