@@ -726,7 +726,8 @@ select[size="1"]:not([multiple]) {
   gap: inherit;
   overflow: hidden;
 }
-.statusbar .app-version {
+.statusbar .app-version,
+.statusbar .statusbar-repository-actions {
   flex: none;
   padding: 2px 5px;
   border: 0;
@@ -735,7 +736,8 @@ select[size="1"]:not([multiple]) {
   background: transparent;
   font: inherit;
 }
-.statusbar .app-version:hover {
+.statusbar .app-version:hover,
+.statusbar .statusbar-repository-actions:hover {
   background: var(--bg-hover);
   color: var(--text);
 }
@@ -2804,6 +2806,7 @@ select[size="1"]:not([multiple]) {
   font-size: var(--fs-sm);
 }
 .settings-sections { align-self: flex-start; }
+.shortcut-search { flex-shrink: 0; }
 .shortcut-settings { display: grid; gap: 2px; }
 .shortcut-row {
   display: grid;

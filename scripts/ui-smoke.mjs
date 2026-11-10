@@ -856,6 +856,13 @@ try {
     await page.waitForSelector(".branches-slot", { state: "visible" });
     if (await branchesToggle.getAttribute("aria-expanded") !== "true") throw new Error("Branches toggle did not report the opened panel");
     await page.waitForSelector(".repository-slot", { state: "visible" });
+    const sidebarActions = page.getByRole("group", { name: "Repository sidebar actions", exact: true });
+    await sidebarActions.getByRole("button", { name: "Collapse repository actions", exact: true }).click();
+    await sidebarActions.waitFor({ state: "hidden" });
+    const restoreActions = page.locator(".statusbar-context").getByRole("button", { name: "Show repository actions", exact: true });
+    await restoreActions.click();
+    await sidebarActions.getByRole("button", { name: "Manage library…", exact: true }).waitFor();
+    await restoreActions.waitFor({ state: "hidden" });
     await page.keyboard.press("Control+Alt+r");
     await page.waitForSelector(".repository-slot", { state: "hidden" });
     await page.click(".topbar button[aria-label='Toggle repositories panel']");

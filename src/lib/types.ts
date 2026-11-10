@@ -133,6 +133,7 @@ export interface FileDiff {
   deletions: number;
   truncated: boolean;
   hash: string;
+  stageSnapshot?: number;
   empty: boolean;
 }
 

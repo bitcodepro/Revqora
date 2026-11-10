@@ -42,8 +42,24 @@ import { branchReflogDialog, savePatch } from "./RepoTools";
 import { WORKTREE } from "../lib/types";
 import type { GraphRow } from "../lib/types";
 import { shortOid } from "../lib/format";
+import { matchesShortcut } from "../lib/shortcuts";
 
 const I = 14;
+
+export function runMenuShortcut(event: React.KeyboardEvent, items: MenuItem[], prefix: string): boolean {
+  if (event.repeat) return false;
+  for (const item of items) {
+    if (item.disabled) continue;
+    if (item.shortcut?.startsWith(prefix) && item.onClick && matchesShortcut(event, item.shortcut)) {
+      event.preventDefault();
+      event.stopPropagation();
+      item.onClick();
+      return true;
+    }
+    if (item.children && runMenuShortcut(event, item.children, prefix)) return true;
+  }
+  return false;
+}
 
 export function branchMenu(root: string, name: string, kind: "local" | "remote"): MenuItem[] {
   const tab = getTab(root);
@@ -51,28 +67,28 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote")
   const isCurrent = kind === "local" && name === current;
   const reference = `refs/${kind === "local" ? "heads" : "remotes"}/${name}`;
   const items: MenuItem[] = [...namePathMenu(name, root, reference), { separator: true }];
-  if (!isCurrent) items.push({ label: kind === "remote" ? `Check out as local branch` : `Check out ${name}`, icon: <Check size={I} />, onClick: () => A.checkout(root, name, kind) });
+  if (!isCurrent) items.push({ label: kind === "remote" ? `Check out as local branch` : `Check out ${name}`, shortcut: "branch-checkout", icon: <Check size={I} />, onClick: () => A.checkout(root, name, kind) });
   items.push({ label: "Create branch from here…", icon: <GitBranchPlus size={I} />, onClick: () => A.createBranch(root, name, name) });
-  items.push({ label: "Branch details…", icon: <GitBranch size={I} />, onClick: () => branchCard(root, name, reference) });
+  items.push({ label: "Branch details…", shortcut: "branch-details", icon: <GitBranch size={I} />, onClick: () => branchCard(root, name, reference) });
   items.push({ label: "Branch history (reflog)…", icon: <History size={I} />, onClick: () => branchReflogDialog(root, name) });
   items.push({ label: "Browse files", icon: <FolderTree size={I} />, onClick: () => openOverlay({ kind: "tree", root, rev: name }) });
-  items.push({ label: "Compare branch commits…", icon: <GitCompareArrows size={I} />, onClick: () => branchCommitCompare(root, reference) });
+  items.push({ label: "Compare branch commits…", shortcut: "branch-compare", icon: <GitCompareArrows size={I} />, onClick: () => branchCommitCompare(root, reference) });
   items.push({ label: "Compare with working tree", icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: reference, to: WORKTREE }) });
   if (!isCurrent) items.push({ label: `Compare with ${current ?? "HEAD"}`, icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: current ? `refs/heads/${current}` : "HEAD", to: reference }) });
   if (!isCurrent && current) {
     items.push({ separator: true });
-    items.push({ label: `Merge ${name} into ${current}…`, icon: <GitMerge size={I} />, onClick: () => A.mergeInto(root, name) });
-    items.push({ label: `Rebase ${current} onto ${name}`, icon: <GitPullRequestArrow size={I} />, onClick: () => A.rebaseOnto(root, name) });
+    items.push({ label: `Merge ${name} into ${current}…`, shortcut: "branch-merge", icon: <GitMerge size={I} />, onClick: () => A.mergeInto(root, name) });
+    items.push({ label: `Rebase ${current} onto ${name}`, shortcut: "branch-rebase", icon: <GitPullRequestArrow size={I} />, onClick: () => A.rebaseOnto(root, name) });
   }
   items.push({ separator: true });
   if (kind === "local") {
     if (isCurrent) items.push({ label: "Push…", icon: <CloudUpload size={I} />, onClick: () => A.push(root) });
-    items.push({ label: "Set upstream…", icon: <Link2 size={I} />, onClick: () => A.setUpstream(root, name) });
+    items.push({ label: "Set upstream…", shortcut: "branch-upstream", icon: <Link2 size={I} />, onClick: () => A.setUpstream(root, name) });
     items.push({ label: "Rename…", icon: <Pencil size={I} />, onClick: () => A.renameBranch(root, name) });
-    items.push({ label: "Delete…", icon: <Trash2 size={I} />, danger: true, disabled: isCurrent, onClick: () => A.deleteBranch(root, name) });
+    items.push({ label: "Delete…", shortcut: "branch-delete", icon: <Trash2 size={I} />, danger: true, disabled: isCurrent, onClick: () => A.deleteBranch(root, name) });
   } else {
     items.push({ label: "Rename on remote…", icon: <Pencil size={I} />, onClick: () => renameRemoteBranch(root, name) });
-    items.push({ label: "Delete on remote…", icon: <Trash2 size={I} />, danger: true, onClick: () => A.deleteRemoteBranch(root, name) });
+    items.push({ label: "Delete on remote…", shortcut: "branch-delete", icon: <Trash2 size={I} />, danger: true, onClick: () => A.deleteRemoteBranch(root, name) });
   }
   return items;
 }
@@ -100,7 +116,7 @@ export function commitMenu(root: string, row: GraphRow, selection: GraphRow[]): 
 
   if (multi) {
     const ordered = [...multi].sort((a, b) => b.index - a.index); // oldest first
-    items.push({ label: `Cherry-pick ${multi.length} commits`, icon: <GitCommitHorizontal size={I} />, disabled: busy, onClick: () => A.cherryPick(root, ordered.map((r) => r.oid)) });
+    items.push({ label: `Cherry-pick ${multi.length} commits`, shortcut: "commit-pick", icon: <GitCommitHorizontal size={I} />, disabled: busy, onClick: () => A.cherryPick(root, ordered.map((r) => r.oid)) });
     items.push({
       label: `Squash ${multi.length} commits…`,
       icon: <Combine size={I} />,
@@ -112,18 +128,18 @@ export function commitMenu(root: string, row: GraphRow, selection: GraphRow[]): 
           ordered.map((r) => r.subject),
         ),
     });
-    items.push({ label: `Save ${multi.length} commits as a patch…`, icon: <FileDown size={I} />, onClick: () => savePatch(root, ordered.map((r) => r.oid), ordered[ordered.length - 1].subject) });
+    items.push({ label: `Save ${multi.length} commits as a patch…`, shortcut: "commit-patch", icon: <FileDown size={I} />, onClick: () => savePatch(root, ordered.map((r) => r.oid), ordered[ordered.length - 1].subject) });
     if (multi.length === 2)
       items.push({ label: "Compare these two commits", icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: ordered[0].oid, to: ordered[1].oid }) });
-    items.push({ label: `Drop ${multi.length} commits…`, icon: <Trash2 size={I} />, danger: true, disabled: busy, onClick: () => A.dropCommits(root, ordered.map((r) => r.oid)) });
+    items.push({ label: `Drop ${multi.length} commits…`, shortcut: "commit-drop", icon: <Trash2 size={I} />, danger: true, disabled: busy, onClick: () => A.dropCommits(root, ordered.map((r) => r.oid)) });
     items.push({ separator: true });
     items.push({ label: "Copy hashes", icon: <Copy size={I} />, onClick: () => copyText(ordered.map((r) => r.oid).join("\n"), "Hashes copied") });
     return items;
   }
 
-  items.push({ label: "Check out this commit", icon: <CircleDot size={I} />, disabled: row.isHead, onClick: () => A.checkout(root, row.oid, "commit") });
-  items.push({ label: "Create branch here…", icon: <GitBranchPlus size={I} />, onClick: () => A.createBranch(root, row.oid, shortOid(row.oid)) });
-  items.push({ label: "Create tag here…", icon: <Tag size={I} />, onClick: () => A.createTag(root, row.oid) });
+  items.push({ label: "Check out this commit", shortcut: "commit-checkout", icon: <CircleDot size={I} />, disabled: row.isHead, onClick: () => A.checkout(root, row.oid, "commit") });
+  items.push({ label: "Create branch here…", shortcut: "commit-branch", icon: <GitBranchPlus size={I} />, onClick: () => A.createBranch(root, row.oid, shortOid(row.oid)) });
+  items.push({ label: "Create tag here…", shortcut: "commit-tag", icon: <Tag size={I} />, onClick: () => A.createTag(root, row.oid) });
   items.push({ separator: true });
   if (!row.isHead) {
     if (branches.length) {
@@ -135,14 +151,14 @@ export function commitMenu(root: string, row: GraphRow, selection: GraphRow[]): 
       items.push({ label: `Merge this commit into ${current}…`, icon: <GitMerge size={I} />, disabled: busy, onClick: () => A.mergeInto(root, row.oid) });
     }
     items.push({ label: `Rebase ${current} onto here`, icon: <GitPullRequestArrow size={I} />, disabled: busy, onClick: () => A.rebaseOnto(root, branches[0]?.name ?? row.oid) });
-    items.push({ label: "Cherry-pick", icon: <GitCommitHorizontal size={I} />, disabled: busy, onClick: () => A.cherryPick(root, [row.oid]) });
+    items.push({ label: "Cherry-pick", shortcut: "commit-pick", icon: <GitCommitHorizontal size={I} />, disabled: busy, onClick: () => A.cherryPick(root, [row.oid]) });
   }
-  items.push({ label: "Compare with working tree", icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: row.oid, to: WORKTREE }) });
-  items.push({ label: "Browse files at this commit", icon: <FolderTree size={I} />, onClick: () => openOverlay({ kind: "tree", root, rev: row.oid }) });
-  items.push({ label: "Save as patch…", icon: <FileDown size={I} />, onClick: () => savePatch(root, [row.oid], row.subject) });
+  items.push({ label: "Compare with working tree", shortcut: "commit-compare", icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: row.oid, to: WORKTREE }) });
+  items.push({ label: "Browse files at this commit", shortcut: "commit-browse", icon: <FolderTree size={I} />, onClick: () => openOverlay({ kind: "tree", root, rev: row.oid }) });
+  items.push({ label: "Save as patch…", shortcut: "commit-patch", icon: <FileDown size={I} />, onClick: () => savePatch(root, [row.oid], row.subject) });
   if (!row.isHead) items.push({ label: `Compare with ${current}`, icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: row.oid, to: "HEAD" }) });
-  items.push({ label: "Revert commit", icon: <Undo2 size={I} />, disabled: busy, onClick: () => A.revertCommit(root, row.oid) });
-  items.push({ label: `Reset ${current} to here…`, icon: <RotateCcw size={I} />, disabled: busy || row.isHead, onClick: () => A.resetTo(root, row.oid, row.subject) });
+  items.push({ label: "Revert commit", shortcut: "commit-revert", icon: <Undo2 size={I} />, disabled: busy, onClick: () => A.revertCommit(root, row.oid) });
+  items.push({ label: `Reset ${current} to here…`, shortcut: "commit-reset", icon: <RotateCcw size={I} />, disabled: busy || row.isHead, onClick: () => A.resetTo(root, row.oid, row.subject) });
   items.push({ separator: true });
   const editable = !busy && !row.isMerge;
   items.push({
@@ -150,9 +166,9 @@ export function commitMenu(root: string, row: GraphRow, selection: GraphRow[]): 
     icon: <Shuffle size={I} />,
     disabled: !editable,
     children: [
-      { label: "Interactive rebase from here…", icon: <ListOrdered size={I} />, onClick: () => openOverlay({ kind: "rebase", root, base: null, oldest: row.oid }) },
+      { label: "Interactive rebase from here…", shortcut: "commit-rebase", icon: <ListOrdered size={I} />, onClick: () => openOverlay({ kind: "rebase", root, base: null, oldest: row.oid }) },
       { separator: true },
-      { label: "Edit message…", icon: <Pencil size={I} />, onClick: () => A.reword(root, row.oid) },
+      { label: "Edit message…", shortcut: "commit-reword", icon: <Pencil size={I} />, onClick: () => A.reword(root, row.oid) },
       { label: "Edit commit contents (stop here)", icon: <FileEdit size={I} />, onClick: () => A.editCommit(root, row.oid) },
       {
         label: "Squash into parent…",
@@ -166,7 +182,7 @@ export function commitMenu(root: string, row: GraphRow, selection: GraphRow[]): 
       { label: "Move up (newer)", icon: <ArrowUp size={I} />, disabled: row.isHead, onClick: () => A.moveCommit(root, row.oid, 1) },
       { label: "Move down (older)", icon: <ArrowDown size={I} />, onClick: () => A.moveCommit(root, row.oid, -1) },
       { separator: true },
-      { label: "Drop commit…", icon: <Trash2 size={I} />, danger: true, onClick: () => A.dropCommits(root, [row.oid]) },
+      { label: "Drop commit…", shortcut: "commit-drop", icon: <Trash2 size={I} />, danger: true, onClick: () => A.dropCommits(root, [row.oid]) },
     ],
   });
   const bisecting = tab?.info?.state.kind === "bisect";

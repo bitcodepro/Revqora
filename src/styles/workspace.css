@@ -32,6 +32,10 @@
 .repository-dirty { width: 5px; height: 5px; border-radius: 50%; background: var(--amber); flex: none; }
 .repository-updates { padding: 9px 10px; border: 0; border-top: 1px solid var(--border-soft); background: transparent; color: var(--text-faint); text-align: left; font-size: var(--fs-xs); }
 .repository-updates.active { color: var(--accent); background: var(--accent-soft); }
+.repository-actions { display: flex; flex: none; flex-direction: column; border-top: 1px solid var(--border-soft); }
+.repository-actions-head { display: flex; align-items: center; padding-right: 8px; }
+.repository-actions-head .repository-updates { flex: 1; border: 0; }
+.repository-actions-head .icon-btn { flex: none; }
 .repository-add { margin: 0 8px 8px; flex: none; }
 .branches-slot { display: flex; grid-column: 1; min-width: 0; min-height: 0; }
 .branches-slot > .sidebar { flex: 1; min-width: 0; }

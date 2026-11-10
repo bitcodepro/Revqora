@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use super::repo::SourceHead;
 use super::runner::{self, GitError, GitResult};
 use super::{layers, ops, refs, status};
 
@@ -26,12 +27,6 @@ pub enum DirtyAction {
 pub struct SwitchChoice {
     action: DirtyAction,
     target_oid: String,
-}
-
-#[derive(Deserialize)]
-pub struct SourceHead {
-    branch: Option<String>,
-    oid: Option<String>,
 }
 
 #[derive(Serialize)]

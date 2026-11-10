@@ -18,6 +18,7 @@ export interface MenuItem {
   label?: string;
   icon?: ReactNode;
   hint?: string;
+  shortcut?: string;
   danger?: boolean;
   disabled?: boolean;
   separator?: boolean;

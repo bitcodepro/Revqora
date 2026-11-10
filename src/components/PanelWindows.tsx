@@ -6,12 +6,9 @@ import { registerUiSurface, surfaceDocument } from "../lib/uiSurfaces";
 import { useSettings } from "../lib/settings";
 import { useRepos } from "../lib/store";
 import { workspaceMode } from "../lib/workspaceLayouts";
+import { PANEL_NAMES, bindingFor, prettyCombo } from "../lib/shortcuts";
 
-const panelNames = {
-  workspaces: "Workspaces", repositories: "Repositories", branches: "Branches",
-  history: "Commit history", commit: "Commit preview", changes: "Changes",
-  pulls: "Pull requests", worktrees: "Worktree manager",
-};
+const panelNames = PANEL_NAMES;
 export type PanelId = keyof typeof panelNames;
 type SidebarId = "workspaces" | "repositories" | "branches";
 type Panels = Partial<Record<PanelId, Window>>;
@@ -159,10 +156,12 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
 
 export function usePanelWindowMenu(hasRepository: boolean, hasCommit: boolean) {
   const { panels, attach, detach } = usePanelWindows();
+  const shortcuts = useSettings((s) => s.shortcuts);
   return (Object.keys(panelNames) as PanelId[]).map(id => ({
       label: panels[id] ? `Return ${panelNames[id]} to main window` : `Open ${panelNames[id]} in separate window`,
       icon: panels[id] ? <PanelTop size={14}/> : <ExternalLink size={14}/>,
       disabled: !panels[id] && (id === "commit" ? !hasCommit : id !== "workspaces" && id !== "repositories" && !hasRepository),
+      hint: prettyCombo(bindingFor(`window-${id}`, shortcuts)),
       onClick: () => panels[id] ? attach(id) : detach(id),
   }));
 }

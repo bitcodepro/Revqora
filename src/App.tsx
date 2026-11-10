@@ -18,7 +18,7 @@ import { PullRequestsView } from "./components/PullRequests";
 import { useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
 import { openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
-import { actionFor, comboFromEvent, shortcutTitle } from "./lib/shortcuts";
+import { actionFor, comboFromEvent, matchesShortcut, PANEL_NAMES, shortcutTitle } from "./lib/shortcuts";
 import { settingsDialog } from "./components/dialogs";
 import { repoToolsDialog } from "./components/RepoTools";
 import { Onboarding } from "./components/Onboarding";
@@ -26,7 +26,7 @@ import { GitMissing } from "./components/GitMissing";
 import * as A from "./lib/actions";
 import { api, errorMessage } from "./lib/api";
 import { WORKTREE } from "./lib/types";
-import { CommandPalette, OpBanner, StatusBar, TopBar, Welcome } from "./components/Shell";
+import { CommandPalette, OpBanner, paletteShortcut, StatusBar, TopBar, Welcome } from "./components/Shell";
 import { ContextMenuHost, DialogHost, Splitter, ToastHost } from "./components/Overlays";
 import { bindingFor, prettyCombo } from "./lib/shortcuts";
 import { Sidebar } from "./components/Sidebar";
@@ -51,7 +51,7 @@ import { RepositoryOverview, RepositorySidebar } from "./components/Repositories
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
 import { WorkspacesSidebar } from "./components/WorkspacesSidebar";
-import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows } from "./components/PanelWindows";
+import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows, type PanelId } from "./components/PanelWindows";
 import "./styles/workspace.css";
 
 function useAppearance() {
@@ -279,7 +279,7 @@ export default function App() {
 }
 
 function MainApp() {
-  const { panels, attach, toggleSidebar } = usePanelWindows();
+  const { panels, attach, detach, toggleSidebar } = usePanelWindows();
   useAppearance();
   useEffect(startUpdateChecks, []);
   useAutoFetch();
@@ -390,7 +390,7 @@ function MainApp() {
       if (e.defaultPrevented || e.isComposing) return;
       const target = e.target as HTMLElement;
       const owner = target?.ownerDocument ?? document;
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" &&
+      if (matchesShortcut(e, "workspaceUndo") &&
           useSettings.getState().workspacesOpen && hasWorkspaceDropToUndo() &&
           !target?.closest?.("input, textarea, select, [contenteditable], .cm-editor") && !owner.querySelector(".modal")) {
         e.preventDefault();
@@ -458,12 +458,53 @@ function MainApp() {
         e.preventDefault();
         if (["history", "changes", "pulls", "reviewMode"].includes(id)) useUi.setState({ repositoryOverview: false });
         run[id]();
+        return;
+      }
+      if (e.repeat || owner.querySelector(".modal, .palette") || typing) return;
+      const panel = id.startsWith("window-") ? id.slice(7) as PanelId : null;
+      if (panel && Object.hasOwn(PANEL_NAMES, panel)) {
+        if (panels[panel]) { e.preventDefault(); attach(panel); return; }
+        if (panel !== "workspaces" && panel !== "repositories" && !t?.info) return;
+        if (panel === "commit" && (!t?.selected || t.selected === WORKTREE)) return;
+        e.preventDefault();
+        detach(panel);
+        return;
+      }
+      if (id === "repository-actions") {
+        e.preventDefault();
+        const settings = useSettings.getState();
+        settings.set({ repositoryActionsCollapsed: !settings.repositoryActionsCollapsed });
+        if (settings.repositoryActionsCollapsed && (panels.repositories || !layout.repositoriesOpen || layout.focusMode)) toggleSidebar("repositories");
+        return;
+      }
+      const historyMode = HISTORY_MODES.find(value => id === `layout-${value}`);
+      if (historyMode && a && t?.info) {
+        e.preventDefault();
+        useSettings.getState().set({ historyMode });
+        useUi.setState({ repositoryOverview: false });
+        st.patch(a, { view: "history" });
+        return;
+      }
+      if (id === "close-preview" && a && t?.selected && t.selected !== WORKTREE) {
+        e.preventDefault();
+        st.patch(a, { selected: null, multi: [] });
+        return;
+      }
+      if (id === "worktree-manager" && panels.worktrees) {
+        e.preventDefault();
+        panels.worktrees.focus();
+        return;
+      }
+      const command = paletteShortcut(id, t?.info ? t : null);
+      if (command) {
+        e.preventDefault();
+        command();
       }
     };
     const surfaces = [window, ...Object.values(panels)];
     for (const view of surfaces) view.addEventListener("keydown", onKey);
     return () => { for (const view of surfaces) view.removeEventListener("keydown", onKey); };
-  }, [panels, toggleSidebar]);
+  }, [panels, attach, detach, toggleSidebar]);
 
   // Block the default browser context menu outside our own menus.
   useEffect(() => {

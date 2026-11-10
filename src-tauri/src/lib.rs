@@ -281,7 +281,7 @@ use git::ops::{self, CommitOptions, OpOutcome, PushOptions, ReflogEntry, Rewrite
 use git::rebase_studio as studio;
 use git::recovery;
 use git::refs::{self, RefsSnapshot};
-use git::repo::{self, RepoInfo};
+use git::repo::{self, RepoInfo, SourceHead};
 use git::runner::{self, GitError, GitResult};
 use git::status::{self, StatusSummary};
 use git::watcher::{self, RepoWatcher};
@@ -677,6 +677,8 @@ async fn rev_diff(repo: String, from: Option<String>, to: String, path: String, 
 async fn apply_selection(
     app: AppHandle,
     expected_state: Option<String>,
+    source_head: Option<SourceHead>,
+    stage_snapshot: Option<u64>,
     repo: String,
     path: String,
     mode: SelectionMode,
@@ -688,6 +690,16 @@ async fn apply_selection(
     let checkpoint_expected = expected_state.clone();
     mutating(repo.clone(), expected_state, app.clone(), "apply_selection", None, move || {
         let r = p(&repo);
+        if mode == SelectionMode::Stage {
+            if let Some(head) = source_head {
+                head.verify(&r)?;
+            }
+            if let Some(snapshot) = stage_snapshot {
+                if diff::stage_selection_snapshot(&r, &path, &selection, snapshot)? {
+                    return Ok(());
+                }
+            }
+        }
         if mode == SelectionMode::Discard {
             recovery::automatic_expected(&r, "discard_lines", true, false, checkpoint_expected.as_deref())?;
         }
@@ -698,8 +710,15 @@ async fn apply_selection(
 }
 
 #[tauri::command]
-async fn stage(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "stage", None, move || ops::stage_paths(&p(&repo), &paths)).await
+async fn stage(app: AppHandle, expected_state: Option<String>, source_head: Option<SourceHead>, repo: String, paths: Vec<String>) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "stage", None, move || {
+        let r = p(&repo);
+        if let Some(head) = source_head {
+            head.verify(&r)?;
+        }
+        ops::stage_paths(&r, &paths)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -927,7 +946,7 @@ async fn checkout(
     target: String,
     kind: String,
     choice: Option<git::branch_switch::SwitchChoice>,
-    source_head: Option<git::branch_switch::SourceHead>,
+    source_head: Option<SourceHead>,
 ) -> GitResult<git::branch_switch::SwitchOutcome> {
     let reviewed_state = expected_state.clone();
     mutating(repo.clone(), expected_state, app, "checkout", None, move || {

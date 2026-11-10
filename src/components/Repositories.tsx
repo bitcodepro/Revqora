@@ -184,6 +184,7 @@ export function RepositorySidebar() {
   const library = useLibrary();
   const [groupId, setGroupId] = useState("");
   const workspacesOpen = useSettings(s => s.workspacesOpen);
+  const actionsCollapsed = useSettings(s => s.repositoryActionsCollapsed);
   const [selection, setSelection] = useState<string[]>([]);
   const selectionAnchor = useRef<string | null>(null);
   const drag = useWorkspaceRepositoryDrag();
@@ -200,7 +201,8 @@ export function RepositorySidebar() {
   const favorite = (r: string) => library.favorites.some((p) => repositoryKey(p) === repositoryKey(r));
   const groupFilter = groups.find((g) => g.id === groupId);
   const displayName = (r: string) => library.repositoryNames[repositoryKey(r)] ?? tabs[r]?.info?.name ?? basename(r);
-  const visible = candidates.filter((r) => (r + " " + displayName(r)).toLowerCase().includes(query.trim().toLowerCase()) && (!updatesOnly || !!repositorySidebarStatus(tabs[r])?.behind) && (!favoritesOnly || favorite(r)) && (!groupFilter || groupFilter.roots.some((p) => repositoryKey(p) === repositoryKey(r))));
+  const filterUpdates = updatesOnly && !actionsCollapsed;
+  const visible = candidates.filter((r) => (r + " " + displayName(r)).toLowerCase().includes(query.trim().toLowerCase()) && (!filterUpdates || !!repositorySidebarStatus(tabs[r])?.behind) && (!favoritesOnly || favorite(r)) && (!groupFilter || groupFilter.roots.some((p) => repositoryKey(p) === repositoryKey(r))));
   const sections = [...groups.map((g) => ({ ...g, roots: visible.filter((r) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r))) })), { id: "ungrouped", name: "Ungrouped", collapsed: false, roots: visible.filter((r) => !groups.some((g) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r)))) }];
   const displayed = sections.flatMap(group => !group.collapsed || query ? group.roots : []);
   const selected = selecting ? displayed.filter(root => selection.includes(root)) : [];
@@ -209,7 +211,7 @@ export function RepositorySidebar() {
       <header onContextMenu={panelMenu}><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{open.length}</span><div className="spacer" /><button className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
       <div className="repository-filter input-wrap"><Search size={13} /><input className="input sm" placeholder="Find repository…" aria-label="Find repository" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupFilter?.id ?? ""} onChange={(e) => setGroupId(e.target.value)}><option value="">All groups</option>{groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select>}
-      <SyncButtons roots={visible.filter((r) => !!tabs[r])} scoped={!!query.trim() || updatesOnly || favoritesOnly || !!groupFilter} />
+      <SyncButtons roots={visible.filter((r) => !!tabs[r])} scoped={!!query.trim() || filterUpdates || favoritesOnly || !!groupFilter} />
       <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites{favoritesOnly ? " · Show all" : ""}</button>
       <button className={`repository-overview-link ${overview ? "active" : ""}`} aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={14} /> All repositories</button>
       {selecting && <small className="repository-selection-note">{selected.length ? `${selected.length} selected · Drag to a workspace` : "Ctrl or Shift to select · Drag to a workspace"}</small>}
@@ -252,10 +254,15 @@ export function RepositorySidebar() {
         })}</div>)}
         {!visible.length && <div className="cg-empty">No matching repositories</div>}
       </div>
-      <button className={`repository-updates ${updatesOnly ? "active" : ""}`} aria-pressed={updatesOnly} onClick={() => setUpdatesOnly(!updatesOnly)}>{count} with incoming commits{updatesOnly ? " · Show all" : ""}</button>
-      <button type="button" className="btn sm repository-add" onClick={() => void repositoryLibraryDialog()}>Manage library…</button>
-      <button className="btn sm repository-add" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open repositories…</button>
-      <button type="button" className="btn sm repository-add" onClick={() => void repositoryFolderImportDialog()}><FolderSearch size={14} /> Import folder…</button>
+      {!actionsCollapsed && <div className="repository-actions" role="group" aria-label="Repository sidebar actions">
+        <div className="repository-actions-head">
+          <button type="button" className={`repository-updates ${updatesOnly ? "active" : ""}`} aria-pressed={updatesOnly} onClick={() => setUpdatesOnly(!updatesOnly)}>{count} with incoming commits{updatesOnly ? " · Show all" : ""}</button>
+          <button type="button" className="icon-btn sm" aria-label="Collapse repository actions" title="Collapse repository actions" onClick={() => useSettings.getState().set({ repositoryActionsCollapsed: true })}><X size={13} /></button>
+        </div>
+        <button type="button" className="btn sm repository-add" onClick={() => void repositoryLibraryDialog()}>Manage library…</button>
+        <button className="btn sm repository-add" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open repositories…</button>
+        <button type="button" className="btn sm repository-add" onClick={() => void repositoryFolderImportDialog()}><FolderSearch size={14} /> Import folder…</button>
+      </div>}
       <Splitter dir="v" style={{ right: -3, left: "auto" }} onDrag={(d) => setW((v) => Math.max(180, Math.min(360, v + d)))} onEnd={() => set({ repositoriesWidth: w })} />
     </div>
   );
