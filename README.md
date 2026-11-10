@@ -505,6 +505,8 @@ Use your actual path, or copy the ready-to-use entry from Settings. Add the VS C
 
 For example, ask the agent to inspect the unstaged diff, propose files to stage and send one staging request. Switch to Revqora and review the exact paths in the **MCP request** dialog. After approval the agent can read the staged state and propose a commit message in a separate request. Branch deletion, push, Sync, and PR review and merge use Revqora's existing review dialogs. An action status of `handed_off` means Revqora took over the review. Check the resulting Git or PR state to confirm what happened.
 
+The MCP staged diff includes all staged changes, including sealed stage layers. While sealed layers exist, use **Changes** in Revqora to unstage or commit them.
+
 MCP access is off on startup. When enabled, local clients can read code and PR text from open repositories in the current workspace, and their model provider may receive those results. PR access uses the connection selected in PR Center. Revqora uses an authenticated loopback bridge and a session file in its portable data folder. The copied configuration contains the executable path and arguments. Requests for changes require approval in the desktop app.
 
 ### Explore changed code and dependent branches

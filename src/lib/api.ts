@@ -160,12 +160,12 @@ export const api = {
   stashSelection: (repo: string, path: string, selection: [number, number][], hash: string, opts: DiffOptions, message: string, expectedState: string | null) => call<PartialStashResult>("stash_selection", { repo, path, selection, hash, opts, message, expectedState }),
   remoteRenamePlan: (repo: string, trackingRef: string, newName: string) => call<RemoteRenamePlan>("remote_rename_plan", { repo, trackingRef, newName }),
   remoteBranchRename: (repo: string, plan: RemoteRenamePlan) => call<RemoteRenameResult>("remote_branch_rename", { repo, plan, expectedState: plan.stateToken }),
-  status: (repo: string) => call<StatusSummary>("status", { repo }),
+  status: (repo: string, requireUnsealed?: boolean) => call<StatusSummary>("status", { repo, requireUnsealed }),
   identityGet: (repo: string) => call<Identity>("identity_get", { repo }),
   identitySet: (repo: string, name: string, email: string, global: boolean) => call<void>("identity_set", { repo, name, email, global }),
 
-  workingDiff: (repo: string, path: string, side: "unstaged" | "staged", untracked: boolean, opts?: DiffOptions) =>
-    call<FileDiff>("working_diff", { repo, path, side, untracked, opts }),
+  workingDiff: (repo: string, path: string, side: "unstaged" | "staged", untracked: boolean, opts?: DiffOptions, fullIndex?: boolean) =>
+    call<FileDiff>("working_diff", { repo, path, side, untracked, opts, fullIndex }),
   revDiff: (repo: string, from: string | null, to: string, path: string, opts?: DiffOptions) => call<FileDiff>("rev_diff", { repo, from, to, path, opts }),
   applySelection: (
     repo: string,
@@ -177,9 +177,10 @@ export const api = {
     opts?: DiffOptions,
   ) => call<void>("apply_selection", { repo, path, mode, selection, hash, untracked, opts }),
   stage: (repo: string, paths: string[], expectedState?: string) => call<void>("stage", { repo, paths, expectedState }),
-  unstage: (repo: string, paths: string[], expectedState?: string) => call<void>("unstage", { repo, paths, expectedState }),
+  unstage: (repo: string, paths: string[], expectedState?: string, requireUnsealed?: boolean) => call<void>("unstage", { repo, paths, expectedState, requireUnsealed }),
   discard: (repo: string, tracked: string[], untracked: string[], expectedState?: string | null) => call<string>("discard", { repo, tracked, untracked, expectedState }),
-  commit: (repo: string, message: string, opts?: CommitOptions, expectedState?: string | null) => call<string>("commit", { repo, message, opts, expectedState }),
+  commit: (repo: string, message: string, opts?: CommitOptions, expectedState?: string | null, requireUnsealed?: boolean) =>
+    call<string>("commit", { repo, message, opts, expectedState, requireUnsealed }),
   lastMessage: (repo: string) => call<string>("last_message", { repo }),
 
   graphLoad: (repo: string, branch: string | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean) =>

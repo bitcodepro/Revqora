@@ -13,6 +13,8 @@ pub(super) struct ToolCall {
     name: String,
     #[serde(default)]
     arguments: Map<String, Value>,
+    #[serde(default, skip_serializing)]
+    _meta: Option<Map<String, Value>>,
 }
 
 struct Tool {
@@ -185,6 +187,9 @@ mod tests {
             json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_repositories"}}),
             json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_repositories","arguments":{"path":"outside"}}}),
             json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"shell","arguments":{"command":"git push"}}}),
+            json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"list_repositories","_meta":{}}}),
+            json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"list_repositories","_meta":{"progressToken":42,"vscode/context":{"view":"chat"}}}}),
+            json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"list_repositories","arguments":{"_meta":{}}}}),
         ]
         .into_iter()
         .map(|request| request.to_string())
@@ -194,17 +199,22 @@ mod tests {
         let mut output = Vec::new();
         run(&mut input.as_bytes(), &mut output, |call| {
             assert_eq!(call.name, "list_repositories");
+            assert!(call.arguments.is_empty());
+            assert!(serde_json::to_value(call).unwrap().get("_meta").is_none());
             Ok(json!({"active":"fixture"}))
         })
         .unwrap();
         let responses: Vec<Value> =
             output.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()).map(|line| serde_json::from_slice(line).unwrap()).collect();
-        assert_eq!(responses.len(), 6);
+        assert_eq!(responses.len(), 9);
         assert_eq!(responses[0]["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(responses[1]["error"]["code"], -32002);
         assert!(responses[2]["result"]["tools"].as_array().is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "request_action")));
         assert_eq!(responses[3]["result"]["isError"], false);
         assert_eq!(responses[4]["result"]["isError"], true);
         assert_eq!(responses[5]["result"]["isError"], true);
+        assert_eq!(responses[6]["result"]["isError"], false);
+        assert_eq!(responses[7]["result"]["isError"], false);
+        assert_eq!(responses[8]["result"]["isError"], true);
     }
 }

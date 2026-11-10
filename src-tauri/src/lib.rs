@@ -600,8 +600,15 @@ async fn repo_info(repo: String) -> GitResult<RepoInfo> {
 }
 
 #[tauri::command]
-async fn status(repo: String) -> GitResult<StatusSummary> {
-    blocking(move || status::status(&p(&repo))).await
+async fn status(repo: String, require_unsealed: Option<bool>) -> GitResult<StatusSummary> {
+    blocking(move || {
+        let r = p(&repo);
+        if require_unsealed == Some(true) {
+            layers::require_unsealed_index(&r)?;
+        }
+        status::status(&r)
+    })
+    .await
 }
 #[tauri::command]
 async fn repository_sidebar_status(repo: String) -> GitResult<StatusSummary> {
@@ -637,10 +644,10 @@ async fn identity_set(app: AppHandle, expected_state: Option<String>, repo: Stri
 // ───────────────────────────── diffs & staging ─────────────────────────────
 
 #[tauri::command]
-async fn working_diff(repo: String, path: String, side: WorkSide, untracked: bool, opts: Option<DiffOptions>) -> GitResult<FileDiff> {
+async fn working_diff(repo: String, path: String, side: WorkSide, untracked: bool, opts: Option<DiffOptions>, full_index: Option<bool>) -> GitResult<FileDiff> {
     blocking(move || {
         let r = p(&repo);
-        let base = if side == WorkSide::Staged { layers::staged_base(&r) } else { None };
+        let base = if side == WorkSide::Staged && full_index != Some(true) { layers::staged_base(&r) } else { None };
         diff::working_diff(&r, &path, side, base.as_deref(), untracked, &opts.unwrap_or_default())
     })
     .await
@@ -699,10 +706,15 @@ async fn working_file_save(
 }
 
 #[tauri::command]
-async fn unstage(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>) -> GitResult<()> {
+async fn unstage(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>, require_unsealed: Option<bool>) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "unstage", None, move || {
         let r = p(&repo);
-        let base = layers::staged_base(&r);
+        let base = if require_unsealed == Some(true) {
+            layers::require_unsealed_index(&r)?;
+            None
+        } else {
+            layers::staged_base(&r)
+        };
         ops::unstage_paths(&r, &paths, base.as_deref())
     })
     .await
@@ -714,14 +726,25 @@ async fn discard(app: AppHandle, expected_state: Option<String>, repo: String, t
 }
 
 #[tauri::command]
-async fn commit(app: AppHandle, expected_state: Option<String>, repo: String, message: String, opts: Option<CommitOptions>) -> GitResult<String> {
+async fn commit(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    message: String,
+    opts: Option<CommitOptions>,
+    require_unsealed: Option<bool>,
+) -> GitResult<String> {
     let checkpoint_expected = expected_state.clone();
     mutating(repo.clone(), expected_state, app.clone(), "commit", None, move || {
+        let r = p(&repo);
+        if require_unsealed == Some(true) {
+            layers::require_unsealed_index(&r)?;
+        }
         let opts = opts.unwrap_or_default();
         if opts.amend {
-            recovery::automatic_expected(&p(&repo), "amend", true, false, checkpoint_expected.as_deref())?;
+            recovery::automatic_expected(&r, "amend", true, false, checkpoint_expected.as_deref())?;
         }
-        ops::commit(&p(&repo), &message, &opts)
+        ops::commit(&r, &message, &opts)
     })
     .await
 }

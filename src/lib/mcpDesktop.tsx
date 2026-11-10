@@ -158,7 +158,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     if (target) detail.push(`Target: ${target}`);
     if (number) detail.push(`Pull request #${number}`);
     const paths = [...new Set(a.paths ?? [])];
-    const baseline = await api.status(root);
+    const baseline = await api.status(root, action === "unstage" || action === "commit");
     const expectedState = baseline.stateToken;
     if (!expectedState) throw new Error("Repository status is not ready. Refresh and inspect it first.");
     const pullMode = useSettings.getState().pullMode;
@@ -216,11 +216,11 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     status.phase = "running";
     switch (action) {
       case "stage": await api.stage(root, paths, expectedState); break;
-      case "unstage": await api.unstage(root, paths, expectedState); break;
+      case "unstage": await api.unstage(root, paths, expectedState, true); break;
       case "commit": {
         const signing = await api.signingGet(root);
         if (!await api.mcpLease(event.session)) { status.phase = "cancelled"; return; }
-        status.commit = await api.commit(root, a.message!.trim(), { sign: signing.signCommits }, expectedState);
+        status.commit = await api.commit(root, a.message!.trim(), { sign: signing.signCommits }, expectedState, true);
         break;
       }
       case "create_branch":
@@ -335,7 +335,7 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
       }
       const file = (await api.status(root)).files.find(file => file.path === path);
       if (!file || path.endsWith("/") || a.side === "staged" && file.untracked) throw new Error("Choose a changed file from repository_status.");
-      return diffPage(await api.workingDiff(root, path, a.side === "staged" ? "staged" : "unstaged", file.untracked, { disableTextconv: true }), a.offset ?? 0);
+      return diffPage(await api.workingDiff(root, path, a.side === "staged" ? "staged" : "unstaged", file.untracked, { disableTextconv: true }, true), a.offset ?? 0);
     }
     case "list_worktrees": {
       const { worktrees } = await api.worktreeManagerSnapshot(root);

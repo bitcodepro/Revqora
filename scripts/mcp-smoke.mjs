@@ -39,7 +39,7 @@ export async function mcpSmoke({ page, exe, profile, work }) {
       child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: request, method, params }) + "\n", error => { if (error) fail(error); });
     });
   };
-  const rawTool = (name, args = {}) => rpc("tools/call", { name, arguments: args });
+  const rawTool = (name, args = {}) => rpc("tools/call", { name, arguments: args, _meta: { progressToken: id + 1 } });
   const tool = async (name, args) => {
     const result = await rawTool(name, args);
     if (result.isError) throw new Error(result.content[0].text);
@@ -104,6 +104,28 @@ export async function mcpSmoke({ page, exe, profile, work }) {
     await approve.getByRole("button", { name: "Approve in Revqora", exact: true }).click();
     await waitPhase(approved.id, "succeeded");
     assert.equal(git("diff", "--cached", "--name-only", "--", file), file);
+
+    const beforeHead = git("rev-parse", "HEAD");
+    assert.equal(git("diff", "--cached", "--name-only"), file, "The smoke repository must have only the fixture staged");
+    await tool("open_view", { repository: root, view: "changes" });
+    await page.getByRole("button", { name: "Seal staged changes into a layer", exact: true }).click();
+    await page.waitForSelector(".layer:not(.open-layer)");
+    await page.waitForSelector(".changes[data-pending='false']");
+    assert((await tool("repository_status", { repository: root })).files.items.some(row => row.path === file && row.index === "A"));
+    const stagedDiff = await tool("file_diff", { repository: root, path: file, side: "staged" });
+    assert(stagedDiff.hunks.some(hunk => hunk.lines.some(line => line.text.includes("MCP stage fixture"))));
+    for (const args of [{ action: "unstage", paths: [file] }, { action: "commit", message: "Unexpected MCP commit" }]) {
+      const request = await tool("request_action", { repository: root, ...args });
+      const failed = await waitPhase(request.id, "failed");
+      assert.match(failed.message, /sealed stage layers.*Changes/);
+    }
+    assert.equal(git("diff", "--cached", "--name-only"), file);
+    assert.equal(git("rev-parse", "HEAD"), beforeHead);
+    await page.locator(".layer:not(.open-layer) button[title='Unstage layer']").click();
+    await page.waitForSelector(".layer:not(.open-layer)", { state: "detached" });
+    await page.waitForSelector(".changes[data-pending='false']");
+    assert.equal(git("diff", "--cached", "--name-only"), "");
+    assert.equal(fs.readFileSync(path.join(root, file), "utf8"), "MCP stage fixture\n");
     await toggle(false);
     assert.equal((await rawTool("list_repositories")).isError, true);
   } finally {

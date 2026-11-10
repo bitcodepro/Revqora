@@ -1,4 +1,5 @@
 import { api, errorMessage } from "./api";
+import { basename } from "./format";
 import { authorScope, loadAuthorPreferences, matchesPrAuthor, type PrAuthor } from "./prAuthors";
 import { safeWebUrl } from "./prCenter";
 import { useSettings, type PullRequestWatch } from "./settings";
@@ -185,11 +186,13 @@ export async function checkPullRequestActivity(running: () => boolean) {
       const readId = nextPrListRead();
       const page = await api.prPage(root, "open");
       if (!stillOpen()) continue;
-      failures.delete(root);
       window.dispatchEvent(new CustomEvent<PrPageRefresh>(PR_PAGE_REFRESHED, { detail: { root, page, readId } }));
       const scope = authorScope(page.forge, page.viewer);
       const watch = watches[root]?.[scope];
-      if ((!watch && !prWatchMineSince) || !page.forge.connectionRevision) continue;
+      if ((!watch && !prWatchMineSince) || !page.forge.connectionRevision) {
+        failures.delete(root);
+        continue;
+      }
       const me = viewerAuthor(page.viewer) ?? loadAuthorPreferences(root, scope, page.forge).mine;
       const selected = new Map(Object.entries(watch?.selected ?? {}).map(([number, since]) => [Number(number), since]));
       if (prWatchMineSince && me) {
@@ -198,9 +201,10 @@ export async function checkPullRequestActivity(running: () => boolean) {
         };
         addMine(page);
         if (page.nextCursor) {
-          await visitPrPages(cursor => api.prPage(root, "open", cursor), stillOpen, addMine, page.nextCursor);
+          if (!await visitPrPages(cursor => api.prPage(root, "open", cursor), stillOpen, addMine, page.nextCursor)) continue;
         }
       }
+      if (stillOpen()) failures.delete(root);
       for (const [number, since] of selected) {
         if (!stillOpen()) break;
         const key = JSON.stringify([root, scope, number, since, me?.key]);
@@ -214,7 +218,7 @@ export async function checkPullRequestActivity(running: () => boolean) {
       }
     } catch (error) {
       complete = false;
-      if (stillOpen() && watches[root]) warnOnce(root, "Could not check watched pull requests", error);
+      if (stillOpen() && (watches[root] || prWatchMineSince)) warnOnce(root, `Could not check watched pull requests in ${tab?.info?.name ?? basename(root)}`, error);
     }
   }
   if (current() && complete) for (const key of baselines.keys()) if (!live.has(key)) baselines.delete(key);

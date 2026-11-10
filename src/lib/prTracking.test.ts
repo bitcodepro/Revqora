@@ -81,6 +81,33 @@ describe("PR background activity", () => {
     expect(mocks.prDetail).not.toHaveBeenCalled();
   });
 
+  it.each(["global", "individual"])("warns about PR-list authentication failures in %s mode", async mode => {
+    if (mode === "global") mocks.settings.prWatchMineSince = 1;
+    else watch([1]);
+    mocks.prPage.mockRejectedValue(new Error("Token expired"));
+    await checkPullRequestActivity(() => true);
+    await checkPullRequestActivity(() => true);
+    expect(mocks.toast).toHaveBeenCalledExactlyOnceWith({
+      kind: "warning", title: "Could not check watched pull requests in repo", detail: "Error: Token expired",
+    });
+    mocks.prPage.mockResolvedValueOnce(page([pull(1)]));
+    await checkPullRequestActivity(() => true);
+    expect(mocks.prDetail).toHaveBeenCalledExactlyOnceWith("/repo", 1, "connection");
+    await checkPullRequestActivity(() => true);
+    expect(mocks.toast).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns only once when a later My PRs page fails repeatedly", async () => {
+    mocks.settings.prWatchMineSince = 1;
+    mocks.prPage.mockImplementation(async (_root, _state, cursor) => {
+      if (cursor) throw new Error("Token expired");
+      return page([pull(1)], "next");
+    });
+    await checkPullRequestActivity(() => true);
+    await checkPullRequestActivity(() => true);
+    expect(mocks.toast).toHaveBeenCalledOnce();
+  });
+
   it("reports new feedback once in History and ignores own comments despite a failed inline feed", async () => {
     watch([1]);
     let incoming = false;

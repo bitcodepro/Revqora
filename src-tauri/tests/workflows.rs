@@ -607,6 +607,26 @@ fn ordinary_restage_and_unstage_preserve_explicitly_sealed_layers_and_latest_edi
 }
 
 #[test]
+fn full_index_diff_includes_sealed_changes_and_mcp_write_guard_rejects_layers() {
+    let r = Repo::new();
+    r.write("settings.txt", "before\n");
+    r.commit_all("base");
+    r.write("settings.txt", "sealed\n");
+    r.git(&["add", "settings.txt"]);
+    layers::require_unsealed_index(r.p()).unwrap();
+    layers::seal(r.p(), None).unwrap();
+
+    let status = status::status(r.p()).unwrap();
+    assert_eq!(status.staged_count, 1);
+    let base = layers::staged_base(r.p()).unwrap();
+    let options = DiffOptions::default();
+    assert!(diff::working_diff(r.p(), "settings.txt", WorkSide::Staged, Some(&base), false, &options).unwrap().empty);
+    assert!(!diff::working_diff(r.p(), "settings.txt", WorkSide::Staged, None, false, &options).unwrap().empty);
+    assert!(layers::require_unsealed_index(r.p()).unwrap_err().message.contains("sealed stage layers"));
+    assert_eq!(r.index_blob("settings.txt"), "sealed\n");
+}
+
+#[test]
 fn status_reports_staged_unstaged_untracked() {
     let r = Repo::new();
     r.write("a.txt", "a\n");
