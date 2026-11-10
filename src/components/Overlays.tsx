@@ -1,29 +1,34 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AlertCircle, CheckCircle2, ChevronRight, Info, TriangleAlert, X } from "lucide-react";
 import { useUi, type MenuItem } from "../lib/ui";
+import { surfaceDocument } from "../lib/uiSurfaces";
 
 export function ContextMenuHost() {
   const menu = useUi((s) => s.menu);
   const close = useUi((s) => s.closeMenu);
   useEffect(() => {
     if (!menu) return;
+    const view = menu.surface;
     const onDown = (e: MouseEvent) => {
       if (!(e.target as HTMLElement).closest(".ctx-menu")) close();
     };
     const onKey = (e: KeyboardEvent) => { if(e.key === "Escape") {e.preventDefault();e.stopImmediatePropagation();close();} };
-    window.addEventListener("mousedown", onDown, true);
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("blur", close);
-    window.addEventListener("resize", close);
+    view.addEventListener("mousedown", onDown, true);
+    view.addEventListener("keydown", onKey);
+    view.addEventListener("blur", close);
+    view.addEventListener("resize", close);
     return () => {
-      window.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("blur", close);
-      window.removeEventListener("resize", close);
+      view.removeEventListener("mousedown", onDown, true);
+      view.removeEventListener("keydown", onKey);
+      view.removeEventListener("blur", close);
+      view.removeEventListener("resize", close);
     };
   }, [menu, close]);
   if (!menu) return null;
-  return <Menu x={menu.x} y={menu.y} items={menu.items} onDone={close} />;
+  const content = <Menu x={menu.x} y={menu.y} items={menu.items} onDone={close} />;
+  const body = surfaceDocument(menu.surface)?.body;
+  return menu.surface === window ? content : body ? createPortal(content, body) : null;
 }
 
 function Menu({ x, y, items, onDone }: { x: number; y: number; items: MenuItem[]; onDone: () => void }) {
@@ -34,7 +39,8 @@ function Menu({ x, y, items, onDone }: { x: number; y: number; items: MenuItem[]
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    setPos({ x: Math.max(6, Math.min(x, window.innerWidth - r.width - 6)), y: Math.max(6, Math.min(y, window.innerHeight - r.height - 6)) });
+    const view = el.ownerDocument.defaultView!;
+    setPos({ x: Math.max(6, Math.min(x, view.innerWidth - r.width - 6)), y: Math.max(6, Math.min(y, view.innerHeight - r.height - 6)) });
   }, [x, y]);
   return (
     <>
@@ -109,40 +115,53 @@ export function DialogHost() {
   const dialogs = useUi((s) => s.dialogs);
   return (
     <>
-      {dialogs.map((d) => (
-        <div key={d.id}>{d.render(d.resolve)}</div>
-      ))}
+      {dialogs.map(d => {
+        if (d.surface === window) return <div key={d.id}>{d.render(d.resolve)}</div>;
+        const body = surfaceDocument(d.surface)?.body;
+        return body ? createPortal(<div>{d.render(d.resolve)}</div>, body, d.id) : null;
+      })}
     </>
   );
 }
 
-export function Splitter({ dir, onDrag, onEnd, style }: { dir: "v" | "h"; onDrag: (delta: number) => void; onEnd?: () => void; style?: React.CSSProperties }) {
+export function Splitter({ dir, onDrag, onEnd, style, label }: { dir: "v" | "h"; onDrag: (delta: number) => void; onEnd?: () => void; style?: React.CSSProperties; label?: string }) {
   const [dragging, setDragging] = useState(false);
+  const position = useRef<number | null>(null);
   const endRef = useRef(onEnd);
   endRef.current = onEnd;
   return (
     <div
       className={`splitter-${dir} ${dragging ? "dragging" : ""}`}
       style={style}
-      onMouseDown={(e) => {
+      role="separator"
+      aria-orientation={dir === "v" ? "vertical" : "horizontal"}
+      aria-label={label ?? (dir === "v" ? "Resize pane width" : "Resize pane height")}
+      tabIndex={0}
+      onPointerDown={e => {
+        if (e.button !== 0) return;
         e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        position.current = dir === "v" ? e.clientX : e.clientY;
         setDragging(true);
-        let last = dir === "v" ? e.clientX : e.clientY;
-        const move = (ev: MouseEvent) => {
-          const cur = dir === "v" ? ev.clientX : ev.clientY;
-          onDrag(cur - last);
-          last = cur;
-        };
-        const up = () => {
-          setDragging(false);
-          window.removeEventListener("mousemove", move);
-          window.removeEventListener("mouseup", up);
-          document.body.style.cursor = "";
-          endRef.current?.();
-        };
-        document.body.style.cursor = dir === "v" ? "col-resize" : "row-resize";
-        window.addEventListener("mousemove", move);
-        window.addEventListener("mouseup", up);
+      }}
+      onPointerMove={e => {
+        if (position.current === null) return;
+        const current = dir === "v" ? e.clientX : e.clientY;
+        onDrag(current - position.current);
+        position.current = current;
+      }}
+      onLostPointerCapture={e => {
+        if (position.current === null) return;
+        position.current = null;
+        setDragging(false);
+        e.currentTarget.ownerDocument.defaultView?.requestAnimationFrame(() => endRef.current?.());
+      }}
+      onKeyDown={e => {
+        const [before, after] = dir === "v" ? ["ArrowLeft", "ArrowRight"] : ["ArrowUp", "ArrowDown"];
+        if (e.key !== before && e.key !== after) return;
+        e.preventDefault();
+        onDrag(e.key === before ? -16 : 16);
+        e.currentTarget.ownerDocument.defaultView?.requestAnimationFrame(() => endRef.current?.());
       }}
     />
   );

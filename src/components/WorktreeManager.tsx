@@ -13,6 +13,8 @@ import { loadWorktreePreferences, restoreWorktreePreferences, selectWorktrees, w
 import type { WorktreeCreationReview, WorktreeManagerSnapshot, WorktreePruneResult, WorktreePruneReview, WorktreeRemoval, WorktreeRemovalReview, WorktreeCreateRequest } from "../lib/types";
 import { Modal } from "./Modal";
 import { recoveryDialog } from "./RecoveryCenter";
+import { useSettings } from "../lib/settings";
+import { useToolDetailSize, useWindowSize, WindowResizeGrip } from "./WindowResize";
 
 const size=(n:number)=>n<1048576?`${(n/1024).toFixed(1)} KiB`:`${(n/1048576).toFixed(1)} MiB`;
 export const worktreeCreateDialog=(root:string)=>showDialog<void>(close=><CreateWorktree root={root} close={()=>close()} />);
@@ -152,8 +154,11 @@ function PruneWorktrees({root,close}:{root:string;close:()=>void}){
   </Modal>;
 }
 
-const ROW=76;
-export function WorktreeManager({root}:{root:string}){
+export function WorktreeManager({root,floating=false,onClose=closeOverlay}:{root:string;floating?:boolean;onClose?:()=>void}){
+  const ROW=76 + Math.ceil(Math.max(0,useSettings(s=>s.uiFontSize)-13)*3);
+  const surface=useRef<HTMLElement>(null);
+  const windowSize=useWindowSize("Worktree manager");
+  const details=useToolDetailSize("Worktree manager details",850);
   const [snapshot,setSnapshot]=useState<WorktreeManagerSnapshot|null>(null),[prefs,setPrefs]=useState(()=>loadWorktreePreferences(root)),[query,setQuery]=useState("");
   const [selected,setSelected]=useState<string|null>(null),[loading,setLoading]=useState(true),[error,setError]=useState(""),[scroll,setScroll]=useState(0),[height,setHeight]=useState(500);
   const generation=useRef(0),inflight=useRef<number|null>(null),reviewing=useRef(false),viewport=useRef<HTMLDivElement>(null);
@@ -177,19 +182,19 @@ export function WorktreeManager({root}:{root:string}){
   const action=async(run:()=>Promise<void>)=>{if(reviewing.current)return;reviewing.current=true;generation.current++;setLoading(false);try{await run();}catch(e){toast.error(e);}finally{reviewing.current=false;inflight.current=null;await refresh();}};
   const choose=(i:number)=>{const index=Math.max(0,Math.min(rows.length-1,i));setSelected(rows[index]?.path??null);const p=viewport.current;if(p&&index*ROW<p.scrollTop)p.scrollTop=index*ROW;else if(p&&(index+1)*ROW>p.scrollTop+p.clientHeight)p.scrollTop=(index+1)*ROW-p.clientHeight;};
   const {start:first,end:last}=virtualRange(rows.length,ROW,height,scroll,4);
-  return <section className="conflict-overlay worktree-manager" aria-label="Worktree manager">
+  return <section ref={surface} className={`conflict-overlay worktree-manager ${floating ? "" : "centered-tool-window"}`} style={{ ...(!floating ? windowSize.style : {}), ["--worktree-row-height" as string]: `${ROW}px` }} aria-label="Worktree manager">
     <header className="cf-head"><FolderGit2 size={18}/><b>Worktree manager</b><span className="muted">{snapshot?.worktrees.length??0} working folders</span><div className="spacer"/>
       <button className="btn" disabled={initialLoading||pending} onClick={()=>void action(()=>worktreeCreateDialog(root))}><Plus size={14}/>New worktree</button>
       <button className="btn" disabled={initialLoading||pending} onClick={()=>void action(()=>worktreePruneDialog(root))}>Review missing entries</button>
       <button className="icon-btn" aria-label="Refresh worktrees" disabled={loading||pending} onClick={()=>void refresh()}><RefreshCw size={16} className={loading?"spin":""}/></button>
-      <button className="icon-btn" aria-label="Close worktree manager" onClick={closeOverlay}><X size={18}/></button>
+      <button className="icon-btn" aria-label="Close worktree manager" onClick={onClose}><X size={18}/></button>
     </header>
     <div className="wm-toolbar"><input className="input" aria-label="Search worktrees" placeholder="Find a branch, folder, commit or lock reason…" value={query} onChange={e=>setQuery(e.target.value)}/>
       <label>Sort<select className="select" aria-label="Worktree sort" value={prefs.sort} onChange={e=>update({sort:e.target.value as WorktreePreferences["sort"]})}><option value="branch">Branch</option><option value="path">Folder</option><option value="changes">Changes</option></select></label>
       <div className="seg">{worktreeFilters.map(f=><button key={f} className={f===prefs.filter?"on":""} onClick={()=>update({filter:f})}>{f}</button>)}</div>
     </div>
     {error&&<p className="wm-error" role="alert">{error}</p>}
-    <div className="wm-body" aria-busy={loading}>
+    <div ref={details.body} className={`wm-body tool-details ${details.narrow ? "tool-details-stacked" : ""}`} style={details.style} aria-busy={loading}>
       <div className="wm-viewport" ref={viewport} role="listbox" aria-label="Worktrees" tabIndex={0} onScroll={e=>setScroll(e.currentTarget.scrollTop)} onKeyDown={e=>{if(!["ArrowDown","ArrowUp","Home","End"].includes(e.key))return;e.preventDefault();const i=rows.findIndex(w=>w.path===selected);choose(e.key==="Home"?0:e.key==="End"?rows.length-1:i+(e.key==="ArrowDown"?1:-1));}}>
         <div style={{height:first*ROW}}/>{rows.slice(first,last).map(w=><div role="option" aria-selected={w.path===selected} key={w.path} data-worktree-path={w.path} className={`wm-row ${w.path===selected?"selected":""}`} onClick={()=>setSelected(w.path)} onContextMenu={e=>contextMenu(e,namePathMenu(basename(w.path),w.path,null))}>
           <div><b onContextMenu={e=>{if(w.branch)contextMenu(e,namePathMenu(w.branch,w.path,`refs/heads/${w.branch}`));}}>{w.branch??(w.bare?"Bare repository":w.detached?"Detached HEAD":"No commits")}</b><small>{[w.isMain&&"Main",w.isCurrent&&"Current",w.locked&&"Locked",!w.exists&&"Missing",w.error&&"Unavailable"].filter(Boolean).join(" · ")||shortOid(w.head??"")}</small></div>
@@ -197,7 +202,8 @@ export function WorktreeManager({root}:{root:string}){
           <div><span>{!w.exists?"Missing":w.error?"Unknown":`${w.changedFiles??0} changes`}</span><small>{w.ignored?`${w.ignored} ignored paths`:w.ahead||w.behind?`↑${w.ahead??0} ↓${w.behind??0}`:""}</small></div>
         </div>)}<div style={{height:Math.max(0,rows.length-last)*ROW}}/>{!rows.length&&<p className="wm-empty">{loading?"Loading worktrees…":"No worktrees match these filters."}</p>}
       </div>
-      <aside className="wm-detail" aria-label="Selected worktree">{target?<>
+      <div className="tool-detail-divider">{details.divider}</div>
+      <aside ref={details.detail} className="wm-detail" aria-label="Selected worktree">{target?<>
         <h3 onContextMenu={e=>contextMenu(e,namePathMenu(target.branch??basename(target.path),target.path,target.branch ? `refs/heads/${target.branch}` : null))}>{target.branch??(target.detached?"Detached HEAD":"Main repository")}</h3><code className="wm-path" onContextMenu={e=>contextMenu(e,namePathMenu(basename(target.path),target.path,null))}>{target.path}</code>
         <button className="btn" onClick={()=>copyText(target.path)}>Copy path</button><p className="mono">{target.head?shortOid(target.head):"No commits"}</p>
         <p>{target.isMain?"Main worktree. ":"Linked worktree. "}{target.isCurrent?"Currently open. ":""}{target.locked?`Locked: ${target.lockReason||"no reason recorded"}`:""}</p>
@@ -211,5 +217,6 @@ export function WorktreeManager({root}:{root:string}){
       </>:<p>Select a working folder.</p>}</aside>
     </div>
     <footer className="wm-footer">{rows.length} shown · Separate working folders share branches and commits, but keep their own files and staging. External changes refresh every 10 seconds, on focus or with Refresh.</footer>
+    {!floating && <WindowResizeGrip surface={surface} size={windowSize} embedded/>}
   </section>;
 }

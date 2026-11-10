@@ -77,7 +77,7 @@ function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
     .map(([, v]) => v);
 }
 
-export function Sidebar({ tab }: { tab: RepoTab }) {
+export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) {
   const { setLayout } = useWorkspaceLayout();
   const root = tab.root;
   const [branchPrefs,setBranchPrefs]=useState(()=>{try{return sidebarBranchPreferences(JSON.parse(localStorage.getItem(sidebarBranchesKey(root))??"null"));}catch{return sidebarBranchPreferences(null);}});
@@ -94,8 +94,18 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
   const match = (s: string) => !f || s.toLowerCase().includes(f);
   const current = tab.info?.head.branch;
   const filterGraph = (reference: string) => {
-    useRepos.getState().patch(root, { branchFilter: reference });
+    useRepos.getState().patch(root, { branchFilter: reference, viewedBranch: reference });
     void useRepos.getState().refresh(root, { graph: true });
+  };
+  const viewBranch = (branch: BranchInfo) => {
+    const repos = useRepos.getState();
+    if (tab.view === "history") {
+      repos.patch(root, { viewedBranch: branch.fullName });
+      jumpToCommit(root, branch.oid);
+      return;
+    }
+    repos.patch(root, { viewedBranch: branch.fullName, view: "history", selected: branch.oid, multi: [], branchFilter: null, historyJump: branch.oid });
+    if (tab.branchFilter || !tab.graph) void repos.refresh(root, { graph: true });
   };
 
   const pairs = useMemo(() => branchPairs(refs?.local ?? [], refs?.remote ?? []), [refs]);
@@ -124,15 +134,16 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
         const isCur = kind === "local" && b.name === current;
         const connection = branchConnection(b);
         const upstream = pairs.upstreams.get(b.fullName);
+        const viewed = tab.viewedBranch ?? tab.branchFilter;
         return [
           <div
             key={b.fullName}
             data-branch-name={b.name}
             data-branch-kind={kind}
-            className={`sb-item ${isCur ? "current" : ""}`}
+            className={`sb-item ${isCur ? "current" : ""} ${viewed && (viewed === b.fullName || viewed === upstream?.fullName) ? "viewed-branch" : ""}`}
             style={{ paddingLeft: pad + 16 }}
             title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}\n${b.creator?`Created by ${b.creator.name} <${b.creator.email}> (local creation log)`:"Branch creator unknown"}${b.upstream ? `\ntracks ${b.upstream}` : ""}${isCur ? "" : "\nCtrl+click or double-click to check out"}`}
-            onClick={(e) => ((e.ctrlKey || e.metaKey) && !isCur ? void A.checkout(root, b.name, kind) : jumpToCommit(root, b.oid))}
+            onClick={(e) => ((e.ctrlKey || e.metaKey) && !isCur ? void A.checkout(root, b.name, kind) : viewBranch(b))}
             draggable
             onDragStart={(e) => {
               e.dataTransfer.setData("revqora/branch", b.name);
@@ -162,7 +173,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
               contextMenu(e, [
                 ...branchMenu(root, b.name, kind),
                 ...(upstream ? [{ label: `Upstream: ${upstream.name}`, icon: <Cloud size={14} />, children: [
-                  { label: "Show tip in history", icon: <GitBranch size={14} />, onClick: () => jumpToCommit(root, upstream.oid) },
+                  { label: "Show tip in history", icon: <GitBranch size={14} />, onClick: () => viewBranch(upstream) },
                   { label: "Show only this branch in graph", icon: <Eye size={14} />, onClick: () => filterGraph(upstream.fullName) },
                   { separator: true },
                   ...branchMenu(root, upstream.name, "remote"),
@@ -225,7 +236,7 @@ export function Sidebar({ tab }: { tab: RepoTab }) {
 
   return (
     <aside className="sidebar">
-      <div className="branches-heading"><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" aria-label="Branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root: tab.root })}><GitBranch size={14} /></button><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={() => setLayout({ branchesOpen: false })}><PanelLeftClose size={14} /></button></div>
+      <div className="branches-heading"><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" aria-label="Branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root: tab.root })}><GitBranch size={14} /></button><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={onHide ?? (() => setLayout({ branchesOpen: false }))}><PanelLeftClose size={14} /></button></div>
       <div className="sb-repo">
         <div className="input-wrap">
           <Search size={13} />

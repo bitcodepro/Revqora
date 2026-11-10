@@ -242,7 +242,7 @@ button {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 30px;
+  height: max(30px, calc(var(--fs) + 14px));
   padding: 0 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
@@ -302,7 +302,7 @@ button {
   border-color: transparent;
 }
 .btn.sm {
-  height: 24px;
+  height: max(24px, calc(var(--fs-sm) + 11px));
   padding: 0 8px;
   font-size: var(--fs-sm);
   gap: 4px;
@@ -347,7 +347,7 @@ button {
 .textarea,
 .select {
   width: 100%;
-  height: 32px;
+  height: max(32px, calc(var(--fs) + 14px));
   padding: 0 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
@@ -387,7 +387,7 @@ select[size="1"]:not([multiple]) {
   color: var(--text-faint);
 }
 .input.sm {
-  height: 26px;
+  height: max(26px, calc(var(--fs-sm) + 12px));
   font-size: var(--fs-sm);
 }
 .input-wrap {
@@ -605,7 +605,7 @@ select[size="1"]:not([multiple]) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
+  height: max(30px, calc(var(--fs) + 12px));
   padding: 0 10px;
   border: none;
   border-radius: var(--radius-sm);
@@ -660,6 +660,7 @@ select[size="1"]:not([multiple]) {
   margin-left: -3px;
   cursor: col-resize;
   z-index: 20;
+  touch-action: none;
 }
 .splitter-h {
   height: 7px;
@@ -669,6 +670,7 @@ select[size="1"]:not([multiple]) {
   z-index: 20;
   position: relative;
   flex: none;
+  touch-action: none;
 }
 .splitter-v::after,
 .splitter-h::after {
@@ -693,7 +695,9 @@ select[size="1"]:not([multiple]) {
 .splitter-v:hover::after,
 .splitter-h:hover::after,
 .splitter-v.dragging::after,
-.splitter-h.dragging::after {
+.splitter-h.dragging::after,
+.splitter-v:focus-visible::after,
+.splitter-h:focus-visible::after {
   opacity: 0.8;
 }
 .statusbar {
@@ -871,7 +875,7 @@ select[size="1"]:not([multiple]) {
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 28px;
+  min-height: max(28px, calc(var(--fs) + 11px));
   padding-right: 6px;
   border-radius: var(--radius-sm);
   /* Same size and weight as the commit list, so the sidebar does not read smaller. */
@@ -889,7 +893,8 @@ select[size="1"]:not([multiple]) {
   background: var(--bg-hover);
   color: var(--text);
 }
-.sb-item.selected {
+.sb-item.selected,
+.sb-item.viewed-branch {
   background: var(--bg-selected);
   color: var(--text);
 }
@@ -1143,7 +1148,7 @@ select[size="1"]:not([multiple]) {
   display: grid;
   align-items: center;
   padding-right: 12px;
-  cursor: default;
+  cursor: pointer;
   border-left: 2px solid transparent;
   transition: background 0.08s;
 }
@@ -1177,6 +1182,7 @@ select[size="1"]:not([multiple]) {
 .grow .g-graph {
   height: 100%;
   overflow: hidden;
+  cursor: default;
 }
 .grow .g-graph svg {
   display: block;
@@ -1997,6 +2003,8 @@ select[size="1"]:not([multiple]) {
 
 /* ───────────── overlays ───────────── */
 .ctx-menu {
+  max-height: calc(100dvh - 12px);
+  overflow: auto;
   position: fixed;
   z-index: 1000;
   min-width: 220px;
@@ -2076,8 +2084,10 @@ select[size="1"]:not([multiple]) {
   background: rgba(30, 35, 60, 0.28);
 }
 .modal {
-  width: min(520px, 100%);
-  max-height: calc(100vh - 48px);
+  position: relative;
+  width: min(var(--saved-window-width, 520px), 100%);
+  height: var(--saved-window-height, auto);
+  max-height: calc(100dvh - 48px);
   display: flex;
   flex-direction: column;
   border-radius: var(--radius-lg);
@@ -2088,13 +2098,14 @@ select[size="1"]:not([multiple]) {
   overflow: hidden;
 }
 .modal.wide {
-  width: min(760px, 100%);
+  width: min(var(--saved-window-width, 760px), 100%);
 }
 .modal-head {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 16px 18px 6px;
+  flex: none;
 }
 .modal-head .mi {
   width: 36px;
@@ -2128,14 +2139,36 @@ select[size="1"]:not([multiple]) {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .modal-foot {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  padding: 12px 18px 16px;
+  padding: 12px 26px 16px 18px;
+  flex: none;
+  flex-wrap: wrap;
 }
+.window-resize-grip {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  color: var(--text-faint);
+  background: var(--bg-elev);
+  border-radius: var(--radius-sm);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+.window-resize-grip:hover, .window-resize-grip:focus-visible { color: var(--accent); }
 .field {
   display: flex;
   flex-direction: column;

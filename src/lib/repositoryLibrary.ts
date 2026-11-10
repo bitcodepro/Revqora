@@ -19,6 +19,7 @@ export interface LibraryData {
   favorites: string[];
   groups: RepositoryGroup[];
   workspaces: SavedWorkspace[];
+  favoriteWorkspaceIds: string[];
   activeWorkspaceId: string | null;
 }
 
@@ -54,7 +55,8 @@ export function restoreLibrary(value: unknown): LibraryData {
     return { id, name, roots, activeRoot: roots.find((r) => typeof v.activeRoot === "string" && repositoryKey(r) === repositoryKey(v.activeRoot)) ?? roots[0] ?? null, views, layouts: restoreWorkspaceLayouts(v), historyMode: v.historyMode === "review" || v.historyMode === "columns" ? v.historyMode : "graph", ...(pathValid(v.importedFrom) ? { importedFrom: v.importedFrom } : {}) };
   });
   const favorites = uniqueRoots(raw.favorites);
-  return { knownRoots: uniqueRoots([...uniqueRoots(raw.knownRoots), ...favorites, ...groups.flatMap((g) => g.roots), ...workspaces.flatMap((w) => w.roots)]), favorites, groups, workspaces, activeWorkspaceId: workspaces.some((w) => w.id === raw.activeWorkspaceId) ? raw.activeWorkspaceId as string : null };
+  const favoriteWorkspaceIds = Array.isArray(raw.favoriteWorkspaceIds) ? workspaces.filter(w => (raw.favoriteWorkspaceIds as unknown[]).includes(w.id)).map(w => w.id) : [];
+  return { knownRoots: uniqueRoots([...uniqueRoots(raw.knownRoots), ...favorites, ...groups.flatMap((g) => g.roots), ...workspaces.flatMap((w) => w.roots)]), favorites, groups, workspaces, favoriteWorkspaceIds, activeWorkspaceId: workspaces.some((w) => w.id === raw.activeWorkspaceId) ? raw.activeWorkspaceId as string : null };
 }
 
 export function planFolderWorkspaces(workspaces: SavedWorkspace[], groups: FolderWorkspace[]) {
@@ -74,6 +76,7 @@ export function planFolderWorkspaces(workspaces: SavedWorkspace[], groups: Folde
 interface LibraryStore extends LibraryData {
   remember: (root: string, alias?: string) => void;
   favorite: (root: string) => void;
+  favoriteWorkspace: (id: string) => void;
   group: (name: string, id?: string) => string;
   move: (root: string, id: string | null) => void;
   collapse: (id: string) => void;
@@ -101,6 +104,7 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
     set({ knownRoots: uniqueRoots([...list(s.knownRoots), root]), favorites: list(s.favorites), groups: s.groups.map((g) => ({ ...g, roots: list(g.roots) })), workspaces: s.workspaces.map((w) => ({ ...w, roots: list(w.roots), activeRoot: w.activeRoot ? remap(w.activeRoot) : null, views: Object.fromEntries(Object.entries(w.views).map(([r, v]) => [remap(r), v])) })) });
   },
   favorite: (root) => { const s = get(); set({ knownRoots: uniqueRoots([...s.knownRoots, root]), favorites: s.favorites.some((r) => repositoryKey(r) === repositoryKey(root)) ? s.favorites.filter((r) => repositoryKey(r) !== repositoryKey(root)) : [...s.favorites, root] }); },
+  favoriteWorkspace: (id) => set(s => !s.workspaces.some(w => w.id === id) ? s : { favoriteWorkspaceIds: s.favoriteWorkspaceIds.includes(id) ? s.favoriteWorkspaceIds.filter(key => key !== id) : [...s.favoriteWorkspaceIds, id] }),
   group: (name, id) => { const s = get(), old = s.groups.find((g) => g.id === id), next = checkedName(name, s.groups.map((g) => g.name), old?.name), key = old?.id ?? newId(); set({ groups: old ? s.groups.map((g) => g.id === key ? { ...g, name: next } : g) : [...s.groups, { id: key, name: next, roots: [], collapsed: false }] }); return key; },
   move: (root, id) => { const s = get(); if (id && !s.groups.some((g) => g.id === id)) return; set({ knownRoots: uniqueRoots([...s.knownRoots, root]), groups: s.groups.map((g) => ({ ...g, roots: [...g.roots.filter((r) => repositoryKey(r) !== repositoryKey(root)), ...(g.id === id ? [root] : [])] })) }); },
   collapse: (id) => set({ groups: get().groups.map((g) => g.id === id ? { ...g, collapsed: !g.collapsed } : g) }),
@@ -108,6 +112,6 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
   save: (name, snapshot, activate = true) => { const s = get(), id = newId(); const next = checkedName(name, s.workspaces.map((w) => w.name)); set({ workspaces: [...s.workspaces, { ...structuredClone(snapshot), id, name: next }], activeWorkspaceId: activate ? id : s.activeWorkspaceId }); return id; },
   update: (id, snapshot) => set({ workspaces: get().workspaces.map((w) => w.id === id ? { ...w, ...structuredClone(snapshot) } : w) }),
   rename: (id, name) => { const s = get(), old = s.workspaces.find((w) => w.id === id); if (!old) return; const next = checkedName(name, s.workspaces.map((w) => w.name), old.name); set({ workspaces: s.workspaces.map((w) => w.id === id ? { ...w, name: next } : w) }); },
-  remove: (id) => set({ workspaces: get().workspaces.filter((w) => w.id !== id), activeWorkspaceId: get().activeWorkspaceId === id ? null : get().activeWorkspaceId }),
+  remove: (id) => set(s => ({ workspaces: s.workspaces.filter(w => w.id !== id), favoriteWorkspaceIds: s.favoriteWorkspaceIds.filter(key => key !== id), activeWorkspaceId: s.activeWorkspaceId === id ? null : s.activeWorkspaceId })),
   select: (id) => set({ activeWorkspaceId: id && get().workspaces.some((w) => w.id === id) ? id : null }),
 }), { name: "revqora.repositories", version: 1, merge: (stored, current) => ({ ...current, ...restoreLibrary(stored) }) }));

@@ -2,7 +2,10 @@ import { useLibrary, uniqueRoots, repositoryKey, type SavedWorkspace } from "../
 import { FavoriteButton, openLibraryRepository, repositoryLibraryDialog } from "./RepositoryLibrary";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
 import { SyncButton } from "./SyncRepositories";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useWorkspaceRepositoryDrag } from "./WorkspacesSidebar";
+import { usePanelWindows } from "./PanelWindows";
+import { useSettings } from "../lib/settings";
 import { ArrowDownToLine, ChevronDown, ChevronRight, Check, CircleAlert, FolderGit2, FolderSearch, GitBranch, LayoutGrid, Plus, RefreshCw, Search, X } from "lucide-react";
 import { api, errorMessage, newOpId } from "../lib/api";
 import * as A from "../lib/actions";
@@ -157,6 +160,7 @@ function workspaceOrder(order: string[], workspace?: SavedWorkspace) {
 }
 
 export function RepositorySidebar() {
+  const { panels } = usePanelWindows();
   const order = useRepos((s) => s.order);
   const tabs = useRepos((s) => s.tabs);
   const active = useRepos((s) => s.active);
@@ -166,7 +170,12 @@ export function RepositorySidebar() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const library = useLibrary();
   const [groupId, setGroupId] = useState("");
-  const { mode, layout: { repositoriesWidth: width }, setLayout: set } = useWorkspaceLayout();
+  const workspacesOpen = useSettings(s => s.workspacesOpen);
+  const [selection, setSelection] = useState<string[]>([]);
+  const selectionAnchor = useRef<string | null>(null);
+  const drag = useWorkspaceRepositoryDrag();
+  const { mode, layout: { repositoriesWidth: width, focusMode }, setLayout: set } = useWorkspaceLayout();
+  const selecting = workspacesOpen && !focusMode && !panels.workspaces && !panels.repositories;
   const [w, setW] = useState(width);
   useEffect(() => setW(width), [mode, width]);
   const workspace = library.workspaces.find((item) => item.id === library.activeWorkspaceId);
@@ -179,6 +188,8 @@ export function RepositorySidebar() {
   const groupFilter = groups.find((g) => g.id === groupId);
   const visible = candidates.filter((r) => (r + " " + tabs[r]?.info?.name).toLowerCase().includes(query.trim().toLowerCase()) && (!updatesOnly || !!repositorySidebarStatus(tabs[r])?.behind) && (!favoritesOnly || favorite(r)) && (!groupFilter || groupFilter.roots.some((p) => repositoryKey(p) === repositoryKey(r))));
   const sections = [...groups.map((g) => ({ ...g, roots: visible.filter((r) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r))) })), { id: "ungrouped", name: "Ungrouped", collapsed: false, roots: visible.filter((r) => !groups.some((g) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r)))) }];
+  const displayed = sections.flatMap(group => !group.collapsed || query ? group.roots : []);
+  const selected = selecting ? displayed.filter(root => selection.includes(root)) : [];
   return (
     <div className="repository-sidebar" style={{ width: w }}>
       <header><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{open.length}</span><div className="spacer" /><button className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
@@ -187,13 +198,32 @@ export function RepositorySidebar() {
       <SyncButtons roots={visible.filter((r) => !!tabs[r])} scoped={!!query.trim() || updatesOnly || favoritesOnly || !!groupFilter} />
       <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites{favoritesOnly ? " · Show all" : ""}</button>
       <button className={`repository-overview-link ${overview ? "active" : ""}`} onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={14} /> All repositories</button>
-      <div className="repository-list" role="list" aria-label="Open repositories">
+      {selecting && <small className="repository-selection-note">{selected.length ? `${selected.length} selected · Drag to a workspace` : "Ctrl or Shift to select · Drag to a workspace"}</small>}
+      <div className="repository-list" role="list" aria-label="Open repositories" onKeyDown={e => {
+        if (e.key === "Escape" && selection.length) { setSelection([]); selectionAnchor.current = null; }
+      }}>
         {sections.filter((group) => !workspace || group.roots.length > 0).map((group) => <div key={group.id}>{groups.length > 0 && <button type="button" className="repository-group" aria-expanded={!group.collapsed} onClick={() => group.id !== "ungrouped" && library.collapse(group.id)}>{group.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{group.name}<span className="faint">{group.roots.length}</span></button>}{(!group.collapsed || !!query) && group.roots.map((r) => {
           const t = tabs[r];
           return (
-            <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""}`} key={r} onContextMenu={e => contextMenu(e, namePathMenu(t?.info?.name ?? basename(r), r, null))}>
+            <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""} ${selected.includes(r) ? "batch-selected" : ""}`} key={r} onContextMenu={e => contextMenu(e, namePathMenu(t?.info?.name ?? basename(r), r, null))}>
               <FavoriteButton root={r} />
-              <button className="repository-select" onClick={() => activate(r)} title={`${r}\n${t?.info ? t.info.head.branch ?? "Detached HEAD" : t ? t.error ?? "Opening repository…" : "Closed · click to open"}${t?.fetchError ? "\n" + t.fetchError : ""}`}>
+              <button className="repository-select" aria-current={r === active && !overview} onPointerDown={e => { if (selecting) drag.start(e, selected.includes(r) ? selected : [r]); }}
+                onClick={e => {
+                  if (drag.suppressClick.current) return;
+                  const anchor = displayed.indexOf(selectionAnchor.current ?? "");
+                  if (selecting && e.shiftKey && anchor >= 0) {
+                    const index = displayed.indexOf(r);
+                    setSelection(displayed.slice(Math.min(anchor, index), Math.max(anchor, index) + 1));
+                    return;
+                  }
+                  selectionAnchor.current = r;
+                  if (selecting && (e.ctrlKey || e.metaKey || e.shiftKey)) {
+                    setSelection(selected.includes(r) ? selected.filter(root => root !== r) : [...selected, r]);
+                    return;
+                  }
+                  setSelection([]);
+                  activate(r);
+                }} title={`${r}\n${t?.info ? t.info.head.branch ?? "Detached HEAD" : t ? t.error ?? "Opening repository…" : "Closed · click to open"}${t?.fetchError ? "\n" + t.fetchError : ""}`}>
                 <FolderGit2 size={14} />
                 <span className="repository-label">{t?.info?.name ?? basename(r)}</span>
                 {!t && <span className="faint">Closed</span>}
@@ -222,6 +252,7 @@ export function RepositoryOverview() {
   const workspace = useLibrary((s) => s.workspaces.find((item) => item.id === s.activeWorkspaceId));
   const order = workspaceOrder(open, workspace);
   const tabs = useRepos((s) => s.tabs);
+  const active = useRepos((s) => s.active);
   const busy = useUi((s) => s.busy.length > 0);
   const [query, setQuery] = useState("");
   const visible = order.filter((r) => (r + " " + tabs[r]?.info?.name).toLowerCase().includes(query.trim().toLowerCase()));
@@ -235,7 +266,7 @@ export function RepositoryOverview() {
           <thead><tr><th>Repository</th><th>Current branch</th><th>Incoming / outgoing</th><th>Working copy</th><th>Last fetch</th><th /></tr></thead>
           <tbody>
             {visible.map((r) => { const t = tabs[r], status = repositorySidebarStatus(t); return (
-              <tr key={r} onContextMenu={e => contextMenu(e, namePathMenu(t?.info?.name ?? basename(r), r, null))}>
+              <tr key={r} className={r === active ? "active" : undefined} onClick={e => { if (!(e.target as HTMLElement).closest("button")) activate(r); }} onContextMenu={e => contextMenu(e, namePathMenu(t?.info?.name ?? basename(r), r, null))}>
                 <td><button className="repository-name" title={r} onClick={() => activate(r)}><FolderGit2 size={15} />{t?.info?.name ?? basename(r)}</button></td>
                 <td title={t?.info?.head.branch ?? ""} onContextMenu={e => { if (t?.info?.head.branch) contextMenu(e, namePathMenu(t.info.head.branch, r, `refs/heads/${t.info.head.branch}`)); }}><GitBranch size={12} /> {t?.info?.head.branch ?? (t?.info?.head.detached ? "Detached HEAD" : "—")}</td>
                 <td>{status ? <AheadBehind ahead={status.ahead} behind={status.behind} /> : "…"}</td>

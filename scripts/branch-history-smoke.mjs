@@ -86,6 +86,14 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await preview.getByText("Advance pinned history line", { exact: true }).waitFor();
   await preview.getByRole("button", { name: "Close", exact: true }).click();
 
+  const viewedBranch = page.locator('.sidebar [data-branch-kind="local"][data-branch-name="target"]');
+  await viewedBranch.click();
+  await page.locator('.sidebar [data-branch-name="target"].viewed-branch').waitFor();
+  await page.locator('.sidebar [data-branch-name="main"].current').waitFor();
+  assert.equal(git(root, "branch", "--show-current"), "main");
+  await preview.getByText("Destination change", { exact: true }).waitFor();
+  await preview.getByRole("button", { name: "Close", exact: true }).click();
+
   // The currently checked-out branch has the same Compare entry as any other branch.
   await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="main"]').click({ button: "right" });
   await page.locator(".ctx-menu").getByText("Compare branch commits…", { exact: true }).click();

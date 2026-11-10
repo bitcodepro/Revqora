@@ -41,11 +41,11 @@ interface LanePin {
 
 const x = (c: number) => PAD + c * LANE_W + LANE_W / 2;
 
-function segPath(s: Seg): { d: string; len: number } {
-  const mid = ROW_H / 2;
+function segPath(s: Seg, height: number): { d: string; len: number } {
+  const mid = height / 2;
   const xa = x(s.a);
   const xb = x(s.b);
-  if (s.t === 0) return { d: `M${xa} 0V${ROW_H}`, len: ROW_H };
+  if (s.t === 0) return { d: `M${xa} 0V${height}`, len: height };
   if (s.t === 1) {
     if (s.a === s.b) return { d: `M${xa} 0V${mid}`, len: mid };
     return {
@@ -53,9 +53,9 @@ function segPath(s: Seg): { d: string; len: number } {
       len: Math.hypot(xb - xa, mid) * 1.15,
     };
   }
-  if (s.a === s.b) return { d: `M${xa} ${mid}V${ROW_H}`, len: mid };
+  if (s.a === s.b) return { d: `M${xa} ${mid}V${height}`, len: mid };
   return {
-    d: `M${xa} ${mid}C${xa} ${mid + mid * 0.55} ${xb} ${mid + mid * 0.45} ${xb} ${ROW_H}`,
+    d: `M${xa} ${mid}C${xa} ${mid + mid * 0.55} ${xb} ${mid + mid * 0.45} ${xb} ${height}`,
     len: Math.hypot(xb - xa, mid) * 1.15,
   };
 }
@@ -105,7 +105,7 @@ const Row = memo(function Row(p: RowProps) {
   }
   if (!p.row) {
     return (
-      <div className="grow" style={{ top, height: ROW_H }}>
+      <div className="grow" style={{ top, height: p.rowH }}>
         <div className="g-graph" />
         <div className="g-subject">
           <span
@@ -121,7 +121,7 @@ const Row = memo(function Row(p: RowProps) {
   }
   const r = p.row;
   const wip = r.oid === WORKTREE;
-  const mid = ROW_H / 2;
+  const mid = p.rowH / 2;
   const nodeColor = `var(--lane-${r.color % 12})`;
   const refs = p.showRemote
     ? r.refs
@@ -196,7 +196,7 @@ ${r.oid}`
   return (
     <div
       className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""} ${p.pinnedLaneMember ? "lane-member" : ""}`}
-      style={{ top, height: ROW_H, ...anim, ["--pinned-lane-color" as string]: p.pinnedLaneMember ? nodeColor : undefined }}
+      style={{ top, height: p.rowH, ...anim, ["--pinned-lane-color" as string]: p.pinnedLaneMember ? nodeColor : undefined }}
       onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
       onContextMenu={(e) => p.onMenu(r, e)}
       onDoubleClick={() => !wip && copyText(r.oid, "Hash copied")}
@@ -208,10 +208,10 @@ ${r.oid}`
         onMouseDown={(e) => { if (e.button === 0) e.stopPropagation(); }}
         onDoubleClick={(e) => e.stopPropagation()}
       >
-        <svg width={p.width} height={ROW_H}>
+        <svg width={p.width} height={p.rowH}>
           {r.segs.map((s, i) => {
             if (s.a >= p.lanes || s.b >= p.lanes) return null;
-            const { d, len } = segPath(s);
+            const { d, len } = segPath(s, p.rowH);
             const dashed = wip && s.t === 2;
             return (
               <Fragment key={i}>
@@ -339,7 +339,8 @@ export function GraphView({
   onEnterChanges: () => void;
   compact?: boolean;
 }) {
-  const rowH = compact ? COMPACT_ROW_H : ROW_H;
+  const fontSize = useSettings(s => s.uiFontSize);
+  const rowH = (compact ? COMPACT_ROW_H : ROW_H) + Math.ceil(Math.max(0, fontSize - 13) * (compact ? 3 : 1.5));
   const root = tab.root;
   const summary = tab.graph;
   const patch = useRepos((s) => s.patch);

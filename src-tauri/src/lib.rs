@@ -2097,6 +2097,13 @@ pub fn run() {
             match event {
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => portable::track_window(window),
                 tauri::WindowEvent::CloseRequested { .. } => portable::remember_window(window),
+                tauri::WindowEvent::Destroyed => {
+                    for (label, panel) in window.app_handle().webview_windows() {
+                        if label.starts_with("panel-") {
+                            let _ = panel.destroy();
+                        }
+                    }
+                }
                 _ => {}
             }
         });
@@ -2121,6 +2128,37 @@ pub fn run() {
                 }
                 // No Edge form autofill (its dropdown arrow showed up inside text fields).
                 let mut wb = tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.general_autofill_enabled(false);
+                #[cfg(desktop)]
+                {
+                    let handle = app.handle().clone();
+                    wb = wb.on_new_window(move |url, features| {
+                        use std::sync::atomic::{AtomicU64, Ordering};
+                        use tauri::webview::NewWindowResponse;
+                        static PANEL_ID: AtomicU64 = AtomicU64::new(0);
+                        if url.as_str() != "about:blank" {
+                            return NewWindowResponse::Deny;
+                        }
+                        let id = PANEL_ID.fetch_add(1, Ordering::Relaxed);
+                        let label = format!("panel-{id}");
+                        match tauri::WebviewWindowBuilder::new(&handle, label, tauri::WebviewUrl::External(url))
+                            .window_features(features)
+                            .title("Revqora")
+                            .min_inner_size(380.0, 280.0)
+                            .on_navigation(|url| url.as_str() == "about:blank")
+                            .on_new_window(|_, _| NewWindowResponse::Deny)
+                            .on_document_title_changed(|window, title| {
+                                let _ = window.set_title(&title);
+                            })
+                            .build()
+                        {
+                            Ok(window) => NewWindowResponse::Create { window },
+                            Err(error) => {
+                                eprintln!("Could not open a detached panel: {error}");
+                                NewWindowResponse::Deny
+                            }
+                        }
+                    });
+                }
                 if let Some(dir) = portable::webview_dir() {
                     wb = wb.data_directory(dir);
                 }
