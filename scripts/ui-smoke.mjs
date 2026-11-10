@@ -157,6 +157,12 @@ try {
     await shot("17-update");
     await card.locator("button:has-text('Skip this version')").click();
     await chip.waitFor({ state: "detached" });
+    await page.getByTitle("Settings", { exact: true }).click();
+    const hourly = page.getByRole("checkbox", { name: "Check for updates every hour", exact: true });
+    if (!await hourly.isChecked()) throw new Error("Hourly update checks should be enabled by default");
+    await hourly.uncheck();
+    await page.locator(".modal").getByRole("button", { name: "Done", exact: true }).click();
+    await chip.waitFor({ state: "detached" });
     const checksBeforeMenu = updateChecks;
     await page.locator(".topbar").click({ button: "right", position: { x: 3, y: 3 } });
     await page.locator(".ctx-menu").getByText("Check Updates", { exact: true }).click();
@@ -192,11 +198,23 @@ try {
     }
   });
 
-  await check("history graph renders all commits", async () => {
+  await check("history defaults to the current branch and can show a selected branch or every branch", async () => {
     await page.waitForSelector(".grow:not(.wip) .g-subject .text", { timeout: 20000 });
-    await page.waitForTimeout(1200);
-    const n = await page.locator(".grow").count();
-    if (n !== 14) throw new Error(`expected 14 rows (13 commits + changes), got ${n}`);
+    const scope = page.getByRole("combobox", { name: "History scope", exact: true });
+    if (await scope.inputValue() !== "HEAD") throw new Error("History must start on the current branch");
+    const current = new Set(git("rev-list", "HEAD").split(/\r?\n/));
+    const other = git("rev-parse", "refs/heads/feature/ui");
+    if (current.has(other)) throw new Error("Expected a branch outside the current history");
+    await page.waitForFunction(count => document.querySelectorAll(".grow").length === count, current.size + 1);
+    await scope.selectOption("refs/heads/feature/ui");
+    for (const layout of ["Review", "Columns", "Graph"]) {
+      await page.locator(".history-mode").getByRole("button", { name: layout, exact: true }).click();
+      await page.locator(".graph-scroll").getByText("Spacing scale", { exact: true }).waitFor();
+      await page.locator(".grow.wip").waitFor({ state: "detached" });
+      if (await scope.inputValue() !== "refs/heads/feature/ui") throw new Error(`History scope changed in ${layout}`);
+    }
+    await scope.selectOption("");
+    await page.waitForFunction(() => document.querySelectorAll(".grow").length === 14);
     await shot("01-history");
   });
 

@@ -1,12 +1,16 @@
 // Stage 14 uses the same loopback forge, repository and native process as Stage 13.
 export function createPrReviewFixture({pulls,a}) {
-  let sequence=2000;const state={actor:13,deny:false,failNext:false,keepRevision:false,threads:new Map(),comments:new Map(),reviews:new Map()};
+  let sequence=2000;const state={actor:13,deny:false,failNext:false,keepRevision:false,prepareGate:null,replyGate:null,threads:new Map(),comments:new Map(),reviews:new Map()};
   const author=()=>({login:"pr-tester",id:state.actor}),stamp=n=>{if(state.keepRevision)return;pulls.get(n).updated_at=`review-${++sequence}`;};
   const list=n=>{if(!state.threads.has(n))state.threads.set(n,Array.from({length:52},(_,i)=>({id:`T${n}-${i+1}`,path:"src/new.ts",diffSide:"RIGHT",line:1,originalLine:1,isOutdated:i===1,isResolved:i===1,viewerCanReply:true,viewerCanResolve:true,viewerCanUnresolve:true,comments:{nodes:[{databaseId:++sequence,author:{login:"fixture-reviewer"},body:`Discussion ${i+1}: please explain this change`,createdAt:"2026-01-01T00:00:00Z",pullRequestReview:{state:"COMMENTED"}}],pageInfo:{hasNextPage:false,endCursor:null}}})));return state.threads.get(n);};
   const find=id=>{for(const [number,threads]of state.threads){const thread=threads.find(t=>t.id===id);if(thread)return{number,thread};}return null;};
   const handle=(req,res,url,entry)=>{
     const send=(data,code=200)=>{res.writeHead(code,{"content-type":"application/json"});res.end(JSON.stringify(data));};
-    if(url.pathname==="/api/v3/user"){send({id:state.actor,login:"pr-tester",name:"PR Tester"});return true;}
+    if(url.pathname==="/api/v3/user"){
+      const reply=()=>send({id:state.actor,login:"pr-tester",name:"PR Tester"});
+      if(state.prepareGate)void state.prepareGate.then(reply);else reply();
+      return true;
+    }
     if(url.pathname==="/api/v3/repos/team/repo"){send({archived:false,permissions:{push:true}});return true;}
     const query=entry.body?.query??"",vars=entry.body?.variables??{};
     if(url.pathname==="/api/graphql"){
@@ -24,7 +28,9 @@ export function createPrReviewFixture({pulls,a}) {
     else if(type==="comments"){
       const comment={databaseId:++sequence,author:{login:"pr-tester"},body:entry.body.body,createdAt:"2026-01-01T00:00:00Z",pullRequestReview:{state:"COMMENTED"}};
       if(review[3]){const root=Number(review[3]),thread=list(n).find(t=>t.comments.nodes[0].databaseId===root);if(!thread){send({},404);return true;}thread.comments.nodes.push(comment);}
-      else{if(entry.body.commit_id!==pulls.get(n).head.sha){send({},422);return true;}list(n).push({id:`T${n}-${++sequence}`,path:entry.body.path,diffSide:entry.body.side,line:entry.body.line,originalLine:entry.body.line,isOutdated:false,isResolved:false,viewerCanReply:true,viewerCanResolve:true,viewerCanUnresolve:true,comments:{nodes:[comment],pageInfo:{hasNextPage:false,endCursor:null}}});}send({id:comment.databaseId},failed?500:200);
+      else{if(entry.body.commit_id!==pulls.get(n).head.sha){send({},422);return true;}list(n).push({id:`T${n}-${++sequence}`,path:entry.body.path,diffSide:entry.body.side,line:entry.body.line,originalLine:entry.body.line,isOutdated:false,isResolved:false,viewerCanReply:true,viewerCanResolve:true,viewerCanUnresolve:true,comments:{nodes:[comment],pageInfo:{hasNextPage:false,endCursor:null}}});}
+      const reply=()=>send({id:comment.databaseId},failed?500:200);
+      if(review[3]&&state.replyGate)void state.replyGate.then(reply);else reply();
     }else{const row={id:++sequence,user:author(),body:entry.body.body,created_at:"2026-01-01T00:00:00Z"};state.comments.set(n,[...(state.comments.get(n)??[]),row]);send(row,failed?500:200);}
     stamp(n);return true;
   };
@@ -54,10 +60,30 @@ export async function prReviewSmoke({page,check,shot,root,invoke,pulls,requests,
   await check("reply drafts survive closing and reopening and clear only after a successful publication",async()=>{
     const forge=await invoke("forge_info",{repo:root}),before=writes();
     const legacy=await page.evaluate(({root,proof})=>{const key="revqora:review-draft:"+JSON.stringify([root.replace(/\\/g,"/").replace(/\/+$/,"").toLowerCase(),`${proof}:13`,1,"a".repeat(40),"reply","T1-1"]);localStorage.setItem(key,JSON.stringify({body:"Reply saved by previous app version 😀",updated:1}));return key;},{root,proof:forge.connectionRevision});
-    await discussion();await card().getByRole("button",{name:"Reply",exact:true}).click();await ready();await page.getByText(/Saved drafts, including previous versions/).click();await button("Use saved text").click();
+    await discussion();
+    const reply=card().getByRole("button",{name:"Reply",exact:true});
+    let releasePreparation;
+    state.prepareGate=new Promise(resolve=>{releasePreparation=resolve;});
+    try{
+      await reply.evaluate(el=>{el.click();el.click();});
+      await page.getByRole("status").filter({hasText:"Preparing reply…"}).waitFor();
+      if(await page.locator(".modal").count()!==1)throw Error("Repeated Reply opened multiple dialogs");
+    }finally{state.prepareGate=null;releasePreparation();}
+    await ready();await page.getByText(/Saved drafts, including previous versions/).click();await button("Use saved text").click();
     if(await text().inputValue()!=="Reply saved by previous app version 😀"||writes()!==before||await page.evaluate(k=>localStorage.getItem(k),legacy)!==null)throw Error("Pre-upgrade reply was not migrated without publishing");
     await button("Close and keep draft").click();await card().getByRole("button",{name:"Reply",exact:true}).click();if(await text().inputValue()!=="Reply saved by previous app version 😀")throw Error("Migrated reply was not retained");await button("Close and keep draft").click();
-    await discussion();await card().getByRole("button",{name:"Reply",exact:true}).click();await text().fill("Saved reply draft 😀");await page.waitForFunction(()=>Object.entries(localStorage).some(([k,v])=>k.startsWith("revqora:review-draft:")&&v.includes("Saved reply draft")));await button("Close and keep draft").click();await card().getByRole("button",{name:"Reply",exact:true}).click();if(await text().inputValue()!=="Saved reply draft 😀")throw Error("Reply draft was lost");await button("Send reply").click();await sent();await card().getByText("Saved reply draft 😀",{exact:true}).waitFor();if(await page.evaluate(()=>Object.entries(localStorage).some(([k,v])=>k.startsWith("revqora:review-draft:")&&v.includes("Saved reply draft"))))throw Error("Sent draft remained locally pending");
+    await discussion();await reply.click();await text().fill("Saved reply draft 😀");await page.waitForFunction(()=>Object.entries(localStorage).some(([k,v])=>k.startsWith("revqora:review-draft:")&&v.includes("Saved reply draft")));await button("Close and keep draft").click();await reply.click();if(await text().inputValue()!=="Saved reply draft 😀")throw Error("Reply draft was lost");
+    let releaseReply;
+    state.replyGate=new Promise(resolve=>{releaseReply=resolve;});
+    try{
+      await button("Send reply").click();
+      await page.getByRole("status").filter({hasText:"Sending reply…"}).waitFor();
+      if(!await button("Sending…").isDisabled())throw Error("Reply can be submitted while publication is pending");
+      await shot("112-reply-sending");
+    }finally{state.replyGate=null;releaseReply();}
+    await sent();
+    if(await page.locator(".modal").count()||writes()!==before+1)throw Error("Reply dialog stayed open or submitted more than once");
+    await card().getByText("Saved reply draft 😀",{exact:true}).waitFor();if(await page.evaluate(()=>Object.entries(localStorage).some(([k,v])=>k.startsWith("revqora:review-draft:")&&v.includes("Saved reply draft"))))throw Error("Sent draft remained locally pending");
   });
   await check("concurrent discussion updates reject stale replies and an explicit context reload preserves typed text",async()=>{
     await card().getByRole("button",{name:"Reply",exact:true}).click();await text().fill("Preserve while discussion changes");list(n)[0].comments.nodes.push({databaseId:99999,author:{login:"other"},body:"New external reply",createdAt:"2026-01-01",pullRequestReview:{state:"COMMENTED"}});stamp(n);const before=writes();await button("Send reply").click();await page.locator(".modal").getByRole("alert").filter({hasText:/changed/}).waitFor();if(writes()!==before||await text().inputValue()!=="Preserve while discussion changes")throw Error("Stale reply was sent or discarded");await button("Reload review context").click();await ready();await page.locator(".review-context").getByText("New external reply",{exact:true}).waitFor();await button("Send reply").click();await sent();await card().getByText("Preserve while discussion changes",{exact:true}).waitFor();

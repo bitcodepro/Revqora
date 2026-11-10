@@ -335,6 +335,7 @@ pub fn load_commits(repo: &Path, branch_filter: Option<&str>, limit: usize, fast
     }
     match branch_filter {
         Some(b) if !b.is_empty() => {
+            args.push("--end-of-options".into());
             args.push(b.to_string());
         }
         _ => {
@@ -416,7 +417,13 @@ pub fn build_with(
     let refs = ref_snapshot(repo);
     let filter = branch_filter.filter(|b| !b.is_empty()).map(|s| s.to_string());
     let reusable = prev.filter(|p| !fast && p.filter == filter && p.limit == limit && p.source != "fast");
-    let reused = reusable.and_then(|p| reuse_history(repo, p, &refs));
+    let reused = reusable.and_then(|p| {
+        let Some(reference) = filter.as_deref() else { return reuse_history(repo, p, &refs) };
+        let tip = refs.iter().find(|(name, _)| name == reference)?;
+        // The unfiltered incremental walk includes advances on every ref.
+        // A scoped history is reusable only while its own tip is unchanged.
+        p.refs.contains(tip).then(|| ((*p.commits).clone(), "reused"))
+    });
     // The history walk dominates; fetch decorations and remote info in parallel with it.
     let (commits, labels, head_oid, local, has_remotes) = std::thread::scope(|sc| {
         let labels = sc.spawn(|| refs::labels_by_oid(repo));
@@ -425,6 +432,7 @@ pub fn build_with(
         let remotes = sc.spawn(|| !runner::run(repo, ["remote"]).unwrap_or_default().trim().is_empty());
         let commits = match &reused {
             Some((c, _)) => Ok(c.clone()),
+            None if filter.as_deref() == Some("HEAD") && !refs.iter().any(|(name, _)| name == "HEAD") => Ok(Vec::new()),
             None => load_commits(repo, branch_filter, limit, fast),
         };
         let join_err = || GitError::new("Background history task failed.");

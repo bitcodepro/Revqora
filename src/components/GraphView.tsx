@@ -12,7 +12,7 @@ import {
 import { api, newOpId } from "../lib/api";
 import {cachedGraphRows,rememberGraphRows,rememberGraphPosition} from "../lib/graphRowsCache";
 import * as A from "../lib/actions";
-import { loadGraph, useRepos, type RepoTab } from "../lib/store";
+import { CURRENT_HISTORY_BRANCH, loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
 import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
@@ -343,6 +343,13 @@ export function GraphView({
   const fontSize = useSettings(s => s.uiFontSize);
   const rowH = (compact ? COMPACT_ROW_H : ROW_H) + Math.ceil(Math.max(0, fontSize - 13) * (compact ? 3 : 1.5));
   const root = tab.root;
+  const fixedBranch = tab.branchFilter && tab.branchFilter !== CURRENT_HISTORY_BRANCH ? tab.branchFilter : null;
+  const selectHistoryScope = (branchFilter: string | null) => {
+    patch(root, { branchFilter, selected: null, multi: [], historyJump: null });
+    setPin(null);
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    void loadGraph(root);
+  };
   const summary = tab.graph;
   const patch = useRepos((s) => s.patch);
   const dateStyle = useSettings((s) => s.dateStyle);
@@ -531,7 +538,7 @@ export function GraphView({
   const rowAt = (i: number) => cache.current.get(i);
 
   // Reaching the end of a capped history loads the next chunk.
-  const limitHit = !!summary && total >= tab.graphLimit && !tab.branchFilter;
+  const limitHit = !!summary && total - Number(tab.graphHasWorktree) >= tab.graphLimit;
   useEffect(() => {
     if (!limitHit || tab.graphLoading) return;
     if (last >= count - 50) {
@@ -572,7 +579,7 @@ export function GraphView({
       setFilterOnly(false);
       return;
     }
-    if (!summary || tab.graphLoading || tab.branchFilter) return;
+    if (!summary || tab.graphLoading) return;
     let current = true;
     void api.graphFind(root, oid, summary.key).then((index) => {
       const latest = useRepos.getState().tabs[root];
@@ -691,8 +698,14 @@ export function GraphView({
       const local=[...cache.current.values()].find(row=>row.oid===oid);
       if(local){anchor.current=local.index;scrollToIndex(local.index,true);return;}
       api.graphFind(root, oid).then((idx) => {
-        if(request!==jump||useRepos.getState().tabs[root]?.selected!==oid)return;
+        const latest = useRepos.getState().tabs[root];
+        if(request!==jump||latest?.selected!==oid)return;
         if (idx === null || idx === undefined) {
+          if (latest.branchFilter) {
+            patch(root, { branchFilter: null, historyJump: oid });
+            void loadGraph(root);
+            return;
+          }
           toast.info(
             "Commit is not in the loaded history",
             "It may be filtered out or older than the loaded range.",
@@ -959,20 +972,18 @@ export function GraphView({
           <FolderSearch size={14} /> Search all repositories
         </button>
         {pin && <button type="button" className="btn sm" onClick={() => setPin(null)}>Clear line highlight</button>}
-        {tab.branchFilter && (
-          <span className="pill accent graph-branch-filter" title={tab.branchFilter} data-branch-filter={tab.branchFilter}>
-            <span>Only {tab.branchFilter.replace(/^refs\/(heads|remotes)\//, "")}</span>
-            <button type="button" className="icon-btn sm" aria-label="Clear branch filter" title="Clear branch filter"
-              onClick={() => {
-                patch(root, { branchFilter: null });
-                setTimeout(
-                  () => useRepos.getState().refresh(root, { graph: true }),
-                  0,
-                );
-              }}
-            ><X size={12} /></button>
-          </span>
-        )}
+        <div className="graph-branch-filter" data-branch-filter={fixedBranch ?? undefined}>
+          <select className="select" aria-label="History scope" title="Choose which branch history to show"
+            value={tab.branchFilter ?? ""} onChange={event => selectHistoryScope(event.target.value || null)}>
+            <option value={CURRENT_HISTORY_BRANCH}>{tab.info?.head.branch ? `Current branch — ${tab.info.head.branch}` : "Current commit (HEAD)"}</option>
+            <option value="">All branches</option>
+            {fixedBranch && ![...(tab.refs?.local ?? []), ...(tab.refs?.remote ?? [])].some(branch => branch.fullName === fixedBranch) && <option value={fixedBranch}>{fixedBranch}</option>}
+            {!!tab.refs?.local.length && <optgroup label="Local branches">{tab.refs.local.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
+            {!!tab.refs?.remote.length && <optgroup label="Remote branches">{tab.refs.remote.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
+          </select>
+          {fixedBranch && <button type="button" className="icon-btn sm" aria-label="Clear branch filter" title="Return to current branch"
+            onClick={() => selectHistoryScope(CURRENT_HISTORY_BRANCH)}><X size={12} /></button>}
+        </div>
         <div className="spacer" />
         <span className="faint" style={{ fontSize: "var(--fs-xs)" }}>
           {total

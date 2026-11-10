@@ -239,9 +239,9 @@ async function applyWorkspace(saved: SavedWorkspace, add: boolean, onApplied?: (
       }
     }
     for (const root of original) if (!opened.includes(root)) useRepos.getState().close(root);
-    for (const [root, view] of Object.entries(target.views)) { const actual = mapped.get(root); if (actual) useRepos.getState().patch(actual, { view }); }
     const active = mapped.get(target.activeRoot ?? "") ?? opened[0] ?? null;
     useRepos.getState().arrange(target.roots.map(root => mapped.get(root)!).filter(Boolean), active);
+    for (const [root, view] of Object.entries(target.views)) { const actual = mapped.get(root); if (actual) useRepos.getState().patch(actual, { view }); }
     useSettings.getState().set({ layouts: structuredClone(target.layouts), historyMode: target.historyMode });
     useUi.setState({ overlay: null, repositoryOverview: false });
     onApplied?.(workspaceSnapshot());

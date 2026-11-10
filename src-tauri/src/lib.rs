@@ -878,10 +878,11 @@ async fn checkout(
     target: String,
     kind: String,
     choice: Option<git::branch_switch::SwitchChoice>,
+    source_head: Option<git::branch_switch::SourceHead>,
 ) -> GitResult<git::branch_switch::SwitchOutcome> {
     let reviewed_state = expected_state.clone();
     mutating(repo.clone(), expected_state, app, "checkout", None, move || {
-        git::branch_switch::switch(&p(&repo), &target, &kind, choice, reviewed_state.as_deref())
+        git::branch_switch::switch(&p(&repo), &target, &kind, choice, reviewed_state.as_deref(), source_head.as_ref())
     })
     .await
 }

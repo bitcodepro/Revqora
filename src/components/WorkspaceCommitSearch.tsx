@@ -60,9 +60,9 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
     const tab = state.tabs[root];
     if (!tab) return;
     close();
-    state.patch(root, { view: "history", selected: hit.oid, multi: [], branchFilter: null, historyJump: hit.oid });
     state.activate(root);
-    if (tab.branchFilter && tab.graph) void loadGraph(root);
+    state.patch(root, { view: "history", selected: hit.oid, multi: [], branchFilter: null, historyJump: hit.oid });
+    if (tab.branchFilter) void loadGraph(root);
   };
 
   return <Modal title="Search all repositories" subtitle="Search commits across the open repositories in this workspace." icon={<FolderSearch size={18} />} wide

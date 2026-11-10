@@ -344,7 +344,11 @@ export async function checkout(root: string, target: string, kind: "local" | "re
         refresh: false,
       });
     }
-    void useRepos.getState().refresh(root, { refs: true, graph: true, layers: true });
+    const repos = useRepos.getState();
+    if (result?.status === "switched" && kind !== "commit") {
+      repos.patch(root, { selected: null, multi: [], historyJump: null });
+    }
+    void repos.refresh(root, { refs: true, graph: true, layers: true });
     if (result?.status !== "switched") return;
     if (result.conflicts.length) {
       showStashConflicts(root, result.conflicts);

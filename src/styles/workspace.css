@@ -291,6 +291,19 @@
 .fa-workspace>.fa-error{position:sticky;top:0;z-index:1;background:var(--bg);padding:10px;border:1px solid var(--border);border-radius:6px}
 
 /* PR Center keeps descriptions out of the diff workspace. */
+.pr-center-shell,.all-pull-requests {display:flex;flex:1;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.pr-scope-bar {display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border)}
+.pr-scope-bar .select {width:auto;max-width:100%}
+.pr-scope-bar .input {flex:1;min-width:140px}
+.pr-scope-bar [aria-pressed="true"] {color:var(--accent);background:var(--accent-soft)}
+.all-pr-groups {flex:1;min-height:0;overflow:auto;padding:12px}
+.all-pr-group {margin-bottom:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.all-pr-group > header,.all-pr-row {display:flex;align-items:center;flex-wrap:wrap;gap:8px;text-align:left;padding:8px 12px}
+.all-pr-group > header {background:var(--panel);border-bottom:1px solid var(--border)}
+.all-pr-group > :is(p,.btn) {margin:8px 12px}
+.all-pr-row {width:100%;border:0;border-bottom:1px solid var(--border);background:transparent;color:var(--text);cursor:pointer}
+.all-pr-row:is(:hover,:focus-visible) {background:var(--bg-hover)}
+.all-pr-row b {flex:1;min-width:120px;overflow-wrap:anywhere}
 .pr-center {display:grid;grid-template-columns:clamp(200px,var(--pr-list-width,280px),35%) minmax(0,1fr);flex:1;min-width:0;min-height:0;position:relative;overflow:hidden}
 .pr-center.pr-list-hidden {grid-template-columns:minmax(0,1fr)}
 .pr-list-panel,.pr-file-panel {display:flex;flex-direction:column;min-height:0;min-width:0;border-right:1px solid var(--border);background:var(--bg)}

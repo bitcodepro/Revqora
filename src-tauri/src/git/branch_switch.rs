@@ -28,6 +28,12 @@ pub struct SwitchChoice {
     target_oid: String,
 }
 
+#[derive(Deserialize)]
+pub struct SourceHead {
+    branch: Option<String>,
+    oid: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum SwitchOutcome {
@@ -75,11 +81,21 @@ fn resolve_commit(repo: &Path, reference: &str) -> GitResult<String> {
     runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{reference}^{{commit}}")]).map(|oid| oid.trim().to_string())
 }
 
-pub fn switch(repo: &Path, target: &str, kind: &str, choice: Option<SwitchChoice>, expected: Option<&str>) -> GitResult<SwitchOutcome> {
+pub fn switch(
+    repo: &Path,
+    target: &str,
+    kind: &str,
+    choice: Option<SwitchChoice>,
+    expected: Option<&str>,
+    source_head: Option<&SourceHead>,
+) -> GitResult<SwitchOutcome> {
     if target.starts_with('-') {
         return Err(GitError::new("Invalid checkout target."));
     }
     let current = working_state(repo)?;
+    if source_head.is_some_and(|head| head.branch != current.branch || head.oid != current.oid) {
+        return Err(stale());
+    }
     let (branch, reference) = target_reference(repo, target, kind)?;
     let same_branch = branch.is_some() && current.branch == branch;
     if choice.is_none() && (current.files.is_empty() || same_branch) {
@@ -107,7 +123,13 @@ pub fn switch(repo: &Path, target: &str, kind: &str, choice: Option<SwitchChoice
     let Some(choice) = choice else {
         let state_token = match expected {
             Some(token) => token.to_string(),
-            None => status::status(repo)?.state_token.ok_or_else(stale)?,
+            None => {
+                let reviewed = status::status(repo)?;
+                if reviewed.branch != current.branch || reviewed.oid != current.oid {
+                    return Err(stale());
+                }
+                reviewed.state_token.ok_or_else(stale)?
+            }
         };
         return Ok(SwitchOutcome::Review { source, target_oid, state_token, files: current.files.len() });
     };
@@ -180,7 +202,7 @@ mod tests {
     }
 
     fn review(repo: &Path) -> (String, String) {
-        match switch(repo, "target", "local", None, None).unwrap() {
+        match switch(repo, "target", "local", None, None, None).unwrap() {
             SwitchOutcome::Review { state_token, target_oid, .. } => (state_token, target_oid),
             _ => panic!("Dirty checkout should require a review"),
         }
@@ -192,8 +214,33 @@ mod tests {
             "checkout",
             Some(state),
             |_, _| {},
-            || switch(repo, "target", "local", Some(SwitchChoice { action, target_oid }), Some(state)),
+            || switch(repo, "target", "local", Some(SwitchChoice { action, target_oid }), Some(state), None),
         )
+    }
+
+    #[test]
+    fn initial_checkout_verifies_the_displayed_head_and_reviews_fresh_worktree_changes() {
+        let dir = fixture();
+        let repo = dir.path();
+        let displayed = SourceHead { branch: Some("main".into()), oid: Some(git(repo, &["rev-parse", "HEAD"])) };
+        let switch_from_displayed =
+            || super::super::operations::run(repo, "checkout", None, |_, _| {}, || switch(repo, "target", "local", None, None, Some(&displayed)));
+
+        git(repo, &["switch", "-qc", "external"]);
+        assert_eq!(switch_from_displayed().err().unwrap().kind, "stale-operation");
+        assert_eq!(git(repo, &["branch", "--show-current"]), "external");
+
+        git(repo, &["switch", "-q", "main"]);
+        fs::write(repo.join("file.txt"), "changed outside Revqora\n").unwrap();
+        let outcome = switch_from_displayed().unwrap();
+        let SwitchOutcome::Review { files: 1, state_token, target_oid, .. } = outcome else {
+            panic!("Fresh changes must be reviewed before checkout");
+        };
+        assert_eq!(git(repo, &["branch", "--show-current"]), "main");
+        assert!(refs::stashes(repo).unwrap().is_empty());
+        fs::write(repo.join("file.txt"), "changed again after review\n").unwrap();
+        assert_eq!(confirm(repo, DirtyAction::Stash, &state_token, target_oid).err().unwrap().kind, "stale-operation");
+        assert_eq!(fs::read_to_string(repo.join("file.txt")).unwrap(), "changed again after review\n");
     }
 
     #[test]
@@ -211,7 +258,7 @@ mod tests {
         assert!(working_state(repo).unwrap().files.is_empty());
         let stash = refs::stashes(repo).unwrap().remove(0);
         assert_eq!(stash.switch_source.as_deref(), Some("refs/heads/main"));
-        switch(repo, "main", "local", None, None).unwrap();
+        switch(repo, "main", "local", None, None, None).unwrap();
         assert_eq!(ops::stash_apply_reviewed(repo, stash.index, &stash.oid, true).unwrap().status, "done");
         assert_eq!(git(repo, &["show", ":file.txt"]), "staged");
         assert_eq!(fs::read_to_string(repo.join("file.txt")).unwrap(), "working\n");
@@ -279,7 +326,7 @@ mod tests {
         fs::write(repo.join("private.txt"), "uncommitted\n").unwrap();
         let (state, target) = review(repo);
         confirm(repo, DirtyAction::Stash, &state, target).unwrap();
-        switch(repo, "main", "local", None, None).unwrap();
+        switch(repo, "main", "local", None, None, None).unwrap();
         fs::write(repo.join(".git/info/exclude"), "private.txt\n").unwrap();
         fs::write(repo.join("private.txt"), "ignored data\n").unwrap();
         let stash = refs::stashes(repo).unwrap().remove(0);

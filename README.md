@@ -547,9 +547,12 @@ preferences. Keep your vault password and back up portable data appropriately.
 Do not delete `data` if you want to retain settings, drafts, credentials or recovery
 history. Close the application before copying a portable installation.
 
-Settings controls update checks, auto-fetch, themes, fonts, shortcuts and optional
-avatars. An available update appears in the status bar; package checksums and
-source metadata are verified before installation. Updates preserve portable data.
+Settings also controls auto-fetch, themes, fonts, shortcuts and optional avatars.
+Revqora checks for updates at startup and every hour while open. Turn off
+**Check for updates every hour** in **Settings → Updates** to keep only the
+startup check. Use **Check now** to check manually. An available update appears
+in the status bar. Revqora verifies package checksums and source metadata before
+installation and preserves portable data.
 Affected older Linux builds need a manual portable-archive update to receive the
 archive-extraction fix; keep the existing `data` folder when upgrading.
 **Settings → About Revqora**, or **Ctrl+K → About Revqora**, shows the installed

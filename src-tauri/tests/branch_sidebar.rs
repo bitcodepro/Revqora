@@ -1,6 +1,33 @@
 use revqora_lib::git::{refs, runner};
 
 #[test]
+fn current_branch_history_follows_head_without_reusing_commits_from_other_refs() {
+    use revqora_lib::git::graph;
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    let git = |args: &[&str]| runner::run(r, args.iter().copied()).unwrap();
+    git(&["init", "-qb", "main"]);
+    assert!(graph::build(r, Some("HEAD"), false, 100, false).unwrap().rows.is_empty());
+    git(&["config", "user.name", "Tester"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    git(&["commit", "--allow-empty", "-qm", "Base"]);
+    git(&["branch", "topic"]);
+    git(&["commit", "--allow-empty", "-qm", "Main tip"]);
+    let before = graph::build(r, Some("HEAD"), false, 100, false).unwrap();
+    git(&["switch", "topic"]);
+    git(&["commit", "--allow-empty", "-qm", "Topic tip"]);
+    git(&["switch", "main"]);
+    let unchanged = graph::build_with(r, Some("HEAD"), false, 100, false, Some(&before)).unwrap();
+    assert_eq!(unchanged.rows.iter().map(|row| row.subject.as_str()).collect::<Vec<_>>(), ["Main tip", "Base"]);
+    git(&["switch", "topic"]);
+    let switched = graph::build_with(r, Some("HEAD"), false, 100, false, Some(&unchanged)).unwrap();
+    assert_eq!(switched.rows.iter().map(|row| row.subject.as_str()).collect::<Vec<_>>(), ["Topic tip", "Base"]);
+    let all = graph::build(r, None, false, 100, false).unwrap();
+    assert_eq!(all.rows.len(), 3);
+}
+
+#[test]
 fn graph_records_its_actual_detached_head_even_outside_the_filter() {
     let t = tempfile::tempdir().unwrap();
     let r = t.path();

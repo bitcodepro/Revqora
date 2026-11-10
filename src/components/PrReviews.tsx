@@ -9,15 +9,41 @@ import {utf8Length,safeWebUrl,forgeRepositoryIdentity} from "../lib/prCenter";
 import {mergeReviewThreads,refreshReviewThread,reviewAttemptPending,setReviewAttemptPending,readReviewDraft,reviewDraftKey,writeReviewDraft,previousReviewDrafts,restoreReviewDraft} from "../lib/prReviews";
 import type {ForgeInfo,PrDetail,PrReviewAnchor,PrReviewCapabilities,PrReviewKind,PrThread} from "../lib/types";
 type Context={root:string;forge:ForgeInfo;detail:PrDetail};
+type ReviewOptions={anchor?:PrReviewAnchor;path?:string;thread?:PrThread};
 const names:Record<PrReviewKind,string>={comment:"Comment",reply:"Reply",resolve:"Resolve discussion",reopen:"Reopen discussion",approve:"Approve",request_changes:"Request changes"};
-export async function composeReview(context:Context,kind:PrReviewKind,onSent:()=>void,options:{anchor?:PrReviewAnchor;path?:string;thread?:PrThread}={}){
+const openComposers = new Set<string>();
+export async function composeReview(context:Context,kind:PrReviewKind,onSent:()=>void,options:ReviewOptions={}){
+  const key=JSON.stringify([context.root,context.forge.connectionRevision,context.detail.pull.number]);
+  if(openComposers.has(key))return;
+  openComposers.add(key);
   try{
-    const {root,forge,detail}=context,connection=forge.connectionRevision!;
-    const [caps,thread]=await Promise.all([api.prReviewCapabilities(root,detail.pull.number,connection,detail.revision),options.thread?api.prReviewThread(root,detail.pull.number,connection,detail.revision,options.thread.id):Promise.resolve(null)]);
-    if(thread&&((kind==="reply"&&!thread.canReply)||((kind==="resolve"||kind==="reopen")&&!thread.canResolve))){toast.warning("Discussion action unavailable","The server no longer permits this action. Refresh the discussion.");return;}
-    if((kind==="approve"&&!caps.approve)||(kind==="request_changes"&&!caps.requestChanges)||(options.anchor&&!caps.inline)||((kind==="comment"||kind==="reply")&&!caps.comment)){toast.warning("Review action unavailable",caps.reason);return;}
-    await showDialog<void>(close=><Composer context={context} kind={kind} caps={caps} anchor={options.anchor??null} path={options.path??null} initialThread={thread} onSent={onSent} close={()=>close()}/>);
-  }catch(e){toast.error(e,"Could not prepare review");}
+    await showDialog<void>(close=><ReviewPreparation context={context} kind={kind} options={options} onSent={onSent} close={()=>close()}/>);
+  }finally{openComposers.delete(key);}
+}
+async function prepareReview({root,forge,detail}:Context,kind:PrReviewKind,options:ReviewOptions){
+  const connection=forge.connectionRevision!,number=detail.pull.number;
+  const [caps,thread]=await Promise.all([
+    api.prReviewCapabilities(root,number,connection,detail.revision),
+    options.thread?api.prReviewThread(root,number,connection,detail.revision,options.thread.id):Promise.resolve(null),
+  ]);
+  if(thread&&((kind==="reply"&&!thread.canReply)||((kind==="resolve"||kind==="reopen")&&!thread.canResolve)))throw Error("The server no longer permits this action. Refresh the discussion.");
+  if((kind==="approve"&&!caps.approve)||(kind==="request_changes"&&!caps.requestChanges)||(options.anchor&&!caps.inline)||((kind==="comment"||kind==="reply")&&!caps.comment))throw Error(caps.reason);
+  return {caps,thread};
+}
+function ReviewPreparation({context,kind,options,onSent,close}:{context:Context;kind:PrReviewKind;options:ReviewOptions;onSent:()=>void;close:()=>void}){
+  const request=useRef<ReturnType<typeof prepareReview>|null>(null);
+  const [prepared,setPrepared]=useState<Awaited<ReturnType<typeof prepareReview>>|null>(null);
+  const [error,setError]=useState("");
+  useEffect(()=>{
+    let current=true;
+    request.current??=prepareReview(context,kind,options);
+    void request.current.then(result=>{if(current)setPrepared(result);},cause=>{if(current)setError(errorMessage(cause));});
+    return()=>{current=false;};
+  },[context,kind,options]);
+  if(prepared)return <Composer context={context} kind={kind} caps={prepared.caps} anchor={options.anchor??null} path={options.path??null} initialThread={prepared.thread} onSent={onSent} close={close}/>;
+  return <Modal title={`${names[kind]} · #${context.detail.pull.number}`} wide onClose={close} footer={<button className="btn" type="button" onClick={close}>Cancel</button>}>
+    {error?<div className="callout warn" role="alert">{error}</div>:<p className="loading-status" role="status"><Loader2 className="spin" size={16}/>Preparing {names[kind].toLowerCase()}…</p>}
+  </Modal>;
 }
 export async function chooseReview(context:Context,onSent:()=>void){
   try{const c=await api.prReviewCapabilities(context.root,context.detail.pull.number,context.forge.connectionRevision!,context.detail.revision);
@@ -28,7 +54,8 @@ export async function chooseReview(context:Context,onSent:()=>void){
 function Composer({context,kind,caps,anchor,path,initialThread,onSent,close}:{context:Context;kind:PrReviewKind;caps:PrReviewCapabilities;anchor:PrReviewAnchor|null;path:string|null;initialThread:PrThread|null;onSent:()=>void;close:()=>void}){
   const {root,forge}=context,[detail,setDetail]=useState(context.detail),connection=forge.connectionRevision!,vote=kind==="approve"||kind==="request_changes",hasText=(kind==="comment"||kind==="reply")||(vote&&caps.summaryWithVote);
   const key=reviewDraftKey(root,JSON.stringify([forgeRepositoryIdentity(forge),caps.actorId]),detail.pull.number,detail.pull.headSha,kind,initialThread?.id??(anchor?`${path}:${anchor.side}:${anchor.line}`:"general"));
-  const [body,setBody]=useState(()=>hasText?readReviewDraft(key):""),[thread,setThread]=useState(initialThread),[error,setError]=useState(""),[busy,setBusy]=useState(false),[storageError,setStorageError]=useState(""),[uncertain,setUncertain]=useState(()=>reviewAttemptPending(key)),[ack,setAck]=useState(false);
+  const [body,setBody]=useState(()=>hasText?readReviewDraft(key):""),[thread,setThread]=useState(initialThread),[error,setError]=useState(""),[phase,setPhase]=useState<"sending"|"refreshing"|null>(null),[storageError,setStorageError]=useState(""),[uncertain,setUncertain]=useState(()=>reviewAttemptPending(key)),[ack,setAck]=useState(false);
+  const busy=phase!==null;
   const active=useRef(false),sent=useRef(false),[saved,setSaved]=useState(false);
   useEffect(()=>{if(!hasText||sent.current)return;try{writeReviewDraft(key,body);setStorageError("");setSaved(!!body);}catch(e){setStorageError(errorMessage(e));setSaved(false);}},[key,body,hasText]);
   const dismiss=async()=>{if(active.current)return;if(storageError&&body&&!await confirmDialog({title:"Close unsaved draft?",message:"Local storage could not save this text. Copy it before closing.",confirm:"Close without saved draft",danger:true}))return;close();};
@@ -37,18 +64,23 @@ function Composer({context,kind,caps,anchor,path,initialThread,onSent,close}:{co
     if(active.current||utf8Length(body)>65536||((kind==="comment"||kind==="reply"||kind==="request_changes"&&caps.summaryWithVote)&&!body.trim()))return;
     const wasPending=reviewAttemptPending(key);
     if((uncertain||wasPending)&&!ack){setUncertain(true);return;}
-    active.current=true;setBusy(true);setError("");
+    active.current=true;setPhase("sending");setError("");
     // Persist before IPC so a closed dialog or interrupted app cannot silently retry a write.
-    try{setReviewAttemptPending(key,true);}catch(e){setStorageError(errorMessage(e));active.current=false;setBusy(false);return;}
-    try{await api.prReviewAct(root,detail.pull.number,connection,detail.revision,{kind,body,expectedActor:caps.actorId,thread:thread?.id??null,threadRevision:thread?.revision??null,anchor});sent.current=true;try{writeReviewDraft(key,"");setReviewAttemptPending(key,false);}catch(e){toast.warning("Sent, but local review state could not be cleared",errorMessage(e));}toast.success(`${names[kind]} sent`);close();onSent();}
-    catch(e){setError(errorMessage(e));let pending=wasPending||!isGitError(e)||e.kind==="forge-write-uncertain";if(!pending){try{setReviewAttemptPending(key,false);}catch{pending=true;}}setUncertain(pending);setAck(false);}
-    finally{active.current=false;setBusy(false);}
+    try{setReviewAttemptPending(key,true);}catch(e){setStorageError(errorMessage(e));active.current=false;setPhase(null);return;}
+    try{await api.prReviewAct(root,detail.pull.number,connection,detail.revision,{kind,body,expectedActor:caps.actorId,thread:thread?.id??null,threadRevision:thread?.revision??null,anchor});}
+    catch(e){setError(errorMessage(e));let pending=wasPending||!isGitError(e)||e.kind==="forge-write-uncertain";if(!pending){try{setReviewAttemptPending(key,false);}catch{pending=true;}}setUncertain(pending);setAck(false);return;}
+    finally{active.current=false;setPhase(null);}
+    sent.current=true;
+    try{writeReviewDraft(key,"");setReviewAttemptPending(key,false);}catch(e){toast.warning("Sent, but local review state could not be cleared",errorMessage(e));}
+    close();
+    toast.success(`${names[kind]} sent`);
+    onSent();
   };
   const checked=()=>{if(active.current||!ack)return;try{setReviewAttemptPending(key,false);setUncertain(false);setAck(false);setError("");}catch(e){setStorageError(errorMessage(e));}};
-  const reload=async()=>{if(active.current)return;active.current=true;setBusy(true);try{const d=await api.prDetail(root,detail.pull.number,connection);if(d.pull.headSha!==detail.pull.headSha||d.baseSha!==detail.baseSha||d.pull.base!==detail.pull.base||d.pull.head!==detail.pull.head)throw Error("The reviewed code changed. Keep or copy this draft, reload the PR and review the new diff before sending.");if(thread){const t=await api.prReviewThread(root,d.pull.number,connection,d.revision,thread.id);setThread(t);}setDetail(d);setError("");}catch(e){setError(errorMessage(e));}finally{active.current=false;setBusy(false);}};
+  const reload=async()=>{if(active.current)return;active.current=true;setPhase("refreshing");try{const d=await api.prDetail(root,detail.pull.number,connection);if(d.pull.headSha!==detail.pull.headSha||d.baseSha!==detail.baseSha||d.pull.base!==detail.pull.base||d.pull.head!==detail.pull.head)throw Error("The reviewed code changed. Keep or copy this draft, reload the PR and review the new diff before sending.");if(thread){const t=await api.prReviewThread(root,d.pull.number,connection,d.revision,thread.id);setThread(t);}setDetail(d);setError("");}catch(e){setError(errorMessage(e));}finally{active.current=false;setPhase(null);}};
   const older=useMemo(()=>hasText?previousReviewDrafts(key,{connection,actor:caps.actorId}):[],[key,hasText,connection,caps.actorId,body]);
   const valid=utf8Length(body)<=65536&&(!(kind==="comment"||kind==="reply"||kind==="request_changes"&&caps.summaryWithVote)||!!body.trim());
-  return <Modal title={`${names[kind]} · #${detail.pull.number}`} subtitle={`${forge.project} · ${caps.actor} · source ${shortOid(detail.pull.headSha)}`} wide onClose={()=>void dismiss()} onSubmit={()=>void send()} footer={<><button className="btn" type="button" disabled={busy} onClick={()=>void dismiss()}>{hasText?"Close and keep draft":"Cancel"}</button>{hasText&&body&&<button className="btn danger" type="button" disabled={busy} onClick={()=>void discard()}>Discard draft</button>}<button className="btn primary" type="submit" disabled={busy||!valid||uncertain&&!ack}>{busy&&<Loader2 className="spin" size={14}/>}Send {names[kind].toLowerCase()}</button></>}>
+  return <Modal title={`${names[kind]} · #${detail.pull.number}`} subtitle={`${forge.project} · ${caps.actor} · source ${shortOid(detail.pull.headSha)}`} wide onClose={()=>void dismiss()} onSubmit={()=>void send()} footer={<><button className="btn" type="button" disabled={busy} onClick={()=>void dismiss()}>{hasText?"Close and keep draft":"Cancel"}</button>{hasText&&body&&<button className="btn danger" type="button" disabled={busy} onClick={()=>void discard()}>Discard draft</button>}<button className="btn primary" type="submit" disabled={busy||!valid||uncertain&&!ack}>{phase==="sending"?<><Loader2 className="spin" size={14}/>Sending…</>:`Send ${names[kind].toLowerCase()}`}</button></>}>
     <div className="review-composer" data-review-composer={kind} aria-busy={busy}>
       {anchor&&<div className="callout">{path} · {anchor.side==="LEFT"?"old":"new"} line {anchor.line}</div>}
       {thread&&<section className="review-context"><b>Discussion context</b>{thread.comments.slice(-3).map(c=><div key={c.id}><small>{c.author}</small><p>{c.body}</p></div>)}</section>}
@@ -56,6 +88,7 @@ function Composer({context,kind,caps,anchor,path,initialThread,onSent,close}:{co
       {hasText?<label className="field">Review text<textarea className="textarea" aria-label="Review text" rows={10} disabled={busy} value={body} onChange={e=>setBody(e.target.value)}/></label>:<p>{vote?"This sends your vote. This provider publishes written feedback separately; use Comment to post a summary.":`This will ${kind} the discussion on the server.`}</p>}
       {older.length>0&&<details className="review-context"><summary>Saved drafts, including previous versions ({older.length})</summary>{older.map(d=><div key={d.key}><b>{shortOid(d.head)}</b><p>{d.body.slice(0,300)}{d.body.length>300?"…":""}</p><button className="btn sm" type="button" disabled={busy} onClick={async()=>{if(!body||await confirmDialog({title:"Replace the current draft?",message:"Use this saved text for the currently reviewed commit. Text from an older app version is migrated after saving. Other previous-commit drafts are kept.",confirm:"Use saved text"})){try{setBody(restoreReviewDraft(key,d.key,{connection,actor:caps.actorId}));setStorageError("");}catch(e){setStorageError(errorMessage(e));}}}}>Use saved text</button></div>)}</details>}
       {hasText&&<small className="faint">{utf8Length(body).toLocaleString()} / 65,536 bytes · {saved?"Draft saved locally":"No saved text"}</small>}
+      {phase&&<p className="loading-status" role="status"><Loader2 className="spin" size={15}/>{phase==="sending"?`Sending ${names[kind].toLowerCase()}…`:"Refreshing review context…"}</p>}
       {storageError&&<div className="callout warn" role="alert">{storageError}</div>}{error&&<div className="callout warn" role="alert">{error}</div>}
       {uncertain&&<div className="callout warn"><p>The action may already be published. Check the server before retrying.</p><button className="btn sm" type="button" onClick={()=>{const u=safeWebUrl(detail.pull.url);if(u)void api.openPath(u);}}><ExternalLink size={13}/>Check on server</button><label className="check"><input type="checkbox" checked={ack} onChange={e=>setAck(e.target.checked)}/>I checked the result on the server</label><button className="btn sm" type="button" disabled={busy||!ack} onClick={checked}>Mark result as checked without resending</button></div>}
       <small className="faint review-permissions">{caps.reason}</small>
@@ -66,7 +99,24 @@ function Composer({context,kind,caps,anchor,path,initialThread,onSent,close}:{co
 export function PrReviews({root,forge,detail,onSent,refreshToken=0}:{root:string;forge:ForgeInfo;detail:PrDetail;onSent:()=>void;refreshToken?:number}){
   const [feed,setFeed]=useState("threads"),[filter,setFilter]=useState("all"),[query,setQuery]=useState(""),[items,setItems]=useState<PrThread[]>([]),[cursor,setCursor]=useState<string|null>(null),[loading,setLoading]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState<string|null>(null);
   const generation=useRef(0),busy=useRef(false),context={root,forge,detail};
-  const load=useCallback(async(next:string|null=null)=>{if(next&&busy.current)return;const id=next?generation.current:++generation.current;busy.current=true;setLoading(true);setError("");if(!next){setItems([]);setCursor(null);setNotice(null);}try{const p=await api.prReviewPage(root,detail.pull.number,forge.connectionRevision!,detail.revision,feed,next);if(id!==generation.current)return;setItems(old=>next?mergeReviewThreads(old,p.items):p.items);setCursor(p.nextCursor);setNotice(p.notice);}catch(e){if(id===generation.current)setError(errorMessage(e));}finally{if(id===generation.current){busy.current=false;setLoading(false);}}},[root,detail.pull.number,detail.revision,forge.connectionRevision,feed,refreshToken]);
+  const scope=JSON.stringify([root,forge.connectionRevision,detail.pull.number,detail.pull.headSha,detail.baseSha,feed]);
+  const loadedScope=useRef<string|null>(null);
+  const load=useCallback(async(next:string|null=null)=>{
+    if(next&&busy.current)return;
+    const id=next?generation.current:++generation.current;
+    busy.current=true;setLoading(true);setError("");
+    if(!next){
+      setCursor(null);
+      if(loadedScope.current!==scope){setItems([]);setNotice(null);}
+    }
+    try{
+      const p=await api.prReviewPage(root,detail.pull.number,forge.connectionRevision!,detail.revision,feed,next);
+      if(id!==generation.current)return;
+      loadedScope.current=scope;
+      setItems(old=>next?mergeReviewThreads(old,p.items):p.items);setCursor(p.nextCursor);setNotice(p.notice);
+    }catch(e){if(id===generation.current)setError(errorMessage(e));}
+    finally{if(id===generation.current){busy.current=false;setLoading(false);}}
+  },[root,detail.pull.number,detail.revision,forge.connectionRevision,feed,refreshToken,scope]);
   useEffect(()=>{void load();return()=>{generation.current++;busy.current=false;};},[load]);
   const visible=useMemo(()=>items.filter(t=>(feed!=="threads"||filter==="all"||(filter==="unresolved"?t.resolved===false:filter==="resolved"?t.resolved===true:t.outdated))&&`${t.path??""} ${t.comments.map(c=>`${c.author} ${c.body}`).join(" ")}`.toLowerCase().includes(query.toLowerCase())),[items,filter,query,feed]);
   const sent=()=>{onSent();};

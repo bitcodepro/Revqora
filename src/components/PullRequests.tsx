@@ -5,8 +5,9 @@ import { useFileListNavigation } from "../lib/useFileListNavigation";
 import { Bell, CheckCircle2, ChevronLeft, ChevronRight, CircleDashed, Download, ExternalLink, FileDiff, GitPullRequest, GitPullRequestCreate, List, Loader2, Maximize2, MinusCircle, Pencil, RefreshCw, XCircle } from "lucide-react";
 import { forgeAccountsDialog } from "./ForgeAccounts";
 import { api, errorMessage, isGitError } from "../lib/api";
-import { getTab, type RepoTab } from "../lib/store";
+import { getTab, useRepos, type RepoTab } from "../lib/store";
 import { showDialog, toast, copyText, openOverlay, contextMenu } from "../lib/ui";
+import { AllPullRequests } from "./AllPullRequests";
 import * as A from "../lib/actions";
 import type { Check, ForgeInfo, PullRequest, PrDetail, PrEditResult, PrFile, PrFileView, PrState, PrTemplates } from "../lib/types";
 import { relativeTime, shortOid } from "../lib/format";
@@ -16,7 +17,7 @@ import { Splitter } from "./Overlays";
 import { DiffView } from "./DiffView";
 import { confirmDialog } from "./dialogs";
 import { virtualRange } from "../lib/virtualRange";
-import {authorSelectionValue,authorScope,authorPreferencesKey,mergePrAuthors,matchesPrAuthor,restoreAuthorPreferences,type PrAuthor,type AuthorPreferences} from "../lib/prAuthors";
+import {authorSelectionValue,authorScope,authorPreferencesKey,loadAuthorPreferences,mergePrAuthors,matchesPrAuthor,rememberAccountAuthor,restoreAuthorPreferences,samePrAuthor,type PrAuthor,type AuthorPreferences} from "../lib/prAuthors";
 import { useSettings } from "../lib/settings";
 import { copyUrlMenu } from "./NamePathMenu";
 import { EMPTY_PR_WATCH, PR_PAGE_REFRESHED, nextPrListRead, updatePrWatch, viewerAuthor, type PrPageRefresh } from "../lib/prTracking";
@@ -39,10 +40,34 @@ export function ChecksList({ checks }: { checks: Check[] }) {
 }
 export function summarizeChecks(checks: Check[]): Check["state"] | null { return !checks.length ? null : checks.some(c => c.state === "failure") ? "failure" : checks.some(c => c.state === "pending") ? "pending" : "success"; }
 
+const prTarget = (forge: ForgeInfo) => JSON.stringify([forge.kind, forge.api, forge.project, forge.remote, forge.accountId]);
+let requestedPull: { root: string; target: string; number: number } | null = null;
+
 export function PullRequestsView({ tab, remotesKey }: { tab: RepoTab; remotesKey: string }) {
+  const all = useSettings(s => s.prAllRepositories);
+  const watching = useSettings(s => !!s.prWatchMineSince);
+  const openRequest = async (root: string, forge: ForgeInfo, number: number) => {
+    try {
+      const repos = useRepos.getState();
+      const opened = await repos.open(root, false);
+      if (!opened || !forge.connectionRevision) throw Error("The repository or connection is no longer available.");
+      requestedPull = { root: opened, target: prTarget(forge), number };
+      repos.activate(opened);
+      repos.patch(opened, { view: "pulls" });
+      useSettings.getState().set({ prAllRepositories: false });
+    } catch (error) { toast.error(error, "Could not open pull request"); }
+  };
   const loadingRemotes = !tab.refs && !tab.loaded;
-  if (!loadingRemotes && tab.refs?.remotes.length !== 0) return <ConnectedPullRequests key={JSON.stringify([tab.root, remotesKey])} root={tab.root} />;
-  return <section className="pr-center pr-list-hidden" aria-label="Pull Request Center">
+  return <div className="pr-center-shell">
+    <header className="pr-scope-bar">
+      <select className="select" aria-label="Pull request scope" value={all ? "all" : "repository"} onChange={e => useSettings.getState().set({ prAllRepositories: e.target.value === "all" })}>
+        <option value="repository">This repository</option><option value="all">All repositories</option>
+      </select>
+      <button type="button" className="btn sm" aria-label="Watch my PRs" aria-pressed={watching} title="Watch your open pull requests across the repository library" onClick={() => useSettings.setState(s => ({ prWatchMineSince: s.prWatchMineSince ? null : Date.now() }))}><Bell size={14}/>My PRs</button>
+    </header>
+    {all?<AllPullRequests open={openRequest}/>:!loadingRemotes&&tab.refs?.remotes.length!==0
+      ?<ConnectedPullRequests key={JSON.stringify([tab.root, remotesKey])} root={tab.root}/>
+      :<section className="pr-center pr-list-hidden" aria-label="Pull Request Center">
     <main className="pr-content">
       <header className="pr-center-head"><b>PR Center</b></header>
       {loadingRemotes ? <div className="pr-empty" role="status"><Loader2 size={22} className="spin" />Loading repository remotes…</div> :
@@ -53,7 +78,8 @@ export function PullRequestsView({ tab, remotesKey }: { tab: RepoTab; remotesKey
           <button type="button" className="btn primary" onClick={() => void A.addRemote(tab.root)}>Add remote…</button>
         </div>}
     </main>
-  </section>;
+  </section>}
+  </div>;
 }
 
 const rememberedPrSelection = new Map<string, number>();
@@ -66,20 +92,35 @@ function ConnectedPullRequests({ root }: { root: string }) {
   const [authors,setAuthors]=useState<{scope:string;known:PrAuthor[];viewer:PrAuthor|null;prefs:AuthorPreferences}>({scope:"",known:[],viewer:null,prefs:restoreAuthorPreferences(null)});
   const mine=authors.viewer??authors.prefs.mine;
   const watch = useSettings(s => s.prWatches[root]?.[authors.scope] ?? EMPTY_PR_WATCH);
+  const watchMine = useSettings(s => !!s.prWatchMineSince);
   const firstPage = useRef<PullRequest[]>([]);
   const latestListRead = useRef(0);
-  const toggleMine = () => updatePrWatch(root, authors.scope, old => ({
-    ...old, mineSince: old.mineSince ? null : Date.now(),
-  }));
   const toggleWatch = (number: number) => updatePrWatch(root, authors.scope, old => {
     const selected = { ...old.selected };
     if (selected[number]) delete selected[number];
     else selected[number] = Date.now();
     return { ...old, selected };
   });
-  const selectedAuthor=authors.prefs.selection==="mine"?mine:authors.prefs.selection==="all"?null:authors.known.find(a=>a.key===authors.prefs.selection)??authors.prefs.chosen;
+  const authorSelection=authorSelectionValue(authors.prefs,mine);
+  const selectedAuthor=authorSelection==="mine"?mine:authorSelection==="all"?null:authors.known.find(a=>a.key===authorSelection)??authors.prefs.chosen;
+  const otherAuthors=authors.known.filter(author=>!samePrAuthor(author,mine));
   useEffect(()=>{if(!authors.scope)return;try{localStorage.setItem(authorPreferencesKey(root,authors.scope),JSON.stringify(authors.prefs));}catch{toast.warning("PR author filter could not be saved");}},[root,authors.scope,authors.prefs]);
-  const chooseAuthor=async(key:string)=>{if(key==="mine"&&!mine){const chosen=await showDialog<PrAuthor|null>(close=><MyPrAuthor authors={authors.known} close={close} bitbucket={forge?.kind==="bitbucket"}/>);if(!chosen)return;setAuthors(a=>({...a,prefs:{...a.prefs,mine:chosen,selection:"mine"}}));}else setAuthors(a=>({...a,prefs:{...a.prefs,selection:key,chosen:a.known.find(x=>x.key===key)??a.prefs.chosen}}));setSelected(null);};
+  const setMyAuthor=async(selectMine:boolean)=>{
+    if(!forge)return;
+    const scope=authors.scope;
+    const chosen=await showDialog<PrAuthor|null>(close=><MyPrAuthor authors={authors.known} initial={mine} close={close} bitbucket={forge.kind==="bitbucket"}/>);
+    if(!chosen)return;
+    rememberAccountAuthor(forge,chosen);
+    setAuthors(a=>a.scope===scope?{...a,prefs:{...a.prefs,mine:chosen,selection:selectMine?"mine":a.prefs.selection}}:a);
+    if(requestedPull?.root===root)requestedPull=null;
+    setSelected(null);
+  };
+  const chooseAuthor=(key:string)=>{
+    if(key==="mine"&&!mine){void setMyAuthor(true);return;}
+    setAuthors(a=>({...a,prefs:{...a.prefs,selection:key,chosen:a.known.find(x=>x.key===key)??a.prefs.chosen}}));
+    if(requestedPull?.root===root)requestedPull=null;
+    setSelected(null);
+  };
   const savePreferences = (patch: Partial<PrPreferences>) => setPrefs(p => restorePrPreferences({ ...p, ...patch }));
   useEffect(() => { try { localStorage.setItem(prPreferencesKey(root), JSON.stringify(prefs)); } catch { toast.warning("PR Center preferences could not be saved"); } }, [root, prefs]);
   const load = useCallback(async (next: string | null = null) => {
@@ -94,8 +135,18 @@ function ConnectedPullRequests({ root }: { root: string }) {
       if (!next) firstPage.current = page.items;
       setForge(page.forge); setItems(old => next ? appendPullRequests(old, page.items) : page.items); setCursor(page.nextCursor);
       const scope=authorScope(page.forge,page.viewer);
-      setAuthors(old=>{let prefs=old.prefs;if(old.scope!==scope){try{prefs=restoreAuthorPreferences(JSON.parse(localStorage.getItem(authorPreferencesKey(root,scope))??"null"));}catch{prefs=restoreAuthorPreferences(null);}}return {scope,known:mergePrAuthors(old.scope===scope?old.known:[],page.items),viewer:viewerAuthor(page.viewer),prefs};});
-      if (!next) setSelected(preferred.current);
+      const saved=loadAuthorPreferences(root,scope,page.forge);
+      setAuthors(old=>({scope,known:mergePrAuthors(old.scope===scope?old.known:[],page.items),viewer:viewerAuthor(page.viewer),prefs:old.scope===scope?old.prefs:saved}));
+      if (!next) {
+        const requested = requestedPull?.root === root ? requestedPull : null;
+        if (requested && requested.target === prTarget(page.forge)) {
+          preferred.current = requested.number;
+        } else if (requested) {
+          requestedPull = null;
+          toast.warning("PR connection changed", "Refresh the combined list before opening this request.");
+        }
+        setSelected(preferred.current);
+      }
     } catch (e) { if (id === generation.current) setError(errorMessage(e)); }
     finally { if (id === generation.current) { busy.current = false; setLoading(false); } }
   }, [root, prefs.state]);
@@ -126,10 +177,11 @@ function ConnectedPullRequests({ root }: { root: string }) {
     window.addEventListener(PR_PAGE_REFRESHED, update);
     return () => window.removeEventListener(PR_PAGE_REFRESHED, update);
   }, [root, prefs.state, forge?.connectionRevision, authors.scope, selected]);
-  const authored = useMemo(() => items.filter(p=>(authors.prefs.selection!=="mine"||!!mine)&&matchesPrAuthor(p,selectedAuthor)), [items,selectedAuthor,authors.prefs.selection,mine]);
+  const authored = useMemo(() => items.filter(p=>(authorSelection!=="mine"||!!mine)&&matchesPrAuthor(p,selectedAuthor)), [items,selectedAuthor,authorSelection,mine]);
   const visible = useMemo(()=>searchPullRequests(authored,query),[authored,query]);
   const selectionKey = forge ? JSON.stringify([root, forge.api, forge.project, forge.remote, forge.accountId, prefs.state]) : "";
   const selectRequest = (number: number) => {
+    if (requestedPull?.root === root) requestedPull = null;
     if (selectionKey) {
       rememberedPrSelection.set(selectionKey, number);
       const oldest = rememberedPrSelection.keys().next().value;
@@ -146,7 +198,7 @@ function ConnectedPullRequests({ root }: { root: string }) {
   const authorScan=useRef({key:"",pages:0});
   useEffect(()=>{const key=`${authors.scope}:${authors.prefs.selection}:${prefs.state}`;if(authorScan.current.key!==key)authorScan.current={key,pages:0};if(selectedAuthor&&!visible.length&&cursor&&!loading&&!error&&authorScan.current.pages<4){authorScan.current.pages++;void load(cursor);}},[authors.scope,authors.prefs.selection,prefs.state,selectedAuthor,visible.length,cursor,loading,error,load]);
   const refresh = () => { preferred.current = selected; void load(); };
-  const created = async () => { const p = await createPullRequest(root, forge); if (p) { preferred.current = p.number; if (prefs.state !== "open") savePreferences({ state: "open" }); else void load(); } };
+  const created = async () => { const p = await createPullRequest(root, forge); if (p) { if(requestedPull?.root===root)requestedPull=null; preferred.current = p.number; if (prefs.state !== "open") savePreferences({ state: "open" }); else void load(); } };
   const updated = useCallback((p: PullRequest) => {
     latestListRead.current = nextPrListRead();
     setItems(old => old.map(row => row.number === p.number ? p : row));
@@ -154,10 +206,10 @@ function ConnectedPullRequests({ root }: { root: string }) {
   return <section className={`pr-center ${!prefs.listOpen ? "pr-list-hidden" : ""}`} aria-label="Pull Request Center" style={{ "--pr-list-width": `${listWidth}px` } as CSSProperties}>
     {prefs.listOpen && <aside className="pr-list-panel" aria-label="Pull request list">
       <div className="pr-list-heading"><GitPullRequest size={17} /><b>Pull requests</b><span className="pill" data-pr-loaded={items.length}>{items.length}</span><div className="spacer" /><button className="icon-btn" title="Hide pull request list" aria-label="Hide pull request list" onClick={() => savePreferences({ listOpen: false })}><ChevronLeft size={16} /></button></div>
-      <div className="pr-list-tools"><select className="select" aria-label="Request status" value={prefs.state} onChange={e => { preferred.current = null; savePreferences({ state: e.target.value as PrState }); }}>{(["open", "closed", "merged", "all"] as const).map(s => <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>)}</select><button className="icon-btn" title="Refresh pull requests" aria-label="Refresh pull requests" disabled={loading} onClick={refresh}><RefreshCw size={15} className={loading ? "spin" : ""} /></button><button className="btn sm primary" disabled={!forge?.connectionRevision || loading} onClick={() => void created()}><GitPullRequestCreate size={14} />New</button></div>
-      <div className="pr-search"><input className="input" aria-label="Search loaded pull requests" placeholder="Search PRs or enter #…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && direct && forge) setSelected(direct); }} /></div>
-      <div className="pr-author-filter"><select className="select" aria-label="Pull request author" title="Authors found in loaded pages. Load more requests to include older PRs." value={authorSelectionValue(authors.prefs,mine)} onChange={e=>void chooseAuthor(e.target.value)}><option value="mine">My pull requests{mine?` — ${mine.label}`:"…"}</option><option value="all">All authors</option>{authors.known.filter(a=>a.key!==mine?.key).map(a=><option key={a.key} value={a.key}>{a.label}{a.login&&a.login!==a.label?` · ${a.login}`:""}</option>)}{authors.prefs.chosen&&!authors.known.some(a=>a.key===authors.prefs.chosen!.key)&&<option value={authors.prefs.chosen.key}>{authors.prefs.chosen.label}</option>}</select>{!authors.viewer&&<button type="button" className="icon-btn" aria-label="Set my PR author" title="Set my PR author without profile permissions" onClick={async()=>{const chosen=await showDialog<PrAuthor|null>(close=><MyPrAuthor authors={authors.known} initial={mine} close={close} bitbucket={forge?.kind==="bitbucket"}/>);if(chosen){setAuthors(a=>({...a,prefs:{...a.prefs,mine:chosen}}));setSelected(null);}}}><Pencil size={14}/></button>}</div>
-      {direct && forge && <button className="btn sm pr-direct" onClick={() => setSelected(direct)}>Open #{direct}</button>}
+      <div className="pr-list-tools"><select className="select" aria-label="Request status" value={prefs.state} onChange={e => { if(requestedPull?.root===root)requestedPull=null; preferred.current = null; savePreferences({ state: e.target.value as PrState }); }}>{(["open", "closed", "merged", "all"] as const).map(s => <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>)}</select><button className="icon-btn" title="Refresh pull requests" aria-label="Refresh pull requests" disabled={loading} onClick={refresh}><RefreshCw size={15} className={loading ? "spin" : ""} /></button><button className="btn sm primary" disabled={!forge?.connectionRevision || loading} onClick={() => void created()}><GitPullRequestCreate size={14} />New</button></div>
+      <div className="pr-search"><input className="input" aria-label="Search loaded pull requests" placeholder="Search PRs or enter #…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && direct && forge) selectRequest(direct); }} /></div>
+      <div className="pr-author-filter"><select className="select" aria-label="Pull request author" title="Authors found in loaded pages. Load more requests to include older PRs." value={authorSelection} disabled={!forge} onChange={e=>chooseAuthor(e.target.value)}><option value="mine">My pull requests{mine?` — ${mine.login||mine.label}`:"…"}</option><option value="all">All authors</option>{otherAuthors.map(a=><option key={a.key} value={a.key}>{a.label}{a.login&&a.login!==a.label?` · ${a.login}`:""}</option>)}{authors.prefs.chosen&&!samePrAuthor(authors.prefs.chosen,mine)&&!otherAuthors.some(a=>a.key===authors.prefs.chosen!.key)&&<option value={authors.prefs.chosen.key}>{authors.prefs.chosen.label}</option>}</select>{forge&&!authors.viewer&&<button type="button" className="icon-btn" aria-label="Set my PR author" title="Set my PR author without profile permissions" onClick={()=>void setMyAuthor(false)}><Pencil size={14}/></button>}</div>
+      {direct && forge && <button className="btn sm pr-direct" onClick={() => selectRequest(direct)}>Open #{direct}</button>}
       {error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connection settings…</button><button type="button" className="btn sm" onClick={refresh}>Try again</button></div>}
       <RequestRows watched={watch.selected} rows={visible} selected={selected} select={selectRequest} resetKey={`${query}:${prefs.state}:${authors.prefs.selection}`} />
       {!visible.length && !loading && !error && <p className="pr-list-empty">No matching requests in the loaded pages.{cursor ? " Load more or open a request by number." : ""}</p>}
@@ -165,9 +217,9 @@ function ConnectedPullRequests({ root }: { root: string }) {
     </aside>}
     {prefs.listOpen && <Splitter dir="v" style={{ left: "clamp(200px, var(--pr-list-width), 35%)" }} onDrag={d => setListWidth(w => Math.max(200, Math.min(520, w + d)))} onEnd={() => savePreferences({ listWidth })} />}
     <main className="pr-content">
-      <header className="pr-center-head"><button className="icon-btn" title={prefs.listOpen ? "Hide pull request list" : "Show pull request list"} aria-label={prefs.listOpen ? "Collapse pull request list" : "Show pull request list"} onClick={() => savePreferences({ listOpen: !prefs.listOpen })}><List size={16} /></button><div className="pr-connection"><b className="ellipsis" title={forge?.project}>PR Center{forge ? ` · ${forge.project}` : ""}</b><small>{forge ? `${FORGE_NAMES[forge.kind]} · ${forge.remote} · ${forge.accountLogin ?? "Git credentials"}` : "Choose an API account and remote to browse requests"}</small></div><div className="spacer" />{forge?.connectionRevision && <button type="button" className="btn sm" aria-label="Watch my PRs" aria-pressed={!!watch.mineSince} title={mine ? "Watch activity on PRs you opened" : "Set your PR author to watch your pull requests"} disabled={!mine && !watch.mineSince} onClick={toggleMine}><Bell size={14} />My PRs</button>}<button className="btn sm" onClick={() => void forgeAccountsDialog(root)}>Accounts…</button>{!prefs.listOpen && <><button className="icon-btn" aria-label="Refresh pull requests" disabled={loading} onClick={refresh}><RefreshCw size={15} /></button><button className="btn sm primary" disabled={!forge?.connectionRevision || loading} onClick={() => void created()}>New PR</button></>}</header>
+      <header className="pr-center-head"><button className="icon-btn" title={prefs.listOpen ? "Hide pull request list" : "Show pull request list"} aria-label={prefs.listOpen ? "Collapse pull request list" : "Show pull request list"} onClick={() => savePreferences({ listOpen: !prefs.listOpen })}><List size={16} /></button><div className="pr-connection"><b className="ellipsis" title={forge?.project}>PR Center{forge ? ` · ${forge.project}` : ""}</b><small>{forge ? `${FORGE_NAMES[forge.kind]} · ${forge.remote} · ${forge.accountLogin ?? "Git credentials"}` : "Choose an API account and remote to browse requests"}</small></div><div className="spacer" /><button className="btn sm" onClick={() => void forgeAccountsDialog(root)}>Accounts…</button>{!prefs.listOpen && <><button className="icon-btn" aria-label="Refresh pull requests" disabled={loading} onClick={refresh}><RefreshCw size={15} /></button><button className="btn sm primary" disabled={!forge?.connectionRevision || loading} onClick={() => void created()}>New PR</button></>}</header>
       {!prefs.listOpen && error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connection settings…</button></div>}
-      {forge?.connectionRevision && selected ? <RequestDetail key={`${forge.connectionRevision}:${selected}:${epoch}`} root={root} forge={forge} number={selected} prefs={prefs} savePreferences={savePreferences} updated={updated} watched={!!watch.selected[selected]} watchOwn={!!watch.mineSince && !!mine} mine={mine} toggleWatch={() => toggleWatch(selected)} /> : <div className="pr-empty">{loading ? <><Loader2 size={22} className="spin" />Loading pull requests…</> : error ? "Configure the API connection or refresh to continue." : "Select a pull request or open one by number."}</div>}
+      {forge?.connectionRevision && selected ? <RequestDetail key={`${forge.connectionRevision}:${selected}:${epoch}`} root={root} forge={forge} number={selected} prefs={prefs} savePreferences={savePreferences} updated={updated} watched={!!watch.selected[selected]} watchOwn={watchMine && !!mine} mine={mine} toggleWatch={() => toggleWatch(selected)} /> : <div className="pr-empty">{loading ? <><Loader2 size={22} className="spin" />Loading pull requests…</> : error ? "Configure the API connection or refresh to continue." : "Select a pull request or open one by number."}</div>}
     </main>
   </section>;
 }

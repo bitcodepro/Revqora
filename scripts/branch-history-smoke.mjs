@@ -42,7 +42,8 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   for (const suffix of ["c", "d"]) git(other, "branch", `review-${suffix}`);
 
   const active = (name) => page.locator(".topbar .repo-current > b").getByText(name, { exact: true }).waitFor();
-  const branch = (name) => page.locator(`.sidebar [data-branch-kind="local"][data-branch-name="${name}"]`).dblclick();
+  const branchRow = (name) => page.locator(`.sidebar [data-branch-kind="local"][data-branch-name="${name}"]`);
+  const branch = (name) => branchRow(name).dblclick();
   const waitBranch = async (name) => {
     await page.locator(`.sidebar [data-branch-kind="local"][data-branch-name="${name}"].current`).waitFor();
     await page.locator(".busy-item").filter({ hasText: /Switching branch|Stashing and switching|Moving changes/ }).waitFor({ state: "detached" });
@@ -51,6 +52,7 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await openRepository(page, root);
   await page.locator(".view-tab").filter({ hasText: "History" }).click();
   await page.locator(".history-mode").getByRole("button", { name: "Graph", exact: true }).click();
+  await page.getByRole("combobox", { name: "History scope", exact: true }).selectOption("");
   const toggle = page.getByTitle("Toggle branches panel", { exact: true });
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
   const graph = page.locator(".graph-scroll");
@@ -154,7 +156,17 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   assert.equal(await graph.locator(".grow").count(), 1);
   await page.getByRole("button", { name: "Search all repositories", exact: true }).click();
   const search = page.getByRole("dialog").filter({ hasText: "Search all repositories" });
-  await search.getByRole("textbox", { name: "Search commits across repositories" }).fill("shared searchable");
+  const searchQuery = search.getByRole("textbox", { name: "Search commits across repositories" });
+  const searchMode = search.getByRole("combobox", { name: "What to search across repositories" });
+  const hasRoomForQuery = await search.locator(".workspace-search-controls").evaluate(controls => {
+    const query = controls.querySelector("input").getBoundingClientRect();
+    const mode = controls.querySelector("select").getBoundingClientRect();
+    return query.width > mode.width && query.right < mode.left;
+  });
+  assert(hasRoomForQuery, "The workspace search field must have room for text without overlapping the filter");
+  await searchMode.selectOption("message");
+  await searchQuery.click();
+  await searchQuery.fill("shared searchable");
   for (const name of ["branch-history", "branch-history-other"]) await search.getByRole("heading", { name, exact: true }).waitFor();
   await search.getByText("Shared searchable branch-history", { exact: true }).click();
   const selected = graph.locator(".grow.selected").filter({ has: page.getByText("Shared searchable branch-history", { exact: true }) });
@@ -219,9 +231,15 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await reviewRow("b").press("Delete");
   const single = dialogFor("Delete branch review-b?");
   await single.getByRole("button", { name: "Cancel", exact: true }).click();
-  await reviewRow("d").click({ modifiers: ["Control"] });
+  const toggleSelection = (row) => row.click({ modifiers: ["Control", "Shift"] });
+  await toggleSelection(reviewRow("d"));
   await sidebar.getByText("2 selected", { exact: true }).waitFor();
+  assert.deepEqual(await sidebar.locator(".branch-selected").evaluateAll(rows => rows.map(row => row.dataset.branchName)), ["review-b", "review-d"]);
   await reviewRow("b").click({ modifiers: ["Shift"] });
+  await sidebar.getByText("3 selected", { exact: true }).waitFor();
+  await toggleSelection(reviewRow("c"));
+  await sidebar.getByText("2 selected", { exact: true }).waitFor();
+  await toggleSelection(reviewRow("c"));
   await sidebar.getByText("3 selected", { exact: true }).waitFor();
   assert.equal(git(other, "branch", "--show-current"), "review-a");
   await sidebar.getByRole("button", { name: "Delete…", exact: true }).click();
@@ -234,6 +252,15 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await openRepository(page, root);
   await active("branch-history");
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+  await branchRow("main").click();
+  await preview.waitFor();
+  await branchRow("target").click({ modifiers: ["Control"] });
+  await waitBranch("target");
+  await preview.waitFor({ state: "detached" });
+  assert.equal(git(root, "branch", "--show-current"), "target");
+  await branchRow("main").click({ modifiers: ["Control"] });
+  await waitBranch("main");
+  assert.equal(await preview.count(), 0);
   put(root, "file.txt", "staged");
   git(root, "add", "file.txt");
   put(root, "file.txt", "working");
@@ -246,6 +273,7 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await branch("target");
   await dialog.getByRole("button", { name: "Stash and switch", exact: true }).click();
   await waitBranch("target");
+  await preview.waitFor({ state: "detached" });
   assert.equal(git(root, "status", "--porcelain"), "");
   await branch("main");
   await waitBranch("main");

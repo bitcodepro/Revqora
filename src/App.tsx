@@ -8,7 +8,7 @@ import { AgentWorkspace } from "./components/AgentWorkspace";
 import { WorktreeManager } from "./components/WorktreeManager";
 import { finishWorkspaceStartup, hasWorkspaceDropToUndo, startWorkspaceTracking, undoWorkspaceDrop } from "./lib/repositoryWorkspaces";
 import { useLibrary } from "./lib/repositoryLibrary";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { listenMcpDesktop } from "./lib/mcpDesktop";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -275,7 +275,9 @@ function MainApp() {
   useAutoFetch();
   const prPollMinutes = useSettings(s => s.prPollMinutes);
   const prWatches = useSettings(s => s.prWatches);
-  useBackgroundPoll(prPollMinutes, checkPullRequestActivity, Object.keys(prWatches).length > 0, prWatches);
+  const prWatchMineSince = useSettings(s => s.prWatchMineSince);
+  const prWatchRevision = useMemo(() => ({ prWatches, prWatchMineSince }), [prWatches, prWatchMineSince]);
+  useBackgroundPoll(prPollMinutes, checkPullRequestActivity, !!prWatchMineSince || Object.keys(prWatches).length > 0, prWatchRevision);
   useEffect(() => {
     window.addEventListener("revqora:forge-accounts", resetPullRequestActivity);
     return () => window.removeEventListener("revqora:forge-accounts", resetPullRequestActivity);
