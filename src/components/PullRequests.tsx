@@ -106,6 +106,11 @@ function ConnectedPullRequests({ root }: { root: string }) {
   const selectedAuthor=authorSelection==="mine"?mine:authorSelection==="all"?null:authors.known.find(a=>a.key===authorSelection)??authors.prefs.chosen;
   const otherAuthors=authors.known.filter(author=>!samePrAuthor(author,mine));
   useEffect(()=>{if(!authors.scope)return;try{localStorage.setItem(authorPreferencesKey(root,authors.scope),JSON.stringify(authors.prefs));}catch{toast.warning("PR author filter could not be saved");}},[root,authors.scope,authors.prefs]);
+  const clearAuthorSelection = () => {
+    if (requestedPull?.root === root) requestedPull = null;
+    preferred.current = null;
+    setSelected(null);
+  };
   const setMyAuthor=async(selectMine:boolean)=>{
     if(!forge)return;
     const scope=authors.scope;
@@ -113,14 +118,12 @@ function ConnectedPullRequests({ root }: { root: string }) {
     if(!chosen)return;
     rememberAccountAuthor(forge,chosen);
     setAuthors(a=>a.scope===scope?{...a,prefs:{...a.prefs,mine:chosen,selection:selectMine?"mine":a.prefs.selection}}:a);
-    if(requestedPull?.root===root)requestedPull=null;
-    setSelected(null);
+    clearAuthorSelection();
   };
   const chooseAuthor=(key:string)=>{
     if(key==="mine"&&!mine){void setMyAuthor(true);return;}
     setAuthors(a=>({...a,prefs:{...a.prefs,selection:key,chosen:a.known.find(x=>x.key===key)??a.prefs.chosen}}));
-    if(requestedPull?.root===root)requestedPull=null;
-    setSelected(null);
+    clearAuthorSelection();
   };
   const savePreferences = (patch: Partial<PrPreferences>) => setPrefs(p => restorePrPreferences({ ...p, ...patch }));
   useEffect(() => { try { localStorage.setItem(prPreferencesKey(root), JSON.stringify(prefs)); } catch { toast.warning("PR Center preferences could not be saved"); } }, [root, prefs]);

@@ -20,7 +20,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
     "diff --git a/long.txt b/long.txt\nnew file mode 100644\n--- /dev/null\n+++ b/long.txt\n@@ -0,0 +1 @@\n+"+"long-line-".repeat(120)+"\n"+
     "diff --git a/asset.bin b/asset.bin\nBinary files a/asset.bin and b/asset.bin differ\n"+
     "diff --git a/mode.txt b/mode.txt\nold mode 100644\nnew mode 100755\n";
-  let hold=null,holdList=null,nextCreated=100,loseCreateResponse=false,loseEditResponse=false;const mergeFixture=createPrMergeFixture({pulls});const reviewFixture=createPrReviewFixture({pulls,a});
+  let hold=null,holdList=null,nextCreated=100,loseCreateResponse=false,loseEditResponse=false,hideViewerPulls=false;const mergeFixture=createPrMergeFixture({pulls});const reviewFixture=createPrReviewFixture({pulls,a});
   const server=http.createServer(async(req,res)=>{
     let body="";for await(const chunk of req)body+=chunk;const url=new URL(req.url,"http://fixture"),entry={method:req.method,path:req.url,body:body?JSON.parse(body):null};requests.push(entry);
     if(req.headers.authorization!==`Bearer ${token}`){res.writeHead(401);res.end("{}");return;}
@@ -38,7 +38,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
     }
     if(url.pathname.endsWith("/pulls")){
       if(req.method==="POST"){const n=nextCreated++;const p={...pulls.get(1),...entry.body,number:n,head:{ref:entry.body.head,sha:a},base:{ref:entry.body.base,sha:b},updated_at:"created"};pulls.set(n,p);if(loseCreateResponse){loseCreateResponse=false;res.writeHead(503);res.end("{}");return;}return send(p);}
-      const state=url.searchParams.get("state"),rows=[...pulls.values()].filter(p=>state==="all"||p.state===state),offset=(Number(url.searchParams.get("page")||1)-1)*50;
+      const state=url.searchParams.get("state"),rows=[...pulls.values()].filter(p=>(state==="all"||p.state===state)&&(!hideViewerPulls||p.user.id!==13)),offset=(Number(url.searchParams.get("page")||1)-1)*50;
       const list=structuredClone(rows.slice(offset,offset+50));
       if(holdList){const gate=holdList;holdList=null;gate.started();await gate.response;}
       return send(list);
@@ -65,6 +65,23 @@ export async function prCenterSmoke({page,check,shot,work}) {
     await check("PR Center pages, searches and filters server requests and opens a number directly",async()=>{
       await page.locator("[data-pr-loaded='50']").waitFor();await page.getByRole("button",{name:"Load more requests",exact:true}).click();await page.locator("[data-pr-loaded='52']").waitFor();
       const authors=page.getByRole("combobox",{name:"Pull request author",exact:true});if(!await authors.locator("option").first().innerText().then(t=>t.includes("pr-tester")))throw Error("Connected author must be the first choice");await authors.selectOption("mine");await detail(2);if(await page.locator('[data-pr-number="1"]').count())throw Error("My PR filter included another author");await authors.selectOption("id:99");await detail(1);if(await page.locator('[data-pr-number="2"]').count())throw Error("Author dropdown included a different author");await authors.selectOption("all");await openNumber(52);
+      const refreshList=page.getByRole("button",{name:"Refresh pull requests",exact:true});
+      await page.getByRole("textbox",{name:"Search loaded pull requests",exact:true}).fill("");
+      await page.locator('[data-pr-number="1"]').click();
+      await detail(1);
+      hideViewerPulls=true;
+      try {
+        await refreshList.click();
+        await page.locator("[data-pr-loaded='26']").waitFor();
+        await detail(1);
+        await authors.selectOption("mine");
+        await page.getByText(/No matching requests in the loaded pages/).waitFor();
+        await refreshList.click();
+        await page.locator("[data-pr-loaded='26']").waitFor();
+        await page.getByText("Select a pull request or open one by number.",{exact:true}).waitFor();
+        if(await page.locator("[data-pr-detail]").count())throw Error("List refresh reopened a PR outside the author filter");
+      } finally { hideViewerPulls=false; }
+      await authors.selectOption("all");
       await page.getByRole("combobox",{name:"Request status",exact:true}).selectOption("merged");await page.getByText(/No matching requests in the loaded pages/).waitFor();await page.getByRole("combobox",{name:"Request status",exact:true}).selectOption("open");await detail(1);await page.getByRole("textbox",{name:"Search loaded pull requests",exact:true}).fill("");await shot("105-pr-center");
       // Hold the real forge request until History is rendered. A slow poll must
       // never block local navigation or replace the currently shown PR.
