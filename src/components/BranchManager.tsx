@@ -11,12 +11,17 @@ import { Modal } from "./Modal";
 import type { BranchManagerSnapshot } from "../lib/types";
 import { relativeTime, shortOid } from "../lib/format";
 import { jumpToCommit } from "./GraphView";
-import { BranchCleanup } from "./BranchCleanup";
+import { reviewBranchCleanup } from "./BranchCleanup";
 import type { BranchCleanupRequest } from "../lib/types";
 import { renameRemoteBranch } from "./RemoteRename";
+import { useSettings } from "../lib/settings";
+import { useToolDetailSize, useWindowSize, WindowResizeGrip } from "./WindowResize";
 
-const ROW = 56;
 export function BranchManager({ root }: { root: string }) {
+  const ROW = 56 + Math.ceil(Math.max(0, useSettings(s => s.uiFontSize) - 13) * 3);
+  const details = useToolDetailSize("Branch manager details", 780);
+  const surface = useRef<HTMLElement>(null);
+  const windowSize = useWindowSize("Branch manager");
   const [checked, setChecked] = useState<Record<string, BranchCleanupRequest>>({});
   const [prefs, setPrefs] = useState(() => loadBranchPreferences(root));
   const [snapshot, setSnapshot] = useState<BranchManagerSnapshot | null>(null);
@@ -98,7 +103,11 @@ export function BranchManager({ root }: { root: string }) {
     return next;
   });
   const cleanupReview = async () => {
-    await showDialog<void>(close => <BranchCleanup root={root} initial={Object.values(checked)} rules={prefs.protections} bases={(snapshot?.branches ?? []).filter(b => b.local).map(b => ({ reference: b.fullRef, name: b.name }))} initialBase={snapshot?.baseRef?.startsWith("refs/heads/") ? snapshot.baseRef : (snapshot?.branches.find(b => b.local && b.current)?.fullRef ?? "")} onClose={() => close()} />);
+    await reviewBranchCleanup({
+      root, initial: Object.values(checked), rules: prefs.protections,
+      bases: (snapshot?.branches ?? []).filter(b => b.local).map(b => ({ reference: b.fullRef, name: b.name })),
+      initialBase: snapshot?.baseRef?.startsWith("refs/heads/") ? snapshot.baseRef : (snapshot?.branches.find(b => b.local && b.current)?.fullRef ?? ""),
+    });
     setChecked({}); await refresh();
   };
   const { start, end } = virtualRange(rows.length, ROW, height, scroll);
@@ -113,7 +122,7 @@ export function BranchManager({ root }: { root: string }) {
     if (node && i * ROW < node.scrollTop) node.scrollTop = i * ROW;
     else if (node && (i + 1) * ROW > node.scrollTop + node.clientHeight) node.scrollTop = (i + 1) * ROW - node.clientHeight;
   };
-  return <section className="conflict-overlay branch-manager" aria-label="Branch manager">
+  return <section ref={surface} className="conflict-overlay branch-manager centered-tool-window" style={{ ...windowSize.style, ["--branch-manager-row-height" as string]: `${ROW}px` }} aria-label="Branch manager">
     <header className="cf-head"><GitBranch size={18} /><b>Branch manager</b><span className="muted">{snapshot?.branches.length ?? 0} branches</span><div className="spacer" />
       <button className="btn" disabled={loading || pending} onClick={() => action(() => A.createBranch(root, null, "HEAD"))}>New branch</button>
       <button className="btn" disabled={loading || pending} onClick={() => action(() => A.fetchAll(root))}>Fetch</button>
@@ -144,7 +153,7 @@ export function BranchManager({ root }: { root: string }) {
       <button className="btn danger" disabled={loading || pending || !Object.keys(checked).length || !!error} onClick={() => void cleanupReview()}>Review cleanup…</button>
     </div>
     {error && <div className="bm-error" role="alert">{error} <button className="btn" onClick={() => void refresh()}>Retry</button></div>}
-    <div className="bm-body" aria-busy={loading}>
+    <div ref={details.body} className={`bm-body tool-details ${details.narrow ? "tool-details-stacked" : ""}`} style={details.style} aria-busy={loading}>
       <div className="bm-list">
         <div className="bm-row bm-columns"><span>Branch</span><span>Upstream</span><span>Last commit</span><span>Message</span></div>
         <div className="bm-viewport" ref={viewport} role="listbox" aria-label="Branches" tabIndex={0} aria-activedescendant={branch ? `bm-row-${rows.indexOf(branch)}` : undefined} onScroll={e => setScroll(e.currentTarget.scrollTop)} onKeyDown={e => {
@@ -162,7 +171,8 @@ export function BranchManager({ root }: { root: string }) {
           {!rows.length && <p className="bm-empty">{loading ? "Loading branches…" : "No branches match these filters."}</p>}
         </div>
       </div>
-      <aside className="bm-detail" aria-label="Selected branch">{branch ? <>
+      <div className="tool-detail-divider">{details.divider}</div>
+      <aside ref={details.detail} className="bm-detail" aria-label="Selected branch">{branch ? <>
         <h3 title={branch.fullRef} onContextMenu={e => contextMenu(e, namePathMenu(branch.name, root, branch.fullRef))}>{branch.name}</h3><div className="muted bm-wrap">{branch.fullRef}</div>
         <button className="btn mono" onClick={() => copyText(branch.oid)} title="Copy commit ID">{shortOid(branch.oid)}</button>
         <p className="bm-wrap">{branch.subject}</p><div className="muted bm-wrap">{branch.author} &lt;{branch.authorEmail}&gt;</div>
@@ -184,6 +194,7 @@ export function BranchManager({ root }: { root: string }) {
       </> : <p>Select a branch to inspect its history and worktrees.</p>}</aside>
     </div>
     <footer className="bm-footer">{rows.length} shown · Stale uses the tip commit date. Counts use cached remote refs; Fetch updates them. Merged uses original commit ancestry and does not detect squash integration. Deletion has a separate safety review.</footer>
+    <WindowResizeGrip surface={surface} size={windowSize} embedded/>
   </section>;
 }
 

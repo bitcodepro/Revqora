@@ -179,6 +179,10 @@ fn request(code: &str) -> Request {
     );
     #[cfg(unix)]
     let (executable, args) = (fs::canonicalize("/bin/sh").unwrap().to_string_lossy().into_owned(), vec!["-c".into(), code.into()]);
+    fixture_request(executable, args)
+}
+
+fn fixture_request(executable: String, args: Vec<String>) -> Request {
     Request {
         title: "Fixture task".into(),
         provider: "custom".into(),
@@ -190,14 +194,30 @@ fn request(code: &str) -> Request {
         timeout_seconds: 10,
     }
 }
-// These cases need literal stdout, not PowerShell cmdlet/pipeline initialization.
-// Keep the SAME shell, execution timeout and real process-tree/output code.
+
+#[cfg(windows)]
+fn node_output_request(code: &str) -> Request {
+    // These fixtures exercise process I/O, not PowerShell initialization.
+    // The regular agent lifecycle tests still launch PowerShell on Windows.
+    let node = std::env::split_paths(&std::env::var_os("PATH").expect("The project test setup requires Node on PATH"))
+        .map(|dir| dir.join("node.exe"))
+        .find(|path| path.is_absolute() && path.is_file())
+        .expect("The project test setup requires node.exe on PATH");
+    fixture_request(
+        node.to_string_lossy().into_owned(),
+        vec!["-e".into(), format!("const fs = require('node:fs'); fs.writeFileSync(2, 'revqora-fixture-entered\\n'); {code}")],
+    )
+}
+
 fn literal_output_request(marker: &str) -> Request {
     #[cfg(windows)]
-    let code = format!("[Console]::Out.Write('{}')", marker.replace('\'', "''"));
+    {
+        node_output_request(&format!("fs.writeFileSync(1, {});", serde_json::to_string(marker).unwrap()))
+    }
     #[cfg(unix)]
-    let code = format!("printf '%s' '{}'", marker.replace('\'', "'\\''"));
-    request(&code)
+    {
+        request(&format!("printf '%s' '{}'", marker.replace('\'', "'\\''")))
+    }
 }
 fn wait(root: &Path, id: &str) -> Task {
     let until = Instant::now() + Duration::from_secs(30);
@@ -359,10 +379,12 @@ fn cancellation_and_timeout_stop_process_tree_without_removing_worktree() {
 fn bounded_outputs_are_drained_and_failed_exit_is_retained() {
     let r = repo();
     #[cfg(windows)]
-    let code = "[Console]::In.ReadToEnd() | Out-Null; [Console]::Out.Write(('x'*300000)); [Console]::Error.Write(('y'*300000)); exit 7";
+    let req = node_output_request(
+        "fs.readFileSync(0); fs.writeFileSync(1, Buffer.alloc(300000, 120)); fs.writeFileSync(2, Buffer.alloc(300000, 121)); process.exitCode = 7;",
+    );
     #[cfg(unix)]
-    let code = "cat >/dev/null; head -c 300000 /dev/zero | tr '\\0' x; head -c 300000 /dev/zero | tr '\\0' y >&2; exit 7";
-    let t = start(r.path().to_owned(), prepare(r.path(), request(code)).unwrap(), true).unwrap();
+    let req = request("cat >/dev/null; head -c 300000 /dev/zero | tr '\\0' x; head -c 300000 /dev/zero | tr '\\0' y >&2; exit 7");
+    let t = start(r.path().to_owned(), prepare(r.path(), req).unwrap(), true).unwrap();
     let t = wait(r.path(), &t.id);
     assert_eq!(t.phase, "failed", "{}", failure_snapshot(r.path(), &t, Path::new(&t.path)));
     assert_eq!(t.exit_code, Some(7));

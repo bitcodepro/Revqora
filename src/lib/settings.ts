@@ -29,6 +29,8 @@ export interface Settings {
   openTabs: string[];
   openLibraryOnStartup: boolean;
   activeTab: string | null;
+  workspacesOpen: boolean;
+  workspaceFavoritesOnly: boolean;
   layouts: Record<WorkspaceMode, WorkspaceLayout>;
   setLayout: (mode: WorkspaceMode, patch: Partial<WorkspaceLayout>) => void;
   pullMode: "ff-only" | "merge" | "rebase";
@@ -81,6 +83,8 @@ export const useSettings = create<Settings>()(
       openTabs: [],
       openLibraryOnStartup: true,
       activeTab: null,
+      workspacesOpen: false,
+      workspaceFavoritesOnly: false,
       layouts: restoreWorkspaceLayouts(),
       setLayout: (mode, patch) => set((state) => ({ layouts: { ...state.layouts, [mode]: { ...state.layouts[mode], ...patch } } })),
       pullMode: "ff-only",

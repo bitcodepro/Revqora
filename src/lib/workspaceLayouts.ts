@@ -2,6 +2,7 @@ export type HistoryMode = "graph" | "review" | "columns";
 export type WorkspaceMode = HistoryMode | "changes" | "pulls" | "overview";
 
 export interface WorkspaceLayout {
+  workspacesWidth: number;
   repositoriesOpen: boolean;
   repositoriesWidth: number;
   branchesOpen: boolean;
@@ -17,6 +18,7 @@ export interface WorkspaceLayout {
 export const HISTORY_MODES: HistoryMode[] = ["graph", "review", "columns"];
 const MODES: WorkspaceMode[] = [...HISTORY_MODES, "changes", "pulls", "overview"];
 const DEFAULT_LAYOUT: WorkspaceLayout = {
+  workspacesWidth: 205,
   repositoriesOpen: true, repositoriesWidth: 224, branchesOpen: true, sidebarWidth: 264,
   commitFilesWidth: 240, detailsHeight: 340, changesListWidth: 360,
   reviewListHeight: 220, historyListWidth: 300, focusMode: false,

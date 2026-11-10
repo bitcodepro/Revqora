@@ -22,6 +22,7 @@ import { absoluteTime, fullTime, relativeTime, shortOid } from "../lib/format";
 import { Avatar, RefBadge } from "./bits";
 import { branchMenu, commitMenu, tagMenu } from "./menus";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
+import { usePanelTitleMenu } from "./PanelWindows";
 
 const ROW_H = 30;
 /** Review mode: two-line rows (subject, then author, date and hash) without the graph. */
@@ -41,11 +42,11 @@ interface LanePin {
 
 const x = (c: number) => PAD + c * LANE_W + LANE_W / 2;
 
-function segPath(s: Seg): { d: string; len: number } {
-  const mid = ROW_H / 2;
+function segPath(s: Seg, height: number): { d: string; len: number } {
+  const mid = height / 2;
   const xa = x(s.a);
   const xb = x(s.b);
-  if (s.t === 0) return { d: `M${xa} 0V${ROW_H}`, len: ROW_H };
+  if (s.t === 0) return { d: `M${xa} 0V${height}`, len: height };
   if (s.t === 1) {
     if (s.a === s.b) return { d: `M${xa} 0V${mid}`, len: mid };
     return {
@@ -53,9 +54,9 @@ function segPath(s: Seg): { d: string; len: number } {
       len: Math.hypot(xb - xa, mid) * 1.15,
     };
   }
-  if (s.a === s.b) return { d: `M${xa} ${mid}V${ROW_H}`, len: mid };
+  if (s.a === s.b) return { d: `M${xa} ${mid}V${height}`, len: mid };
   return {
-    d: `M${xa} ${mid}C${xa} ${mid + mid * 0.55} ${xb} ${mid + mid * 0.45} ${xb} ${ROW_H}`,
+    d: `M${xa} ${mid}C${xa} ${mid + mid * 0.55} ${xb} ${mid + mid * 0.45} ${xb} ${height}`,
     len: Math.hypot(xb - xa, mid) * 1.15,
   };
 }
@@ -71,6 +72,7 @@ interface RowProps {
   match: boolean;
   dim: boolean;
   hl: number | null;
+  pinnedLaneMember: boolean;
   animDelay: number | null;
   dateStyle: "relative" | "absolute";
   showRemote: boolean;
@@ -104,7 +106,7 @@ const Row = memo(function Row(p: RowProps) {
   }
   if (!p.row) {
     return (
-      <div className="grow" style={{ top, height: ROW_H }}>
+      <div className="grow" style={{ top, height: p.rowH }}>
         <div className="g-graph" />
         <div className="g-subject">
           <span
@@ -120,7 +122,7 @@ const Row = memo(function Row(p: RowProps) {
   }
   const r = p.row;
   const wip = r.oid === WORKTREE;
-  const mid = ROW_H / 2;
+  const mid = p.rowH / 2;
   const nodeColor = `var(--lane-${r.color % 12})`;
   const refs = p.showRemote
     ? r.refs
@@ -194,8 +196,8 @@ ${r.oid}`
   }
   return (
     <div
-      className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""}`}
-      style={{ top, height: ROW_H, ...anim }}
+      className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""} ${p.pinnedLaneMember ? "lane-member" : ""}`}
+      style={{ top, height: p.rowH, ...anim, ["--pinned-lane-color" as string]: p.pinnedLaneMember ? nodeColor : undefined }}
       onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
       onContextMenu={(e) => p.onMenu(r, e)}
       onDoubleClick={() => !wip && copyText(r.oid, "Hash copied")}
@@ -207,10 +209,10 @@ ${r.oid}`
         onMouseDown={(e) => { if (e.button === 0) e.stopPropagation(); }}
         onDoubleClick={(e) => e.stopPropagation()}
       >
-        <svg width={p.width} height={ROW_H}>
+        <svg width={p.width} height={p.rowH}>
           {r.segs.map((s, i) => {
             if (s.a >= p.lanes || s.b >= p.lanes) return null;
-            const { d, len } = segPath(s);
+            const { d, len } = segPath(s, p.rowH);
             const dashed = wip && s.t === 2;
             return (
               <Fragment key={i}>
@@ -338,7 +340,8 @@ export function GraphView({
   onEnterChanges: () => void;
   compact?: boolean;
 }) {
-  const rowH = compact ? COMPACT_ROW_H : ROW_H;
+  const fontSize = useSettings(s => s.uiFontSize);
+  const rowH = (compact ? COMPACT_ROW_H : ROW_H) + Math.ceil(Math.max(0, fontSize - 13) * (compact ? 3 : 1.5));
   const root = tab.root;
   const summary = tab.graph;
   const patch = useRepos((s) => s.patch);
@@ -394,6 +397,7 @@ export function GraphView({
   const [searching, setSearching] = useState(false);
   const [filterOnly, setFilterOnly] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const panelMenu = usePanelTitleMenu("history");
   const matchSet = useMemo(() => new Set(results), [results]);
 
   const total = summary?.total ?? 0;
@@ -433,6 +437,9 @@ export function GraphView({
   const columns = useSettings((s) => s.graphColumns);
   const autoLanes = Math.min(16, Math.max(summary?.maxLanes ?? 1, 2));
   const [dragW, setDragW] = useState<number | null>(null);
+  const columnDrag = useRef<{ pointer: number; start: number; width: number } | null>(null);
+  const resizedWidth = (x: number, drag: NonNullable<typeof columnDrag.current>) =>
+    Math.max(PAD * 2 + 2 * LANE_W, Math.min(PAD * 2 + MAX_LANES * LANE_W, drag.width + x - drag.start));
   // Never narrower than the "Graph" header label, or it runs into "Description".
   const graphW = Math.max(
     MIN_GRAPH_W,
@@ -760,19 +767,23 @@ export function GraphView({
   };
 
   useEffect(() => {
+    const view = searchRef.current?.ownerDocument.defaultView;
+    if (!view) return;
     const onKey = (e: KeyboardEvent) => {
       if (
+        !e.defaultPrevented &&
         matchesShortcut(e, "historyFind") &&
         useRepos.getState().active === root &&
-        tab.view === "history"
+        (view !== window || tab.view === "history") &&
+        !view.document.querySelector(".modal")
       ) {
         e.preventDefault();
         searchRef.current?.focus();
         searchRef.current?.select();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    view.addEventListener("keydown", onKey);
+    return () => view.removeEventListener("keydown", onKey);
   }, [root, tab.view]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -843,6 +854,7 @@ export function GraphView({
             r?.oid !== WORKTREE
           }
           hl={hl}
+          pinnedLaneMember={!!r && r.oid !== WORKTREE && r.laneId === pinned}
           animDelay={drawing ? Math.max(0, i - first) * 16 : null}
           dateStyle={dateStyle}
           showRemote={showRemote}
@@ -863,6 +875,7 @@ export function GraphView({
     <div className="graph-panel">
       <div
         className="hstack graph-toolbar"
+        onContextMenu={panelMenu}
         style={{
           padding: "8px 12px",
           gap: 8,
@@ -1084,29 +1097,26 @@ export function GraphView({
             )}
             <span
               className="col-resize"
-              onMouseDown={(e) => {
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
                 e.preventDefault();
-                const start = e.clientX;
-                const base = graphW;
-                let latest = base;
-                const move = (ev: MouseEvent) => {
-                  latest = Math.max(
-                    PAD * 2 + 2 * LANE_W,
-                    Math.min(
-                      PAD * 2 + MAX_LANES * LANE_W,
-                      base + ev.clientX - start,
-                    ),
-                  );
-                  setDragW(latest);
-                };
-                const up = () => {
-                  window.removeEventListener("mousemove", move);
-                  window.removeEventListener("mouseup", up);
-                  useSettings.getState().set({ graphWidth: latest });
-                  setDragW(null);
-                };
-                window.addEventListener("mousemove", move);
-                window.addEventListener("mouseup", up);
+                e.currentTarget.setPointerCapture(e.pointerId);
+                columnDrag.current = { pointer: e.pointerId, start: e.clientX, width: graphW };
+              }}
+              onPointerMove={e => {
+                const drag = columnDrag.current;
+                if (drag?.pointer === e.pointerId) setDragW(resizedWidth(e.clientX, drag));
+              }}
+              onPointerUp={e => {
+                const drag = columnDrag.current;
+                if (drag?.pointer !== e.pointerId) return;
+                columnDrag.current = null;
+                if (e.clientX !== drag.start) useSettings.getState().set({ graphWidth: resizedWidth(e.clientX, drag) });
+                setDragW(null);
+              }}
+              onLostPointerCapture={() => {
+                columnDrag.current = null;
+                setDragW(null);
               }}
               onDoubleClick={() =>
                 useSettings.getState().set({ graphWidth: 0 })

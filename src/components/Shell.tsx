@@ -1,8 +1,10 @@
 import {forgeAccountsDialog} from "./ForgeAccounts";
 import { aboutDialog } from "./AboutDialog";
 import { branchCommitCompare } from "./BranchCommitCompare";
-import { SyncButton } from "./SyncRepositories";
-import { RepositoryLibraryButton, WorkspacePicker } from "./RepositoryLibrary";
+import { SyncButton, syncRepositories } from "./SyncRepositories";
+import { RepositoryLibraryButton, WorkspacePicker, repositoryLibraryDialog } from "./RepositoryLibrary";
+import { PanelWindowsButton, usePanelWindowMenu, usePanelWindows } from "./PanelWindows";
+import { WORKTREE } from "../lib/types";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { validationDialog } from "./ConflictValidation";
@@ -18,6 +20,7 @@ import {
   Command,
   Download,
   FolderGit2,
+  FolderKanban,
   FolderOpen,
   FolderSearch,
   GitBranch,
@@ -53,17 +56,18 @@ import {
 import { useRepos, type RepoTab } from "../lib/store";
 import { resolvedTheme, useSettings } from "../lib/settings";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { contextMenu, openOverlay, useUi } from "../lib/ui";
+import { contextMenu, endBusy, openOverlay, startBusy, toast, useUi, type MenuItem } from "../lib/ui";
 import { namePathMenu } from "./NamePathMenu";
 import * as A from "../lib/actions";
 import * as XA from "../lib/extraActions";
 import { bindingFor, prettyCombo, shortcutTitle } from "../lib/shortcuts";
 import { jumpToCommit } from "./GraphView";
-import { api } from "../lib/api";
+import { api, newOpId } from "../lib/api";
 import { useAppVersion } from "../lib/appVersion";
 import { basename, plural, shortOid } from "../lib/format";
 import { AheadBehind } from "./bits";
 import { UpdateChip } from "./UpdateChip";
+import { canCheckUpdates, useUpdate } from "../lib/update";
 import { confirmDialog, reflogDialog, settingsDialog } from "./dialogs";
 import { applyPatchFile, repoToolsDialog } from "./RepoTools";
 import { OperationLogButton, operationLogDialog } from "./OperationLog";
@@ -73,10 +77,9 @@ import {gitConnectionDialog} from "./GitConnections";
 // ───────────── top bar ─────────────
 
 export function TopBar() {
-  const order = useRepos((s) => s.order);
+  const { panels, toggleSidebar } = usePanelWindows();
   const tabs = useRepos((s) => s.tabs);
   const active = useRepos((s) => s.active);
-  const activate = useRepos((s) => s.activate);
   const tab = active ? tabs[active] : null;
   const theme = useSettings((s) => s.theme);
   const setS = useSettings((s) => s.set);
@@ -85,17 +88,85 @@ export function TopBar() {
   const root = tab?.root;
   const dark = resolvedTheme(theme) === "dark";
   const overview = useUi((s) => s.repositoryOverview);
-  const { layout: { repositoriesOpen, focusMode }, setLayout } = useWorkspaceLayout();
+  const workspacesOpen = useSettings(s => s.workspacesOpen);
+  const shortcuts = useSettings(s => s.shortcuts);
+  const updatePhase = useUpdate(s => s.phase);
+  const { layout: { repositoriesOpen, focusMode } } = useWorkspaceLayout();
+  const hasCommit = !!tab?.selected && tab.selected !== WORKTREE;
+  const panelWindowMenu = usePanelWindowMenu(!!tab?.info, hasCommit);
+  const openWorktrees = (repo: string) => panels.worktrees ? panels.worktrees.focus() : openOverlay({ kind: "worktrees", root: repo });
+  const showView = (view: RepoTab["view"]) => {
+    if (!root) return;
+    useUi.setState({ repositoryOverview: false });
+    useRepos.getState().patch(root, { view });
+  };
+  const checkUpdates = async () => {
+    const update = useUpdate.getState();
+    if (!canCheckUpdates(update.phase)) return;
+    const id = newOpId();
+    startBusy(id, "Checking for updates");
+    try {
+      const info = await update.check(true);
+      const error = useUpdate.getState().error;
+      if (error) toast.error(error, "Could not check for updates");
+      else if (info && !info.available) toast.info("Revqora is up to date", `Version ${info.current}`);
+    } finally {
+      endBusy(id);
+    }
+  };
+  const menu: MenuItem[] = [
+    { label: "Workspaces", icon: <FolderKanban size={15}/>, checked: workspacesOpen && !focusMode, hint: prettyCombo(bindingFor("workspacesPanel", shortcuts)), onClick: () => toggleSidebar("workspaces") },
+    { label: "Toggle repositories panel", icon: <PanelLeft size={15}/>, hint: prettyCombo(bindingFor("repositoriesPanel", shortcuts)), onClick: () => toggleSidebar("repositories") },
+    { label: "All repositories", icon: <LayoutGrid size={15}/>, onClick: () => useUi.setState({ repositoryOverview: true }) },
+    { label: "Repository library and workspaces", onClick: () => void repositoryLibraryDialog() },
+    { label: "Open repositories…", icon: <Plus size={15}/>, onClick: () => void A.openRepoDialog() },
+    { label: "Import folder…", icon: <FolderSearch size={15}/>, onClick: () => void repositoryFolderImportDialog() },
+    ...(root && tab?.info ? [
+      { separator: true },
+      { label: "History", onClick: () => showView("history") },
+      { label: "Changes", onClick: () => showView("changes") },
+      { label: "Pull requests / Merge requests", onClick: () => showView("pulls") },
+      { label: "Toggle branches panel", hint: prettyCombo(bindingFor("branchesPanel", shortcuts)), onClick: () => toggleSidebar("branches") },
+      { label: "Refresh repository", icon: <RefreshCw size={15}/>, onClick: () => void useRepos.getState().refresh(root) },
+      { separator: true },
+      { label: "Sync…", onClick: () => void syncRepositories([root]) },
+      { label: "Fetch all remotes", icon: <RefreshCw size={15}/>, onClick: () => void A.fetchAll(root) },
+      { label: "Pull…", icon: <ArrowDownToLine size={15}/>, onClick: () => void A.pull(root) },
+      { label: "Push…", icon: <ArrowUpFromLine size={15}/>, onClick: () => void A.push(root) },
+      { label: "New branch…", icon: <GitBranchPlus size={15}/>, onClick: () => void A.createBranch(root, null, tab.info?.head.branch ?? "HEAD") },
+      { label: "Stash changes…", icon: <Archive size={15}/>, disabled: !status?.files.length, onClick: () => void A.stash(root) },
+      { label: "Pop latest stash", icon: <ArchiveRestore size={15}/>, disabled: !stashCount, onClick: () => void A.stashApply(root, 0, true) },
+      { label: "Worktree manager", icon: <FolderGit2 size={15}/>, onClick: () => openWorktrees(root) },
+      { label: "Branch manager", icon: <GitBranch size={15}/>, onClick: () => openOverlay({ kind: "branches", root }) },
+      { label: "Repository tools", icon: <Wrench size={15}/>, onClick: () => void repoToolsDialog(root) },
+      { label: "Undo history (reflog)", icon: <History size={15}/>, onClick: () => void reflogDialog(root, oid => A.resetTo(root, oid, "reflog entry")) },
+      { label: "Undo Center", icon: <ShieldCheck size={15}/>, onClick: () => void recoveryDialog(root) },
+      { label: "Branch Stacks", onClick: () => openOverlay({ kind: "stacks", root }) },
+      { label: "History Explorer", onClick: () => openOverlay({ kind: "historyExplorer", root }) },
+      { label: "Workflow Builder", onClick: () => openOverlay({ kind: "workflows", root }) },
+      { label: "Agent Workspace", onClick: () => openOverlay({ kind: "agents", root }) },
+      { label: "Open terminal here", icon: <SquareTerminal size={15}/>, onClick: () => void api.openTerminal(root) },
+      { label: "Show in Explorer", icon: <FolderOpen size={15}/>, onClick: () => void api.revealPath(root) },
+    ] : []),
+    { separator: true },
+    { label: "Panels in separate windows", children: panelWindowMenu },
+    { label: "Command palette", icon: <Command size={15}/>, onClick: () => useUi.getState().setPalette(true) },
+    { label: "Operation log", onClick: () => void operationLogDialog(root ?? null) },
+    { label: dark ? "Light theme" : "Dark theme", icon: dark ? <Sun size={15}/> : <Moon size={15}/>, onClick: () => setS({ theme: dark ? "light" : "dark" }) },
+    { label: "Accounts and API connections…", icon: <UserRound size={15}/>, onClick: () => void forgeAccountsDialog(root ?? null) },
+    { label: "Check Updates", icon: <Download size={15}/>, disabled: !canCheckUpdates(updatePhase), onClick: () => void checkUpdates() },
+    { label: "Settings…", icon: <Settings2 size={15}/>, onClick: () => void settingsDialog(root ?? null) },
+  ];
 
   return (
-    <div className="topbar">
-      <div className="brand" onClick={() => order.length ? useUi.setState({ repositoryOverview: true }) : activate(null)} title="Repositories overview">
-        <img src="/logo.svg" alt="" />
-        <span>Revqora</span>
+    <div className="topbar" onContextMenu={e => { if (!(e.target as HTMLElement).closest("button, select, input, .repo-current")) contextMenu(e, menu); }}>
+      <div className="topbar-navigation" role="group" aria-label="Repository navigation">
+        <button type="button" className={`icon-btn ${workspacesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle Workspaces panel", "workspacesPanel")} aria-label="Toggle Workspaces panel" aria-pressed={workspacesOpen && !focusMode} onClick={() => toggleSidebar("workspaces")}><FolderKanban size={16}/></button>
+        <button type="button" className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle repositories panel", "repositoriesPanel")} aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => toggleSidebar("repositories")}><PanelLeft size={16} /></button>
+        <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
+        <RepositoryLibraryButton />
       </div>
-      <button className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => setLayout({ repositoriesOpen: focusMode || !repositoriesOpen, focusMode: false })}><PanelLeft size={16} /></button>
-      <button className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
-      <RepositoryLibraryButton /><WorkspacePicker />
+      <WorkspacePicker />
       <div className="repo-current" title={root ?? ""} onContextMenu={e => { if (root && !overview) contextMenu(e, namePathMenu(tab?.info?.name ?? basename(root), root, null)); }}>
         <b>{overview ? "All repositories" : tab?.info?.name ?? (root ? basename(root) : "Repositories")}</b>
         {!overview && tab?.info && <span onContextMenu={e => { if (root && tab.info?.head.branch) contextMenu(e, namePathMenu(tab.info.head.branch, root, `refs/heads/${tab.info.head.branch}`)); }}><GitBranch size={12} />{tab.info.head.branch ?? shortOid(tab.info.head.oid ?? "")}</span>}
@@ -104,7 +175,7 @@ export function TopBar() {
       {root && tab?.info && !overview && (
         <div className="toolbar">
           <SyncButton roots={[root]} />
-          <button className="tb-btn" aria-label="Open worktree manager" title="Worktree manager" onClick={() => openOverlay({ kind: "worktrees", root })}><FolderGit2 size={15} />Worktrees</button>
+          <button className="tb-btn" aria-label="Open worktree manager" title="Worktree manager" onClick={() => openWorktrees(root)}><FolderGit2 size={15} />Worktrees</button>
           <button className="tb-btn" aria-label="Open branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root })}><GitBranch size={15} />Branches</button>
           <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes">
             <RefreshCw size={15} /> Fetch
@@ -146,6 +217,7 @@ export function TopBar() {
         </div>
       )}
       <div className="tb-sep" />
+      <PanelWindowsButton hasRepository={!!tab?.info} hasCommit={hasCommit}/>
       <button className="icon-btn" title={shortcutTitle("Command palette", "palette")} onClick={() => useUi.getState().setPalette(true)}>
         <Command size={16} />
       </button>
@@ -157,6 +229,7 @@ export function TopBar() {
       <button className="icon-btn" title="Settings" onClick={() => settingsDialog(root ?? null)}>
         <Settings2 size={16} />
       </button>
+      <div className="topbar-empty" aria-hidden="true"/>
     </div>
   );
 }

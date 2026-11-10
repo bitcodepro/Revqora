@@ -18,6 +18,7 @@ import { Splitter } from "./Overlays";
 import { CommitMessageDialog } from "./CommitMessage";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { useFileListNavigation } from "../lib/useFileListNavigation";
+import { usePanelTitleMenu } from "./PanelWindows";
 
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
   const fileNavigation = useFileListNavigation();
@@ -48,7 +49,10 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
   const [hasForge, setHasForge] = useState(false);
   const { mode, layout: { commitFilesWidth: filesWidth }, setLayout } = useWorkspaceLayout();
   const [fw, setFw] = useState(filesWidth);
-  useEffect(() => setFw(filesWidth), [mode, filesWidth]);
+  const preferredWidth = useRef(filesWidth);
+  const filePane = useRef<HTMLDivElement>(null);
+  const panelMenu = usePanelTitleMenu("commit");
+  useLayoutEffect(() => { preferredWidth.current = filesWidth; setFw(filesWidth); }, [mode, filesWidth]);
   useEffect(() => {
     api.forgeInfo(root).then((f) => setHasForge(!!f), () => setHasForge(false));
   }, [root]);
@@ -117,7 +121,7 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
 
   const current = d && d.oid.slice(0, oid.length) === oid.slice(0, d.oid.length) ? d : null;
   const header = (
-    <header className="commit-preview-head">
+    <header className="commit-preview-head" onContextMenu={panelMenu}>
       <div className="commit-heading">
         <h2 className="commit-subject selectable" title={current?.subject}>{current?.subject ?? "Commit preview"}</h2>
         {compactMeta && current && <div className="commit-byline">
@@ -127,23 +131,29 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
         </div>}
       </div>
       <div className="commit-preview-actions">
-        <button type="button" className="btn sm commit-message-open" disabled={!current} title="Read the full commit message" onClick={async () => {
+        <button type="button" className="btn sm commit-message-open" disabled={!current} title="Read the full commit message" onClick={async (event) => {
           if (!current) return;
-          const trigger = document.activeElement;
+          const trigger = event.currentTarget;
           await showDialog<void>((close) => <CommitMessageDialog subject={current.subject} body={current.body} oid={current.oid} author={current.author} onClose={() => close()} />);
-          if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus({ preventScroll: true });
+          if (trigger.isConnected) trigger.focus({ preventScroll: true });
         }}><FileText size={14} /> Message</button>
         {onClose && <button type="button" className="btn sm details-hide" title="Close commit preview" onClick={onClose}><X size={14} /> Close</button>}
       </div>
     </header>
   );
-  const splitter = <Splitter dir="v" style={{ left: "clamp(140px, var(--commit-files-w), 45%)" }} onDrag={(d) => setFw((w) => Math.max(140, Math.min(600, w + d)))} onEnd={() => setLayout({ commitFilesWidth: fw })} />;
+  const splitter = <Splitter dir="v" style={{ left: "clamp(140px, var(--commit-files-w), 45%)" }}
+    onStart={() => { preferredWidth.current = filePane.current?.getBoundingClientRect().width ?? filesWidth; }}
+    onDrag={delta => {
+      preferredWidth.current = Math.max(140, Math.min(600, preferredWidth.current + delta));
+      setFw(preferredWidth.current);
+    }}
+    onCommit={() => setLayout({ commitFilesWidth: Math.round(preferredWidth.current) })} />;
   if (err || !current || !d)
     return (
       <div className="commit-preview">
         {header}
         <div className="commit-details" style={{ ["--commit-files-w" as string]: `${fw}px` }}>
-          <div className="details-left">{err ? <div className="empty">{err}</div> : <div className="loading-center"><span className="loader" /></div>}</div>
+          <div ref={filePane} className="details-left">{err ? <div className="empty">{err}</div> : <div className="loading-center"><span className="loader" /></div>}</div>
           {splitter}
           {/* Keep the viewer mounted across refreshes: its search field/query
               survive while stale metadata/diff and mutation actions are absent. */}
@@ -231,7 +241,7 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
     <div className="commit-preview">
       {header}
       <div className="commit-details" style={{ ["--commit-files-w" as string]: `${fw}px` }}>
-        <div className="details-left">
+        <div ref={filePane} className="details-left">
           {compactMeta ? <details className="commit-metadata"><summary>Commit details</summary>{metadata}</details> : metadata}
           <div className="file-list-head">
             <span>{d.files.length} files</span>
