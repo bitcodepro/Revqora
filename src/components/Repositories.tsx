@@ -1,24 +1,35 @@
 import { useLibrary, uniqueRoots, repositoryKey, type SavedWorkspace } from "../lib/repositoryLibrary";
-import { FavoriteButton, openLibraryRepository, repositoryLibraryDialog } from "./RepositoryLibrary";
+import { FavoriteButton, openLibraryRepository, renameRepositoryDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
 import { SyncButton } from "./SyncRepositories";
 import { useEffect, useRef, useState } from "react";
 import { useWorkspaceRepositoryDrag } from "./WorkspacesSidebar";
 import { usePanelWindows } from "./PanelWindows";
 import { useSettings } from "../lib/settings";
-import { ArrowDownToLine, ChevronDown, ChevronRight, Check, CircleAlert, FolderGit2, FolderSearch, GitBranch, LayoutGrid, Plus, RefreshCw, Search, X } from "lucide-react";
+import { ArrowDownToLine, ChevronDown, ChevronRight, Check, CircleAlert, FolderGit2, FolderSearch, GitBranch, LayoutGrid, Pencil, Plus, RefreshCw, Search, X } from "lucide-react";
 import { api, errorMessage, newOpId } from "../lib/api";
 import * as A from "../lib/actions";
 import { basename, relativeTime } from "../lib/format";
 import { pullBlockReason, runRepositoryBatch, type BatchResult } from "../lib/repositoryBatch";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
-import { contextMenu, endBusy, showDialog, startBusy, toast, useUi } from "../lib/ui";
+import { contextMenu, endBusy, showDialog, startBusy, toast, toggleRepositoryOverview, useUi } from "../lib/ui";
 import { AheadBehind } from "./bits";
 import { Modal } from "./Modal";
 import { Splitter } from "./Overlays";
 import { usePanelTitleMenu } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
+import { matchesShortcut, prettyCombo, bindingFor } from "../lib/shortcuts";
+
+const repositoryMenu = (root: string, name: string) => [
+  { label: "Rename repository…", icon: <Pencil size={14}/>, hint: prettyCombo(bindingFor("renameItem")), onClick: () => void renameRepositoryDialog(root) },
+  ...namePathMenu(name, root, null),
+];
+const renameOnKey = (e: React.KeyboardEvent, root: string) => {
+  if (e.repeat || !matchesShortcut(e, "renameItem")) return;
+  e.preventDefault();
+  void renameRepositoryDialog(root);
+};
 
 let running = false;
 let choosingPull = false;
@@ -188,7 +199,8 @@ export function RepositorySidebar() {
   const groups = workspace ? library.groups.filter((g) => g.roots.some((root) => candidateKeys.has(repositoryKey(root)))) : library.groups;
   const favorite = (r: string) => library.favorites.some((p) => repositoryKey(p) === repositoryKey(r));
   const groupFilter = groups.find((g) => g.id === groupId);
-  const visible = candidates.filter((r) => (r + " " + tabs[r]?.info?.name).toLowerCase().includes(query.trim().toLowerCase()) && (!updatesOnly || !!repositorySidebarStatus(tabs[r])?.behind) && (!favoritesOnly || favorite(r)) && (!groupFilter || groupFilter.roots.some((p) => repositoryKey(p) === repositoryKey(r))));
+  const displayName = (r: string) => library.repositoryNames[repositoryKey(r)] ?? tabs[r]?.info?.name ?? basename(r);
+  const visible = candidates.filter((r) => (r + " " + displayName(r)).toLowerCase().includes(query.trim().toLowerCase()) && (!updatesOnly || !!repositorySidebarStatus(tabs[r])?.behind) && (!favoritesOnly || favorite(r)) && (!groupFilter || groupFilter.roots.some((p) => repositoryKey(p) === repositoryKey(r))));
   const sections = [...groups.map((g) => ({ ...g, roots: visible.filter((r) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r))) })), { id: "ungrouped", name: "Ungrouped", collapsed: false, roots: visible.filter((r) => !groups.some((g) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r)))) }];
   const displayed = sections.flatMap(group => !group.collapsed || query ? group.roots : []);
   const selected = selecting ? displayed.filter(root => selection.includes(root)) : [];
@@ -199,7 +211,7 @@ export function RepositorySidebar() {
       {groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupFilter?.id ?? ""} onChange={(e) => setGroupId(e.target.value)}><option value="">All groups</option>{groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select>}
       <SyncButtons roots={visible.filter((r) => !!tabs[r])} scoped={!!query.trim() || updatesOnly || favoritesOnly || !!groupFilter} />
       <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites{favoritesOnly ? " · Show all" : ""}</button>
-      <button className={`repository-overview-link ${overview ? "active" : ""}`} onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={14} /> All repositories</button>
+      <button className={`repository-overview-link ${overview ? "active" : ""}`} aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={14} /> All repositories</button>
       {selecting && <small className="repository-selection-note">{selected.length ? `${selected.length} selected · Drag to a workspace` : "Ctrl or Shift to select · Drag to a workspace"}</small>}
       <div className="repository-list" role="list" aria-label="Open repositories" onKeyDown={e => {
         if (e.key === "Escape" && selection.length) { setSelection([]); selectionAnchor.current = null; }
@@ -207,9 +219,9 @@ export function RepositorySidebar() {
         {sections.filter((group) => !workspace || group.roots.length > 0).map((group) => <div key={group.id}>{groups.length > 0 && <button type="button" className="repository-group" aria-expanded={!group.collapsed} onClick={() => group.id !== "ungrouped" && library.collapse(group.id)}>{group.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{group.name}<span className="faint">{group.roots.length}</span></button>}{(!group.collapsed || !!query) && group.roots.map((r) => {
           const t = tabs[r];
           return (
-            <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""} ${selected.includes(r) ? "batch-selected" : ""}`} key={r} onContextMenu={e => contextMenu(e, namePathMenu(t?.info?.name ?? basename(r), r, null))}>
+            <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""} ${selected.includes(r) ? "batch-selected" : ""}`} key={r} onContextMenu={e => contextMenu(e, repositoryMenu(r, displayName(r)))}>
               <FavoriteButton root={r} />
-              <button className="repository-select" aria-current={r === active && !overview} onPointerDown={e => { if (selecting) drag.start(e, selected.includes(r) ? selected : [r]); }}
+              <button className="repository-select" aria-current={r === active && !overview} onKeyDown={e => renameOnKey(e, r)} onPointerDown={e => { if (selecting) drag.start(e, selected.includes(r) ? selected : [r]); }}
                 onClick={e => {
                   if (drag.suppressClick.current) return;
                   const anchor = displayed.indexOf(selectionAnchor.current ?? "");
@@ -227,14 +239,14 @@ export function RepositorySidebar() {
                   activate(r);
                 }} title={`${r}\n${t?.info ? t.info.head.branch ?? "Detached HEAD" : t ? t.error ?? "Opening repository…" : "Closed · click to open"}${t?.fetchError ? "\n" + t.fetchError : ""}`}>
                 <FolderGit2 size={14} />
-                <span className="repository-label">{t?.info?.name ?? basename(r)}</span>
+                <span className="repository-label">{displayName(r)}</span>
                 {!t && <span className="faint">Closed</span>}
                 {t && !t.info && (t.error ? <CircleAlert size={12} className="amber" aria-label="Repository unavailable" /> : <span className="faint" title="Opening repository…" aria-label="Opening repository">…</span>)}
                 <AheadBehind ahead={repositorySidebarStatus(t)?.ahead ?? 0} behind={repositorySidebarStatus(t)?.behind ?? 0} />
                 {!!repositorySidebarStatus(t)?.files.length && <span className="repository-dirty" aria-label="Local changes" />}
                 {!!t?.fetchError && <CircleAlert size={12} className="amber" />}
               </button>
-              {t && <button className="repository-close icon-btn sm" title={`Close ${t?.info?.name ?? basename(r)}`} aria-label={`Close ${t?.info?.name ?? basename(r)}`} onClick={() => useRepos.getState().close(r)}><X size={12} /></button>}
+              {t && <button className="repository-close icon-btn sm" title={`Close ${displayName(r)}`} aria-label={`Close ${displayName(r)}`} onClick={() => useRepos.getState().close(r)}><X size={12} /></button>}
             </div>
           );
         })}</div>)}
@@ -254,22 +266,24 @@ export function RepositoryOverview() {
   const workspace = useLibrary((s) => s.workspaces.find((item) => item.id === s.activeWorkspaceId));
   const order = workspaceOrder(open, workspace);
   const tabs = useRepos((s) => s.tabs);
+  const names = useLibrary(s => s.repositoryNames);
   const active = useRepos((s) => s.active);
   const busy = useUi((s) => s.busy.length > 0);
   const [query, setQuery] = useState("");
-  const visible = order.filter((r) => (r + " " + tabs[r]?.info?.name).toLowerCase().includes(query.trim().toLowerCase()));
+  const displayName = (r: string) => names[repositoryKey(r)] ?? tabs[r]?.info?.name ?? basename(r);
+  const visible = order.filter((r) => (r + " " + displayName(r)).toLowerCase().includes(query.trim().toLowerCase()));
   const incoming = order.filter((r) => !!repositorySidebarStatus(tabs[r])?.behind).length;
   return (
     <div className="repository-overview">
-      <header><div><h2>Repositories</h2><span className="faint">{workspace?.name ?? "All Workspaces"} · {order.length} open · {incoming} with incoming commits</span></div><div className="spacer" /><SyncButtons roots={visible} scoped={!!query.trim()} /><button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button></header>
+      <header><div><h2>Repositories</h2><span className="faint">{workspace?.name ?? "All Workspaces"} · {order.length} open · {incoming} with incoming commits</span></div><div className="spacer" /><SyncButtons roots={visible} scoped={!!query.trim()} /><button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button><button type="button" className="icon-btn" title="Close repository overview" aria-label="Close repository overview" onClick={toggleRepositoryOverview}><X size={16}/></button></header>
       <div className="repository-overview-search input-wrap"><Search size={14} /><input className="input" placeholder="Find repository…" aria-label="Find repository in overview" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       <div className="repository-table-scroll">
         <table className="repository-table">
           <thead><tr><th>Repository</th><th>Current branch</th><th>Incoming / outgoing</th><th>Working copy</th><th>Last fetch</th><th /></tr></thead>
           <tbody>
             {visible.map((r) => { const t = tabs[r], status = repositorySidebarStatus(t); return (
-              <tr key={r} className={r === active ? "active" : undefined} onClick={e => { if (!(e.target as HTMLElement).closest("button")) activate(r); }} onContextMenu={e => contextMenu(e, namePathMenu(t?.info?.name ?? basename(r), r, null))}>
-                <td><button className="repository-name" title={r} onClick={() => activate(r)}><FolderGit2 size={15} />{t?.info?.name ?? basename(r)}</button></td>
+              <tr key={r} className={r === active ? "active" : undefined} onClick={e => { if (!(e.target as HTMLElement).closest("button")) activate(r); }} onContextMenu={e => contextMenu(e, repositoryMenu(r, displayName(r)))}>
+                <td><button className="repository-name" title={r} onClick={() => activate(r)} onKeyDown={e => renameOnKey(e, r)}><FolderGit2 size={15} />{displayName(r)}</button></td>
                 <td title={t?.info?.head.branch ?? ""} onContextMenu={e => { if (t?.info?.head.branch) contextMenu(e, namePathMenu(t.info.head.branch, r, `refs/heads/${t.info.head.branch}`)); }}><GitBranch size={12} /> {t?.info?.head.branch ?? (t?.info?.head.detached ? "Detached HEAD" : "—")}</td>
                 <td>{status ? <AheadBehind ahead={status.ahead} behind={status.behind} /> : "…"}</td>
                 <td><RepoState tab={t} /></td>

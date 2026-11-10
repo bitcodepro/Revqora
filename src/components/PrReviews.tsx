@@ -96,15 +96,16 @@ function Composer({context,kind,caps,anchor,path,initialThread,onSent,close}:{co
   </Modal>;
 }
 
-export function PrReviews({root,forge,detail,onSent,refreshToken=0}:{root:string;forge:ForgeInfo;detail:PrDetail;onSent:()=>void;refreshToken?:number}){
+export function PrReviews({root,forge,detail,onSent,onReloadRequest,refreshToken=0}:{root:string;forge:ForgeInfo;detail:PrDetail;onSent:()=>void;onReloadRequest:()=>Promise<void>;refreshToken?:number}){
   const [feed,setFeed]=useState("threads"),[filter,setFilter]=useState("all"),[query,setQuery]=useState(""),[items,setItems]=useState<PrThread[]>([]),[cursor,setCursor]=useState<string|null>(null),[loading,setLoading]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState<string|null>(null);
   const generation=useRef(0),busy=useRef(false),context={root,forge,detail};
+  const [stale,setStale]=useState(false);
   const scope=JSON.stringify([root,forge.connectionRevision,detail.pull.number,detail.pull.headSha,detail.baseSha,feed]);
   const loadedScope=useRef<string|null>(null);
   const load=useCallback(async(next:string|null=null)=>{
     if(next&&busy.current)return;
     const id=next?generation.current:++generation.current;
-    busy.current=true;setLoading(true);setError("");
+    busy.current=true;setLoading(true);setError("");setStale(false);
     if(!next){
       setCursor(null);
       if(loadedScope.current!==scope){setItems([]);setNotice(null);}
@@ -114,15 +115,20 @@ export function PrReviews({root,forge,detail,onSent,refreshToken=0}:{root:string
       if(id!==generation.current)return;
       loadedScope.current=scope;
       setItems(old=>next?mergeReviewThreads(old,p.items):p.items);setCursor(p.nextCursor);setNotice(p.notice);
-    }catch(e){if(id===generation.current)setError(errorMessage(e));}
+    }catch(e){if(id===generation.current){
+      const outdated=isGitError(e)&&e.kind==="stale-operation";
+      setStale(outdated);
+      setError(outdated?"This pull request or its connection changed. Reload it to see the latest discussions.":errorMessage(e));
+    }}
     finally{if(id===generation.current){busy.current=false;setLoading(false);}}
   },[root,detail.pull.number,detail.revision,forge.connectionRevision,feed,refreshToken,scope]);
   useEffect(()=>{void load();return()=>{generation.current++;busy.current=false;};},[load]);
   const visible=useMemo(()=>items.filter(t=>(feed!=="threads"||filter==="all"||(filter==="unresolved"?t.resolved===false:filter==="resolved"?t.resolved===true:t.outdated))&&`${t.path??""} ${t.comments.map(c=>`${c.author} ${c.body}`).join(" ")}`.toLowerCase().includes(query.toLowerCase())),[items,filter,query,feed]);
   const sent=()=>{onSent();};
+  const refreshDiscussions=()=>stale?onReloadRequest():load();
   const refreshThread=async(t:PrThread)=>{try{const id=generation.current;const fresh=await api.prReviewThread(root,detail.pull.number,forge.connectionRevision!,detail.revision,t.id);if(id===generation.current)setItems(old=>old.map(x=>x.id===t.id?refreshReviewThread(x,fresh):x));}catch(e){toast.error(e,"Could not refresh discussion");}};
-  return <section className="pr-reviews" aria-label="PR discussions" aria-busy={loading}><header className="review-toolbar"><select className="select" aria-label="Review feed" value={feed} onChange={e=>{setFeed(e.target.value);setFilter("all");setQuery("");}}><option value="threads">Discussions</option>{forge.kind==="github"&&<option value="comments">PR comments</option>}<option value="reviews">{forge.kind==="github"?"Review history":"Review status"}</option></select><select className="select" aria-label="Discussion status" disabled={feed!=="threads"} value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All loaded</option><option value="unresolved">Unresolved</option><option value="resolved">Resolved</option><option value="outdated">Outdated</option></select><input className="input" aria-label="Search loaded discussions" placeholder="Search loaded discussions…" value={query} onChange={e=>setQuery(e.target.value)}/><button className="icon-btn" aria-label="Refresh discussions" disabled={loading} onClick={()=>void load()}><RefreshCw size={15}/></button><button className="btn sm" onClick={()=>void composeReview(context,"comment",()=>{if(forge.kind==="github"){setFeed("comments");setFilter("all");setQuery("");}sent();})}><MessageSquare size={14}/>New comment</button><button className="btn sm primary" onClick={()=>void chooseReview(context,sent)}><Check size={14}/>Review…</button></header>
-    {notice&&<div className="pr-notice" role="status">{notice}</div>}{error&&<div className="callout warn" role="alert">{error}<button className="btn sm" onClick={()=>void load()}>Reload discussions</button></div>}
+  return <section className="pr-reviews" aria-label="PR discussions" aria-busy={loading}><header className="review-toolbar"><select className="select" aria-label="Review feed" value={feed} onChange={e=>{setFeed(e.target.value);setFilter("all");setQuery("");}}><option value="threads">Discussions</option>{forge.kind==="github"&&<option value="comments">PR comments</option>}<option value="reviews">{forge.kind==="github"?"Review history":"Review status"}</option></select><select className="select" aria-label="Discussion status" disabled={feed!=="threads"} value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All loaded</option><option value="unresolved">Unresolved</option><option value="resolved">Resolved</option><option value="outdated">Outdated</option></select><input className="input" aria-label="Search loaded discussions" placeholder="Search loaded discussions…" value={query} onChange={e=>setQuery(e.target.value)}/><button className="icon-btn" aria-label="Refresh discussions" disabled={loading} onClick={()=>void refreshDiscussions()}><RefreshCw size={15} className={loading?"spin":""}/></button><button className="btn sm" onClick={()=>void composeReview(context,"comment",()=>{if(forge.kind==="github"){setFeed("comments");setFilter("all");setQuery("");}sent();})}><MessageSquare size={14}/>New comment</button><button className="btn sm primary" onClick={()=>void chooseReview(context,sent)}><Check size={14}/>Review…</button></header>
+    {notice&&<div className="pr-notice" role="status">{notice}</div>}{error&&<div className="callout warn" role="alert">{error}<button className="btn sm" onClick={()=>void refreshDiscussions()}>{stale?"Reload pull request":"Reload discussions"}</button></div>}
     <div className="review-thread-list">{visible.map(t=><ThreadCard key={t.id} thread={t} context={context} onSent={sent} refresh={()=>void refreshThread(t)}/>)}{!visible.length&&!loading&&!error&&<div className="pr-empty">No matching discussions in the loaded pages.</div>}{loading&&<div className="pr-empty" role="status"><Loader2 size={18} className="spin"/>Loading discussions…</div>}{cursor&&<button className="btn" disabled={loading} onClick={()=>void load(cursor)}>Load more discussions</button>}</div>
   </section>;
 }

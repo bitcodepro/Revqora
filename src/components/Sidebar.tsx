@@ -45,6 +45,8 @@ import { promptDialog } from "./dialogs";
 import { branchConnection, branchPairs } from "../lib/branchPresentation";
 import {sidebarBranchesKey,sidebarBranchPreferences,selectSidebarBranches} from "../lib/sidebarBranches";
 import {loadBranchPreferences,preferencesKey} from "../lib/branchManager";
+import { matchesShortcut } from "../lib/shortcuts";
+import { renameRemoteBranch } from "./RemoteRename";
 
 interface TreeNode {
   name: string;
@@ -222,6 +224,11 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               chooseBranch(b, modifier, e.shiftKey && !modifier);
             }}
             onKeyDown={(e) => {
+              if (matchesShortcut(e, "renameItem")) {
+                e.preventDefault();
+                if (!e.repeat) void (kind === "local" ? A.renameBranch(root, b.name) : renameRemoteBranch(root, b.name));
+                return;
+              }
               if (e.key !== "Enter" && e.key !== " ") return;
               e.preventDefault();
               chooseBranch(b, e.ctrlKey || e.metaKey, e.shiftKey);

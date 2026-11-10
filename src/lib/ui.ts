@@ -143,6 +143,10 @@ export function contextMenu(e: { clientX: number; clientY: number; currentTarget
   useUi.getState().openMenu(e.clientX, e.clientY, items, (e.currentTarget as HTMLElement | null)?.ownerDocument?.defaultView ?? undefined);
 }
 
+export function toggleRepositoryOverview() {
+  useUi.setState(state => ({ repositoryOverview: !state.repositoryOverview }));
+}
+
 export function startBusy(id: string, label: string) {
   useUi.setState({ busy: [...useUi.getState().busy, { id, label, line: "", started: Date.now() }] });
 }

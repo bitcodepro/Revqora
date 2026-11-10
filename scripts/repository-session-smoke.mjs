@@ -70,6 +70,13 @@ export async function repositorySessionSmoke({ page, work, shot, template }) {
       return rows.length === 40 && rows.every(row => row.children[3]?.textContent.trim() === "Clean");
     });
     await shot("session-40-overview");
+    const overview = page.locator(".topbar").getByRole("button", { name: "All repositories", exact: true });
+    await overview.click();
+    await page.locator(".repository-overview").waitFor({ state: "detached" });
+    await overview.click();
+    await page.getByRole("button", { name: "Close repository overview", exact: true }).click();
+    await page.locator(".repository-overview").waitFor({ state: "detached" });
+    if (await page.locator(".topbar .repo-current").getAttribute("title") !== roots[35]) throw Error("Closing the overview changed the active repository");
     await page.locator(".repository-item", { hasText: "frontend-35" }).locator(".repository-select").click();
     // Start a new frontend session from its real saved settings, without
     // reinstalling the fixture or sending an explicit open-paths command.

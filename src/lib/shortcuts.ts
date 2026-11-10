@@ -6,13 +6,14 @@ export interface ShortcutDef {
   label: string;
   description: string;
   default: string;
-  scope?: "commit" | "diff" | "history" | "files" | "conflicts" | "editor";
+  scope?: "commit" | "diff" | "history" | "files" | "conflicts" | "editor" | "navigation";
 }
 
 export const SHORTCUTS: ShortcutDef[] = [
   { id: "palette", label: "Command palette", description: "Search actions, branches and repositories.", default: "Ctrl+K" },
   { id: "open", label: "Open repository", description: "Open a local Git repository.", default: "Ctrl+O" },
   { id: "refresh", label: "Refresh", description: "Reload the current repository or overview.", default: "F5" },
+  { id: "renameItem", label: "Rename focused item", description: "Rename a workspace, branch or repository label from its navigation panel.", default: "F2", scope: "navigation" },
   { id: "history", label: "Show history", description: "Open the commit history for the current repository.", default: "Ctrl+1" },
   { id: "changes", label: "Show changes", description: "Show staged and unstaged changes.", default: "Ctrl+2" },
   { id: "pulls", label: "Show pull requests", description: "Open the repository’s pull or merge requests.", default: "Ctrl+3" },

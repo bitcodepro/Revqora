@@ -134,6 +134,18 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await prButton("Load checks").click();
       await detailPanel.getByText("Build fixture",{exact:true}).waitFor();
       assert.equal(seen.filter(r=>r.path.endsWith("/statuses")).length,1);
+      pr.updated_on="2026-01-02T00:00:00Z";
+      await prButton("Discussions").click();
+      const staleDiscussions=detailPanel.getByRole("alert").filter({hasText:"Reload it to see the latest discussions"});
+      await staleDiscussions.getByRole("button",{name:"Reload pull request",exact:true}).click();
+      await detailPanel.getByText("No matching discussions in the loaded pages.",{exact:true}).waitFor();
+      pr.description="Updated through the main refresh button";
+      const listsBefore=seen.filter(r=>r.path.endsWith("/team/repo/pullrequests")).length;
+      await page.locator(".main-head").getByTitle("Refresh (F5)",{exact:true}).click();
+      await detailPanel.getByText("No matching discussions in the loaded pages.",{exact:true}).waitFor();
+      assert(seen.filter(r=>r.path.endsWith("/team/repo/pullrequests")).length>listsBefore,"Main refresh did not fetch the PR list");
+      await prButton("Overview").click();
+      await detailPanel.getByText(pr.description,{exact:true}).waitFor();
       pr.state="DECLINED";
       await prButton("Reload request").click();
       await detailPanel.getByText("Declined",{exact:true}).waitFor();

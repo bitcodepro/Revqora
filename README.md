@@ -371,18 +371,20 @@ browser login so missing credentials can be entered in its own sign-in dialog.
 Git needs repository read scope
 for Fetch/Pull and write scope for Push; PR operations need their own API scopes.
 
-After a successful HTTPS clone/fetch/push, Git-approved credentials can be reused
-for that repository during this session. For Bitbucket Cloud, opening PRs uses
-the matching Git token automatically; entering it again is unnecessary. This
-memory cache follows Git's host, username and `credential.useHttpPath` matching,
-is isolated per repository, expires after at most 12 hours by default, and is
-cleared when tokens are locked or the application exits. It never stores tokens
-in repository URLs or plain-text configuration. Credentials already saved by an
-external credential manager continue to follow that manager's storage policy.
-To retain an app-entered token across restarts, choose **Use existing Git token**
-in the Bitbucket account form and **Save token in the encrypted vault**.
-Old credentials absent from both the current session and Git's credential manager
-cannot be recovered; enter them once to establish the connection.
+In automatic HTTPS mode, Git looks for existing credentials through its configured
+credential manager. If Revqora opens its own HTTPS password prompt on Windows,
+**Remember in Revqora on this Windows account** is enabled by default. After
+Git approves the credential, Revqora saves it under `data/git-credentials`,
+encrypted for that Windows user. Matching follows Git's host, username and
+`credential.useHttpPath` rules and stays scoped to the repository. For a Bitbucket
+API token, enter the Atlassian email in the same prompt to reuse it in PR Center.
+Use **Git connection settings → Forget Git tokens saved by Revqora…** to remove
+these credentials for a repository. API accounts and external credential managers
+retain their own storage settings.
+
+On other platforms, use Git Credential Manager for persistent HTTPS credentials
+or save an API account in Revqora's encrypted vault. Session credentials are
+cleared on exit, when the session is cleared, or when they expire.
 
 SSH prompts use a separate authenticated channel and cannot receive saved API
 tokens, even when their server-supplied text resembles an HTTPS prompt.
@@ -586,6 +588,7 @@ accepts Command for Ctrl-based actions.
 | Ctrl+Shift+S | Stash |
 | Ctrl+Enter | Commit from the commit form |
 | F5 | Refresh |
+| F2 | Rename the focused workspace, branch, or repository display name |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous repository tab |
 | Ctrl+W | Close repository tab |
 | Ctrl+, | Settings |

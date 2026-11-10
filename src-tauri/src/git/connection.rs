@@ -49,6 +49,7 @@ pub struct Snapshot {
     pub options: Options,
     pub revision: String,
     pub credential_manager_configured: bool,
+    pub can_remember_tokens: bool,
 }
 fn fail(message: impl Into<String>) -> GitError {
     GitError::new(message).kind("git-connection")
@@ -76,7 +77,12 @@ fn read(root: &Path) -> GitResult<Snapshot> {
             bytes
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Snapshot { options: Options::default(), revision: "none".into(), credential_manager_configured: false })
+            return Ok(Snapshot {
+                options: Options::default(),
+                revision: "none".into(),
+                credential_manager_configured: false,
+                can_remember_tokens: cfg!(windows),
+            })
         }
         Err(e) => return Err(e.into()),
     };
@@ -85,7 +91,7 @@ fn read(root: &Path) -> GitResult<Snapshot> {
     }
     let options = serde_json::from_slice(&bytes)
         .map_err(|_| fail("Git connection settings are damaged. Restore the file in portable data/git-connections before connecting."))?;
-    Ok(Snapshot { options, revision: format!("{:x}", Sha256::digest(&bytes)), credential_manager_configured: false })
+    Ok(Snapshot { options, revision: format!("{:x}", Sha256::digest(&bytes)), credential_manager_configured: false, can_remember_tokens: cfg!(windows) })
 }
 pub fn snapshot(root: &Path) -> GitResult<Snapshot> {
     let mut value = read(root)?;

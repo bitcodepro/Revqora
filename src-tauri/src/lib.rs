@@ -1,5 +1,7 @@
 mod desktop;
 pub mod git_credentials;
+#[cfg(windows)]
+mod windows_secret;
 #[tauri::command]
 async fn symbol_history(repo: String, path: String, query: String, anchor: Option<String>, offset: usize) -> GitResult<git::semantic::SymbolHistoryPage> {
     blocking(move || git::semantic::symbol_history(&p(&repo), &path, &query, anchor.as_deref(), offset)).await
@@ -499,8 +501,8 @@ async fn git_configure(state: State<'_, AppState>) -> GitResult<git::locate::Git
 }
 
 #[tauri::command]
-fn askpass_respond(id: u64, value: Option<String>) -> bool {
-    askpass::respond(id, value)
+fn askpass_respond(id: u64, value: Option<String>, remember: Option<bool>, email: Option<String>) -> bool {
+    askpass::respond_with_storage(id, value, remember.unwrap_or(false), email)
 }
 
 #[tauri::command]
@@ -590,6 +592,18 @@ async fn git_connection_test(repo: String, remote: String, expected_url_fingerpr
             return Err(GitError::new("The remote changed. Reload before testing.").kind("stale-operation"));
         }
         runner::run(&root, ["ls-remote", "--heads", "--", &remote]).map(|_| "Git access verified".into())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn git_connection_forget(repo: String) -> GitResult<()> {
+    blocking(move || {
+        #[cfg(windows)]
+        crate::git_credentials::forget(&p(&repo)).map_err(|_| GitError::new("Could not remove Revqora's saved Git tokens."))?;
+        #[cfg(not(windows))]
+        let _ = repo;
+        Ok(())
     })
     .await
 }
@@ -2220,12 +2234,16 @@ pub fn run() {
                 std::thread::spawn(move || update::cleanup(&root));
             }
             let handle = app.handle().clone();
+            let warning_handle = handle.clone();
             let exe = std::env::current_exe()?;
-            if let Err(e) = askpass::start(
+            if let Err(e) = askpass::start_with_storage_warning(
                 &exe,
                 &portable::runtime_dir()?.join("helpers"),
                 std::sync::Arc::new(move |req| {
                     let _ = handle.emit("askpass-request", req);
+                }),
+                std::sync::Arc::new(move || {
+                    let _ = warning_handle.emit("git-credential-storage-warning", ());
                 }),
             ) {
                 eprintln!("askpass server failed to start: {e}");
@@ -2272,6 +2290,7 @@ pub fn run() {
             git_connection_snapshot,
             git_connection_save,
             git_connection_test,
+            git_connection_forget,
             repo_info,
             status,
             identity_get,

@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ExternalLink, PanelTop } from "lucide-react";
-import { contextMenu, openOverlay, toast, useUi } from "../lib/ui";
+import { contextMenu, openOverlay, toast, useUi, type MenuItem } from "../lib/ui";
 import { registerUiSurface, surfaceDocument } from "../lib/uiSurfaces";
 import { useSettings } from "../lib/settings";
 import { useRepos } from "../lib/store";
@@ -167,11 +167,12 @@ export function usePanelWindowMenu(hasRepository: boolean, hasCommit: boolean) {
   }));
 }
 
-export function usePanelTitleMenu(id: PanelId) {
+export function usePanelTitleMenu(id: PanelId, items: MenuItem[] = []) {
   const { panels, detach } = usePanelWindows();
   return (event: ReactMouseEvent<HTMLElement>) => {
-    if (panels[id] || (event.target as HTMLElement).closest?.("input, textarea, select, [contenteditable]")) return;
-    contextMenu(event, [{ label: "Detach", icon: <ExternalLink size={14}/>, onClick: () => detach(id) }]);
+    if ((event.target as HTMLElement).closest?.("input, textarea, select, [contenteditable]")) return;
+    const menu = panels[id] ? items : [...items, ...(items.length ? [{ separator: true } as const] : []), { label: "Detach", icon: <ExternalLink size={14}/>, onClick: () => detach(id) }];
+    if (menu.length) contextMenu(event, menu);
   };
 }
 

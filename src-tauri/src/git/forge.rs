@@ -320,6 +320,10 @@ pub(super) fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::
         )
     })?;
     if !out.ok() {
+        #[cfg(windows)]
+        if crate::git_credentials::expired(repo, protocol, &host, &git_path, &username) {
+            return Err(GitError::new("The remembered Git token expired. Sign in again or reconnect the API account.").kind("auth"));
+        }
         return Err(GitError::new("No Git credential is available for this remote. Add an API account or sign in with Git first.").kind("auth"));
     }
     let text = zeroize::Zeroizing::new(out.text());
@@ -328,7 +332,14 @@ pub(super) fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::
     if pass.is_empty() {
         return Err(GitError::new("Git returned no API credential. Add an API account.").kind("auth"));
     }
-    Ok(super::forge_accounts::Credential { username: field("username="), token: pass, mode: "bearer".into() })
+    let username = field("username=");
+    #[cfg(windows)]
+    if host == "bitbucket.org" && protocol == "https" {
+        if let Some(email) = crate::git_credentials::bitbucket_email(repo, &git_path, &username, &pass) {
+            return Ok(super::forge_accounts::Credential { username: email, token: pass, mode: "basic".into() });
+        }
+    }
+    Ok(super::forge_accounts::Credential { username, token: pass, mode: "bearer".into() })
 }
 
 pub(crate) fn base64(input: &[u8]) -> String {
@@ -453,7 +464,7 @@ fn send_with_git_credential<T>(
     let rejected = format!("forge_http_status={kind}:401");
     if matches!(&result, Err(e) if e.details.contains(&rejected)) {
         match kind {
-            "bitbucket" | "bitbucket-server" if !credential.username.is_empty() => credential.mode = "basic".into(),
+            "bitbucket" | "bitbucket-server" if credential.mode != "basic" && !credential.username.is_empty() => credential.mode = "basic".into(),
             "azure" if credential.token.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~+/=".contains(&b)) => credential.mode = "bearer".into(),
             _ => return result,
         }

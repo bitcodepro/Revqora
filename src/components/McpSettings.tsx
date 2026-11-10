@@ -25,11 +25,11 @@ export function McpSettings() {
   return <section aria-label="MCP">
     <div className="section-title">MCP</div>
     <div className="settings-grid">
-      <label htmlFor="mcp-enabled">Local access</label>
-      <div>
-        <label className="check"><input id="mcp-enabled" type="checkbox" checked={info?.enabled ?? false} disabled={!info || busy}
+      <span className="muted">Local access</span>
+      <div className="vstack">
+        <label className="check"><input type="checkbox" aria-describedby="mcp-access-help" checked={info?.enabled ?? false} disabled={!info || busy}
           onChange={e => void toggle(e.target.checked)} /> Enable MCP for this session</label>
-        <small className="muted">Local MCP clients can read open repositories, including code and PR discussions. Git and PR actions ask for confirmation in Revqora. Keep this window's app running while connected.</small>
+        <small id="mcp-access-help" className="muted">Local MCP clients can read open repositories, including code and PR discussions. Git and PR actions ask for confirmation in Revqora. Keep this window's app running while connected.</small>
       </div>
       <label htmlFor="mcp-client">Client</label>
       <select id="mcp-client" className="select" value={client} onChange={e => setClient(e.target.value as McpClient)}>

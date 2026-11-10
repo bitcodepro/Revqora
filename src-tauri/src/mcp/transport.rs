@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use crate::windows_secret::dpapi;
 use ring::{hmac, rand};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
@@ -98,33 +100,6 @@ fn protect(key: &[u8]) -> io::Result<Vec<u8>> {
 #[cfg(windows)]
 fn unprotect(key: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
     dpapi(key, false)
-}
-
-#[cfg(windows)]
-fn dpapi(input: &[u8], encrypt: bool) -> io::Result<Zeroizing<Vec<u8>>> {
-    use std::ptr::{null, null_mut};
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB};
-    let input = CRYPT_INTEGER_BLOB { cbData: input.len() as u32, pbData: input.as_ptr().cast_mut() };
-    let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: null_mut() };
-    unsafe {
-        let ok = if encrypt {
-            CryptProtectData(&input, null(), null(), null(), null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output)
-        } else {
-            CryptUnprotectData(&input, null_mut(), null(), null(), null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output)
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if output.pbData.is_null() {
-            return Err(denied());
-        }
-        let data = std::slice::from_raw_parts_mut(output.pbData, output.cbData as usize);
-        let result = Zeroizing::new(data.to_vec());
-        data.zeroize();
-        LocalFree(output.pbData.cast());
-        Ok(result)
-    }
 }
 
 fn denied() -> io::Error {

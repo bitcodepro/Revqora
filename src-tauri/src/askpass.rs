@@ -42,6 +42,7 @@ pub struct AskpassRequest {
     /// "username" | "secret" | "yesno" | "text"
     pub kind: String,
     pub origin: Origin,
+    pub can_remember: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -51,6 +52,8 @@ struct Ask {
     prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     credential: Option<crate::git_credentials::Request>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repository: Option<(String, u64)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -69,7 +72,12 @@ type Responder = Arc<dyn Fn(AskpassRequest) + Send + Sync>;
 
 struct PendingPrompt {
     request: AskpassRequest,
-    answer: Sender<Option<String>>,
+    answer: Sender<Option<PromptAnswer>>,
+}
+struct PromptAnswer {
+    value: zeroize::Zeroizing<String>,
+    remember: bool,
+    email: Option<String>,
 }
 
 struct Server {
@@ -146,6 +154,15 @@ fn git_helper(exe: &std::path::Path, directory: &std::path::Path, filename: &str
 
 /// Starts the prompt server. `on_request` shows the prompt; answers come back via [`respond`].
 pub fn start(helper_exe: &std::path::Path, directory: &std::path::Path, on_request: Responder) -> std::io::Result<()> {
+    start_with_storage_warning(helper_exe, directory, on_request, Arc::new(|| {}))
+}
+
+pub(crate) fn start_with_storage_warning(
+    helper_exe: &std::path::Path,
+    directory: &std::path::Path,
+    on_request: Responder,
+    storage_warning: Arc<dyn Fn() + Send + Sync>,
+) -> std::io::Result<()> {
     if SERVER.get().is_some() {
         return Ok(());
     }
@@ -178,15 +195,16 @@ pub fn start(helper_exe: &std::path::Path, directory: &std::path::Path, on_reque
             let server = server.clone();
             let channels = channels.clone();
             let on_request = on_request.clone();
+            let storage_warning = storage_warning.clone();
             std::thread::spawn(move || {
-                let _ = handle(stream, &server, &channels, &on_request);
+                let _ = handle(stream, &server, &channels, &on_request, storage_warning.as_ref());
             });
         }
     });
     Ok(())
 }
 
-fn handle(stream: TcpStream, server: &Server, channels: &Channels, on_request: &Responder) -> std::io::Result<()> {
+fn handle(stream: TcpStream, server: &Server, channels: &Channels, on_request: &Responder, storage_warning: &dyn Fn()) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut reader = BufReader::new(stream.try_clone()?.take(MAX_LINE));
     let mut line = zeroize::Zeroizing::new(String::new());
@@ -198,20 +216,35 @@ fn handle(stream: TcpStream, server: &Server, channels: &Channels, on_request: &
         if origin != Origin::Git {
             return Ok(());
         }
-        let value = zeroize::Zeroizing::new(crate::git_credentials::handle(&credential));
+        let value = zeroize::Zeroizing::new(crate::git_credentials::handle(&credential).unwrap_or_else(|_| {
+            storage_warning();
+            String::new()
+        }));
         let reply = zeroize::Zeroizing::new(serde_json::to_string(&Answer { ok: true, value: value.to_string() })?);
         writeln!(out, "{}", reply.as_str())?;
         return out.flush();
     }
     let id = server.next.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = channel();
-    let request = AskpassRequest { id, kind: classify(&ask.prompt).to_string(), prompt: ask.prompt, origin };
+    let destination = if cfg!(windows) && origin == Origin::Git && ask.repository.is_some() {
+        crate::git::forge_accounts::git_https_prompt(&ask.prompt).and_then(|(username, url)| (!username).then_some(url))
+    } else {
+        None
+    };
+    let request = AskpassRequest { id, kind: classify(&ask.prompt).to_string(), prompt: ask.prompt, origin, can_remember: destination.is_some() };
     server.pending.lock().insert(id, PendingPrompt { request: request.clone(), answer: tx });
     on_request(request);
     let answer = rx.recv_timeout(ANSWER_TIMEOUT).ok().flatten();
     server.pending.lock().remove(&id);
     let reply = match answer {
-        Some(v) => Answer { ok: true, value: v },
+        Some(v) => {
+            if v.remember {
+                if let (Some((root, epoch)), Some(destination)) = (ask.repository, destination) {
+                    crate::git_credentials::remember_input(std::path::Path::new(&root), epoch, &destination, &v.value, v.email);
+                }
+            }
+            Answer { ok: true, value: v.value.to_string() }
+        }
         None => Answer { ok: false, value: String::new() },
     };
     writeln!(out, "{}", serde_json::to_string(&reply).unwrap_or_default())?;
@@ -220,10 +253,14 @@ fn handle(stream: TcpStream, server: &Server, channels: &Channels, on_request: &
 
 /// Delivers the user's answer (None = cancelled).
 pub fn respond(id: u64, value: Option<String>) -> bool {
+    respond_with_storage(id, value, false, None)
+}
+
+pub fn respond_with_storage(id: u64, value: Option<String>, remember: bool, email: Option<String>) -> bool {
     let Some(server) = SERVER.get() else { return false };
     let tx = server.pending.lock().remove(&id);
     match tx {
-        Some(pending) => pending.answer.send(value).is_ok(),
+        Some(pending) => pending.answer.send(value.map(|value| PromptAnswer { value: zeroize::Zeroizing::new(value), remember, email })).is_ok(),
         None => false,
     }
 }
@@ -234,9 +271,9 @@ pub fn pending_request(id: u64) -> Option<AskpassRequest> {
 }
 
 /// Asks the running app; Ok(None) = the user cancelled.
-pub fn ask(port: &str, token: &str, prompt: &str) -> std::io::Result<Option<String>> {
+fn ask(port: &str, token: &str, prompt: &str, repository: Option<(String, u64)>) -> std::io::Result<Option<String>> {
     let mut s = TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap_or(0)))?;
-    let msg = serde_json::to_string(&Ask { token: token.to_string(), prompt: prompt.to_string(), credential: None }).unwrap_or_default();
+    let msg = serde_json::to_string(&Ask { token: token.to_string(), prompt: prompt.to_string(), credential: None, repository }).unwrap_or_default();
     writeln!(s, "{msg}")?;
     s.flush()?;
     let mut line = String::new();
@@ -248,7 +285,8 @@ pub fn ask(port: &str, token: &str, prompt: &str) -> std::io::Result<Option<Stri
 pub(crate) fn credential(port: &str, token: &str, request: crate::git_credentials::Request) -> std::io::Result<String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap_or(0)))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let message = zeroize::Zeroizing::new(serde_json::to_string(&Ask { token: token.into(), prompt: String::new(), credential: Some(request) })?);
+    let message =
+        zeroize::Zeroizing::new(serde_json::to_string(&Ask { token: token.into(), prompt: String::new(), credential: Some(request), repository: None })?);
     writeln!(stream, "{}", message.as_str())?;
     stream.flush()?;
     let mut line = zeroize::Zeroizing::new(String::new());
@@ -277,7 +315,12 @@ pub fn run_helper_if_requested() -> Option<i32> {
         _ => return Some(1),
     };
     let Ok(token) = std::env::var(variable) else { return Some(1) };
-    match ask(&port, &token, prompt) {
+    let repository = if variable == GIT_TOKEN_VAR {
+        std::env::var(crate::git_credentials::REPO_VAR).ok().zip(std::env::var(crate::git_credentials::EPOCH_VAR).ok().and_then(|e| e.parse().ok()))
+    } else {
+        None
+    };
+    match ask(&port, &token, prompt, repository) {
         Ok(Some(v)) => {
             let mut out = std::io::stdout();
             let _ = writeln!(out, "{v}");

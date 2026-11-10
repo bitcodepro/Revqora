@@ -3,6 +3,7 @@ import { aboutDialog } from "./AboutDialog";
 import { branchCommitCompare } from "./BranchCommitCompare";
 import { SyncButton, syncRepositories } from "./SyncRepositories";
 import { RepositoryLibraryButton, WorkspacePicker, repositoryLibraryDialog } from "./RepositoryLibrary";
+import { repositoryKey, useLibrary } from "../lib/repositoryLibrary";
 import { PanelWindowsButton, usePanelWindowMenu, usePanelWindows } from "./PanelWindows";
 import { WORKTREE } from "../lib/types";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
@@ -56,7 +57,7 @@ import {
 import { useRepos, type RepoTab } from "../lib/store";
 import { resolvedTheme, useSettings } from "../lib/settings";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { contextMenu, endBusy, openOverlay, startBusy, toast, useUi, type MenuItem } from "../lib/ui";
+import { contextMenu, endBusy, openOverlay, startBusy, toast, toggleRepositoryOverview, useUi, type MenuItem } from "../lib/ui";
 import { namePathMenu } from "./NamePathMenu";
 import * as A from "../lib/actions";
 import * as XA from "../lib/extraActions";
@@ -86,6 +87,7 @@ export function TopBar() {
   const status = tab?.status;
   const stashCount = tab?.refs?.stashes.length ?? 0;
   const root = tab?.root;
+  const repositoryName = useLibrary(s => root ? s.repositoryNames[repositoryKey(root)] : undefined) ?? tab?.info?.name ?? (root ? basename(root) : "Repositories");
   const dark = resolvedTheme(theme) === "dark";
   const overview = useUi((s) => s.repositoryOverview);
   const workspacesOpen = useSettings(s => s.workspacesOpen);
@@ -117,7 +119,7 @@ export function TopBar() {
   const menu: MenuItem[] = [
     { label: "Workspaces", icon: <FolderKanban size={15}/>, checked: workspacesOpen && !focusMode, hint: prettyCombo(bindingFor("workspacesPanel", shortcuts)), onClick: () => toggleSidebar("workspaces") },
     { label: "Toggle repositories panel", icon: <PanelLeft size={15}/>, hint: prettyCombo(bindingFor("repositoriesPanel", shortcuts)), onClick: () => toggleSidebar("repositories") },
-    { label: "All repositories", icon: <LayoutGrid size={15}/>, onClick: () => useUi.setState({ repositoryOverview: true }) },
+    { label: overview ? "Close repository overview" : "All repositories", icon: <LayoutGrid size={15}/>, onClick: toggleRepositoryOverview },
     { label: "Repository library and workspaces", onClick: () => void repositoryLibraryDialog() },
     { label: "Open repositories…", icon: <Plus size={15}/>, onClick: () => void A.openRepoDialog() },
     { label: "Import folder…", icon: <FolderSearch size={15}/>, onClick: () => void repositoryFolderImportDialog() },
@@ -163,12 +165,12 @@ export function TopBar() {
       <div className="topbar-navigation" role="group" aria-label="Repository navigation">
         <button type="button" className={`icon-btn ${workspacesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle Workspaces panel", "workspacesPanel")} aria-label="Toggle Workspaces panel" aria-pressed={workspacesOpen && !focusMode} onClick={() => toggleSidebar("workspaces")}><FolderKanban size={16}/></button>
         <button type="button" className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle repositories panel", "repositoriesPanel")} aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => toggleSidebar("repositories")}><PanelLeft size={16} /></button>
-        <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
+        <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={16} /></button>
         <RepositoryLibraryButton />
       </div>
       <WorkspacePicker />
-      <div className="repo-current" title={root ?? ""} onContextMenu={e => { if (root && !overview) contextMenu(e, namePathMenu(tab?.info?.name ?? basename(root), root, null)); }}>
-        <b>{overview ? "All repositories" : tab?.info?.name ?? (root ? basename(root) : "Repositories")}</b>
+      <div className="repo-current" title={root ?? ""} onContextMenu={e => { if (root && !overview) contextMenu(e, namePathMenu(repositoryName, root, null)); }}>
+        <b>{overview ? "All repositories" : repositoryName}</b>
         {!overview && tab?.info && <span onContextMenu={e => { if (root && tab.info?.head.branch) contextMenu(e, namePathMenu(tab.info.head.branch, root, `refs/heads/${tab.info.head.branch}`)); }}><GitBranch size={12} />{tab.info.head.branch ?? shortOid(tab.info.head.oid ?? "")}</span>}
       </div>
       <button className="icon-btn" title={shortcutTitle("Open repository", "open")} aria-label="Open repositories" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>

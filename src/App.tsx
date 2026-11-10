@@ -17,7 +17,7 @@ import { Columns3, FilePlus2, GitBranch, GitCommitHorizontal, GitGraph, GitPullR
 import { PullRequestsView } from "./components/PullRequests";
 import { useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
-import { openOverlay, toast, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
+import { openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
 import { actionFor, comboFromEvent, shortcutTitle } from "./lib/shortcuts";
 import { settingsDialog } from "./components/dialogs";
 import { repoToolsDialog } from "./components/RepoTools";
@@ -46,6 +46,7 @@ import { startUpdateChecks } from "./lib/update";
 import { createAutoFetch, defaultFetch } from "./lib/autofetch";
 import { useBackgroundPoll } from "./lib/backgroundPolling";
 import { checkPullRequestActivity, resetPullRequestActivity } from "./lib/prTracking";
+import { refreshRepositoryView } from "./lib/prRefresh";
 import { RepositoryOverview, RepositorySidebar } from "./components/Repositories";
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
@@ -75,6 +76,18 @@ function useAppearance() {
     r.setProperty("--font-ui", `"${s.uiFont}", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif`);
     r.setProperty("--font-code", `"${s.codeFont}", "Cascadia Code", Consolas, monospace`);
   }, [s.uiFontSize, s.codeFontSize, s.uiFont, s.codeFont]);
+}
+
+function RepositoryRefresh({ root }: { root: string }) {
+  const [busy, setBusy] = useState(false);
+  const refresh = async () => {
+    setBusy(true);
+    try { await refreshRepositoryView(root); }
+    finally { setBusy(false); }
+  };
+  return <button className="icon-btn" title={shortcutTitle("Refresh", "refresh")} disabled={busy} aria-busy={busy} onClick={() => void refresh()}>
+    <RefreshCw size={15} className={busy ? "spin" : ""} />
+  </button>;
 }
 
 function RepositoryContent({ tab }: { tab: RepoTab }) {
@@ -172,9 +185,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
             </div>
           )}
           <button className={`icon-btn focus-toggle ${focusMode ? "active" : ""}`} title={focusMode ? "Exit focus mode" : "Focus on code"} aria-label={focusMode ? "Exit focus mode" : "Focus on code"} aria-pressed={focusMode} onClick={() => setLayout({ focusMode: !focusMode })}>{focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
-          <button className="icon-btn" title={shortcutTitle("Refresh", "refresh")} onClick={() => useRepos.getState().refresh(root)}>
-            <RefreshCw size={15} />
-          </button>
+          <RepositoryRefresh key={root} root={root} />
         </div>
         <OpBanner tab={tab} onResolve={openConflict} />
         {latestSwitchStash && <div className="branch-switch-stash hstack">
@@ -405,8 +416,8 @@ function MainApp() {
         palette: () => { window.focus(); useUi.getState().setPalette(true); },
         paletteAlternate: () => { window.focus(); useUi.getState().setPalette(true); },
         open: () => A.openRepoDialog(),
-        refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && st.refresh(a),
-        overview: () => useUi.setState({ repositoryOverview: true }),
+        refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && refreshRepositoryView(a),
+        overview: toggleRepositoryOverview,
         workspacesPanel: () => toggleSidebar("workspaces"),
         repositoriesPanel: () => toggleSidebar("repositories"),
         branchesPanel: () => toggleSidebar("branches"),

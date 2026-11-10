@@ -16,6 +16,7 @@ export interface SavedWorkspace extends WorkspaceSnapshot { id: string; name: st
 export interface FolderWorkspace { folder: string; roots: string[] }
 export interface LibraryData {
   knownRoots: string[];
+  repositoryNames: Record<string, string>;
   favorites: string[];
   groups: RepositoryGroup[];
   workspaces: SavedWorkspace[];
@@ -56,7 +57,13 @@ export function restoreLibrary(value: unknown): LibraryData {
   });
   const favorites = uniqueRoots(raw.favorites);
   const favoriteWorkspaceIds = Array.isArray(raw.favoriteWorkspaceIds) ? workspaces.filter(w => (raw.favoriteWorkspaceIds as unknown[]).includes(w.id)).map(w => w.id) : [];
-  return { knownRoots: uniqueRoots([...uniqueRoots(raw.knownRoots), ...favorites, ...groups.flatMap((g) => g.roots), ...workspaces.flatMap((w) => w.roots)]), favorites, groups, workspaces, favoriteWorkspaceIds, activeWorkspaceId: workspaces.some((w) => w.id === raw.activeWorkspaceId) ? raw.activeWorkspaceId as string : null };
+  const knownRoots = uniqueRoots([...uniqueRoots(raw.knownRoots), ...favorites, ...groups.flatMap((g) => g.roots), ...workspaces.flatMap((w) => w.roots)]);
+  const names = record(raw.repositoryNames);
+  const repositoryNames = Object.fromEntries(knownRoots.flatMap(root => {
+    const key = repositoryKey(root), name = validName(names[key]);
+    return name ? [[key, name]] : [];
+  }));
+  return { knownRoots, repositoryNames, favorites, groups, workspaces, favoriteWorkspaceIds, activeWorkspaceId: workspaces.some((w) => w.id === raw.activeWorkspaceId) ? raw.activeWorkspaceId as string : null };
 }
 
 export function planFolderWorkspaces(workspaces: SavedWorkspace[], groups: FolderWorkspace[]) {
@@ -75,6 +82,7 @@ export function planFolderWorkspaces(workspaces: SavedWorkspace[], groups: Folde
 }
 interface LibraryStore extends LibraryData {
   remember: (root: string, alias?: string) => void;
+  renameRepository: (root: string, name: string) => void;
   favorite: (root: string) => void;
   favoriteWorkspace: (id: string) => void;
   group: (name: string, id?: string) => string;
@@ -101,8 +109,20 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
     if ((!alias || alias === root) && s.knownRoots.includes(root)) return;
     const remap = (r: string) => repositoryKey(r) === repositoryKey(alias ?? root) ? root : r;
     const list = (roots: string[]) => uniqueRoots(roots.map(remap));
-    set({ knownRoots: uniqueRoots([...list(s.knownRoots), root]), favorites: list(s.favorites), groups: s.groups.map((g) => ({ ...g, roots: list(g.roots) })), workspaces: s.workspaces.map((w) => ({ ...w, roots: list(w.roots), activeRoot: w.activeRoot ? remap(w.activeRoot) : null, views: Object.fromEntries(Object.entries(w.views).map(([r, v]) => [remap(r), v])) })) });
+    const from = repositoryKey(alias ?? root), to = repositoryKey(root);
+    const repositoryNames = { ...s.repositoryNames };
+    if (from !== to && repositoryNames[from]) {
+      repositoryNames[to] ??= repositoryNames[from];
+      delete repositoryNames[from];
+    }
+    set({ knownRoots: uniqueRoots([...list(s.knownRoots), root]), repositoryNames, favorites: list(s.favorites), groups: s.groups.map((g) => ({ ...g, roots: list(g.roots) })), workspaces: s.workspaces.map((w) => ({ ...w, roots: list(w.roots), activeRoot: w.activeRoot ? remap(w.activeRoot) : null, views: Object.fromEntries(Object.entries(w.views).map(([r, v]) => [remap(r), v])) })) });
   },
+  renameRepository: (root, name) => set(s => {
+    const repositoryNames = { ...s.repositoryNames }, key = repositoryKey(root), next = validName(name);
+    if (next) repositoryNames[key] = next;
+    else delete repositoryNames[key];
+    return { repositoryNames, knownRoots: uniqueRoots([...s.knownRoots, root]) };
+  }),
   favorite: (root) => { const s = get(); set({ knownRoots: uniqueRoots([...s.knownRoots, root]), favorites: s.favorites.some((r) => repositoryKey(r) === repositoryKey(root)) ? s.favorites.filter((r) => repositoryKey(r) !== repositoryKey(root)) : [...s.favorites, root] }); },
   favoriteWorkspace: (id) => set(s => !s.workspaces.some(w => w.id === id) ? s : { favoriteWorkspaceIds: s.favoriteWorkspaceIds.includes(id) ? s.favoriteWorkspaceIds.filter(key => key !== id) : [...s.favoriteWorkspaceIds, id] }),
   group: (name, id) => { const s = get(), old = s.groups.find((g) => g.id === id), next = checkedName(name, s.groups.map((g) => g.name), old?.name), key = old?.id ?? newId(); set({ groups: old ? s.groups.map((g) => g.id === key ? { ...g, name: next } : g) : [...s.groups, { id: key, name: next, roots: [], collapsed: false }] }); return key; },

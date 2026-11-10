@@ -203,6 +203,32 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     if (await page.locator(".repository-close").count() !== 1 || await page.locator(".history-mode button.on").innerText() !== "Columns") throw new Error("workspace did not restore repository set");
     await excluded.waitFor({ state: "detached" });
     if (await branches.getAttribute("aria-expanded") !== "false") throw new Error("workspace did not restore panel visibility");
+    const workspaceToggle = page.getByRole("button", { name: "Toggle Workspaces panel", exact: true });
+    const workspacesWereOpen = await workspaceToggle.getAttribute("aria-pressed") === "true";
+    if (!workspacesWereOpen) await workspaceToggle.click();
+    const workspacePanel = page.getByRole("complementary", { name: "Workspaces", exact: true });
+    const workspaceRow = name => workspacePanel.locator(".repository-select").filter({ hasText: name });
+    await workspaceRow("Stage8 focused").click({ button: "right" });
+    const workspaceMenu = page.locator(".ctx-menu");
+    for (const label of ["New workspace…", "Rename workspace…", "Delete workspace…"]) {
+      await workspaceMenu.getByText(label, { exact: true }).waitFor();
+    }
+    await page.keyboard.press("Escape");
+    for (const [before, after] of [["Stage8 focused", "Stage8 renamed"], ["Stage8 renamed", "Stage8 focused"]]) {
+      await workspaceRow(before).press("F2");
+      const rename = page.getByRole("dialog").filter({ has: page.getByRole("heading", { name: "Rename workspace", exact: true }) });
+      await rename.getByRole("textbox").fill(after);
+      await rename.getByRole("button", { name: "OK", exact: true }).click();
+      await workspaceRow(after).waitFor();
+    }
+    if (!workspacesWereOpen) await workspaceToggle.click();
+    for (const [before, after] of [["stage8-workspace", "Stage8 display name"], ["Stage8 display name", "stage8-workspace"]]) {
+      await page.locator(".repository-sidebar:not(.workspace-sidebar) .repository-select").filter({ hasText: before }).press("F2");
+      const rename = page.getByRole("dialog").filter({ has: page.getByRole("heading", { name: "Rename repository", exact: true }) });
+      await rename.getByRole("textbox").fill(after);
+      await rename.getByRole("button", { name: "OK", exact: true }).click();
+      await waitActive(after);
+    }
     await edit("Stage8 all", "stage8-tools", false);
     if (await page.getByLabel("Workspace", { exact: true }).inputValue() !== ids["Stage8 focused"]) throw new Error("editing another workspace switched the current session");
     const toolsSubdir = path.join(second, "tools-subdir");

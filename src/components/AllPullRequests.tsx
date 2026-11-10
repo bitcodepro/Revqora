@@ -7,6 +7,7 @@ import { appendPullRequests, searchPullRequests } from "../lib/prCenter";
 import { visitPrPages, viewerAuthor } from "../lib/prTracking";
 import { uniqueRoots, useLibrary } from "../lib/repositoryLibrary";
 import { useRepos } from "../lib/store";
+import { onPrRefresh } from "../lib/prRefresh";
 import type { ForgeInfo, PrState, PullRequest } from "../lib/types";
 
 type Group = {
@@ -16,7 +17,7 @@ type Group = {
   loading: boolean;
 };
 
-export function AllPullRequests({ open }: { open: (root: string, forge: ForgeInfo, number: number) => Promise<void> }) {
+export function AllPullRequests({ root, open }: { root: string; open: (root: string, forge: ForgeInfo, number: number) => Promise<void> }) {
   const known = useLibrary(s => s.knownRoots);
   const opened = useRepos(s => s.order);
   const roots = useMemo(() => uniqueRoots([...opened, ...known]), [opened, known]);
@@ -29,6 +30,7 @@ export function AllPullRequests({ open }: { open: (root: string, forge: ForgeInf
   const [pending, setPending] = useState(false);
   const [finished, setFinished] = useState(false);
   const scans = useRef(Promise.resolve());
+  useEffect(() => onPrRefresh(root, () => { setGeneration(n => n + 1); }), [root]);
 
   useEffect(() => {
     let current = true;
