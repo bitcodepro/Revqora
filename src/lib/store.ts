@@ -40,6 +40,7 @@ export interface RepoTab {
   graphLoading: boolean;
   graphHasWorktree: boolean;
   branchFilter: string | null;
+  viewedBranch?: string | null;
   graphLimit: number;
   view: View;
   selected: string | null;

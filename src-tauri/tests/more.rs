@@ -72,6 +72,136 @@ fn branch_commit_comparison_resolves_qualified_refs_and_keeps_both_sides() {
 }
 
 #[test]
+fn compared_cherry_pick_checks_reviewed_tips_and_switches_to_the_exact_local_branch() {
+    let t = tempfile::tempdir().unwrap();
+    let r = repo(t.path());
+    let base = commit(&r, ".gitignore", "picked.txt\n", "Shared base");
+    git(&r, &["switch", "-qc", "source"]);
+    fs::write(r.join("picked.txt"), "source\n").unwrap();
+    git(&r, &["add", "-f", "picked.txt"]);
+    git(&r, &["commit", "-qm", "Source patch"]);
+    let oid = git(&r, &["rev-parse", "HEAD"]);
+    git(&r, &["update-ref", "refs/remotes/origin/source", &oid]);
+    git(&r, &["switch", "-qc", "destination", &base]);
+    let destination = commit(&r, "other.txt", "destination\n", "Destination patch");
+    git(&r, &["switch", "-q", "main"]);
+    let mut pick = ops::ComparedCherryPick {
+        source: "refs/remotes/origin/source".into(),
+        source_oid: oid.clone(),
+        destination: "refs/heads/destination".into(),
+        destination_oid: base.clone(),
+        oid: oid.clone(),
+    };
+    assert_eq!(ops::cherry_pick_compared(&r, &pick).unwrap_err().kind, "stale-operation");
+    pick.destination_oid = destination.clone();
+    pick.oid = base.clone();
+    assert!(ops::cherry_pick_compared(&r, &pick).unwrap_err().message.contains("unique"));
+    pick.oid = oid.clone();
+    fs::write(r.join("picked.txt"), "keep ignored data\n").unwrap();
+    assert_eq!(ops::cherry_pick_compared(&r, &pick).unwrap_err().kind, "ignored-collision");
+    assert_eq!(fs::read_to_string(r.join("picked.txt")).unwrap(), "keep ignored data\n");
+    fs::remove_file(r.join("picked.txt")).unwrap();
+    assert_eq!(git(&r, &["branch", "--show-current"]), "main");
+    assert_eq!(git(&r, &["rev-parse", "destination"]), destination);
+
+    assert_eq!(ops::cherry_pick_compared(&r, &pick).unwrap().status, "done");
+    assert_eq!(git(&r, &["branch", "--show-current"]), "destination");
+    assert_eq!(git(&r, &["rev-parse", "HEAD^"]), destination);
+    assert_eq!(git(&r, &["rev-parse", "main"]), base);
+    assert_eq!(git(&r, &["rev-parse", "source"]), oid);
+    assert_eq!(fs::read_to_string(r.join("picked.txt")).unwrap(), "source\n");
+}
+
+#[test]
+fn compared_cherry_pick_leaves_conflicts_on_the_destination_branch() {
+    let t = tempfile::tempdir().unwrap();
+    let r = repo(t.path());
+    commit(&r, ".gitignore", "cache/\n", "Ignore cache");
+    let base = commit(&r, "shared.txt", "base\n", "Shared base");
+    git(&r, &["switch", "-qc", "source"]);
+    let oid = commit(&r, "shared.txt", "source\n", "Source patch");
+    git(&r, &["switch", "-qc", "destination", &base]);
+    let destination = commit(&r, "shared.txt", "destination\n", "Destination patch");
+    git(&r, &["switch", "-q", "main"]);
+    fs::create_dir(r.join("cache")).unwrap();
+    fs::write(r.join("cache/local.txt"), "local cache\n").unwrap();
+    let pick = ops::ComparedCherryPick {
+        source: "refs/heads/source".into(),
+        source_oid: oid.clone(),
+        destination: "refs/heads/destination".into(),
+        destination_oid: destination.clone(),
+        oid,
+    };
+    let result = ops::cherry_pick_compared(&r, &pick).unwrap();
+    assert_eq!(result.status, "conflicts");
+    assert_eq!(result.conflicts, ["shared.txt"]);
+    assert_eq!(fs::read_to_string(r.join("cache/local.txt")).unwrap(), "local cache\n");
+    assert_eq!(git(&r, &["branch", "--show-current"]), "destination");
+    git(&r, &["cherry-pick", "--abort"]);
+    assert_eq!(git(&r, &["rev-parse", "HEAD"]), destination);
+}
+
+#[test]
+fn compared_cherry_pick_preserves_an_ignored_generated_conflict_path() {
+    let t = tempfile::tempdir().unwrap();
+    let r = repo(t.path());
+    let base = commit(&r, ".gitignore", "node~*\n", "Ignore local copies");
+    git(&r, &["switch", "-qc", "source"]);
+    let oid = commit(&r, "node", "source\n", "Source patch");
+    git(&r, &["switch", "-qc", "destination", &base]);
+    let destination = commit(&r, "node/child", "destination\n", "Directory on destination");
+    git(&r, &["switch", "-q", "main"]);
+    let abbreviation = git(&r, &["rev-parse", "--short", &oid]);
+    let obstructing = r.join(format!("node~{abbreviation} (Source patch)"));
+    fs::write(&obstructing, "keep this file\n").unwrap();
+    let pick = ops::ComparedCherryPick {
+        source: "refs/heads/source".into(),
+        source_oid: oid.clone(),
+        destination: "refs/heads/destination".into(),
+        destination_oid: destination,
+        oid,
+    };
+    assert_eq!(ops::cherry_pick_compared(&r, &pick).unwrap_err().kind, "ignored-collision");
+    assert_eq!(fs::read_to_string(obstructing).unwrap(), "keep this file\n");
+    assert_eq!(git(&r, &["branch", "--show-current"]), "main");
+}
+
+#[test]
+fn compared_cherry_pick_preserves_an_ignored_literal_conflict_path_with_a_tip_suffix() {
+    let t = tempfile::tempdir().unwrap();
+    let r = repo(t.path());
+    git(&r, &["config", "merge.renames", "true"]);
+    commit(&r, ".gitignore", "node~*\n", "Ignore local copies");
+    let base = commit(&r, "old", "source\n", "Tracked original");
+    git(&r, &["switch", "-qc", "destination"]);
+    git(&r, &["rm", "--", "old"]);
+    git(&r, &["commit", "-qm", "Delete the original"]);
+    let destination = git(&r, &["rev-parse", "HEAD"]);
+    let renamed = format!("node~{destination}");
+    git(&r, &["switch", "-qc", "source", &base]);
+    git(&r, &["mv", "--", "old", &renamed]);
+    git(&r, &["commit", "-qm", "Rename the original"]);
+    let oid = git(&r, &["rev-parse", "HEAD"]);
+    git(&r, &["switch", "-q", "destination"]);
+    let obstructing = r.join(&renamed);
+    fs::write(&obstructing, "keep this file\n").unwrap();
+
+    let preview = runner::exec(&r, ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", &destination, &oid]).unwrap();
+    assert_eq!(preview.code, 1, "The fixture must produce a rename/delete conflict");
+    assert!(preview.stdout.split(|byte| *byte == 0).any(|path| path == renamed.as_bytes()));
+    let pick = ops::ComparedCherryPick {
+        source: "refs/heads/source".into(),
+        source_oid: oid.clone(),
+        destination: "refs/heads/destination".into(),
+        destination_oid: destination.clone(),
+        oid,
+    };
+    assert_eq!(ops::cherry_pick_compared(&r, &pick).unwrap_err().kind, "ignored-collision");
+    assert_eq!(fs::read_to_string(obstructing).unwrap(), "keep this file\n");
+    assert_eq!(git(&r, &["rev-parse", "HEAD"]), destination);
+}
+
+#[test]
 fn deleted_branches_can_be_restored() {
     let t = tempfile::tempdir().unwrap();
     let r = repo(t.path());

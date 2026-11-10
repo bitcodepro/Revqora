@@ -1,4 +1,4 @@
-//! Discover working copies beneath a folder without walking through their contents.
+//! Discover working copies, including repositories nested in other working copies.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -9,10 +9,6 @@ use serde::Serialize;
 use super::ops::path_is_link;
 use super::repo;
 use super::runner::{GitError, GitResult};
-
-const MAX_ENTRIES: usize = 30_000;
-const MAX_DEPTH: usize = 20;
-const MAX_REPOSITORIES: usize = 500;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,7 +23,6 @@ pub struct FoundRepository {
 pub struct FolderScan {
     pub repositories: Vec<FoundRepository>,
     pub skipped: usize,
-    pub limited: bool,
 }
 
 pub fn scan(root: &Path) -> GitResult<FolderScan> {
@@ -40,37 +35,26 @@ pub fn scan(root: &Path) -> GitResult<FolderScan> {
     }
 
     let mut result = FolderScan::default();
-    let mut remaining = MAX_ENTRIES;
-    let mut pending = vec![(root.to_path_buf(), 0)];
-    while let Some((folder, depth)) = pending.pop() {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(folder) = pending.pop() {
         match fs::symlink_metadata(folder.join(".git")) {
             Ok(_) => {
                 if let Some(found_root) = exact_repository(&folder) {
-                    let workspace_folder =
-                        if depth > 1 { Path::new(&found_root).ancestors().nth(depth - 1).and_then(Path::to_str).map(str::to_owned) } else { None };
+                    let workspace_folder = Path::new(&found_root).parent().and_then(Path::to_str).map(str::to_owned);
                     let relative_path = folder.strip_prefix(root).ok().and_then(Path::to_str).unwrap_or(&found_root).to_owned();
                     result.repositories.push(FoundRepository { root: found_root, relative_path, workspace_folder });
-                    if result.repositories.len() == MAX_REPOSITORIES {
-                        result.limited |= !pending.is_empty();
-                        break;
-                    }
-                    continue;
+                } else {
+                    result.skipped += 1;
                 }
-                result.skipped += 1;
             }
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(_) => {
                 result.skipped += 1;
-                continue;
             }
-        }
-        if depth == MAX_DEPTH {
-            result.limited = true;
-            continue;
         }
         let entries = match fs::read_dir(&folder) {
             Ok(entries) => entries,
-            Err(error) if depth == 0 => return Err(error.into()),
+            Err(error) if folder == root => return Err(error.into()),
             Err(_) => {
                 result.skipped += 1;
                 continue;
@@ -78,16 +62,12 @@ pub fn scan(root: &Path) -> GitResult<FolderScan> {
         };
         let mut children = Vec::new();
         for entry in entries {
-            if remaining == 0 {
-                result.limited = true;
-                break;
-            }
-            remaining -= 1;
             let Ok(entry) = entry else {
                 result.skipped += 1;
                 continue;
             };
-            if entry.file_name() == ".git" {
+            let name = entry.file_name();
+            if name == ".git" || cfg!(windows) && name.to_str().is_some_and(|name| name.eq_ignore_ascii_case(".git")) {
                 continue;
             }
             match entry.metadata() {
@@ -105,7 +85,7 @@ pub fn scan(root: &Path) -> GitResult<FolderScan> {
             }
         }
         children.sort_unstable();
-        pending.extend(children.into_iter().rev().map(|path| (path, depth + 1)));
+        pending.extend(children.into_iter().rev());
     }
     Ok(result)
 }
@@ -129,11 +109,11 @@ mod tests {
     }
 
     #[test]
-    fn scans_direct_and_grouped_working_copies_without_descending_into_repositories() {
+    fn scans_nested_working_copies_and_uses_each_immediate_parent() {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path();
         init(&root.join("api"));
-        init(&root.join("api/nested"));
+        init(&root.join("api/nested/worker"));
         init(&root.join("backend/service one"));
         init(&root.join("frontend/deeper/web"));
         fs::create_dir(root.join("empty")).unwrap();
@@ -149,10 +129,10 @@ mod tests {
                 (name, workspace)
             })
             .collect();
-        assert_eq!(paths, [("api", None), ("service one", Some("backend")), ("web", Some("frontend"))]);
+        let name = root.file_name().unwrap().to_str().unwrap();
+        assert_eq!(paths, [("api", Some(name)), ("worker", Some("nested")), ("service one", Some("backend")), ("web", Some("deeper"))]);
         assert_eq!(result.skipped, 1);
-        assert!(!result.limited);
-        assert_eq!(scan(&root.join("api")).unwrap().repositories.len(), 1);
+        assert_eq!(scan(&root.join("api")).unwrap().repositories.len(), 2);
         let aliased = scan(&root.join("empty/..")).unwrap();
         assert_eq!(aliased.repositories[1].workspace_folder, result.repositories[1].workspace_folder);
     }
@@ -167,15 +147,17 @@ mod tests {
         assert!(repo.join(".git").is_file());
         let found = scan(&root.join("projects")).unwrap().repositories;
         assert_eq!(found.len(), 1);
-        assert!(found[0].workspace_folder.is_none());
+        assert!(Path::new(found[0].workspace_folder.as_deref().unwrap()).ends_with("projects"));
     }
 
     #[test]
-    fn reports_when_the_scan_stops_at_the_depth_limit() {
+    fn finds_a_repository_beyond_the_old_depth_limit() {
         let fixture = tempfile::tempdir().unwrap();
-        let deepest = fixture.path().join("folder/".repeat(MAX_DEPTH + 1));
-        fs::create_dir_all(deepest).unwrap();
-        assert!(scan(fixture.path()).unwrap().limited);
+        let deepest = fixture.path().join("a/".repeat(30)).join("group/project");
+        init(&deepest);
+        let found = scan(fixture.path()).unwrap().repositories;
+        assert_eq!(found.len(), 1);
+        assert!(Path::new(found[0].workspace_folder.as_deref().unwrap()).ends_with("group"));
     }
 
     #[cfg(unix)]

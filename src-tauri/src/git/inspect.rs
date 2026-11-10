@@ -148,7 +148,7 @@ fn range_commits(repo: &Path, from: &str, to: &str, offset: usize, limit: usize)
         .collect()
 }
 
-fn branch_tip(repo: &Path, reference: &str) -> GitResult<String> {
+pub(super) fn branch_tip(repo: &Path, reference: &str) -> GitResult<String> {
     if !(reference.starts_with("refs/heads/") || reference.starts_with("refs/remotes/")) {
         return Err(GitError::new("Choose a local or remote branch."));
     }

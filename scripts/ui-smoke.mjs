@@ -8,6 +8,7 @@ import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
 import {prCenterSmoke} from "./pr-center-smoke.mjs";
 import {agentWorkspaceSmoke} from "./agent-workspace-smoke.mjs";
 import { worktreeManagerSmoke } from "./worktree-manager-smoke.mjs";
+import { fillWorktreeFolder, reviewWorktreeCreation } from "./worktree-manager-fixture.mjs";
 import { smokeTimings, assertSmokeCoverage } from "./ci-timing.mjs";
 import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
@@ -50,7 +51,9 @@ const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8"
 git("config", "core.hooksPath", path.join(repo, ".git", "hooks"));
 
 // A fake release feed with a much newer version, so the update chip can be exercised offline.
+let updateChecks = 0;
 const feed = http.createServer((req, res) => {
+  updateChecks++;
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ tag_name: "v99.0.0", body: ["## Highlights", "- Faster graph", "- **New** update chip"].join("\n"), html_url: "https://github.com/bitcodepro/Revqora/releases/tag/v99.0.0", published_at: new Date().toISOString(), assets: [] }));
 });
@@ -136,7 +139,7 @@ try {
     await page.locator(".modal").getByRole("button", { name:"Done", exact:true }).click();
   });
 
-  await check("a newer release shows the update chip, which can be skipped", async () => {
+  await check("a newer release shows the update chip and Check Updates can show it again", async () => {
     const runningVersion = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("plugin:app|version"));
     const version = page.locator(".statusbar .app-version");
     await version.filter({ hasText: `Revqora v${runningVersion}` }).waitFor();
@@ -151,6 +154,14 @@ try {
     // Development builds are not release packages: only the download link is offered.
     await card.locator("button:has-text('Download')").waitFor();
     await shot("17-update");
+    await card.locator("button:has-text('Skip this version')").click();
+    await chip.waitFor({ state: "detached" });
+    const checksBeforeMenu = updateChecks;
+    await page.locator(".topbar").click({ button: "right", position: { x: 3, y: 3 } });
+    await page.locator(".ctx-menu").getByText("Check Updates", { exact: true }).click();
+    await chip.filter({ hasText: "Update 99.0.0" }).waitFor();
+    if (updateChecks <= checksBeforeMenu) throw new Error("Check Updates did not request the release feed");
+    await chip.click();
     await card.locator("button:has-text('Skip this version')").click();
     await chip.waitFor({ state: "detached" });
     await version.click();
@@ -756,13 +767,16 @@ try {
     await page.keyboard.press("Control+k");
     await page.fill(".palette input", "New worktree");
     await page.keyboard.press("Enter");
-    await page.waitForSelector(".modal:has-text('New worktree')");
+    const dialog = page.locator(".modal").last();
+    await dialog.getByRole("heading", { name: "New worktree", exact: true }).waitFor();
+    const root = await page.locator(".topbar .repo-current").getAttribute("title");
+    if (!root) throw new Error("Cannot identify repository for the suggested worktree folder");
     const sourceHead = git("rev-parse", "HEAD"), sourceIndex = fs.readFileSync(path.join(repo, ".git", "index")), sourceFiles = git("status", "--porcelain");
-    await page.getByRole("textbox", { name: "Worktree folder", exact: true }).fill(path.join(work,"env","palette-worktree"));
-    await page.getByRole("button", { name: "Review creation", exact: true }).click();
-    await page.waitForSelector('[data-worktree-review="create"]');
-    await page.getByRole("button", { name: "Create worktree", exact: true }).click();
-    await until(() => git("worktree", "list").split("\n").length === 2, "worktree not created");
+    const destination = path.join(work, "env", "palette worktree ü");
+    await fillWorktreeFolder(page, dialog, root, destination);
+    await reviewWorktreeCreation(dialog, destination);
+    await dialog.getByRole("button", { name: "Create worktree", exact: true }).click();
+    await until(() => fs.existsSync(path.join(destination, ".git")) && git("worktree", "list").split("\n").length === 2, "worktree not created at the reviewed destination");
     if (git("rev-parse","HEAD") !== sourceHead || git("status","--porcelain") !== sourceFiles || !sourceIndex.equals(fs.readFileSync(path.join(repo,".git","index")))) throw new Error("creating another worktree changed source files, branch or staging");
     await page.waitForSelector(".modal", { state: "detached" });
   });
@@ -801,14 +815,22 @@ try {
     const list = await page.locator(".review-list").boundingBox();
     const details = await page.locator(".review-details").boundingBox();
     if (list.y >= details.y) throw new Error("review commits should be above the diff");
-    await page.click(".branches-toggle");
+    await page.waitForSelector(".branches-slot", { state: "visible" });
+    await page.keyboard.press("Control+Alt+b");
     await page.waitForSelector(".branches-slot", { state: "hidden" });
     await page.click(".branches-toggle");
     await page.waitForSelector(".branches-slot", { state: "visible" });
-    await page.click(".topbar button[aria-label='Toggle repositories panel']");
+    await page.waitForSelector(".repository-slot", { state: "visible" });
+    await page.keyboard.press("Control+Alt+r");
     await page.waitForSelector(".repository-slot", { state: "hidden" });
     await page.click(".topbar button[aria-label='Toggle repositories panel']");
     await page.waitForSelector(".repository-slot", { state: "visible" });
+    const workspaces = page.getByRole("complementary", { name: "Workspaces", exact: true });
+    const workspacesOpen = await workspaces.isVisible();
+    await page.keyboard.press("Control+Alt+w");
+    await workspaces.waitFor({ state: workspacesOpen ? "hidden" : "visible" });
+    await page.keyboard.press("Control+Alt+w");
+    await workspaces.waitFor({ state: workspacesOpen ? "visible" : "hidden" });
     // Give a growing pane actual headroom instead of depending on the runner's display.
     await page.setViewportSize({ width: 1600, height: 900 });
     const before = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
@@ -819,8 +841,10 @@ try {
     await page.mouse.up();
     const after = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
     if (after < before + 40) throw new Error("file list did not resize");
-    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth);
-    if (Math.abs(saved - (before + 67)) > 4) throw new Error("preferred file list width was not persisted");
+    const preferred = () => page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth);
+    await until(async () => Math.abs(await preferred() - (before + 67)) <= 4,
+      `preferred file list width was not persisted (before=${before}, rendered=${after}, delta=67)`, 5000);
+    const saved = await preferred();
     // A narrower window clamps the rendered width without rewriting the preference.
     await page.setViewportSize({ width: 1028, height: 760 });
     const containerWidth = await page.locator(".commit-details").evaluate((el) => el.clientWidth);
@@ -833,10 +857,12 @@ try {
     const x = narrowSplitter.x + narrowSplitter.width / 2, y = narrowSplitter.y + narrowSplitter.height / 2;
     await page.mouse.move(x, y);
     await page.mouse.down();
-    await page.mouse.move(x + target - saved, y, { steps: 8 });
+    await page.mouse.move(x + target - narrowBefore, y, { steps: 8 });
     await page.mouse.up();
     const narrowAfter = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
-    const narrowSaved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth);
+    await until(async () => Math.abs(await preferred() - target) <= 4,
+      `narrow file list width was not persisted (before=${narrowBefore}, target=${target}, rendered=${narrowAfter})`, 5000);
+    const narrowSaved = await preferred();
     if (narrowBefore - narrowAfter < 40) throw new Error("file list did not shrink in a narrow window");
     if (Math.abs(narrowSaved - target) > 4 || Math.abs(narrowAfter - clamped(narrowSaved)) > 2) throw new Error("narrow resize did not persist preferred width independently of its layout clamp");
     await shot("24-resize-narrow");

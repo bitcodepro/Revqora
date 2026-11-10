@@ -1123,6 +1123,11 @@ async fn cherry_pick(app: AppHandle, expected_state: Option<String>, repo: Strin
 }
 
 #[tauri::command]
+async fn cherry_pick_compared_commit(app: AppHandle, expected_state: String, repo: String, pick: ops::ComparedCherryPick) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), Some(expected_state), app, "cherry_pick_compared_commit", None, move || ops::cherry_pick_compared(&p(&repo), &pick)).await
+}
+
+#[tauri::command]
 async fn revert(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, no_commit: bool) -> GitResult<OpOutcome> {
     mutating(repo.clone(), expected_state, app.clone(), "revert", None, move || ops::revert(&p(&repo), &oid, no_commit)).await
 }
@@ -2086,8 +2091,8 @@ pub fn run() {
             }
         }));
     }
-    // Settings and window geometry live in `data/` next to the exe. The window opens maximized
-    // the first time, then as it was closed. UI tests keep their own off-screen geometry.
+    // Open maximized with the last normal bounds available when restored.
+    // UI tests keep their own off-screen geometry.
     let remember_window = std::env::var_os("REVQORA_MULTI_INSTANCE").is_none();
     if remember_window {
         builder = builder.on_window_event(|window, event| {
@@ -2097,6 +2102,13 @@ pub fn run() {
             match event {
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => portable::track_window(window),
                 tauri::WindowEvent::CloseRequested { .. } => portable::remember_window(window),
+                tauri::WindowEvent::Destroyed => {
+                    for (label, panel) in window.app_handle().webview_windows() {
+                        if label.starts_with("panel-") {
+                            let _ = panel.destroy();
+                        }
+                    }
+                }
                 _ => {}
             }
         });
@@ -2114,10 +2126,44 @@ pub fn run() {
                 portable::data_dir().map(|p| p.join("operation-log"))
             };
             journal::initialize(log_dir.as_deref());
-            if let Some(cfg) = app.config().app.windows.iter().find(|w| w.label == "main").cloned() {
+            if let Some(mut cfg) = app.config().app.windows.iter().find(|w| w.label == "main").cloned() {
                 portable::automation_startup("webview-builder-start");
+                if remember_window {
+                    cfg.visible = false;
+                }
                 // No Edge form autofill (its dropdown arrow showed up inside text fields).
                 let mut wb = tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.general_autofill_enabled(false);
+                #[cfg(desktop)]
+                {
+                    let handle = app.handle().clone();
+                    wb = wb.on_new_window(move |url, features| {
+                        use std::sync::atomic::{AtomicU64, Ordering};
+                        use tauri::webview::NewWindowResponse;
+                        static PANEL_ID: AtomicU64 = AtomicU64::new(0);
+                        if url.as_str() != "about:blank" {
+                            return NewWindowResponse::Deny;
+                        }
+                        let id = PANEL_ID.fetch_add(1, Ordering::Relaxed);
+                        let label = format!("panel-{id}");
+                        match tauri::WebviewWindowBuilder::new(&handle, label, tauri::WebviewUrl::External(url))
+                            .window_features(features)
+                            .title("Revqora")
+                            .min_inner_size(380.0, 280.0)
+                            .on_navigation(|url| url.as_str() == "about:blank")
+                            .on_new_window(|_, _| NewWindowResponse::Deny)
+                            .on_document_title_changed(|window, title| {
+                                let _ = window.set_title(&title);
+                            })
+                            .build()
+                        {
+                            Ok(window) => NewWindowResponse::Create { window },
+                            Err(error) => {
+                                eprintln!("Could not open a detached panel: {error}");
+                                NewWindowResponse::Deny
+                            }
+                        }
+                    });
+                }
                 if let Some(dir) = portable::webview_dir() {
                     wb = wb.data_directory(dir);
                 }
@@ -2125,7 +2171,11 @@ pub fn run() {
                 let w = wb.build()?;
                 portable::automation_startup("webview-build-ready");
                 if remember_window {
-                    portable::restore_window(&w);
+                    portable::restore_window_bounds(&w);
+                    if let Err(error) = w.maximize() {
+                        eprintln!("Could not maximize the main window: {error}");
+                    }
+                    w.show()?;
                 }
             }
             if let Some(root) = update::launch().map(|l| l.root.clone()) {
@@ -2242,6 +2292,7 @@ pub fn run() {
             op_continue,
             op_skip,
             cherry_pick,
+            cherry_pick_compared_commit,
             revert,
             rebase_onto,
             rewrite,

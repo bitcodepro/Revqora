@@ -4,7 +4,7 @@ import type { ForgeInfo, PullRequest } from "./types";
 const row = (number: number, title: string): PullRequest => ({ number, title, author: "Alice", head: "feature/login", base: "main", state: "open", draft: false, created: "2026-01-01", headSha: "a".repeat(40), url: "https://example.invalid/pr/1" });
 describe("PR Center", () => {
   it("restores independent bounded panels from untrusted saved preferences", () => {
-    expect(restorePrPreferences({ state: "bad", section: "files", listOpen: false, filesOpen: "false", listWidth: 9999, filesWidth: NaN })).toEqual({ state: "open", section: "files", listOpen: false, filesOpen: true, listWidth: 520, filesWidth: 220 });
+    expect(restorePrPreferences({ state: "bad", section: "files", listOpen: false, filesOpen: "false", listWidth: 9999, filesWidth: NaN })).toEqual({ state: "open", section: "files", listOpen: false, filesOpen: true, listWidth: 520, filesWidth: 220, descriptionHeight: null });
     expect(restorePrPreferences(null).listWidth).toBe(280);
   });
   it("combines overlapping pages while preserving order and updated metadata", () => {

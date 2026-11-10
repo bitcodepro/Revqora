@@ -459,6 +459,14 @@ export interface RangeCommit {
   subject: string;
 }
 
+export interface ComparedCherryPick {
+  source: string;
+  sourceOid: string;
+  destination: string;
+  destinationOid: string;
+  oid: string;
+}
+
 export interface BranchCommitComparison {
   fromOid: string;
   toOid: string;
@@ -861,5 +869,4 @@ export interface FoundRepository {
 export interface RepositoryFolderScan {
   repositories: FoundRepository[];
   skipped: number;
-  limited: boolean;
 }

@@ -109,13 +109,10 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     {scanning && <div className="repository-import-progress" role="status"><Loader2 className="spin" size={16} /> Looking for Git repositories…</div>}
     {error && <p className="red workspace-editor-error" role="alert">{error}</p>}
     {scan && <>
-      {(scan.skipped > 0 || scan.limited) && <p className="batch-note" role="status">
-        {scan.limited && "The scan reached its limit. Choose a narrower folder to see more results. "}
-        {scan.skipped > 0 && `Skipped ${scan.skipped} linked, inaccessible, or invalid entries.`}
-      </p>}
+      {scan.skipped > 0 && <p className="batch-note" role="status">Skipped {scan.skipped} linked, inaccessible, or invalid entries.</p>}
       {!scan.repositories.length ? <div className="cg-empty">No Git working copies found in this folder.</div> : <>
         {scan.repositories.some((repo) => repo.workspaceFolder) && <label className="repository-import-option">
-          <input type="checkbox" checked={createWorkspaces} onChange={(event) => setCreateWorkspaces(event.target.checked)} /> Create Workspaces from subfolders
+          <input type="checkbox" checked={createWorkspaces} onChange={(event) => setCreateWorkspaces(event.target.checked)} /> Create Workspaces from repository parent folders
         </label>}
         <div className="workspace-editor-selection">
           <span className="batch-note">{selectedCount} of {scan.repositories.length} selected</span>

@@ -4,7 +4,7 @@ import { parseCloneInput, repoNameFromUrl } from "../lib/cloneInput";
 import {GitConnectionFields,defaultGitConnection,gitTransport} from "./GitConnections";
 import type {GitConnectionOptions} from "../lib/types";
 import { useEffect, useState, type ReactNode } from "react";
-import { useUpdate } from "../lib/update";
+import { canCheckUpdates, useUpdate } from "../lib/update";
 import { SHORTCUTS, bindingFor, comboFromEvent, prettyCombo, shortcutConflict } from "../lib/shortcuts";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -648,11 +648,8 @@ function UpdateSettings() {
             <button
               type="button"
               className="btn sm ghost"
-              disabled={phase === "checking"}
-              onClick={() => {
-                set({ skippedUpdate: null });
-                check(true);
-              }}
+              disabled={!canCheckUpdates(phase)}
+              onClick={() => void check(true)}
             >
               Check now
             </button>

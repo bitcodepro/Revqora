@@ -6,7 +6,7 @@ import { HistoryExplorer } from "./components/HistoryExplorer";
 import { WorkflowBuilder } from "./components/WorkflowBuilder";
 import { AgentWorkspace } from "./components/AgentWorkspace";
 import { WorktreeManager } from "./components/WorktreeManager";
-import { finishWorkspaceStartup, startWorkspaceTracking } from "./lib/repositoryWorkspaces";
+import { finishWorkspaceStartup, hasWorkspaceDropToUndo, startWorkspaceTracking, undoWorkspaceDrop } from "./lib/repositoryWorkspaces";
 import { useLibrary } from "./lib/repositoryLibrary";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -48,6 +48,8 @@ import { checkPullRequestActivity, resetPullRequestActivity } from "./lib/prTrac
 import { RepositoryOverview, RepositorySidebar } from "./components/Repositories";
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
+import { WorkspacesSidebar } from "./components/WorkspacesSidebar";
+import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows } from "./components/PanelWindows";
 import "./styles/workspace.css";
 
 function useAppearance() {
@@ -84,7 +86,13 @@ function RepositoryContent({ tab }: { tab: RepoTab }) {
   return <RepoWorkspace tab={tab} />;
 }
 
+const repositoryRemotesKey = (tab: RepoTab) => JSON.stringify(tab.refs?.remotes.map(({ name, fetchUrl }) => [name, fetchUrl]) ?? []);
+
 function RepoWorkspace({ tab }: { tab: RepoTab }) {
+  const { panels, toggleSidebar } = usePanelWindows();
+  const historyMenu = usePanelTitleMenu("history");
+  const changesMenu = usePanelTitleMenu("changes");
+  const pullMenu = usePanelTitleMenu("pulls");
   const root = tab.root;
   const overlay = useUi((s) => (s.overlay && s.overlay.root === tab.root ? s.overlay : null));
   const patch = useRepos((s) => s.patch);
@@ -104,10 +112,10 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
   useEffect(() => setCw(layout.historyListWidth), [mode, layout.historyListWidth]);
   const branchesOpen = layout.branchesOpen;
   const focusMode = layout.focusMode;
-  const showBranches = branchesOpen && !focusMode;
+  const showBranches = branchesOpen && !focusMode && !panels.branches;
   const changesCount = tab.status?.files.length ?? 0;
   const [forgeKind, setForgeKind] = useState<string | null>(null);
-  const remotesKey = JSON.stringify(tab.refs?.remotes.map(({ name, fetchUrl }) => [name, fetchUrl]) ?? []);
+  const remotesKey = repositoryRemotesKey(tab);
   useEffect(() => {
     let generation = 0;
     const refresh = () => {
@@ -125,7 +133,8 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
 
   const openConflict = (path: string) => patch(root, { conflictPath: path, view: "changes", changeSel: { kind: "conflict", path } });
 
-  const commitSelected = tab.selected && tab.selected !== WORKTREE ? tab.selected : null;
+  const commitSelected = !panels.commit && tab.selected && tab.selected !== WORKTREE ? tab.selected : null;
+  const historyList = (compact: boolean) => panels.history ? <DetachedPlaceholder id="history"/> : <GraphView tab={tab} compact={compact} onEnterChanges={() => patch(root, { view: "changes" })}/>;
   const closePreview = () => {
     patch(root, { selected: null, multi: [] });
     setLayout({ focusMode: false });
@@ -134,21 +143,21 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
 
   return (
     <div className="workspace" style={{ ["--sidebar-w" as string]: `${showBranches ? sw : 0}px` }}>
-      <div className="branches-slot" hidden={!showBranches}><Sidebar tab={tab} /></div>
+      <div className="branches-slot" hidden={!showBranches}>{!panels.branches && <Sidebar tab={tab} />}</div>
       {showBranches && <Splitter dir="v" style={{ left: sw }} onDrag={(d) => setSw((w) => Math.max(180, Math.min(420, w + d)))} onEnd={() => setLayout({ sidebarWidth: sw })} />}
       <div className="main">
         <div className="main-head">
-          <button className={`btn sm branches-toggle ${showBranches ? "active" : ""}`} aria-expanded={showBranches} title="Toggle branches panel" onClick={() => setLayout({ branchesOpen: !showBranches, focusMode: false })}><GitBranch size={13} /> Branches</button>
+          <button className={`btn sm branches-toggle ${showBranches ? "active" : ""}`} aria-expanded={showBranches} title="Toggle branches panel" onClick={() => toggleSidebar("branches")}><GitBranch size={13} /> Branches</button>
           <div className="view-tabs">
-            <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onClick={() => patch(root, { view: "history" })} title={shortcutTitle("History", "history")}>
+            <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onContextMenu={historyMenu} onClick={() => patch(root, { view: "history" })} title={shortcutTitle("History", "history")}>
               <GitCommitHorizontal size={15} /> History
             </button>
-            <button className={`view-tab ${tab.view === "changes" ? "on" : ""}`} onClick={() => patch(root, { view: "changes" })} title={shortcutTitle("Changes", "changes")}>
+            <button className={`view-tab ${tab.view === "changes" ? "on" : ""}`} onContextMenu={changesMenu} onClick={() => patch(root, { view: "changes" })} title={shortcutTitle("Changes", "changes")}>
               <FilePlus2 size={15} /> Changes
               {changesCount > 0 && <span className={`pill ${conflicts ? "red" : "accent"}`}>{changesCount}</span>}
             </button>
           </div>
-          <button className={`view-tab ${tab.view === "pulls" ? "on" : ""}`} onClick={() => patch(root, { view: "pulls" })} title={shortcutTitle("Pull requests", "pulls")}>
+          <button className={`view-tab ${tab.view === "pulls" ? "on" : ""}`} onContextMenu={pullMenu} onClick={() => patch(root, { view: "pulls" })} title={shortcutTitle("Pull requests", "pulls")}>
             <GitPullRequest size={15} /> {forgeKind === "gitlab" ? "Merge requests" : "Pull requests"}
           </button>
           <div className="spacer" />
@@ -177,7 +186,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
         {tab.view === "history" && historyMode === "review" ? (
           <div className={`review ${focusMode && commitSelected ? "review-focused" : ""}`} style={{ gridTemplateRows: focusMode || !commitSelected ? "minmax(0, 1fr)" : `minmax(100px, min(${rh}px, 45%)) minmax(0, 1fr)` }}>
             <div className="review-list" hidden={focusMode && !!commitSelected}>
-              <GraphView tab={tab} compact onEnterChanges={() => patch(root, { view: "changes" })} />
+              {historyList(true)}
             </div>
             {!focusMode && commitSelected && <div className="review-resizer"><Splitter dir="h" onDrag={(d) => setRh((h) => Math.max(100, Math.min(400, h + d)))} onEnd={() => setLayout({ reviewListHeight: rh })} /></div>}
             {commitSelected && <div key="commit-preview" className="details review-details">
@@ -186,7 +195,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
           </div>
         ) : tab.view === "history" && historyMode === "columns" ? (
           <div className="columns-history" style={{ ["--history-list-w" as string]: `${cw}px` }}>
-            <div className="columns-commits"><GraphView tab={tab} compact onEnterChanges={() => patch(root, { view: "changes" })} /></div>
+            <div className="columns-commits">{historyList(true)}</div>
             <Splitter dir="v" style={{ left: "var(--history-list-size)" }} onDrag={(d) => setCw((w) => Math.max(180, Math.min(600, w + d)))} onEnd={() => setLayout({ historyListWidth: cw })} />
             {commitSelected ? (
               <div key="commit-preview" className="details columns-details"><CommitDetails root={root} oid={commitSelected} compactMeta onClose={closePreview} /></div>
@@ -199,7 +208,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
           </div>
         ) : tab.view === "history" ? (
           <div className="history">
-            <GraphView tab={tab} onEnterChanges={() => patch(root, { view: "changes" })} />
+            {historyList(false)}
             {commitSelected && (
               <>
                 <Splitter dir="h" onDrag={(d) => setDh((h) => Math.max(160, Math.min(window.innerHeight - 260, h - d)))} onEnd={() => setLayout({ detailsHeight: dh })} />
@@ -210,14 +219,14 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
             )}
           </div>
         ) : tab.view === "pulls" ? (
-          <PullRequestsView tab={tab} remotesKey={remotesKey} />
+          panels.pulls ? <DetachedPlaceholder id="pulls"/> : <PullRequestsView tab={tab} remotesKey={remotesKey} />
         ) : (
-          <ChangesView tab={tab} onOpenConflict={openConflict} />
+          panels.changes ? <DetachedPlaceholder id="changes"/> : <ChangesView tab={tab} onOpenConflict={openConflict} />
         )}
         {tab.conflictPath && <ConflictEditor key={`${root}:${tab.conflictPath}`} root={root} path={tab.conflictPath} onClose={() => patch(root, { conflictPath: null })} />}
         {overlay?.kind === "blame" && <BlameView root={root} path={overlay.path} rev={overlay.rev} line={overlay.line} />}
         {overlay?.kind === "branches" && <BranchManager key={root} root={root} />}
-        {overlay?.kind === "worktrees" && <WorktreeManager key={root} root={root} />}
+        {overlay?.kind === "worktrees" && !panels.worktrees && <WorktreeManager key={root} root={root} />}
         {overlay?.kind === "stacks" && <StackManager key={root} root={root}/>}
         {overlay?.kind === "historyExplorer" && <HistoryExplorer key={root} root={root}/>}
         {overlay?.kind === "workflows" && <WorkflowBuilder key={root} root={root} pull={overlay.pull} />}
@@ -255,6 +264,11 @@ function useAutoFetch() {
 }
 
 export default function App() {
+  return <PanelWindowsProvider><MainApp/></PanelWindowsProvider>;
+}
+
+function MainApp() {
+  const { panels, attach, toggleSidebar } = usePanelWindows();
   useAppearance();
   useEffect(startUpdateChecks, []);
   useAutoFetch();
@@ -278,9 +292,15 @@ export default function App() {
   const layoutMode = workspaceMode(overview ? "overview" : tab?.view, historyMode);
   const { layout } = useWorkspaceLayout(layoutMode);
   const { focusMode, repositoriesOpen } = layout;
+  const workspacesOpen = useSettings(s => s.workspacesOpen);
   const repositoryCount = useRepos((s) => s.order.length);
   const hasBookmarks = useLibrary((s) => s.knownRoots.length > 0);
   const repositoryScope = useLibrary((s) => s.activeWorkspaceId) ?? "all";
+  const showMainChanges = (root: string, path?: string) => {
+    useUi.setState({ repositoryOverview: false });
+    useRepos.getState().patch(root, path ? { conflictPath: path, view: "changes", changeSel: { kind: "conflict", path } } : { view: "changes" });
+    window.focus();
+  };
 
   useEffect(startWorkspaceTracking, []);
   // Restore the tabs from the previous session.
@@ -354,6 +374,18 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing) return;
+      const target = e.target as HTMLElement;
+      const owner = target?.ownerDocument ?? document;
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" &&
+          useSettings.getState().workspacesOpen && hasWorkspaceDropToUndo() &&
+          !target?.closest?.("input, textarea, select, [contenteditable], .cm-editor") && !owner.querySelector(".modal")) {
+        e.preventDefault();
+        void undoWorkspaceDrop().then(errors => {
+          if (errors.length) toast.warning("Workspace move could not be undone", errors.join("\n"));
+          else toast.success("Workspace move undone");
+        }, error => toast.error(error));
+        return;
+      }
       const combo = comboFromEvent(e);
       if (!combo) return;
       const typing = (e.target as HTMLElement)?.closest?.("input, textarea, .cm-editor");
@@ -366,13 +398,14 @@ export default function App() {
       const mode = workspaceMode(useUi.getState().repositoryOverview ? "overview" : t?.view, useSettings.getState().historyMode);
       const layout = useSettings.getState().layouts[mode];
       const run: Record<string, () => void> = {
-        palette: () => useUi.getState().setPalette(true),
-        paletteAlternate: () => useUi.getState().setPalette(true),
+        palette: () => { window.focus(); useUi.getState().setPalette(true); },
+        paletteAlternate: () => { window.focus(); useUi.getState().setPalette(true); },
         open: () => A.openRepoDialog(),
         refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && st.refresh(a),
         overview: () => useUi.setState({ repositoryOverview: true }),
-        repositoriesPanel: () => useSettings.getState().setLayout(mode, { repositoriesOpen: !layout.repositoriesOpen, focusMode: false }),
-        branchesPanel: () => useSettings.getState().setLayout(mode, { branchesOpen: !layout.branchesOpen, focusMode: false }),
+        workspacesPanel: () => toggleSidebar("workspaces"),
+        repositoriesPanel: () => toggleSidebar("repositories"),
+        branchesPanel: () => toggleSidebar("branches"),
         focusMode: () => useSettings.getState().setLayout(mode, { focusMode: !layout.focusMode }),
         history: () => a && st.patch(a, { view: "history" }),
         changes: () => a && st.patch(a, { view: "changes" }),
@@ -413,9 +446,10 @@ export default function App() {
         run[id]();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    const surfaces = [window, ...Object.values(panels)];
+    for (const view of surfaces) view.addEventListener("keydown", onKey);
+    return () => { for (const view of surfaces) view.removeEventListener("keydown", onKey); };
+  }, [panels, toggleSidebar]);
 
   // Block the default browser context menu outside our own menus.
   useEffect(() => {
@@ -432,7 +466,8 @@ export default function App() {
       <TopBar />
       <ActivityIndicator active={busy} />
       <div className="app-body">
-        <div className="repository-slot" hidden={!repositoriesOpen || focusMode || (!repositoryCount && !hasBookmarks)}><RepositorySidebar key={repositoryScope} /></div>
+        {workspacesOpen && !focusMode && !panels.workspaces && <WorkspacesSidebar onClose={() => useSettings.getState().set({ workspacesOpen: false })}/>}
+        <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode || (!repositoryCount && !hasBookmarks)}>{!panels.repositories && <RepositorySidebar key={repositoryScope} />}</div>
         <div className="workspace-host">{overview ? <RepositoryOverview key={repositoryScope} /> : tab ? <RepositoryContent key={tab.root} tab={tab} /> : <Welcome />}</div>
       </div>
       <StatusBar />
@@ -444,6 +479,14 @@ export default function App() {
       <GitMissing />
       <Onboarding />
       {dropping && <div className="drop-hint">Drop a folder to open it</div>}
+      <DetachedPanel id="workspaces"><WorkspacesSidebar onClose={() => attach("workspaces")}/></DetachedPanel>
+      <DetachedPanel id="repositories"><RepositorySidebar key={repositoryScope}/></DetachedPanel>
+      <DetachedPanel id="branches">{tab?.info && <Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/>}</DetachedPanel>
+      <DetachedPanel id="history">{tab?.info && <GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/>}</DetachedPanel>
+      <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <CommitDetails root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/> : null}</DetachedPanel>
+      <DetachedPanel id="pulls">{tab?.info && <PullRequestsView key={tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/>}</DetachedPanel>
+      <DetachedPanel id="changes">{tab?.info && <ChangesView key={tab.root} tab={tab} onOpenConflict={path => showMainChanges(tab.root, path)}/>}</DetachedPanel>
+      <DetachedPanel id="worktrees">{tab?.info && <WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/>}</DetachedPanel>
     </div></WorkspaceLayoutContext.Provider>
   );
 }

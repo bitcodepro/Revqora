@@ -7,6 +7,11 @@ import { validationRunning } from "./validation";
 
 let ready = false;
 let switching = false;
+interface WorkspaceDrop {
+  before: SavedWorkspace[];
+  after: SavedWorkspace[];
+}
+const workspaceDrops: WorkspaceDrop[] = [];
 export function workspaceSnapshot(): WorkspaceSnapshot {
   const r = useRepos.getState(), s = useSettings.getState();
   return structuredClone({ roots: r.order, activeRoot: r.active, views: Object.fromEntries(r.order.map((root) => [root, r.tabs[root].view])), layouts: s.layouts, historyMode: s.historyMode });
@@ -141,6 +146,54 @@ export async function moveWorkspaceRepositories(fromId: string, toId: string, pa
   if (active === fromId) return applyWorkspace({ ...source, ...nextSource }, false, saveMove);
   if (active === toId) return applyWorkspace({ ...destination, ...nextDestination }, false, saveMove);
   saveMove();
+  return [];
+}
+
+const sameMembers = (a: SavedWorkspace, b: SavedWorkspace) => a.roots.length === b.roots.length && a.roots.every((root, i) => repositoryKey(root) === repositoryKey(b.roots[i]));
+
+export async function dropWorkspaceRepositories(fromId: string | null, toId: string, paths: string[]): Promise<string[]> {
+  const library = useLibrary.getState();
+  const destination = library.workspaces.find(w => w.id === toId);
+  if (!destination || fromId !== library.activeWorkspaceId || fromId === toId) throw new Error("Choose a workspace from the current repository list.");
+  const before = library.workspaces.filter(w => w.id === toId || w.id === fromId).map(w => w.id === fromId ? { ...w, ...workspaceSnapshot() } : w);
+  const errors = fromId ? await moveWorkspaceRepositories(fromId, toId, paths) : await editWorkspaceRepositories(toId, [...destination.roots, ...paths]);
+  if (!errors.length) {
+    const after = useLibrary.getState().workspaces.filter(w => before.some(old => old.id === w.id && !sameMembers(old, w)));
+    if (after.length) {
+      workspaceDrops.push({ before: before.filter(w => after.some(changed => changed.id === w.id)), after });
+      if (workspaceDrops.length > 20) workspaceDrops.shift();
+    }
+  }
+  return errors;
+}
+
+export function hasWorkspaceDropToUndo() { return workspaceDrops.length > 0; }
+
+export async function undoWorkspaceDrop(): Promise<string[]> {
+  const drop = workspaceDrops.at(-1);
+  if (!drop) return [];
+  if (workspaceBusy()) throw new Error("Wait for the current operation to finish before undoing the workspace move.");
+  const library = useLibrary.getState();
+  const current = drop.after.map(expected => {
+    const saved = library.workspaces.find(w => w.id === expected.id);
+    if (!saved || !sameMembers(saved, expected)) throw new Error("Workspace membership changed after this move. Review its repositories before undoing.");
+    return saved.id === library.activeWorkspaceId ? { ...saved, ...workspaceSnapshot() } : saved;
+  });
+  if (current.some((w, i) => !sameMembers(w, drop.after[i]))) throw new Error("Open repositories changed after this move.");
+  const restored = current.map(w => {
+    const old = drop.before.find(before => before.id === w.id)!;
+    return { ...w, ...workspaceWithRepositories({ ...w, activeRoot: w.activeRoot ?? old.activeRoot, views: { ...old.views, ...w.views } }, old.roots) };
+  });
+  const save = (applied?: WorkspaceSnapshot) => {
+    useLibrary.setState(s => ({ workspaces: s.workspaces.map(w => {
+      const next = restored.find(item => item.id === w.id);
+      return next ? { ...next, ...(next.id === library.activeWorkspaceId && applied ? applied : {}) } : w;
+    }) }));
+    workspaceDrops.pop();
+  };
+  const active = restored.find(w => w.id === library.activeWorkspaceId);
+  if (active) return applyWorkspace(active, false, save);
+  save();
   return [];
 }
 

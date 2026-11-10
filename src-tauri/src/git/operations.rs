@@ -171,6 +171,7 @@ pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl Fn
                 | "interactive_rebase"
                 | "rewrite"
                 | "cherry_pick"
+                | "cherry_pick_compared_commit"
                 | "revert"
                 | "apply_patch"
                 | "layer_commit"

@@ -2,6 +2,7 @@
 import type { ReactNode } from "react";
 import { create } from "zustand";
 import { errorMessage, isGitError } from "./api";
+import { focusedUiSurface } from "./uiSurfaces";
 
 export type ToastKind = "info" | "success" | "error" | "warning";
 
@@ -48,6 +49,7 @@ export function updateRepositoryOperation(op: RepositoryOperation) {
 
 interface Dialog {
   id: number;
+  surface: Window;
   render: (close: (v: unknown) => void) => ReactNode;
   resolve: (v: unknown) => void;
 }
@@ -67,7 +69,7 @@ export type Overlay =
 
 interface UiState {
   toasts: Toast[];
-  menu: { x: number; y: number; items: MenuItem[] } | null;
+  menu: { x: number; y: number; items: MenuItem[]; surface: Window } | null;
   dialogs: Dialog[];
   busy: BusyOp[];
   repositoryOperations: RepositoryOperation[];
@@ -77,7 +79,7 @@ interface UiState {
   repositoryOverview: boolean;
   toast: (t: Omit<Toast, "id">, ttl?: number) => void;
   dismissToast: (id: number) => void;
-  openMenu: (x: number, y: number, items: MenuItem[]) => void;
+  openMenu: (x: number, y: number, items: MenuItem[], surface?: Window) => void;
   closeMenu: () => void;
   setPalette: (open: boolean) => void;
 }
@@ -102,7 +104,7 @@ export const useUi = create<UiState>()((set, get) => ({
     if (life > 0) setTimeout(() => get().dismissToast(id), life);
   },
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
-  openMenu: (x, y, items) => set({ menu: { x, y, items } }),
+  openMenu: (x, y, items, surface = focusedUiSurface()) => set({ menu: { x, y, items, surface } }),
   closeMenu: () => set({ menu: null }),
   setPalette: (open) => set({ paletteOpen: open }),
 }));
@@ -124,6 +126,7 @@ export function showDialog<T>(render: (close: (v: T) => void) => ReactNode): Pro
     const id = ++dialogId;
     const dialog: Dialog = {
       id,
+      surface: focusedUiSurface(),
       render: render as (close: (v: unknown) => void) => ReactNode,
       resolve: (v) => {
         useUi.setState({ dialogs: useUi.getState().dialogs.filter((d) => d.id !== id) });
@@ -134,10 +137,10 @@ export function showDialog<T>(render: (close: (v: T) => void) => ReactNode): Pro
   });
 }
 
-export function contextMenu(e: { clientX: number; clientY: number; preventDefault: () => void; stopPropagation?: () => void }, items: MenuItem[]) {
+export function contextMenu(e: { clientX: number; clientY: number; currentTarget?: EventTarget | null; preventDefault: () => void; stopPropagation?: () => void }, items: MenuItem[]) {
   e.preventDefault();
   e.stopPropagation?.();
-  useUi.getState().openMenu(e.clientX, e.clientY, items);
+  useUi.getState().openMenu(e.clientX, e.clientY, items, (e.currentTarget as HTMLElement | null)?.ownerDocument?.defaultView ?? undefined);
 }
 
 export function startBusy(id: string, label: string) {
@@ -163,7 +166,7 @@ export function endBusy(id: string) {
 
 export async function copyText(text: string, what = "Copied") {
   try {
-    await navigator.clipboard.writeText(text);
+    await focusedUiSurface().navigator.clipboard.writeText(text);
     toast.success(what, text.length > 80 ? text.slice(0, 80) + "…" : text);
   } catch (e) {
     toast.error(e, "Copy failed");
@@ -171,7 +174,8 @@ export async function copyText(text: string, what = "Copied") {
 }
 
 export function openOverlay(o: Overlay) {
-  useUi.setState(s => ({ overlay: o, overlayRevision: s.overlayRevision + 1 }));
+  useUi.setState(s => ({ overlay: o, overlayRevision: s.overlayRevision + 1, repositoryOverview: false }));
+  if (typeof window !== "undefined" && focusedUiSurface() !== window) window.focus();
 }
 
 export function closeOverlay() {

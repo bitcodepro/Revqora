@@ -25,7 +25,7 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
   const before = fs.readFileSync(path.join(root, ".git/index"));
   const open = async () => { await page.getByRole("button", { name: "Open branch manager", exact: true }).click(); await page.waitForSelector(".bm-body[aria-busy=false]"); };
   const manager = () => page.locator(".branch-manager");
-  const row = ref => page.locator(`[data-branch-ref='${ref}']`);
+  const row = ref => manager().locator(`[data-branch-ref='${ref}']`);
   await page.evaluate(root => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), root);
   await page.locator(".topbar .repo-current > b").filter({ hasText: "stage9-branches" }).waitFor();
   await check("branch manager virtualizes inventory, searches messages and compares exact commit IDs", async () => {
@@ -275,8 +275,9 @@ export async function branchManagerProtectionSmoke({ page, check, shot, work }) 
     await page.locator(".topbar .repo-current > b").filter({hasText:name}).waitFor();
     await page.getByRole("button",{name:"Open branch manager",exact:true}).click();await page.waitForSelector(".bm-body[aria-busy=false]");
     const openReview=async()=>{
-      await page.getByRole("textbox",{name:"Search branches"}).fill("topic");await page.locator('[data-branch-ref="refs/heads/topic"]').click();
-      await page.locator(".branch-manager").getByRole("button",{name:"Review deletion…",exact:true}).click();
+      const manager=page.locator(".branch-manager");
+      await manager.getByRole("textbox",{name:"Search branches"}).fill("topic");await manager.locator('[data-branch-ref="refs/heads/topic"]').click();
+      await manager.getByRole("button",{name:"Review deletion…",exact:true}).click();
       await page.waitForSelector(".branch-review[aria-busy=false][data-review-local-oid]");
     };
     await openReview();
