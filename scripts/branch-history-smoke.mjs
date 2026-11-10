@@ -21,12 +21,16 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   const base = git(root, "rev-parse", "HEAD");
   const records = Array.from({ length: 100 }, (_, i) => {
     const message = `History line ${i}\n`;
-    return `commit refs/heads/main\ncommitter History Fixture <fixture@example.test> ${1700000000 + i} +0000\ndata ${Buffer.byteLength(message)}\n${message}${i ? "" : `from ${base}\n`}\n`;
+    return `commit refs/heads/main\ncommitter History Fixture <fixture@example.test> ${1700000000 + 2 * i} +0000\ndata ${Buffer.byteLength(message)}\n${message}${i ? "" : `from ${base}\n`}\n`;
   });
   execFileSync("git", ["-C", root, "fast-import", "--quiet"], { input: records.join("") });
   git(root, "switch", "-qc", "target", base);
   put(root, "file.txt", "destination");
-  git(root, "commit", "-qam", "Destination change");
+  // Interleave this commit so the pinned line passes through another lane's row.
+  const targetDate = "1700000197 +0000";
+  execFileSync("git", ["-C", root, "commit", "-qam", "Destination change"], {
+    env: { ...process.env, GIT_AUTHOR_DATE: targetDate, GIT_COMMITTER_DATE: targetDate },
+  });
   git(root, "switch", "-q", "main");
 
   const active = (name) => page.locator(".topbar .repo-current > b").getByText(name, { exact: true }).waitFor();
@@ -55,9 +59,14 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await page.waitForFunction(() => document.querySelector(".graph-scroll")?.hasAttribute("data-pinned-lane"));
   const pinned = await graph.getAttribute("data-pinned-lane");
   assert.equal(pinned, await line.getAttribute("data-lane"), "Clicking the line must pin its identity");
+  const members = graph.locator(".grow.lane-member");
+  await members.getByText("History line 99", { exact: true }).waitFor();
+  const crossing = graph.locator(".grow").filter({ has: page.getByText("Destination change", { exact: true }) });
+  await crossing.locator(".lane-line.hl").first().waitFor({ state: "attached" });
+  assert.equal(await members.getByText("Destination change", { exact: true }).count(), 0, "A passing line must not highlight another lane's commit");
   await page.getByRole("button", { name: "Search all repositories", exact: true }).hover();
   await graph.evaluate((el) => { el.scrollTop = 1400; });
-  await graph.locator(".grow").getByText(/History line [45]\d/).first().waitFor();
+  await members.getByText(/History line [45]\d/).first().waitFor();
   assert.equal(await graph.getAttribute("data-pinned-lane"), pinned);
   assert(await graph.locator(".lane-line.hl").count(), "Newly visible segments must still be highlighted");
   git(root, "commit", "--allow-empty", "-qm", "Advance pinned history line");
@@ -69,8 +78,10 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   const remapped = await highlighted.getAttribute("data-lane");
   assert.notEqual(remapped, pinned, "Advancing the tip should change the layout ID in this fixture");
   assert.equal(await graph.getAttribute("data-pinned-lane"), remapped);
+  await members.getByText("Advance pinned history line", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Clear line highlight", exact: true }).click();
   assert.equal(await graph.getAttribute("data-pinned-lane"), null);
+  assert.equal(await members.count(), 0);
   await advanced.locator(".g-subject .text").click();
   await preview.getByText("Advance pinned history line", { exact: true }).waitFor();
   await preview.getByRole("button", { name: "Close", exact: true }).click();

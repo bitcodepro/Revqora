@@ -1160,6 +1160,12 @@ select[size="1"]:not([multiple]) {
 .grow.multi {
   background: var(--bg-selected);
 }
+.grow.lane-member {
+  border-left-color: var(--pinned-lane-color);
+}
+.grow.lane-member:not(.selected, .multi) {
+  background: color-mix(in srgb, var(--pinned-lane-color) 16%, transparent);
+}
 .grow.match .g-subject .text {
   background: var(--amber-soft);
   box-shadow: 0 0 0 2px var(--amber-soft);

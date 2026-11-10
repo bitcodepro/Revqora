@@ -71,6 +71,7 @@ interface RowProps {
   match: boolean;
   dim: boolean;
   hl: number | null;
+  pinnedLaneMember: boolean;
   animDelay: number | null;
   dateStyle: "relative" | "absolute";
   showRemote: boolean;
@@ -194,8 +195,8 @@ ${r.oid}`
   }
   return (
     <div
-      className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""}`}
-      style={{ top, height: ROW_H, ...anim }}
+      className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""} ${p.pinnedLaneMember ? "lane-member" : ""}`}
+      style={{ top, height: ROW_H, ...anim, ["--pinned-lane-color" as string]: p.pinnedLaneMember ? nodeColor : undefined }}
       onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
       onContextMenu={(e) => p.onMenu(r, e)}
       onDoubleClick={() => !wip && copyText(r.oid, "Hash copied")}
@@ -843,6 +844,7 @@ export function GraphView({
             r?.oid !== WORKTREE
           }
           hl={hl}
+          pinnedLaneMember={!!r && r.oid !== WORKTREE && r.laneId === pinned}
           animDelay={drawing ? Math.max(0, i - first) * 16 : null}
           dateStyle={dateStyle}
           showRemote={showRemote}
