@@ -139,6 +139,7 @@ export interface FileDiff {
 export interface DiffOptions {
   context?: number;
   ignoreWhitespace?: boolean;
+  disableTextconv?: boolean;
 }
 
 export interface Seg {

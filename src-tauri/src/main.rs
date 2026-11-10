@@ -2,6 +2,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if std::env::args_os().len() == 2 && std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--mcp")) {
+        if let Err(error) = revqora_lib::mcp::stdio() {
+            eprintln!("Revqora MCP: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // Started by git / ssh as the credential prompt helper: answer and exit without a window.
     if let Some(code) = revqora_lib::askpass::run_helper_if_requested() {
         std::process::exit(code);

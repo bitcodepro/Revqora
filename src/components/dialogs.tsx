@@ -29,6 +29,7 @@ import { Modal } from "./Modal";
 import { showDialog, toast } from "../lib/ui";
 import { api, errorMessage } from "../lib/api";
 import { CODE_FONTS, UI_FONTS, useSettings } from "../lib/settings";
+import { McpSettings } from "./McpSettings";
 import type { GitSelection, PushOptions, ReflogEntry, RemoteInfo, SigningConfig } from "../lib/types";
 import { useRepos } from "../lib/store";
 import { absoluteTime, relativeTime, shortOid } from "../lib/format";
@@ -863,6 +864,7 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
           </button>
         </div>
       </div>
+      <McpSettings />
       </>}
     </Modal>
   );

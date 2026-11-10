@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 import { createProfile, launch, withViewport, openCommitAction } from "./ui-driver.mjs";
 import { shutdownAndCleanup } from "./ui-cleanup.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
+import { mcpSmoke } from "./mcp-smoke.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
@@ -1928,6 +1929,7 @@ try {
     await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
   });
   await conflictStudioSmoke({ page, check, shot, work });
+  await check("MCP stdio scopes reads and stages files only after desktop approval", () => mcpSmoke({ page, exe, profile: smokeProfile, work }));
   // Earlier scenarios relaunch with an explicit repository argument. App reload
   // intentionally reapplies that argument, overriding the saved active tab.
   // Replay the UI preferences in a separate fixture profile without CLI requests.

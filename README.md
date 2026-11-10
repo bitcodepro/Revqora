@@ -114,6 +114,7 @@ or check out anything.
 | Pull Request Center | Browse, create and edit PRs/MRs; templates, changed files, discussions, inline comments, reviews, CI and supported policy-checked merge/cleanup actions. |
 | Agent Workspace | Run an installed CLI in a reviewed worktree; inspect logs and changes, stop its process tree and keep native task history across restarts. |
 | Workflow Builder | Save ordered checks, commands and reviewed Git/service steps; PR follow-up recipes connect agents, validation, publication, CI and re-review. |
+| MCP server | Connect a local agent to Revqora to inspect repositories and request Git or PR actions for desktop review. |
 | Code exploration | Local syntax-aware summaries for C#, TypeScript/TSX and JSON; literal changed-code search and symbol-body/JSON-subtree history. |
 | Branch Stacks | Track dependent branches, link PRs, review one-layer restacks, retain recovery and old-parent boundaries after rewrites or squash merges. |
 
@@ -465,6 +466,39 @@ steps. Named re-review currently targets GitHub. Read
 [Agent Workspace](https://github.com/bitcodepro/Revqora/blob/main/docs/AGENT_WORKSPACE.md)
 and the [workflow limits](https://github.com/bitcodepro/Revqora/blob/main/docs/ROADMAP.md#stage-18--automated-pr-workflow)
 for CLI setup and automation limits.
+
+### Connect an external agent through MCP
+
+1. Open Revqora, then go to **Settings → General → MCP** and select **Enable MCP for this session**.
+2. Choose **Codex**, **VS Code**, or **Claude Code** and select **Copy MCP configuration**. Add the entry to the client's configuration and restart the client. The snippet includes the absolute path to this installation.
+3. Keep Revqora running. Ask the agent to call `list_repositories` and use the returned repository ID. Enable access again when you reopen Revqora.
+
+The MCP launch command is the installed executable followed by `--mcp`. For example, to register it with Codex on Windows:
+
+```powershell
+codex mcp add revqora -- 'D:\Revqora\revqora.exe' --mcp
+```
+
+The equivalent Codex user configuration is:
+
+```toml
+[mcp_servers.revqora]
+command = "D:\\Revqora\\revqora.exe"
+args = ["--mcp"]
+```
+
+Use your actual path, or copy the ready-to-use entry from Settings. Add the VS Code entry under `servers` in user `mcp.json`. Claude Code uses `mcpServers`; you can also register the command in your user scope with `claude mcp add --scope user revqora -- <executable> --mcp`. Merge the copied entry with any existing servers. Run the client locally under the same OS account as Revqora. [Codex setup](https://learn.chatgpt.com/docs/extend/mcp) · [VS Code configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) · [Claude Code configuration](https://code.claude.com/docs/en/mcp)
+
+| I want the agent to… | Tools |
+| --- | --- |
+| See what I have open and inspect changes | `list_repositories`, `repository_status`, `list_branches`, `search_commits`, `commit_details`, `file_diff` |
+| Inspect worktrees, workflows or PRs | `list_worktrees`, `list_workflows`, `list_pull_requests`, `pull_request` |
+| Show me a screen in the app | `open_view` |
+| Prepare a Git or PR operation | `request_action`, then `action_status` |
+
+For example, ask the agent to inspect the unstaged diff, propose files to stage and send one staging request. Switch to Revqora and review the exact paths in the **MCP request** dialog. After approval the agent can read the staged state and propose a commit message in a separate request. Branch deletion, push, Sync, and PR review and merge use Revqora's existing review dialogs. An action status of `handed_off` means Revqora took over the review. Check the resulting Git or PR state to confirm what happened.
+
+MCP access is off on startup. When enabled, local clients can read code and PR text from open repositories in the current workspace, and their model provider may receive those results. PR access uses the connection selected in PR Center. Revqora uses an authenticated loopback bridge and a session file in its portable data folder. The copied configuration contains the executable path and arguments. Requests for changes require approval in the desktop app.
 
 ### Explore changed code and dependent branches
 

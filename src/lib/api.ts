@@ -72,6 +72,10 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  mcpInfo: () => call<{ enabled: boolean; executable: string }>("mcp_info"),
+  mcpEnable: (enabled: boolean) => call<{ enabled: boolean; executable: string }>("mcp_enable", { enabled }),
+  mcpLease: (session: string, id: string | null = null) => call<boolean>("mcp_lease", { session, id }),
+  mcpReply: (session: string, id: string, value: unknown, error: string | null = null) => call<void>("mcp_reply", { session, id, value: value ?? null, error }),
   workingFileRead: (repo:string,path:string) => call<{content:string;revision:string}>("working_file_read",{repo,path}),
   workingFileSave: (repo:string,path:string,expectedRevision:string,content:string) => call<{file:{content:string;revision:string};backupPath:string|null}>("working_file_save",{repo,path,expectedRevision,content}),
   symbolHistory:(repo:string,path:string,query:string,anchor:string|null,offset:number)=>call<import("./types").SymbolHistoryPage>("symbol_history",{repo,path,query,anchor,offset}),
@@ -172,8 +176,8 @@ export const api = {
     untracked: boolean,
     opts?: DiffOptions,
   ) => call<void>("apply_selection", { repo, path, mode, selection, hash, untracked, opts }),
-  stage: (repo: string, paths: string[]) => call<void>("stage", { repo, paths }),
-  unstage: (repo: string, paths: string[]) => call<void>("unstage", { repo, paths }),
+  stage: (repo: string, paths: string[], expectedState?: string) => call<void>("stage", { repo, paths, expectedState }),
+  unstage: (repo: string, paths: string[], expectedState?: string) => call<void>("unstage", { repo, paths, expectedState }),
   discard: (repo: string, tracked: string[], untracked: string[], expectedState?: string | null) => call<string>("discard", { repo, tracked, untracked, expectedState }),
   commit: (repo: string, message: string, opts?: CommitOptions, expectedState?: string | null) => call<string>("commit", { repo, message, opts, expectedState }),
   lastMessage: (repo: string) => call<string>("last_message", { repo }),
@@ -234,7 +238,7 @@ export const api = {
   opAbort: (repo: string, kind: string, expectedState?: string | null) => call<OpOutcome>("op_abort", { repo, kind, expectedState }),
   opContinue: (repo: string, kind: string, message?: string | null, expectedState?: string | null) => call<OpOutcome>("op_continue", { repo, kind, message, expectedState }),
   opSkip: (repo: string, kind: string) => call<OpOutcome>("op_skip", { repo, kind }),
-  cherryPick: (repo: string, oids: string[], noCommit: boolean) => call<OpOutcome>("cherry_pick", { repo, oids, noCommit }),
+  cherryPick: (repo: string, oids: string[], noCommit: boolean, expectedState?: string) => call<OpOutcome>("cherry_pick", { repo, oids, noCommit, expectedState }),
   revert: (repo: string, oid: string, noCommit: boolean) => call<OpOutcome>("revert", { repo, oid, noCommit }),
   rebaseOnto: (repo: string, upstream: string, expectedState?: string | null) => call<OpOutcome>("rebase_onto", { repo, upstream, expectedState }),
   rewrite: (repo: string, action: RewriteAction, expectedState?: string | null) => call<OpOutcome>("rewrite", { repo, action, expectedState }),

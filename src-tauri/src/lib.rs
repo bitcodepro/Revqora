@@ -216,6 +216,7 @@ async fn sync_execute(
 pub mod askpass;
 pub mod git;
 pub mod journal;
+pub mod mcp;
 pub mod portable;
 pub mod update;
 
@@ -2104,6 +2105,7 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(mcp::Bridge::default())
         .setup(move |app| {
             portable::automation_startup("git-locate-start");
             git::locate::configure();
@@ -2146,6 +2148,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            mcp::mcp_info,
+            mcp::mcp_enable,
+            mcp::mcp_lease,
+            mcp::mcp_reply,
             branch_cleanup_review,
             branch_cleanup_execute,
             branch_manager_snapshot,
@@ -2393,8 +2399,9 @@ pub fn run() {
         ])
         .build(context)
         .expect("error while building Revqora")
-        .run(|_, event| {
+        .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<mcp::Bridge>().shutdown();
                 git::workflows::cancel_all();
                 git::validation::cancel_all();
                 git::agents::cancel_all();

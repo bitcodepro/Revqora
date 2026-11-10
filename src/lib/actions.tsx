@@ -317,12 +317,12 @@ export async function addRemote(root: string) {
 
 const switching = new Set<string>();
 
-export async function checkout(root: string, target: string, kind: "local" | "remote" | "commit") {
+export async function checkout(root: string, target: string, kind: "local" | "remote" | "commit", expectedState?: string) {
   if (switching.has(root)) return;
   switching.add(root);
   try {
     // The operation client already refreshes HEAD and status before returning.
-    let result = await act(root, () => api.checkout(root, target, kind), { busy: "Switching branch", refresh: false });
+    let result = await act(root, () => api.checkout(root, target, kind, undefined, expectedState), { busy: "Switching branch", refresh: false });
     if (result?.status === "review") {
       const review = result;
       const source = review.source.startsWith("HEAD/") ? `detached HEAD (${shortOid(review.source.slice(5))})` : review.source.slice(11);

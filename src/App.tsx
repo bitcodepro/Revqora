@@ -9,6 +9,7 @@ import { WorktreeManager } from "./components/WorktreeManager";
 import { finishWorkspaceStartup, startWorkspaceTracking } from "./lib/repositoryWorkspaces";
 import { useLibrary } from "./lib/repositoryLibrary";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { listenMcpDesktop } from "./lib/mcpDesktop";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -300,6 +301,7 @@ export default function App() {
   // Backend events.
   useEffect(() => {
     const unsubs: Promise<() => void>[] = [];
+    unsubs.push(listenMcpDesktop());
     unsubs.push(
       listen<{ repo: string; git: boolean; worktree: boolean }>("repo-changed", (e) => {
         const { repo, git } = e.payload;
