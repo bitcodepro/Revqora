@@ -32,15 +32,12 @@ export async function mcpSmoke({ page, exe, profile, work }) {
   const rpc = (method, params) => {
     const request = ++id;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`MCP ${method} timed out: ${stderr}`)), 35_000);
-      pending.set(request, { resolve, reject });
-      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: request, method, params }) + "\n");
       const remove = () => { clearTimeout(timer); pending.delete(request); };
-      const waiting = pending.get(request);
-      waiting.resolve = value => { remove(); resolve(value); };
-      waiting.reject = error => { remove(); reject(error); };
-      timer.refresh();
-    }).finally(() => pending.delete(request));
+      const fail = error => { remove(); reject(error); };
+      const timer = setTimeout(() => fail(new Error(`MCP ${method} timed out: ${stderr}`)), 35_000);
+      pending.set(request, { resolve: value => { remove(); resolve(value); }, reject: fail });
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: request, method, params }) + "\n", error => { if (error) fail(error); });
+    });
   };
   const rawTool = (name, args = {}) => rpc("tools/call", { name, arguments: args });
   const tool = async (name, args) => {
@@ -89,8 +86,8 @@ export async function mcpSmoke({ page, exe, profile, work }) {
     assert.equal((await rawTool("repository_status", { repository: path.join(work, "unopened") })).isError, true);
     assert.equal((await rawTool("request_action", { repository: root, action: "stage", paths: ["file"], approved: true })).isError, true);
     const file = "revqora-mcp-stage-fixture.txt";
-    fixture = { root, file };
     fs.writeFileSync(path.join(root, file), "MCP stage fixture\n", { flag: "wx" });
+    fixture = { root, file };
     const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true }).trim();
     assert((await tool("repository_status", { repository: root })).files.items.some(row => row.path === file && row.untracked));
     const diff = await tool("file_diff", { repository: root, path: file, side: "unstaged" });

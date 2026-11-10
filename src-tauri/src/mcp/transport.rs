@@ -1,12 +1,12 @@
 use ring::{hmac, rand};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 pub(super) type Secret = Zeroizing<[u8; 32]>;
 const REQUEST_MAX: usize = 128 * 1024;
@@ -36,9 +36,11 @@ pub(super) fn descriptor_path() -> io::Result<PathBuf> {
 }
 
 pub(super) fn publish(path: &Path, port: u16, key: &Secret) -> io::Result<()> {
-    let descriptor = Descriptor { port, key: protect(key.as_ref())? };
     let mut file = crate::git::atomic_file::new_in(path.parent().ok_or_else(|| io::Error::other("Missing portable data folder."))?)?;
-    serde_json::to_writer(&mut file, &descriptor)?;
+    let mut descriptor = Descriptor { port, key: protect(key.as_ref())? };
+    let written = serde_json::to_writer(&mut file, &descriptor);
+    descriptor.key.zeroize();
+    written?;
     file.as_file().sync_all()?;
     crate::git::atomic_file::replace(file, path)
 }
@@ -114,9 +116,12 @@ fn dpapi(input: &[u8], encrypt: bool) -> io::Result<Zeroizing<Vec<u8>>> {
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
+        if output.pbData.is_null() {
+            return Err(denied());
+        }
         let data = std::slice::from_raw_parts_mut(output.pbData, output.cbData as usize);
         let result = Zeroizing::new(data.to_vec());
-        zeroize::Zeroize::zeroize(data);
+        data.zeroize();
         LocalFree(output.pbData.cast());
         Ok(result)
     }
@@ -233,4 +238,22 @@ pub(super) fn serve(mut socket: TcpStream, key: &Secret, dispatch: impl FnOnce(V
     let request = auth.receive(&mut reader, b"request", REQUEST_MAX)?;
     let reply = dispatch(request);
     auth.send(&mut socket, b"reply", &reply, REPLY_MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authentication_binds_the_payload_to_both_nonces_and_the_direction() {
+        let key = secret().unwrap();
+        let auth = Auth::new(&key, [1; 32], [2; 32]);
+        let message = b"{\"name\":\"list_repositories\"}";
+        let tag = auth.tag(b"request", message);
+        assert!(auth.verify(b"request", message, &tag).is_ok());
+        assert!(auth.verify(b"request", b"{}", &tag).is_err());
+        assert!(auth.verify(b"reply", message, &tag).is_err());
+        assert!(Auth::new(&key, [3; 32], [2; 32]).verify(b"request", message, &tag).is_err());
+        assert!(Auth::new(&key, [1; 32], [3; 32]).verify(b"request", message, &tag).is_err());
+    }
 }

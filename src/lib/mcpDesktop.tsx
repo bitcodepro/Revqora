@@ -161,8 +161,10 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     const baseline = await api.status(root);
     const expectedState = baseline.stateToken;
     if (!expectedState) throw new Error("Repository status is not ready. Refresh and inspect it first.");
-    const inputPaths = new Map(baseline.files.map(file => [file.path, file]));
+    const pullMode = useSettings.getState().pullMode;
+    if (action === "pull") detail.push(`Upstream: ${baseline.upstream ?? "none configured"}`, `Pull mode: ${pullMode}`);
     if (action === "stage" || action === "unstage") {
+      const inputPaths = new Map(baseline.files.map(file => [file.path, file]));
       for (const path of paths) {
         const file = inputPaths.get(path);
         if (!file || file.conflict || (action === "stage" ? !file.untracked && file.worktree === "." : file.untracked || file.index === ".")) {
@@ -244,8 +246,8 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
         switch (action) {
           case "checkout": await A.checkout(root, target!, "local", expectedState); break;
           case "delete_branch": await A.deleteBranch(root, target!); break;
-          case "stash": await A.stash(root); break;
-          case "pull": await A.pull(root); break;
+          case "stash": await A.stash(root, expectedState); break;
+          case "pull": await A.pull(root, pullMode, expectedState); break;
           case "push": await A.push(root); break;
           case "sync": await syncRepositories([root]); break;
           case "create_pr": await createPullRequest(root, null); break;

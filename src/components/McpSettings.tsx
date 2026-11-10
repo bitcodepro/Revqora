@@ -41,7 +41,7 @@ export function McpSettings() {
       <div className="vstack">
         <textarea id="mcp-config" className="textarea mono" rows={client === "codex" ? 3 : 11} value={config} readOnly spellCheck={false} />
         <button type="button" className="btn sm" disabled={!config} onClick={() => void copyText(config, "MCP configuration copied")}><Copy size={14} /> Copy MCP configuration</button>
-        <small className="muted">Add this entry to your client's user configuration and restart the client. Enable access again when you reopen Revqora.</small>
+        <small className="muted">{client === "claude" ? "Add this entry to the project's .mcp.json." : "Add this entry to your client's user configuration."} Restart the client after configuring it. Enable access again when you reopen Revqora.</small>
       </div>
     </div>
     {error && <p className="error-text" role="alert">{error}</p>}

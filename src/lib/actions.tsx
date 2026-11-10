@@ -201,7 +201,7 @@ export const fetchAll = async (root: string) => {
   return out;
 };
 
-export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase") {
+export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase", expectedState?: string) {
   const mode = modeOverride ?? useSettings.getState().pullMode;
   const opId = newOpId();
   startBusy(opId, "Pulling");
@@ -209,7 +209,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
   let ignoredCollision: GitError | undefined;
   let outcome: PullOutcome | undefined;
   try {
-    outcome = await api.pull(root, mode, opId);
+    outcome = await api.pull(root, mode, opId, expectedState);
   } catch (e) {
     const msg = errorMessage(e).toLowerCase();
     if (isGitError(e) && e.kind === "ignored-collision") ignoredCollision = e;
@@ -523,10 +523,10 @@ export async function pushTag(root: string, name: string) {
 
 // ───────────── stash ─────────────
 
-export async function stash(root: string) {
+export async function stash(root: string, expectedState?: string) {
   const r = await stashDialog();
   if (!r) return;
-  await act(root, () => api.stashSave(root, r.message, r.untracked, r.keepIndex), { success: "Changes stashed" });
+  await act(root, () => api.stashSave(root, r.message, r.untracked, r.keepIndex, undefined, expectedState), { success: "Changes stashed" });
 }
 
 export async function stashApply(root: string, index: number, pop: boolean, oid = getTab(root)?.refs?.stashes.find(s => s.index === index)?.oid) {

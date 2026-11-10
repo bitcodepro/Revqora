@@ -227,7 +227,8 @@ export const api = {
   undoCommit: (repo: string) => call<void>("undo_commit", { repo }),
 
   fetch: (repo: string, remote: string | null, prune: boolean, opId: string) => call<string>("fetch", { repo, remote, prune, opId }),
-  pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string) => call<import("./types").PullOutcome>("pull", { repo, mode, opId }),
+  pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string) =>
+    call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
   pushRef: (repo: string, remote: string, refspec: string, opId: string, expectedState?: string | null) => call<string>("push_ref", { repo, remote, refspec, opId, expectedState }),
   remoteAdd: (repo: string, name: string, url: string) => call<void>("remote_add", { repo, name, url }),
@@ -257,8 +258,8 @@ export const api = {
   conflictMarkResolved: (repo: string, paths: string[]) => call<void>("conflict_mark_resolved", { repo, paths }),
   conflictUnresolve: (repo: string, path: string) => call<void>("conflict_unresolve", { repo, path }),
 
-  stashSave: (repo: string, message: string, includeUntracked: boolean, keepIndex: boolean, paths?: string[]) =>
-    call<void>("stash_save", { repo, message, includeUntracked, keepIndex, paths }),
+  stashSave: (repo: string, message: string, includeUntracked: boolean, keepIndex: boolean, paths?: string[], expectedState?: string) =>
+    call<void>("stash_save", { repo, message, includeUntracked, keepIndex, paths, expectedState }),
   stashApply: (repo: string, index: number, pop: boolean, oid: string) => call<OpOutcome>("stash_apply", { repo, index, pop, oid }),
   stashDrop: (repo: string, index: number, oid: string, expectedState?: string | null) => call<void>("stash_drop", { repo, index, oid, expectedState }),
 
