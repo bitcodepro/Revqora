@@ -56,17 +56,18 @@ import {
 import { useRepos, type RepoTab } from "../lib/store";
 import { resolvedTheme, useSettings } from "../lib/settings";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { contextMenu, openOverlay, useUi, type MenuItem } from "../lib/ui";
+import { contextMenu, endBusy, openOverlay, startBusy, toast, useUi, type MenuItem } from "../lib/ui";
 import { namePathMenu } from "./NamePathMenu";
 import * as A from "../lib/actions";
 import * as XA from "../lib/extraActions";
 import { bindingFor, prettyCombo, shortcutTitle } from "../lib/shortcuts";
 import { jumpToCommit } from "./GraphView";
-import { api } from "../lib/api";
+import { api, newOpId } from "../lib/api";
 import { useAppVersion } from "../lib/appVersion";
 import { basename, plural, shortOid } from "../lib/format";
 import { AheadBehind } from "./bits";
 import { UpdateChip } from "./UpdateChip";
+import { canCheckUpdates, useUpdate } from "../lib/update";
 import { confirmDialog, reflogDialog, settingsDialog } from "./dialogs";
 import { applyPatchFile, repoToolsDialog } from "./RepoTools";
 import { OperationLogButton, operationLogDialog } from "./OperationLog";
@@ -88,6 +89,7 @@ export function TopBar() {
   const dark = resolvedTheme(theme) === "dark";
   const overview = useUi((s) => s.repositoryOverview);
   const workspacesOpen = useSettings(s => s.workspacesOpen);
+  const updatePhase = useUpdate(s => s.phase);
   const { layout: { branchesOpen, repositoriesOpen, focusMode }, setLayout } = useWorkspaceLayout();
   const hasCommit = !!tab?.selected && tab.selected !== WORKTREE;
   const panelWindowMenu = usePanelWindowMenu(!!tab?.info, hasCommit);
@@ -102,6 +104,20 @@ export function TopBar() {
     if (!root) return;
     useUi.setState({ repositoryOverview: false });
     useRepos.getState().patch(root, { view });
+  };
+  const checkUpdates = async () => {
+    const update = useUpdate.getState();
+    if (!canCheckUpdates(update.phase)) return;
+    const id = newOpId();
+    startBusy(id, "Checking for updates");
+    try {
+      const info = await update.check(true);
+      const error = useUpdate.getState().error;
+      if (error) toast.error(error, "Could not check for updates");
+      else if (info && !info.available) toast.info("Revqora is up to date", `Version ${info.current}`);
+    } finally {
+      endBusy(id);
+    }
   };
   const menu: MenuItem[] = [
     { label: "Workspaces", icon: <FolderKanban size={15}/>, checked: workspacesOpen, onClick: toggleWorkspaces },
@@ -143,6 +159,7 @@ export function TopBar() {
     { label: "Operation log", onClick: () => void operationLogDialog(root ?? null) },
     { label: dark ? "Light theme" : "Dark theme", icon: dark ? <Sun size={15}/> : <Moon size={15}/>, onClick: () => setS({ theme: dark ? "light" : "dark" }) },
     { label: "Accounts and API connections…", icon: <UserRound size={15}/>, onClick: () => void forgeAccountsDialog(root ?? null) },
+    { label: "Check Updates", icon: <Download size={15}/>, disabled: !canCheckUpdates(updatePhase), onClick: () => void checkUpdates() },
     { label: "Settings…", icon: <Settings2 size={15}/>, onClick: () => void settingsDialog(root ?? null) },
   ];
 

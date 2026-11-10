@@ -51,7 +51,9 @@ const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8"
 git("config", "core.hooksPath", path.join(repo, ".git", "hooks"));
 
 // A fake release feed with a much newer version, so the update chip can be exercised offline.
+let updateChecks = 0;
 const feed = http.createServer((req, res) => {
+  updateChecks++;
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ tag_name: "v99.0.0", body: ["## Highlights", "- Faster graph", "- **New** update chip"].join("\n"), html_url: "https://github.com/bitcodepro/Revqora/releases/tag/v99.0.0", published_at: new Date().toISOString(), assets: [] }));
 });
@@ -137,7 +139,7 @@ try {
     await page.locator(".modal").getByRole("button", { name:"Done", exact:true }).click();
   });
 
-  await check("a newer release shows the update chip, which can be skipped", async () => {
+  await check("a newer release shows the update chip and Check Updates can show it again", async () => {
     const runningVersion = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("plugin:app|version"));
     const version = page.locator(".statusbar .app-version");
     await version.filter({ hasText: `Revqora v${runningVersion}` }).waitFor();
@@ -152,6 +154,14 @@ try {
     // Development builds are not release packages: only the download link is offered.
     await card.locator("button:has-text('Download')").waitFor();
     await shot("17-update");
+    await card.locator("button:has-text('Skip this version')").click();
+    await chip.waitFor({ state: "detached" });
+    const checksBeforeMenu = updateChecks;
+    await page.locator(".topbar").click({ button: "right", position: { x: 3, y: 3 } });
+    await page.locator(".ctx-menu").getByText("Check Updates", { exact: true }).click();
+    await chip.filter({ hasText: "Update 99.0.0" }).waitFor();
+    if (updateChecks <= checksBeforeMenu) throw new Error("Check Updates did not request the release feed");
+    await chip.click();
     await card.locator("button:has-text('Skip this version')").click();
     await chip.waitFor({ state: "detached" });
     await version.click();

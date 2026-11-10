@@ -6,6 +6,10 @@ import type { UpdateInfo } from "./types";
 
 export type UpdatePhase = "idle" | "checking" | "downloading" | "installing" | "ready" | "error";
 
+export function canCheckUpdates(phase: UpdatePhase): boolean {
+  return phase === "idle" || phase === "error";
+}
+
 interface UpdateState {
   info: UpdateInfo | null;
   phase: UpdatePhase;
@@ -27,11 +31,12 @@ export const useUpdate = create<UpdateState>()((set, get) => ({
   error: null,
   checkedAt: null,
   check: async (manual = false) => {
-    const busy = get().phase;
-    if (busy === "checking" || busy === "downloading" || busy === "installing" || busy === "ready") return get().info;
+    if (!canCheckUpdates(get().phase)) return get().info;
     set({ phase: "checking", error: null });
     try {
       const info = await api.updateCheck();
+      const settings = useSettings.getState();
+      if (manual && info?.available && settings.skippedUpdate === info.latest) settings.set({ skippedUpdate: null });
       set({ info, phase: "idle", checkedAt: Date.now() });
       return info;
     } catch (e) {
