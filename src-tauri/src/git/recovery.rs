@@ -956,6 +956,7 @@ pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<(
             | "interactive_rebase"
             | "rewrite"
             | "cherry_pick"
+            | "cherry_pick_compared_commit"
             | "revert"
             | "merge_start"
             | "pull"

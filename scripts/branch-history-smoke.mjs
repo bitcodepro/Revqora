@@ -32,6 +32,14 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
     env: { ...process.env, GIT_AUTHOR_DATE: targetDate, GIT_COMMITTER_DATE: targetDate },
   });
   git(root, "switch", "-q", "main");
+  for (const suffix of ["a", "b"]) {
+    git(other, "switch", "-qc", `review-${suffix}`, "main");
+    put(other, `picked-${suffix}.txt`, suffix);
+    git(other, "add", ".");
+    git(other, "commit", "-qm", `Pick review-${suffix}`);
+  }
+  git(other, "switch", "-q", "main");
+  for (const suffix of ["c", "d"]) git(other, "branch", `review-${suffix}`);
 
   const active = (name) => page.locator(".topbar .repo-current > b").getByText(name, { exact: true }).waitFor();
   const branch = (name) => page.locator(`.sidebar [data-branch-kind="local"][data-branch-name="${name}"]`).dblclick();
@@ -148,6 +156,62 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await active("branch-history-other");
   await page.locator(".commit-preview").getByText("Shared searchable branch-history-other", { exact: true }).waitFor();
 
+  if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+  const sidebar = page.locator(".sidebar");
+  const reviewRow = (suffix) => sidebar.locator(`[data-branch-kind="local"][data-branch-name="review-${suffix}"]`);
+  await reviewRow("a").click({ button: "right" });
+  await page.locator(".ctx-menu").getByText("Compare branch commits…", { exact: true }).click();
+  await comparison.getByLabel("Compare with").selectOption("refs/heads/review-b");
+  await comparison.getByRole("button", { name: "Compare", exact: true }).click();
+  const aColumn = comparison.getByRole("region", { name: "Only in review-a", exact: true });
+  const bColumn = comparison.getByRole("region", { name: "Only in review-b", exact: true });
+  const dialogFor = (name) => page.getByRole("dialog").filter({ has: page.getByRole("heading", { name, exact: true }) });
+  const applyPick = async (suffix) => {
+    const confirm = dialogFor(`Cherry-pick into review-${suffix}?`);
+    await confirm.getByText(`Revqora will switch to review-${suffix} and apply this commit locally.`).waitFor();
+    await confirm.getByRole("button", { name: "Cherry-pick", exact: true }).click();
+    await sidebar.locator(`[data-branch-name="review-${suffix}"].current`).waitFor();
+  };
+  await aColumn.getByText("Pick review-a", { exact: true }).click({ button: "right" });
+  await page.locator(".ctx-menu").getByText("Cherry-pick into review-b…", { exact: true }).click();
+  await applyPick("b");
+  // The comparison reloads from the updated tip after applying the commit.
+  await bColumn.getByText("Pick review-a", { exact: true }).waitFor();
+  assert.equal(git(other, "show", "review-b:picked-a.txt"), "a");
+
+  const dragged = bColumn.getByText("Pick review-b", { exact: true });
+  await dragged.scrollIntoViewIfNeeded();
+  const start = await dragged.boundingBox();
+  const end = await aColumn.locator("header").boundingBox();
+  assert(start && end);
+  await page.mouse.move(start.x + 10, start.y + start.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 10 });
+  await aColumn.locator("xpath=self::*[@data-cherry-pick-drop]").waitFor();
+  await page.mouse.up();
+  await applyPick("a");
+  await aColumn.getByText("Pick review-b", { exact: true }).waitFor();
+  assert.equal(git(other, "show", "review-a:picked-b.txt"), "b");
+  await comparison.getByRole("button", { name: "Close", exact: true }).click();
+
+  await reviewRow("b").and(sidebar.locator('[title*="Pick review-a"]')).waitFor();
+  await sidebar.getByLabel("Branch list order").selectOption("name");
+  await reviewRow("b").click();
+  await reviewRow("b").press("Delete");
+  const single = dialogFor("Delete branch review-b?");
+  await single.getByRole("button", { name: "Cancel", exact: true }).click();
+  await reviewRow("d").click({ modifiers: ["Control"] });
+  await sidebar.getByText("2 selected", { exact: true }).waitFor();
+  await reviewRow("b").click({ modifiers: ["Shift"] });
+  await sidebar.getByText("3 selected", { exact: true }).waitFor();
+  assert.equal(git(other, "branch", "--show-current"), "review-a");
+  await sidebar.getByRole("button", { name: "Delete…", exact: true }).click();
+  const cleanup = dialogFor("Review branch cleanup");
+  await cleanup.getByRole("checkbox", { name: "Create recovery checkpoint" }).uncheck();
+  await cleanup.getByRole("button", { name: "Delete 3 selected", exact: true }).click();
+  await dialogFor("Branch cleanup results").getByRole("button", { name: "Close", exact: true }).click();
+  assert.equal(git(other, "branch", "--list", "review-b", "review-c", "review-d"), "");
+
   await openRepository(page, root);
   await active("branch-history");
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
@@ -184,5 +248,5 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   assert(git(root, "stash", "list").includes("Revqora switch refs/heads/main"));
   await openRepository(page, returnRoot);
   for (const name of ["branch-history", "branch-history-other"]) await page.getByRole("button", { name: `Close ${name}`, exact: true }).click();
-  console.log("Verified pinned graph lines, grouped repository search, two-sided branch comparison, stash/restore and move conflicts");
+  console.log("Verified pinned graph lines, grouped repository search, branch comparison and cherry-pick, branch multiselection and cleanup, stash/restore and move conflicts");
 }

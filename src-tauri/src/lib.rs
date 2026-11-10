@@ -1123,6 +1123,11 @@ async fn cherry_pick(app: AppHandle, expected_state: Option<String>, repo: Strin
 }
 
 #[tauri::command]
+async fn cherry_pick_compared_commit(app: AppHandle, expected_state: String, repo: String, pick: ops::ComparedCherryPick) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), Some(expected_state), app, "cherry_pick_compared_commit", None, move || ops::cherry_pick_compared(&p(&repo), &pick)).await
+}
+
+#[tauri::command]
 async fn revert(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, no_commit: bool) -> GitResult<OpOutcome> {
     mutating(repo.clone(), expected_state, app.clone(), "revert", None, move || ops::revert(&p(&repo), &oid, no_commit)).await
 }
@@ -2287,6 +2292,7 @@ pub fn run() {
             op_continue,
             op_skip,
             cherry_pick,
+            cherry_pick_compared_commit,
             revert,
             rebase_onto,
             rewrite,

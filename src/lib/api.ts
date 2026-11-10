@@ -235,6 +235,8 @@ export const api = {
   opContinue: (repo: string, kind: string, message?: string | null, expectedState?: string | null) => call<OpOutcome>("op_continue", { repo, kind, message, expectedState }),
   opSkip: (repo: string, kind: string) => call<OpOutcome>("op_skip", { repo, kind }),
   cherryPick: (repo: string, oids: string[], noCommit: boolean) => call<OpOutcome>("cherry_pick", { repo, oids, noCommit }),
+  cherryPickComparedCommit: (repo: string, pick: import("./types").ComparedCherryPick, expectedState: string) =>
+    call<OpOutcome>("cherry_pick_compared_commit", { repo, pick, expectedState }),
   revert: (repo: string, oid: string, noCommit: boolean) => call<OpOutcome>("revert", { repo, oid, noCommit }),
   rebaseOnto: (repo: string, upstream: string, expectedState?: string | null) => call<OpOutcome>("rebase_onto", { repo, upstream, expectedState }),
   rewrite: (repo: string, action: RewriteAction, expectedState?: string | null) => call<OpOutcome>("rewrite", { repo, action, expectedState }),

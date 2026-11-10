@@ -11,7 +11,7 @@ import { Modal } from "./Modal";
 import type { BranchManagerSnapshot } from "../lib/types";
 import { relativeTime, shortOid } from "../lib/format";
 import { jumpToCommit } from "./GraphView";
-import { BranchCleanup } from "./BranchCleanup";
+import { reviewBranchCleanup } from "./BranchCleanup";
 import type { BranchCleanupRequest } from "../lib/types";
 import { renameRemoteBranch } from "./RemoteRename";
 import { useSettings } from "../lib/settings";
@@ -103,7 +103,11 @@ export function BranchManager({ root }: { root: string }) {
     return next;
   });
   const cleanupReview = async () => {
-    await showDialog<void>(close => <BranchCleanup root={root} initial={Object.values(checked)} rules={prefs.protections} bases={(snapshot?.branches ?? []).filter(b => b.local).map(b => ({ reference: b.fullRef, name: b.name }))} initialBase={snapshot?.baseRef?.startsWith("refs/heads/") ? snapshot.baseRef : (snapshot?.branches.find(b => b.local && b.current)?.fullRef ?? "")} onClose={() => close()} />);
+    await reviewBranchCleanup({
+      root, initial: Object.values(checked), rules: prefs.protections,
+      bases: (snapshot?.branches ?? []).filter(b => b.local).map(b => ({ reference: b.fullRef, name: b.name })),
+      initialBase: snapshot?.baseRef?.startsWith("refs/heads/") ? snapshot.baseRef : (snapshot?.branches.find(b => b.local && b.current)?.fullRef ?? ""),
+    });
     setChecked({}); await refresh();
   };
   const { start, end } = virtualRange(rows.length, ROW, height, scroll);

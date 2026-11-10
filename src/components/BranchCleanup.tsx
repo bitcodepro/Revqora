@@ -4,15 +4,21 @@ import { api, errorMessage, newOpId } from "../lib/api";
 import type { BranchCleanupMode, BranchCleanupRequest, BranchCleanupReview, BranchCleanupReport } from "../lib/types";
 import { basename, shortOid } from "../lib/format";
 import { ALL, useRepos } from "../lib/store";
-import { endBusy, startBusy } from "../lib/ui";
+import { endBusy, showDialog, startBusy } from "../lib/ui";
 import { recoveryDialog } from "./RecoveryCenter";
 import { Modal } from "./Modal";
 import { selectedCleanupItems } from "../lib/branchCleanup";
 
-export function BranchCleanup({ root, initial, bases, initialBase, rules, onClose }: {
+type BranchCleanupOptions = {
   root: string; initial: BranchCleanupRequest[]; bases: { reference: string; name: string }[];
-  initialBase: string; rules: string[]; onClose: () => void;
-}) {
+  initialBase: string; rules: string[];
+};
+
+export function reviewBranchCleanup(options: BranchCleanupOptions) {
+  return showDialog<void>((close) => <BranchCleanup {...options} onClose={() => close()} />);
+}
+
+function BranchCleanup({ root, initial, bases, initialBase, rules, onClose }: BranchCleanupOptions & { onClose: () => void }) {
   const [requests, setRequests] = useState(initial);
   const [base, setBase] = useState(initialBase);
   const [compare, setCompare] = useState(false);

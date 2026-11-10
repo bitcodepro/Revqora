@@ -1087,6 +1087,112 @@ pub fn cherry_pick(repo: &Path, oids: &[String], no_commit: bool) -> GitResult<O
     sequence_outcome(repo, out, "git cherry-pick")
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComparedCherryPick {
+    pub source: String,
+    pub source_oid: String,
+    pub destination: String,
+    pub destination_oid: String,
+    pub oid: String,
+}
+
+pub fn cherry_pick_compared(repo: &Path, pick: &ComparedCherryPick) -> GitResult<OpOutcome> {
+    let branch = pick
+        .destination
+        .strip_prefix("refs/heads/")
+        .filter(|branch| !branch.is_empty() && !branch.starts_with('-') && *branch != "HEAD")
+        .ok_or_else(|| GitError::new("Choose a local destination branch."))?;
+    let stale = || GitError::new("The compared branches changed. Compare them again before cherry-picking.").kind("stale-operation");
+    let check_tips = || {
+        if super::inspect::branch_tip(repo, &pick.source)? != pick.source_oid || super::inspect::branch_tip(repo, &pick.destination)? != pick.destination_oid {
+            return Err(stale());
+        }
+        let symbolic = runner::exec(repo, ["symbolic-ref", "--quiet", "--no-recurse", &pick.destination])?;
+        match symbolic.code {
+            0 => Err(GitError::new("The destination is a symbolic branch. Select its direct local branch instead.")),
+            1 => Ok(()),
+            _ => Err(runner::to_error("verify destination branch", &symbolic)),
+        }
+    };
+    check_tips()?;
+    if !matches!(pick.oid.len(), 40 | 64) || !pick.oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(GitError::new("Choose a commit from the branch comparison."));
+    }
+    let ancestor = |tip: &str| {
+        let result = runner::exec(repo, ["merge-base", "--is-ancestor", &pick.oid, tip])?;
+        match result.code {
+            0 => Ok(true),
+            1 => Ok(false),
+            _ => Err(runner::to_error("verify compared commit", &result)),
+        }
+    };
+    if !ancestor(&pick.source_oid)? || ancestor(&pick.destination_oid)? {
+        return Err(GitError::new("The selected commit must be unique to the source branch."));
+    }
+
+    let clean = || {
+        let raw = runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--ignore-submodules=none"])?;
+        let current = status::parse(&raw);
+        if !current.files.is_empty() || super::layers::staged_base(repo).is_some() {
+            return Err(GitError::new("Commit or stash local changes before cherry-picking into a compared branch."));
+        }
+        let flags = runner::run_bytes(repo, ["ls-files", "-v", "-z"])?;
+        if flags.split(|byte| *byte == 0).filter_map(|entry| entry.first()).any(|flag| *flag == b'S' || flag.is_ascii_lowercase()) {
+            return Err(GitError::new("Clear skip-worktree and assume-unchanged flags before cherry-picking so hidden edits can be checked."));
+        }
+        Ok(current)
+    };
+    let current = clean()?;
+    runner::run(repo, ["var", "GIT_COMMITTER_IDENT"])?;
+    if super::extras::worktrees(repo)?.iter().any(|worktree| !worktree.is_current && worktree.branch.as_deref() == Some(branch)) {
+        return Err(GitError::new("This branch is checked out in another worktree. Switch that worktree to a different branch before cherry-picking here."));
+    }
+    if current.branch.as_deref() != Some(branch) {
+        guard_compared_pick_files(repo, pick)?;
+        runner::run(repo, ["switch", "--no-guess", "--no-overwrite-ignore", "--no-recurse-submodules", "--", branch])?;
+    }
+    // Recheck the exact destination and working tree after switch hooks run.
+    let head = runner::run(repo, ["symbolic-ref", "--quiet", "--no-recurse", "HEAD"])?;
+    if head.trim() != pick.destination || clean()?.oid.as_deref() != Some(pick.destination_oid.as_str()) {
+        return Err(stale());
+    }
+    check_tips()?;
+    if repo::op_state(repo, &repo::git_dir(repo)?).kind != "none" {
+        return Err(GitError::new("Finish or abort the current Git operation before cherry-picking.").kind("operation-in-progress"));
+    }
+    guard_compared_pick_files(repo, pick)?;
+    cherry_pick(repo, std::slice::from_ref(&pick.oid), false)
+}
+
+fn guard_compared_pick_files(repo: &Path, pick: &ComparedCherryPick) -> GitResult<()> {
+    let ignored = super::workspace_files::untracked(repo)?;
+    if ignored.paths.is_empty() {
+        return Ok(());
+    }
+    // A rename can introduce a path absent from the commit's own patch.
+    // Inspect Git's resulting tree before its checkout can overwrite ignored files.
+    if !runner::version_at_least(2, 40) {
+        return Err(GitError::new("Git 2.40 or newer is required to protect ignored files during this cherry-pick."));
+    }
+    let parents = runner::run(repo, ["rev-list", "--parents", "-n", "1", &pick.oid])?;
+    let base = match parents.split_whitespace().nth(1) {
+        Some(parent) => parent.to_owned(),
+        None => runner::run_env(repo, ["hash-object", "-t", "tree", "-w", "--stdin"], &[], Some(&[]))?.trim().to_owned(),
+    };
+    let preview = runner::exec(repo, ["merge-tree", "--write-tree", "--no-messages", &format!("--merge-base={base}"), &pick.destination_oid, &pick.oid])?;
+    if preview.code == 1 {
+        // Conflict paths can depend on the labels used by Git during checkout.
+        return Err(GitError::new("This cherry-pick conflicts and could overwrite ignored files. Move those files outside the repository and try again."));
+    }
+    if !preview.ok() {
+        return Err(runner::to_error("preview cherry-pick to protect ignored files", &preview));
+    }
+    let result = preview.text();
+    let paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "-z", &pick.destination_oid, result.trim(), "--"])?;
+    check_ignored_paths(repo, &ignored, &paths, "ignored")
+}
+
 pub fn revert(repo: &Path, oid: &str, no_commit: bool) -> GitResult<OpOutcome> {
     let mut args: Vec<String> = vec!["revert".into(), "--no-edit".into()];
     if no_commit {

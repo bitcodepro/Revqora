@@ -898,6 +898,9 @@ select[size="1"]:not([multiple]) {
   background: var(--bg-selected);
   color: var(--text);
 }
+.sb-item.branch-selected { background: var(--bg-selected); color: var(--text); }
+.sb-branch-selection { justify-content: space-between; gap: 4px; }
+.sb-branch-selection .btn { margin-left: auto; }
 .sb-item.current {
   color: var(--text);
   font-weight: 600;
@@ -1107,11 +1110,15 @@ select[size="1"]:not([multiple]) {
 .branch-compare-select { display: grid; gap: 5px; min-width: 0; }
 .branch-compare-select select { width: 100%; }
 .branch-compare-column { min-width: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.branch-compare-hint { margin: 0; }
+.branch-compare-column[data-cherry-pick-drop] { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--bg-selected); }
 .branch-compare-column > header { min-width: 0; padding: 8px 10px; gap: 8px; background: var(--bg-elev2); }
 .branch-compare-column > header b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .branch-compare-column > header code { margin-left: auto; color: var(--muted); font-size: var(--fs-xs); }
 .branch-compare-list { max-height: min(48vh, 480px); overflow: auto; overscroll-behavior: contain; }
 .branch-compare-commit { padding: 8px 10px; border-top: 1px solid var(--border-soft); display: grid; gap: 5px; overflow-wrap: anywhere; }
+.branch-compare-commit[data-draggable] { cursor: grab; user-select: none; }
+.branch-compare-commit[data-draggable]:active { cursor: grabbing; }
 .branch-compare-commit .hstack { gap: 6px; flex-wrap: wrap; font-size: var(--fs-xs); }
 .branch-compare-list > p, .branch-compare-more { margin: 0; padding: 8px 10px; }
 @media (max-width: 620px) { .branch-compare-grid { grid-template-columns: minmax(0, 1fr); } }

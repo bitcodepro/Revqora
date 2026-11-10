@@ -25,6 +25,7 @@ import {
   Server,
   Tag,
   Trash2,
+  X as ClearIcon,
 } from "lucide-react";
 import * as X from "../lib/extraActions";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
@@ -36,6 +37,7 @@ import { api } from "../lib/api";
 import { basename, joinPath, relativeTime } from "../lib/format";
 import { AheadBehind } from "./bits";
 import { branchMenu, tagMenu } from "./menus";
+import { reviewBranchCleanup } from "./BranchCleanup";
 import { namePathMenu } from "./NamePathMenu";
 import { highlightBranch, jumpToCommit } from "./GraphView";
 import { promptDialog } from "./dialogs";
@@ -88,6 +90,9 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ tags: true });
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({});
+  const [selection, setSelection] = useState<BranchInfo[]>([]);
+  const selectionAnchor = useRef<string | null>(null);
+  const cleanupPending = useRef(false);
   const refs = tab.refs;
   const extras = tab.extras;
   const f = filter.trim().toLowerCase();
@@ -125,6 +130,52 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
 
   const toggle = (k: string) => setCollapsed((c) => ({ ...c, [k]: !c[k] }));
   const isOpen = (k: string) => (f ? true : openDirs[k] ?? true);
+  const clearSelection = () => { setSelection([]); selectionAnchor.current = null; };
+
+  const chooseBranch = (branch: BranchInfo, toggle: boolean, range: boolean) => {
+    const reference = branch.fullName;
+    if (range && selectionAnchor.current) {
+      const anchor = visibleRefs.indexOf(selectionAnchor.current);
+      const end = visibleRefs.indexOf(reference);
+      if (anchor >= 0 && end >= 0) {
+        const selectedRange = visibleRefs.slice(Math.min(anchor, end), Math.max(anchor, end) + 1).map((ref) => branchesByRef.get(ref)!);
+        setSelection(toggle ? [...selected, ...selectedRange.filter((row) => !selectedSet.has(row.fullName))] : selectedRange);
+        return;
+      }
+    }
+    selectionAnchor.current = reference;
+    if (toggle) setSelection(selectedSet.has(reference) ? selected.filter((row) => row.fullName !== reference) : [...selected, branch]);
+    else {
+      setSelection([branch]);
+      viewBranch(branch);
+    }
+  };
+
+  const deleteSelected = async () => {
+    if (cleanupPending.current || !selected.length || selected.length > 50) return;
+    cleanupPending.current = true;
+    try {
+      if (selected.length === 1) {
+        const branch = selected[0];
+        if (branch.fullName.startsWith("refs/heads/")) {
+          if (branch.name !== current) await A.deleteBranch(root, branch.name);
+        } else {
+          await A.deleteRemoteBranch(root, branch.name);
+        }
+        return;
+      }
+      const preferences = loadBranchPreferences(root);
+      const bases = (refs?.local ?? []).map((branch) => ({ reference: branch.fullName, name: branch.name }));
+      const preferredBase = bases.find((branch) => branch.reference === preferences.base)?.reference;
+      await reviewBranchCleanup({
+        root, rules: preferences.protections, bases,
+        initial: selected.map(({ fullName: reference, oid }) => ({ reference, oid, mode: reference.startsWith("refs/heads/") ? "local" : "remote" })),
+        initialBase: preferredBase ?? (current ? `refs/heads/${current}` : ""),
+      });
+    } finally {
+      cleanupPending.current = false;
+    }
+  };
 
   const renderTree = (node: TreeNode, kind: "local" | "remote", depth: number, prefix: string): ReactNode[] =>
     sortedChildren(node,branchPrefs.sort==="recent").flatMap((n) => {
@@ -140,10 +191,21 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
             key={b.fullName}
             data-branch-name={b.name}
             data-branch-kind={kind}
-            className={`sb-item ${isCur ? "current" : ""} ${viewed && (viewed === b.fullName || viewed === upstream?.fullName) ? "viewed-branch" : ""}`}
+            data-branch-ref={b.fullName}
+            tabIndex={selectionAnchor.current === b.fullName || (!selectionAnchor.current && isCur) ? 0 : -1}
+            className={`sb-item ${isCur ? "current" : ""} ${selectedSet.has(b.fullName) ? "branch-selected" : ""} ${viewed && (viewed === b.fullName || viewed === upstream?.fullName) ? "viewed-branch" : ""}`}
             style={{ paddingLeft: pad + 16 }}
-            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}\n${b.creator?`Created by ${b.creator.name} <${b.creator.email}> (local creation log)`:"Branch creator unknown"}${b.upstream ? `\ntracks ${b.upstream}` : ""}${isCur ? "" : "\nCtrl+click or double-click to check out"}`}
-            onClick={(e) => ((e.ctrlKey || e.metaKey) && !isCur ? void A.checkout(root, b.name, kind) : viewBranch(b))}
+            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}\n${b.creator?`Created by ${b.creator.name} <${b.creator.email}> (local creation log)`:"Branch creator unknown"}${b.upstream ? `\ntracks ${b.upstream}` : ""}\nCtrl+click to select; Shift+click to select a range${isCur ? "" : "\nDouble-click to check out"}`}
+            onMouseDown={(e) => { if (e.button === 0 && (e.ctrlKey || e.metaKey || e.shiftKey)) e.preventDefault(); }}
+            onClick={(e) => {
+              e.currentTarget.focus({ preventScroll: true });
+              chooseBranch(b, e.ctrlKey || e.metaKey, e.shiftKey);
+            }}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              chooseBranch(b, e.ctrlKey || e.metaKey, e.shiftKey);
+            }}
             draggable
             onDragStart={(e) => {
               e.dataTransfer.setData("revqora/branch", b.name);
@@ -168,9 +230,13 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
             }}
             onMouseEnter={() => highlightBranch(root, b.oid)}
             onMouseLeave={() => highlightBranch(root, null)}
-            onDoubleClick={() => !isCur && A.checkout(root, b.name, kind)}
+            onDoubleClick={(e) => { if (!isCur && !e.ctrlKey && !e.metaKey && !e.shiftKey) void A.checkout(root, b.name, kind); }}
             onContextMenu={(e) =>
-              contextMenu(e, [
+              contextMenu(e, selected.length > 1 && selectedSet.has(b.fullName) ? [
+                { label: `Delete ${selected.length} branches…`, icon: <Trash2 size={14} />, danger: true, disabled: selected.length > 50,
+                  hint: selected.length > 50 ? "Select up to 50" : undefined, onClick: () => void deleteSelected() },
+                { label: "Clear selection", onClick: clearSelection },
+              ] : [
                 ...branchMenu(root, b.name, kind),
                 ...(upstream ? [{ label: `Upstream: ${upstream.name}`, icon: <Cloud size={14} />, children: [
                   { label: "Show tip in history", icon: <GitBranch size={14} />, onClick: () => viewBranch(upstream) },
@@ -234,18 +300,10 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
     </div>,
   ];
 
-  return (
-    <aside className="sidebar">
-      <div className="branches-heading"><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" aria-label="Branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root: tab.root })}><GitBranch size={14} /></button><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={onHide ?? (() => setLayout({ branchesOpen: false }))}><PanelLeftClose size={14} /></button></div>
-      <div className="sb-repo">
-        <div className="input-wrap">
-          <Search size={13} />
-          <input className="input sm" placeholder="Filter branches, tags, stashes" value={filter} onChange={(e) => setFilter(e.target.value)} />
-        </div>
-        <div className="sb-branch-filters"><button type="button" className={`btn sm ${branchPrefs.onlyMine?"active":""}`} aria-pressed={branchPrefs.onlyMine} disabled={!branchPrefs.onlyMine&&!authorQuery&&!refs?.identityEmail} title={`Recorded branch creator ${authorQuery?`matches: ${authorQuery}`:`email equals Git user.email: ${refs?.identityEmail??"not configured"}`}`} onClick={()=>setBranchPrefs(p=>({...p,onlyMine:!p.onlyMine}))}>My branches</button><button type="button" className="icon-btn sm" aria-label="Sidebar branch author filter" title="Choose branch creator email or name" onClick={()=>void configureAuthor()}><Pencil size={13}/></button><select className="select" aria-label="Branch list order" value={branchPrefs.sort} onChange={e=>setBranchPrefs(p=>({...p,sort:e.target.value as "recent"|"name"}))}><option value="recent">Recent first</option><option value="name">Name / folders</option></select></div>
-      </div>
-      <VirtualRows
-        rows={[
+  const branchesByRef = useMemo(() => new Map([...local, ...[...remoteByName.values()].flat()].map((branch) => [branch.fullName, branch])), [local, remoteByName]);
+  const selected = selection.filter((branch) => branchesByRef.has(branch.fullName));
+  const selectedSet = new Set(selected.map((branch) => branch.fullName));
+  const branchRows = [
         ...section(
           "local",
           "Branches",
@@ -254,7 +312,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           <button className="icon-btn sm" title="New branch" onClick={() => A.createBranch(root, null, current ?? "HEAD")}>
             <Plus size={13} />
           </button>,
-          local.length ? renderTree(buildTree(local,0,branchPrefs.sort==="recent"), "local", 0, "") : empty("empty-local", f||branchPrefs.onlyMine ? "No matches" : "No branches yet"),
+          collapsed.local ? [] : local.length ? renderTree(buildTree(local,0,branchPrefs.sort==="recent"), "local", 0, "") : empty("empty-local", f||branchPrefs.onlyMine ? "No matches" : "No branches yet"),
         ),
         ...section(
           "remotes",
@@ -264,7 +322,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           <button className="icon-btn sm" title="Add remote" onClick={() => A.addRemote(root)}>
             <Plus size={13} />
           </button>,
-          remoteByName.size === 0
+          collapsed.remotes ? [] : remoteByName.size === 0
             ? empty("empty-remotes", "No remotes")
             : [...remoteByName.entries()].flatMap(([name, list]) => {
               const key = `remote-root:${name}`;
@@ -303,6 +361,40 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               ];
             }),
         ),
+  ];
+  // Use the complete visible order, including rows outside the virtual viewport.
+  const visibleRefs = (branchRows as ReactElement[]).map((row) => String(row.key)).filter((ref) => branchesByRef.has(ref));
+
+  return (
+    <aside className="sidebar" onKeyDown={(e) => {
+      if (e.defaultPrevented || !(e.target as Element).closest("[data-branch-ref]")) return;
+      if (e.key === "Escape" && selected.length > 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        clearSelection();
+      }
+      if (e.key === "Delete" && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        void deleteSelected();
+      }
+    }}>
+      <div className="branches-heading"><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" aria-label="Branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root: tab.root })}><GitBranch size={14} /></button><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={onHide ?? (() => setLayout({ branchesOpen: false }))}><PanelLeftClose size={14} /></button></div>
+      <div className="sb-repo">
+        <div className="input-wrap">
+          <Search size={13} />
+          <input className="input sm" placeholder="Filter branches, tags, stashes" value={filter} onChange={(e) => { clearSelection(); setFilter(e.target.value); }} />
+        </div>
+        <div className="sb-branch-filters"><button type="button" className={`btn sm ${branchPrefs.onlyMine?"active":""}`} aria-pressed={branchPrefs.onlyMine} disabled={!branchPrefs.onlyMine&&!authorQuery&&!refs?.identityEmail} title={`Recorded branch creator ${authorQuery?`matches: ${authorQuery}`:`email equals Git user.email: ${refs?.identityEmail??"not configured"}`}`} onClick={()=>{ clearSelection(); setBranchPrefs(p=>({...p,onlyMine:!p.onlyMine})); }}>My branches</button><button type="button" className="icon-btn sm" aria-label="Sidebar branch author filter" title="Choose branch creator email or name" onClick={()=>void configureAuthor()}><Pencil size={13}/></button><select className="select" aria-label="Branch list order" value={branchPrefs.sort} onChange={e=>{ clearSelection(); setBranchPrefs(p=>({...p,sort:e.target.value as "recent"|"name"})); }}><option value="recent">Recent first</option><option value="name">Name / folders</option></select></div>
+        {selected.length > 1 && <div className="sb-branch-selection hstack">
+          <span className="muted" role="status">{selected.length} selected</span>
+          <button type="button" className="btn sm danger" disabled={selected.length > 50} title={selected.length > 50 ? "Select up to 50 branches per cleanup" : undefined} onClick={() => void deleteSelected()}><Trash2 size={13} /> Delete…</button>
+          <button type="button" className="icon-btn sm" title="Clear branch selection" aria-label="Clear branch selection" onClick={clearSelection}><ClearIcon size={14} /></button>
+        </div>}
+      </div>
+      <VirtualRows
+        rows={[
+        ...branchRows,
         ...section(
           "tags",
           "Tags",
