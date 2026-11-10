@@ -861,5 +861,4 @@ export interface FoundRepository {
 export interface RepositoryFolderScan {
   repositories: FoundRepository[];
   skipped: number;
-  limited: boolean;
 }
