@@ -13,7 +13,15 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
   for (const repo of ["import-direct", "import-direct/children/nested-repo", "import-backend/service-api", "import-backend/service-worker", "import-frontend/web-ui"]) {
     init(repo);
   }
-  const workingFile = path.join(parent, "import-backend", "service-api", "local.txt");
+  const serviceApi = path.join(parent, "import-backend", "service-api");
+  const gitService = (...args) => execFileSync("git", ["-C", serviceApi, ...args], { windowsHide: true });
+  const commitService = (subject) => gitService("-c", "user.name=Revqora Smoke", "-c", "user.email=smoke@example.invalid", "-c", "commit.gpgsign=false",
+    "commit", "--allow-empty", "-qm", subject);
+  commitService("Service API main");
+  gitService("switch", "-qc", "detached-branch-tip");
+  commitService("Detached branch target commit");
+  gitService("switch", "-q", "main");
+  const workingFile = path.join(serviceApi, "local.txt");
   fs.writeFileSync(workingFile, "uncommitted work\n");
   const sidebar = page.locator(".repository-sidebar:not(.workspace-sidebar)");
   const repositoriesToggle = page.getByRole("button", { name: "Toggle repositories panel", exact: true });
@@ -180,11 +188,22 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
     await workspaces.waitFor();
 
     await repoButton("service-api").click();
+    await page.locator(".view-tabs .view-tab").filter({ hasText: "History" }).click();
+    await page.locator(".workspace .graph-scroll").waitFor();
     const branchToggle = page.getByTitle("Toggle branches panel", { exact: true });
     if (await branchToggle.getAttribute("aria-expanded") !== "true") await branchToggle.click();
     await detach(page.locator(".branches-heading > b"));
-    await page.waitForFunction(() => !!window.__workspacePanelWindow?.document.querySelector(".detached-branches .sidebar"));
-    await page.locator(".topbar").getByRole("button", { name: "All repositories", exact: true }).click();
+    const showAll = page.locator(".topbar").getByRole("button", { name: "All repositories", exact: true });
+    const targetRef = '[data-branch-ref="refs/heads/detached-branch-tip"]';
+    await page.waitForFunction(selector => !!window.__workspacePanelWindow?.document.querySelector(`.detached-branches ${selector}`), targetRef);
+    await showAll.click();
+    await overview.waitFor();
+    await page.locator(".workspace .graph-scroll").waitFor({ state: "detached" });
+    await page.evaluate(selector => window.__workspacePanelWindow.document.querySelector(`.detached-branches ${selector}`).click(), targetRef);
+    await overview.waitFor({ state: "detached" });
+    await page.locator(".workspace .graph-scroll .grow.selected").filter({ hasText: "Detached branch target commit" }).waitFor();
+
+    await showAll.click();
     await overview.waitFor();
     await page.evaluate(() => window.__workspacePanelWindow.document.querySelector('.detached-branches button[aria-label="Branch manager"]').click());
     const manager = page.getByRole("region", { name: "Branch manager", exact: true });

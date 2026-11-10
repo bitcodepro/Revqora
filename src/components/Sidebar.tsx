@@ -31,14 +31,14 @@ import * as X from "../lib/extraActions";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import type { BranchInfo } from "../lib/types";
 import { useRepos, type RepoTab } from "../lib/store";
-import { contextMenu, copyText, openOverlay } from "../lib/ui";
+import { contextMenu, copyText, openOverlay, useUi } from "../lib/ui";
 import * as A from "../lib/actions";
 import { api } from "../lib/api";
 import { basename, joinPath, relativeTime } from "../lib/format";
 import { AheadBehind } from "./bits";
 import { branchMenu, tagMenu } from "./menus";
 import { reviewBranchCleanup } from "./BranchCleanup";
-import { usePanelTitleMenu } from "./PanelWindows";
+import { usePanelTitleMenu, usePanelWindows } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
 import { highlightBranch, jumpToCommit } from "./GraphView";
 import { promptDialog } from "./dialogs";
@@ -82,6 +82,7 @@ function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
 
 export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) {
   const panelMenu = usePanelTitleMenu("branches");
+  const { panels } = usePanelWindows();
   const { setLayout } = useWorkspaceLayout();
   const root = tab.root;
   const [branchPrefs,setBranchPrefs]=useState(()=>{try{return sidebarBranchPreferences(JSON.parse(localStorage.getItem(sidebarBranchesKey(root))??"null"));}catch{return sidebarBranchPreferences(null);}});
@@ -106,12 +107,17 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   };
   const viewBranch = (branch: BranchInfo) => {
     const repos = useRepos.getState();
-    if (tab.view === "history") {
+    const revealHistory = useUi.getState().repositoryOverview && !panels.history;
+    if (tab.view === "history" && !revealHistory) {
       repos.patch(root, { viewedBranch: branch.fullName });
       jumpToCommit(root, branch.oid);
       return;
     }
     repos.patch(root, { viewedBranch: branch.fullName, view: "history", selected: branch.oid, multi: [], branchFilter: null, historyJump: branch.oid });
+    if (revealHistory) {
+      useUi.setState({ repositoryOverview: false });
+      window.focus();
+    }
     if (tab.branchFilter || !tab.graph) void repos.refresh(root, { graph: true });
   };
 

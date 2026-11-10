@@ -1205,10 +1205,11 @@ fn guard_compared_pick_files(repo: &Path, pick: &ComparedCherryPick) -> GitResul
         super::workspace_files::path_list(&paths)?.split('\0').chain(conflicts.iter().copied()).filter(|path| !path.is_empty()).collect();
     let source = pick.oid.to_ascii_lowercase();
     for path in candidates {
+        // A literal tracked path can end with the same suffix as Git's generated names.
+        checked.extend_from_slice(path.as_bytes());
+        checked.push(0);
         let renamed = if conflicts.contains(path) { preview_conflict_name(path, pick) } else { None };
         let Some((stem, from_head)) = renamed else {
-            checked.extend_from_slice(path.as_bytes());
-            checked.push(0);
             continue;
         };
         // merge-tree labels generated paths with the supplied full OIDs.

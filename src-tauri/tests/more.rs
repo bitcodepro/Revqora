@@ -167,6 +167,41 @@ fn compared_cherry_pick_preserves_an_ignored_generated_conflict_path() {
 }
 
 #[test]
+fn compared_cherry_pick_preserves_an_ignored_literal_conflict_path_with_a_tip_suffix() {
+    let t = tempfile::tempdir().unwrap();
+    let r = repo(t.path());
+    git(&r, &["config", "merge.renames", "true"]);
+    commit(&r, ".gitignore", "node~*\n", "Ignore local copies");
+    let base = commit(&r, "old", "source\n", "Tracked original");
+    git(&r, &["switch", "-qc", "destination"]);
+    git(&r, &["rm", "--", "old"]);
+    git(&r, &["commit", "-qm", "Delete the original"]);
+    let destination = git(&r, &["rev-parse", "HEAD"]);
+    let renamed = format!("node~{destination}");
+    git(&r, &["switch", "-qc", "source", &base]);
+    git(&r, &["mv", "--", "old", &renamed]);
+    git(&r, &["commit", "-qm", "Rename the original"]);
+    let oid = git(&r, &["rev-parse", "HEAD"]);
+    git(&r, &["switch", "-q", "destination"]);
+    let obstructing = r.join(&renamed);
+    fs::write(&obstructing, "keep this file\n").unwrap();
+
+    let preview = runner::exec(&r, ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", &destination, &oid]).unwrap();
+    assert_eq!(preview.code, 1, "The fixture must produce a rename/delete conflict");
+    assert!(preview.stdout.split(|byte| *byte == 0).any(|path| path == renamed.as_bytes()));
+    let pick = ops::ComparedCherryPick {
+        source: "refs/heads/source".into(),
+        source_oid: oid.clone(),
+        destination: "refs/heads/destination".into(),
+        destination_oid: destination.clone(),
+        oid,
+    };
+    assert_eq!(ops::cherry_pick_compared(&r, &pick).unwrap_err().kind, "ignored-collision");
+    assert_eq!(fs::read_to_string(obstructing).unwrap(), "keep this file\n");
+    assert_eq!(git(&r, &["rev-parse", "HEAD"]), destination);
+}
+
+#[test]
 fn deleted_branches_can_be_restored() {
     let t = tempfile::tempdir().unwrap();
     let r = repo(t.path());
