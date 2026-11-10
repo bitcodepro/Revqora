@@ -480,16 +480,17 @@ async function loadGraphOnce(root: string, includeWorktree: boolean | undefined,
   const tab = store.tabs[root];
   if (!tab) return;
   const dirty = includeWorkingChanges(tab, includeWorktree ?? (!!tab.status && tab.status.files.length > 0));
+  const showIncoming = !useSettings.getState().hideIncomingByRepo[root];
   store.patch(root, { graphLoading: true });
   try {
     // First paint: the newest commits without the full ordered walk, then the whole history.
     if (!tab.graph) {
-      const quick = await api.graphLoad(root, tab.branchFilter, dirty, 2000, true).catch(() => null);
+      const quick = await api.graphLoad(root, tab.branchFilter, dirty, 2000, true, showIncoming).catch(() => null);
       if (!current()) return;
       const t0 = useRepos.getState().tabs[root];
       if (quick && t0 && !t0.graph) useRepos.getState().patch(root, { graph: quick, graphVersion: t0.graphVersion + 1, graphHasWorktree: dirty });
     }
-    const summary = await api.graphLoad(root, tab.branchFilter, dirty, useRepos.getState().tabs[root]?.graphLimit ?? tab.graphLimit);
+    const summary = await api.graphLoad(root, tab.branchFilter, dirty, useRepos.getState().tabs[root]?.graphLimit ?? tab.graphLimit, false, showIncoming);
     if (!current()) return;
     const t = useRepos.getState().tabs[root];
     if (!t) return;

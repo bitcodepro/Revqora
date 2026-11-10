@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./api", () => ({ api: { status: vi.fn(), repoInfo: vi.fn(), layersState: vi.fn(), refs: vi.fn(), repoExtras: vi.fn(), squashMerged: vi.fn(), graphLoad: vi.fn() }, errorMessage: String }));
-vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn() }) } }));
+vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), hideIncomingByRepo: {} }) } }));
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() } }));
 import { api } from "./api";

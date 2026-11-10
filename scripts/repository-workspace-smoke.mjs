@@ -287,17 +287,34 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     }
     const rows = page.locator(".graph-rows");
     const fetchedRow = rows.getByText("workspace fetched tip", { exact: true });
+    const incomingRows = rows.locator(".grow.incoming");
+    const incomingToggle = page.getByRole("button", { name: "Show incoming commits", exact: true });
     for (const layout of ["Graph", "Review", "Columns"]) {
       await layouts.getByRole("button", { name: layout, exact: true }).click();
       await rows.getByText("workspace base", { exact: true }).waitFor();
-      if (await fetchedRow.count()) throw new Error(`${layout} showed an unpulled commit in the current branch`);
+      await incomingRows.getByText("workspace fetched tip", { exact: true }).waitFor();
     }
+    await fetchedRow.click();
+    const preview = page.locator(".commit-preview");
+    await preview.locator(".diff .dl").first().waitFor();
+    await preview.getByRole("button", { name: "Close", exact: true }).click();
+    await incomingToggle.click();
+    await fetchedRow.waitFor({ state: "detached" });
+    await layouts.getByRole("button", { name: "Graph", exact: true }).click();
+    await rows.getByText("workspace base", { exact: true }).waitFor();
+    if (await fetchedRow.count() || await incomingToggle.getAttribute("aria-pressed") !== "false") {
+      throw new Error("Hiding incoming commits did not carry across layouts");
+    }
+    await pendingPull.waitFor();
     await historyScope.selectOption("refs/remotes/origin/main");
     await fetchedRow.waitFor();
     await historyScope.selectOption("HEAD");
     await fetchedRow.waitFor({ state: "detached" });
+    await incomingToggle.click();
+    await incomingRows.getByText("workspace fetched tip", { exact: true }).waitFor();
     await page.locator(".toolbar").getByTitle("Pull", { exact: true }).click();
-    await fetchedRow.waitFor({ timeout: syncTimeout });
+    await incomingRows.first().waitFor({ state: "detached", timeout: syncTimeout });
+    await fetchedRow.waitFor();
     await pendingPull.waitFor({ state: "detached" });
     if (git(root, "rev-parse", "HEAD") !== fetchedTip) throw new Error("Pull did not update the local branch");
     await layouts.getByRole("button", { name: originalLayout, exact: true }).click();

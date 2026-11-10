@@ -211,9 +211,11 @@ without a linked local branch. Counts and missing-upstream state use cached refs
 Fetch updates them without changing your working files.
 
 **Graph**, **Review** and **Columns** open on **Current branch** by default.
-Incoming commits are counted after Fetch and enter that local history after
-Pull. To inspect fetched commits before Pull, choose a remote branch or
-**All branches (local and fetched)** in the history scope.
+After Fetch, commits from its upstream appear above the local history with an
+**Incoming** badge. Select one to preview its files and diff before pulling.
+Use the eye button to hide incoming rows. Revqora remembers this choice for
+each repository. After Pull integrates the commits, they appear as regular
+history rows.
 
 The sidebar also offers **My branches** and **Recent first**. Recent order shows
 full branch names with the latest commit at the top; choose **Name / folders**

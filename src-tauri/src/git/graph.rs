@@ -56,6 +56,7 @@ pub struct GraphRow {
     pub is_merge: bool,
     /// Commit is not contained in any remote-tracking branch (safe to rewrite).
     pub local_only: bool,
+    pub incoming: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -183,8 +184,16 @@ pub struct GraphCache {
     pub limit: usize,
     /// How the commit list was obtained: "full" | "reused" | "incremental" | "fast".
     pub source: String,
+    incoming: Option<IncomingHistory>,
     lane_anchors: Arc<LaneAnchors>,
     previous_anchors: Option<(String, Arc<LaneAnchors>)>,
+}
+
+#[derive(Debug, Clone)]
+struct IncomingHistory {
+    base: String,
+    tip: String,
+    commits: Arc<Vec<CommitMeta>>,
 }
 
 impl GraphCache {
@@ -327,12 +336,17 @@ pub struct GraphSummary {
 
 /// Loads commit metadata. `fast` skips `--date-order` (which needs a full history walk before
 /// the first line) so the newest commits stream out immediately; used for the first paint.
-pub fn load_commits(repo: &Path, branch_filter: Option<&str>, limit: usize, fast: bool) -> GitResult<Vec<CommitMeta>> {
+fn log_arguments(repo: &Path, limit: usize, fast: bool) -> Vec<String> {
     let mut args: Vec<String> = vec!["log".into(), format!("--max-count={limit}"), "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ct%x1f%s%x1e".into()];
     // With a commit-graph file git can order the newest commits without a full walk.
     if !fast || has_commit_graph(repo) {
         args.insert(1, "--date-order".into());
     }
+    args
+}
+
+pub fn load_commits(repo: &Path, branch_filter: Option<&str>, limit: usize, fast: bool) -> GitResult<Vec<CommitMeta>> {
+    let mut args = log_arguments(repo, limit, fast);
     match branch_filter {
         Some(b) if !b.is_empty() => {
             args.push("--end-of-options".into());
@@ -346,7 +360,11 @@ pub fn load_commits(repo: &Path, branch_filter: Option<&str>, limit: usize, fast
         }
     }
     args.push("--".into());
-    let out = runner::exec(repo, &args)?;
+    read_commits(repo, &args)
+}
+
+fn read_commits(repo: &Path, args: &[String]) -> GitResult<Vec<CommitMeta>> {
+    let out = runner::exec(repo, args)?;
     if !out.ok() {
         // Unborn HEAD with no refs at all → empty history.
         if out.stderr.contains("does not have any commits") || out.stderr.contains("unknown revision") || out.stderr.contains("bad default revision") {
@@ -354,29 +372,7 @@ pub fn load_commits(repo: &Path, branch_filter: Option<&str>, limit: usize, fast
         }
         return Err(runner::to_error("git log", &out));
     }
-    let text = out.text();
-    let mut commits = Vec::new();
-    for rec in text.split('\x1e') {
-        let rec = rec.trim_start_matches(['\n', '\r']);
-        if rec.is_empty() {
-            continue;
-        }
-        let f: Vec<&str> = rec.splitn(8, '\x1f').collect();
-        if f.len() < 8 {
-            continue;
-        }
-        commits.push(CommitMeta {
-            oid: f[0].to_string(),
-            parents: f[1].split_whitespace().map(|s| s.to_string()).collect(),
-            author: f[2].to_string(),
-            email: f[3].to_string(),
-            author_time: f[4].parse().unwrap_or(0),
-            committer: f[5].to_string(),
-            commit_time: f[6].parse().unwrap_or(0),
-            subject: f[7].trim_end().to_string(),
-        });
-    }
-    Ok(commits)
+    Ok(parse_log(&out.text()))
 }
 
 /// Whether git's commit-graph cache exists for the repository.
@@ -414,30 +410,96 @@ pub fn build_with(
     fast: bool,
     prev: Option<&GraphCache>,
 ) -> GitResult<GraphCache> {
+    build_with_incoming(repo, branch_filter, include_worktree, limit, fast, prev, false)
+}
+
+fn incoming_history(
+    repo: &Path,
+    scope: &str,
+    refs: &[(String, String)],
+    limit: usize,
+    fast: bool,
+    previous: Option<&IncomingHistory>,
+) -> GitResult<Option<IncomingHistory>> {
+    if (scope != "HEAD" && !scope.starts_with("refs/heads/")) || !refs.iter().any(|(name, _)| name.starts_with("refs/remotes/")) {
+        return Ok(None);
+    }
+    let Some((_, base)) = refs.iter().find(|(name, _)| name == scope) else { return Ok(None) };
+    let resolved = if let Some(branch) = scope.strip_prefix("refs/heads/") {
+        runner::exec(repo, ["rev-parse", "--symbolic-full-name", "--verify", "--end-of-options", &format!("{branch}@{{upstream}}")])?
+    } else {
+        runner::exec(repo, ["rev-parse", "--symbolic-full-name", "HEAD", "@{upstream}"])?
+    };
+    if !resolved.ok() {
+        return Ok(None);
+    }
+    let output = resolved.text();
+    let mut lines = output.lines();
+    if scope == "HEAD" {
+        let Some(branch) = lines.next() else { return Ok(None) };
+        if !branch.starts_with("refs/heads/") || !refs.iter().any(|(name, oid)| name == branch && oid == base) {
+            return Ok(None);
+        }
+    }
+    let Some(upstream) = lines.next() else { return Ok(None) };
+    if !upstream.starts_with("refs/remotes/") {
+        return Ok(None);
+    }
+    let Some((_, tip)) = refs.iter().find(|(name, _)| name == upstream) else { return Ok(None) };
+    if base == tip {
+        return Ok(None);
+    }
+    if let Some(previous) = previous.filter(|history| history.base == *base && history.tip == *tip) {
+        return Ok(Some(previous.clone()));
+    }
+    // Reserve a row for the local tip even when the incoming history fills the window.
+    let mut args = log_arguments(repo, limit.saturating_sub(1), fast);
+    args.extend(["--end-of-options".into(), tip.clone(), format!("^{base}"), "--".into()]);
+    let commits = Arc::new(read_commits(repo, &args)?);
+    Ok(Some(IncomingHistory { base: base.clone(), tip: tip.clone(), commits }))
+}
+
+pub fn build_with_incoming(
+    repo: &Path,
+    branch_filter: Option<&str>,
+    include_worktree: bool,
+    limit: usize,
+    fast: bool,
+    prev: Option<&GraphCache>,
+    show_incoming: bool,
+) -> GitResult<GraphCache> {
     let refs = ref_snapshot(repo);
     let filter = branch_filter.filter(|b| !b.is_empty()).map(|s| s.to_string());
+    let scoped_tip = filter.as_ref().and_then(|reference| refs.iter().find(|(name, _)| name == reference));
     let reusable = prev.filter(|p| !fast && p.filter == filter && p.limit == limit && p.source != "fast");
     let reused = reusable.and_then(|p| {
-        let Some(reference) = filter.as_deref() else { return reuse_history(repo, p, &refs) };
-        let tip = refs.iter().find(|(name, _)| name == reference)?;
+        if filter.is_none() {
+            return reuse_history(repo, p, &refs);
+        }
         // The unfiltered incremental walk includes advances on every ref.
         // A scoped history is reusable only while its own tip is unchanged.
-        p.refs.contains(tip).then(|| ((*p.commits).clone(), "reused"))
+        p.refs.contains(scoped_tip?).then(|| ((*p.commits).clone(), "reused"))
     });
     // The history walk dominates; fetch decorations and remote info in parallel with it.
-    let (commits, labels, head_oid, local, has_remotes) = std::thread::scope(|sc| {
+    let (commits, incoming, labels, head_oid, local, has_remotes) = std::thread::scope(|sc| {
         let labels = sc.spawn(|| refs::labels_by_oid(repo));
         let head = sc.spawn(|| runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD"]).map(|o| o.text().trim().to_string()));
         let local = sc.spawn(|| local_only(repo));
         let remotes = sc.spawn(|| !runner::run(repo, ["remote"]).unwrap_or_default().trim().is_empty());
+        let incoming = sc.spawn(|| match filter.as_deref().filter(|_| show_incoming) {
+            Some(scope) => incoming_history(repo, scope, &refs, limit, fast, reusable.and_then(|p| p.incoming.as_ref())),
+            None => Ok(None),
+        });
         let commits = match &reused {
             Some((c, _)) => Ok(c.clone()),
             None if filter.as_deref() == Some("HEAD") && !refs.iter().any(|(name, _)| name == "HEAD") => Ok(Vec::new()),
-            None => load_commits(repo, branch_filter, limit, fast),
+            // Use the same local tip as the incoming range even if a ref moves during this build.
+            None => load_commits(repo, scoped_tip.map(|(_, oid)| oid.as_str()).or(branch_filter), limit, fast),
         };
         let join_err = || GitError::new("Background history task failed.");
         GitResult::Ok((
             commits?,
+            incoming.join().map_err(|_| join_err())??,
             labels.join().map_err(|_| join_err())??,
             head.join().map_err(|_| join_err())??,
             local.join().map_err(|_| join_err())?,
@@ -445,20 +507,22 @@ pub fn build_with(
         ))
     })?;
 
-    let mut order: Vec<(String, Vec<String>)> = Vec::with_capacity(commits.len() + 1);
+    let upstream_commits = incoming.as_ref().map_or(&[][..], |history| history.commits.as_slice());
+    let local_limit = if upstream_commits.is_empty() { commits.len() } else { limit.saturating_sub(upstream_commits.len()).min(commits.len()) };
+    let shown = upstream_commits.iter().chain(&commits[..local_limit]);
+    let mut order: Vec<(String, Vec<String>)> = Vec::with_capacity(upstream_commits.len() + local_limit + 1);
     if include_worktree && !head_oid.is_empty() {
         order.push((WORKTREE_OID.to_string(), vec![head_oid.clone()]));
     } else if include_worktree {
         order.push((WORKTREE_OID.to_string(), vec![]));
     }
     // Drop parents that are outside the loaded window so lanes do not dangle forever.
-    let known: HashMap<&str, ()> = commits.iter().map(|c| (c.oid.as_str(), ())).collect();
-    for c in &commits {
+    let known: HashMap<&str, ()> = shown.clone().map(|c| (c.oid.as_str(), ())).collect();
+    for c in shown.clone() {
         let parents: Vec<String> = c.parents.iter().filter(|p| known.contains_key(p.as_str())).cloned().collect();
         order.push((c.oid.clone(), parents));
     }
     let (lay, max_lanes, lane_anchors) = layout(&order);
-    let commit_list = commits.clone();
 
     let mut rows = Vec::with_capacity(order.len());
     let mut offset = 0;
@@ -482,10 +546,11 @@ pub fn build_with(
             is_head: false,
             is_merge: false,
             local_only: true,
+            incoming: false,
         });
         offset = 1;
     }
-    for (i, c) in commits.into_iter().enumerate() {
+    for (i, c) in shown.cloned().enumerate() {
         let l = &lay[i + offset];
         let refs = labels.get(&c.oid).cloned().unwrap_or_default();
         let is_merge = c.parents.len() > 1;
@@ -508,6 +573,7 @@ pub fn build_with(
             segs: l.segs.clone(),
             is_merge,
             local_only: lo,
+            incoming: i < upstream_commits.len(),
         });
     }
     let index = rows.iter().map(|r| (r.oid.clone(), r.index)).collect();
@@ -525,11 +591,12 @@ pub fn build_with(
         rows,
         max_lanes,
         index,
-        commits: Arc::new(commit_list),
+        commits: Arc::new(commits),
         refs,
         filter,
         limit,
         source,
+        incoming,
         lane_anchors: Arc::new(lane_anchors),
         previous_anchors,
     })

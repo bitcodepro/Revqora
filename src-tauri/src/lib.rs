@@ -741,11 +741,23 @@ async fn graph_load(
     include_worktree: bool,
     limit: Option<usize>,
     fast: Option<bool>,
+    show_incoming: Option<bool>,
 ) -> GitResult<GraphSummary> {
     let key = repo.clone();
     let fast = fast.unwrap_or(false);
     let prev = state.graphs.lock().get(&repo).cloned();
-    let cache = blocking(move || graph::build_with(&p(&repo), branch.as_deref(), include_worktree, limit.unwrap_or(150_000), fast, prev.as_deref())).await?;
+    let cache = blocking(move || {
+        graph::build_with_incoming(
+            &p(&repo),
+            branch.as_deref(),
+            include_worktree,
+            limit.unwrap_or(150_000),
+            fast,
+            prev.as_deref(),
+            show_incoming.unwrap_or(false),
+        )
+    })
+    .await?;
     let head_index = cache.rows.iter().position(|r| r.is_head);
     let summary = GraphSummary { head_oid: cache.head_oid.clone(), key: cache.key.clone(), total: cache.rows.len(), max_lanes: cache.max_lanes, head_index };
     state.graphs.lock().insert(key, Arc::new(cache));

@@ -23,6 +23,7 @@ export interface Settings {
   dateStyle: DateStyle;
   confirmDiscard: boolean;
   showRemoteBranchesInGraph: boolean;
+  hideIncomingByRepo: Record<string, true>;
   wrapDiff: boolean;
   recent: string[];
   openTabs: string[];
@@ -80,6 +81,7 @@ export const useSettings = create<Settings>()(
       dateStyle: "relative",
       confirmDiscard: true,
       showRemoteBranchesInGraph: true,
+      hideIncomingByRepo: {},
       wrapDiff: false,
       recent: [],
       openTabs: [],

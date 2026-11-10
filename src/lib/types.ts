@@ -179,6 +179,7 @@ export interface GraphRow {
   isHead: boolean;
   isMerge: boolean;
   localOnly: boolean;
+  incoming: boolean;
 }
 
 export interface GraphSummary {

@@ -205,6 +205,8 @@ try {
     const current = new Set(git("rev-list", "HEAD").split(/\r?\n/));
     const other = git("rev-parse", "refs/heads/feature/ui");
     if (current.has(other)) throw new Error("Expected a branch outside the current history");
+    const incomingToggle = page.getByRole("button", { name: "Show incoming commits", exact: true });
+    await incomingToggle.click();
     await page.waitForFunction(count => document.querySelectorAll(".grow").length === count, current.size + 1);
     await scope.selectOption("refs/heads/feature/ui");
     for (const layout of ["Review", "Columns", "Graph"]) {
@@ -213,6 +215,7 @@ try {
       await page.locator(".grow.wip").waitFor({ state: "detached" });
       if (await scope.inputValue() !== "refs/heads/feature/ui") throw new Error(`History scope changed in ${layout}`);
     }
+    await incomingToggle.click();
     await scope.selectOption("");
     await page.waitForFunction(() => document.querySelectorAll(".grow").length === 14);
     await shot("01-history");

@@ -1166,6 +1166,15 @@ select[size="1"]:not([multiple]) {
 .grow:hover {
   background: var(--bg-hover);
 }
+.grow.incoming {
+  border-left-color: var(--blue);
+}
+.grow.incoming:not(.selected, .multi, .lane-member, :hover) {
+  background: var(--blue-soft);
+}
+.incoming-badge {
+  flex: none;
+}
 .grow.selected {
   background: var(--bg-selected);
   border-left-color: var(--accent);

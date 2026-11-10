@@ -2,6 +2,8 @@ import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import {
   ChevronDown,
   ChevronUp,
+  Eye,
+  EyeOff,
   Filter,
   FolderSearch,
   Loader2,
@@ -122,6 +124,7 @@ const Row = memo(function Row(p: RowProps) {
   }
   const r = p.row;
   const wip = r.oid === WORKTREE;
+  const incomingBadge = r.incoming && <span className="pill blue incoming-badge" title="Fetched from upstream. Pull to add this commit to the local branch.">Incoming</span>;
   const mid = p.rowH / 2;
   const nodeColor = `var(--lane-${r.color % 12})`;
   const refs = p.showRemote
@@ -168,7 +171,7 @@ const Row = memo(function Row(p: RowProps) {
         : absoluteTime(r.authorTime);
     return (
       <div
-        className={`grow compact ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""}`}
+        className={`grow compact ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${r.incoming ? "incoming" : ""}`}
         style={{ top, height: p.rowH }}
         onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
         onContextMenu={(e) => p.onMenu(r, e)}
@@ -182,6 +185,7 @@ ${r.oid}`
         }
       >
         <div className="g-subject">
+          {incomingBadge}
           {badges}
           <span className="text">{r.subject}</span>
         </div>
@@ -196,7 +200,7 @@ ${r.oid}`
   }
   return (
     <div
-      className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""} ${p.pinnedLaneMember ? "lane-member" : ""}`}
+      className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""} ${p.pinnedLaneMember ? "lane-member" : ""} ${r.incoming ? "incoming" : ""}`}
       style={{ top, height: p.rowH, ...anim, ["--pinned-lane-color" as string]: p.pinnedLaneMember ? nodeColor : undefined }}
       onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
       onContextMenu={(e) => p.onMenu(r, e)}
@@ -300,6 +304,7 @@ ${r.oid}`
         </svg>
       </div>
       <div className="g-subject">
+        {incomingBadge}
         {badges}
         <span className="text" title={r.subject}>
           {r.subject}
@@ -345,7 +350,11 @@ export function GraphView({
   const root = tab.root;
   const fixedBranch = tab.branchFilter && tab.branchFilter !== CURRENT_HISTORY_BRANCH ? tab.branchFilter : null;
   const status = tab.status ?? tab.sidebarStatus;
-  const incoming = tab.branchFilter === CURRENT_HISTORY_BRANCH && status?.branch === tab.info?.head.branch ? status?.behind ?? 0 : 0;
+  const localScope = tab.branchFilter === CURRENT_HISTORY_BRANCH ? !!tab.info?.head.branch : !!fixedBranch?.startsWith("refs/heads/");
+  const showIncoming = useSettings(s => !s.hideIncomingByRepo[root]);
+  const incoming = tab.branchFilter === CURRENT_HISTORY_BRANCH && status?.branch === tab.info?.head.branch
+    ? status?.behind ?? 0
+    : tab.refs?.local.find(branch => branch.fullName === fixedBranch)?.behind ?? 0;
   const selectHistoryScope = (branchFilter: string | null) => {
     patch(root, { branchFilter, selected: null, multi: [], historyJump: null });
     setPin(null);
@@ -354,6 +363,17 @@ export function GraphView({
   };
   const summary = tab.graph;
   const patch = useRepos((s) => s.patch);
+  const toggleIncoming = () => {
+    const settings = useSettings.getState();
+    const hidden = { ...settings.hideIncomingByRepo };
+    if (showIncoming) hidden[root] = true;
+    else delete hidden[root];
+    settings.set({ hideIncomingByRepo: hidden });
+    patch(root, { selected: null, multi: [], historyJump: null });
+    setPin(null);
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    void loadGraph(root);
+  };
   const dateStyle = useSettings((s) => s.dateStyle);
   const showRemote = useSettings((s) => s.showRemoteBranchesInGraph);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -986,6 +1006,10 @@ export function GraphView({
           {fixedBranch && <button type="button" className="icon-btn sm" aria-label="Clear branch filter" title="Return to current branch"
             onClick={() => selectHistoryScope(CURRENT_HISTORY_BRANCH)}><X size={12} /></button>}
         </div>
+        {localScope && <button type="button" className={`icon-btn sm ${showIncoming ? "active" : ""}`} aria-label="Show incoming commits"
+          aria-pressed={showIncoming} title={showIncoming ? "Hide incoming commits" : "Show incoming commits"} onClick={toggleIncoming}>
+          {showIncoming ? <Eye size={15} /> : <EyeOff size={15} />}
+        </button>}
         {incoming > 0 && <span className="pill" title="Fetched commits waiting for Pull">{incoming.toLocaleString()} incoming · Pull to apply</span>}
         <div className="spacer" />
         <span className="faint" style={{ fontSize: "var(--fs-xs)" }}>
