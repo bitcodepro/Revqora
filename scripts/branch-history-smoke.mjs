@@ -73,10 +73,29 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await crossing.locator(".lane-line.hl").first().waitFor({ state: "attached" });
   assert.equal(await members.getByText("Destination change", { exact: true }).count(), 0, "A passing line must not highlight another lane's commit");
   await page.getByRole("button", { name: "Search all repositories", exact: true }).hover();
-  await graph.evaluate((el) => { el.scrollTop = 1400; });
-  await members.getByText(/History line [45]\d/).first().waitFor();
+  const rowHeight = await tip.evaluate(row => row.getBoundingClientRect().height);
+  await graph.evaluate((el, height) => { el.scrollTop = 46 * height; }, rowHeight);
+  await page.waitForFunction(lane => {
+    const viewport = document.querySelector(".graph-scroll");
+    if (!viewport || viewport.getAttribute("data-pinned-lane") !== lane) return false;
+    const bounds = viewport.getBoundingClientRect();
+    return [...viewport.querySelectorAll(".grow.lane-member")].some(row => {
+      if (!/^History line [45]\d$/.test(row.querySelector(".g-subject .text")?.textContent ?? "")) return false;
+      const rect = row.getBoundingClientRect();
+      if (rect.top >= bounds.bottom || rect.bottom <= bounds.top) return false;
+      return [...row.querySelectorAll(".lane-line.hl + .lane-hit")].some(segment => segment.getAttribute("data-lane") === lane);
+    });
+  }, pinned).catch(async error => {
+    const state = await graph.evaluate(el => ({
+      top: el.scrollTop,
+      height: el.clientHeight,
+      pin: el.getAttribute("data-pinned-lane"),
+      members: el.querySelectorAll(".grow.lane-member").length,
+      highlighted: [...el.querySelectorAll(".lane-line.hl + .lane-hit")].map(segment => segment.getAttribute("data-lane")),
+    }), undefined, { timeout: 3000 }).catch(() => null);
+    throw new Error(`Expected visible segments for lane ${pinned} after scrolling; graph state: ${JSON.stringify(state)}`, { cause: error });
+  });
   assert.equal(await graph.getAttribute("data-pinned-lane"), pinned);
-  assert(await graph.locator(".lane-line.hl").count(), "Newly visible segments must still be highlighted");
   git(root, "commit", "--allow-empty", "-qm", "Advance pinned history line");
   await page.getByTitle("Refresh (F5)", { exact: true }).click();
   await graph.evaluate((el) => { el.scrollTop = 0; });
