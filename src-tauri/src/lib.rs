@@ -2086,8 +2086,8 @@ pub fn run() {
             }
         }));
     }
-    // Settings and window geometry live in `data/` next to the exe. The window opens maximized
-    // the first time, then as it was closed. UI tests keep their own off-screen geometry.
+    // Open maximized with the last normal bounds available when restored.
+    // UI tests keep their own off-screen geometry.
     let remember_window = std::env::var_os("REVQORA_MULTI_INSTANCE").is_none();
     if remember_window {
         builder = builder.on_window_event(|window, event| {
@@ -2114,8 +2114,11 @@ pub fn run() {
                 portable::data_dir().map(|p| p.join("operation-log"))
             };
             journal::initialize(log_dir.as_deref());
-            if let Some(cfg) = app.config().app.windows.iter().find(|w| w.label == "main").cloned() {
+            if let Some(mut cfg) = app.config().app.windows.iter().find(|w| w.label == "main").cloned() {
                 portable::automation_startup("webview-builder-start");
+                if remember_window {
+                    cfg.visible = false;
+                }
                 // No Edge form autofill (its dropdown arrow showed up inside text fields).
                 let mut wb = tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.general_autofill_enabled(false);
                 if let Some(dir) = portable::webview_dir() {
@@ -2125,7 +2128,11 @@ pub fn run() {
                 let w = wb.build()?;
                 portable::automation_startup("webview-build-ready");
                 if remember_window {
-                    portable::restore_window(&w);
+                    portable::restore_window_bounds(&w);
+                    if let Err(error) = w.maximize() {
+                        eprintln!("Could not maximize the main window: {error}");
+                    }
+                    w.show()?;
                 }
             }
             if let Some(root) = update::launch().map(|l| l.root.clone()) {

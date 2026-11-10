@@ -73,10 +73,8 @@ import {gitConnectionDialog} from "./GitConnections";
 // ───────────── top bar ─────────────
 
 export function TopBar() {
-  const order = useRepos((s) => s.order);
   const tabs = useRepos((s) => s.tabs);
   const active = useRepos((s) => s.active);
-  const activate = useRepos((s) => s.activate);
   const tab = active ? tabs[active] : null;
   const theme = useSettings((s) => s.theme);
   const setS = useSettings((s) => s.set);
@@ -89,13 +87,12 @@ export function TopBar() {
 
   return (
     <div className="topbar">
-      <div className="brand" onClick={() => order.length ? useUi.setState({ repositoryOverview: true }) : activate(null)} title="Repositories overview">
-        <img src="/logo.svg" alt="" />
-        <span>Revqora</span>
+      <div className="topbar-navigation" role="group" aria-label="Repository navigation">
+        <button type="button" className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => setLayout({ repositoriesOpen: focusMode || !repositoriesOpen, focusMode: false })}><PanelLeft size={16} /></button>
+        <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
+        <RepositoryLibraryButton />
       </div>
-      <button className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => setLayout({ repositoriesOpen: focusMode || !repositoriesOpen, focusMode: false })}><PanelLeft size={16} /></button>
-      <button className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
-      <RepositoryLibraryButton /><WorkspacePicker />
+      <WorkspacePicker />
       <div className="repo-current" title={root ?? ""} onContextMenu={e => { if (root && !overview) contextMenu(e, namePathMenu(tab?.info?.name ?? basename(root), root, null)); }}>
         <b>{overview ? "All repositories" : tab?.info?.name ?? (root ? basename(root) : "Repositories")}</b>
         {!overview && tab?.info && <span onContextMenu={e => { if (root && tab.info?.head.branch) contextMenu(e, namePathMenu(tab.info.head.branch, root, `refs/heads/${tab.info.head.branch}`)); }}><GitBranch size={12} />{tab.info.head.branch ?? shortOid(tab.info.head.oid ?? "")}</span>}

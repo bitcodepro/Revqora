@@ -110,11 +110,10 @@ pub fn save_window_state(dir: &Path, state: &WindowState) {
     }
 }
 
-/// Restores the saved geometry, or opens maximized the first time.
-pub fn restore_window(window: &tauri::WebviewWindow) {
+/// Restores the normal bounds so Restore returns the user to their last placement.
+pub fn restore_window_bounds(window: &tauri::WebviewWindow) {
     let saved = data_dir().and_then(load_window_state);
     let Some(s) = saved.filter(|s| s.width >= 400 && s.height >= 300) else {
-        let _ = window.maximize();
         return;
     };
     let _ = window.set_size(tauri::PhysicalSize::new(s.width, s.height));
@@ -127,9 +126,6 @@ pub fn restore_window(window: &tauri::WebviewWindow) {
         let _ = window.set_position(tauri::PhysicalPosition::new(s.x, s.y));
     } else {
         let _ = window.center();
-    }
-    if s.maximized {
-        let _ = window.maximize();
     }
 }
 

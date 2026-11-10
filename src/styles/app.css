@@ -515,19 +515,11 @@ select[size="1"]:not([multiple]) {
   border-bottom: 1px solid var(--border);
   min-width: 0;
 }
-.brand {
+.topbar-navigation {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 700;
-  letter-spacing: 0.2px;
+  gap: 4px;
   flex: none;
-  cursor: pointer;
-}
-.brand img {
-  width: 22px;
-  height: 22px;
-  filter: drop-shadow(0 2px 6px rgba(124, 92, 255, 0.45));
 }
 .repo-tabs {
   display: flex;
