@@ -199,6 +199,8 @@ try {
   });
 
   await check("history defaults to the current branch and can show a selected branch or every branch", async () => {
+    // The previous scenario leaves Changes selected, even after switching repositories.
+    await page.getByRole("button", { name: "History", exact: true }).click();
     await page.waitForSelector(".grow:not(.wip) .g-subject .text", { timeout: 20000 });
     const scope = page.getByRole("combobox", { name: "History scope", exact: true });
     if (await scope.inputValue() !== "HEAD") throw new Error("History must start on the current branch");
