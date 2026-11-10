@@ -77,7 +77,7 @@ import {gitConnectionDialog} from "./GitConnections";
 // ───────────── top bar ─────────────
 
 export function TopBar() {
-  const { panels } = usePanelWindows();
+  const { panels, toggleSidebar } = usePanelWindows();
   const tabs = useRepos((s) => s.tabs);
   const active = useRepos((s) => s.active);
   const tab = active ? tabs[active] : null;
@@ -89,16 +89,11 @@ export function TopBar() {
   const dark = resolvedTheme(theme) === "dark";
   const overview = useUi((s) => s.repositoryOverview);
   const workspacesOpen = useSettings(s => s.workspacesOpen);
+  const shortcuts = useSettings(s => s.shortcuts);
   const updatePhase = useUpdate(s => s.phase);
-  const { layout: { branchesOpen, repositoriesOpen, focusMode }, setLayout } = useWorkspaceLayout();
+  const { layout: { repositoriesOpen, focusMode } } = useWorkspaceLayout();
   const hasCommit = !!tab?.selected && tab.selected !== WORKTREE;
   const panelWindowMenu = usePanelWindowMenu(!!tab?.info, hasCommit);
-  const toggleWorkspaces = () => {
-    if (panels.workspaces) { panels.workspaces.focus(); return; }
-    setS({ workspacesOpen: focusMode || !workspacesOpen });
-    if (focusMode) setLayout({ focusMode: false });
-  };
-  const toggleRepositories = () => panels.repositories ? panels.repositories.focus() : setLayout({ repositoriesOpen: focusMode || !repositoriesOpen, focusMode: false });
   const openWorktrees = (repo: string) => panels.worktrees ? panels.worktrees.focus() : openOverlay({ kind: "worktrees", root: repo });
   const showView = (view: RepoTab["view"]) => {
     if (!root) return;
@@ -120,8 +115,8 @@ export function TopBar() {
     }
   };
   const menu: MenuItem[] = [
-    { label: "Workspaces", icon: <FolderKanban size={15}/>, checked: workspacesOpen, onClick: toggleWorkspaces },
-    { label: "Toggle repositories panel", icon: <PanelLeft size={15}/>, onClick: toggleRepositories },
+    { label: "Workspaces", icon: <FolderKanban size={15}/>, checked: workspacesOpen && !focusMode, hint: prettyCombo(bindingFor("workspacesPanel", shortcuts)), onClick: () => toggleSidebar("workspaces") },
+    { label: "Toggle repositories panel", icon: <PanelLeft size={15}/>, hint: prettyCombo(bindingFor("repositoriesPanel", shortcuts)), onClick: () => toggleSidebar("repositories") },
     { label: "All repositories", icon: <LayoutGrid size={15}/>, onClick: () => useUi.setState({ repositoryOverview: true }) },
     { label: "Repository library and workspaces", onClick: () => void repositoryLibraryDialog() },
     { label: "Open repositories…", icon: <Plus size={15}/>, onClick: () => void A.openRepoDialog() },
@@ -131,7 +126,7 @@ export function TopBar() {
       { label: "History", onClick: () => showView("history") },
       { label: "Changes", onClick: () => showView("changes") },
       { label: "Pull requests / Merge requests", onClick: () => showView("pulls") },
-      { label: "Toggle branches panel", onClick: () => panels.branches ? panels.branches.focus() : setLayout({ branchesOpen: !branchesOpen || focusMode, focusMode: false }) },
+      { label: "Toggle branches panel", hint: prettyCombo(bindingFor("branchesPanel", shortcuts)), onClick: () => toggleSidebar("branches") },
       { label: "Refresh repository", icon: <RefreshCw size={15}/>, onClick: () => void useRepos.getState().refresh(root) },
       { separator: true },
       { label: "Sync…", onClick: () => void syncRepositories([root]) },
@@ -166,8 +161,8 @@ export function TopBar() {
   return (
     <div className="topbar" onContextMenu={e => { if (!(e.target as HTMLElement).closest("button, select, input, .repo-current")) contextMenu(e, menu); }}>
       <div className="topbar-navigation" role="group" aria-label="Repository navigation">
-        <button type="button" className={`icon-btn ${workspacesOpen ? "active" : ""}`} title="Toggle Workspaces panel" aria-label="Toggle Workspaces panel" aria-pressed={workspacesOpen} onClick={toggleWorkspaces}><FolderKanban size={16}/></button>
-        <button type="button" className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title="Toggle repositories panel" aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={toggleRepositories}><PanelLeft size={16} /></button>
+        <button type="button" className={`icon-btn ${workspacesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle Workspaces panel", "workspacesPanel")} aria-label="Toggle Workspaces panel" aria-pressed={workspacesOpen && !focusMode} onClick={() => toggleSidebar("workspaces")}><FolderKanban size={16}/></button>
+        <button type="button" className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle repositories panel", "repositoriesPanel")} aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => toggleSidebar("repositories")}><PanelLeft size={16} /></button>
         <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
         <RepositoryLibraryButton />
       </div>

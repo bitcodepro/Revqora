@@ -815,14 +815,22 @@ try {
     const list = await page.locator(".review-list").boundingBox();
     const details = await page.locator(".review-details").boundingBox();
     if (list.y >= details.y) throw new Error("review commits should be above the diff");
-    await page.click(".branches-toggle");
+    await page.waitForSelector(".branches-slot", { state: "visible" });
+    await page.keyboard.press("Control+Alt+b");
     await page.waitForSelector(".branches-slot", { state: "hidden" });
     await page.click(".branches-toggle");
     await page.waitForSelector(".branches-slot", { state: "visible" });
-    await page.click(".topbar button[aria-label='Toggle repositories panel']");
+    await page.waitForSelector(".repository-slot", { state: "visible" });
+    await page.keyboard.press("Control+Alt+r");
     await page.waitForSelector(".repository-slot", { state: "hidden" });
     await page.click(".topbar button[aria-label='Toggle repositories panel']");
     await page.waitForSelector(".repository-slot", { state: "visible" });
+    const workspaces = page.getByRole("complementary", { name: "Workspaces", exact: true });
+    const workspacesOpen = await workspaces.isVisible();
+    await page.keyboard.press("Control+Alt+w");
+    await workspaces.waitFor({ state: workspacesOpen ? "hidden" : "visible" });
+    await page.keyboard.press("Control+Alt+w");
+    await workspaces.waitFor({ state: workspacesOpen ? "visible" : "hidden" });
     // Give a growing pane actual headroom instead of depending on the runner's display.
     await page.setViewportSize({ width: 1600, height: 900 });
     const before = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);

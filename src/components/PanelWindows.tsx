@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ExternalLink, PanelTop } from "lucide-react";
 import { contextMenu, openOverlay, toast, useUi } from "../lib/ui";
@@ -13,18 +13,42 @@ const panelNames = {
   pulls: "Pull requests", worktrees: "Worktree manager",
 };
 export type PanelId = keyof typeof panelNames;
+type SidebarId = "workspaces" | "repositories" | "branches";
 type Panels = Partial<Record<PanelId, Window>>;
 interface PanelWindows {
   panels: Panels;
   detach: (id: PanelId) => void;
   attach: (id: PanelId) => void;
+  toggleSidebar: (id: SidebarId) => void;
 }
-const Context = createContext<PanelWindows>({ panels: {}, detach: () => {}, attach: () => {} });
+const Context = createContext<PanelWindows>({ panels: {}, detach: () => {}, attach: () => {}, toggleSidebar: () => {} });
 export const usePanelWindows = () => useContext(Context);
 
 export function PanelWindowsProvider({ children }: { children: ReactNode }) {
   const [panels, setPanels] = useState<Panels>({});
   const sessions = useRef(new Map<PanelId, { view: Window; close: () => void; check: () => void }>());
+  const toggleSidebar = useCallback((id: SidebarId) => {
+    const view = sessions.current.get(id)?.view;
+    if (view && !view.closed) { view.focus(); return; }
+
+    const repos = useRepos.getState();
+    const tab = repos.active ? repos.tabs[repos.active] : null;
+    if (id === "branches" && !tab?.info) return;
+
+    const overview = useUi.getState().repositoryOverview;
+    const settings = useSettings.getState();
+    const mode = workspaceMode(overview && id !== "branches" ? "overview" : tab?.view, settings.historyMode);
+    const layout = settings.layouts[mode];
+    if (id === "workspaces") {
+      settings.set({ workspacesOpen: layout.focusMode || !settings.workspacesOpen });
+      if (layout.focusMode) settings.setLayout(mode, { focusMode: false });
+    } else if (id === "repositories") {
+      settings.setLayout(mode, { repositoriesOpen: layout.focusMode || !layout.repositoriesOpen, focusMode: false });
+    } else {
+      settings.setLayout(mode, { branchesOpen: overview || layout.focusMode || !layout.branchesOpen, focusMode: false });
+      if (overview) useUi.setState({ repositoryOverview: false });
+    }
+  }, []);
   const attach = (id: PanelId) => {
     const session = sessions.current.get(id);
     if (!session) return;
@@ -130,7 +154,7 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
     window.addEventListener("beforeunload", closeAll);
     return () => { clearInterval(poll); window.removeEventListener("beforeunload", closeAll); closeAll(); };
   }, []);
-  return <Context.Provider value={{ panels, detach, attach }}>{children}</Context.Provider>;
+  return <Context.Provider value={{ panels, detach, attach, toggleSidebar }}>{children}</Context.Provider>;
 }
 
 export function usePanelWindowMenu(hasRepository: boolean, hasCommit: boolean) {

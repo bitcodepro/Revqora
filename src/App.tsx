@@ -89,7 +89,7 @@ function RepositoryContent({ tab }: { tab: RepoTab }) {
 const repositoryRemotesKey = (tab: RepoTab) => JSON.stringify(tab.refs?.remotes.map(({ name, fetchUrl }) => [name, fetchUrl]) ?? []);
 
 function RepoWorkspace({ tab }: { tab: RepoTab }) {
-  const { panels } = usePanelWindows();
+  const { panels, toggleSidebar } = usePanelWindows();
   const historyMenu = usePanelTitleMenu("history");
   const changesMenu = usePanelTitleMenu("changes");
   const pullMenu = usePanelTitleMenu("pulls");
@@ -147,7 +147,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
       {showBranches && <Splitter dir="v" style={{ left: sw }} onDrag={(d) => setSw((w) => Math.max(180, Math.min(420, w + d)))} onEnd={() => setLayout({ sidebarWidth: sw })} />}
       <div className="main">
         <div className="main-head">
-          <button className={`btn sm branches-toggle ${showBranches ? "active" : ""}`} aria-expanded={showBranches} title="Toggle branches panel" onClick={() => panels.branches ? panels.branches.focus() : setLayout({ branchesOpen: !showBranches, focusMode: false })}><GitBranch size={13} /> Branches</button>
+          <button className={`btn sm branches-toggle ${showBranches ? "active" : ""}`} aria-expanded={showBranches} title="Toggle branches panel" onClick={() => toggleSidebar("branches")}><GitBranch size={13} /> Branches</button>
           <div className="view-tabs">
             <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onContextMenu={historyMenu} onClick={() => patch(root, { view: "history" })} title={shortcutTitle("History", "history")}>
               <GitCommitHorizontal size={15} /> History
@@ -268,7 +268,7 @@ export default function App() {
 }
 
 function MainApp() {
-  const { panels, attach } = usePanelWindows();
+  const { panels, attach, toggleSidebar } = usePanelWindows();
   useAppearance();
   useEffect(startUpdateChecks, []);
   useAutoFetch();
@@ -403,8 +403,9 @@ function MainApp() {
         open: () => A.openRepoDialog(),
         refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && st.refresh(a),
         overview: () => useUi.setState({ repositoryOverview: true }),
-        repositoriesPanel: () => useSettings.getState().setLayout(mode, { repositoriesOpen: !layout.repositoriesOpen, focusMode: false }),
-        branchesPanel: () => useSettings.getState().setLayout(mode, { branchesOpen: !layout.branchesOpen, focusMode: false }),
+        workspacesPanel: () => toggleSidebar("workspaces"),
+        repositoriesPanel: () => toggleSidebar("repositories"),
+        branchesPanel: () => toggleSidebar("branches"),
         focusMode: () => useSettings.getState().setLayout(mode, { focusMode: !layout.focusMode }),
         history: () => a && st.patch(a, { view: "history" }),
         changes: () => a && st.patch(a, { view: "changes" }),
@@ -448,7 +449,7 @@ function MainApp() {
     const surfaces = [window, ...Object.values(panels)];
     for (const view of surfaces) view.addEventListener("keydown", onKey);
     return () => { for (const view of surfaces) view.removeEventListener("keydown", onKey); };
-  }, [panels]);
+  }, [panels, toggleSidebar]);
 
   // Block the default browser context menu outside our own menus.
   useEffect(() => {
