@@ -49,7 +49,7 @@ import { RepositoryOverview, RepositorySidebar } from "./components/Repositories
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
 import { WorkspacesSidebar } from "./components/WorkspacesSidebar";
-import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelWindows } from "./components/PanelWindows";
+import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows } from "./components/PanelWindows";
 import "./styles/workspace.css";
 
 function useAppearance() {
@@ -90,6 +90,9 @@ const repositoryRemotesKey = (tab: RepoTab) => JSON.stringify(tab.refs?.remotes.
 
 function RepoWorkspace({ tab }: { tab: RepoTab }) {
   const { panels } = usePanelWindows();
+  const historyMenu = usePanelTitleMenu("history");
+  const changesMenu = usePanelTitleMenu("changes");
+  const pullMenu = usePanelTitleMenu("pulls");
   const root = tab.root;
   const overlay = useUi((s) => (s.overlay && s.overlay.root === tab.root ? s.overlay : null));
   const patch = useRepos((s) => s.patch);
@@ -146,15 +149,15 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
         <div className="main-head">
           <button className={`btn sm branches-toggle ${showBranches ? "active" : ""}`} aria-expanded={showBranches} title="Toggle branches panel" onClick={() => panels.branches ? panels.branches.focus() : setLayout({ branchesOpen: !showBranches, focusMode: false })}><GitBranch size={13} /> Branches</button>
           <div className="view-tabs">
-            <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onClick={() => patch(root, { view: "history" })} title={shortcutTitle("History", "history")}>
+            <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onContextMenu={historyMenu} onClick={() => patch(root, { view: "history" })} title={shortcutTitle("History", "history")}>
               <GitCommitHorizontal size={15} /> History
             </button>
-            <button className={`view-tab ${tab.view === "changes" ? "on" : ""}`} onClick={() => patch(root, { view: "changes" })} title={shortcutTitle("Changes", "changes")}>
+            <button className={`view-tab ${tab.view === "changes" ? "on" : ""}`} onContextMenu={changesMenu} onClick={() => patch(root, { view: "changes" })} title={shortcutTitle("Changes", "changes")}>
               <FilePlus2 size={15} /> Changes
               {changesCount > 0 && <span className={`pill ${conflicts ? "red" : "accent"}`}>{changesCount}</span>}
             </button>
           </div>
-          <button className={`view-tab ${tab.view === "pulls" ? "on" : ""}`} onClick={() => patch(root, { view: "pulls" })} title={shortcutTitle("Pull requests", "pulls")}>
+          <button className={`view-tab ${tab.view === "pulls" ? "on" : ""}`} onContextMenu={pullMenu} onClick={() => patch(root, { view: "pulls" })} title={shortcutTitle("Pull requests", "pulls")}>
             <GitPullRequest size={15} /> {forgeKind === "gitlab" ? "Merge requests" : "Pull requests"}
           </button>
           <div className="spacer" />
@@ -293,6 +296,11 @@ function MainApp() {
   const repositoryCount = useRepos((s) => s.order.length);
   const hasBookmarks = useLibrary((s) => s.knownRoots.length > 0);
   const repositoryScope = useLibrary((s) => s.activeWorkspaceId) ?? "all";
+  const showMainChanges = (root: string, path?: string) => {
+    useUi.setState({ repositoryOverview: false });
+    useRepos.getState().patch(root, path ? { conflictPath: path, view: "changes", changeSel: { kind: "conflict", path } } : { view: "changes" });
+    window.focus();
+  };
 
   useEffect(startWorkspaceTracking, []);
   // Restore the tabs from the previous session.
@@ -367,9 +375,10 @@ function MainApp() {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing) return;
       const target = e.target as HTMLElement;
+      const owner = target?.ownerDocument ?? document;
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" &&
           useSettings.getState().workspacesOpen && hasWorkspaceDropToUndo() &&
-          !target.closest?.("input, textarea, select, [contenteditable], .cm-editor") && !document.querySelector(".modal")) {
+          !target?.closest?.("input, textarea, select, [contenteditable], .cm-editor") && !owner.querySelector(".modal")) {
         e.preventDefault();
         void undoWorkspaceDrop().then(errors => {
           if (errors.length) toast.warning("Workspace move could not be undone", errors.join("\n"));
@@ -389,8 +398,8 @@ function MainApp() {
       const mode = workspaceMode(useUi.getState().repositoryOverview ? "overview" : t?.view, useSettings.getState().historyMode);
       const layout = useSettings.getState().layouts[mode];
       const run: Record<string, () => void> = {
-        palette: () => useUi.getState().setPalette(true),
-        paletteAlternate: () => useUi.getState().setPalette(true),
+        palette: () => { window.focus(); useUi.getState().setPalette(true); },
+        paletteAlternate: () => { window.focus(); useUi.getState().setPalette(true); },
         open: () => A.openRepoDialog(),
         refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && st.refresh(a),
         overview: () => useUi.setState({ repositoryOverview: true }),
@@ -436,9 +445,10 @@ function MainApp() {
         run[id]();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    const surfaces = [window, ...Object.values(panels)];
+    for (const view of surfaces) view.addEventListener("keydown", onKey);
+    return () => { for (const view of surfaces) view.removeEventListener("keydown", onKey); };
+  }, [panels]);
 
   // Block the default browser context menu outside our own menus.
   useEffect(() => {
@@ -471,10 +481,10 @@ function MainApp() {
       <DetachedPanel id="workspaces"><WorkspacesSidebar onClose={() => attach("workspaces")}/></DetachedPanel>
       <DetachedPanel id="repositories"><RepositorySidebar key={repositoryScope}/></DetachedPanel>
       <DetachedPanel id="branches">{tab?.info && <Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/>}</DetachedPanel>
-      <DetachedPanel id="history">{tab?.info && <GraphView key={tab.root} tab={tab} onEnterChanges={() => useRepos.getState().patch(tab.root, { view: "changes" })}/>}</DetachedPanel>
+      <DetachedPanel id="history">{tab?.info && <GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/>}</DetachedPanel>
       <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <CommitDetails root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/> : null}</DetachedPanel>
       <DetachedPanel id="pulls">{tab?.info && <PullRequestsView key={tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/>}</DetachedPanel>
-      <DetachedPanel id="changes">{tab?.info && <ChangesView key={tab.root} tab={tab} onOpenConflict={path => useRepos.getState().patch(tab.root, { conflictPath: path, view: "changes", changeSel: { kind: "conflict", path } })}/>}</DetachedPanel>
+      <DetachedPanel id="changes">{tab?.info && <ChangesView key={tab.root} tab={tab} onOpenConflict={path => showMainChanges(tab.root, path)}/>}</DetachedPanel>
       <DetachedPanel id="worktrees">{tab?.info && <WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/>}</DetachedPanel>
     </div></WorkspaceLayoutContext.Provider>
   );

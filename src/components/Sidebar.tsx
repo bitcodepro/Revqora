@@ -38,6 +38,7 @@ import { basename, joinPath, relativeTime } from "../lib/format";
 import { AheadBehind } from "./bits";
 import { branchMenu, tagMenu } from "./menus";
 import { reviewBranchCleanup } from "./BranchCleanup";
+import { usePanelTitleMenu } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
 import { highlightBranch, jumpToCommit } from "./GraphView";
 import { promptDialog } from "./dialogs";
@@ -80,6 +81,7 @@ function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
 }
 
 export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) {
+  const panelMenu = usePanelTitleMenu("branches");
   const { setLayout } = useWorkspaceLayout();
   const root = tab.root;
   const [branchPrefs,setBranchPrefs]=useState(()=>{try{return sidebarBranchPreferences(JSON.parse(localStorage.getItem(sidebarBranchesKey(root))??"null"));}catch{return sidebarBranchPreferences(null);}});
@@ -379,7 +381,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
         void deleteSelected();
       }
     }}>
-      <div className="branches-heading"><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" aria-label="Branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root: tab.root })}><GitBranch size={14} /></button><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={onHide ?? (() => setLayout({ branchesOpen: false }))}><PanelLeftClose size={14} /></button></div>
+      <div className="branches-heading" onContextMenu={panelMenu}><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" aria-label="Branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root: tab.root })}><GitBranch size={14} /></button><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={onHide ?? (() => setLayout({ branchesOpen: false }))}><PanelLeftClose size={14} /></button></div>
       <div className="sb-repo">
         <div className="input-wrap">
           <Search size={13} />

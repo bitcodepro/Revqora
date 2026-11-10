@@ -1,9 +1,11 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ExternalLink, PanelTop } from "lucide-react";
-import { contextMenu, toast, useUi } from "../lib/ui";
+import { contextMenu, openOverlay, toast, useUi } from "../lib/ui";
 import { registerUiSurface, surfaceDocument } from "../lib/uiSurfaces";
 import { useSettings } from "../lib/settings";
+import { useRepos } from "../lib/store";
+import { workspaceMode } from "../lib/workspaceLayouts";
 
 const panelNames = {
   workspaces: "Workspaces", repositories: "Repositories", branches: "Branches",
@@ -23,7 +25,32 @@ export const usePanelWindows = () => useContext(Context);
 export function PanelWindowsProvider({ children }: { children: ReactNode }) {
   const [panels, setPanels] = useState<Panels>({});
   const sessions = useRef(new Map<PanelId, { view: Window; close: () => void; check: () => void }>());
-  const attach = (id: PanelId) => sessions.current.get(id)?.close();
+  const attach = (id: PanelId) => {
+    const session = sessions.current.get(id);
+    if (!session) return;
+    session.close();
+    const repos = useRepos.getState();
+    const root = repos.active;
+    const current = root ? repos.tabs[root] : null;
+    const settings = useSettings.getState();
+    const mode = workspaceMode(useUi.getState().repositoryOverview ? "overview" : current?.view, settings.historyMode);
+    if (id === "workspaces") {
+      settings.set({ workspacesOpen: true });
+      settings.setLayout(mode, { focusMode: false });
+    } else if (id === "repositories") {
+      settings.setLayout(mode, { repositoriesOpen: true, focusMode: false });
+    } else if (root && current) {
+      useUi.setState({ repositoryOverview: false });
+      if (id === "branches") settings.setLayout(workspaceMode(current.view, settings.historyMode), { branchesOpen: true, focusMode: false });
+      else if (id === "worktrees") openOverlay({ kind: "worktrees", root });
+      else {
+        const view = id === "history" || id === "commit" ? "history" : id;
+        repos.patch(root, { view });
+        if (id === "history") settings.setLayout(workspaceMode(view, settings.historyMode), { focusMode: false });
+      }
+    }
+    window.focus();
+  };
   const detach = (id: PanelId) => {
     const existing = sessions.current.get(id);
     if (existing && !existing.view.closed) { existing.view.focus(); return; }
@@ -116,6 +143,14 @@ export function usePanelWindowMenu(hasRepository: boolean, hasCommit: boolean) {
   }));
 }
 
+export function usePanelTitleMenu(id: PanelId) {
+  const { panels, detach } = usePanelWindows();
+  return (event: ReactMouseEvent<HTMLElement>) => {
+    if (panels[id] || (event.target as HTMLElement).closest?.("input, textarea, select, [contenteditable]")) return;
+    contextMenu(event, [{ label: "Detach", icon: <ExternalLink size={14}/>, onClick: () => detach(id) }]);
+  };
+}
+
 export function PanelWindowsButton({ hasRepository, hasCommit }: { hasRepository: boolean; hasCommit: boolean }) {
   const menu = usePanelWindowMenu(hasRepository, hasCommit);
   return <button type="button" className="icon-btn" title="Panels in separate windows" aria-label="Panels in separate windows"
@@ -128,7 +163,9 @@ export function DetachedPanel({ id, children }: { id: PanelId; children: ReactNo
   const body = target && surfaceDocument(target)?.body;
   if (!body) return null;
   return createPortal(<section className="detached-panel">
-    <header><b>{panelNames[id]}</b><button type="button" className="btn sm" onClick={() => attach(id)}><PanelTop size={14}/> Return to main window</button></header>
+    <header onContextMenu={event => contextMenu(event, [{ label: "Attach", icon: <PanelTop size={14}/>, onClick: () => attach(id) }])}>
+      <b>{panelNames[id]}</b><button type="button" className="btn sm" title="Attach to the main window" onClick={() => attach(id)}><PanelTop size={14}/> Return to main window</button>
+    </header>
     <div className={`detached-content detached-${id}`}>{children ?? <div className="empty">Select a repository or commit in the main window.</div>}</div>
   </section>, body, id);
 }

@@ -37,10 +37,11 @@ export async function namePathCopySmoke({page,root}) {
     await copy(page.locator('.sidebar [data-branch-kind="local"][data-branch-name="main"]'),"main");
     await copy(page.locator(".graph-scroll .ref.head").filter({hasText:"main"}).first(),"main");
     await page.getByRole("button",{name:"Open branch manager",exact:true}).click();
-    const main=page.locator('[data-branch-ref="refs/heads/main"]');
+    const manager=page.getByRole("region",{name:"Branch manager",exact:true});
+    const main=manager.locator('[data-branch-ref="refs/heads/main"]');
     await copy(main,"main");
-    await main.click();await copy(page.locator(".bm-detail h3"),"main");
-    await copy(page.locator('[data-branch-ref="refs/remotes/origin/main"]'),"origin/main");
+    await main.click();await copy(manager.locator(".bm-detail h3"),"main");
+    await copy(manager.locator('[data-branch-ref="refs/remotes/origin/main"]'),"origin/main");
     await page.getByRole("button",{name:"Close branch manager",exact:true}).click();
     await page.getByRole("button",{name:"Open worktree manager",exact:true}).click();
     const worktree=page.locator("[data-worktree-path]").filter({has:page.getByText(root,{exact:true})});

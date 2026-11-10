@@ -38,7 +38,11 @@ export function useToolDetailSize(key: string, breakpoint: number) {
     return () => observer.disconnect();
   }, [breakpoint]);
   return {
-    body, detail, style: size.style, narrow,
+    body, detail, narrow,
+    style: {
+      "--tool-detail-width": size.value ? `${size.value.width}px` : undefined,
+      "--tool-detail-height": size.value ? `${size.value.height}px` : undefined,
+    } as CSSProperties,
     divider: <Splitter dir={narrow ? "h" : "v"} label="Resize details pane" style={narrow ? undefined : { right: 0 }}
       onDrag={delta => {
         const panel = detail.current, container = body.current;

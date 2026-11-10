@@ -15,6 +15,7 @@ import { Modal } from "./Modal";
 import { recoveryDialog } from "./RecoveryCenter";
 import { useSettings } from "../lib/settings";
 import { useToolDetailSize, useWindowSize, WindowResizeGrip } from "./WindowResize";
+import { usePanelTitleMenu } from "./PanelWindows";
 
 const size=(n:number)=>n<1048576?`${(n/1024).toFixed(1)} KiB`:`${(n/1048576).toFixed(1)} MiB`;
 export const worktreeCreateDialog=(root:string)=>showDialog<void>(close=><CreateWorktree root={root} close={()=>close()} />);
@@ -155,6 +156,7 @@ function PruneWorktrees({root,close}:{root:string;close:()=>void}){
 }
 
 export function WorktreeManager({root,floating=false,onClose=closeOverlay}:{root:string;floating?:boolean;onClose?:()=>void}){
+  const panelMenu = usePanelTitleMenu("worktrees");
   const ROW=76 + Math.ceil(Math.max(0,useSettings(s=>s.uiFontSize)-13)*3);
   const surface=useRef<HTMLElement>(null);
   const windowSize=useWindowSize("Worktree manager");
@@ -183,7 +185,7 @@ export function WorktreeManager({root,floating=false,onClose=closeOverlay}:{root
   const choose=(i:number)=>{const index=Math.max(0,Math.min(rows.length-1,i));setSelected(rows[index]?.path??null);const p=viewport.current;if(p&&index*ROW<p.scrollTop)p.scrollTop=index*ROW;else if(p&&(index+1)*ROW>p.scrollTop+p.clientHeight)p.scrollTop=(index+1)*ROW-p.clientHeight;};
   const {start:first,end:last}=virtualRange(rows.length,ROW,height,scroll,4);
   return <section ref={surface} className={`conflict-overlay worktree-manager ${floating ? "" : "centered-tool-window"}`} style={{ ...(!floating ? windowSize.style : {}), ["--worktree-row-height" as string]: `${ROW}px` }} aria-label="Worktree manager">
-    <header className="cf-head"><FolderGit2 size={18}/><b>Worktree manager</b><span className="muted">{snapshot?.worktrees.length??0} working folders</span><div className="spacer"/>
+    <header className="cf-head" onContextMenu={panelMenu}><FolderGit2 size={18}/><b>Worktree manager</b><span className="muted">{snapshot?.worktrees.length??0} working folders</span><div className="spacer"/>
       <button className="btn" disabled={initialLoading||pending} onClick={()=>void action(()=>worktreeCreateDialog(root))}><Plus size={14}/>New worktree</button>
       <button className="btn" disabled={initialLoading||pending} onClick={()=>void action(()=>worktreePruneDialog(root))}>Review missing entries</button>
       <button className="icon-btn" aria-label="Refresh worktrees" disabled={loading||pending} onClick={()=>void refresh()}><RefreshCw size={16} className={loading?"spin":""}/></button>

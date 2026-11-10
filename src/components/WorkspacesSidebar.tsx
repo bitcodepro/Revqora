@@ -6,9 +6,11 @@ import { useSettings } from "../lib/settings";
 import { toast, useUi } from "../lib/ui";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { Splitter } from "./Overlays";
+import { usePanelTitleMenu } from "./PanelWindows";
 import { repositoryLibraryDialog } from "./RepositoryLibrary";
 
 export function WorkspacesSidebar({ onClose }: { onClose: () => void }) {
+  const panelMenu = usePanelTitleMenu("workspaces");
   const workspaces = useLibrary(s => s.workspaces);
   const active = useLibrary(s => s.activeWorkspaceId);
   const favorites = useLibrary(s => s.favoriteWorkspaceIds);
@@ -28,7 +30,7 @@ export function WorkspacesSidebar({ onClose }: { onClose: () => void }) {
   };
 
   return <aside className="repository-sidebar workspace-sidebar" aria-label="Workspaces" style={{ width }}>
-    <header><FolderKanban size={15}/><b>Workspaces</b><span className="pill">{workspaces.length}</span><div className="spacer"/><button type="button" className="icon-btn sm" aria-label="Hide Workspaces" onClick={onClose}><X size={13}/></button></header>
+    <header onContextMenu={panelMenu}><FolderKanban size={15}/><b>Workspaces</b><span className="pill">{workspaces.length}</span><div className="spacer"/><button type="button" className="icon-btn sm" aria-label="Hide Workspaces" onClick={onClose}><X size={13}/></button></header>
     <div className="repository-filter input-wrap"><Search size={13}/><input className="input sm" aria-label="Find workspace" placeholder="Find workspace…" value={query} onChange={e => setQuery(e.target.value)}/></div>
     <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly} onClick={() => useSettings.getState().set({ workspaceFavoritesOnly: !favoritesOnly })}>Favorites</button>
     <button type="button" className={`repository-overview-link ${active === null ? "active" : ""}`} aria-current={active === null} disabled={busy} onClick={openAllWorkspaces}><LayoutGrid size={14}/> All Workspaces</button>

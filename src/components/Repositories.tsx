@@ -17,6 +17,7 @@ import { contextMenu, endBusy, showDialog, startBusy, toast, useUi } from "../li
 import { AheadBehind } from "./bits";
 import { Modal } from "./Modal";
 import { Splitter } from "./Overlays";
+import { usePanelTitleMenu } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
 
 let running = false;
@@ -160,6 +161,7 @@ function workspaceOrder(order: string[], workspace?: SavedWorkspace) {
 }
 
 export function RepositorySidebar() {
+  const panelMenu = usePanelTitleMenu("repositories");
   const { panels } = usePanelWindows();
   const order = useRepos((s) => s.order);
   const tabs = useRepos((s) => s.tabs);
@@ -192,7 +194,7 @@ export function RepositorySidebar() {
   const selected = selecting ? displayed.filter(root => selection.includes(root)) : [];
   return (
     <div className="repository-sidebar" style={{ width: w }}>
-      <header><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{open.length}</span><div className="spacer" /><button className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
+      <header onContextMenu={panelMenu}><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{open.length}</span><div className="spacer" /><button className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
       <div className="repository-filter input-wrap"><Search size={13} /><input className="input sm" placeholder="Find repository…" aria-label="Find repository" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupFilter?.id ?? ""} onChange={(e) => setGroupId(e.target.value)}><option value="">All groups</option>{groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select>}
       <SyncButtons roots={visible.filter((r) => !!tabs[r])} scoped={!!query.trim() || updatesOnly || favoritesOnly || !!groupFilter} />

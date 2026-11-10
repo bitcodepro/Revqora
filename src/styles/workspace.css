@@ -221,7 +221,7 @@
 .bm-row:hover { background: var(--bg-hover); }
 .bm-row.selected { background: var(--bg-selected); box-shadow: inset 3px 0 var(--accent); }
 .bm-columns { height: 34px; flex-shrink: 0; cursor: default; color: var(--text-faint); font-size: 11px; font-weight: 600; }
-.bm-detail { width: var(--saved-window-width, clamp(240px, 26%, 340px)); max-width: 65%; flex-shrink: 0; border-left: 1px solid var(--border); padding: 16px; overflow: auto; }
+.bm-detail { width: var(--tool-detail-width, clamp(240px, 26%, 340px)); max-width: 65%; flex-shrink: 0; border-left: 1px solid var(--border); padding: 16px; overflow: auto; }
 .bm-detail h3 { margin: 0 0 8px; overflow-wrap: anywhere; }
 .bm-detail h4 { margin: 18px 0 8px; }
 .bm-wrap, .bm-notice { overflow-wrap: anywhere; }
@@ -266,7 +266,7 @@
 .wm-row small { color:var(--text-faint); margin-top:6px; }
 .wm-row:hover { background:var(--bg-hover); }
 .wm-row.selected { background:var(--bg-selected); box-shadow:inset 3px 0 var(--accent); }
-.wm-detail { width:var(--saved-window-width,clamp(260px,28%,360px));max-width:65%; flex-shrink:0; padding:16px; border-left:1px solid var(--border); overflow:auto; }
+.wm-detail { width:var(--tool-detail-width,clamp(260px,28%,360px));max-width:65%; flex-shrink:0; padding:16px; border-left:1px solid var(--border); overflow:auto; }
 .wm-detail h3 { margin-top:0; overflow-wrap:anywhere; }
 .wm-actions { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,145px),1fr)); gap:8px; margin-top:16px; }
 .wm-actions > .btn { min-width:0; height:auto; min-height:32px; padding:7px 12px; white-space:normal; }
@@ -467,7 +467,7 @@
 .tool-detail-divider { position: relative; width: 0; flex: none; z-index: 2; }
 .tool-details-stacked { flex-direction: column; }
 .tool-details-stacked .tool-detail-divider { width: auto; }
-.tool-details-stacked :is(.wm-detail,.bm-detail) { width: auto; max-width: none; height: var(--saved-window-height, auto); max-height: min(var(--saved-window-height,42%), 65%); border-left: 0; border-top: 1px solid var(--border); }
+.tool-details-stacked :is(.wm-detail,.bm-detail) { width: auto; max-width: none; height: var(--tool-detail-height, auto); max-height: min(var(--tool-detail-height,42%), 65%); border-left: 0; border-top: 1px solid var(--border); }
 .tool-details-stacked .bm-list { min-height: 130px; }
 .repository-table tbody tr { cursor: pointer; }
 .repository-table tbody tr.active { background: var(--bg-selected); }

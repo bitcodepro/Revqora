@@ -1180,17 +1180,79 @@ fn guard_compared_pick_files(repo: &Path, pick: &ComparedCherryPick) -> GitResul
         Some(parent) => parent.to_owned(),
         None => runner::run_env(repo, ["hash-object", "-t", "tree", "-w", "--stdin"], &[], Some(&[]))?.trim().to_owned(),
     };
-    let preview = runner::exec(repo, ["merge-tree", "--write-tree", "--no-messages", &format!("--merge-base={base}"), &pick.destination_oid, &pick.oid])?;
-    if preview.code == 1 {
-        // Conflict paths can depend on the labels used by Git during checkout.
-        return Err(GitError::new("This cherry-pick conflicts and could overwrite ignored files. Move those files outside the repository and try again."));
-    }
-    if !preview.ok() {
+    let preview = runner::exec(
+        repo,
+        ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", &format!("--merge-base={base}"), &pick.destination_oid, &pick.oid],
+    )?;
+    if !matches!(preview.code, 0 | 1) {
         return Err(runner::to_error("preview cherry-pick to protect ignored files", &preview));
     }
-    let result = preview.text();
-    let paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "-z", &pick.destination_oid, result.trim(), "--"])?;
-    check_ignored_paths(repo, &ignored, &paths, "ignored")
+    let output = super::workspace_files::path_list(&preview.stdout)?;
+    let (tree, conflicts) = output.split_once('\0').ok_or_else(|| GitError::new("Git returned an invalid cherry-pick preview."))?;
+    if !matches!(tree.len(), 40 | 64) || !tree.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(GitError::new("Git returned an invalid cherry-pick preview tree."));
+    }
+    let paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "-z", &pick.destination_oid, tree, "--"])?;
+    let conflicts: std::collections::BTreeSet<_> = conflicts.split('\0').filter(|path| !path.is_empty()).collect();
+    if conflicts.is_empty() {
+        return check_ignored_paths(repo, &ignored, &paths, "ignored");
+    }
+    let mut checked = Vec::new();
+    let insensitive = cfg!(windows) || runner::exec(repo, ["config", "--bool", "--get", "core.ignorecase"])?.text().trim() == "true";
+    let normalize = |path: &str| if insensitive { path.to_lowercase() } else { path.to_owned() };
+    let local: std::collections::BTreeMap<_, _> = ignored.paths.iter().map(|path| (normalize(path.trim_end_matches('/')), path)).collect();
+    let candidates: std::collections::BTreeSet<_> =
+        super::workspace_files::path_list(&paths)?.split('\0').chain(conflicts.iter().copied()).filter(|path| !path.is_empty()).collect();
+    let source = pick.oid.to_ascii_lowercase();
+    for path in candidates {
+        let renamed = if conflicts.contains(path) { preview_conflict_name(path, pick) } else { None };
+        let Some((stem, from_head)) = renamed else {
+            checked.extend_from_slice(path.as_bytes());
+            checked.push(0);
+            continue;
+        };
+        // merge-tree labels generated paths with the supplied full OIDs.
+        // cherry-pick uses HEAD or "<abbrev> (<subject>)", with optional _N.
+        // Check that family under this specific conflict, including ignored ancestors.
+        let prefix = format!("{}~", normalize(stem));
+        let ancestors = prefix.match_indices('/').filter_map(|(index, _)| local.get(&prefix[..index]));
+        let generated = local.range(prefix.clone()..).take_while(|(path, _)| path.starts_with(&prefix)).filter_map(|(path, original)| {
+            let name = path[prefix.len()..].split('/').next().unwrap_or_default();
+            let matches = if from_head {
+                conflict_suffix(name, if insensitive { "head" } else { "HEAD" })
+            } else {
+                name.split_once(" (").is_some_and(|(sha, subject)| {
+                    !sha.is_empty()
+                        && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        && source.starts_with(sha)
+                        && (subject.ends_with(')') || subject.rsplit_once(')').is_some_and(|(_, tail)| conflict_suffix(tail, "")))
+                })
+            };
+            matches.then_some(original)
+        });
+        for original in ancestors.chain(generated) {
+            checked.extend_from_slice(original.trim_end_matches('/').as_bytes());
+            checked.push(0);
+        }
+    }
+    check_ignored_paths(repo, &ignored, &checked, "ignored")
+}
+
+fn conflict_suffix(name: &str, label: &str) -> bool {
+    name.strip_prefix(label).is_some_and(|tail| {
+        tail.is_empty() || tail.strip_prefix('_').is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()))
+    })
+}
+
+fn preview_conflict_name<'a>(path: &'a str, pick: &ComparedCherryPick) -> Option<(&'a str, bool)> {
+    let (stem, name) = path.rsplit_once('~')?;
+    if conflict_suffix(name, &pick.destination_oid) {
+        Some((stem, true))
+    } else if conflict_suffix(name, &pick.oid) {
+        Some((stem, false))
+    } else {
+        None
+    }
 }
 
 pub fn revert(repo: &Path, oid: &str, no_commit: bool) -> GitResult<OpOutcome> {

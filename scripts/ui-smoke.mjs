@@ -823,8 +823,10 @@ try {
     await page.mouse.up();
     const after = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
     if (after < before + 40) throw new Error("file list did not resize");
-    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth);
-    if (Math.abs(saved - (before + 67)) > 4) throw new Error("preferred file list width was not persisted");
+    const preferred = () => page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth);
+    await until(async () => Math.abs(await preferred() - (before + 67)) <= 4,
+      `preferred file list width was not persisted (before=${before}, rendered=${after}, delta=67)`, 5000);
+    const saved = await preferred();
     // A narrower window clamps the rendered width without rewriting the preference.
     await page.setViewportSize({ width: 1028, height: 760 });
     const containerWidth = await page.locator(".commit-details").evaluate((el) => el.clientWidth);
@@ -837,10 +839,12 @@ try {
     const x = narrowSplitter.x + narrowSplitter.width / 2, y = narrowSplitter.y + narrowSplitter.height / 2;
     await page.mouse.move(x, y);
     await page.mouse.down();
-    await page.mouse.move(x + target - saved, y, { steps: 8 });
+    await page.mouse.move(x + target - narrowBefore, y, { steps: 8 });
     await page.mouse.up();
     const narrowAfter = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
-    const narrowSaved = await page.evaluate(() => JSON.parse(localStorage.getItem("revqora.settings")).state.layouts.review.commitFilesWidth);
+    await until(async () => Math.abs(await preferred() - target) <= 4,
+      `narrow file list width was not persisted (before=${narrowBefore}, target=${target}, rendered=${narrowAfter})`, 5000);
+    const narrowSaved = await preferred();
     if (narrowBefore - narrowAfter < 40) throw new Error("file list did not shrink in a narrow window");
     if (Math.abs(narrowSaved - target) > 4 || Math.abs(narrowAfter - clamped(narrowSaved)) > 2) throw new Error("narrow resize did not persist preferred width independently of its layout clamp");
     await shot("24-resize-narrow");

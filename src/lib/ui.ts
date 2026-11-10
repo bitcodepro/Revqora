@@ -174,7 +174,8 @@ export async function copyText(text: string, what = "Copied") {
 }
 
 export function openOverlay(o: Overlay) {
-  useUi.setState(s => ({ overlay: o, overlayRevision: s.overlayRevision + 1 }));
+  useUi.setState(s => ({ overlay: o, overlayRevision: s.overlayRevision + 1, repositoryOverview: false }));
+  if (typeof window !== "undefined" && focusedUiSurface() !== window) window.focus();
 }
 
 export function closeOverlay() {

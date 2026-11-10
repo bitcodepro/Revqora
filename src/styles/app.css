@@ -2997,6 +2997,7 @@ select[size="1"]:not([multiple]) {
 }
 
 .col-resize {
+  touch-action: none;
   position: absolute;
   right: -3px;
   top: 4px;

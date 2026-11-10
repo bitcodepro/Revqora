@@ -124,11 +124,20 @@ export function DialogHost() {
   );
 }
 
-export function Splitter({ dir, onDrag, onEnd, style, label }: { dir: "v" | "h"; onDrag: (delta: number) => void; onEnd?: () => void; style?: React.CSSProperties; label?: string }) {
+export function Splitter({ dir, onDrag, onStart, onCommit, onEnd, style, label }: {
+  dir: "v" | "h"; onDrag: (delta: number) => void; onStart?: () => void; onCommit?: () => void; onEnd?: () => void;
+  style?: React.CSSProperties; label?: string;
+}) {
   const [dragging, setDragging] = useState(false);
   const position = useRef<number | null>(null);
+  const moved = useRef(false);
   const endRef = useRef(onEnd);
   endRef.current = onEnd;
+  const finish = (view: Window | null) => {
+    // Ref-backed sizes can persist immediately. State-backed callers read after React renders.
+    onCommit?.();
+    if (endRef.current) view?.requestAnimationFrame(() => endRef.current?.());
+  };
   return (
     <div
       className={`splitter-${dir} ${dragging ? "dragging" : ""}`}
@@ -142,26 +151,32 @@ export function Splitter({ dir, onDrag, onEnd, style, label }: { dir: "v" | "h";
         e.preventDefault();
         e.currentTarget.setPointerCapture(e.pointerId);
         position.current = dir === "v" ? e.clientX : e.clientY;
+        moved.current = false;
+        onStart?.();
         setDragging(true);
       }}
       onPointerMove={e => {
         if (position.current === null) return;
         const current = dir === "v" ? e.clientX : e.clientY;
-        onDrag(current - position.current);
+        if (current !== position.current) {
+          moved.current = true;
+          onDrag(current - position.current);
+        }
         position.current = current;
       }}
       onLostPointerCapture={e => {
         if (position.current === null) return;
         position.current = null;
         setDragging(false);
-        e.currentTarget.ownerDocument.defaultView?.requestAnimationFrame(() => endRef.current?.());
+        if (moved.current) finish(e.currentTarget.ownerDocument.defaultView);
       }}
       onKeyDown={e => {
         const [before, after] = dir === "v" ? ["ArrowLeft", "ArrowRight"] : ["ArrowUp", "ArrowDown"];
         if (e.key !== before && e.key !== after) return;
         e.preventDefault();
+        onStart?.();
         onDrag(e.key === before ? -16 : 16);
-        e.currentTarget.ownerDocument.defaultView?.requestAnimationFrame(() => endRef.current?.());
+        finish(e.currentTarget.ownerDocument.defaultView);
       }}
     />
   );

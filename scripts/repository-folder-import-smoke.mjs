@@ -160,12 +160,53 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
     window.__restoreWorkspacePanelOpen = () => { window.open = open; delete window.__workspacePanelWindow; delete window.__restoreWorkspacePanelOpen; };
   });
   try {
-    await page.getByRole("button", { name: "Panels in separate windows", exact: true }).click();
-    await page.locator(".ctx-menu").getByText("Open Workspaces in separate window", { exact: true }).click();
+    const detach = async (title) => {
+      await title.click({ button: "right" });
+      await page.locator(".ctx-menu").getByText("Detach", { exact: true }).click();
+    };
+    const attach = async () => {
+      await page.evaluate(() => {
+        const child = window.__workspacePanelWindow;
+        child.document.querySelector(".detached-panel > header").dispatchEvent(new child.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 12, clientY: 12 }));
+      });
+      await page.waitForFunction(() => window.__workspacePanelWindow?.document.querySelector(".ctx-menu .ctx-item")?.textContent.trim() === "Attach");
+      await page.evaluate(() => window.__workspacePanelWindow.document.querySelector(".ctx-menu .ctx-item").click());
+      await page.waitForFunction(() => window.__workspacePanelWindow?.closed);
+    };
+    await detach(workspaces.locator("header > b"));
     await page.waitForFunction(() => !!window.__workspacePanelWindow?.document.querySelector(".detached-workspaces .workspace-sidebar"));
     await workspaces.waitFor({ state: "detached" });
-    await page.evaluate(() => window.__workspacePanelWindow.close());
+    await attach();
     await workspaces.waitFor();
+
+    await repoButton("service-api").click();
+    const branchToggle = page.getByTitle("Toggle branches panel", { exact: true });
+    if (await branchToggle.getAttribute("aria-expanded") !== "true") await branchToggle.click();
+    await detach(page.locator(".branches-heading > b"));
+    await page.waitForFunction(() => !!window.__workspacePanelWindow?.document.querySelector(".detached-branches .sidebar"));
+    await page.locator(".topbar").getByRole("button", { name: "All repositories", exact: true }).click();
+    await overview.waitFor();
+    await page.evaluate(() => window.__workspacePanelWindow.document.querySelector('.detached-branches button[aria-label="Branch manager"]').click());
+    const manager = page.getByRole("region", { name: "Branch manager", exact: true });
+    await manager.waitFor();
+    await overview.waitFor({ state: "detached" });
+    await manager.getByRole("button", { name: "Close branch manager", exact: true }).click();
+    await attach();
+    await page.locator(".branches-slot .sidebar").waitFor();
+
+    await detach(page.locator(".view-tabs .view-tab").filter({ hasText: "History" }));
+    await page.waitForFunction(() => !!window.__workspacePanelWindow?.document.querySelector(".detached-history .graph-toolbar input"));
+    await page.evaluate(() => {
+      const child = window.__workspacePanelWindow;
+      const toolbar = child.document.querySelector(".detached-history .graph-toolbar");
+      toolbar.dispatchEvent(new child.KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true }));
+    });
+    await page.waitForFunction(() => {
+      const doc = window.__workspacePanelWindow?.document;
+      return doc?.activeElement === doc?.querySelector(".detached-history .graph-toolbar input");
+    });
+    await attach();
+    await page.locator(".workspace .graph-toolbar").waitFor();
   } finally {
     await page.evaluate(() => { window.__workspacePanelWindow?.close(); window.__restoreWorkspacePanelOpen(); });
   }
