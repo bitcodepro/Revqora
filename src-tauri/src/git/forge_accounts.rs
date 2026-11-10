@@ -749,6 +749,10 @@ pub(super) struct ApiContent {
     pub bytes: Zeroizing<Vec<u8>>,
 }
 
+fn api_agent(local: bool) -> ureq::Agent {
+    ureq::AgentBuilder::new().try_proxy_from_env(!local).redirects(0).timeout(Duration::from_secs(20)).user_agent("Revqora").build()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn request_content(
     kind: &str,
@@ -770,7 +774,10 @@ pub(super) fn request_content(
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
         _ => false,
     });
-    let agent = ureq::AgentBuilder::new().try_proxy_from_env(!local).redirects(0).timeout(Duration::from_secs(20)).user_agent("Revqora").build();
+    // Reuse Bitbucket read connections, including the TLS session. Credentials
+    // remain on individual requests, and writes keep their own transport.
+    static BITBUCKET_READS: OnceLock<ureq::Agent> = OnceLock::new();
+    let agent = if kind == "bitbucket" && method == "GET" && !local { BITBUCKET_READS.get_or_init(|| api_agent(false)).clone() } else { api_agent(local) };
     let mut req = agent.request(method, &target);
     if kind == "gitlab" && c.mode != "bearer" {
         req = req.set("PRIVATE-TOKEN", &c.token);

@@ -92,6 +92,8 @@ pub struct DiffOptions {
     pub context: Option<u32>,
     #[serde(default)]
     pub ignore_whitespace: bool,
+    #[serde(default)]
+    pub disable_textconv: bool,
 }
 
 pub fn fingerprint(data: &[u8]) -> String {
@@ -327,6 +329,9 @@ fn base_args(opts: &DiffOptions) -> Vec<String> {
     a.push(format!("-U{}", opts.context.unwrap_or(3)));
     if opts.ignore_whitespace {
         a.push("-w".into());
+    }
+    if opts.disable_textconv {
+        a.push("--no-textconv".into());
     }
     a
 }

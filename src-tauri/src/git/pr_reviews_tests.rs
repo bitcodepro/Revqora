@@ -18,6 +18,24 @@ fn bitbucket_root_reads_are_explicitly_partial_and_preserve_fresh_resolution() {
     assert_eq!(refreshed.comments[0].body, "Edited root");
     assert_ne!(root.revision, refreshed.revision);
 }
+
+#[test]
+fn bitbucket_discussions_reuse_each_missing_parent_and_find_parents_already_in_the_page() {
+    let root = json!({"id": 1, "content":{"raw":"root"}});
+    let intermediate = json!({"id": 2, "parent":{"id":1}, "content":{"raw":"first reply"}});
+    let rows =
+        [json!({"id":3,"parent":{"id":2},"content":{"raw":"nested reply"}}), json!({"id":4,"parent":{"id":1},"content":{"raw":"second reply"}}), intermediate];
+    let mut lookups = Vec::new();
+    let threads = bitbucket_threads(&rows, |parent| {
+        lookups.push(parent.to_owned());
+        Ok(root.clone())
+    })
+    .unwrap();
+    assert_eq!(lookups, ["1"]);
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].comments.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["1", "3", "4", "2"]);
+    assert!(!threads[0].complete);
+}
 #[test]
 fn github_comment_ids_preserve_64_bit_ids_and_gitlab_marks_older_source_discussions() {
     let mut github = discussion("github");

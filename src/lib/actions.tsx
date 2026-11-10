@@ -201,7 +201,7 @@ export const fetchAll = async (root: string) => {
   return out;
 };
 
-export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase") {
+export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase", expectedState?: string) {
   const mode = modeOverride ?? useSettings.getState().pullMode;
   const opId = newOpId();
   startBusy(opId, "Pulling");
@@ -209,7 +209,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
   let ignoredCollision: GitError | undefined;
   let outcome: PullOutcome | undefined;
   try {
-    outcome = await api.pull(root, mode, opId);
+    outcome = await api.pull(root, mode, opId, expectedState);
   } catch (e) {
     const msg = errorMessage(e).toLowerCase();
     if (isGitError(e) && e.kind === "ignored-collision") ignoredCollision = e;
@@ -317,12 +317,12 @@ export async function addRemote(root: string) {
 
 const switching = new Set<string>();
 
-export async function checkout(root: string, target: string, kind: "local" | "remote" | "commit") {
+export async function checkout(root: string, target: string, kind: "local" | "remote" | "commit", expectedState?: string) {
   if (switching.has(root)) return;
   switching.add(root);
   try {
     // The operation client already refreshes HEAD and status before returning.
-    let result = await act(root, () => api.checkout(root, target, kind), { busy: "Switching branch", refresh: false });
+    let result = await act(root, () => api.checkout(root, target, kind, undefined, expectedState), { busy: "Switching branch", refresh: false });
     if (result?.status === "review") {
       const review = result;
       const source = review.source.startsWith("HEAD/") ? `detached HEAD (${shortOid(review.source.slice(5))})` : review.source.slice(11);
@@ -344,7 +344,11 @@ export async function checkout(root: string, target: string, kind: "local" | "re
         refresh: false,
       });
     }
-    void useRepos.getState().refresh(root, { refs: true, graph: true, layers: true });
+    const repos = useRepos.getState();
+    if (result?.status === "switched" && kind !== "commit") {
+      repos.patch(root, { selected: null, multi: [], historyJump: null });
+    }
+    void repos.refresh(root, { refs: true, graph: true, layers: true });
     if (result?.status !== "switched") return;
     if (result.conflicts.length) {
       showStashConflicts(root, result.conflicts);
@@ -523,10 +527,10 @@ export async function pushTag(root: string, name: string) {
 
 // ───────────── stash ─────────────
 
-export async function stash(root: string) {
+export async function stash(root: string, expectedState?: string) {
   const r = await stashDialog();
   if (!r) return;
-  await act(root, () => api.stashSave(root, r.message, r.untracked, r.keepIndex), { success: "Changes stashed" });
+  await act(root, () => api.stashSave(root, r.message, r.untracked, r.keepIndex, undefined, expectedState), { success: "Changes stashed" });
 }
 
 export async function stashApply(root: string, index: number, pop: boolean, oid = getTab(root)?.refs?.stashes.find(s => s.index === index)?.oid) {

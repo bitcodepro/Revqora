@@ -8,6 +8,7 @@ import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
 import {prCenterSmoke} from "./pr-center-smoke.mjs";
 import {agentWorkspaceSmoke} from "./agent-workspace-smoke.mjs";
 import { worktreeManagerSmoke } from "./worktree-manager-smoke.mjs";
+import { repositoryIsActive } from "./ui-readiness.mjs";
 import { fillWorktreeFolder, reviewWorktreeCreation } from "./worktree-manager-fixture.mjs";
 import { smokeTimings, assertSmokeCoverage } from "./ci-timing.mjs";
 import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
@@ -30,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import { createProfile, launch, withViewport, openCommitAction } from "./ui-driver.mjs";
 import { shutdownAndCleanup } from "./ui-cleanup.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
+import { mcpSmoke } from "./mcp-smoke.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
@@ -156,6 +158,12 @@ try {
     await shot("17-update");
     await card.locator("button:has-text('Skip this version')").click();
     await chip.waitFor({ state: "detached" });
+    await page.getByTitle("Settings", { exact: true }).click();
+    const hourly = page.getByRole("checkbox", { name: "Check for updates every hour", exact: true });
+    if (!await hourly.isChecked()) throw new Error("Hourly update checks should be enabled by default");
+    await hourly.uncheck();
+    await page.locator(".modal").getByRole("button", { name: "Done", exact: true }).click();
+    await chip.waitFor({ state: "detached" });
     const checksBeforeMenu = updateChecks;
     await page.locator(".topbar").click({ button: "right", position: { x: 3, y: 3 } });
     await page.locator(".ctx-menu").getByText("Check Updates", { exact: true }).click();
@@ -191,11 +199,28 @@ try {
     }
   });
 
-  await check("history graph renders all commits", async () => {
+  await check("history defaults to the current branch and can show a selected branch or every branch", async () => {
+    // The previous scenario leaves Changes selected, even after switching repositories.
+    await page.getByRole("button", { name: "History", exact: true }).click();
     await page.waitForSelector(".grow:not(.wip) .g-subject .text", { timeout: 20000 });
-    await page.waitForTimeout(1200);
-    const n = await page.locator(".grow").count();
-    if (n !== 14) throw new Error(`expected 14 rows (13 commits + changes), got ${n}`);
+    const scope = page.getByRole("combobox", { name: "History scope", exact: true });
+    if (await scope.inputValue() !== "HEAD") throw new Error("History must start on the current branch");
+    const current = new Set(git("rev-list", "HEAD").split(/\r?\n/));
+    const other = git("rev-parse", "refs/heads/feature/ui");
+    if (current.has(other)) throw new Error("Expected a branch outside the current history");
+    const incomingToggle = page.getByRole("button", { name: "Show incoming commits", exact: true });
+    await incomingToggle.click();
+    await page.waitForFunction(count => document.querySelectorAll(".grow").length === count, current.size + 1);
+    await scope.selectOption("refs/heads/feature/ui");
+    for (const layout of ["Review", "Columns", "Graph"]) {
+      await page.locator(".history-mode").getByRole("button", { name: layout, exact: true }).click();
+      await page.locator(".graph-scroll").getByText("Spacing scale", { exact: true }).waitFor();
+      await page.locator(".grow.wip").waitFor({ state: "detached" });
+      if (await scope.inputValue() !== "refs/heads/feature/ui") throw new Error(`History scope changed in ${layout}`);
+    }
+    await incomingToggle.click();
+    await scope.selectOption("");
+    await page.waitForFunction(() => document.querySelectorAll(".grow").length === 14);
     await shot("01-history");
   });
 
@@ -1639,6 +1664,7 @@ try {
   // Stage 5 uses a fresh repository so earlier history/recovery cases cannot
   // accidentally satisfy its file, staging or remote-ref assertions.
   const stage5 = path.join(work, "env", "stage5-workflows");
+  const child5 = path.join(stage5, "nested", "child");
   const remote5 = path.join(work, "env", "stage5-origin.git");
   const git5 = (...args) => execFileSync("git", ["-C", stage5, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
   const server5 = (...args) => execFileSync("git", ["--git-dir", remote5, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
@@ -1647,6 +1673,13 @@ try {
   const select5 = async () => {
     await page.locator(".repository-select", { has: page.locator(".repository-label", { hasText: /^stage5-workflows$/ }) }).click();
     await page.waitForSelector(".repository-item.active .repository-label:has-text('stage5-workflows')");
+  };
+  const verifyNestedHistory = async () => {
+    await page.waitForFunction(repositoryIsActive, { expected: child5, windows: process.platform === "win32" });
+    await page.locator(".view-tab.on").filter({ hasText: "Changes" }).waitFor();
+    await page.getByRole("button", { name: "History", exact: true }).click();
+    await page.locator(".grow").getByText("Nested child baseline", { exact: true }).waitFor();
+    await page.locator(".view-tab").filter({ hasText: "Changes" }).click();
   };
 
   await check("ignored paths have a separate read-only view", async () => {
@@ -1657,9 +1690,9 @@ try {
     git5("add", "-A"); git5("commit", "-qm", "Stage 5 baseline"); base5 = git5("rev-parse", "HEAD");
     git5("clone", "--bare", ".", remote5); git5("remote", "add", "origin", remote5); git5("push", "origin", "HEAD:refs/heads/topic-old"); git5("fetch", "origin"); git5("branch", "--set-upstream-to=origin/topic-old", "main");
     fs.writeFileSync(path.join(stage5, "ignored.log"), "ignored fixture\n");
-    const nested = path.join(stage5, "nested", "child"); fs.mkdirSync(nested, { recursive: true });
-    execFileSync("git", ["-C", nested, "init", "-q", "-b", "child"]);
-    execFileSync("git", ["-C", nested, "-c", "user.name=Child", "-c", "user.email=child@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Nested child baseline"]);
+    fs.mkdirSync(child5, { recursive: true });
+    execFileSync("git", ["-C", child5, "init", "-q", "-b", "child"]);
+    execFileSync("git", ["-C", child5, "-c", "user.name=Child", "-c", "user.email=child@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Nested child baseline"]);
     index5 = fs.readFileSync(path.join(stage5, ".git", "index"));
     await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), stage5);
     await page.waitForSelector(".repository-item.active .repository-label:has-text('stage5-workflows')");
@@ -1680,7 +1713,7 @@ try {
     await page.waitForSelector(".nested-repository:has-text('nested/child')");
     await shot("54-nested-repositories");
     await page.locator(".nested-repository", { hasText: "nested/child" }).getByRole("button", { name: "Open repository", exact: true }).click();
-    await page.waitForSelector(".grow:has-text('Nested child baseline')");
+    await verifyNestedHistory();
     if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(index5)) throw new Error("opening a child changed the parent index");
     await select5();
     await page.waitForSelector(".view-tab.on:has-text('Changes')");
@@ -1793,7 +1826,7 @@ try {
     await page.waitForSelector(".changes[data-pending='false']");
     if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(before) || git5("diff", "--cached", "--name-only")) throw new Error("refused Stage all still changed the index");
     await child.hover(); await shot("59-nested-staging-guard"); await child.click();
-    await page.waitForSelector(".grow:has-text('Nested child baseline')"); await select5();
+    await verifyNestedHistory(); await select5();
     if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(before)) throw new Error("opening the nested row changed parent staging");
   });
 
@@ -1954,6 +1987,7 @@ try {
     await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
   });
   await conflictStudioSmoke({ page, check, shot, work });
+  await check("MCP stdio scopes reads and stages files only after desktop approval", () => mcpSmoke({ page, exe, profile: smokeProfile, work }));
   // Earlier scenarios relaunch with an explicit repository argument. App reload
   // intentionally reapplies that argument, overriding the saved active tab.
   // Replay the UI preferences in a separate fixture profile without CLI requests.

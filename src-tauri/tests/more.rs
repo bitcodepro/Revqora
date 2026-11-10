@@ -277,7 +277,7 @@ fn audit_partial_commit_transfer_matches_the_displayed_context() {
     let base = commit(&r, "f.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n", "base");
     let changed = commit(&r, "f.txt", "1\n2\n3\nFOUR\n5\n6\n7\n8\n9\n10\n", "change four");
     git(&r, &["reset", "--hard", &base]);
-    let opts = revqora_lib::git::diff::DiffOptions { context: Some(0), ignore_whitespace: false };
+    let opts = revqora_lib::git::diff::DiffOptions { context: Some(0), ..Default::default() };
     let d = revqora_lib::git::diff::rev_diff(&r, Some(&base), &changed, "f.txt", &opts).unwrap();
     let sel: Vec<_> = d.hunks[0].lines.iter().enumerate().filter(|(_, l)| l.kind != " ").map(|(i, _)| (0, i)).collect();
     let before = git(&r, &["ls-files", "--stage"]);

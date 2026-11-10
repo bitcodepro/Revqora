@@ -123,6 +123,37 @@ export async function prCenterSmoke({page,check,shot,work}) {
       } finally {
         await page.evaluate(()=>window.__restoreNamePathClipboard?.());
       }
+      const second=path.join(work,"stage13-other-prs"),local=path.join(work,"stage13-local-only");
+      for(const destination of [second,local]){
+        fs.mkdirSync(destination);
+        execFileSync("git",["-C",destination,"init","-qb","main"],{windowsHide:true});
+      }
+      execFileSync("git",["-C",second,"remote","add","origin",`${url}/team/second.git`],{windowsHide:true});
+      const otherConnection=await invoke("forge_connections",{repo:second});
+      await invoke("forge_connection_select",{repo:second,selection:{remote:"origin",fingerprint:otherConnection.remotes[0].fingerprint,accountId:account.id,allowSshAlias:false},expected:otherConnection.revision});
+      await invoke("plugin:event|emit",{event:"open-paths",payload:[second,local]});
+      await page.locator(".repository-select").filter({hasText:"stage13-local-only"}).click();
+      await page.getByText("No remote configured",{exact:true}).waitFor();
+      const watchMine=page.getByRole("button",{name:"Watch my PRs",exact:true});
+      await watchMine.click();
+      await page.locator(".repository-select").filter({hasText:"stage13-pr-center"}).click();
+      await detail(1);
+      if(await watchMine.getAttribute("aria-pressed")!=="true")throw Error("Global My PRs watch was reset on repository switch");
+      await watchMine.click();
+      await page.getByRole("combobox",{name:"Pull request scope",exact:true}).selectOption("all");
+      const all=page.getByRole("region",{name:"Pull requests across repositories",exact:true});
+      const firstGroup=all.getByRole("region",{name:"stage13-pr-center",exact:true});
+      const secondGroup=all.getByRole("region",{name:"stage13-other-prs",exact:true});
+      await firstGroup.getByText("Request 2: improve repository workflow",{exact:true}).waitFor();
+      const secondPull=secondGroup.getByRole("button",{name:/#2 Request 2:/});
+      await secondPull.waitFor();
+      if(await secondGroup.getByText("Request 1: improve repository workflow",{exact:true}).count())throw Error("Combined My PRs included a different author");
+      await shot("105-pr-across-repositories");
+      await secondPull.click();
+      await detail(2);
+      await page.locator(".topbar .repo-current > b").filter({hasText:"stage13-other-prs"}).waitFor();
+      await page.locator(".repository-select").filter({hasText:"stage13-pr-center"}).click();
+      await detail(1);
     });
     await check("long PR descriptions expand without rendering provider HTML or unsafe browser URLs",async()=>{
       await page.getByRole("button",{name:"Expand description",exact:true}).click();const text=await page.locator(".pr-description-expanded").innerText();if(!text.includes("must-not-load.invalid")||await page.locator(".pr-description-expanded img").count())throw Error("Description was truncated or rendered unsafe HTML");await button("Close").click();
@@ -227,6 +258,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
       await page.getByRole("button",{name:"Hide PR files",exact:true}).click();await page.getByRole("button",{name:"Hide pull request list",exact:true}).click();await page.getByRole("button",{name:"History",exact:true}).click();await page.getByRole("button",{name:"Pull requests",exact:true}).click();await page.waitForSelector(".pr-center.pr-list-hidden .pr-files.pr-files-hidden");await page.getByRole("button",{name:"Show pull request list",exact:true}).click();await page.getByRole("button",{name:"Show files",exact:true}).click();await page.waitForFunction(()=>parseFloat(document.querySelector(".pr-files").style.getPropertyValue("--pr-files-width"))>220);
       if(git("rev-parse","HEAD")!==head||!index.equals(fs.readFileSync(path.join(root,".git/index")))||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="Keep this local work\n"||requests.some(r=>/info\/refs|git-receive-pack/.test(r.path)))throw Error("PR Center modified or pushed working files/index/HEAD");await shot("108-pr-panels");
     });
+    await openNumber(1);
     await prReviewSmoke({page,check,shot,root,invoke,pulls,requests,fixture:reviewFixture,a,git,index,head});
     await prMergeSmoke({page,check,shot,root,pulls,fixture:mergeFixture,git,index,head});
   } finally {server.closeAllConnections();await new Promise(r=>server.close(r));}

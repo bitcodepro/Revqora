@@ -216,6 +216,7 @@ async fn sync_execute(
 pub mod askpass;
 pub mod git;
 pub mod journal;
+pub mod mcp;
 pub mod portable;
 pub mod update;
 
@@ -599,8 +600,15 @@ async fn repo_info(repo: String) -> GitResult<RepoInfo> {
 }
 
 #[tauri::command]
-async fn status(repo: String) -> GitResult<StatusSummary> {
-    blocking(move || status::status(&p(&repo))).await
+async fn status(repo: String, require_unsealed: Option<bool>) -> GitResult<StatusSummary> {
+    blocking(move || {
+        let r = p(&repo);
+        if require_unsealed == Some(true) {
+            layers::require_unsealed_index(&r)?;
+        }
+        status::status(&r)
+    })
+    .await
 }
 #[tauri::command]
 async fn repository_sidebar_status(repo: String) -> GitResult<StatusSummary> {
@@ -636,10 +644,10 @@ async fn identity_set(app: AppHandle, expected_state: Option<String>, repo: Stri
 // ───────────────────────────── diffs & staging ─────────────────────────────
 
 #[tauri::command]
-async fn working_diff(repo: String, path: String, side: WorkSide, untracked: bool, opts: Option<DiffOptions>) -> GitResult<FileDiff> {
+async fn working_diff(repo: String, path: String, side: WorkSide, untracked: bool, opts: Option<DiffOptions>, full_index: Option<bool>) -> GitResult<FileDiff> {
     blocking(move || {
         let r = p(&repo);
-        let base = if side == WorkSide::Staged { layers::staged_base(&r) } else { None };
+        let base = if side == WorkSide::Staged && full_index != Some(true) { layers::staged_base(&r) } else { None };
         diff::working_diff(&r, &path, side, base.as_deref(), untracked, &opts.unwrap_or_default())
     })
     .await
@@ -698,10 +706,15 @@ async fn working_file_save(
 }
 
 #[tauri::command]
-async fn unstage(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>) -> GitResult<()> {
+async fn unstage(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>, require_unsealed: Option<bool>) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "unstage", None, move || {
         let r = p(&repo);
-        let base = layers::staged_base(&r);
+        let base = if require_unsealed == Some(true) {
+            layers::require_unsealed_index(&r)?;
+            None
+        } else {
+            layers::staged_base(&r)
+        };
         ops::unstage_paths(&r, &paths, base.as_deref())
     })
     .await
@@ -713,14 +726,25 @@ async fn discard(app: AppHandle, expected_state: Option<String>, repo: String, t
 }
 
 #[tauri::command]
-async fn commit(app: AppHandle, expected_state: Option<String>, repo: String, message: String, opts: Option<CommitOptions>) -> GitResult<String> {
+async fn commit(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    message: String,
+    opts: Option<CommitOptions>,
+    require_unsealed: Option<bool>,
+) -> GitResult<String> {
     let checkpoint_expected = expected_state.clone();
     mutating(repo.clone(), expected_state, app.clone(), "commit", None, move || {
+        let r = p(&repo);
+        if require_unsealed == Some(true) {
+            layers::require_unsealed_index(&r)?;
+        }
         let opts = opts.unwrap_or_default();
         if opts.amend {
-            recovery::automatic_expected(&p(&repo), "amend", true, false, checkpoint_expected.as_deref())?;
+            recovery::automatic_expected(&r, "amend", true, false, checkpoint_expected.as_deref())?;
         }
-        ops::commit(&p(&repo), &message, &opts)
+        ops::commit(&r, &message, &opts)
     })
     .await
 }
@@ -740,11 +764,23 @@ async fn graph_load(
     include_worktree: bool,
     limit: Option<usize>,
     fast: Option<bool>,
+    show_incoming: Option<bool>,
 ) -> GitResult<GraphSummary> {
     let key = repo.clone();
     let fast = fast.unwrap_or(false);
     let prev = state.graphs.lock().get(&repo).cloned();
-    let cache = blocking(move || graph::build_with(&p(&repo), branch.as_deref(), include_worktree, limit.unwrap_or(150_000), fast, prev.as_deref())).await?;
+    let cache = blocking(move || {
+        graph::build_with_incoming(
+            &p(&repo),
+            branch.as_deref(),
+            include_worktree,
+            limit.unwrap_or(150_000),
+            fast,
+            prev.as_deref(),
+            show_incoming.unwrap_or(false),
+        )
+    })
+    .await?;
     let head_index = cache.rows.iter().position(|r| r.is_head);
     let summary = GraphSummary { head_oid: cache.head_oid.clone(), key: cache.key.clone(), total: cache.rows.len(), max_lanes: cache.max_lanes, head_index };
     state.graphs.lock().insert(key, Arc::new(cache));
@@ -877,10 +913,11 @@ async fn checkout(
     target: String,
     kind: String,
     choice: Option<git::branch_switch::SwitchChoice>,
+    source_head: Option<git::branch_switch::SourceHead>,
 ) -> GitResult<git::branch_switch::SwitchOutcome> {
     let reviewed_state = expected_state.clone();
     mutating(repo.clone(), expected_state, app, "checkout", None, move || {
-        git::branch_switch::switch(&p(&repo), &target, &kind, choice, reviewed_state.as_deref())
+        git::branch_switch::switch(&p(&repo), &target, &kind, choice, reviewed_state.as_deref(), source_head.as_ref())
     })
     .await
 }
@@ -2116,6 +2153,7 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(mcp::Bridge::default())
         .setup(move |app| {
             portable::automation_startup("git-locate-start");
             git::locate::configure();
@@ -2196,6 +2234,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            mcp::mcp_info,
+            mcp::mcp_enable,
+            mcp::mcp_lease,
+            mcp::mcp_reply,
             branch_cleanup_review,
             branch_cleanup_execute,
             branch_manager_snapshot,
@@ -2444,8 +2486,9 @@ pub fn run() {
         ])
         .build(context)
         .expect("error while building Revqora")
-        .run(|_, event| {
+        .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<mcp::Bridge>().shutdown();
                 git::workflows::cancel_all();
                 git::validation::cancel_all();
                 git::agents::cancel_all();

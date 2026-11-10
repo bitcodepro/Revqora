@@ -139,6 +139,7 @@ export interface FileDiff {
 export interface DiffOptions {
   context?: number;
   ignoreWhitespace?: boolean;
+  disableTextconv?: boolean;
 }
 
 export interface Seg {
@@ -178,6 +179,7 @@ export interface GraphRow {
   isHead: boolean;
   isMerge: boolean;
   localOnly: boolean;
+  incoming: boolean;
 }
 
 export interface GraphSummary {

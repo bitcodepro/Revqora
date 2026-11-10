@@ -1,12 +1,14 @@
 import { api, errorMessage } from "./api";
-import { authorPreferencesKey, authorScope, matchesPrAuthor, restoreAuthorPreferences, type PrAuthor } from "./prAuthors";
+import { basename } from "./format";
+import { authorScope, loadAuthorPreferences, matchesPrAuthor, type PrAuthor } from "./prAuthors";
 import { safeWebUrl } from "./prCenter";
 import { useSettings, type PullRequestWatch } from "./settings";
 import { useRepos } from "./store";
+import { uniqueRoots, useLibrary } from "./repositoryLibrary";
 import type { PrPage, PrReviewComment, PullRequest } from "./types";
 import { useUi } from "./ui";
 
-export const EMPTY_PR_WATCH: PullRequestWatch = { mineSince: null, selected: {} };
+export const EMPTY_PR_WATCH: PullRequestWatch = { selected: {} };
 export const PR_PAGE_REFRESHED = "revqora:pr-page-refreshed";
 export type PrPageRefresh = { root: string; page: PrPage; readId: number };
 let prListReadId = 0;
@@ -17,7 +19,7 @@ export function updatePrWatch(root: string, scope: string, update: (watch: PullR
   useSettings.setState(state => {
     const scopes = { ...state.prWatches[root] };
     const next = update(scopes[scope] ?? EMPTY_PR_WATCH);
-    if (next.mineSince || Object.keys(next.selected).length) scopes[scope] = next;
+    if (Object.keys(next.selected).length) scopes[scope] = next;
     else delete scopes[scope];
     const prWatches = { ...state.prWatches };
     if (Object.keys(scopes).length) prWatches[root] = scopes;
@@ -33,17 +35,6 @@ export function viewerAuthor(viewer: PrPage["viewer"]): PrAuthor | null {
     label: viewer.login,
     login: viewer.login,
   };
-}
-
-function myAuthor(root: string, scope: string, viewer: PrPage["viewer"]) {
-  const verified = viewerAuthor(viewer);
-  if (verified) return verified;
-  try {
-    const saved = localStorage.getItem(authorPreferencesKey(root, scope));
-    return restoreAuthorPreferences(JSON.parse(saved ?? "null")).mine;
-  } catch {
-    return null;
-  }
 }
 
 /** A display name alone cannot prove that the sender is another account. */
@@ -81,24 +72,28 @@ export function newReviewActivity(previous: Snapshot | undefined, fresh: Snapsho
 
 const MAX_PAGES = 40;
 const MAX_ACTIVITY_ITEMS = 20_000;
-async function visitPages<T extends { nextCursor: string | null }>(
+export async function visitPrPages<T extends { nextCursor: string | null }>(
   read: (cursor: string | null) => Promise<T>,
   current: () => boolean,
   visit: (page: T) => void | Promise<void>,
   start: string | null = null,
+  maxPages = MAX_PAGES,
 ) {
   let cursor = start;
-  for (let i = 0; i < MAX_PAGES && current(); i++) {
+  const seen = new Set<string>();
+  if (start) seen.add(start);
+  for (let i = 0; i < maxPages && current(); i++) {
     const page = await read(cursor);
     if (!current()) return false;
     await visit(page);
     if (!current()) return false;
     if (!page.nextCursor) return true;
-    if (page.nextCursor === cursor) throw Error("The provider returned the same activity page twice.");
+    if (seen.has(page.nextCursor)) throw Error("The provider returned the same page twice.");
+    seen.add(page.nextCursor);
     cursor = page.nextCursor;
   }
   if (!current()) return false;
-  throw Error("This pull request or list exceeds the background page limit.");
+  throw Error("The provider returned more pages than this scan can load.");
 }
 
 const baselines = new Map<string, Snapshot>();
@@ -141,7 +136,7 @@ async function checkRequest(root: string, number: number, page: PrPage, me: PrAu
     if (!current()) return;
     try {
       const snapshot: Snapshot = new Map();
-      const complete = await visitPages(cursor => api.prReviewPage(root, number, connection, detail.revision, feed, cursor), current, async result => {
+      const complete = await visitPrPages(cursor => api.prReviewPage(root, number, connection, detail.revision, feed, cursor), current, async result => {
         for (const thread of result.items) {
           if (!current()) return;
           const completeThread = page.forge.kind === "github" && feed === "threads" && !thread.complete
@@ -175,37 +170,41 @@ export async function checkPullRequestActivity(running: () => boolean) {
   const generation = connectionGeneration;
   const current = () => running() && generation === connectionGeneration;
   const { order, active } = useRepos.getState();
-  const roots = new Set(active ? [active, ...order] : order);
-  const watches = useSettings.getState().prWatches;
+  const { prWatches: watches, prWatchMineSince } = useSettings.getState();
+  const roots = uniqueRoots([...(active ? [active] : []), ...order, ...(prWatchMineSince ? useLibrary.getState().knownRoots : [])]);
   const live = new Set<string>();
   let complete = true;
   for (const root of roots) {
     if (!current()) return;
     const tab = useRepos.getState().tabs[root];
     const visible = root === useRepos.getState().active && tab?.view === "pulls";
-    if (!tab?.info || (!watches[root] && !visible)) continue;
-    const stillOpen = () => current() && !!useRepos.getState().tabs[root];
+    if (!prWatchMineSince && (!tab?.info || (!watches[root] && !visible))) continue;
+    const stillOpen = () => current() && (!!useRepos.getState().tabs[root] || !!prWatchMineSince && useLibrary.getState().knownRoots.includes(root));
     try {
+      if (prWatchMineSince && !visible && !watches[root] && !await api.forgeKind(root)) continue;
+      if (!stillOpen()) continue;
       const readId = nextPrListRead();
       const page = await api.prPage(root, "open");
       if (!stillOpen()) continue;
-      failures.delete(root);
       window.dispatchEvent(new CustomEvent<PrPageRefresh>(PR_PAGE_REFRESHED, { detail: { root, page, readId } }));
       const scope = authorScope(page.forge, page.viewer);
       const watch = watches[root]?.[scope];
-      if (!watch || !page.forge.connectionRevision) continue;
-      const me = myAuthor(root, scope, page.viewer);
-      const selected = new Map(Object.entries(watch.selected).map(([number, since]) => [Number(number), since]));
-      if (watch.mineSince && me) {
-        const since = watch.mineSince;
+      if ((!watch && !prWatchMineSince) || !page.forge.connectionRevision) {
+        failures.delete(root);
+        continue;
+      }
+      const me = viewerAuthor(page.viewer) ?? loadAuthorPreferences(root, scope, page.forge).mine;
+      const selected = new Map(Object.entries(watch?.selected ?? {}).map(([number, since]) => [Number(number), since]));
+      if (prWatchMineSince && me) {
         const addMine = (p: PrPage) => {
-          for (const pull of p.items) if (matchesPrAuthor(pull, me) && !selected.has(pull.number)) selected.set(pull.number, since);
+          for (const pull of p.items) if (matchesPrAuthor(pull, me) && !selected.has(pull.number)) selected.set(pull.number, prWatchMineSince);
         };
         addMine(page);
         if (page.nextCursor) {
-          await visitPages(cursor => api.prPage(root, "open", cursor), stillOpen, addMine, page.nextCursor);
+          if (!await visitPrPages(cursor => api.prPage(root, "open", cursor), stillOpen, addMine, page.nextCursor)) continue;
         }
       }
+      if (stillOpen()) failures.delete(root);
       for (const [number, since] of selected) {
         if (!stillOpen()) break;
         const key = JSON.stringify([root, scope, number, since, me?.key]);
@@ -219,7 +218,7 @@ export async function checkPullRequestActivity(running: () => boolean) {
       }
     } catch (error) {
       complete = false;
-      if (stillOpen() && watches[root]) warnOnce(root, "Could not check watched pull requests", error);
+      if (stillOpen() && (watches[root] || prWatchMineSince)) warnOnce(root, `Could not check watched pull requests in ${tab?.info?.name ?? basename(root)}`, error);
     }
   }
   if (current() && complete) for (const key of baselines.keys()) if (!live.has(key)) baselines.delete(key);

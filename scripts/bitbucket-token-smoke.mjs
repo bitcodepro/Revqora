@@ -79,6 +79,10 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await page.locator(".main-head").getByTitle("Refresh (F5)",{exact:true}).click();
       await localCenter.getByText("No remote configured",{exact:true}).waitFor();
 
+      // Cloning inherits the active section. Leave PR Center before measuring
+      // the connection probe, since account events can also refresh PR lists.
+      await page.locator(".main-head").getByRole("button",{name:"History",exact:true}).click();
+      await localCenter.waitFor({state:"detached"});
       await page.getByTitle("Command palette (Ctrl+K)",{exact:true}).click();await page.waitForFunction(()=>document.activeElement===document.querySelector(".palette input"));await page.locator(".palette input").fill("Clone repository");await page.locator(".palette-item").filter({hasText:"Clone repository…"}).click();
       await page.getByRole("textbox",{name:"Repository URL",exact:true}).fill(`git clone http://${user}@127.0.0.1:${server.address().port}/team/repo.git`);
       await page.waitForFunction(()=>document.querySelector('[aria-label="Clone folder name"]')?.value==="repo");
@@ -105,7 +109,9 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       for(const id of [second.id,account.id]){
         await bind("upstream",id);await bind("origin",account.id);await button("Refresh API accounts").click();await page.waitForSelector(".fa-workspace[aria-busy=false]");await modal().getByLabel("API remote",{exact:true}).selectOption("upstream");
         const before=seen.length;await modal().locator(`.fa-card[data-account-id="${id}"]`).getByRole("button",{name:"Test connection",exact:true}).click();await page.waitForSelector(".fa-workspace[aria-busy=false]");assert.equal(await modal().getByRole("alert").count(),0);
-        const calls=seen.slice(before).filter(r=>r.path.includes("/pullrequests"));assert.equal(calls.length,1);assert.equal(calls[0].path,"/2.0/repositories/team/other/pullrequests");assert.equal(calls[0].account,id===second.id?"second":"first");assert.equal((await invoke("forge_connections",{repo:root})).activeRemote,"origin");
+        const calls=seen.slice(before).filter(r=>r.path.includes("/pullrequests")).map(({path,account})=>({path,account}));
+        assert.deepEqual(calls,[{path:"/2.0/repositories/team/other/pullrequests",account:id===second.id?"second":"first"}]);
+        assert.equal((await invoke("forge_connections",{repo:root})).activeRemote,"origin");
       }
       await button("Close").click();await page.getByRole("button",{name:"Pull requests",exact:true}).click();await page.getByText("Scoped Bitbucket PR",{exact:true}).first().waitFor();
       denyPrList=true;

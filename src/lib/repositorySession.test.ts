@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const saved = vi.hoisted(() => ({ set: vi.fn(), addRecent: vi.fn(), remember: vi.fn() }));
+const saved = vi.hoisted(() => ({ set: vi.fn(), addRecent: vi.fn(), remember: vi.fn(), hideIncomingByRepo: {} }));
 vi.mock("./api", () => ({ api: Object.fromEntries(["repoOpen", "repoInfo", "status", "repositorySidebarStatus", "refs", "repoExtras", "layersState", "squashMerged", "graphLoad", "watchRepo", "unwatchRepo"].map(name => [name, vi.fn()])), errorMessage: String }));
 vi.mock("./settings", () => ({ useSettings: { getState: () => saved } }));
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => saved } }));
@@ -113,7 +113,7 @@ describe("repository session restoration", () => {
     expect(api.graphLoad).not.toHaveBeenCalled();
     expect(api.layersState).not.toHaveBeenCalled();
     useRepos.getState().activate("/background");
-    await vi.waitFor(() => expect(api.graphLoad).toHaveBeenCalledWith("/background", null, false, 2000, true));
+    await vi.waitFor(() => expect(api.graphLoad).toHaveBeenCalledWith("/background", "HEAD", false, 2000, true, true));
   });
 
   it("keeps lightweight observations out of mutation guards and reads full proofs for an explicit bulk preview", async () => {

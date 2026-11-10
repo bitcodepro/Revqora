@@ -1,6 +1,72 @@
 use revqora_lib::git::{refs, runner};
 
 #[test]
+fn current_branch_history_follows_head_without_reusing_commits_from_other_refs() {
+    use revqora_lib::git::graph;
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    let git = |args: &[&str]| runner::run(r, args.iter().copied()).unwrap();
+    git(&["init", "-qb", "main"]);
+    assert!(graph::build(r, Some("HEAD"), false, 100, false).unwrap().rows.is_empty());
+    git(&["config", "user.name", "Tester"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    git(&["commit", "--allow-empty", "-qm", "Base"]);
+    git(&["branch", "topic"]);
+    git(&["commit", "--allow-empty", "-qm", "Main tip"]);
+    let before = graph::build(r, Some("HEAD"), false, 100, false).unwrap();
+    git(&["switch", "topic"]);
+    git(&["commit", "--allow-empty", "-qm", "Topic tip"]);
+    git(&["switch", "main"]);
+    let unchanged = graph::build_with(r, Some("HEAD"), false, 100, false, Some(&before)).unwrap();
+    assert_eq!(unchanged.rows.iter().map(|row| row.subject.as_str()).collect::<Vec<_>>(), ["Main tip", "Base"]);
+    git(&["switch", "topic"]);
+    let switched = graph::build_with(r, Some("HEAD"), false, 100, false, Some(&unchanged)).unwrap();
+    assert_eq!(switched.rows.iter().map(|row| row.subject.as_str()).collect::<Vec<_>>(), ["Topic tip", "Base"]);
+    let all = graph::build(r, None, false, 100, false).unwrap();
+    assert_eq!(all.rows.len(), 3);
+}
+
+#[test]
+fn incoming_preview_follows_only_the_upstream_and_refreshes_after_integration() {
+    use revqora_lib::git::graph;
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    let git = |args: &[&str]| runner::run(r, args.iter().copied()).unwrap().trim().to_owned();
+    git(&["init", "-qb", "main"]);
+    git(&["config", "user.name", "Tester"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    git(&["commit", "--allow-empty", "-qm", "Base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    let tree = git(&["rev-parse", "HEAD^{tree}"]);
+    git(&["remote", "add", "origin", "https://example.invalid/unused"]);
+    git(&["update-ref", "refs/remotes/origin/main", &base]);
+    git(&["branch", "--set-upstream-to=origin/main"]);
+    git(&["commit", "--allow-empty", "-qm", "Local"]);
+    let local = git(&["rev-parse", "HEAD"]);
+    let before = graph::build_with_incoming(r, Some("HEAD"), false, 100, false, None, true).unwrap();
+    assert!(before.rows.iter().all(|row| !row.incoming));
+
+    let fetched = git(&["commit-tree", &tree, "-p", &base, "-m", "Fetched"]);
+    let unrelated = git(&["commit-tree", &tree, "-p", &base, "-m", "Unrelated"]);
+    git(&["update-ref", "refs/remotes/origin/main", &fetched]);
+    git(&["update-ref", "refs/remotes/origin/unrelated", &unrelated]);
+    let preview = graph::build_with_incoming(r, Some("HEAD"), false, 100, false, Some(&before), true).unwrap();
+    assert_eq!(preview.rows.iter().map(|row| (row.subject.as_str(), row.incoming)).collect::<Vec<_>>(), [("Fetched", true), ("Local", false), ("Base", false)]);
+    assert_eq!(git(&["rev-parse", "HEAD"]), local);
+    let explicit = graph::build_with_incoming(r, Some("refs/heads/main"), false, 2, false, None, true).unwrap();
+    assert_eq!(explicit.rows.iter().map(|row| row.oid.as_str()).collect::<Vec<_>>(), [fetched.as_str(), local.as_str()]);
+    let hidden = graph::build_with_incoming(r, Some("HEAD"), false, 100, false, Some(&preview), false).unwrap();
+    assert!(!hidden.index.contains_key(&fetched));
+
+    git(&["merge", "--no-edit", "origin/main"]);
+    let integrated = graph::build_with_incoming(r, Some("HEAD"), false, 100, false, Some(&preview), true).unwrap();
+    assert!(!integrated.rows[integrated.index[&fetched]].incoming);
+    assert!(!integrated.index.contains_key(&unrelated));
+}
+
+#[test]
 fn graph_records_its_actual_detached_head_even_outside_the_filter() {
     let t = tempfile::tempdir().unwrap();
     let r = t.path();

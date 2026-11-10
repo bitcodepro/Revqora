@@ -30,7 +30,7 @@ import {
 import * as X from "../lib/extraActions";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import type { BranchInfo } from "../lib/types";
-import { useRepos, type RepoTab } from "../lib/store";
+import { CURRENT_HISTORY_BRANCH, loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { contextMenu, copyText, openOverlay, useUi } from "../lib/ui";
 import * as A from "../lib/actions";
 import { api } from "../lib/api";
@@ -95,6 +95,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({});
   const [selection, setSelection] = useState<BranchInfo[]>([]);
   const selectionAnchor = useRef<string | null>(null);
+  const checkoutFromCurrentHistory = useRef<string | null>(null);
   const cleanupPending = useRef(false);
   const refs = tab.refs;
   const extras = tab.extras;
@@ -102,23 +103,26 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   const match = (s: string) => !f || s.toLowerCase().includes(f);
   const current = tab.info?.head.branch;
   const filterGraph = (reference: string) => {
-    useRepos.getState().patch(root, { branchFilter: reference, viewedBranch: reference });
+    useRepos.getState().patch(root, { view: "history", branchFilter: reference, viewedBranch: reference, selected: null, multi: [], historyJump: null });
+    if(!panels.history&&useUi.getState().repositoryOverview)useUi.setState({repositoryOverview:false});
     void useRepos.getState().refresh(root, { graph: true });
   };
   const viewBranch = (branch: BranchInfo) => {
     const repos = useRepos.getState();
     const revealHistory = useUi.getState().repositoryOverview && !panels.history;
-    if (tab.view === "history" && !revealHistory) {
+    const shown = tab.branchFilter === CURRENT_HISTORY_BRANCH ? `refs/heads/${current ?? ""}` : tab.branchFilter;
+    const scope = tab.branchFilter && shown !== branch.fullName ? branch.fullName : tab.branchFilter;
+    if (tab.view === "history" && !revealHistory && scope === tab.branchFilter && tab.graph) {
       repos.patch(root, { viewedBranch: branch.fullName });
       jumpToCommit(root, branch.oid);
       return;
     }
-    repos.patch(root, { viewedBranch: branch.fullName, view: "history", selected: branch.oid, multi: [], branchFilter: null, historyJump: branch.oid });
+    repos.patch(root, { viewedBranch: branch.fullName, view: "history", selected: branch.oid, multi: [], branchFilter: scope, historyJump: branch.oid });
     if (revealHistory) {
       useUi.setState({ repositoryOverview: false });
       window.focus();
     }
-    if (tab.branchFilter || !tab.graph) void repos.refresh(root, { graph: true });
+    if (scope !== tab.branchFilter || !tab.graph) void repos.refresh(root, { graph: true });
   };
 
   const pairs = useMemo(() => branchPairs(refs?.local ?? [], refs?.remote ?? []), [refs]);
@@ -203,11 +207,19 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
             tabIndex={selectionAnchor.current === b.fullName || (!selectionAnchor.current && isCur) ? 0 : -1}
             className={`sb-item ${isCur ? "current" : ""} ${selectedSet.has(b.fullName) ? "branch-selected" : ""} ${viewed && (viewed === b.fullName || viewed === upstream?.fullName) ? "viewed-branch" : ""}`}
             style={{ paddingLeft: pad + 16 }}
-            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}\n${b.creator?`Created by ${b.creator.name} <${b.creator.email}> (local creation log)`:"Branch creator unknown"}${b.upstream ? `\ntracks ${b.upstream}` : ""}\nCtrl+click to select; Shift+click to select a range${isCur ? "" : "\nDouble-click to check out"}`}
+            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}\n${b.creator?`Created by ${b.creator.name} <${b.creator.email}> (local creation log)`:"Branch creator unknown"}${b.upstream ? `\ntracks ${b.upstream}` : ""}\nCtrl+Shift+click to toggle selection; Shift+click to select a range${isCur ? "" : "\nCtrl+click or double-click to check out"}`}
             onMouseDown={(e) => { if (e.button === 0 && (e.ctrlKey || e.metaKey || e.shiftKey)) e.preventDefault(); }}
             onClick={(e) => {
+              if (e.button !== 0) return;
               e.currentTarget.focus({ preventScroll: true });
-              chooseBranch(b, e.ctrlKey || e.metaKey, e.shiftKey);
+              const modifier = e.ctrlKey || e.metaKey;
+              if (modifier && !e.shiftKey) {
+                checkoutFromCurrentHistory.current = null;
+                if (!isCur && e.detail <= 1) void A.checkout(root, b.name, kind);
+                return;
+              }
+              if (e.detail <= 1) checkoutFromCurrentHistory.current = tab.branchFilter === CURRENT_HISTORY_BRANCH && !e.shiftKey ? b.fullName : null;
+              chooseBranch(b, modifier, e.shiftKey && !modifier);
             }}
             onKeyDown={(e) => {
               if (e.key !== "Enter" && e.key !== " ") return;
@@ -238,7 +250,17 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
             }}
             onMouseEnter={() => highlightBranch(root, b.oid)}
             onMouseLeave={() => highlightBranch(root, null)}
-            onDoubleClick={(e) => { if (!isCur && !e.ctrlKey && !e.metaKey && !e.shiftKey) void A.checkout(root, b.name, kind); }}
+            onDoubleClick={(e) => {
+              if (isCur || e.ctrlKey || e.metaKey || e.shiftKey) return;
+              const restoreCurrentHistory = checkoutFromCurrentHistory.current === b.fullName;
+              checkoutFromCurrentHistory.current = null;
+              useRepos.getState().patch(root, {
+                ...(restoreCurrentHistory ? { branchFilter: CURRENT_HISTORY_BRANCH } : {}),
+                selected: null, multi: [], historyJump: null,
+              });
+              if (restoreCurrentHistory) void loadGraph(root);
+              void A.checkout(root, b.name, kind);
+            }}
             onContextMenu={(e) =>
               contextMenu(e, selected.length > 1 && selectedSet.has(b.fullName) ? [
                 { label: `Delete ${selected.length} branches…`, icon: <Trash2 size={14} />, danger: true, disabled: selected.length > 50,

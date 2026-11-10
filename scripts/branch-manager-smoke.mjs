@@ -190,10 +190,19 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
     await page.locator(".ctx-menu").filter({has:page.getByText("Upstream: origin/innocent",{exact:true})}).locator(".ctx-item").filter({has:page.getByText("Show only this branch in graph",{exact:true})}).click();
     const localFilter=page.locator('[data-branch-filter="refs/heads/feature/login"]');
     await localFilter.waitFor();
-    await page.waitForFunction(() => {
-      const rows=[...document.querySelectorAll(".grow")].map(node=>node.textContent);
-      return rows.some(text=>text.includes("Add authentication flow")) && !rows.some(text=>text.includes("Other author tip"));
-    });
+    // A narrow Columns pane can clip the subject behind branch badges.
+    const commitRow = (selector, subject) => page.locator(selector, { has: page.getByText(subject, { exact: true }) });
+    const localTip = commitRow(".grow:not(.incoming)", "Add authentication flow");
+    const upstreamTip = commitRow(".grow", "Other author tip");
+    const incomingTip = commitRow(".grow.incoming", "Other author tip").getByText("Incoming", { exact: true });
+    const incomingToggle = page.getByRole("button", { name: "Show incoming commits", exact: true });
+    await localTip.waitFor();
+    await incomingTip.waitFor();
+    await incomingToggle.click();
+    await upstreamTip.waitFor({ state: "detached" });
+    await localTip.waitFor();
+    await incomingToggle.click();
+    await incomingTip.waitFor();
     await clearFilter.click();
     await localFilter.waitFor({state:"detached"});
     await search.fill("owned/removed");

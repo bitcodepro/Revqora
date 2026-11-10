@@ -270,6 +270,55 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     if (await branches.getAttribute("aria-expanded") !== "false") throw new Error("restart lost workspace panel visibility");
   });
   await check("Sync reviews exact incoming revisions and requires opt-in before publishing outgoing commits", async () => {
+    const localTip = git(root, "rev-parse", "HEAD");
+    for (let i = 1; i < 12; i++) git(peer, "commit", "--allow-empty", "-qm", `workspace fetched ${i}`);
+    const fetchedTip = commit(peer, "workspace fetched tip");
+    git(peer, "push", "origin", "main");
+    await page.locator(".view-tab").getByText("History", { exact: true }).click();
+    const layouts = page.locator(".history-mode");
+    const originalLayout = (await layouts.locator("button.on").innerText()).trim();
+    const historyScope = page.getByRole("combobox", { name: "History scope", exact: true });
+    if (await historyScope.inputValue() !== "HEAD") throw new Error("History did not default to the current branch");
+    await page.locator(".toolbar").getByTitle("Fetch all remotes", { exact: true }).click();
+    const pendingPull = page.getByText("12 incoming · Pull to apply", { exact: true });
+    await pendingPull.waitFor();
+    if (git(root, "rev-parse", "HEAD") !== localTip || git(root, "rev-parse", "origin/main") !== fetchedTip) {
+      throw new Error("Fetch must update the remote-tracking ref while leaving HEAD unchanged");
+    }
+    const rows = page.locator(".graph-rows");
+    const fetchedRow = rows.getByText("workspace fetched tip", { exact: true });
+    const incomingRows = rows.locator(".grow.incoming");
+    const incomingToggle = page.getByRole("button", { name: "Show incoming commits", exact: true });
+    for (const layout of ["Graph", "Review", "Columns"]) {
+      await layouts.getByRole("button", { name: layout, exact: true }).click();
+      await rows.getByText("workspace base", { exact: true }).waitFor();
+      await incomingRows.getByText("workspace fetched tip", { exact: true }).waitFor();
+    }
+    await fetchedRow.click();
+    const preview = page.locator(".commit-preview");
+    await preview.locator(".diff .dl").first().waitFor();
+    await preview.getByRole("button", { name: "Close", exact: true }).click();
+    await incomingToggle.click();
+    await fetchedRow.waitFor({ state: "detached" });
+    await layouts.getByRole("button", { name: "Graph", exact: true }).click();
+    await rows.getByText("workspace base", { exact: true }).waitFor();
+    if (await fetchedRow.count() || await incomingToggle.getAttribute("aria-pressed") !== "false") {
+      throw new Error("Hiding incoming commits did not carry across layouts");
+    }
+    await pendingPull.waitFor();
+    await historyScope.selectOption("refs/remotes/origin/main");
+    await fetchedRow.waitFor();
+    await historyScope.selectOption("HEAD");
+    await fetchedRow.waitFor({ state: "detached" });
+    await incomingToggle.click();
+    await incomingRows.getByText("workspace fetched tip", { exact: true }).waitFor();
+    await page.locator(".toolbar").getByTitle("Pull", { exact: true }).click();
+    await incomingRows.first().waitFor({ state: "detached", timeout: syncTimeout });
+    await fetchedRow.waitFor();
+    await pendingPull.waitFor({ state: "detached" });
+    if (git(root, "rev-parse", "HEAD") !== fetchedTip) throw new Error("Pull did not update the local branch");
+    await layouts.getByRole("button", { name: originalLayout, exact: true }).click();
+
     const incoming = commit(peer, "workspace incoming"); git(peer, "push", "origin", "main");
     await page.locator(".toolbar").getByRole("button", { name: "Sync", exact: true }).click(); await page.waitForSelector(".modal:has-text('Review Sync')");
     if (!await page.getByRole("checkbox", { name: "Receive 1", exact: true }).isChecked()) throw new Error("incoming revision not selected");

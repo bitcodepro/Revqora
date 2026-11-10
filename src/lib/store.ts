@@ -13,6 +13,7 @@ import { WORKTREE } from "./types";
 import { setOperationHooks } from "./operationClient";
 
 export type View = "history" | "changes" | "pulls";
+export const CURRENT_HISTORY_BRANCH = "HEAD";
 
 export type ChangeSel =
   | { kind: "unstaged"; path: string; untracked: boolean }
@@ -101,7 +102,7 @@ function emptyTab(root: string): RepoTab {
     diffRefreshVersion: 0,
     graphLoading: false,
     graphHasWorktree: false,
-    branchFilter: null,
+    branchFilter: CURRENT_HISTORY_BRANCH,
     graphLimit: 150_000,
     view: "history",
     selected: null,
@@ -127,6 +128,12 @@ function existingRoot(path: string) {
   return useRepos.getState().order.find(root => repositoryKey(root) === repositoryKey(path));
 }
 
+function carryRepositoryView(tabs: RepoStore["tabs"], root: string | null, from: RepoTab | undefined) {
+  const next = root ? tabs[root] : undefined;
+  if (next && from && next.view !== from.view) return { ...tabs, [next.root]: { ...next, view: from.view } };
+  return tabs;
+}
+
 /** Publish the entire roster before starting any asynchronous Git discovery. */
 function register(paths: string[], active?: string | null): string[] {
   const state = useRepos.getState(), tabs = { ...state.tabs }, order = [...state.order];
@@ -140,7 +147,11 @@ function register(paths: string[], active?: string | null): string[] {
     return root;
   });
   const selected = active ? order.find(r => repositoryKey(r) === repositoryKey(active)) : undefined;
-  useRepos.setState({ tabs, order, ...(active !== undefined ? { active: selected ?? state.active ?? order[0] ?? null, selectionVersion: state.selectionVersion + 1 } : {}) });
+  const next = selected ?? state.active ?? order[0] ?? null;
+  useRepos.setState(active === undefined ? { tabs, order } : {
+    tabs: carryRepositoryView(tabs, next, state.active ? state.tabs[state.active] : undefined),
+    order, active: next, selectionVersion: state.selectionVersion + 1,
+  });
   if (active !== undefined) useUi.setState({ repositoryOverview: false });
   persistTabs();
   return roots;
@@ -170,7 +181,11 @@ function hydrate(root: string): Promise<string | null> {
         };
         lifetimes.delete(root);
         if (!lifetimes.has(actual)) lifetimes.set(actual, lifetime ?? Symbol(actual));
-        useRepos.setState({ tabs, order: [...new Set(state.order.map(r => r === root ? actual : r))], active: state.active === root ? actual : state.active });
+        const active = state.active === root ? actual : state.active;
+        useRepos.setState({
+          tabs: carryRepositoryView(tabs, active, state.active === root ? original : undefined),
+          order: [...new Set(state.order.map(r => r === root ? actual : r))], active,
+        });
       }
       useRepos.getState().patch(actual, { info, opening: false, error: null });
       useLibrary.getState().remember(actual, root);
@@ -236,6 +251,11 @@ function persistTabs() {
   useSettings.getState().set({ openTabs: order, activeTab: active });
 }
 
+function includeWorkingChanges(tab: RepoTab, dirty: boolean) {
+  const branch = tab.info?.head?.branch;
+  return dirty && (!tab.branchFilter || tab.branchFilter === CURRENT_HISTORY_BRANCH || !!branch && tab.branchFilter === `refs/heads/${branch}`);
+}
+
 export const useRepos = create<RepoStore>()((set, get) => ({
   tabs: {},
   order: [],
@@ -279,14 +299,15 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       const i = s.order.indexOf(root);
       active = order[Math.min(i, order.length - 1)] ?? null;
     }
-    set({ tabs, order, active, selectionVersion: s.selectionVersion + Number(active !== s.active) });
+    set({ tabs: carryRepositoryView(tabs, active, s.active ? s.tabs[s.active] : undefined), order, active, selectionVersion: s.selectionVersion + Number(active !== s.active) });
     api.unwatchRepo(root).catch(() => {});
     persistTabs();
     if (active && active !== s.active) get().activate(active);
   },
 
   activate: (root) => {
-    set({ active: root, selectionVersion: get().selectionVersion + 1 });
+    const s = get();
+    set({ tabs: carryRepositoryView(s.tabs, root, s.active ? s.tabs[s.active] : undefined), active: root, selectionVersion: s.selectionVersion + 1 });
     useUi.setState({ repositoryOverview: false });
     persistTabs();
     if (root) {
@@ -299,8 +320,8 @@ export const useRepos = create<RepoStore>()((set, get) => ({
 
   arrange: (roots, active) => {
     const order = [...new Set([...roots, ...get().order])].filter((r) => !!get().tabs[r]);
-    set({ order, active: active && order.includes(active) ? active : order[0] ?? null });
-    get().activate(get().active);
+    set({ order });
+    get().activate(active && order.includes(active) ? active : order[0] ?? null);
   },
 
   patch: (root, p) => {
@@ -399,7 +420,13 @@ async function refreshOnce(root: string, parts: Parts) {
   // Publish independently: slow layers/extras must not hide local branch info
   // or refs that are already ready. The full status still owns action guards.
   void infoP.then(info=>{if(info&&current())useRepos.getState().patch(root,{info});}).catch(()=>{});
-  void refsP.then(refs=>{if(refs&&current())useRepos.getState().patch(root,{refs});}).catch(()=>{});
+  void refsP.then(refs=>{
+    if(!refs||!current())return;
+    const state=useRepos.getState(), scope=state.tabs[root]?.branchFilter;
+    const missing=scope?.startsWith("refs/") && !refs.local.some(branch=>branch.fullName===scope) && !refs.remote.some(branch=>branch.fullName===scope);
+    state.patch(root,missing?{refs,branchFilter:CURRENT_HISTORY_BRANCH,selected:null,multi:[],historyJump:null}:{refs});
+    if(missing)void loadGraph(root);
+  }).catch(()=>{});
   for (const p of [infoP, refsP]) p.catch(() => {}); // rejections are handled below
   const initialDirty=!!(before.status??before.sidebarStatus)?.files.length;
   let graphP: Promise<void> | null = !parts.summary&&parts.graph&&!before.graph?loadGraph(root,initialDirty):null;
@@ -410,7 +437,7 @@ async function refreshOnce(root: string, parts: Parts) {
     const st = status ?? tab.status;
     const dirty = !!st && st.files.length > 0;
     if (status) useRepos.getState().patch(root, sidebarOnly ? { sidebarStatus: status } : { status });
-    if (!parts.summary && ((parts.graph&&!graphP) || dirty !== (graphP?initialDirty:tab.graphHasWorktree) || !tab.graph&&!graphP)) graphP = loadGraph(root, dirty);
+    if (!parts.summary && ((parts.graph&&!graphP) || includeWorkingChanges(tab, dirty) !== (graphP?includeWorkingChanges(before, initialDirty):tab.graphHasWorktree) || !tab.graph&&!graphP)) graphP = loadGraph(root, dirty);
     const [info, refs] = await Promise.all([infoP, refsP]);
     const graphHeadChanged=info&&before.graph?.headOid!==undefined&&before.graph.headOid!==(info.head.oid??"");
     const graphChanged=graphHeadChanged||(info&&JSON.stringify(info.head)!==JSON.stringify(before.info?.head))||!!refs;
@@ -452,17 +479,18 @@ async function loadGraphOnce(root: string, includeWorktree: boolean | undefined,
   const store = useRepos.getState();
   const tab = store.tabs[root];
   if (!tab) return;
-  const dirty = includeWorktree ?? (!!tab.status && tab.status.files.length > 0);
+  const dirty = includeWorkingChanges(tab, includeWorktree ?? (!!tab.status && tab.status.files.length > 0));
+  const showIncoming = !useSettings.getState().hideIncomingByRepo[root];
   store.patch(root, { graphLoading: true });
   try {
     // First paint: the newest commits without the full ordered walk, then the whole history.
     if (!tab.graph) {
-      const quick = await api.graphLoad(root, tab.branchFilter, dirty, 2000, true).catch(() => null);
+      const quick = await api.graphLoad(root, tab.branchFilter, dirty, 2000, true, showIncoming).catch(() => null);
       if (!current()) return;
       const t0 = useRepos.getState().tabs[root];
       if (quick && t0 && !t0.graph) useRepos.getState().patch(root, { graph: quick, graphVersion: t0.graphVersion + 1, graphHasWorktree: dirty });
     }
-    const summary = await api.graphLoad(root, tab.branchFilter, dirty, useRepos.getState().tabs[root]?.graphLimit ?? tab.graphLimit);
+    const summary = await api.graphLoad(root, tab.branchFilter, dirty, useRepos.getState().tabs[root]?.graphLimit ?? tab.graphLimit, false, showIncoming);
     if (!current()) return;
     const t = useRepos.getState().tabs[root];
     if (!t) return;

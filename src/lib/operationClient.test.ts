@@ -52,6 +52,30 @@ describe("repository operation client", () => {
     await repositoryCall(f.invoke, "restore_branch", { repo: "repo", name: "restored", oid: "explicit-sha" });
     expect(f.calls.find((c) => c.cmd === "restore_branch")?.args?.expectedState).toBe("fresh");
   });
+  it("lets an initial branch switch inspect the worktree inside the queue", async () => {
+    const f = fixture();
+    const sourceHead = { branch: "main", oid: "displayed-head" };
+    setOperationHooks({ observed: () => "old", observedHead: () => sourceHead, refreshed: () => {} });
+    await repositoryCall(f.invoke, "checkout", { repo: "repo", target: "topic", kind: "local" });
+    expect(f.calls[0]).toEqual({ cmd: "checkout", args: { repo: "repo", target: "topic", kind: "local", expectedState: null, sourceHead } });
+    expect(f.calls.map(c => c.cmd)).toEqual(["checkout", "status", "repo_info"]);
+  });
+  it("returns a dirty branch review without refreshing or weakening confirmation", async () => {
+    const f = fixture();
+    const sourceHead = { branch: "main", oid: "displayed-head" };
+    const pending: number[] = [];
+    setOperationHooks({ observed: () => null, observedHead: () => sourceHead, refreshed: () => {}, pending: (_root, delta) => pending.push(delta) });
+    const review = { status: "review", stateToken: "reviewed-state", targetOid: "target-tip" };
+    const args = { repo: "repo", target: "topic", kind: "local" };
+    const commands: string[] = [];
+    const invoke: Invoke = async <T>(cmd: string) => { commands.push(cmd); return review as T; };
+    await expect(repositoryCall(invoke, "checkout", args)).resolves.toEqual(review);
+    expect(commands).toEqual(["checkout"]);
+    expect(pending).toEqual([1, -1]);
+    await repositoryCall(f.invoke, "checkout", { ...args, expectedState: review.stateToken, choice: { action: "stash", targetOid: review.targetOid } });
+    expect(f.calls[0].args).toMatchObject({ expectedState: "reviewed-state", choice: { action: "stash", targetOid: "target-tip" } });
+    expect(f.calls[0].args).not.toHaveProperty("sourceHead");
+  });
   it("a fresh request snapshot cannot silently switch the destination branch", async () => {
     const f = fixture();
     setOperationHooks({ observed: () => "old", observedHead: () => ({ branch: "main", oid: "old" }), refreshed: () => {} });

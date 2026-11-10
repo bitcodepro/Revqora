@@ -6,7 +6,6 @@ export type ThemePref = "system" | "dark" | "light";
 export type DiffMode = "unified" | "split";
 export type DateStyle = "relative" | "absolute";
 export interface PullRequestWatch {
-  mineSince: number | null;
   selected: Record<number, number>;
 }
 export type PullRequestWatches = Record<string, Record<string, PullRequestWatch>>;
@@ -24,6 +23,7 @@ export interface Settings {
   dateStyle: DateStyle;
   confirmDiscard: boolean;
   showRemoteBranchesInGraph: boolean;
+  hideIncomingByRepo: Record<string, true>;
   wrapDiff: boolean;
   recent: string[];
   openTabs: string[];
@@ -47,10 +47,13 @@ export interface Settings {
   mergeShowBase: boolean;
   validationCommands: Record<string, string[]>;
   diffFullFile: boolean;
+  /** Enables hourly update checks. The startup check always runs. */
   checkUpdates: boolean;
   /** Background fetch interval in minutes; 0 turns it off. */
   autoFetchMinutes: number;
   prPollMinutes: number;
+  prWatchMineSince: number | null;
+  prAllRepositories: boolean;
   prWatches: PullRequestWatches;
   /** Graph, stacked Review, or commit/file/diff columns. */
   historyMode: HistoryMode;
@@ -78,6 +81,7 @@ export const useSettings = create<Settings>()(
       dateStyle: "relative",
       confirmDiscard: true,
       showRemoteBranchesInGraph: true,
+      hideIncomingByRepo: {},
       wrapDiff: false,
       recent: [],
       openTabs: [],
@@ -104,6 +108,8 @@ export const useSettings = create<Settings>()(
       checkUpdates: true,
       autoFetchMinutes: 5,
       prPollMinutes: 5,
+      prWatchMineSince: null,
+      prAllRepositories: false,
       prWatches: {},
       historyMode: "graph",
       skippedUpdate: null,
@@ -114,7 +120,19 @@ export const useSettings = create<Settings>()(
     {
       name: "revqora.settings", version: 2,
       migrate: (stored) => ({ ...(stored as object), layouts: restoreWorkspaceLayouts(stored) }),
-      merge: (stored, current) => ({ ...current, ...(stored as object), layouts: restoreWorkspaceLayouts(stored) }),
+      merge: (stored, current) => {
+        const old = stored as (Partial<Settings> & { prWatches?: Record<string, Record<string, PullRequestWatch & { mineSince?: number }>> }) | undefined;
+        const watches = Object.entries(old?.prWatches ?? {}).map(([root, scopes]) => [root, Object.entries(scopes ?? {})] as const);
+        const legacyMine = watches.some(([, scopes]) => scopes.some(([, watch]) => !!watch?.mineSince));
+        const prWatches = Object.fromEntries(watches.flatMap(([root, scopes]) => {
+          const individual = scopes.flatMap(([scope, watch]) => Object.keys(watch?.selected ?? {}).length ? [[scope, { selected: watch.selected }]] : []);
+          return individual.length ? [[root, Object.fromEntries(individual)]] : [];
+        }));
+        return {
+          ...current, ...old, prWatches, layouts: restoreWorkspaceLayouts(stored),
+          prWatchMineSince: old?.prWatchMineSince !== undefined ? old.prWatchMineSince : legacyMine ? Date.now() : null,
+        };
+      },
     },
   ),
 );

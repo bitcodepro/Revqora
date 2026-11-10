@@ -29,6 +29,7 @@ import { Modal } from "./Modal";
 import { showDialog, toast } from "../lib/ui";
 import { api, errorMessage } from "../lib/api";
 import { CODE_FONTS, UI_FONTS, useSettings } from "../lib/settings";
+import { McpSettings } from "./McpSettings";
 import type { GitSelection, PushOptions, ReflogEntry, RemoteInfo, SigningConfig } from "../lib/types";
 import { useRepos } from "../lib/store";
 import { absoluteTime, relativeTime, shortOid } from "../lib/format";
@@ -642,8 +643,9 @@ function UpdateSettings() {
         <label>Updates</label>
         <div className="vstack" style={{ gap: 6 }}>
           <label className="check">
-            <input type="checkbox" checked={checkUpdates} onChange={(e) => set({ checkUpdates: e.target.checked, skippedUpdate: null })} /> Check for new versions at startup
+            <input type="checkbox" checked={checkUpdates} aria-describedby="update-check-schedule" onChange={(e) => set({ checkUpdates: e.target.checked })} /> Check for updates every hour
           </label>
+          <span className="faint" id="update-check-schedule">Revqora also checks once at startup.</span>
           <span className="hstack" style={{ gap: 8 }}>
             <button
               type="button"
@@ -860,6 +862,7 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
           </button>
         </div>
       </div>
+      <McpSettings />
       </>}
     </Modal>
   );

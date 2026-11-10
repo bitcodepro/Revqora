@@ -17,6 +17,9 @@ export async function fastSwitchSmoke({exe,work,check,out}){
   const preview=body=>page.waitForFunction(body=>document.querySelector(".details")?.textContent.includes(body),body);
   try{
    app=await launch({exe,profile:path.join(home,"profile"),port:0,visible:false});page=app.page;page.setDefaultTimeout(60000);await page.getByRole("button",{name:"Skip",exact:true}).click();await open(one);
+   // This test holds reads while jumping between commits already in one cached history.
+   await page.getByRole("combobox",{name:"History scope",exact:true}).selectOption("");
+   await page.locator(".graph-rows").getByText("Switch first feature",{exact:true}).waitFor();
    const branch=name=>page.locator(`.sidebar [data-branch-kind="local"][data-branch-name="${name}"]`);
    await branch("other/person").waitFor();
    assert.equal(await page.getByLabel("Branch list order",{exact:true}).inputValue(),"recent");

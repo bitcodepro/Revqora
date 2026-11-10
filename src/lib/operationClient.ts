@@ -33,7 +33,17 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
   // backend queue, but the foreground controls stay usable while it runs.
   if (command === "fetch_background") return invoke<T>(command, { ...args, expectedState: null });
   hooks.pending?.(repo, 1);
+  let refresh = true;
   try {
+    if (command === "checkout" && args?.kind !== "commit" && !args?.choice && typeof args?.expectedState !== "string") {
+      const sourceHead = hooks.observedHead?.(repo);
+      if (sourceHead) {
+        // The queued checkout observes current worktree changes and verifies this source HEAD itself.
+        const result = await invoke<T>(command, { ...args, expectedState: null, sourceHead });
+        refresh = !(typeof result === "object" && result && "status" in result && result.status === "review");
+        return result;
+      }
+    }
     let expectedState: string | null = null;
     if (!UNGUARDED.has(command)) {
       expectedState = typeof args?.expectedState === "string" ? args.expectedState : DISPLAYED_STATE.has(command) ? hooks.observed(repo) : null;
@@ -51,8 +61,10 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
     // Compound UI actions (commit then push, local then remote delete) must see
     // their own preceding mutation rather than reusing its now-stale token.
     // Refresh failures must not turn a successful Git mutation into a retryable error.
-    await Promise.all([invoke<StatusSummary>("status", { repo }), invoke<RepoInfo>("repo_info", { repo })])
-      .then(([status, info]) => hooks.refreshed(repo, status, info), () => {}).catch(() => {});
+    if (refresh) {
+      await Promise.all([invoke<StatusSummary>("status", { repo }), invoke<RepoInfo>("repo_info", { repo })])
+        .then(([status, info]) => hooks.refreshed(repo, status, info), () => {}).catch(() => {});
+    }
     hooks.pending?.(repo, -1);
   }
 }

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./api", () => ({ api: { status: vi.fn(), repoInfo: vi.fn(), layersState: vi.fn(), refs: vi.fn(), repoExtras: vi.fn(), squashMerged: vi.fn(), graphLoad: vi.fn() }, errorMessage: String }));
-vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn() }) } }));
+vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), hideIncomingByRepo: {} }) } }));
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() } }));
 import { api } from "./api";
@@ -20,6 +20,20 @@ beforeEach(() => {
   useRepos.setState({ order: [root], active: root, tabs: { [root]: { root, status: snapshot("before-wal", 1), graph: {}, graphHasWorktree: true, diffRefreshVersion: 0 } as RepoTab } });
 });
 describe("background repository observation", () => {
+  it("keeps the active section when switching repositories without moving the selected commit", () => {
+    const other = "/other";
+    const tab = useRepos.getState().tabs[root];
+    useRepos.setState({ order: [root, other], tabs: {
+      [root]: { ...tab, view: "pulls", selected: "first" },
+      [other]: { ...tab, root: other, view: "history", selected: "second" },
+    } });
+    const repos = useRepos.getState();
+    repos.activate(other);
+    expect(useRepos.getState().tabs[other]).toMatchObject({ view: "pulls", selected: "second" });
+    repos.patch(other, { view: "changes" });
+    repos.activate(root);
+    expect(useRepos.getState().tabs[root]).toMatchObject({ view: "changes", selected: "first" });
+  });
   it("keeps cached history and previews while activation revalidates unchanged local state",async()=>{
     const refs={local:[],remote:[],tags:[],remotes:[]};const info={head:{branch:"main",oid:"a"}} as RepoInfo;
     useRepos.getState().patch(root,{info,refs:refs as never,loaded:true});vi.mocked(api.repoInfo).mockResolvedValue(info);vi.mocked(api.refs).mockResolvedValue(refs as never);

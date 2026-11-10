@@ -114,6 +114,7 @@ or check out anything.
 | Pull Request Center | Browse, create and edit PRs/MRs; templates, changed files, discussions, inline comments, reviews, CI and supported policy-checked merge/cleanup actions. |
 | Agent Workspace | Run an installed CLI in a reviewed worktree; inspect logs and changes, stop its process tree and keep native task history across restarts. |
 | Workflow Builder | Save ordered checks, commands and reviewed Git/service steps; PR follow-up recipes connect agents, validation, publication, CI and re-review. |
+| MCP server | Connect a local agent to Revqora to inspect repositories and request Git or PR actions for desktop review. |
 | Code exploration | Local syntax-aware summaries for C#, TypeScript/TSX and JSON; literal changed-code search and symbol-body/JSON-subtree history. |
 | Branch Stacks | Track dependent branches, link PRs, review one-layer restacks, retain recovery and old-parent boundaries after rewrites or squash merges. |
 
@@ -208,6 +209,13 @@ in graph** for the remote branch. A drive icon means no remote upstream is confi
 cloud means that upstream is missing after Fetch. **Remotes** contains branches
 without a linked local branch. Counts and missing-upstream state use cached refs;
 Fetch updates them without changing your working files.
+
+**Graph**, **Review** and **Columns** open on **Current branch** by default.
+After Fetch, commits from its upstream appear above the local history with an
+**Incoming** badge. Select one to preview its files and diff before pulling.
+Use the eye button to hide incoming rows. Revqora remembers this choice for
+each repository. After Pull integrates the commits, they appear as regular
+history rows.
 
 The sidebar also offers **My branches** and **Recent first**. Recent order shows
 full branch names with the latest commit at the top; choose **Name / folders**
@@ -466,6 +474,41 @@ steps. Named re-review currently targets GitHub. Read
 and the [workflow limits](https://github.com/bitcodepro/Revqora/blob/main/docs/ROADMAP.md#stage-18--automated-pr-workflow)
 for CLI setup and automation limits.
 
+### Connect an external agent through MCP
+
+1. Open Revqora, then go to **Settings → General → MCP** and select **Enable MCP for this session**.
+2. Choose **Codex**, **VS Code**, or **Claude Code** and select **Copy MCP configuration**. Add the entry to the client's configuration and restart the client. The snippet includes the absolute path to this installation.
+3. Keep Revqora running. Ask the agent to call `list_repositories` and use the returned repository ID. Enable access again when you reopen Revqora.
+
+The MCP launch command is the installed executable followed by `--mcp`. For example, to register it with Codex on Windows:
+
+```powershell
+codex mcp add revqora -- 'D:\Revqora\revqora.exe' --mcp
+```
+
+The equivalent Codex user configuration is:
+
+```toml
+[mcp_servers.revqora]
+command = "D:\\Revqora\\revqora.exe"
+args = ["--mcp"]
+```
+
+Use your actual path, or copy the ready-to-use entry from Settings. Add the VS Code entry under `servers` in user `mcp.json`. Claude Code uses `mcpServers`; you can also register the command in your user scope with `claude mcp add --scope user revqora -- <executable> --mcp`. Merge the copied entry with any existing servers. Run the client locally under the same OS account as Revqora. [Codex setup](https://learn.chatgpt.com/docs/extend/mcp) · [VS Code configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) · [Claude Code configuration](https://code.claude.com/docs/en/mcp)
+
+| I want the agent to… | Tools |
+| --- | --- |
+| See what I have open and inspect changes | `list_repositories`, `repository_status`, `list_branches`, `search_commits`, `commit_details`, `file_diff` |
+| Inspect worktrees, workflows or PRs | `list_worktrees`, `list_workflows`, `list_pull_requests`, `pull_request` |
+| Show me a screen in the app | `open_view` |
+| Prepare a Git or PR operation | `request_action`, then `action_status` |
+
+For example, ask the agent to inspect the unstaged diff, propose files to stage and send one staging request. Switch to Revqora and review the exact paths in the **MCP request** dialog. After approval the agent can read the staged state and propose a commit message in a separate request. Branch deletion, push, Sync, and PR review and merge use Revqora's existing review dialogs. An action status of `handed_off` means Revqora took over the review. Check the resulting Git or PR state to confirm what happened.
+
+The MCP staged diff includes all staged changes, including sealed stage layers. While sealed layers exist, use **Changes** in Revqora to unstage or commit them.
+
+MCP access is off on startup. When enabled, local clients can read code and PR text from open repositories in the current workspace, and their model provider may receive those results. PR access uses the connection selected in PR Center. Revqora uses an authenticated loopback bridge and a session file in its portable data folder. The copied configuration contains the executable path and arguments. Requests for changes require approval in the desktop app.
+
 ### Explore changed code and dependent branches
 
 In a supported C#, TypeScript/TSX or JSON diff, use **Show semantic summary** to
@@ -513,9 +556,12 @@ preferences. Keep your vault password and back up portable data appropriately.
 Do not delete `data` if you want to retain settings, drafts, credentials or recovery
 history. Close the application before copying a portable installation.
 
-Settings controls update checks, auto-fetch, themes, fonts, shortcuts and optional
-avatars. An available update appears in the status bar; package checksums and
-source metadata are verified before installation. Updates preserve portable data.
+Settings also controls auto-fetch, themes, fonts, shortcuts and optional avatars.
+Revqora checks for updates at startup and every hour while open. Turn off
+**Check for updates every hour** in **Settings → Updates** to keep only the
+startup check. Use **Check now** to check manually. An available update appears
+in the status bar. Revqora verifies package checksums and source metadata before
+installation and preserves portable data.
 Affected older Linux builds need a manual portable-archive update to receive the
 archive-extraction fix; keep the existing `data` folder when upgrading.
 **Settings → About Revqora**, or **Ctrl+K → About Revqora**, shows the installed

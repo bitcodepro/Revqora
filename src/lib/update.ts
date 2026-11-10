@@ -22,7 +22,8 @@ interface UpdateState {
   restart: () => Promise<void>;
 }
 
-const RECHECK_MS = 6 * 60 * 60 * 1000;
+const STARTUP_CHECK_DELAY_MS = 4000;
+const RECHECK_MS = 60 * 60 * 1000;
 
 export const useUpdate = create<UpdateState>()((set, get) => ({
   info: null,
@@ -80,15 +81,22 @@ export function visibleUpdate(info: UpdateInfo | null, skipped: string | null): 
   return info.latest === skipped ? null : info;
 }
 
-let started = false;
-
-/** Checks shortly after start (when enabled) and then every few hours. */
+/** Checks once at startup, with optional hourly checks while the app is open. */
 export function startUpdateChecks() {
-  if (started) return;
-  started = true;
-  const run = () => {
-    if (useSettings.getState().checkUpdates) useUpdate.getState().check();
+  const check = () => { void useUpdate.getState().check(); };
+  const startup = setTimeout(check, STARTUP_CHECK_DELAY_MS);
+  let hourly: ReturnType<typeof setInterval> | undefined;
+  const scheduleHourly = (enabled: boolean) => {
+    clearInterval(hourly);
+    hourly = enabled ? setInterval(check, RECHECK_MS) : undefined;
   };
-  setTimeout(run, 4000);
-  setInterval(run, RECHECK_MS);
+  scheduleHourly(useSettings.getState().checkUpdates);
+  const unsubscribe = useSettings.subscribe((settings, previous) => {
+    if (settings.checkUpdates !== previous.checkUpdates) scheduleHourly(settings.checkUpdates);
+  });
+  return () => {
+    unsubscribe();
+    clearTimeout(startup);
+    clearInterval(hourly);
+  };
 }

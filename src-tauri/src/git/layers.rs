@@ -385,6 +385,15 @@ pub fn staged_base(repo: &Path) -> Option<String> {
     runner::exec(repo, ["rev-parse", "-q", "--verify", LAYER_REF]).ok().filter(|o| o.ok()).map(|o| o.text().trim().to_string())
 }
 
+pub fn require_unsealed_index(repo: &Path) -> GitResult<()> {
+    let out = runner::exec(repo, ["rev-parse", "-q", "--verify", LAYER_REF])?;
+    match out.code {
+        0 => Err(GitError::new("This repository has sealed stage layers. Use Changes in Revqora to unstage or commit them.").kind("sealed-stage-layers")),
+        1 => Ok(()),
+        _ => Err(runner::to_error("check sealed stage layers", &out)),
+    }
+}
+
 fn load(repo: &Path) -> GitResult<Chain> {
     let (chain, _) = reconcile(repo)?;
     match chain {

@@ -72,6 +72,10 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
+  mcpInfo: () => call<{ enabled: boolean; executable: string }>("mcp_info"),
+  mcpEnable: (enabled: boolean) => call<{ enabled: boolean; executable: string }>("mcp_enable", { enabled }),
+  mcpLease: (session: string, id: string | null = null) => call<boolean>("mcp_lease", { session, id }),
+  mcpReply: (session: string, id: string, value: unknown, error: string | null = null) => call<void>("mcp_reply", { session, id, value: value ?? null, error }),
   workingFileRead: (repo:string,path:string) => call<{content:string;revision:string}>("working_file_read",{repo,path}),
   workingFileSave: (repo:string,path:string,expectedRevision:string,content:string) => call<{file:{content:string;revision:string};backupPath:string|null}>("working_file_save",{repo,path,expectedRevision,content}),
   symbolHistory:(repo:string,path:string,query:string,anchor:string|null,offset:number)=>call<import("./types").SymbolHistoryPage>("symbol_history",{repo,path,query,anchor,offset}),
@@ -156,12 +160,12 @@ export const api = {
   stashSelection: (repo: string, path: string, selection: [number, number][], hash: string, opts: DiffOptions, message: string, expectedState: string | null) => call<PartialStashResult>("stash_selection", { repo, path, selection, hash, opts, message, expectedState }),
   remoteRenamePlan: (repo: string, trackingRef: string, newName: string) => call<RemoteRenamePlan>("remote_rename_plan", { repo, trackingRef, newName }),
   remoteBranchRename: (repo: string, plan: RemoteRenamePlan) => call<RemoteRenameResult>("remote_branch_rename", { repo, plan, expectedState: plan.stateToken }),
-  status: (repo: string) => call<StatusSummary>("status", { repo }),
+  status: (repo: string, requireUnsealed?: boolean) => call<StatusSummary>("status", { repo, requireUnsealed }),
   identityGet: (repo: string) => call<Identity>("identity_get", { repo }),
   identitySet: (repo: string, name: string, email: string, global: boolean) => call<void>("identity_set", { repo, name, email, global }),
 
-  workingDiff: (repo: string, path: string, side: "unstaged" | "staged", untracked: boolean, opts?: DiffOptions) =>
-    call<FileDiff>("working_diff", { repo, path, side, untracked, opts }),
+  workingDiff: (repo: string, path: string, side: "unstaged" | "staged", untracked: boolean, opts?: DiffOptions, fullIndex?: boolean) =>
+    call<FileDiff>("working_diff", { repo, path, side, untracked, opts, fullIndex }),
   revDiff: (repo: string, from: string | null, to: string, path: string, opts?: DiffOptions) => call<FileDiff>("rev_diff", { repo, from, to, path, opts }),
   applySelection: (
     repo: string,
@@ -172,14 +176,15 @@ export const api = {
     untracked: boolean,
     opts?: DiffOptions,
   ) => call<void>("apply_selection", { repo, path, mode, selection, hash, untracked, opts }),
-  stage: (repo: string, paths: string[]) => call<void>("stage", { repo, paths }),
-  unstage: (repo: string, paths: string[]) => call<void>("unstage", { repo, paths }),
+  stage: (repo: string, paths: string[], expectedState?: string) => call<void>("stage", { repo, paths, expectedState }),
+  unstage: (repo: string, paths: string[], expectedState?: string, requireUnsealed?: boolean) => call<void>("unstage", { repo, paths, expectedState, requireUnsealed }),
   discard: (repo: string, tracked: string[], untracked: string[], expectedState?: string | null) => call<string>("discard", { repo, tracked, untracked, expectedState }),
-  commit: (repo: string, message: string, opts?: CommitOptions, expectedState?: string | null) => call<string>("commit", { repo, message, opts, expectedState }),
+  commit: (repo: string, message: string, opts?: CommitOptions, expectedState?: string | null, requireUnsealed?: boolean) =>
+    call<string>("commit", { repo, message, opts, expectedState, requireUnsealed }),
   lastMessage: (repo: string) => call<string>("last_message", { repo }),
 
-  graphLoad: (repo: string, branch: string | null, includeWorktree: boolean, limit?: number, fast?: boolean) =>
-    call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast }),
+  graphLoad: (repo: string, branch: string | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean) =>
+    call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast, showIncoming }),
   graphRows: (repo: string, start: number, count: number,expectedKey?:string) => call<GraphRow[]>("graph_rows", { repo, start, count,expectedKey }),
   graphFind: (repo: string, oid: string, expectedKey?: string) => call<number | null>("graph_find", { repo, oid, expectedKey }),
   graphLaneAnchor: (repo: string, key: string, id: number) => call<import("./types").GraphLaneAnchor | null>("graph_lane_anchor", { repo, key, id }),
@@ -223,7 +228,8 @@ export const api = {
   undoCommit: (repo: string) => call<void>("undo_commit", { repo }),
 
   fetch: (repo: string, remote: string | null, prune: boolean, opId: string) => call<string>("fetch", { repo, remote, prune, opId }),
-  pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string) => call<import("./types").PullOutcome>("pull", { repo, mode, opId }),
+  pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string) =>
+    call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
   pushRef: (repo: string, remote: string, refspec: string, opId: string, expectedState?: string | null) => call<string>("push_ref", { repo, remote, refspec, opId, expectedState }),
   remoteAdd: (repo: string, name: string, url: string) => call<void>("remote_add", { repo, name, url }),
@@ -234,7 +240,7 @@ export const api = {
   opAbort: (repo: string, kind: string, expectedState?: string | null) => call<OpOutcome>("op_abort", { repo, kind, expectedState }),
   opContinue: (repo: string, kind: string, message?: string | null, expectedState?: string | null) => call<OpOutcome>("op_continue", { repo, kind, message, expectedState }),
   opSkip: (repo: string, kind: string) => call<OpOutcome>("op_skip", { repo, kind }),
-  cherryPick: (repo: string, oids: string[], noCommit: boolean) => call<OpOutcome>("cherry_pick", { repo, oids, noCommit }),
+  cherryPick: (repo: string, oids: string[], noCommit: boolean, expectedState?: string) => call<OpOutcome>("cherry_pick", { repo, oids, noCommit, expectedState }),
   cherryPickComparedCommit: (repo: string, pick: import("./types").ComparedCherryPick, expectedState: string) =>
     call<OpOutcome>("cherry_pick_compared_commit", { repo, pick, expectedState }),
   revert: (repo: string, oid: string, noCommit: boolean) => call<OpOutcome>("revert", { repo, oid, noCommit }),
@@ -255,8 +261,8 @@ export const api = {
   conflictMarkResolved: (repo: string, paths: string[]) => call<void>("conflict_mark_resolved", { repo, paths }),
   conflictUnresolve: (repo: string, path: string) => call<void>("conflict_unresolve", { repo, path }),
 
-  stashSave: (repo: string, message: string, includeUntracked: boolean, keepIndex: boolean, paths?: string[]) =>
-    call<void>("stash_save", { repo, message, includeUntracked, keepIndex, paths }),
+  stashSave: (repo: string, message: string, includeUntracked: boolean, keepIndex: boolean, paths?: string[], expectedState?: string) =>
+    call<void>("stash_save", { repo, message, includeUntracked, keepIndex, paths, expectedState }),
   stashApply: (repo: string, index: number, pop: boolean, oid: string) => call<OpOutcome>("stash_apply", { repo, index, pop, oid }),
   stashDrop: (repo: string, index: number, oid: string, expectedState?: string | null) => call<void>("stash_drop", { repo, index, oid, expectedState }),
 

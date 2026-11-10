@@ -265,6 +265,41 @@ fn bb_thread(v: &Value) -> Thread {
         comments: vec![bb_comment(v)],
     }
 }
+
+fn bitbucket_threads(rows: &[Value], mut fetch_parent: impl FnMut(&str) -> GitResult<Value>) -> GitResult<Vec<Thread>> {
+    let mut comments: BTreeMap<String, Value> = rows.iter().map(|item| (id(item, "/id"), item.clone())).collect();
+    let mut groups: BTreeMap<String, Thread> = BTreeMap::new();
+    for item in rows {
+        let mut root = item.clone();
+        let mut depth = 0;
+        while root.pointer("/parent/id").is_some_and(|v| !v.is_null()) {
+            depth += 1;
+            let key = id(&root, "/parent/id");
+            if key.parse::<u64>().ok().is_none_or(|n| n == 0) || !key.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(err("Invalid comment parent ID."));
+            }
+            if depth > 20 {
+                return Err(err("Invalid comment parent chain."));
+            }
+            if let Some(parent) = comments.get(&key) {
+                root = parent.clone();
+                continue;
+            }
+            let value = fetch_parent(&key)?;
+            if id(&value, "/id") != key {
+                return Err(err("The server returned a different discussion parent."));
+            }
+            root = value.clone();
+            comments.insert(key, value);
+        }
+        let thread = groups.entry(id(&root, "/id")).or_insert_with(|| bb_thread(&root));
+        let comment = bb_comment(item);
+        if !thread.comments.iter().any(|c| c.id == comment.id) {
+            thread.comments.push(comment);
+        }
+    }
+    Ok(groups.into_values().collect())
+}
 fn az_thread(v: &Value) -> GitResult<Thread> {
     let status = text(v, "/status");
     let closed = !matches!(status.as_str(), "active" | "pending" | "1" | "6" | "");
@@ -447,27 +482,12 @@ pub fn page(repo: &Path, n: u64, connection: &str, revision: &str, feed: &str, c
         if data.get("next").and_then(Value::as_str).is_some() {
             next = Some(c.offset + PAGE);
         }
-        let mut groups: BTreeMap<String, Thread> = BTreeMap::new();
-        for item in array(&data, "/values")? {
-            let mut root = item.clone();
-            let mut depth = 0;
-            while root.pointer("/parent/id").is_some_and(|x| !x.is_null()) {
-                depth += 1;
-                if depth > 20 {
-                    return Err(err("Invalid comment parent chain."));
-                }
-                root = forge::request(repo, &f, "GET", &route(&f, n, &format!("/comments/{}", forge::enc(&id(&root, "/parent/id")))), None)?;
-            }
-            let t = groups.entry(id(&root, "/id")).or_insert_with(|| bb_thread(&root));
-            let comment = bb_comment(item);
-            if !t.comments.iter().any(|c| c.id == comment.id) {
-                t.comments.push(comment);
-            }
-        }
+        let threads =
+            bitbucket_threads(array(&data, "/values")?, |parent| forge::request(repo, &f, "GET", &route(&f, n, &format!("/comments/{parent}")), None))?;
         notice = Some(
             "Replies are collected from loaded comment pages. Load further pages to read the rest; permissions are checked by Bitbucket when sending.".into(),
         );
-        groups.into_values().collect()
+        threads
     } else {
         let data = forge::request(repo, &f, "GET", &format!("{}?limit=50&start={}", route(&f, n, "/activities"), c.offset), None)?;
         if !boolean(&data, "/isLastPage") {
