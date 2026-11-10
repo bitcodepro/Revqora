@@ -190,10 +190,17 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
     await page.locator(".ctx-menu").filter({has:page.getByText("Upstream: origin/innocent",{exact:true})}).locator(".ctx-item").filter({has:page.getByText("Show only this branch in graph",{exact:true})}).click();
     const localFilter=page.locator('[data-branch-filter="refs/heads/feature/login"]');
     await localFilter.waitFor();
-    await page.waitForFunction(() => {
-      const rows=[...document.querySelectorAll(".grow")].map(node=>node.textContent);
-      return rows.some(text=>text.includes("Add authentication flow")) && !rows.some(text=>text.includes("Other author tip"));
-    });
+    const localTip = page.locator(".grow:not(.incoming)").getByText("Add authentication flow", { exact: true });
+    const upstreamTip = page.locator(".grow").getByText("Other author tip", { exact: true });
+    const incomingTip = page.locator(".grow.incoming").getByText("Other author tip", { exact: true });
+    const incomingToggle = page.getByRole("button", { name: "Show incoming commits", exact: true });
+    await localTip.waitFor();
+    await incomingTip.waitFor();
+    await incomingToggle.click();
+    await upstreamTip.waitFor({ state: "detached" });
+    await localTip.waitFor();
+    await incomingToggle.click();
+    await incomingTip.waitFor();
     await clearFilter.click();
     await localFilter.waitFor({state:"detached"});
     await search.fill("owned/removed");

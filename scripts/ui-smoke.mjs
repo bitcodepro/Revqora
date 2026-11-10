@@ -8,6 +8,7 @@ import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
 import {prCenterSmoke} from "./pr-center-smoke.mjs";
 import {agentWorkspaceSmoke} from "./agent-workspace-smoke.mjs";
 import { worktreeManagerSmoke } from "./worktree-manager-smoke.mjs";
+import { repositoryIsActive } from "./ui-readiness.mjs";
 import { fillWorktreeFolder, reviewWorktreeCreation } from "./worktree-manager-fixture.mjs";
 import { smokeTimings, assertSmokeCoverage } from "./ci-timing.mjs";
 import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
@@ -1663,6 +1664,7 @@ try {
   // Stage 5 uses a fresh repository so earlier history/recovery cases cannot
   // accidentally satisfy its file, staging or remote-ref assertions.
   const stage5 = path.join(work, "env", "stage5-workflows");
+  const child5 = path.join(stage5, "nested", "child");
   const remote5 = path.join(work, "env", "stage5-origin.git");
   const git5 = (...args) => execFileSync("git", ["-C", stage5, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
   const server5 = (...args) => execFileSync("git", ["--git-dir", remote5, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }).trim();
@@ -1671,6 +1673,13 @@ try {
   const select5 = async () => {
     await page.locator(".repository-select", { has: page.locator(".repository-label", { hasText: /^stage5-workflows$/ }) }).click();
     await page.waitForSelector(".repository-item.active .repository-label:has-text('stage5-workflows')");
+  };
+  const verifyNestedHistory = async () => {
+    await page.waitForFunction(repositoryIsActive, { expected: child5, windows: process.platform === "win32" });
+    await page.locator(".view-tab.on").filter({ hasText: "Changes" }).waitFor();
+    await page.getByRole("button", { name: "History", exact: true }).click();
+    await page.locator(".grow").getByText("Nested child baseline", { exact: true }).waitFor();
+    await page.locator(".view-tab").filter({ hasText: "Changes" }).click();
   };
 
   await check("ignored paths have a separate read-only view", async () => {
@@ -1681,9 +1690,9 @@ try {
     git5("add", "-A"); git5("commit", "-qm", "Stage 5 baseline"); base5 = git5("rev-parse", "HEAD");
     git5("clone", "--bare", ".", remote5); git5("remote", "add", "origin", remote5); git5("push", "origin", "HEAD:refs/heads/topic-old"); git5("fetch", "origin"); git5("branch", "--set-upstream-to=origin/topic-old", "main");
     fs.writeFileSync(path.join(stage5, "ignored.log"), "ignored fixture\n");
-    const nested = path.join(stage5, "nested", "child"); fs.mkdirSync(nested, { recursive: true });
-    execFileSync("git", ["-C", nested, "init", "-q", "-b", "child"]);
-    execFileSync("git", ["-C", nested, "-c", "user.name=Child", "-c", "user.email=child@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Nested child baseline"]);
+    fs.mkdirSync(child5, { recursive: true });
+    execFileSync("git", ["-C", child5, "init", "-q", "-b", "child"]);
+    execFileSync("git", ["-C", child5, "-c", "user.name=Child", "-c", "user.email=child@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Nested child baseline"]);
     index5 = fs.readFileSync(path.join(stage5, ".git", "index"));
     await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), stage5);
     await page.waitForSelector(".repository-item.active .repository-label:has-text('stage5-workflows')");
@@ -1704,7 +1713,7 @@ try {
     await page.waitForSelector(".nested-repository:has-text('nested/child')");
     await shot("54-nested-repositories");
     await page.locator(".nested-repository", { hasText: "nested/child" }).getByRole("button", { name: "Open repository", exact: true }).click();
-    await page.waitForSelector(".grow:has-text('Nested child baseline')");
+    await verifyNestedHistory();
     if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(index5)) throw new Error("opening a child changed the parent index");
     await select5();
     await page.waitForSelector(".view-tab.on:has-text('Changes')");
@@ -1817,7 +1826,7 @@ try {
     await page.waitForSelector(".changes[data-pending='false']");
     if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(before) || git5("diff", "--cached", "--name-only")) throw new Error("refused Stage all still changed the index");
     await child.hover(); await shot("59-nested-staging-guard"); await child.click();
-    await page.waitForSelector(".grow:has-text('Nested child baseline')"); await select5();
+    await verifyNestedHistory(); await select5();
     if (!fs.readFileSync(path.join(stage5, ".git", "index")).equals(before)) throw new Error("opening the nested row changed parent staging");
   });
 
