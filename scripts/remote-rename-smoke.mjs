@@ -5,7 +5,7 @@ import { openSubmenu } from "./ui-driver.mjs";
 export async function remoteRenameSmoke({ page, check, shot, git, server, base, until }) {
   const filter = page.locator(".sidebar input[placeholder^='Filter branches']");
   const openRename = async (oldName, newName, pairedLocal = null) => {
-    const branches=page.getByRole("button",{name:"Branches",exact:true});
+    const branches=page.getByRole("button",{name:"Toggle branches panel",exact:true});
     if(await branches.getAttribute("aria-expanded")==="false")await branches.click();
     await filter.waitFor({state:"visible"});await filter.fill(oldName);
     const rename=page.locator(".ctx-item").filter({has:page.getByText("Rename on remote…",{exact:true})});

@@ -147,7 +147,7 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
 
     // Workspaces deliberately remember a collapsed sidebar. Establish this
     // scenario's UI precondition via its real control, not saved-state edits.
-    const branches = page.getByRole("button", { name:"Branches",exact:true });
+    const branches = page.getByRole("button", { name:"Toggle branches panel",exact:true });
     if(await branches.getAttribute("aria-expanded") === "false") await branches.click();
     await page.locator(".branches-slot:not([hidden])").waitFor();
     const search = page.locator(".sidebar input[placeholder^='Filter branches']");

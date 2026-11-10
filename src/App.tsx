@@ -13,7 +13,7 @@ import { listenMcpDesktop } from "./lib/mcpDesktop";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Columns3, FilePlus2, GitBranch, GitCommitHorizontal, GitGraph, GitPullRequest, Maximize2, Minimize2, RefreshCw, Rows3 } from "lucide-react";
+import { Columns3, FilePlus2, GitCommitHorizontal, GitGraph, GitPullRequest, Maximize2, Minimize2, RefreshCw, Rows3 } from "lucide-react";
 import { PullRequestsView } from "./components/PullRequests";
 import { useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
@@ -103,7 +103,7 @@ function RepositoryContent({ tab }: { tab: RepoTab }) {
 const repositoryRemotesKey = (tab: RepoTab) => JSON.stringify(tab.refs?.remotes.map(({ name, fetchUrl }) => [name, fetchUrl]) ?? []);
 
 function RepoWorkspace({ tab }: { tab: RepoTab }) {
-  const { panels, toggleSidebar } = usePanelWindows();
+  const { panels } = usePanelWindows();
   const historyMenu = usePanelTitleMenu("history");
   const changesMenu = usePanelTitleMenu("changes");
   const pullMenu = usePanelTitleMenu("pulls");
@@ -161,7 +161,6 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
       {showBranches && <Splitter dir="v" style={{ left: sw }} onDrag={(d) => setSw((w) => Math.max(180, Math.min(420, w + d)))} onEnd={() => setLayout({ sidebarWidth: sw })} />}
       <div className="main">
         <div className="main-head">
-          <button className={`btn sm branches-toggle ${showBranches ? "active" : ""}`} aria-expanded={showBranches} title="Toggle branches panel" onClick={() => toggleSidebar("branches")}><GitBranch size={13} /> Branches</button>
           <div className="view-tabs">
             <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onContextMenu={historyMenu} onClick={() => patch(root, { view: "history" })} title={shortcutTitle("History", "history")}>
               <GitCommitHorizontal size={15} /> History

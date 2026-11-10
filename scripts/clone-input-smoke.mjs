@@ -10,7 +10,7 @@ export async function cloneInputSmoke({page,check,shot,work}){
     git(source,"init","-qb","main");for(const [key,value] of [["user.name","Clone Tester"],["user.email","clone@example.invalid"],["commit.gpgsign","false"],["core.autocrlf","false"]])git(source,"config",key,value);
     fs.writeFileSync(path.join(source,".gitattributes"),"* text eol=lf\n");fs.writeFileSync(path.join(source,"file.txt"),"cloned content\n");git(source,"add",".");git(source,"commit","-qm","Clone fixture");const head=git(source,"rev-parse","HEAD"),index=fs.readFileSync(path.join(source,".git/index"));
     const open=async()=>{
-      await page.getByTitle("Command palette (Ctrl+K)",{exact:true}).click();await page.waitForFunction(()=>document.activeElement===document.querySelector(".palette input")&&document.activeElement.value==="");await page.locator(".palette input").fill("Clone repository");await page.locator(".palette-item").filter({hasText:"Clone repository…"}).click();await page.getByRole("heading",{name:"Clone repository",exact:true}).waitFor();
+      await page.getByTitle("Command palette (Ctrl+N)",{exact:true}).click();await page.waitForFunction(()=>document.activeElement===document.querySelector(".palette input")&&document.activeElement.value==="");await page.locator(".palette input").fill("Clone repository");await page.locator(".palette-item").filter({hasText:"Clone repository…"}).click();await page.getByRole("heading",{name:"Clone repository",exact:true}).waitFor();
     };
     const field=name=>page.getByRole("textbox",{name,exact:true});
     const waitName=name=>page.waitForFunction(name=>document.querySelector('[aria-label="Clone folder name"]').value===name,name);

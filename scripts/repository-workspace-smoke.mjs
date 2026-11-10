@@ -118,7 +118,7 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     const toolsContents = fs.readFileSync(toolsFile, "utf8");
     await open(second);
     await page.locator(".history-mode").getByRole("button", { name: "Columns", exact: true }).click();
-    const branches = page.getByRole("button", { name: "Branches", exact: true });
+    const branches = page.getByRole("button", { name: "Toggle branches panel", exact: true });
     if (await branches.getAttribute("aria-expanded") === "true") await branches.click();
     const closeRoot = page.getByRole("button", { name: "Close stage8-workspace", exact: true });
     if (await closeRoot.count()) await closeRoot.click();

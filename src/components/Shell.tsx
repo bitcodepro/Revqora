@@ -93,7 +93,9 @@ export function TopBar() {
   const workspacesOpen = useSettings(s => s.workspacesOpen);
   const shortcuts = useSettings(s => s.shortcuts);
   const updatePhase = useUpdate(s => s.phase);
-  const { layout: { repositoriesOpen, focusMode } } = useWorkspaceLayout();
+  const { layout: { repositoriesOpen, branchesOpen, focusMode } } = useWorkspaceLayout();
+  const canToggleBranches = !!tab?.info;
+  const showBranches = canToggleBranches && !overview && branchesOpen && !focusMode && !panels.branches;
   const hasCommit = !!tab?.selected && tab.selected !== WORKTREE;
   const panelWindowMenu = usePanelWindowMenu(!!tab?.info, hasCommit);
   const openWorktrees = (repo: string) => panels.worktrees ? panels.worktrees.focus() : openOverlay({ kind: "worktrees", root: repo });
@@ -119,6 +121,7 @@ export function TopBar() {
   const menu: MenuItem[] = [
     { label: "Workspaces", icon: <FolderKanban size={15}/>, checked: workspacesOpen && !focusMode, hint: prettyCombo(bindingFor("workspacesPanel", shortcuts)), onClick: () => toggleSidebar("workspaces") },
     { label: "Toggle repositories panel", icon: <PanelLeft size={15}/>, hint: prettyCombo(bindingFor("repositoriesPanel", shortcuts)), onClick: () => toggleSidebar("repositories") },
+    { label: "Toggle branches panel", icon: <GitBranch size={15}/>, checked: showBranches, disabled: !canToggleBranches, hint: prettyCombo(bindingFor("branchesPanel", shortcuts)), onClick: () => toggleSidebar("branches") },
     { label: overview ? "Close repository overview" : "All repositories", icon: <LayoutGrid size={15}/>, onClick: toggleRepositoryOverview },
     { label: "Repository library and workspaces", onClick: () => void repositoryLibraryDialog() },
     { label: "Open repositories…", icon: <Plus size={15}/>, onClick: () => void A.openRepoDialog() },
@@ -128,7 +131,6 @@ export function TopBar() {
       { label: "History", onClick: () => showView("history") },
       { label: "Changes", onClick: () => showView("changes") },
       { label: "Pull requests / Merge requests", onClick: () => showView("pulls") },
-      { label: "Toggle branches panel", hint: prettyCombo(bindingFor("branchesPanel", shortcuts)), onClick: () => toggleSidebar("branches") },
       { label: "Refresh repository", icon: <RefreshCw size={15}/>, onClick: () => void useRepos.getState().refresh(root) },
       { separator: true },
       { label: "Sync…", onClick: () => void syncRepositories([root]) },
@@ -165,8 +167,7 @@ export function TopBar() {
       <div className="topbar-navigation" role="group" aria-label="Repository navigation">
         <button type="button" className={`icon-btn ${workspacesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle Workspaces panel", "workspacesPanel")} aria-label="Toggle Workspaces panel" aria-pressed={workspacesOpen && !focusMode} onClick={() => toggleSidebar("workspaces")}><FolderKanban size={16}/></button>
         <button type="button" className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle repositories panel", "repositoriesPanel")} aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => toggleSidebar("repositories")}><PanelLeft size={16} /></button>
-        <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={16} /></button>
-        <RepositoryLibraryButton />
+        <button type="button" className={`icon-btn ${showBranches ? "active" : ""}`} title={shortcutTitle("Toggle branches panel", "branchesPanel")} aria-label="Toggle branches panel" aria-expanded={showBranches} disabled={!canToggleBranches} onClick={() => toggleSidebar("branches")}><GitBranch size={16} /></button>
       </div>
       <WorkspacePicker />
       <div className="repo-current" title={root ?? ""} onContextMenu={e => { if (root && !overview) contextMenu(e, namePathMenu(repositoryName, root, null)); }}>
@@ -213,11 +214,16 @@ export function TopBar() {
           <button className="icon-btn" title="Open terminal here" onClick={() => api.openTerminal(root)}>
             <SquareTerminal size={16} />
           </button>
-          <button className="icon-btn" title="Show in Explorer" onClick={() => api.revealPath(root)}>
-            <FolderOpen size={16} />
-          </button>
         </div>
       )}
+      <div className="topbar-empty" aria-hidden="true"/>
+      <div className="topbar-repository-actions" role="group" aria-label="Repository actions">
+        <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={16} /></button>
+        <RepositoryLibraryButton />
+        {root && tab?.info && !overview && <button type="button" className="icon-btn" title="Show in Explorer" onClick={() => api.revealPath(root)}>
+          <FolderOpen size={16} />
+        </button>}
+      </div>
       <div className="tb-sep" />
       <PanelWindowsButton hasRepository={!!tab?.info} hasCommit={hasCommit}/>
       <button className="icon-btn" title={shortcutTitle("Command palette", "palette")} onClick={() => useUi.getState().setPalette(true)}>
@@ -231,7 +237,6 @@ export function TopBar() {
       <button className="icon-btn" title="Settings" onClick={() => settingsDialog(root ?? null)}>
         <Settings2 size={16} />
       </button>
-      <div className="topbar-empty" aria-hidden="true"/>
     </div>
   );
 }

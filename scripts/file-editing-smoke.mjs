@@ -74,7 +74,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.getByRole("button",{name:"Reload from disk",exact:true}).click();await page.getByRole("button",{name:"Discard draft",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector(".working-code .cm-content")?.textContent.includes("IDE latest"));
     await page.locator(".modal").getByRole("button",{name:"Close",exact:true}).click();
-    await history();const toggle=page.getByTitle("Toggle branches panel",{exact:true});if(await toggle.getAttribute("aria-expanded")!=="true")await toggle.click();
+    await history();const toggle=page.getByRole("button",{name:"Toggle branches panel",exact:true});if(await toggle.getAttribute("aria-expanded")!=="true")await toggle.click();
     await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="main"]').click();
     const commitFiles=page.getByLabel("Commit files",{exact:true});await commitFiles.locator("[data-file-nav]").first().click();await page.keyboard.press("ArrowDown");
     await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="b.txt");

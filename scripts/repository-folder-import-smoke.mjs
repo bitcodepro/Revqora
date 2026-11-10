@@ -190,7 +190,7 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
     await repoButton("service-api").click();
     await page.locator(".view-tabs .view-tab").filter({ hasText: "History" }).click();
     await page.locator(".workspace .graph-scroll").waitFor();
-    const branchToggle = page.getByTitle("Toggle branches panel", { exact: true });
+    const branchToggle = page.getByRole("button", { name: "Toggle branches panel", exact: true });
     if (await branchToggle.getAttribute("aria-expanded") !== "true") await branchToggle.click();
     await detach(page.locator(".branches-heading > b"));
     const showAll = page.locator(".topbar").getByRole("button", { name: "All repositories", exact: true });

@@ -515,7 +515,8 @@ select[size="1"]:not([multiple]) {
   border-bottom: 1px solid var(--border);
   min-width: 0;
 }
-.topbar-navigation {
+.topbar-navigation,
+.topbar-repository-actions {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1107,6 +1108,7 @@ select[size="1"]:not([multiple]) {
 .workspace-search-group h4, .workspace-search-group p { margin: 0; padding: 8px 10px; }
 .workspace-search-hit { display: grid; gap: 4px; width: 100%; text-align: left; padding: 8px 10px; border-top: 1px solid var(--border-soft); overflow-wrap: anywhere; }
 .workspace-search-hit:hover, .workspace-search-hit:focus-visible { background: var(--bg-hover); }
+.workspace-search-hit mark { background: color-mix(in srgb, var(--amber) 30%, transparent); color: var(--text); border-radius: 2px; }
 .branch-compare-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .branch-compare-select { display: grid; gap: 5px; min-width: 0; }
 .branch-compare-select select { width: 100%; }

@@ -751,7 +751,7 @@ try {
   });
 
   await check("browse files and grep a revision", async () => {
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press("Control+n");
     await page.fill(".palette input", "Browse files");
     await page.keyboard.press("Enter");
     await page.waitForSelector(".conflict-overlay .sb-item");
@@ -789,7 +789,7 @@ try {
   });
 
   await check("create a worktree from the command palette", async () => {
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press("Control+n");
     await page.fill(".palette input", "New worktree");
     await page.keyboard.press("Enter");
     const dialog = page.locator(".modal").last();
@@ -841,10 +841,20 @@ try {
     const details = await page.locator(".review-details").boundingBox();
     if (list.y >= details.y) throw new Error("review commits should be above the diff");
     await page.waitForSelector(".branches-slot", { state: "visible" });
+    const navigation = page.getByRole("group", { name: "Repository navigation", exact: true });
+    const navigationButtons = await navigation.getByRole("button").evaluateAll(buttons => buttons.map(button => button.getAttribute("aria-label")));
+    if (navigationButtons.join("|") !== "Toggle Workspaces panel|Toggle repositories panel|Toggle branches panel") throw new Error("Sidebar toggles are out of order");
+    const repositoryActions = page.getByRole("group", { name: "Repository actions", exact: true });
+    await repositoryActions.getByRole("button", { name: "All repositories", exact: true }).waitFor();
+    await repositoryActions.getByRole("button", { name: "Repository library and workspaces", exact: true }).waitFor();
+    await repositoryActions.getByTitle("Show in Explorer", { exact: true }).waitFor();
+    const branchesToggle = navigation.getByRole("button", { name: "Toggle branches panel", exact: true });
     await page.keyboard.press("Control+Alt+b");
     await page.waitForSelector(".branches-slot", { state: "hidden" });
-    await page.click(".branches-toggle");
+    if (await branchesToggle.getAttribute("aria-expanded") !== "false") throw new Error("Branches toggle still reports an open panel");
+    await branchesToggle.click();
     await page.waitForSelector(".branches-slot", { state: "visible" });
+    if (await branchesToggle.getAttribute("aria-expanded") !== "true") throw new Error("Branches toggle did not report the opened panel");
     await page.waitForSelector(".repository-slot", { state: "visible" });
     await page.keyboard.press("Control+Alt+r");
     await page.waitForSelector(".repository-slot", { state: "hidden" });
@@ -924,11 +934,11 @@ try {
     await drag(".repository-sidebar > .splitter-v", 20);
     await drag(".workspace > .splitter-v", 20);
     await page.click(".topbar button[aria-label='Toggle repositories panel']");
-    await page.click(".branches-toggle");
+    await page.getByRole("button", { name: "Toggle branches panel", exact: true }).click();
     await drag(".columns-history > .splitter-v", 60);
     await drag(".commit-details > .splitter-v", 40);
     await page.click(".topbar button[aria-label='Toggle repositories panel']");
-    await page.click(".branches-toggle");
+    await page.getByRole("button", { name: "Toggle branches panel", exact: true }).click();
     await page.click(".focus-toggle");
     await page.waitForSelector(".repository-slot", { state: "hidden" });
     await page.waitForSelector(".branches-slot", { state: "hidden" });
@@ -939,7 +949,7 @@ try {
     await page.waitForSelector(".repository-slot", { state: "visible" });
     await page.waitForSelector(".branches-slot", { state: "visible" });
     if (JSON.stringify((await layouts()).review) !== JSON.stringify(before.review)) throw new Error("Columns changed Review's preferences");
-    await page.click(".branches-toggle");
+    await page.getByRole("button", { name: "Toggle branches panel", exact: true }).click();
     await page.click(".history-mode button:has-text('Graph')");
     await page.waitForSelector(".branches-slot", { state: "visible" });
     if (JSON.stringify((await layouts()).graph) !== JSON.stringify(before.graph)) throw new Error("another layout changed Graph's preferences");

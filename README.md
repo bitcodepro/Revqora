@@ -48,7 +48,7 @@ Git executable.
 ### 2. Open a repository
 
 - Press **Ctrl+O** to open a local repository, or drag its folder into the window.
-- Press **Ctrl+K**, then choose **Clone repository…** to clone a remote URL.
+- Press **Ctrl+N**, then choose **Clone repository…** to clone a remote URL.
   You can paste either the URL or the complete `git clone <URL>` command copied
   from your hosting service, including an HTTPS username. Quoted sources are
   supported; choose the parent folder and folder name in the form. Extra command
@@ -566,7 +566,7 @@ in the status bar. Revqora verifies package checksums and source metadata before
 installation and preserves portable data.
 Affected older Linux builds need a manual portable-archive update to receive the
 archive-extraction fix; keep the existing `data` folder when upgrading.
-**Settings → About Revqora**, or **Ctrl+K → About Revqora**, shows the installed
+**Settings → About Revqora**, or **Ctrl+N → About Revqora**, shows the installed
 version, author and links to this guide, the project and issue reporting.
 
 ## Keyboard shortcuts
@@ -577,7 +577,7 @@ accepts Command for Ctrl-based actions.
 | Keys | Action |
 | --- | --- |
 | Ctrl+O | Open repository |
-| Ctrl+K / Ctrl+Shift+P | Command palette |
+| Ctrl+N / Ctrl+Shift+P | Command palette |
 | Ctrl+1 / Ctrl+2 / Ctrl+3 | History / Changes / Pull Requests |
 | Ctrl+Shift+R | Cycle Graph / Review / Columns |
 | Ctrl+Alt+R / Ctrl+Alt+B | Toggle repository / branch panel |

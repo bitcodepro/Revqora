@@ -27,7 +27,7 @@ export async function namePathCopySmoke({page,root}) {
       assert.equal(await page.locator(".topbar .repo-current > b").innerText(),repoName,"Right click/copy must not activate another repository");
     }
   };
-  const toggle=page.getByTitle("Toggle branches panel",{exact:true});
+  const toggle=page.getByRole("button",{name:"Toggle branches panel",exact:true});
   const branchesWereOpen=await toggle.getAttribute("aria-expanded")==="true";
   try {
     if(!branchesWereOpen)await toggle.click();

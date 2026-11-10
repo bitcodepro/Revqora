@@ -10,7 +10,7 @@ export interface ShortcutDef {
 }
 
 export const SHORTCUTS: ShortcutDef[] = [
-  { id: "palette", label: "Command palette", description: "Search actions, branches and repositories.", default: "Ctrl+K" },
+  { id: "palette", label: "Command palette", description: "Search actions, branches and repositories.", default: "Ctrl+N" },
   { id: "open", label: "Open repository", description: "Open a local Git repository.", default: "Ctrl+O" },
   { id: "refresh", label: "Refresh", description: "Reload the current repository or overview.", default: "F5" },
   { id: "renameItem", label: "Rename focused item", description: "Rename a workspace, branch or repository label from its navigation panel.", default: "F2", scope: "navigation" },
