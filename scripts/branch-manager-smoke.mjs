@@ -190,9 +190,11 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
     await page.locator(".ctx-menu").filter({has:page.getByText("Upstream: origin/innocent",{exact:true})}).locator(".ctx-item").filter({has:page.getByText("Show only this branch in graph",{exact:true})}).click();
     const localFilter=page.locator('[data-branch-filter="refs/heads/feature/login"]');
     await localFilter.waitFor();
-    const localTip = page.locator(".grow:not(.incoming)").getByText("Add authentication flow", { exact: true });
-    const upstreamTip = page.locator(".grow").getByText("Other author tip", { exact: true });
-    const incomingTip = page.locator(".grow.incoming").getByText("Other author tip", { exact: true });
+    // A narrow Columns pane can clip the subject behind branch badges.
+    const commitRow = (selector, subject) => page.locator(selector, { has: page.getByText(subject, { exact: true }) });
+    const localTip = commitRow(".grow:not(.incoming)", "Add authentication flow");
+    const upstreamTip = commitRow(".grow", "Other author tip");
+    const incomingTip = commitRow(".grow.incoming", "Other author tip").getByText("Incoming", { exact: true });
     const incomingToggle = page.getByRole("button", { name: "Show incoming commits", exact: true });
     await localTip.waitFor();
     await incomingTip.waitFor();
