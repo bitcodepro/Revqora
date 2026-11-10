@@ -344,6 +344,8 @@ export function GraphView({
   const rowH = (compact ? COMPACT_ROW_H : ROW_H) + Math.ceil(Math.max(0, fontSize - 13) * (compact ? 3 : 1.5));
   const root = tab.root;
   const fixedBranch = tab.branchFilter && tab.branchFilter !== CURRENT_HISTORY_BRANCH ? tab.branchFilter : null;
+  const status = tab.status ?? tab.sidebarStatus;
+  const incoming = tab.branchFilter === CURRENT_HISTORY_BRANCH && status?.branch === tab.info?.head.branch ? status?.behind ?? 0 : 0;
   const selectHistoryScope = (branchFilter: string | null) => {
     patch(root, { branchFilter, selected: null, multi: [], historyJump: null });
     setPin(null);
@@ -976,7 +978,7 @@ export function GraphView({
           <select className="select" aria-label="History scope" title="Choose which branch history to show"
             value={tab.branchFilter ?? ""} onChange={event => selectHistoryScope(event.target.value || null)}>
             <option value={CURRENT_HISTORY_BRANCH}>{tab.info?.head.branch ? `Current branch — ${tab.info.head.branch}` : "Current commit (HEAD)"}</option>
-            <option value="">All branches</option>
+            <option value="">All branches (local and fetched)</option>
             {fixedBranch && ![...(tab.refs?.local ?? []), ...(tab.refs?.remote ?? [])].some(branch => branch.fullName === fixedBranch) && <option value={fixedBranch}>{fixedBranch}</option>}
             {!!tab.refs?.local.length && <optgroup label="Local branches">{tab.refs.local.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
             {!!tab.refs?.remote.length && <optgroup label="Remote branches">{tab.refs.remote.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
@@ -984,6 +986,7 @@ export function GraphView({
           {fixedBranch && <button type="button" className="icon-btn sm" aria-label="Clear branch filter" title="Return to current branch"
             onClick={() => selectHistoryScope(CURRENT_HISTORY_BRANCH)}><X size={12} /></button>}
         </div>
+        {incoming > 0 && <span className="pill" title="Fetched commits waiting for Pull">{incoming.toLocaleString()} incoming · Pull to apply</span>}
         <div className="spacer" />
         <span className="faint" style={{ fontSize: "var(--fs-xs)" }}>
           {total

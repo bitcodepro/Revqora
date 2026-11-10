@@ -210,6 +210,11 @@ cloud means that upstream is missing after Fetch. **Remotes** contains branches
 without a linked local branch. Counts and missing-upstream state use cached refs;
 Fetch updates them without changing your working files.
 
+**Graph**, **Review** and **Columns** open on **Current branch** by default.
+Incoming commits are counted after Fetch and enter that local history after
+Pull. To inspect fetched commits before Pull, choose a remote branch or
+**All branches (local and fetched)** in the history scope.
+
 The sidebar also offers **My branches** and **Recent first**. Recent order shows
 full branch names with the latest commit at the top; choose **Name / folders**
 for the grouped tree. The pencil beside My branches shares the custom author
