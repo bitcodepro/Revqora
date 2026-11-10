@@ -228,6 +228,9 @@ pub(super) fn call(request: &impl Serialize) -> super::Reply {
 }
 
 pub(super) fn serve(mut socket: TcpStream, key: &Secret, dispatch: impl FnOnce(Value) -> super::Reply) -> io::Result<()> {
+    // Winsock can inherit the listener's nonblocking mode. The worker reads a
+    // complete frame and relies on timeouts while the next bytes are in flight.
+    socket.set_nonblocking(false)?;
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
     socket.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::new(socket.try_clone()?);
@@ -255,5 +258,39 @@ mod tests {
         assert!(auth.verify(b"reply", message, &tag).is_err());
         assert!(Auth::new(&key, [3; 32], [2; 32]).verify(b"request", message, &tag).is_err());
         assert!(Auth::new(&key, [1; 32], [3; 32]).verify(b"request", message, &tag).is_err());
+    }
+
+    #[test]
+    fn serves_a_split_handshake_from_a_nonblocking_socket() {
+        let key = secret().unwrap();
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+
+        std::thread::scope(|scope| {
+            let exchange = scope.spawn(|| {
+                let client_nonce = [7; 32];
+                let frame = serde_json::to_vec(&client_nonce).unwrap();
+                client.write_all(&frame[..1]).unwrap();
+                std::thread::sleep(Duration::from_millis(50));
+                client.write_all(&frame[1..]).unwrap();
+                client.write_all(b"\n").unwrap();
+                let mut reader = BufReader::new(client.try_clone().unwrap());
+                let hello: Hello = read(&mut reader, AUTH_MAX).unwrap();
+                let auth = Auth::new(&key, client_nonce, hello.nonce);
+                auth.verify(b"hello", &[], &hello.tag).unwrap();
+                auth.send(&mut client, b"request", &Value::Null, REQUEST_MAX).unwrap();
+                let reply: Result<Value, String> = auth.receive(&mut reader, b"reply", REPLY_MAX).unwrap();
+                assert_eq!(reply, Ok(Value::Bool(true)));
+            });
+            serve(server, &key, |request| {
+                assert_eq!(request, Value::Null);
+                Ok(Value::Bool(true))
+            })
+            .unwrap();
+            exchange.join().unwrap();
+        });
     }
 }

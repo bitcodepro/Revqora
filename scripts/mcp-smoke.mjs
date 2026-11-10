@@ -60,7 +60,8 @@ export async function mcpSmoke({ page, exe, profile, work }) {
   const access = settings.getByRole("checkbox", { name: "Enable MCP for this session" });
   const toggle = async enabled => {
     await page.getByTitle("Settings", { exact: true }).click();
-    await access.setChecked(enabled);
+    // The controlled checkbox changes only after the native access request returns.
+    await access.click();
     await page.waitForFunction(expected => {
       const input = document.querySelector("#mcp-enabled");
       return input && !input.disabled && input.checked === expected;
