@@ -36,6 +36,7 @@ pub mod watcher;
 pub mod file_editor;
 pub mod partial_stash;
 pub mod remote_rename;
+mod text_encoding;
 pub mod workspace_files;
 
 pub mod rebase_studio;

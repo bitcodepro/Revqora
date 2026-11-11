@@ -132,6 +132,15 @@
 .diff-body { min-width: 0; min-height: 0; }
 .diff .diff-body .code { tab-size: var(--diff-tab-size, 4); }
 .diff-content { width: max-content; min-width: 100%; }
+.diff-content:has(.decoded-preview) { width: 100%; min-width: 0; }
+.decoded-preview { padding: 12px; min-width: 0; }
+.decoded-preview-tools { margin-bottom: 12px; }
+.decoded-preview-tools label, .decoded-preview-side header { display: flex; align-items: center; gap: 8px; }
+.decoded-preview-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 12px; }
+.decoded-preview-side { min-width: 0; border: 1px solid var(--border); border-radius: 8px; }
+.decoded-preview-side header { padding: 8px 12px; background: var(--bg-elev); border-bottom: 1px solid var(--border); }
+.decoded-preview-side pre { margin: 0; padding: 12px; overflow: auto; user-select: text; font: var(--fs-sm) / 1.5 var(--font-mono); }
+.diff-body.wrap .decoded-preview-side pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff-body.diff-loading { display: flex; }
 .diff-loading > .diff-content { display: flex; flex: 1; width: 100%; min-width: 0; }
 .diff-content .hunk { content-visibility: visible; contain-intrinsic-size: none; }

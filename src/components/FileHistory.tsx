@@ -7,6 +7,7 @@ import type { FileDiff, FileHistoryEntry } from "../lib/types";
 import { absoluteTime, relativeTime } from "../lib/format";
 import { DiffView } from "./DiffView";
 import { jumpToCommit } from "./GraphView";
+import type { ImageSides } from "./ImageDiff";
 
 export function fileHistoryDialog(root: string, path: string) {
   return showDialog<void>((close) => <FileHistoryBody root={root} path={path} close={close} />);
@@ -16,6 +17,7 @@ function FileHistoryBody({ root, path, close }: { root: string; path: string; cl
   const [items, setItems] = useState<FileHistoryEntry[] | null>(null);
   const [sel, setSel] = useState<FileHistoryEntry | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
+  const [sides, setSides] = useState<ImageSides>();
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
@@ -34,8 +36,14 @@ function FileHistoryBody({ root, path, close }: { root: string; path: string; cl
     if (!sel) return;
     let alive = true;
     setDiff(null);
+    setSides(undefined);
     setError(null);
-    api.commitDetails(root, sel.oid).then((d) => api.revDiff(root, d.diffBase, d.oid, sel.path)).then(d => alive && setDiff(d), e => alive && setError(String(e?.message ?? e)));
+    api.commitDetails(root, sel.oid).then(async d => {
+      const diff = await api.revDiff(root, d.diffBase, d.oid, sel.path);
+      if (!alive) return;
+      setSides({old:d.diffBase ? {rev:`${d.diffBase}:${diff.oldPath ?? sel.path}`} : null, new:{rev:`${d.oid}:${sel.path}`}});
+      setDiff(diff);
+    }).catch(e => alive && setError(String(e?.message ?? e)));
     return () => { alive = false; };
   }, [root, sel]);
   return (
@@ -54,7 +62,7 @@ function FileHistoryBody({ root, path, close }: { root: string; path: string; cl
           ))}
         </div>
         <div style={{ display: "flex", minHeight: 0, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-          <DiffView diff={diff} loading={!!sel && !diff && !error} error={error} mode="readonly" path={sel?.path ?? path} />
+          <DiffView diff={diff} loading={!!sel && !diff && !error} error={error} mode="readonly" path={sel?.path ?? path} root={root} images={sides} />
         </div>
       </div>
     </Modal>

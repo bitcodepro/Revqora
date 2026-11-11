@@ -963,6 +963,11 @@ async fn blob(repo: String, spec: git::inspect::BlobSpec) -> GitResult<Option<gi
 }
 
 #[tauri::command]
+async fn text_blob(repo: String, spec: git::inspect::BlobSpec, encoding: Option<String>) -> GitResult<Option<git::inspect::DecodedText>> {
+    blocking(move || git::inspect::text_blob(&p(&repo), &spec, encoding.as_deref())).await
+}
+
+#[tauri::command]
 async fn reflog(repo: String) -> GitResult<Vec<ReflogEntry>> {
     blocking(move || ops::reflog(&p(&repo), 150)).await
 }
@@ -2396,6 +2401,7 @@ pub fn run() {
             compare_branch_commits,
             branch_commit_page,
             blob,
+            text_blob,
             refs_snapshot,
             fetch_background,
             squash_merged,

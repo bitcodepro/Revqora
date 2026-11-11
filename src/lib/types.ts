@@ -123,6 +123,7 @@ export interface FileDiff {
   path: string;
   oldPath: string | null;
   binary: boolean;
+  encodedText?: boolean;
   isNew: boolean;
   isDeleted: boolean;
   oldMode: string | null;
@@ -508,6 +509,13 @@ export interface BlobData {
   base64: string;
   size: number;
   mime: string;
+}
+
+export interface DecodedText {
+  content: string;
+  encoding: string;
+  bom: boolean;
+  guessed: boolean;
 }
 
 export type RebaseAction = "pick" | "reword" | "edit" | "squash" | "fixup" | "drop";

@@ -30,6 +30,7 @@ import { contextMenu, copyText } from "../lib/ui";
 import { DIFF_TAB_SIZE, measureDiffLine } from "../lib/diffMetrics";
 import type { LanguageSupport } from "@codemirror/language";
 import { ImageDiff, isImagePath, type ImageSides } from "./ImageDiff";
+import { TextDiffPreview } from "./TextDiffPreview";
 import { useDiffWordSelection } from "./DiffWordSelection";
 
 export type DiffMode = "unstaged" | "staged" | "readonly" | "pick";
@@ -552,16 +553,18 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     );
   } else if (diff.binary && root && images && isImagePath(path)) {
     body = <ImageDiff root={root} revision={diff.hash} sides={{ old: diff.isNew ? null : images.old, new: diff.isDeleted ? null : images.new }} />;
-  } else if (diff.binary) {
-    body = (
+  } else if (diff.binary || diff.encodedText) {
+    const fallback = (
       <div className="empty">
         <div className="big">
           <FileWarning size={24} />
         </div>
-        <h3>Binary file</h3>
-        <div>{diff.isNew ? "Added" : diff.isDeleted ? "Deleted" : "Changed"} — no text diff available.</div>
+        <h3>{diff.binary ? "Binary file" : "Text preview unavailable"}</h3>
+        <div>No readable text with this encoding.</div>
       </div>
     );
+    body = root && images ? <TextDiffPreview key={JSON.stringify([root, path])} root={root}
+      revision={diff.hash} before={diff.isNew ? null : images.old} after={diff.isDeleted ? null : images.new} fallback={fallback} /> : fallback;
   } else if (diff.hunks.length === 0) {
     body = <div className="empty">{diff.oldMode !== diff.newMode ? "Only the file mode changed." : sourceOptions && s.ignoreWhitespace ? "Only whitespace changed." : "No textual changes."}</div>;
   } else if (virtual) {

@@ -162,11 +162,10 @@ pub fn file_history(repo: &Path, path: &str, limit: usize) -> GitResult<Vec<File
 
 /// Contents of a file at a revision ("" = index stage 0, ":2" etc. allowed via `spec`).
 pub fn blob_text(repo: &Path, spec: &str) -> GitResult<Option<String>> {
-    let out = runner::exec_limited(repo, ["cat-file", "blob", spec], 25 * 1024 * 1024)?;
-    if !out.ok() {
-        return Ok(None);
-    }
-    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+    let Some(bytes) = super::inspect::revision_blob(repo, spec, 25 * 1024 * 1024)? else { return Ok(None) };
+    super::text_encoding::decode(&bytes, None)?
+        .map(|text| Some(text.content))
+        .ok_or_else(|| GitError::new("No readable text is available for this file.").kind("binary-file"))
 }
 
 #[cfg(test)]

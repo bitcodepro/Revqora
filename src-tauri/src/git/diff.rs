@@ -88,6 +88,7 @@ pub struct FileDiff {
     pub path: String,
     pub old_path: Option<String>,
     pub binary: bool,
+    pub encoded_text: bool,
     pub is_new: bool,
     pub is_deleted: bool,
     pub old_mode: Option<String>,
@@ -300,6 +301,7 @@ pub fn to_display(raw: &RawFileDiff, path_hint: &str, hash: String) -> FileDiff 
         let mut new_no = h.new_start;
         let mut lines = Vec::with_capacity(h.lines.len());
         for l in &h.lines {
+            d.encoded_text |= std::str::from_utf8(&l.content).is_err();
             let (o, n) = match l.kind {
                 b' ' => {
                     let r = (Some(old_no), Some(new_no));

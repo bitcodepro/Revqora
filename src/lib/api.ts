@@ -206,6 +206,7 @@ export const api = {
   compareBranchCommits: (repo: string, from: string, to: string) => call<import("./types").BranchCommitComparison>("compare_branch_commits", { repo, from, to }),
   branchCommitPage: (repo: string, from: string, to: string, offset: number) => call<import("./types").RangeCommit[]>("branch_commit_page", { repo, from, to, offset }),
   blob: (repo: string, spec: BlobSpec) => call<BlobData | null>("blob", { repo, spec }),
+  textBlob: (repo: string, spec: BlobSpec, encoding: string | null = null) => call<import("./types").DecodedText | null>("text_blob", { repo, spec, encoding }),
 
   refs: (repo: string) => call<RefsSnapshot>("refs_snapshot", { repo }),
   fetchBackground: (repo: string) => call<string>("fetch_background", { repo }),

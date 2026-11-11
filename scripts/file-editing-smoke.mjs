@@ -159,6 +159,16 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await historyBinding.getByText(originalBinding,{exact:true}).waitFor();
     await done();
     assert.equal(git("rev-parse","HEAD"),head);assert(index.equals(fs.readFileSync(path.join(root,".git/index"))));
+    fs.writeFileSync(path.join(root,"encoded.txt"),Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from("UTF-16 fixture\r\nПривет","utf16le")]));
+    fs.writeFileSync(path.join(root,"genuine-binary.dat"),Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,1,2]));
+    await changes();
+    const encoded=page.locator(".changes [data-file-nav]").filter({has:page.getByText("encoded.txt",{exact:true})});
+    await encoded.click();
+    const preview=page.getByRole("region",{name:"File contents preview",exact:true});
+    await preview.getByText("UTF-16 fixture",{exact:false}).waitFor();
+    await preview.getByText("UTF-16LE · BOM",{exact:true}).waitFor();
+    await page.locator(".changes [data-file-nav]").filter({has:page.getByText("genuine-binary.dat",{exact:true})}).click();
+    await preview.getByRole("heading",{name:"Binary file",exact:true}).waitFor();
     console.log("File navigation/editor: stage-side identity, collapsed folders, shortcut validation and rebinding, whitespace, undo, CRLF/BOM, stale-save rejection and index/HEAD preservation passed");
   } catch(error) {
     // Retain the actual UI and original failure for the caller's screenshot.
