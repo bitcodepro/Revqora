@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { api, newOpId } from "./api";
 import { McpToolError, mcpError } from "./mcpErrors";
 import { mcpNeedsApproval, runAutomaticMcpAction, type McpActionOptions } from "./mcpAutomatic";
+import { assertDiffVersion, conflictLine, conflictSidePage, diffPage, type DiffPageOptions } from "./mcpDiff";
 import { loadBranchPreferences } from "./branchManager";
 import { deletionProtection } from "./branchProtection";
 import * as A from "./actions";
@@ -11,7 +12,7 @@ import { useRepos } from "./store";
 import { useLibrary } from "./repositoryLibrary";
 import { useSettings } from "./settings";
 import { closeOverlay, openOverlay, showDialog, useUi } from "./ui";
-import type { BranchInfo, FileDiff, IndexConflictSide, McpApprovalMode, PrState, SearchMode, StatusSummary } from "./types";
+import type { BranchInfo, McpApprovalMode, PrState, SearchMode, StageReview, StatusSummary } from "./types";
 import { Modal } from "../components/Modal";
 import { validBranchName } from "../components/dialogs";
 import { createPullRequest } from "../components/PullRequests";
@@ -20,8 +21,8 @@ import { mergeDialog } from "../components/PrMerge";
 import { syncRepositories } from "../components/SyncRepositories";
 import { openWorkflowStepReview } from "../components/WorkflowBuilder";
 
-type Arguments = McpActionOptions & {
-  repository?: string; offset?: number; limit?: number; oid?: string; path?: string; side?: string;
+type Arguments = McpActionOptions & DiffPageOptions & {
+  repository?: string; oid?: string; path?: string; side?: string;
   scope?: string; query?: string; mode?: SearchMode | "all"; state?: PrState;
   section?: string; cursor?: string; revision?: string; fileId?: string;
   view?: string; id?: string; action?: string; paths?: string[];
@@ -32,7 +33,7 @@ interface DesktopRequest {
   session: string;
   request: { name: string; arguments: Arguments };
 }
-type Phase = "preparing" | "awaiting_confirmation" | "running" | "waiting_for_resolution" | "cancelled" | "succeeded" | "handed_off" | "failed";
+type Phase = "preparing" | "awaiting_confirmation" | "running" | "waiting_for_resolution" | "cancelled" | "succeeded" | "partial" | "handed_off" | "failed";
 interface ActionStatus {
   id: string; session: string; root: string; action: string; phase: Phase; message?: string; errorCode?: string;
   approval?: "manual" | "automatic"; reason?: string; conflicts?: string[]; commit?: string; runId?: string; result?: Record<string, unknown>;
@@ -77,37 +78,6 @@ function page<T>(items: T[], offset = 0, size = 100) {
   return { items: items.slice(offset, offset + size), total: items.length, nextOffset: offset + size < items.length ? offset + size : null };
 }
 
-function diffPage(diff: FileDiff, offset: number) {
-  const { hunks, hash: _hash, ...summary } = diff;
-  const total = hunks.reduce((count, hunk) => count + hunk.lines.length, 0);
-  let start = 0;
-  let lineTextTruncated = false;
-  const end = offset + 160;
-  const items = [];
-  for (const { lines, header } of hunks) {
-    if (start >= end) break;
-    if (start + lines.length > offset) {
-      const selected = lines.slice(Math.max(0, offset - start), end - start).map(line => {
-        if (line.text.length <= 600) return line;
-        lineTextTruncated = true;
-        return { ...line, text: line.text.slice(0, 600) };
-      });
-      items.push({ header, lines: selected });
-    }
-    start += lines.length;
-  }
-  return { ...summary, hunks: items, totalLines: total, lineTextTruncated, nextOffset: end < total ? end : null };
-}
-
-function conflictSidePage(side: IndexConflictSide | null, offset: number) {
-  if (!side || side.text === null) return side;
-  const lines = side.text ? side.text.split("\n") : [];
-  const end = offset + 40;
-  const selected = lines.slice(offset, end);
-  return { ...side, text: selected.map(line => line.slice(0, 240)).join("\n"),
-    totalLines: lines.length, lineTextTruncated: selected.some(line => line.length > 240), nextOffset: end < lines.length ? end : null };
-}
-
 async function prContext(root: string, number: number) {
   const forge = await api.forgeInfo(root);
   const connection = forge?.connectionRevision;
@@ -119,13 +89,14 @@ async function pullRequest(root: string, a: Arguments) {
   const number = a.number!;
   const { connection, detail } = await prContext(root, number);
   const { revision } = detail;
-  if (a.revision && a.revision !== revision) throw new McpToolError("stale_state", "The PR changed. Read its files or overview again.");
+  if (a.revision && a.revision !== revision) throw new McpToolError(a.section === "diff" && a.diffVersion ? "diff_changed" : "stale_state", "The PR changed. Read its files or overview again.");
   switch (a.section) {
     case "files": return { revision, ...await api.prFiles(root, number, connection, revision, a.offset ?? 0) };
     case "diff": {
       if (!a.revision || !a.fileId) throw new McpToolError("invalid_arguments", "Supply fileId and revision from the files section.");
       const { diff, notice } = await api.prFile(root, number, connection, revision, a.fileId);
-      return { revision, notice, diff: diff ? diffPage(diff, a.offset ?? 0) : null };
+      if (!diff && a.diffVersion) throw new McpToolError("diff_changed", "The provider diff is unavailable. Start again from the PR files.");
+      return { revision, notice, diff: diff ? diffPage(diff, a) : null };
     }
     case "discussions": return { revision, ...await api.prReviewPage(root, number, connection, revision, a.feed ?? "threads", a.cursor) };
     case "checks": return { revision, checks: await api.prChecks(root, number, connection, revision) };
@@ -151,6 +122,7 @@ function navigate(root: string, view: string) {
 const actionNames: Record<string, string> = {
   stage: "Stage files", unstage: "Unstage files", commit: "Commit staged changes", create_branch: "Create branch",
   checkout: "Switch branch", delete_branch: "Review branch deletion", cherry_pick: "Cherry-pick commit", stash: "Open stash dialog",
+  stash_apply: "Apply stash", stash_pop: "Pop stash",
   cherry_pick_continue: "Continue cherry-pick", cherry_pick_abort: "Abort cherry-pick",
   fetch: "Fetch from all remotes", pull: "Pull current branch", push: "Open push review", sync: "Open Sync review",
   create_pr: "Open PR creation", review_pr: "Open PR review", merge_pr: "Open PR merge review", pr_workflow: "Open PR workflow",
@@ -252,6 +224,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     if (target && action !== "create_branch") detail.push(`Target: ${target}`);
     if (number) detail.push(`Pull request #${number}`);
     let paths = [...new Set(a.paths ?? [])];
+    let stageReview: StageReview | undefined;
     const baseline = branchReview?.baseline ?? pickReview?.baseline ?? await api.status(root, action === "unstage" || action === "commit");
     const expectedState = baseline.stateToken;
     if (!expectedState) throw new Error("Repository status is not ready. Refresh and inspect it first.");
@@ -270,16 +243,34 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       const inputPaths = new Map(baseline.files.map(file => [file.path, file]));
       const renamed = new Map(baseline.files.filter(file => file.index === "R" && file.origPath).map(file => [file.origPath!, file]));
       const reviewed = new Set<string>();
+      const proofs: [string, string][] = [];
       for (const path of paths) {
         const file = (action === "unstage" ? renamed.get(path) : undefined) ?? inputPaths.get(path);
         if (!file || file.conflict || (action === "stage" ? !file.untracked && file.worktree === "." : file.untracked || file.index === ".")) {
           throw new Error(`The file is not eligible for this action: ${path}`);
         }
         reviewed.add(file.path);
+        if (action === "stage") {
+          if (!file.diffToken || file.path.endsWith("/")) throw new McpToolError("invalid_arguments", "Choose exact file paths from repository_status.");
+          proofs.push([file.path, file.diffToken]);
+        }
         if (action === "unstage" && file.index === "R" && file.origPath) reviewed.add(file.origPath);
       }
       paths = [...reviewed];
       detail.push(...paths);
+      if (action === "stage") {
+        const { kind, incoming, step, stoppedAt } = (await api.repoInfo(root)).state;
+        stageReview = { branch: baseline.branch, oid: baseline.oid, operation: { kind, incoming, step, stoppedAt }, files: Object.fromEntries(proofs) };
+      }
+    }
+    const stashRestore = action === "stash_apply" || action === "stash_pop";
+    if (stashRestore) {
+      const oid = exactCommit(target);
+      if (a.stashIndex === undefined) throw new McpToolError("invalid_arguments", "Supply stashIndex and target (the stash SHA) from list_stashes.");
+      const stash = (await api.stashList(root)).find(item => item.index === a.stashIndex && item.oid === oid);
+      if (!stash) throw new McpToolError("stale_state", "The stash changed. Read list_stashes again.");
+      detail.push(`stash@{${stash.index}} · ${stash.message}`, a.restoreIndex === false ? "Restore working changes only." : "Restore working changes and the saved index.");
+      if (action === "stash_pop") detail.push("Remove the stash after successful application.");
     }
     const targetOid = branchReview?.tip;
     if (targetOid) detail.push(`Branch tip: ${targetOid}`);
@@ -348,7 +339,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
     if (action === "create_branch") target = value;
     requireRepo(root);
-    if ((await api.status(root)).stateToken !== expectedState) throw new McpToolError("stale_state", "The repository changed during approval. Review the current state and submit a new request.");
+    if (!stageReview && (await api.status(root)).stateToken !== expectedState) throw new McpToolError("stale_state", "The repository changed during approval. Review the current state and submit a new request.");
     if (targetOid && (await api.refs(root)).local.find(branch => branch.name === target)?.oid !== targetOid) throw new McpToolError("stale_state", "The target branch changed during approval.");
     if (action === "create_branch") {
       const existing = duplicateBranch(root, target!, (await api.refs(root)).local);
@@ -366,7 +357,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     };
     if (!await authorize()) return;
     switch (action) {
-      case "stage": await api.stage(root, paths, expectedState); break;
+      case "stage": await api.stage(root, paths, undefined, stageReview); break;
       case "unstage": await api.unstage(root, paths, expectedState, true); break;
       case "commit": {
         const signing = await api.signingGet(root);
@@ -444,6 +435,13 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
           if (await A.fetchAll(root) === undefined) throw new Error("Fetch failed. See Revqora's operation log.");
         } else status.message = await api.fetch(root, null, a.prune ?? mode === "full", newOpId());
         break;
+      case "stash_apply": case "stash_pop": {
+        const { status: outcome, indexRestored, stashKept, staging, conflicts, message } = await api.stashApply(root, a.stashIndex!, action === "stash_pop", target!, a.restoreIndex, expectedState);
+        status.result = { status: outcome, indexRestored, stashKept, staging: staging?.slice(0, 100) ?? null, stagingTotal: staging?.length ?? null, conflicts };
+        status.message = outcome === "done" ? undefined : message;
+        if (outcome !== "done") { status.phase = "partial"; return; }
+        break;
+      }
       case "pr_workflow": {
         const pull = pr!.detail.pull;
         openOverlay({ kind: "workflows", root, pull: { number: pull.number, head: pull.head, base: pull.base, remote: pr!.forge.remote } });
@@ -495,7 +493,10 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
 }
 
 async function requestAction(event: DesktopRequest, root: string, a: Arguments) {
-  if (activeAction) throw new McpToolError("review_pending", "Finish the existing Revqora review before requesting another action.");
+  if (activeAction) {
+    const sameSession = activeAction.startsWith(event.session);
+    throw new McpToolError("review_pending", sameSession ? `Wait for MCP action ${activeAction} before requesting another action.` : "Wait for the previous MCP session's action to finish.", sameSession ? activeAction : undefined);
+  }
   const id = event.session + event.id;
   activeAction = id;
   try {
@@ -589,25 +590,34 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
         const oid = exactCommit(a.oid);
         const { files, diffBase } = await api.commitDetails(root, oid, true);
         const file = files.find(file => file.path === path);
-        if (!file) throw new McpToolError("file_not_found", "Choose a changed path from commit_details.");
-        return diffPage(await api.revDiff(root, diffBase, oid, path, { disableTextconv: true, renameFrom: file.oldPath ?? undefined }), a.offset ?? 0);
+        if (!file) throw new McpToolError(a.diffVersion ? "diff_changed" : "file_not_found", "Choose a changed path from commit_details and start at offset 0.");
+        return diffPage(await api.revDiff(root, diffBase, oid, path, { disableTextconv: true, renameFrom: file.oldPath ?? undefined }), a);
       }
       const file = (await api.status(root)).files.find(file => file.path === path);
-      if (!file || path.endsWith("/") || a.side === "staged" && file.untracked) throw new McpToolError("file_not_found", "Choose a changed file from repository_status.");
+      if (!file || path.endsWith("/") || a.side === "staged" && file.untracked) throw new McpToolError(a.diffVersion ? "diff_changed" : "file_not_found", "Choose a changed file from repository_status and start at offset 0.");
       if (file.conflict) {
-        const offset = a.offset ?? 0;
-        const sides = await api.conflictIndexSides(root, path);
-        return { kind: "conflict", path, empty: false, code: file.conflict,
-          base: conflictSidePage(sides.base, offset), ours: conflictSidePage(sides.ours, offset), theirs: conflictSidePage(sides.theirs, offset) };
+        const sides = await api.conflictIndexSides(root, path).catch(error => {
+          if (a.diffVersion && mcpError(error).code === "stale_state") throw new McpToolError("diff_changed", "The conflict changed. Start again at offset 0.");
+          throw error;
+        });
+        const diffVersion = `conflict:${file.conflict}:${sides.base?.oid ?? "-"}:${sides.ours?.oid ?? "-"}:${sides.theirs?.oid ?? "-"}`;
+        assertDiffVersion(diffVersion, a);
+        const summary = { kind: "conflict", path, empty: false, code: file.conflict, diffVersion };
+        if (a.lineOffset !== undefined) {
+          if (!a.conflictSide) throw new McpToolError("invalid_arguments", "Select conflictSide to continue a conflict line.");
+          return { ...summary, side: a.conflictSide, line: conflictLine(sides[a.conflictSide], a.offset ?? 0, a.lineOffset) };
+        }
+        return { ...summary, base: conflictSidePage(sides.base, a), ours: conflictSidePage(sides.ours, a), theirs: conflictSidePage(sides.theirs, a) };
       }
       const staged = a.side === "staged";
       const renameFrom = staged && file.index === "R" ? file.origPath ?? undefined : undefined;
-      return diffPage(await api.workingDiff(root, path, staged ? "staged" : "unstaged", file.untracked, { disableTextconv: true, renameFrom }, true), a.offset ?? 0);
+      return diffPage(await api.workingDiff(root, path, staged ? "staged" : "unstaged", file.untracked, { disableTextconv: true, renameFrom }, true), a);
     }
     case "list_worktrees": {
       const { worktrees } = await api.worktreeManagerSnapshot(root);
       return page(worktrees, a.offset);
     }
+    case "list_stashes": return page(await api.stashList(root), a.offset);
     case "list_workflows": {
       const [catalog, runs] = await Promise.all([api.workflowCatalog(root), api.workflowRuns(root)]);
       return { definitions: catalog.definitions.map(({ id, name, steps }) => ({ id, name, steps: steps.length })), runs };

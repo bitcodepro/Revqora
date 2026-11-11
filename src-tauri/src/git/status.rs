@@ -2,10 +2,44 @@
 
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::runner::{self, GitResult};
+use super::runner::{self, GitError, GitResult};
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageReview {
+    branch: Option<String>,
+    oid: Option<String>,
+    operation: StageOperation,
+    files: std::collections::HashMap<String, String>,
+}
+
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct StageOperation {
+    kind: String,
+    incoming: Option<String>,
+    step: Option<u32>,
+    stopped_at: Option<String>,
+}
+
+impl StageReview {
+    pub fn verify(&self, repo: &Path, paths: &[String]) -> GitResult<()> {
+        let observed = status(repo)?;
+        let operation = super::repo::op_state(repo, &super::repo::git_dir(repo)?);
+        let actual = StageOperation { kind: operation.kind, incoming: operation.incoming, step: operation.step, stopped_at: operation.stopped_at };
+        if observed.branch != self.branch || observed.oid != self.oid || actual != self.operation {
+            return Err(GitError::new("The branch, HEAD or Git operation changed. Review the stage request again.").kind("stale-operation"));
+        }
+        let files: std::collections::HashMap<_, _> = observed.files.into_iter().map(|file| (file.path, file.diff_token)).collect();
+        if paths.len() != self.files.len() || paths.iter().any(|path| !self.files.get(path).is_some_and(|token| files.get(path) == Some(token))) {
+            return Err(GitError::new("A selected file or its staged version changed. Review the stage request again.").kind("stale-operation"));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

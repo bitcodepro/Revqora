@@ -1646,31 +1646,74 @@ pub fn stash_save(repo: &Path, message: &str, include_untracked: bool, keep_inde
     Ok(())
 }
 
-pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<OpOutcome> {
-    let name = format!("stash@{{{index}}}");
-    stash_apply_ref(repo, &name, pop)
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashStagingDifference {
+    path: String,
+    currently_staged: bool,
+    matches_saved_index: bool,
 }
 
-pub(super) fn stash_apply_ref(repo: &Path, name: &str, pop: bool) -> GitResult<OpOutcome> {
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashApplyOutcome {
+    #[serde(flatten)]
+    pub operation: OpOutcome,
+    pub index_restored: bool,
+    pub stash_kept: bool,
+    pub staging: Option<Vec<StashStagingDifference>>,
+}
+
+fn stash_staging_difference(repo: &Path, base: &str, saved_index: &str) -> GitResult<Vec<StashStagingDifference>> {
+    use std::collections::HashSet;
+    let saved = runner::run(repo, ["diff", "--name-only", "--no-renames", "-z", base, saved_index, "--"])?;
+    let actual = runner::run(repo, ["diff", "--cached", "--name-only", "--no-renames", "-z", "--"])?;
+    let different = runner::run(repo, ["diff", "--cached", "--name-only", "--no-renames", "-z", saved_index, "--"])?;
+    let actual: HashSet<_> = runner::split_nul(&actual).collect();
+    let different: HashSet<_> = runner::split_nul(&different).collect();
+    Ok(runner::split_nul(&saved)
+        .map(|path| StashStagingDifference { path: path.into(), currently_staged: actual.contains(path), matches_saved_index: !different.contains(path) })
+        .collect())
+}
+
+pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<StashApplyOutcome> {
+    let name = format!("stash@{{{index}}}");
+    stash_apply_ref(repo, &name, pop, true)
+}
+
+pub(super) fn stash_apply_ref(repo: &Path, name: &str, pop: bool, restore_index: bool) -> GitResult<StashApplyOutcome> {
     // A stash can add paths over ignored data on the destination branch.
     // Inspect both tracked snapshots and the optional untracked parent.
-    let base = format!("{name}^1");
-    let index = format!("{name}^2");
-    let untracked = format!("{name}^3");
-    let mut paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &base, name, "--"])?;
+    let snapshot = runner::run(repo, ["rev-parse", "--verify", name])?;
+    let snapshot = snapshot.trim();
+    let base = format!("{snapshot}^1");
+    let index = format!("{snapshot}^2");
+    let untracked = format!("{snapshot}^3");
+    let mut paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &base, snapshot, "--"])?;
     paths.extend(runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &base, &index, "--"])?);
     if runner::exec(repo, ["rev-parse", "--verify", "--quiet", &untracked])?.ok() {
         paths.extend(runner::run_bytes(repo, ["ls-tree", "-r", "--name-only", "-z", &untracked])?);
     }
     check_ignored_paths(repo, &super::workspace_files::ignored(repo)?, &paths, "ignored")?;
     let before = status::status(repo)?.state_token;
-    let out = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, "--index", name])?;
-    if out.ok() {
-        return Ok(OpOutcome::done(out.text()));
+    let mut args = vec!["stash", if pop { "pop" } else { "apply" }];
+    if restore_index {
+        args.push("--index");
     }
-    let c = conflicted(repo);
-    if !c.is_empty() {
-        return Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: "Stash applied with conflicts; it was kept in the list.".into() });
+    args.push(if pop { name } else { snapshot });
+    let out = runner::exec(repo, args)?;
+    if out.ok() {
+        return Ok(StashApplyOutcome { operation: OpOutcome::done(out.text()), index_restored: restore_index, stash_kept: !pop, staging: None });
+    }
+    let conflict_result = |conflicts| StashApplyOutcome {
+        operation: OpOutcome { status: "conflicts".into(), conflicts, message: "Stash applied with conflicts; it was kept in the list.".into() },
+        index_restored: false,
+        stash_kept: true,
+        staging: None,
+    };
+    let conflicts = conflicted(repo);
+    if !conflicts.is_empty() {
+        return Ok(conflict_result(conflicts));
     }
     // Git may have already applied tracked edits before an untracked collision
     // fails. Never replay that partially completed mutation automatically.
@@ -1681,14 +1724,27 @@ pub(super) fn stash_apply_ref(repo: &Path, name: &str, pop: bool) -> GitResult<O
         .kind("partial-operation")
         .details(vec![out.stderr]));
     }
-    // A different index strategy is safe only if the first attempt changed nothing.
-    let out2 = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, name])?;
+    if !restore_index {
+        return Err(runner::to_error("git stash apply", &out));
+    }
+    // Keep the only saved index even when the caller requested Pop.
+    let out2 = runner::exec(repo, ["stash", "apply", snapshot])?;
     if out2.ok() {
-        return Ok(OpOutcome::done(out2.text()));
+        let staging = stash_staging_difference(repo, &base, &index).ok();
+        return Ok(StashApplyOutcome {
+            operation: OpOutcome {
+                status: "index_not_restored".into(),
+                conflicts: Vec::new(),
+                message: "Working changes were applied, but the saved staging could not be restored. The stash was kept.".into(),
+            },
+            index_restored: false,
+            stash_kept: true,
+            staging,
+        });
     }
     let c = conflicted(repo);
     if !c.is_empty() {
-        return Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: "Stash applied with conflicts; it was kept in the list.".into() });
+        return Ok(conflict_result(c));
     }
     Err(runner::to_error("git stash apply", &out2))
 }
@@ -1701,9 +1757,13 @@ pub fn check_stash(repo: &Path, index: u32, expected_oid: &str) -> GitResult<()>
     Ok(())
 }
 
-pub fn stash_apply_reviewed(repo: &Path, index: u32, expected_oid: &str, pop: bool) -> GitResult<OpOutcome> {
+pub fn stash_apply_reviewed(repo: &Path, index: u32, expected_oid: &str, pop: bool) -> GitResult<StashApplyOutcome> {
+    stash_apply_reviewed_with_index(repo, index, expected_oid, pop, true)
+}
+
+pub fn stash_apply_reviewed_with_index(repo: &Path, index: u32, expected_oid: &str, pop: bool, restore_index: bool) -> GitResult<StashApplyOutcome> {
     check_stash(repo, index, expected_oid)?;
-    stash_apply(repo, index, pop)
+    stash_apply_ref(repo, &format!("stash@{{{index}}}"), pop, restore_index)
 }
 
 pub fn stash_drop_reviewed(repo: &Path, index: u32, expected_oid: &str) -> GitResult<()> {

@@ -181,7 +181,7 @@ export const api = {
     opts?: DiffOptions,
     stageSnapshot?: number,
   ) => call<void>("apply_selection", { repo, path, mode, selection, hash, untracked, opts, stageSnapshot }),
-  stage: (repo: string, paths: string[], expectedState?: string) => call<void>("stage", { repo, paths, expectedState }),
+  stage: (repo: string, paths: string[], expectedState?: string, review?: import("./types").StageReview) => call<void>("stage", { repo, paths, expectedState, review }),
   unstage: (repo: string, paths: string[], expectedState?: string, requireUnsealed?: boolean) => call<void>("unstage", { repo, paths, expectedState, requireUnsealed }),
   discard: (repo: string, tracked: string[], untracked: string[], expectedState?: string | null) => call<string>("discard", { repo, tracked, untracked, expectedState }),
   commit: (repo: string, message: string, opts?: CommitOptions, expectedState?: string | null, requireUnsealed?: boolean) =>
@@ -272,7 +272,9 @@ export const api = {
 
   stashSave: (repo: string, message: string, includeUntracked: boolean, keepIndex: boolean, paths?: string[], expectedState?: string) =>
     call<void>("stash_save", { repo, message, includeUntracked, keepIndex, paths, expectedState }),
-  stashApply: (repo: string, index: number, pop: boolean, oid: string) => call<OpOutcome>("stash_apply", { repo, index, pop, oid }),
+  stashList: (repo: string) => call<import("./types").StashInfo[]>("stash_list", { repo }),
+  stashApply: (repo: string, index: number, pop: boolean, oid: string, restoreIndex?: boolean, expectedState?: string) =>
+    call<import("./types").StashApplyOutcome>("stash_apply", { repo, index, pop, oid, restoreIndex, expectedState }),
   stashDrop: (repo: string, index: number, oid: string, expectedState?: string | null) => call<void>("stash_drop", { repo, index, oid, expectedState }),
 
   layersState: (repo: string) => call<LayersState>("layers_state", { repo }),

@@ -29,11 +29,13 @@ type Reply = Result<Value, ToolError>;
 pub(crate) struct ToolError {
     code: String,
     message: String,
+    #[serde(default, rename = "activeActionId", skip_serializing_if = "Option::is_none")]
+    active_action_id: Option<String>,
 }
 
 impl ToolError {
     fn new(code: &str, message: impl Into<String>) -> Self {
-        Self { code: code.into(), message: message.into() }
+        Self { code: code.into(), message: message.into(), active_action_id: None }
     }
 
     fn disabled() -> Self {

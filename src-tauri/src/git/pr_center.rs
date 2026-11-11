@@ -1074,7 +1074,7 @@ fn azure_diff(repo: &Path, f: &ForgeInfo, e: &Entry) -> GitResult<FileView> {
     view.old_path = e.meta.old_path.clone();
     view.is_new = e.meta.status == "A";
     view.is_deleted = e.meta.status == "D";
-    view.hash = e.meta.id.clone();
+    view.hash = hash(&out.stdout);
     Ok(FileView { diff: Some(view), notice: Some(AZURE_METADATA_NOTICE.into()) })
 }
 pub fn file(repo: &Path, n: u64, connection: &str, revision: &str, id: &str) -> GitResult<FileView> {
@@ -1092,7 +1092,9 @@ pub fn file(repo: &Path, n: u64, connection: &str, revision: &str, id: &str) -> 
         if !complete(raw) {
             return Ok(FileView{diff:None,notice:Some("The provider returned an incomplete patch for this file. Open the server view or use a local checkout; no complete diff is available here.".into())});
         }
-        return Ok(FileView { diff: Some(diff::to_display(raw, &entry.meta.path, entry.meta.id.clone())), notice: None });
+        let mut display = diff::to_display(raw, &entry.meta.path, String::new());
+        display.hash = hash(serde_json::to_vec(&display).map_err(|_| fail("Could not fingerprint the provider patch."))?);
+        return Ok(FileView { diff: Some(display), notice: None });
     }
     let result = azure_diff(repo, &f, entry).map_err(pr_read_error)?;
     forge::reviewed_connection(repo, connection)?;

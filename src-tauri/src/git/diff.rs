@@ -9,6 +9,7 @@ use std::sync::{
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::runner::{self, GitError, GitResult};
 
@@ -118,12 +119,7 @@ pub struct DiffOptions {
 }
 
 pub fn fingerprint(data: &[u8]) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in data {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("{h:016x}")
+    format!("{:x}", Sha256::digest(data))
 }
 
 fn parse_range(s: &str) -> (u32, u32) {

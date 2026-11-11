@@ -21,6 +21,8 @@ Existing stashes appear in **Branches → Stashes**. Inspect the selected stash 
 
 Stash is local Git data. It is not uploaded by an ordinary Push. After applying a stash on another branch, inspect and commit the restored changes there.
 
+Apply and Pop try to restore the saved index along with the working changes. If Git can restore only the working changes, Revqora shows a staging comparison and keeps the stash. **Restore file** writes the chosen version to the working tree and leaves the index in place.
+
 ## Partial stash
 
 For supported tracked changes, select the intended lines/hunks in the working diff and use the partial-stash action. Inspect the resulting working files afterward: unrelated edits should remain.

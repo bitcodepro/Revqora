@@ -35,6 +35,9 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
   hooks.pending?.(repo, 1);
   let refresh = true;
   try {
+    if (command === "stage" && args?.review) {
+      return await invoke<T>(command, { ...args, expectedState: null });
+    }
     const stage = command === "stage" || (command === "apply_selection" && args?.mode === "stage");
     if (stage && typeof args?.expectedState !== "string") {
       const sourceHead = hooks.observedHead?.(repo);

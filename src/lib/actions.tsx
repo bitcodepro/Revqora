@@ -563,6 +563,16 @@ export async function stashApply(root: string, index: number, pop: boolean, oid 
   if (!oid) return toast.warning("Stash unavailable", "Refresh the stash list before trying again.");
   const out = await act(root, () => api.stashApply(root, index, pop, oid));
   if (out?.status === "conflicts") showStashConflicts(root, out.conflicts);
+  else if (out?.status === "index_not_restored") {
+    const rows = out.staging ?? [];
+    await showDialog<void>(close => <Modal title="Stash applied with different staging" tone="warn" wide onClose={() => close()}
+      footer={<button type="button" className="btn primary" onClick={() => close()}>Done</button>}>
+      <p>{out.message}</p>
+      {out.staging === null ? <p>Open Changes to inspect the current index.</p> : rows.length > 0 ? <ul>
+        {rows.map(row => <li key={row.path}><code>{row.path}</code> · {row.currentlyStaged ? "currently staged" : "outside staging"} · {row.matchesSavedIndex ? "matches the saved index" : "differs from the saved index"}</li>)}
+      </ul> : <p>This stash had no staged paths.</p>}
+    </Modal>);
+  }
   else if (out) toast.success(pop ? "Stash popped" : "Stash applied");
 }
 

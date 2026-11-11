@@ -13,12 +13,13 @@ export interface McpActionOptions {
   method?: string; dirtyAction?: SwitchChoice["action"]; includeUntracked?: boolean; keepIndex?: boolean;
   prune?: boolean; force?: boolean; remote?: string; remoteBranch?: string; setUpstream?: boolean;
   receive?: boolean; send?: boolean;
+  stashIndex?: number; restoreIndex?: boolean;
 }
 
 export function mcpNeedsApproval(mode: McpApprovalMode, action: string, options: McpActionOptions, step?: WorkflowStep["kind"], mergeMayDelete = false, pullRebases = false) {
   if (mode === "full") return false;
   if (mode !== "delete_only") return true;
-  return action === "delete_branch" || action === "cherry_pick_abort"
+  return action === "delete_branch" || action === "cherry_pick_abort" || action === "stash_pop"
     || (action === "fetch" || action === "pull") && options.prune === true
     || action === "pull" && pullRebases
     || action === "push" && options.force === true

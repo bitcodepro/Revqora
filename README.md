@@ -558,6 +558,12 @@ You can edit a proposed commit message or new branch name in the approval dialog
 
 The MCP staged diff includes all staged changes, including sealed stage layers. While sealed layers exist, use **Changes** in Revqora to unstage or commit them. For a staged rename, `file_diff` keeps `oldPath`, and `unstage` reviews and resets both index paths. Conflicted files return `kind: "conflict"`, a conflict code, and index stages `base`, `ours` and `theirs`. A missing stage is `null`. Text is paged by line, with a `nextOffset` per side. Binary, oversized or gitlink stages include an object ID, mode and omission reason.
 
+For `file_diff` and PR diffs, send the first page's `diffVersion` with each `nextOffset`. If the content changes, `diff_changed` asks you to restart at offset 0. Set `limit` up to 1,200 lines. Revqora may return fewer lines to stay within the response budget. To continue a long line, pass its `lineIndex` as `offset`, its `nextTextOffset` as `lineOffset`, and the same `diffVersion`. For a conflicted file also pass `conflictSide`. Text offsets count UTF-16 code units.
+
+Selective `stage` checks the selected files and their index entries, plus the current branch, HEAD and Git operation. Edits to other files can remain in the working tree during approval. Revqora processes one MCP action at a time. `review_pending` includes `activeActionId` when another MCP request is active in the same session.
+
+Use `list_stashes`, then request `stash_apply` or `stash_pop` with the returned `stashIndex` and stash SHA as `target`. `restoreIndex` defaults to `true`. If Git applies the working changes without restoring the saved index, the action reports `partial` with a staging comparison and keeps the stash. **Ask before deleting** requires confirmation for `stash_pop`.
+
 A cherry-pick paused on a conflict reports `waiting_for_resolution`. Resolve and stage the files in Revqora, then use **Continue** or request `cherry_pick_continue` for desktop approval. **Abort** in Revqora and approved `cherry_pick_abort` both cancel the original action. Poll its original ID for the final result. If Git changes the operation outside Revqora and the outcome cannot be verified, the original action reports `operation_changed`.
 
 Cancelled actions include a reason such as `user_declined`, `dialog_dismissed` or `approval_timed_out`. If the desktop closes while MCP is enabled, calls report `desktop_closed`. After the desktop reconnects, action IDs from the previous session return `session_expired`.

@@ -710,11 +710,21 @@ async fn apply_selection(
 }
 
 #[tauri::command]
-async fn stage(app: AppHandle, expected_state: Option<String>, source_head: Option<SourceHead>, repo: String, paths: Vec<String>) -> GitResult<()> {
+async fn stage(
+    app: AppHandle,
+    expected_state: Option<String>,
+    source_head: Option<SourceHead>,
+    repo: String,
+    paths: Vec<String>,
+    review: Option<status::StageReview>,
+) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "stage", None, move || {
         let r = p(&repo);
         if let Some(head) = source_head {
             head.verify(&r)?;
+        }
+        if let Some(review) = review {
+            review.verify(&r, &paths)?;
         }
         ops::stage_paths(&r, &paths)
     })
@@ -1467,8 +1477,24 @@ async fn stash_save(
 }
 
 #[tauri::command]
-async fn stash_apply(app: AppHandle, expected_state: Option<String>, repo: String, index: u32, oid: String, pop: bool) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "stash_apply", None, move || ops::stash_apply_reviewed(&p(&repo), index, &oid, pop)).await
+async fn stash_apply(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    index: u32,
+    oid: String,
+    pop: bool,
+    restore_index: Option<bool>,
+) -> GitResult<ops::StashApplyOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "stash_apply", None, move || {
+        ops::stash_apply_reviewed_with_index(&p(&repo), index, &oid, pop, restore_index.unwrap_or(true))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn stash_list(repo: String) -> GitResult<Vec<refs::StashInfo>> {
+    blocking(move || git::operations::read(&p(&repo), || refs::stashes(&p(&repo)))).await
 }
 
 #[tauri::command]
@@ -2543,6 +2569,7 @@ pub fn run() {
             remote_branch_rename,
             stash_save,
             stash_apply,
+            stash_list,
             stash_drop,
             layers_state,
             layer_seal,

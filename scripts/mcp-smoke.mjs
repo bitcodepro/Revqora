@@ -263,6 +263,104 @@ async function approvalModes({ page, root, work, tool, waitPhase, selectApproval
   return approved.id;
 }
 
+async function diffStageAndStash({ page, original, work, tool, rawTool, waitPhase }) {
+  const root = path.join(work, "mcp-diff-stage-stash");
+  fs.mkdirSync(root);
+  const git = (...args) => execFileSync("git", ["-C", root, "-c", "core.autocrlf=false", ...args], { encoding: "utf8", windowsHide: true }).trimEnd();
+  const put = (file, text) => fs.writeFileSync(path.join(root, file), text);
+  git("init", "-qb", "main");
+  git("config", "user.name", "MCP Fixture");
+  git("config", "user.email", "mcp@example.invalid");
+  git("config", "commit.gpgsign", "false");
+  put("a.txt", "base a\n"); put("b.txt", "base b\n");
+  git("add", "-A"); git("commit", "-qm", "Base");
+  const base = git("rev-parse", "HEAD");
+  await openRepository(page, root);
+  await page.locator(".topbar .repo-current > span").filter({ hasText: "main" }).waitFor();
+  const { active: repository } = await tool("list_repositories");
+  assert(repository && path.relative(root, repository) === "");
+  const request = (action, args = {}) => tool("request_action", { repository, action, ...args });
+  const approve = title => page.getByRole("dialog", { name: `MCP request · ${title}`, exact: true }).getByRole("button", { name: "Approve in Revqora", exact: true }).click();
+
+  const lines = Array.from({ length: 720 }, (_, i) => `line ${i}`);
+  lines[212] = "x".repeat(599) + "🙂" + "rest".repeat(5000);
+  put("large.txt", lines.join("\n") + "\n");
+  const diff = { repository, path: "large.txt", side: "unstaged" };
+  const first = await tool("file_diff", { ...diff, limit: 500 });
+  assert.equal(first.nextOffset, 500);
+  const stable = await tool("file_diff", { ...diff, limit: 500 });
+  assert.equal(stable.diffVersion, first.diffVersion);
+  const second = await tool("file_diff", { ...diff, offset: first.nextOffset, diffVersion: first.diffVersion });
+  assert.equal(second.hunks[0].lines[0].text, "line 500");
+  let piece = first.hunks.flatMap(hunk => hunk.lines).find(line => line.lineIndex === 212), text = piece.text;
+  while (piece.nextTextOffset !== null) {
+    const continuation = await tool("file_diff", { ...diff, offset: 212, lineOffset: piece.nextTextOffset, diffVersion: first.diffVersion });
+    piece = continuation.hunks[0].lines[0]; text += piece.text;
+  }
+  assert.equal(text, lines[212]);
+  lines[0] = "edit at the beginning";
+  put("large.txt", lines.join("\n") + "\n");
+  const changed = await rawTool("file_diff", { ...diff, offset: first.nextOffset, diffVersion: first.diffVersion });
+  assert.equal(changed.structuredContent.code, "diff_changed");
+  assert.equal((await tool("file_diff", diff)).totalLines, first.totalLines);
+  fs.unlinkSync(path.join(root, "large.txt"));
+
+  put("a.txt", "stage this version\n"); put("b.txt", "first unrelated edit\n");
+  const selected = await request("stage", { paths: ["a.txt"] });
+  await waitPhase(selected.id, "awaiting_confirmation");
+  const busy = await rawTool("request_action", { repository, action: "stage", paths: ["b.txt"] });
+  assert.equal(busy.structuredContent.code, "review_pending");
+  assert.equal(busy.structuredContent.activeActionId, selected.id);
+  put("b.txt", "second unrelated edit\n");
+  await approve("Stage files");
+  await waitPhase(selected.id, "succeeded");
+  assert.equal(git("diff", "--cached", "--name-only"), "a.txt");
+  const stale = await request("stage", { paths: ["b.txt"] });
+  await waitPhase(stale.id, "awaiting_confirmation");
+  put("b.txt", "changed selected file\n");
+  await approve("Stage files");
+  assert.equal((await waitPhase(stale.id, "failed")).errorCode, "stale_state");
+  assert.equal(git("diff", "--cached", "--name-only"), "a.txt");
+  git("reset", "--hard", "HEAD");
+
+  put("a.txt", "staged a\n"); put("b.txt", "staged b\n"); git("add", "-A");
+  put("b.txt", "working b\n"); put("new.txt", "untracked\n");
+  git("stash", "push", "-u", "-m", "Mixed staging fixture");
+  const { items } = await tool("list_stashes", { repository });
+  assert.equal(items.length, 1);
+  const args = { stashIndex: items[0].index, target: items[0].oid };
+  const apply = await request("stash_apply", args);
+  await approve("Apply stash");
+  const restored = await waitPhase(apply.id, "succeeded");
+  assert.equal(restored.result.indexRestored, true);
+  assert.equal(restored.result.stashKept, true);
+  assert.equal(git("show", ":b.txt"), "staged b");
+  assert.equal(fs.readFileSync(path.join(root, "b.txt"), "utf8"), "working b\n");
+  assert.equal(fs.readFileSync(path.join(root, "new.txt"), "utf8"), "untracked\n");
+  git("reset", "--hard", "HEAD"); fs.unlinkSync(path.join(root, "new.txt"));
+
+  put("a.txt", "staged a\n"); git("add", "a.txt"); git("commit", "-qm", "Destination has same A");
+  const pop = await request("stash_pop", args);
+  await approve("Pop stash");
+  const partial = await waitPhase(pop.id, "partial");
+  assert.equal(partial.result.status, "index_not_restored");
+  assert.equal(partial.result.stashKept, true);
+  assert.deepEqual(partial.result.staging.find(row => row.path === "b.txt"), { path: "b.txt", currentlyStaged: false, matchesSavedIndex: false });
+  assert.equal(git("show", ":b.txt"), "base b");
+  assert.equal(fs.readFileSync(path.join(root, "b.txt"), "utf8"), "working b\n");
+  assert.equal((await tool("list_stashes", { repository })).items[0].oid, args.target);
+  git("reset", "--hard", base); fs.unlinkSync(path.join(root, "new.txt"));
+
+  const worktreeOnly = await request("stash_pop", { ...args, restoreIndex: false });
+  await approve("Pop stash");
+  const completed = await waitPhase(worktreeOnly.id, "succeeded");
+  assert.equal(completed.result.indexRestored, false);
+  assert.equal(completed.result.stashKept, false);
+  assert.equal(git("diff", "--cached", "--name-only"), "");
+  assert.equal((await tool("list_stashes", { repository })).items.length, 0);
+  await openRepository(page, original);
+}
+
 export async function mcpSmoke({ page, exe, profile, work, restart }) {
   const child = spawn(exe, ["--mcp"], {
     windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
@@ -309,7 +407,7 @@ export async function mcpSmoke({ page, exe, profile, work, restart }) {
     while (Date.now() < end) {
       result = await tool("action_status", { id: action });
       if (result.phase === phase) return result;
-      if (["failed", "cancelled", "succeeded", "handed_off"].includes(result.phase)) break;
+      if (["failed", "cancelled", "succeeded", "partial", "handed_off"].includes(result.phase)) break;
       await new Promise(resolve => setTimeout(resolve, 150));
     }
     throw new Error(`MCP action did not reach ${phase}: ${JSON.stringify(result)}`);
@@ -405,6 +503,7 @@ export async function mcpSmoke({ page, exe, profile, work, restart }) {
     assert.equal(git("diff", "--cached", "--name-only"), "");
     assert.equal(fs.readFileSync(path.join(root, file), "utf8"), "MCP stage fixture\n");
     await branchActions({page,work,tool,rawTool,waitPhase,original:root});
+    await diffStageAndStash({ page, original: root, work, tool, rawTool, waitPhase });
     const oldAction = await approvalModes({ page, root, work, tool, waitPhase, selectApproval });
     page = await restart(root, async () => {
       const offline = await rawTool("action_status", { id: oldAction });

@@ -3,10 +3,11 @@ import { errorMessage, isGitError } from "./api";
 export interface McpError {
   code: string;
   message: string;
+  activeActionId?: string;
 }
 
 export class McpToolError extends Error {
-  constructor(readonly code: string, message: string) {
+  constructor(readonly code: string, message: string, readonly activeActionId?: string) {
     super(message);
   }
 }
@@ -38,5 +39,5 @@ export function mcpError(reason: unknown): McpError {
   const code = reason instanceof McpToolError ? reason.code
     : isGitError(reason) ? gitErrorCodes.get(reason.kind) ?? "operation_failed" : "operation_failed";
   const message = errorMessage(reason).replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1[credentials]@").slice(0, 2000);
-  return { code, message };
+  return { code, message, ...(reason instanceof McpToolError && reason.activeActionId ? { activeActionId: reason.activeActionId } : {}) };
 }

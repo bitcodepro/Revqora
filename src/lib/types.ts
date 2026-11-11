@@ -91,6 +91,13 @@ export interface FileStatus {
   submodule: boolean;
 }
 
+export interface StageReview {
+  branch: string | null;
+  oid: string | null;
+  operation: Pick<OpState, "kind" | "incoming" | "step" | "stoppedAt">;
+  files: Record<string, string>;
+}
+
 export interface StatusSummary {
   stateToken?: string | null;
   diffContextToken?: string | null;
@@ -328,6 +335,13 @@ export interface OpOutcome {
   studioSession?: string | null;
   studioWarning?: string | null;
 }
+
+export type StashApplyOutcome = Omit<OpOutcome, "status"> & {
+  status: "done" | "conflicts" | "index_not_restored";
+  indexRestored: boolean;
+  stashKept: boolean;
+  staging: { path: string; currentlyStaged: boolean; matchesSavedIndex: boolean }[] | null;
+};
 
 export interface ConflictSide {
   exists: boolean;
