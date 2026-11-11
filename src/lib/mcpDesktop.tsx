@@ -10,7 +10,7 @@ import { useRepos } from "./store";
 import { useLibrary } from "./repositoryLibrary";
 import { useSettings } from "./settings";
 import { closeOverlay, openOverlay, showDialog, useUi } from "./ui";
-import type { BranchInfo, FileDiff, PrState, SearchMode, StatusSummary } from "./types";
+import type { BranchInfo, FileDiff, IndexConflictSide, PrState, SearchMode, StatusSummary } from "./types";
 import { Modal } from "../components/Modal";
 import { validBranchName } from "../components/dialogs";
 import { createPullRequest } from "../components/PullRequests";
@@ -31,14 +31,33 @@ interface DesktopRequest {
   session: string;
   request: { name: string; arguments: Arguments };
 }
-type Phase = "preparing" | "awaiting_confirmation" | "running" | "cancelled" | "succeeded" | "handed_off" | "failed";
+type Phase = "preparing" | "awaiting_confirmation" | "running" | "waiting_for_resolution" | "cancelled" | "succeeded" | "handed_off" | "failed";
 type ActionResult =
   | { sha: string }
+  | { aborted: true }
   | { branch: string; sha: string | null }
   | { previousBranch: string | null; currentBranch: string; conflicts: string[] };
-interface ActionStatus { id: string; session: string; action: string; phase: Phase; message?: string; errorCode?: string; commit?: string; runId?: string; result?: ActionResult }
+interface ActionStatus {
+  id: string; session: string; root: string; action: string; phase: Phase; message?: string; errorCode?: string;
+  reason?: string; conflicts?: string[]; commit?: string; runId?: string; result?: ActionResult;
+}
 const actions = new Map<string, ActionStatus>();
 let activeAction: string | null = null;
+
+const cancellationMessages: Record<string, string> = {
+  user_declined: "The person in Revqora declined this request.",
+  dialog_dismissed: "The review was closed before approval.",
+  approval_timed_out: "The review expired before approval.",
+  session_expired: "The MCP session ended before the operation could run.",
+  cherry_pick_aborted: "The cherry-pick was aborted in Revqora.",
+  cherry_pick_skipped: "The cherry-pick was skipped in Revqora.",
+};
+
+function cancelAction(status: ActionStatus, reason: string) {
+  status.phase = "cancelled";
+  status.reason = reason;
+  status.message = cancellationMessages[reason];
+}
 
 function permittedRoots() {
   const { activeWorkspaceId, workspaces } = useLibrary.getState();
@@ -84,6 +103,15 @@ function diffPage(diff: FileDiff, offset: number) {
   return { ...summary, hunks: items, totalLines: total, lineTextTruncated, nextOffset: end < total ? end : null };
 }
 
+function conflictSidePage(side: IndexConflictSide | null, offset: number) {
+  if (!side || side.text === null) return side;
+  const lines = side.text ? side.text.split("\n") : [];
+  const end = offset + 40;
+  const selected = lines.slice(offset, end);
+  return { ...side, text: selected.map(line => line.slice(0, 240)).join("\n"),
+    totalLines: lines.length, lineTextTruncated: selected.some(line => line.length > 240), nextOffset: end < lines.length ? end : null };
+}
+
 async function prContext(root: string, number: number) {
   const forge = await api.forgeInfo(root);
   const connection = forge?.connectionRevision;
@@ -127,13 +155,14 @@ function navigate(root: string, view: string) {
 const actionNames: Record<string, string> = {
   stage: "Stage files", unstage: "Unstage files", commit: "Commit staged changes", create_branch: "Create branch",
   checkout: "Switch branch", delete_branch: "Review branch deletion", cherry_pick: "Cherry-pick commit", stash: "Open stash dialog",
+  cherry_pick_continue: "Continue cherry-pick", cherry_pick_abort: "Abort cherry-pick",
   fetch: "Fetch from all remotes", pull: "Pull current branch", push: "Open push review", sync: "Open Sync review",
   create_pr: "Open PR creation", review_pr: "Open PR review", merge_pr: "Open PR merge review", pr_workflow: "Open PR workflow",
   start_workflow: "Create waiting workflow run", review_workflow_step: "Open workflow step review",
 };
 
 interface ApprovalField { label: string; initial: string; multiline?: boolean; validate: (value: string) => string | null }
-interface ApprovalResult { value: string }
+type ApprovalResult = { value: string } | { reason: "user_declined" | "dialog_dismissed" | "approval_timed_out" };
 
 function Approval({ action, description, details, field, close }: {
   action: string; description: string; details: string[]; field?: ApprovalField; close: (approved: ApprovalResult | null) => void;
@@ -141,11 +170,11 @@ function Approval({ action, description, details, field, close }: {
   const [value, setValue] = useState(field?.initial ?? "");
   const error = field?.validate(value);
   useEffect(() => {
-    const timer = window.setTimeout(() => close(null), 120_000);
+    const timer = window.setTimeout(() => close({reason:"approval_timed_out"}), 120_000);
     return () => window.clearTimeout(timer);
   }, [close]);
-  return <Modal title={`MCP request · ${action}`} subtitle={description} wide onClose={() => close(null)} onSubmit={() => { if (!error) close({value}); }}
-    footer={<><button className="btn" type="button" onClick={() => close(null)}>Decline</button>
+  return <Modal title={`MCP request · ${action}`} subtitle={description} wide onClose={() => close({reason:"dialog_dismissed"})} onSubmit={() => { if (!error) close({value}); }}
+    footer={<><button className="btn" type="button" onClick={() => close({reason:"user_declined"})}>Decline</button>
       <button className="btn primary" type="submit" disabled={!!error}>Approve in Revqora</button></>}>
     <p className="muted">A local MCP client requested this action. This approval applies to this request only.</p>
     {field && <>
@@ -201,7 +230,18 @@ async function reviewBranchAction(root: string, action: string, target?: string)
   return {baseline,branches,tip};
 }
 
-async function runAction(event: DesktopRequest, root: string, a: Arguments, status: ActionStatus, branchReview?: BranchReview) {
+interface PickReview { baseline: StatusSummary; incoming: string }
+
+async function reviewPendingPick(root: string, action: string): Promise<PickReview> {
+  const [baseline, info] = await Promise.all([api.status(root), api.repoInfo(root)]);
+  if (info.state.kind !== "cherry-pick" || !info.state.incoming) throw new McpToolError("no_cherry_pick", "There is no cherry-pick to continue or abort.");
+  if (action === "cherry_pick_continue" && baseline.conflictCount) {
+    throw new McpToolError("unresolved_conflicts", "Resolve and stage the remaining conflict files before continuing the cherry-pick.");
+  }
+  return { baseline, incoming: info.state.incoming };
+}
+
+async function runAction(event: DesktopRequest, root: string, a: Arguments, status: ActionStatus, branchReview?: BranchReview, pickReview?: PickReview) {
   const action = status.action;
   try {
     let target = a.target;
@@ -215,20 +255,32 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     if (action === "start_workflow" && (!a.branch || !a.base)) throw new Error("Supply the workflow branch and base.");
     if (target && action !== "create_branch") detail.push(`Target: ${target}`);
     if (number) detail.push(`Pull request #${number}`);
-    const paths = [...new Set(a.paths ?? [])];
-    const baseline = branchReview?.baseline ?? await api.status(root, action === "unstage" || action === "commit");
+    let paths = [...new Set(a.paths ?? [])];
+    const baseline = branchReview?.baseline ?? pickReview?.baseline ?? await api.status(root, action === "unstage" || action === "commit");
     const expectedState = baseline.stateToken;
     if (!expectedState) throw new Error("Repository status is not ready. Refresh and inspect it first.");
     const pullMode = useSettings.getState().pullMode;
     if (action === "pull") detail.push(`Upstream: ${baseline.upstream ?? "none configured"}`, `Pull mode: ${pullMode}`);
+    if (action === "cherry_pick" && (baseline.conflictCount || (await api.repoInfo(root)).state.kind !== "none")) {
+      throw new McpToolError("operation_in_progress", "Finish the current Git operation before cherry-picking another commit.");
+    }
+    if (pickReview) {
+      detail.push(`Incoming commit: ${pickReview.incoming}`);
+      if (action === "cherry_pick_abort") detail.push("Git will return to the state before this cherry-pick.");
+    }
     if (action === "stage" || action === "unstage") {
       const inputPaths = new Map(baseline.files.map(file => [file.path, file]));
+      const renamed = new Map(baseline.files.filter(file => file.index === "R" && file.origPath).map(file => [file.origPath!, file]));
+      const reviewed = new Set<string>();
       for (const path of paths) {
-        const file = inputPaths.get(path);
+        const file = (action === "unstage" ? renamed.get(path) : undefined) ?? inputPaths.get(path);
         if (!file || file.conflict || (action === "stage" ? !file.untracked && file.worktree === "." : file.untracked || file.index === ".")) {
           throw new Error(`The file is not eligible for this action: ${path}`);
         }
+        reviewed.add(file.path);
+        if (action === "unstage" && file.index === "R" && file.origPath) reviewed.add(file.origPath);
       }
+      paths = [...reviewed];
       detail.push(...paths);
     }
     const targetOid = branchReview?.tip;
@@ -270,11 +322,12 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     }
     if (useUi.getState().dialogs.length) throw new Error("Finish the open Revqora dialog before requesting another action.");
     requireRepo(root);
-    if (!await api.mcpLease(event.session)) throw new Error("The MCP session ended.");
+    if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
     status.phase = "awaiting_confirmation";
     const approved = await showDialog<ApprovalResult | null>(close => <Approval action={title}
       description={`${root} · ${baseline.branch ?? "detached HEAD"}`} details={detail} field={field} close={close} />);
-    if (!approved || !await api.mcpLease(event.session)) { status.phase = "cancelled"; return; }
+    if (!approved || "reason" in approved) { cancelAction(status, approved?.reason ?? "dialog_dismissed"); return; }
+    if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
     if (action === "create_branch") target = approved.value;
     requireRepo(root);
     if ((await api.status(root)).stateToken !== expectedState) throw new McpToolError("stale_state", "The repository changed during approval. Review the current state and submit a new request.");
@@ -283,10 +336,10 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       const existing = duplicateBranch(root, target!, (await api.refs(root)).local);
       if (existing) throw new McpToolError("branch_exists", `The name conflicts with local branch ${existing.name}.`);
     }
-    if (!await api.mcpLease(event.session)) { status.phase = "cancelled"; return; }
+    if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
     status.phase = "running";
     const authorize = async () => {
-      if (!await api.mcpLease(event.session)) return false;
+      if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return false; }
       requireRepo(root);
       return true;
     };
@@ -295,8 +348,8 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       case "unstage": await api.unstage(root, paths, expectedState, true); break;
       case "commit": {
         const signing = await api.signingGet(root);
-        if (!await api.mcpLease(event.session)) { status.phase = "cancelled"; return; }
-        status.commit = await api.commit(root, approved.value, { sign: signing.signCommits }, expectedState, true);
+        if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
+        status.commit = await api.commit(root, approved.value, { sign: signing.signCommits, verbatimMessage: true }, expectedState, true);
         status.result = {sha:status.commit};
         break;
       }
@@ -306,7 +359,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
         break;
       case "checkout": {
         const result = await A.checkoutWithOutcome(root, target!, "local", expectedState, authorize);
-        if (result.status === "cancelled") { status.phase = "cancelled"; return; }
+        if (result.status === "cancelled") { cancelAction(status, status.reason ?? "dialog_dismissed"); return; }
         if (result.status === "failed") throw result.error;
         status.result = {previousBranch:baseline.branch,currentBranch:result.switch.branch,conflicts:result.switch.conflicts};
         status.message = result.switch.warning ?? undefined;
@@ -322,7 +375,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
             return true;
           },
         });
-        if (result.status === "cancelled") { status.phase = "cancelled"; return; }
+        if (result.status === "cancelled") { cancelAction(status, status.reason ?? "dialog_dismissed"); return; }
         if (result.status === "failed") throw result.error;
         status.result = {branch:result.branch,sha:result.oid};
         break;
@@ -334,9 +387,27 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
         break;
       }
       case "cherry_pick": {
-        const result = await api.cherryPick(root, [target!], false, expectedState);
+        const result = await api.cherryPick(root, [target!], false, expectedState, status.id);
+        await useRepos.getState().refresh(root);
         A.handleOutcome(root, result, "Cherry-pick");
-        if (result.status !== "done") { status.phase = "handed_off"; status.message = result.status; return; }
+        if (result.status !== "done") {
+          status.phase = "waiting_for_resolution";
+          status.conflicts = result.conflicts;
+          status.message = "Resolve and stage the conflicts, then continue the cherry-pick, or abort it.";
+          return;
+        }
+        break;
+      }
+      case "cherry_pick_continue": {
+        const result = await api.opContinue(root, "cherry-pick", null, expectedState);
+        await useRepos.getState().refresh(root);
+        A.handleOutcome(root, result, "Cherry-pick");
+        if (result.status !== "done") throw new McpToolError("cherry_pick_stopped", result.message || "The cherry-pick is still paused.");
+        break;
+      }
+      case "cherry_pick_abort": {
+        await api.opAbort(root, "cherry-pick", expectedState);
+        status.result = { aborted: true };
         break;
       }
       case "fetch":
@@ -364,7 +435,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
           case "review_workflow_step": {
             const current = await api.workflowRun(root, target!);
             if (current.phase !== "ready" || current.cursor !== run!.cursor) throw new Error("The workflow advanced during approval.");
-            if (!await api.mcpLease(event.session)) { status.phase = "cancelled"; return; }
+            if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
             await openWorkflowStepReview(root, current.id);
             break;
           }
@@ -384,14 +455,16 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
 
 async function requestAction(event: DesktopRequest, root: string, a: Arguments) {
   if (activeAction || useUi.getState().dialogs.length) throw new McpToolError("review_pending", "Finish the existing Revqora review before requesting another action.");
-  const id = event.id;
+  const id = event.session + event.id;
   activeAction = id;
   try {
     const branchReview = branchActions.has(a.action!) ? await reviewBranchAction(root, a.action!, a.target) : undefined;
-    const status: ActionStatus = { id, session: event.session, action: a.action!, phase: "preparing" };
+    const pickReview = a.action === "cherry_pick_continue" || a.action === "cherry_pick_abort" ? await reviewPendingPick(root, a.action) : undefined;
+    if (!await api.mcpLease(event.session, event.id)) throw new McpToolError("session_expired", "The MCP request expired before the review could open.");
+    const status: ActionStatus = { id, session: event.session, root, action: a.action!, phase: "preparing" };
     actions.set(id, status);
     if (actions.size > 50) actions.delete(actions.keys().next().value!);
-    void runAction(event, root, a, status, branchReview);
+    void runAction(event, root, a, status, branchReview, pickReview);
     return { id, phase: status.phase, message: "Switch to Revqora to review this action. Poll action_status for the outcome." };
   } catch (error) {
     activeAction = null;
@@ -421,9 +494,29 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
     };
   }
   if (name === "action_status") {
+    if (/^[a-f0-9]{64}$/.test(a.id!) && !a.id!.startsWith(event.session)) {
+      throw new McpToolError("session_expired", "This action ID belongs to a previous MCP session. Read the current repository state to verify the outcome.");
+    }
     const status = actions.get(a.id!);
     if (!status || status.session !== event.session) throw new McpToolError("unknown_action", "Unknown MCP action in this session.");
-    const { session: _session, ...result } = status;
+    if (status.phase === "waiting_for_resolution") {
+      const outcome = await api.mcpCherryPickStatus(requireRepo(status.root), status.id);
+      if (outcome) {
+        delete status.conflicts;
+        if (outcome.phase === "succeeded") {
+          status.phase = "succeeded";
+          status.result = { sha: outcome.sha };
+          delete status.message;
+        } else if (outcome.phase === "cancelled") {
+          cancelAction(status, outcome.reason);
+        } else {
+          status.phase = "failed";
+          status.errorCode = outcome.reason;
+          status.message = "Revqora could not verify how the pending cherry-pick ended. Inspect the repository's current state.";
+        }
+      }
+    }
+    const { session: _session, root: _root, ...result } = status;
     return result;
   }
   const root = requireRepo(a.repository);
@@ -452,12 +545,21 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
       if (a.side === "commit") {
         const oid = exactCommit(a.oid);
         const { files, diffBase } = await api.commitDetails(root, oid, true);
-        if (!files.some(file => file.path === path)) throw new McpToolError("file_not_found", "Choose a changed path from commit_details.");
-        return diffPage(await api.revDiff(root, diffBase, oid, path, { disableTextconv: true }), a.offset ?? 0);
+        const file = files.find(file => file.path === path);
+        if (!file) throw new McpToolError("file_not_found", "Choose a changed path from commit_details.");
+        return diffPage(await api.revDiff(root, diffBase, oid, path, { disableTextconv: true, renameFrom: file.oldPath ?? undefined }), a.offset ?? 0);
       }
       const file = (await api.status(root)).files.find(file => file.path === path);
       if (!file || path.endsWith("/") || a.side === "staged" && file.untracked) throw new McpToolError("file_not_found", "Choose a changed file from repository_status.");
-      return diffPage(await api.workingDiff(root, path, a.side === "staged" ? "staged" : "unstaged", file.untracked, { disableTextconv: true }, true), a.offset ?? 0);
+      if (file.conflict) {
+        const offset = a.offset ?? 0;
+        const sides = await api.conflictIndexSides(root, path);
+        return { kind: "conflict", path, empty: false, code: file.conflict,
+          base: conflictSidePage(sides.base, offset), ours: conflictSidePage(sides.ours, offset), theirs: conflictSidePage(sides.theirs, offset) };
+      }
+      const staged = a.side === "staged";
+      const renameFrom = staged && file.index === "R" ? file.origPath ?? undefined : undefined;
+      return diffPage(await api.workingDiff(root, path, staged ? "staged" : "unstaged", file.untracked, { disableTextconv: true, renameFrom }, true), a.offset ?? 0);
     }
     case "list_worktrees": {
       const { worktrees } = await api.worktreeManagerSnapshot(root);

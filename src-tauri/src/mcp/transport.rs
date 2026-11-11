@@ -187,11 +187,19 @@ impl Auth {
 
 pub(super) fn call(request: &impl Serialize) -> super::Reply {
     let (port, key) = descriptor_path().and_then(|path| read_descriptor(&path)).map_err(|error| match error.kind() {
-        io::ErrorKind::NotFound => ToolError::disabled(),
+        io::ErrorKind::NotFound => {
+            if super::preference_path().is_ok_and(|path| super::saved_enabled(&path).unwrap_or_default()) {
+                ToolError::desktop_closed()
+            } else {
+                ToolError::disabled()
+            }
+        }
         _ => authentication_failed(),
     })?;
-    let socket = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_secs(3))
-        .map_err(|_| ToolError::new("desktop_unavailable", "Could not connect to Revqora's local MCP session. Check Settings → General → MCP."))?;
+    let socket = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_secs(3)).map_err(|error| match error.kind() {
+        io::ErrorKind::ConnectionRefused => ToolError::desktop_closed(),
+        _ => ToolError::new("desktop_unavailable", "Could not connect to Revqora's local MCP session. Check Settings → General → MCP."),
+    })?;
     exchange(socket, &key, request, AUTH_TIMEOUT)
 }
 

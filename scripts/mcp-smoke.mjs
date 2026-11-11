@@ -6,10 +6,112 @@ import { createInterface } from "node:readline";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 import { openRepository } from "./ui-readiness.mjs";
 
+async function renameAndCherryPick({ page, root, repository, git, request, rejected, tool, waitPhase, approval, approve, decline }) {
+  const oldPath = "старый файл.bin", newPath = "новый файл.bin";
+  const bytes = Buffer.from([0, 12, 255, 0, 40]);
+  fs.writeFileSync(path.join(root, oldPath), bytes);
+  git("add", "--", oldPath);
+  git("commit", "-qm", "Add binary fixture");
+  fs.renameSync(path.join(root, oldPath), path.join(root, newPath));
+  for (const paths of [[newPath], [newPath, oldPath]]) {
+    git("add", "-A");
+    const status = await tool("repository_status", { repository });
+    const rename = status.files.items.find(file => file.path === newPath);
+    assert.equal(rename.index, "R");
+    assert.equal(rename.origPath, oldPath);
+    const diff = await tool("file_diff", { repository, path: newPath, side: "staged" });
+    assert.equal(diff.oldPath, oldPath);
+    assert.equal(diff.similarity, 100);
+    assert.equal(diff.isNew || diff.isDeleted || diff.empty, false);
+    const unstage = await request("unstage", { paths });
+    const review = approval("Unstage files");
+    const details = await review.locator(".code-list").textContent();
+    assert.deepEqual(details.split("\n"), [newPath, oldPath]);
+    await approve(review);
+    await waitPhase(unstage.id, "succeeded");
+    assert.equal(git("diff", "--cached", "--name-status"), "");
+    assert.deepEqual(fs.readFileSync(path.join(root, newPath)), bytes);
+    assert.equal(fs.existsSync(path.join(root, oldPath)), false);
+  }
+  git("add", "-A");
+  git("commit", "-qm", "Rename binary fixture");
+  const committed = await tool("file_diff", { repository, path: newPath, side: "commit", oid: git("rev-parse", "HEAD") });
+  assert.equal(committed.oldPath, oldPath);
+
+  const file = "conflict.txt";
+  const put = value => fs.writeFileSync(path.join(root, file), value);
+  git("switch", "-qc", "fixture/source");
+  put("incoming version\n");
+  git("add", file);
+  git("commit", "-qm", "Add incoming version");
+  const incoming = git("rev-parse", "HEAD");
+  git("switch", "-q", "main");
+  put("our version\n");
+  git("add", file);
+  git("commit", "-qm", "Add our version");
+  const original = git("rev-parse", "HEAD");
+  const pick = async () => {
+    const action = await request("cherry_pick", { target: incoming });
+    await approve(approval("Cherry-pick commit"));
+    const paused = await waitPhase(action.id, "waiting_for_resolution");
+    assert.deepEqual(paused.conflicts, [file]);
+    return action;
+  };
+  const first = await pick();
+  const status = await tool("repository_status", { repository });
+  assert.equal(status.operation, "cherry-pick");
+  assert.equal(status.conflictCount, 1);
+  for (const side of ["staged", "unstaged"]) {
+    const diff = await tool("file_diff", { repository, path: file, side });
+    assert.equal(diff.kind, "conflict");
+    assert.equal(diff.empty, false);
+    assert.equal(diff.code, "AA");
+    assert.equal(diff.base, null);
+    assert.equal(diff.ours.text, "our version\n");
+    assert.equal(diff.theirs.text, "incoming version\n");
+    assert.equal(diff.ours.oid, git("rev-parse", `:2:${file}`));
+    assert.equal(diff.theirs.oid, git("rev-parse", `:3:${file}`));
+  }
+  await rejected("cherry_pick_continue", undefined, "unresolved_conflicts");
+  const declined = await request("cherry_pick_abort");
+  await decline(approval("Abort cherry-pick"));
+  assert.equal((await waitPhase(declined.id, "cancelled")).reason, "user_declined");
+  await waitPhase(first.id, "waiting_for_resolution");
+  await page.locator(".op-banner").getByRole("button", { name: "Abort", exact: true }).click();
+  await page.getByRole("dialog", { name: "Abort cherry-pick?", exact: true }).getByRole("button", { name: "Abort cherry-pick", exact: true }).click();
+  assert.equal((await waitPhase(first.id, "cancelled")).reason, "cherry_pick_aborted");
+  assert.equal(git("rev-parse", "HEAD"), original);
+
+  const second = await pick();
+  const abort = await request("cherry_pick_abort");
+  await approve(approval("Abort cherry-pick"));
+  assert.equal((await waitPhase(abort.id, "succeeded")).result.aborted, true);
+  assert.equal((await waitPhase(second.id, "cancelled")).reason, "cherry_pick_aborted");
+  assert.equal(git("rev-parse", "HEAD"), original);
+
+  const third = await pick();
+  put("resolved version\n");
+  git("add", file);
+  const dismissed = await request("cherry_pick_continue");
+  await approval("Continue cherry-pick").waitFor();
+  await page.keyboard.press("Escape");
+  assert.equal((await waitPhase(dismissed.id, "cancelled")).reason, "dialog_dismissed");
+  assert.equal(git("rev-parse", "HEAD"), original);
+  const proceed = await request("cherry_pick_continue");
+  await approve(approval("Continue cherry-pick"));
+  await waitPhase(proceed.id, "succeeded");
+  const result = await waitPhase(third.id, "succeeded");
+  assert.equal(result.result.sha, git("rev-parse", "HEAD"));
+  assert.equal(git("show", `HEAD:${file}`), "resolved version");
+  assert.equal((await tool("repository_status", { repository })).operation, "none");
+  await rejected("cherry_pick_abort", undefined, "no_cherry_pick");
+}
+
 async function branchActions({ page, work, tool, rawTool, waitPhase, original }) {
   const root = path.join(work, "mcp-branch-fixture");
   fs.mkdirSync(root);
-  const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true }).trimEnd();
+  const gitRaw = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true });
+  const git = (...args) => gitRaw(...args).trimEnd();
   git("init", "-qb", "main");
   git("config", "user.name", "MCP Fixture");
   git("config", "user.email", "mcp@example.invalid");
@@ -34,7 +136,7 @@ async function branchActions({ page, work, tool, rawTool, waitPhase, original })
   await rejected("create_branch", "feature/too-early", "initial_commit_required");
   for (const [proposed, approved] of [
     ["#TEST-1: Initial commit", "#TEST-1: Initial commit"],
-    ["Proposed message", "#TEST-2: Approved message\n\nKeep the body.\n# Literal detail"],
+    ["Proposed message", "#TEST-2: Approved message\n\nKeep the body.  \n# Literal detail\n\n"],
   ]) {
     const action = await request("commit", {message:proposed});
     const dialog = approval("Commit staged changes");
@@ -44,7 +146,8 @@ async function branchActions({ page, work, tool, rawTool, waitPhase, original })
     await approve(dialog);
     const result = await waitPhase(action.id, "succeeded");
     assert.equal(result.result.sha, git("rev-parse", "HEAD"));
-    assert.equal(git("log", "-1", "--format=%B"), approved);
+    const object = gitRaw("cat-file", "commit", "HEAD");
+    assert.equal(object.slice(object.indexOf("\n\n") + 2), approved);
     if (proposed === approved) {
       fs.writeFileSync(file, "Second revision\n");
       git("add", "fixture.txt");
@@ -106,7 +209,9 @@ async function branchActions({ page, work, tool, rawTool, waitPhase, original })
   const deleted = await waitPhase(deletion.id, "succeeded");
   assert.deepEqual(deleted.result, {branch:"feature/approved",sha:tip});
   assert.equal(git("branch", "--list", "feature/approved"), "");
+  await renameAndCherryPick({ page, root, repository, git, request, rejected, tool, waitPhase, approval, approve, decline });
   await openRepository(page, original);
+  return deletion.id;
 }
 
 export async function mcpSmoke({ page, exe, profile, work, restart }) {
@@ -238,8 +343,13 @@ export async function mcpSmoke({ page, exe, profile, work, restart }) {
     await page.waitForSelector(".changes[data-pending='false']");
     assert.equal(git("diff", "--cached", "--name-only"), "");
     assert.equal(fs.readFileSync(path.join(root, file), "utf8"), "MCP stage fixture\n");
-    await branchActions({page,work,tool,rawTool,waitPhase,original:root});
-    page = await restart(root);
+    const oldAction = await branchActions({page,work,tool,rawTool,waitPhase,original:root});
+    page = await restart(root, async () => {
+      const offline = await rawTool("action_status", { id: oldAction });
+      assert.equal(offline.structuredContent.code, "desktop_closed");
+    });
+    const expired = await rawTool("action_status", { id: oldAction });
+    assert.equal(expired.structuredContent.code, "session_expired");
     // Desktop startup does not wait for Git to finish loading the active tab.
     assert(Array.isArray((await tool("list_repositories")).repositories));
     await openRepository(page, root);

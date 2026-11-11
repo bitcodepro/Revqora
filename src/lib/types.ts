@@ -142,6 +142,7 @@ export interface DiffOptions {
   context?: number;
   ignoreWhitespace?: boolean;
   disableTextconv?: boolean;
+  renameFrom?: string;
 }
 
 export interface Seg {
@@ -332,6 +333,13 @@ export interface ConflictSide {
   oid: string | null;
 }
 
+export interface IndexConflictSide {
+  oid: string;
+  mode: string;
+  text: string | null;
+  omitted: "binary" | "too_large" | "gitlink" | null;
+}
+
 export interface ConflictInfo {
   stateToken?: string;
   path: string;
@@ -379,6 +387,7 @@ export interface ReflogEntry {
 }
 
 export interface CommitOptions {
+  verbatimMessage?: boolean;
   sign?: boolean;
   amend?: boolean;
   noVerify?: boolean;

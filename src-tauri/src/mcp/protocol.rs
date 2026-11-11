@@ -51,7 +51,7 @@ fn tools() -> Vec<Tool> {
         Tool { name:"compare_branches", description:"Compare two branch histories using their full refs from list_branches. Returns commits unique to each branch.", properties:json!({"repository":repo(),"from":text(4096),"to":text(4096)}), required:&["repository","from","to"], read_only:true, uses_provider:false },
         Tool { name:"search_commits", description:"Search local branches, remote-tracking branches, tags and HEAD. Stash is excluded. Author searches Git author name and email, and message searches the entire commit message. Matching is case insensitive. If hasMore is true, pass nextCursor as cursor with the same repository, query and mode, even if this page was empty.", properties:json!({"repository":repo(),"query":text(512),"mode":choices(&["all","message","hash","author"]),"cursor":text(64),"limit":{"type":"integer","minimum":1,"maximum":100,"default":30}}), required:&["repository","query"], read_only:true, uses_provider:false },
         Tool { name:"commit_details", description:"Read an exact commit and its changed file list.", properties:json!({"repository":repo(),"oid":text(64),"offset":count(0,1_000_000)}), required:&["repository","oid"], read_only:true, uses_provider:false },
-        Tool { name:"file_diff", description:"Read one changed file from working changes, the staged index or an exact commit. Use a path returned by status or commit_details.", properties:json!({"repository":repo(),"path":text(4096),"side":choices(&["unstaged","staged","commit"]),"oid":text(64),"offset":count(0,1_000_000)}), required:&["repository","path","side"], read_only:true, uses_provider:false },
+        Tool { name:"file_diff", description:"Read one changed file from working changes, the staged index or an exact commit. A conflicted file returns kind=conflict with base, ours and theirs from the index. Use a path returned by status or commit_details.", properties:json!({"repository":repo(),"path":text(4096),"side":choices(&["unstaged","staged","commit"]),"oid":text(64),"offset":count(0,1_000_000)}), required:&["repository","path","side"], read_only:true, uses_provider:false },
         Tool { name:"list_worktrees", description:"Read registered worktrees and their current branches.", properties:json!({"repository":repo(),"offset":count(0,1_000_000)}), required:&["repository"], read_only:true, uses_provider:false },
         Tool { name:"list_workflows", description:"List saved workflow names and recent run states in Revqora.", properties:json!({"repository":repo()}), required:&["repository"], read_only:true, uses_provider:false },
         Tool { name:"workflow_status", description:"Read a workflow run's phase and per-step outcomes. Use the ID from list_workflows or request_action.", properties:json!({"repository":repo(),"id":text(64)}), required:&["repository","id"], read_only:true, uses_provider:false },
@@ -59,8 +59,8 @@ fn tools() -> Vec<Tool> {
         Tool { name:"connection_identity", description:"Identify the current user for a repository's selected PR connection. Returns the provider user ID, name and login without returning credentials.", properties:json!({"repository":repo()}), required:&["repository"], read_only:true, uses_provider:true },
         Tool { name:"pull_request", description:"Inspect a PR overview, changed file list, one diff, discussion threads or CI checks. For diff, pass a fileId and revision returned by the files section. Discussion feeds depend on the provider.", properties:json!({"repository":repo(),"number":pr(),"section":choices(&["overview","files","diff","discussions","checks"]),"feed":choices(&["threads","comments","reviews"]),"cursor":text(4096),"offset":count(0,1_000_000),"fileId":text(4096),"revision":text(4096)}), required:&["repository","number"], read_only:true, uses_provider:true },
         Tool { name:"open_view", description:"Select an already open repository and navigate to a Revqora view.", properties:json!({"repository":repo(),"view":choices(&["history","changes","pull_requests","branches","worktrees","workflows","agents"])}), required:&["repository","view"], read_only:false, uses_provider:false },
-        Tool { name:"request_action", description:"Ask the person in Revqora to review an action. Supply paths for stage/unstage, target for branch actions or cherry-pick (full SHA), message for commit, number for PR review/merge/workflow, or target with the workflow recipe/run ID for start_workflow/review_workflow_step. Starting a saved workflow also requires branch and base. Poll action_status before submitting another request.", properties:json!({"repository":repo(),"action":choices(&["stage","unstage","commit","create_branch","checkout","delete_branch","cherry_pick","stash","fetch","pull","push","sync","create_pr","review_pr","merge_pr","pr_workflow","start_workflow","review_workflow_step"]),"paths":paths(),"target":text(512),"message":text(8192),"number":pr(),"branch":text(1024),"base":text(1024)}), required:&["repository","action"], read_only:false, uses_provider:true },
-        Tool { name:"action_status", description:"Read the status of a previous request_action. Commit, branch creation, checkout and local branch deletion return a terminal status and the Git result on success. Other actions may hand off to a native review.", properties:json!({"id":text(64)}), required:&["id"], read_only:true, uses_provider:false },
+        Tool { name:"request_action", description:"Ask the person in Revqora to review an action. Supply paths for stage/unstage, target for branch actions or cherry_pick (full SHA), message for commit, number for PR review/merge/workflow, or target with the workflow recipe/run ID for start_workflow/review_workflow_step. A paused cherry-pick can be continued or aborted using cherry_pick_continue or cherry_pick_abort. Starting a saved workflow also requires branch and base. Poll action_status before submitting another request.", properties:json!({"repository":repo(),"action":choices(&["stage","unstage","commit","create_branch","checkout","delete_branch","cherry_pick","cherry_pick_continue","cherry_pick_abort","stash","fetch","pull","push","sync","create_pr","review_pr","merge_pr","pr_workflow","start_workflow","review_workflow_step"]),"paths":paths(),"target":text(512),"message":text(8192),"number":pr(),"branch":text(1024),"base":text(1024)}), required:&["repository","action"], read_only:false, uses_provider:true },
+        Tool { name:"action_status", description:"Read the status of a previous request_action. A paused cherry-pick reports waiting_for_resolution until it is continued, skipped or aborted in Revqora. Cancellation includes a reason. IDs from a previous session return session_expired.", properties:json!({"id":text(64)}), required:&["id"], read_only:true, uses_provider:false },
     ]
 }
 
@@ -178,8 +178,8 @@ impl Protocol {
 fn error_reason(code: &str) -> (&'static str, bool) {
     match code {
         "request_timeout" => ("timeout", true),
-        "desktop_unavailable" | "request_send_failed" => ("desktop", true),
-        "mcp_disabled" | "invalid_desktop_reply" => ("desktop", false),
+        "desktop_closed" | "desktop_unavailable" | "request_send_failed" => ("desktop", true),
+        "mcp_disabled" | "invalid_desktop_reply" | "session_expired" => ("desktop", false),
         "mcp_authentication_failed" | "provider_authentication_failed" | "identity_unavailable" => ("authentication", false),
         "provider_unavailable" | "provider_rate_limited" => ("provider", true),
         "provider_error" | "pr_connection_required" => ("provider", false),
@@ -192,6 +192,9 @@ fn error_reason(code: &str) -> (&'static str, bool) {
         | "branch_not_found"
         | "branch_checked_out"
         | "branch_protected"
+        | "no_cherry_pick"
+        | "operation_in_progress"
+        | "unresolved_conflicts"
         | "stale_state" => ("repository", false),
         _ => ("internal", false),
     }

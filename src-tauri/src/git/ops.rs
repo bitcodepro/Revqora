@@ -221,6 +221,8 @@ pub fn discard_paths(repo: &Path, tracked: &[String], untracked: &[String]) -> G
 #[serde(rename_all = "camelCase")]
 pub struct CommitOptions {
     #[serde(default)]
+    pub verbatim_message: bool,
+    #[serde(default)]
     pub amend: bool,
     #[serde(default)]
     pub no_verify: bool,
@@ -251,7 +253,8 @@ fn commit_confirmed(repo: &Path, message: &str, opts: &CommitOptions) -> GitResu
     let fp = file.to_string_lossy().into_owned();
     // This message comes from a Revqora editor or an explicitly approved
     // request. Git's strip mode would treat a leading # as a template comment.
-    let mut args = vec!["commit", "-F", fp.as_str(), "--cleanup=whitespace"];
+    let cleanup = if opts.verbatim_message { "--cleanup=verbatim" } else { "--cleanup=whitespace" };
+    let mut args = vec!["commit", "-F", fp.as_str(), cleanup];
     if opts.amend {
         args.push("--amend");
     }

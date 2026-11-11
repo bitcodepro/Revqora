@@ -114,6 +114,7 @@ pub struct DiffOptions {
     pub ignore_whitespace: bool,
     #[serde(default)]
     pub disable_textconv: bool,
+    pub rename_from: Option<String>,
 }
 
 pub fn fingerprint(data: &[u8]) -> String {
@@ -341,7 +342,7 @@ pub fn to_display(raw: &RawFileDiff, path_hint: &str, hash: String) -> FileDiff 
         }
     }
     d.truncated = shown > MAX_DISPLAY_LINES;
-    d.empty = raw.hunks.is_empty() && !raw.binary && raw.old_mode == raw.new_mode && !raw.is_new && !raw.is_deleted;
+    d.empty = raw.hunks.is_empty() && !raw.binary && raw.old_mode == raw.new_mode && !raw.is_new && !raw.is_deleted && d.old_path.is_none();
     d
 }
 
@@ -390,6 +391,11 @@ pub fn working_raw(repo: &Path, path: &str, side: WorkSide, base: Option<&str>, 
     }
     args.push("--".into());
     args.push(path.into());
+    if side == WorkSide::Staged {
+        if let Some(old) = opts.rename_from.as_ref().filter(|old| old.as_str() != path) {
+            args.push(old.clone());
+        }
+    }
     let out = runner::exec_full(repo, &args, &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
     if !out.ok() {
         return Err(runner::to_error("git diff", &out));
@@ -465,6 +471,9 @@ pub fn rev_raw(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &Dif
     args.push(to.to_string());
     args.push("--".into());
     args.push(path.into());
+    if let Some(old) = opts.rename_from.as_ref().filter(|old| old.as_str() != path) {
+        args.push(old.clone());
+    }
     let out = runner::exec_full(repo, &args, &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
     if !out.ok() {
         return Err(runner::to_error("git diff", &out));

@@ -2020,8 +2020,9 @@ try {
   await conflictStudioSmoke({ page, check, shot, work });
   await check("MCP restores access after restart and requires desktop approval for Git actions", () => mcpSmoke({
     page, exe, profile: smokeProfile, work,
-    restart: async root => {
+    restart: async (root, whileClosed) => {
       await close();
+      await whileClosed?.();
       ({ page, close, child } = await launch({ exe, args: [root], profile: smokeProfile, port: 0 }));
       attachPage();
       return page;

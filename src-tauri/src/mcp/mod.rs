@@ -1,11 +1,12 @@
 //! A stdio MCP process talks to the running desktop through a private local bridge.
+pub(crate) mod cherry_pick;
 mod protocol;
 mod transport;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io;
 use std::net::TcpListener;
@@ -24,7 +25,7 @@ const DISPATCH_TIMEOUT: Duration = Duration::from_secs(25);
 const WORKERS: usize = 8;
 type Reply = Result<Value, ToolError>;
 
-#[derive(Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub(crate) struct ToolError {
     code: String,
     message: String,
@@ -38,6 +39,10 @@ impl ToolError {
     fn disabled() -> Self {
         Self::new("mcp_disabled", DISABLED)
     }
+
+    fn desktop_closed() -> Self {
+        Self::new("desktop_closed", "Revqora's desktop is closed. Open Revqora to reconnect to MCP.")
+    }
 }
 
 #[derive(Default)]
@@ -50,12 +55,15 @@ struct Session {
     stopped: AtomicBool,
     workers: AtomicUsize,
     pending: Mutex<HashMap<String, mpsc::SyncSender<Reply>>>,
+    picks: Mutex<VecDeque<cherry_pick::TrackedPick>>,
 }
 
 impl Session {
-    fn stop(&self) {
+    fn stop(&self, reason: ToolError) {
         self.stopped.store(true, Ordering::Release);
-        self.pending.lock().clear();
+        for (_, sender) in self.pending.lock().drain() {
+            let _ = sender.try_send(Err(reason.clone()));
+        }
         let _ = std::fs::remove_file(&self.descriptor);
     }
 
@@ -92,7 +100,7 @@ struct Event<'a> {
 impl Drop for Bridge {
     fn drop(&mut self) {
         if let Some(session) = self.0.get_mut().take() {
-            session.stop();
+            session.stop(ToolError::desktop_closed());
         }
     }
 }
@@ -100,7 +108,7 @@ impl Drop for Bridge {
 impl Bridge {
     pub(crate) fn shutdown(&self) {
         if let Some(session) = self.0.lock().take() {
-            session.stop();
+            session.stop(ToolError::desktop_closed());
         }
     }
 }
@@ -170,11 +178,12 @@ fn start(app: AppHandle) -> io::Result<Arc<Session>> {
         stopped: AtomicBool::new(false),
         workers: AtomicUsize::new(0),
         pending: Mutex::new(HashMap::new()),
+        picks: Mutex::new(VecDeque::new()),
     });
     transport::publish(&session.descriptor, listener.local_addr()?.port(), &session.key)?;
     let thread_session = Arc::clone(&session);
     if let Err(error) = std::thread::Builder::new().name("revqora-mcp".into()).spawn(move || listen(listener, thread_session, app)) {
-        session.stop();
+        session.stop(ToolError::desktop_closed());
         return Err(error);
     }
     Ok(session)
@@ -211,7 +220,7 @@ pub(crate) fn mcp_enable(app: AppHandle, window: WebviewWindow, bridge: State<'_
     let started = if enabled && active.is_none() { Some(start(app).map_err(start_error)?) } else { None };
     if let Err(error) = save_enabled(&path, enabled) {
         if let Some(session) = started {
-            session.stop();
+            session.stop(ToolError::disabled());
         }
         return Err(format!("Could not save the MCP setting. {error}"));
     }
@@ -219,7 +228,7 @@ pub(crate) fn mcp_enable(app: AppHandle, window: WebviewWindow, bridge: State<'_
         *active = Some(session);
     } else if !enabled {
         if let Some(session) = active.take() {
-            session.stop();
+            session.stop(ToolError::disabled());
         }
     }
     drop(active);

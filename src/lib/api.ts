@@ -75,6 +75,7 @@ export const api = {
   mcpInfo: () => call<{ enabled: boolean; executable: string }>("mcp_info"),
   mcpEnable: (enabled: boolean) => call<{ enabled: boolean; executable: string }>("mcp_enable", { enabled }),
   mcpRestore: () => call<void>("mcp_restore"),
+  mcpCherryPickStatus: (repo: string, id: string) => call<{ phase: "succeeded"; sha: string } | { phase: "cancelled" | "failed"; reason: string } | null>("mcp_cherry_pick_status", { repo, id }),
   mcpLease: (session: string, id: string | null = null) => call<boolean>("mcp_lease", { session, id }),
   mcpReply: (session: string, id: string, value: unknown, error: import("./mcpErrors").McpError | null = null) => call<void>("mcp_reply", { session, id, value: value ?? null, error }),
   workingFileRead: (repo:string,path:string) => call<{content:string;revision:string}>("working_file_read",{repo,path}),
@@ -246,7 +247,7 @@ export const api = {
   opAbort: (repo: string, kind: string, expectedState?: string | null) => call<OpOutcome>("op_abort", { repo, kind, expectedState }),
   opContinue: (repo: string, kind: string, message?: string | null, expectedState?: string | null) => call<OpOutcome>("op_continue", { repo, kind, message, expectedState }),
   opSkip: (repo: string, kind: string) => call<OpOutcome>("op_skip", { repo, kind }),
-  cherryPick: (repo: string, oids: string[], noCommit: boolean, expectedState?: string) => call<OpOutcome>("cherry_pick", { repo, oids, noCommit, expectedState }),
+  cherryPick: (repo: string, oids: string[], noCommit: boolean, expectedState?: string, mcpId?: string) => call<OpOutcome>("cherry_pick", { repo, oids, noCommit, expectedState, mcpId }),
   cherryPickComparedCommit: (repo: string, pick: import("./types").ComparedCherryPick, expectedState: string) =>
     call<OpOutcome>("cherry_pick_compared_commit", { repo, pick, expectedState }),
   revert: (repo: string, oid: string, noCommit: boolean) => call<OpOutcome>("revert", { repo, oid, noCommit }),
@@ -262,6 +263,7 @@ export const api = {
     call<OpOutcome>("interactive_rebase", { repo, base, items, expectedState }),
 
   conflictInfo: (repo: string, path: string) => call<ConflictInfo>("conflict_info", { repo, path }),
+  conflictIndexSides: (repo: string, path: string) => call<Record<"base" | "ours" | "theirs", import("./types").IndexConflictSide | null>>("conflict_index_sides", { repo, path }),
   conflictSave: (repo: string, path: string, content: string, stage: boolean, expectedState?: string | null) => call<void>("conflict_save", { repo, path, content, stage, expectedState }),
   conflictTake: (repo: string, path: string, which: "ours" | "theirs" | "base" | "delete", expectedState?: string | null) => call<void>("conflict_take", { repo, path, which, expectedState }),
   conflictMarkResolved: (repo: string, paths: string[]) => call<void>("conflict_mark_resolved", { repo, paths }),

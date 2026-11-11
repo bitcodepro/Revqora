@@ -1218,14 +1218,27 @@ async fn merge_start(app: AppHandle, expected_state: Option<String>, repo: Strin
 #[tauri::command]
 async fn op_abort(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<studio::StepOutcome> {
     let expected = expected_state.clone();
-    mutating(repo.clone(), expected_state, app.clone(), "op_abort", None, move || studio::abort(&p(&repo), &kind, expected.as_deref())).await
+    mutating(repo.clone(), expected_state, app.clone(), "op_abort", None, move || {
+        let root = p(&repo);
+        let pick = mcp::cherry_pick::before_step(&app, &root, &kind);
+        let result = studio::abort(&root, &kind, expected.as_deref())?;
+        mcp::cherry_pick::finish(&app, &root, pick, Some("cherry_pick_aborted"));
+        Ok(result)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn op_continue(app: AppHandle, expected_state: Option<String>, repo: String, kind: String, message: Option<String>) -> GitResult<studio::StepOutcome> {
     let expected = expected_state.clone();
     mutating(repo.clone(), expected_state, app.clone(), "op_continue", None, move || {
-        studio::step(&p(&repo), &kind, expected.as_deref(), || ops::continue_op(&p(&repo), &kind, message.as_deref()))
+        let root = p(&repo);
+        let pick = mcp::cherry_pick::before_step(&app, &root, &kind);
+        let result = studio::step(&root, &kind, expected.as_deref(), || ops::continue_op(&root, &kind, message.as_deref()))?;
+        if result.outcome.status == "done" {
+            mcp::cherry_pick::finish(&app, &root, pick, None);
+        }
+        Ok(result)
     })
     .await
 }
@@ -1234,14 +1247,35 @@ async fn op_continue(app: AppHandle, expected_state: Option<String>, repo: Strin
 async fn op_skip(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<studio::StepOutcome> {
     let expected = expected_state.clone();
     mutating(repo.clone(), expected_state, app.clone(), "op_skip", None, move || {
-        studio::step(&p(&repo), &kind, expected.as_deref(), || ops::skip_op(&p(&repo), &kind))
+        let root = p(&repo);
+        let pick = mcp::cherry_pick::before_step(&app, &root, &kind);
+        let result = studio::step(&root, &kind, expected.as_deref(), || ops::skip_op(&root, &kind))?;
+        if result.outcome.status == "done" {
+            mcp::cherry_pick::finish(&app, &root, pick, Some("cherry_pick_skipped"));
+        }
+        Ok(result)
     })
     .await
 }
 
 #[tauri::command]
-async fn cherry_pick(app: AppHandle, expected_state: Option<String>, repo: String, oids: Vec<String>, no_commit: bool) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "cherry_pick", None, move || ops::cherry_pick(&p(&repo), &oids, no_commit)).await
+async fn cherry_pick(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    oids: Vec<String>,
+    no_commit: bool,
+    mcp_id: Option<String>,
+) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "cherry_pick", None, move || {
+        let root = p(&repo);
+        let result = ops::cherry_pick(&root, &oids, no_commit)?;
+        if let Some(id) = mcp_id.filter(|_| matches!(result.status.as_str(), "conflicts" | "stopped")) {
+            mcp::cherry_pick::track(&app, &id, &root);
+        }
+        Ok(result)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1325,6 +1359,11 @@ async fn rebase_studio_capture(app: AppHandle, expected_state: Option<String>, r
 async fn conflict_info(repo: String, path: String) -> GitResult<Observed<ConflictInfo>> {
     blocking(move || git::operations::inspect(&p(&repo), || conflicts::info(&p(&repo), &path)).map(|(value, state_token)| Observed { value, state_token }))
         .await
+}
+
+#[tauri::command]
+async fn conflict_index_sides(repo: String, path: String) -> GitResult<conflicts::IndexConflict> {
+    blocking(move || git::operations::read(&p(&repo), || conflicts::index_conflict(&p(&repo), &path))).await
 }
 
 #[tauri::command]
@@ -2335,6 +2374,7 @@ pub fn run() {
             mcp::mcp_restore,
             mcp::mcp_lease,
             mcp::mcp_reply,
+            mcp::cherry_pick::mcp_cherry_pick_status,
             branch_cleanup_review,
             branch_cleanup_execute,
             branch_manager_snapshot,
@@ -2447,6 +2487,7 @@ pub fn run() {
             rebase_studio_capture,
             interactive_rebase,
             conflict_info,
+            conflict_index_sides,
             semantic_diff,
             code_history,
             symbol_history,
