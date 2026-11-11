@@ -189,6 +189,7 @@ export interface GraphSummary {
   total: number;
   maxLanes: number;
   headIndex: number | null;
+  branchContext?: { reference: string; base: string | null; recorded: boolean; primary: string | null } | null;
 }
 
 export type SearchMode = "quick" | "message" | "author" | "hash" | "content" | "path";

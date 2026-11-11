@@ -201,7 +201,20 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
     await page.locator(".workspace .graph-scroll").waitFor({ state: "detached" });
     await page.evaluate(selector => window.__workspacePanelWindow.document.querySelector(`.detached-branches ${selector}`).click(), targetRef);
     await overview.waitFor({ state: "detached" });
-    await page.locator(".workspace .graph-scroll .grow.selected").filter({ hasText: "Detached branch target commit" }).waitFor();
+    const history = page.locator(".workspace .graph-scroll");
+    await history.waitFor();
+    const targetCommit = history.locator(".grow.branch-member").filter({ hasText: "Detached branch target commit" });
+    await targetCommit.waitFor();
+    const scope = page.getByRole("combobox", { name: "History scope", exact: true });
+    assert.equal(await scope.inputValue(), "branch-context");
+    assert.equal(await scope.locator("option:checked").textContent(), "Branch context — detached-branch-tip");
+    assert.equal(await history.locator(".grow.selected").count(), 0, "A branch click must leave the commit unselected");
+    const preview = page.locator(".commit-preview");
+    assert.equal(await preview.count(), 0, "A branch click must leave commit details closed");
+    await targetCommit.getByText("Detached branch target commit", { exact: true }).click();
+    await targetCommit.and(history.locator(".grow.selected")).waitFor();
+    await preview.getByText("Detached branch target commit", { exact: true }).waitFor();
+    await preview.getByRole("button", { name: "Close", exact: true }).click();
 
     await showAll.click();
     await overview.waitFor();

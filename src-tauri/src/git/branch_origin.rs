@@ -24,7 +24,10 @@ impl Reader {
         Self { logs: super::operations::repository_key(root).join("logs"), remaining: 16 * 1024 * 1024 }
     }
     pub fn creator(&mut self, full_ref: &str) -> Option<Creator> {
-        if !full_ref.starts_with("refs/heads/") || !Path::new(full_ref).components().all(|p| matches!(p, Component::Normal(_))) {
+        parse(&self.read(full_ref)?, full_ref.strip_prefix("refs/heads/")?)
+    }
+    fn read(&mut self, full_ref: &str) -> Option<String> {
+        if (full_ref != "HEAD" && !full_ref.starts_with("refs/heads/")) || !Path::new(full_ref).components().all(|p| matches!(p, Component::Normal(_))) {
             return None;
         }
         let path = self.logs.join(full_ref);
@@ -44,8 +47,52 @@ impl Reader {
         if bytes.len() > 256 * 1024 || !bytes.ends_with(b"\n") {
             return None;
         }
-        parse(std::str::from_utf8(&bytes).ok()?, full_ref.strip_prefix("refs/heads/")?)
+        String::from_utf8(bytes).ok()
     }
+}
+
+/// A source can be recorded by name, or by the matching HEAD checkout when
+/// Git created the branch from HEAD. An arbitrary starting commit has no name.
+pub(super) fn named_source(root: &Path, reference: &str) -> Option<String> {
+    let mut reader = Reader::new(root);
+    let name = reference.strip_prefix("refs/heads/")?;
+    let log = reader.read(reference)?;
+    if let Some(source) = log.lines().rev().find_map(|line| {
+        let (_, _, message) = actor(line)?;
+        message.strip_prefix("Branch: copied ")?.split_once(" to ").map(|(source, _)| source)
+    }) {
+        return Some(source.to_owned());
+    }
+    let line = log.lines().next()?;
+    let (old, _, message) = actor(line)?;
+    if !old.bytes().all(|b| b == b'0') {
+        return None;
+    }
+    let source = message.strip_prefix("branch: Created from ")?;
+    if source != "HEAD" && source != "@" {
+        return Some(source.to_owned());
+    }
+    let original = log
+        .lines()
+        .find_map(|line| {
+            let (_, _, message) = actor(line)?;
+            message.strip_prefix("Branch: renamed refs/heads/")?.split_once(" to refs/heads/").map(|(old, _)| old)
+        })
+        .unwrap_or(name);
+    let meta = line.split_once('\t')?.0;
+    let created_oid = meta.split(' ').nth(1)?;
+    let timestamp = meta.rsplit_once(' ')?.0.rsplit_once(' ')?.1;
+    let head = reader.read("HEAD")?;
+    let mut sources = head.lines().filter_map(|line| {
+        let (previous, _, action) = actor(line)?;
+        let (from, to) = action.strip_prefix("checkout: moving from ")?.split_once(" to ")?;
+        let meta = line.split_once('\t')?.0;
+        let next = meta.split(' ').nth(1)?;
+        let time = meta.rsplit_once(' ')?.0.rsplit_once(' ')?.1;
+        (to == original && previous == created_oid && next == created_oid && time == timestamp).then_some(from)
+    });
+    let first = sources.next()?;
+    sources.all(|source| source == first).then(|| format!("refs/heads/{first}"))
 }
 
 fn actor(line: &str) -> Option<(&str, Creator, &str)> {

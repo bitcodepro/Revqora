@@ -15,6 +15,8 @@ import { reviewBranchCleanup } from "./BranchCleanup";
 import type { BranchCleanupRequest } from "../lib/types";
 import { renameRemoteBranch } from "./RemoteRename";
 import { useSettings } from "../lib/settings";
+import { repositoryKey } from "../lib/repositoryLibrary";
+import { primaryBranchMenuItem } from "./menus";
 import { useToolDetailSize, useWindowSize, WindowResizeGrip } from "./WindowResize";
 
 export function BranchManager({ root }: { root: string }) {
@@ -38,6 +40,7 @@ export function BranchManager({ root }: { root: string }) {
   const viewport = useRef<HTMLDivElement>(null);
   const generation = useRef(0);
   const refs = useRepos(s => s.tabs[root]?.refs);
+  const primaryRef = useSettings(s => s.primaryBranchByRepo[repositoryKey(root)]);
   const pending = useRepos(s => (s.tabs[root]?.pendingMutations ?? 0) > 0);
   const prefsRef = useRef(prefs); prefsRef.current = prefs;
   const refresh = useCallback(async () => {
@@ -66,7 +69,10 @@ export function BranchManager({ root }: { root: string }) {
     return () => resize.disconnect();
   }, []);
   const update = (patch: Partial<BranchPreferences>) => setPrefs(p => restoreBranchPreferences({ ...p, ...patch }));
-  const rows = useMemo(() => selectBranches(snapshot?.branches ?? [], prefs, query, snapshot?.worktrees ?? [], Date.now(), snapshot?.identityEmail ?? null), [snapshot, prefs, query]);
+  const filteredRows = useMemo(() => selectBranches(snapshot?.branches ?? [], prefs, query, snapshot?.worktrees ?? [], Date.now(), snapshot?.identityEmail ?? null), [snapshot, prefs, query]);
+  const primary = snapshot?.branches.find(branch => branch.fullRef === primaryRef);
+  const rows = useMemo(() => primary ? [primary, ...filteredRows.filter(branch => branch.fullRef !== primaryRef)] : filteredRows, [primary, primaryRef, filteredRows]);
+  const primaryOutsideFilter = !!primary && !filteredRows.includes(primary);
   useEffect(() => {
     setSelected(old => rows.some(b => b.fullRef === old) ? old : rows[0]?.fullRef ?? null);
   }, [rows]);
@@ -75,7 +81,7 @@ export function BranchManager({ root }: { root: string }) {
   useEffect(() => {
     if (viewport.current) viewport.current.scrollTop = 0;
     setScroll(0);
-  }, [prefs.scope, prefs.filter, prefs.sort, prefs.staleDays, prefs.onlyMine, prefs.remoteDeleted, prefs.authorQuery, query]);
+  }, [prefs.scope, prefs.filter, prefs.sort, prefs.staleDays, prefs.onlyMine, prefs.remoteDeleted, prefs.authorQuery, query, primaryRef]);
   const branch = rows.find(b => b.fullRef === selected);
   const base = snapshot?.baseOid;
   const tip = branch?.oid;
@@ -147,7 +153,7 @@ export function BranchManager({ root }: { root: string }) {
     </nav>
     {prefs.onlyMine && <div className="bm-author-summary">Recorded branch creator {prefs.authorQuery ? <>name or email contains <b>{prefs.authorQuery}</b></> : <>email matches Git <code>user.email</code>: <b>{snapshot?.identityEmail ?? "not configured"}</b></>}. Unknown creators (remote imports, missing or expired creation logs) are excluded. Commit authors do not determine ownership.</div>}
     <div className="bm-bulk">
-      <button className="btn" disabled={loading || pending || !rows.length} onClick={() => setChecked(Object.fromEntries(rows.slice(0, 50).map(b => [b.fullRef, { reference: b.fullRef, oid: b.oid, mode: b.local ? "local" : "remote" }])))}>Select shown (up to 50)</button>
+      <button className="btn" disabled={loading || pending || !filteredRows.length} onClick={() => setChecked(Object.fromEntries(filteredRows.slice(0, 50).map(b => [b.fullRef, { reference: b.fullRef, oid: b.oid, mode: b.local ? "local" : "remote" }])))}>{primaryOutsideFilter ? "Select filtered (up to 50)" : "Select shown (up to 50)"}</button>
       <span>{Object.keys(checked).length} selected · {Object.keys(checked).filter(ref => !rows.some(b => b.fullRef === ref)).length} hidden by filter</span>
       <button className="btn" disabled={!Object.keys(checked).length} onClick={() => setChecked({})}>Clear selection</button>
       <button className="btn danger" disabled={loading || pending || !Object.keys(checked).length || !!error} onClick={() => void cleanupReview()}>Review cleanup…</button>
@@ -161,8 +167,8 @@ export function BranchManager({ root }: { root: string }) {
           if (e.key === "Enter" && branch && ready) { closeOverlay(); jumpToCommit(root, branch.oid); }
         }}>
           <div className="bm-canvas" style={{ height: rows.length * ROW }}><div className="bm-window" style={{ transform: `translateY(${start * ROW}px)` }}>
-          {rows.slice(start, end).map((b, i) => <div className={`bm-row ${b.fullRef === selected ? "selected" : ""}`} id={`bm-row-${start + i}`} key={b.fullRef} role="option" aria-selected={b.fullRef === selected} data-branch-ref={b.fullRef} onClick={() => setSelected(b.fullRef)} onContextMenu={e => contextMenu(e, namePathMenu(b.name, root, b.fullRef))}>
-            <div title={b.fullRef} className="bm-name"><input type="checkbox" aria-label={`Select ${b.fullRef} for cleanup`} checked={!!checked[b.fullRef]} disabled={pending || (!checked[b.fullRef] && Object.keys(checked).length >= 50)} onClick={e => e.stopPropagation()} onChange={e => checkBranch(b, e.target.checked)} /><div><b>{b.name}</b><small>{b.local ? "Local" : "Remote"}{b.current ? " · HEAD" : ""}{branchWorktrees(b, snapshot?.worktrees ?? []).length ? " · Worktree" : ""}{isProtected(b, prefs.protections) ? " · Protected" : ""}</small></div></div>
+          {rows.slice(start, end).map((b, i) => <div className={`bm-row ${b.fullRef === selected ? "selected" : ""}`} id={`bm-row-${start + i}`} key={b.fullRef} role="option" aria-selected={b.fullRef === selected} data-branch-ref={b.fullRef} onClick={() => setSelected(b.fullRef)} onContextMenu={e => contextMenu(e, [...namePathMenu(b.name, root, b.fullRef), {separator:true}, primaryBranchMenuItem(root, b.fullRef)])}>
+            <div title={b.fullRef} className="bm-name"><input type="checkbox" aria-label={`Select ${b.fullRef} for cleanup`} checked={!!checked[b.fullRef]} disabled={pending || (!checked[b.fullRef] && Object.keys(checked).length >= 50)} onClick={e => e.stopPropagation()} onChange={e => checkBranch(b, e.target.checked)} /><div><b>{b.name}</b><small>{b.local ? "Local" : "Remote"}{b.current ? " · HEAD" : ""}{b.fullRef === primaryRef && <span className="branch-primary-mark"> · Primary</span>}{branchWorktrees(b, snapshot?.worktrees ?? []).length ? " · Worktree" : ""}{isProtected(b, prefs.protections) ? " · Protected" : ""}</small></div></div>
             <div title={b.upstream ?? "No upstream"}><span>{b.upstream?.replace(/^refs\/(remotes|heads)\//, "") ?? "—"}</span><small>{isRemoteDeleted(b) ? <><CloudOff size={11} /> Remote deleted</> : b.gone ? "Local upstream missing" : b.upstream ? `↑${b.ahead} ↓${b.behind}` : "No upstream"}</small></div>
             <div title={`${b.author} <${b.authorEmail}>${b.time > 0 ? ` · ${new Date(b.time * 1000).toLocaleString()}` : ""}`}><span>{b.author || "—"}</span><small>{b.time > 0 ? relativeTime(b.time) : "Unknown date"}</small></div>
             <div title={b.subject}><span>{b.subject}</span><small className="mono">{shortOid(b.oid)}</small></div>

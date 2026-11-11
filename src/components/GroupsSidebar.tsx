@@ -1,11 +1,12 @@
 import { useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, ChevronRight, Folder, FolderPlus, FolderTree, GripVertical, Pencil, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Folder, FolderPlus, FolderTree, GripVertical, Pencil, Trash2, Unlink, X } from "lucide-react";
 import { treeAncestors, treeSelection, visibleTree } from "../lib/libraryTree";
-import { groupRepositoryRoots, useLibrary } from "../lib/repositoryLibrary";
+import { groupRepositoryRoots, groupsInWorkspace, useLibrary } from "../lib/repositoryLibrary";
 import { useSettings } from "../lib/settings";
 import { matchesShortcut } from "../lib/shortcuts";
 import { contextMenu, toast, useUi } from "../lib/ui";
 import { confirmDialog } from "./dialogs";
+import { isPlainDelete } from "./LibraryMenus";
 import { Splitter } from "./Overlays";
 
 export function InlineGroupName({ initial = "", label = "Group name", save, cancel }: {
@@ -24,8 +25,28 @@ export function InlineGroupName({ initial = "", label = "Group name", save, canc
   </form>;
 }
 
+export async function deleteGroupsDialog(ids: string[]) {
+  const library = useLibrary.getState();
+  const selected = library.groups.filter(group => ids.includes(group.id));
+  if (!selected.length) return false;
+  const hasChildren = library.groups.some(group => group.parentId && ids.includes(group.parentId) && !ids.includes(group.id));
+  const title = selected.length === 1 ? "Delete group" : `Delete ${selected.length} groups`;
+  if (!await confirmDialog({
+    title: title + "?",
+    confirm: title,
+    message: "Repositories stay in the library and in their workspaces." + (hasChildren ? " Any remaining subgroups move to the top level." : ""),
+    details: selected.map(group => group.name),
+    danger: true,
+  })) return false;
+  useLibrary.getState().removeGroups(ids);
+  if (ids.some(id => useUi.getState().repositoryGroup === id)) useUi.setState({repositoryGroup: null});
+  return true;
+}
+
 export function GroupsSidebar() {
-  const groups = useLibrary(s => s.groups);
+  const allGroups = useLibrary(s => s.groups);
+  const workspace = useLibrary(s => s.workspaces.find(w => w.id === s.activeWorkspaceId));
+  const groups = groupsInWorkspace(allGroups, workspace);
   const active = useUi(s => s.repositoryGroup);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
@@ -39,6 +60,21 @@ export function GroupsSidebar() {
   const rows = visibleTree(groups, g => g.name.toLowerCase().includes(search), g => g.collapsed, !!search);
   const visible = rows.map(({entry}) => entry.id);
   const setActive = (id: string | null) => useUi.setState({ repositoryGroup: id });
+  const deleteSelected = async (ids: string[]) => {
+    if (await deleteGroupsDialog(ids)) {
+      setSelected(current => current.filter(id => !ids.includes(id)));
+      if (anchor.current && ids.includes(anchor.current)) anchor.current = null;
+    }
+  };
+  const removeFromWorkspace = (ids: string[]) => {
+    const library = useLibrary.getState();
+    if (!workspace || library.activeWorkspaceId !== workspace.id) return;
+    library.setWorkspaceGroupsExcluded(workspace.id, ids, true);
+    const updated = useLibrary.getState().workspaces.find(w => w.id === workspace.id);
+    const remaining = groupsInWorkspace(library.groups, updated);
+    setSelected(current => current.filter(id => remaining.some(group => group.id === id)));
+    if (active && !remaining.some(group => group.id === active)) setActive(null);
+  };
   const move = (ids: string[], parent: string | null) => {
     try {
       const library = useLibrary.getState();
@@ -90,6 +126,12 @@ export function GroupsSidebar() {
           className={`repository-item library-tree-row ${active === group.id ? "active" : ""} ${selected.includes(group.id) ? "batch-selected" : ""} ${target === group.id ? "workspace-drop-active" : ""}`}
           {...drop(group.id)} onKeyDown={e => {
             if (e.key === "Escape") setSelected([]);
+            if (isPlainDelete(e)) {
+              e.preventDefault();
+              e.stopPropagation();
+              void deleteSelected(ids);
+              return;
+            }
             if (e.repeat || !matchesShortcut(e, "renameItem")) return;
             e.preventDefault();
             e.stopPropagation();
@@ -98,13 +140,9 @@ export function GroupsSidebar() {
             { label: "Create group", icon: <FolderPlus size={14}/>, onClick: () => setEdit({ ids, parent }) },
             { label: "Create subgroup", icon: <FolderPlus size={14}/>, onClick: () => setEdit({ ids: [], parent: group.id }) },
             { label: "Rename group…", icon: <Pencil size={14}/>, onClick: rename },
-            ...(group.parentId ? [{ label: "Move to top level", onClick: () => move(ids, null) }] : []),
-            { label: "Delete group…", icon: <Trash2 size={14}/>, danger: true, onClick: async () => {
-              if (await confirmDialog({ title: "Delete group?", message: "Repositories remain in the library. Subgroups move to the top level.", confirm: "Delete group", danger: true })) {
-                useLibrary.getState().removeGroup(group.id);
-                if (useUi.getState().repositoryGroup === group.id) setActive(null);
-              }
-            } },
+            ...(group.parentId ? [{ label: "Remove from parent group", icon: <Unlink size={14}/>, onClick: () => move([group.id], null) }] : []),
+            ...(workspace ? [{ label: `Remove from workspace · ${workspace.name}`, icon: <Unlink size={14}/>, onClick: () => removeFromWorkspace(ids) }] : []),
+            { label: ids.length === 1 ? "Delete group…" : `Delete ${ids.length} groups…`, icon: <Trash2 size={14}/>, hint: "Delete", danger: true, onClick: () => void deleteSelected(ids) },
           ])}>
           {hasChildren ? <button type="button" className="icon-btn sm" aria-label={`${expanded ? "Collapse" : "Expand"} ${group.name}`} aria-expanded={expanded} onClick={() => useLibrary.getState().collapse(group.id)}>
             {expanded ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}

@@ -184,9 +184,113 @@ pub struct GraphCache {
     pub limit: usize,
     /// How the commit list was obtained: "full" | "reused" | "incremental" | "fast".
     pub source: String,
+    pub branch_context: Option<BranchContext>,
     incoming: Option<IncomingHistory>,
     lane_anchors: Arc<LaneAnchors>,
     previous_anchors: Option<(String, Arc<LaneAnchors>)>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchContextRequest {
+    pub reference: String,
+    pub primary: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum HistorySelection {
+    Reference(String),
+    Context(BranchContextRequest),
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchContext {
+    pub reference: String,
+    pub base: Option<String>,
+    pub recorded: bool,
+    pub primary: Option<String>,
+}
+
+impl BranchContext {
+    fn resolve(repo: &Path, refs: &[(String, String)], request: &BranchContextRequest) -> GitResult<Self> {
+        let exists = |reference: &str| branch_name(reference).is_some() && refs.iter().any(|(name, _)| name == reference);
+        if !exists(&request.reference) {
+            return Err(GitError::new("The selected branch no longer exists."));
+        }
+        let primary = request.primary.as_ref().filter(|reference| exists(reference)).cloned();
+        let recorded = super::branch_origin::named_source(repo, &request.reference)
+            .and_then(|source| {
+                if exists(&source) {
+                    return Some(source);
+                }
+                let mut matching =
+                    refs.iter().filter(|(name, _)| branch_name(name) == Some(source.as_str()) || name.strip_prefix("refs/tags/") == Some(source.as_str()));
+                let (reference, _) = matching.next()?;
+                (matching.next().is_none() && exists(reference)).then(|| reference.clone())
+            })
+            .filter(|source| source != &request.reference);
+        let base = recorded.clone().or_else(|| {
+            let selected = logical_branch_name(&request.reference);
+            let eligible = |name: &str| exists(name) && logical_branch_name(name) != selected;
+            if let Some(primary) = &primary {
+                return eligible(primary).then(|| primary.clone());
+            }
+            if refs.iter().any(|(name, _)| name == "refs/remotes/origin/HEAD") {
+                if let Ok(remote) = runner::run(repo, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]) {
+                    let remote = remote.trim();
+                    if let Some(name) = logical_branch_name(remote) {
+                        let local = format!("refs/heads/{name}");
+                        if eligible(&local) {
+                            return Some(local);
+                        }
+                    }
+                    return eligible(remote).then(|| remote.to_owned());
+                }
+            }
+            let main = [
+                "refs/heads/main",
+                "refs/heads/master",
+                "refs/heads/trunk",
+                "refs/remotes/origin/main",
+                "refs/remotes/origin/master",
+                "refs/remotes/origin/trunk",
+            ]
+            .into_iter()
+            .find(|name| exists(name))?;
+            eligible(main).then(|| main.to_owned())
+        });
+        Ok(Self { reference: request.reference.clone(), base, recorded: recorded.is_some(), primary })
+    }
+
+    fn tips(&self, refs: &[(String, String)]) -> Vec<String> {
+        let mut tips: Vec<_> = std::iter::once(&self.reference)
+            .chain(self.base.iter())
+            .chain(self.primary.iter())
+            .filter_map(|reference| refs.iter().find(|(name, _)| name == reference).map(|(_, oid)| oid.clone()))
+            .collect();
+        tips.sort_unstable();
+        tips.dedup();
+        tips
+    }
+}
+
+fn branch_name(reference: &str) -> Option<&str> {
+    reference.strip_prefix("refs/heads/").or_else(|| reference.strip_prefix("refs/remotes/"))
+}
+
+fn logical_branch_name(reference: &str) -> Option<&str> {
+    if let Some(name) = reference.strip_prefix("refs/heads/") {
+        return Some(name);
+    }
+    reference.strip_prefix("refs/remotes/")?.split_once('/').map(|(_, name)| name)
+}
+
+pub struct ViewScope<'a> {
+    pub branch: Option<&'a str>,
+    pub show_incoming: bool,
+    pub context: Option<&'a BranchContextRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +301,31 @@ struct IncomingHistory {
 }
 
 impl GraphCache {
+    pub fn branch_members(&self, reference: &str) -> Vec<usize> {
+        let mut members = self.reachable_rows(reference);
+        if let Some(base) = self.branch_context.as_ref().filter(|context| context.reference == reference).and_then(|context| context.base.as_deref()) {
+            for (member, common) in members.iter_mut().zip(self.reachable_rows(base)) {
+                *member &= !common;
+            }
+        }
+        members.into_iter().enumerate().filter_map(|(index, member)| member.then_some(index)).collect()
+    }
+
+    fn reachable_rows(&self, reference: &str) -> Vec<bool> {
+        let mut visited = vec![false; self.rows.len()];
+        let Some(tip) = self.refs.iter().find(|(name, _)| name == reference).and_then(|(_, oid)| self.index.get(oid)) else {
+            return visited;
+        };
+        let mut pending = vec![*tip];
+        while let Some(index) = pending.pop() {
+            if std::mem::replace(&mut visited[index], true) {
+                continue;
+            }
+            pending.extend(self.rows[index].parents.iter().filter_map(|oid| self.index.get(oid).copied()));
+        }
+        visited
+    }
+
     pub fn lane_anchor(&self, key: &str, id: u64) -> Option<LaneAnchor> {
         let anchors = if key == self.key {
             &self.lane_anchors
@@ -332,6 +461,7 @@ pub struct GraphSummary {
     pub total: usize,
     pub max_lanes: u16,
     pub head_index: Option<usize>,
+    pub branch_context: Option<BranchContext>,
 }
 
 /// Loads commit metadata. `fast` skips `--date-order` (which needs a full history walk before
@@ -468,11 +598,19 @@ pub fn build_with_incoming(
     prev: Option<&GraphCache>,
     show_incoming: bool,
 ) -> GitResult<GraphCache> {
+    build_for_view(repo, ViewScope { branch: branch_filter, show_incoming, context: None }, include_worktree, limit, fast, prev)
+}
+
+pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool, limit: usize, fast: bool, prev: Option<&GraphCache>) -> GitResult<GraphCache> {
     let refs = ref_snapshot(repo);
-    let filter = branch_filter.filter(|b| !b.is_empty()).map(|s| s.to_string());
+    let branch_context = scope.context.map(|request| BranchContext::resolve(repo, &refs, request)).transpose()?;
+    let filter = scope.branch.filter(|b| !b.is_empty()).map(str::to_owned);
     let scoped_tip = filter.as_ref().and_then(|reference| refs.iter().find(|(name, _)| name == reference));
-    let reusable = prev.filter(|p| !fast && p.filter == filter && p.limit == limit && p.source != "fast");
+    let reusable = prev.filter(|p| !fast && p.filter == filter && p.branch_context == branch_context && p.limit == limit && p.source != "fast");
     let reused = reusable.and_then(|p| {
+        if let Some(context) = &branch_context {
+            return (context.tips(&p.refs) == context.tips(&refs)).then(|| ((*p.commits).clone(), "reused"));
+        }
         if filter.is_none() {
             return reuse_history(repo, p, &refs);
         }
@@ -486,15 +624,22 @@ pub fn build_with_incoming(
         let head = sc.spawn(|| runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD"]).map(|o| o.text().trim().to_string()));
         let local = sc.spawn(|| local_only(repo));
         let remotes = sc.spawn(|| !runner::run(repo, ["remote"]).unwrap_or_default().trim().is_empty());
-        let incoming = sc.spawn(|| match filter.as_deref().filter(|_| show_incoming) {
+        let incoming = sc.spawn(|| match filter.as_deref().filter(|_| scope.show_incoming && branch_context.is_none()) {
             Some(scope) => incoming_history(repo, scope, &refs, limit, fast, reusable.and_then(|p| p.incoming.as_ref())),
             None => Ok(None),
         });
-        let commits = match &reused {
-            Some((c, _)) => Ok(c.clone()),
-            None if filter.as_deref() == Some("HEAD") && !refs.iter().any(|(name, _)| name == "HEAD") => Ok(Vec::new()),
+        let commits = match (&reused, &branch_context) {
+            (Some((c, _)), _) => Ok(c.clone()),
+            (None, Some(context)) => {
+                let mut args = log_arguments(repo, limit, fast);
+                args.push("--end-of-options".into());
+                args.extend(context.tips(&refs));
+                args.push("--".into());
+                read_commits(repo, &args)
+            }
+            (None, None) if filter.as_deref() == Some("HEAD") && !refs.iter().any(|(name, _)| name == "HEAD") => Ok(Vec::new()),
             // Use the same local tip as the incoming range even if a ref moves during this build.
-            None => load_commits(repo, scoped_tip.map(|(_, oid)| oid.as_str()).or(branch_filter), limit, fast),
+            (None, None) => load_commits(repo, scoped_tip.map(|(_, oid)| oid.as_str()).or(scope.branch), limit, fast),
         };
         let join_err = || GitError::new("Background history task failed.");
         GitResult::Ok((
@@ -596,6 +741,7 @@ pub fn build_with_incoming(
         filter,
         limit,
         source,
+        branch_context,
         incoming,
         lane_anchors: Arc::new(lane_anchors),
         previous_anchors,
@@ -814,8 +960,10 @@ mod tests {
             runner::run(repo, ["rev-parse", "HEAD"]).unwrap().trim().to_owned()
         };
         let base = commit("Base");
+        runner::run(repo, ["branch", "side", &base]).unwrap();
         let tip = commit("Original tip");
         let before = build(repo, None, false, 100, false).unwrap();
+        assert_eq!(before.branch_members("refs/heads/side"), vec![before.index[&base]]);
         let id = before.rows[before.index[&tip]].lane_id;
         let anchor = before.lane_anchor(&before.key, id).unwrap();
 
@@ -829,6 +977,41 @@ mod tests {
 
         let filtered = build(repo, Some(&base), false, 100, false).unwrap();
         assert_eq!(filtered.resolve_lane(&anchor), None);
+        assert!(filtered.branch_members("refs/heads/main").is_empty());
+    }
+
+    #[test]
+    fn branch_context_walks_only_the_selected_source_and_primary_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let run = |args: &[&str]| runner::run(repo, args.iter().copied()).unwrap();
+        run(&["init", "-qb", "main"]);
+        run(&["config", "user.name", "Graph Fixture"]);
+        run(&["config", "user.email", "history@example.test"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        let commit = |subject| run(&["commit", "--allow-empty", "-qm", subject]);
+        commit("Common");
+        run(&["switch", "-qc", "develop"]);
+        commit("Source only");
+        run(&["switch", "-qc", "topic", "refs/heads/develop"]);
+        commit("Topic only");
+        run(&["switch", "-q", "main"]);
+        commit("Primary only");
+        run(&["switch", "-qc", "unrelated"]);
+        commit("Unrelated");
+
+        let request = BranchContextRequest { reference: "refs/heads/topic".into(), primary: Some("refs/heads/main".into()) };
+        let graph = build_for_view(repo, ViewScope { branch: None, context: Some(&request), show_incoming: false }, false, 100, false, None).unwrap();
+        let context = graph.branch_context.as_ref().unwrap();
+        assert_eq!(context.base.as_deref(), Some("refs/heads/develop"));
+        assert!(context.recorded);
+        assert_eq!(context.primary.as_deref(), Some("refs/heads/main"));
+        let subjects: std::collections::HashSet<_> = graph.rows.iter().map(|row| row.subject.as_str()).collect();
+        assert_eq!(subjects, ["Common", "Source only", "Topic only", "Primary only"].into_iter().collect());
+        assert_eq!(graph.branch_members(&request.reference).iter().map(|&i| graph.rows[i].subject.as_str()).collect::<Vec<_>>(), vec!["Topic only"]);
+        let ordinary = build(repo, None, false, 100, false).unwrap();
+        assert!(ordinary.branch_context.is_none());
+        assert!(ordinary.rows.iter().any(|row| row.subject == "Unrelated"));
     }
 
     #[test]

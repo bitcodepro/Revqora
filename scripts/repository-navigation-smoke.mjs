@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { openSubmenu } from "./ui-driver.mjs";
 
 export async function repositoryNavigationSmoke({ page, work, shot }) {
   const parent = path.join(work, "navigation-projects");
@@ -100,6 +101,79 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await groups.getByRole("button", { name: "All groups", exact: true }).click();
   await overview.getByRole("button", { name: "Fetch all", exact: true }).waitFor();
   await overview.getByRole("button", { name: "Close repository overview", exact: true }).click();
+
+  const menu = label => page.locator(".ctx-menu .ctx-item").filter({has: page.getByText(label, {exact: true})});
+  const choose = async (row, label) => {
+    await row.click({button: "right"});
+    await menu(label).click();
+  };
+  const groupRow = name => group(name).locator(".repository-select");
+  const workspaceRow = name => workspace(name).locator(".repository-select");
+  const member = (state, name, repo) => state.groups.find(item => item.name === name).roots.some(root => path.basename(root) === repo);
+  await choose(groupRow("Platform"), "Remove from parent group");
+  assert.equal((await library()).groups.find(item => item.name === "Platform").parentId, null);
+  const addApi = () => openSubmenu(page, () => repository("api").click({button: "right"}), menu("Add to group"), menu("Platform"));
+  await addApi();
+  await menu("Platform").click();
+  assert(member(await library(), "Delivery", "api") && member(await library(), "Platform", "api"));
+  await choose(workspaceRow("product"), "New sub-workspace…");
+  const workspaceEditor = page.getByRole("dialog", {name: "New workspace", exact: true});
+  const groupFilter = workspaceEditor.getByRole("combobox", {name: "Filter repositories by group", exact: true});
+  for (const name of ["Delivery", "Platform"]) {
+    await groupFilter.selectOption({label: name});
+    await workspaceEditor.getByRole("checkbox", {name: /^api\b/}).waitFor();
+  }
+  await workspaceEditor.getByRole("button", {name: "Cancel", exact: true}).click();
+  await groupRow("Delivery").click();
+  await choose(repository("api"), "Remove from group · Delivery");
+  assert(!member(await library(), "Delivery", "api") && member(await library(), "Platform", "api"));
+  await groups.getByRole("button", { name: "All groups", exact: true }).click();
+  await repository("api").click({modifiers: ["Control"]});
+  await repository("platform").click({modifiers: ["Control"]});
+  await choose(repository("platform"), "Remove from all groups");
+  assert(!member(await library(), "Platform", "api") && !member(await library(), "Platform", "platform"));
+  await repository("api").press("Escape");
+
+  await workspaceRow("product").click();
+  await repository("api").waitFor();
+  await choose(groupRow("Engineering"), "Remove from workspace · product");
+  await group("Engineering").waitFor({state: "detached"});
+  await group("Delivery").waitFor({state: "detached"});
+  await repository("api").waitFor();
+  await ws.getByRole("button", { name: "All Workspaces", exact: true }).click();
+  await group("Engineering").waitFor();
+  await workspaceRow("product").click();
+  await group("Engineering").waitFor({state: "detached"});
+  await page.getByRole("button", {name: "Repository library and workspaces", exact: true}).click();
+  const manage = page.getByRole("dialog", {name: "Repository library", exact: true});
+  await manage.getByRole("button", {name: "Groups", exact: true}).click();
+  await manage.locator(".library-row").filter({has: page.getByText("Engineering", {exact: true})}).getByRole("button", {name: "Restore to workspace", exact: true}).click();
+  await manage.getByRole("button", {name: "Done", exact: true}).click();
+  await group("Engineering").waitFor();
+  await ws.getByRole("button", { name: "All Workspaces", exact: true }).click();
+  await groupRow("Engineering").click({modifiers: ["Control"]});
+  await groupRow("Platform").click({modifiers: ["Control"]});
+  await groupRow("Platform").press("Delete");
+  const deleteGroups = page.getByRole("dialog", {name: "Delete 2 groups?", exact: true});
+  await deleteGroups.getByRole("button", {name: "Delete 2 groups", exact: true}).click();
+  await group("Engineering").waitFor({state: "detached"});
+  await group("Platform").waitFor({state: "detached"});
+  await group("Delivery").waitFor();
+  assert.equal((await library()).groups.find(item => item.name === "Delivery").parentId, null);
+
+  await choose(workspaceRow("worker"), "Remove from parent workspace");
+  assert.equal((await library()).workspaces.find(item => item.name === "worker").parentId, null);
+  await workspaceRow("worker").click();
+  await workspaceRow("worker").press("Delete");
+  const deleteWorkspace = page.getByRole("dialog", {name: "Delete saved workspace?", exact: true});
+  await deleteWorkspace.getByRole("button", {name: "Delete workspace", exact: true}).click();
+  await workspace("worker").waitFor({state: "detached"});
+  await ws.getByRole("button", {name: "All Workspaces", exact: true}).and(page.locator('[aria-current="true"]')).waitFor();
+  assert.equal((await library()).workspaces.find(item => item.name === "plugins").parentId, null);
+  for (const name of ["api", "worker", "platform"]) {
+    await repository(name).waitFor();
+    assert(fs.existsSync(path.join((await library()).knownRoots.find(root => path.basename(root) === name), ".git")));
+  }
   await groups.getByRole("button", { name: "Hide Groups", exact: true }).click();
 
   await page.getByRole("button", { name: "Settings", exact: true }).click();

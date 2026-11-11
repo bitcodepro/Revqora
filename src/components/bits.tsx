@@ -59,13 +59,14 @@ export function Avatar({ name, email, large }: { name: string; email?: string; l
   );
 }
 
-export function RefBadge({ r, color, merged, onClick, onContextMenu }: { r: RefLabel; color?: number; merged?: string; onClick?: (e: React.MouseEvent) => void; onContextMenu?: (e: React.MouseEvent) => void }) {
+export function RefBadge({ r, color, merged, branchMark, onClick, onContextMenu }: { r: RefLabel; color?: number; merged?: string; branchMark?: "selected" | "base" | "primary"; onClick?: (e: React.MouseEvent) => void; onContextMenu?: (e: React.MouseEvent) => void }) {
   const style = color !== undefined ? ({ "--lane-c": `var(--lane-${color % 12})` } as React.CSSProperties) : undefined;
   const icon =
     r.kind === "tag" ? <Tag size={12} /> : r.kind === "remote" ? <Cloud size={12} /> : r.kind === "detached" ? <CircleDot size={12} /> : r.kind === "bisect" ? <Bug size={12} /> : <GitBranch size={12} />;
   return (
     <span
       className={`ref ${r.kind} ${r.kind === "bisect" ? (r.name.endsWith("bad") ? "bad" : "good") : ""}${merged ? " squashed" : ""}`}
+      data-branch-mark={branchMark}
       style={style}
       title={
         merged

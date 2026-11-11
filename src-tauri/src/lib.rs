@@ -793,7 +793,7 @@ async fn last_message(repo: String) -> GitResult<String> {
 async fn graph_load(
     state: State<'_, AppState>,
     repo: String,
-    branch: Option<String>,
+    branch: Option<graph::HistorySelection>,
     include_worktree: bool,
     limit: Option<usize>,
     fast: Option<bool>,
@@ -803,19 +803,30 @@ async fn graph_load(
     let fast = fast.unwrap_or(false);
     let prev = state.graphs.lock().get(&repo).cloned();
     let cache = blocking(move || {
-        graph::build_with_incoming(
+        let (branch, context) = match &branch {
+            Some(graph::HistorySelection::Reference(reference)) => (Some(reference.as_str()), None),
+            Some(graph::HistorySelection::Context(context)) => (None, Some(context)),
+            None => (None, None),
+        };
+        graph::build_for_view(
             &p(&repo),
-            branch.as_deref(),
+            graph::ViewScope { branch, show_incoming: show_incoming.unwrap_or(false), context },
             include_worktree,
             limit.unwrap_or(150_000),
             fast,
             prev.as_deref(),
-            show_incoming.unwrap_or(false),
         )
     })
     .await?;
     let head_index = cache.rows.iter().position(|r| r.is_head);
-    let summary = GraphSummary { head_oid: cache.head_oid.clone(), key: cache.key.clone(), total: cache.rows.len(), max_lanes: cache.max_lanes, head_index };
+    let summary = GraphSummary {
+        head_oid: cache.head_oid.clone(),
+        key: cache.key.clone(),
+        total: cache.rows.len(),
+        max_lanes: cache.max_lanes,
+        head_index,
+        branch_context: cache.branch_context.clone(),
+    };
     state.graphs.lock().insert(key, Arc::new(cache));
     Ok(summary)
 }
@@ -836,6 +847,13 @@ fn graph_find(state: State<'_, AppState>, repo: String, oid: String, expected_ke
         return Ok(Some(*i));
     }
     Ok(cache.rows.iter().position(|r| r.oid.starts_with(&oid)))
+}
+
+#[tauri::command]
+async fn graph_branch_members(state: State<'_, AppState>, repo: String, reference: String, key: String) -> GitResult<Vec<usize>> {
+    let cache = state.graphs.lock().get(&repo).cloned().ok_or_else(|| GitError::new("History is not loaded."))?;
+    cache.check_key(Some(&key))?;
+    blocking(move || Ok(cache.branch_members(&reference))).await
 }
 
 #[tauri::command]
@@ -2327,6 +2345,7 @@ pub fn run() {
             graph_load,
             graph_rows,
             graph_find,
+            graph_branch_members,
             graph_lane_anchor,
             graph_resolve_lane,
             graph_search,

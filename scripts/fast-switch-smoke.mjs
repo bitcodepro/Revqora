@@ -27,7 +27,8 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    await page.getByRole("button",{name:"My branches",exact:true}).click();await branch("other/person").waitFor({state:"detached"});await branch("feature/mine").waitFor();
    assert.equal(await page.locator('.sidebar [data-branch-kind="local"]').first().getAttribute("data-branch-name"),"feature/mine");
    if(out){await page.screenshot({path:path.join(out,"my-branches.png")});await page.locator(".sidebar").screenshot({path:path.join(out,"my-branches-sidebar.png")});}
-   await branch("main").click();await preview("base-body");await branch("feature/mine").click();await preview("feature-body");
+   const commitRow=title=>page.locator(".graph-rows").getByText(title,{exact:true});
+   await commitRow("Switch first base").click();await preview("base-body");await commitRow("Switch first feature").click();await preview("feature-body");
    await open(two);await page.locator(".repository-select").filter({hasText:"switch-one"}).click();await graphReady();await preview("feature-body");await page.locator(".repository-select").filter({hasText:"switch-two"}).click();await graphReady();
    const installGate=(commands=["repo_info","status","refs_snapshot","layers_state","repo_extras","graph_rows","graph_find","commit_details","rev_diff","working_diff"], omitSnapshotFor=null)=>page.evaluate(async ({commands,omitSnapshotFor})=>{
     const bridge=window.__TAURI_INTERNALS__,original=window.fetch,held=[],counts={},stageResponses=[];let active=true,omittedSnapshots=0;
@@ -75,8 +76,8 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    console.log(`Cached repository and diff rendered with native reads held in ${Math.round(performance.now()-repositorySwitch)} ms`);
    assert.equal(await page.getByRole("button",{name:"My branches",exact:true}).getAttribute("aria-pressed"),"true");
    const branchSwitch=performance.now();
-   await branch("main").click();await preview("base-body");await branch("feature/mine").click();await preview("feature-body");
-   console.log(`Two cached branch previews rendered with native reads held in ${Math.round(performance.now()-branchSwitch)} ms`);
+   await commitRow("Switch first base").click();await preview("base-body");await commitRow("Switch first feature").click();await preview("feature-body");
+   console.log(`Two cached commit previews rendered with native reads held in ${Math.round(performance.now()-branchSwitch)} ms`);
    const counts=await page.evaluate(()=>({...window.__fastSwitchGate.counts}));assert.equal(counts.graph_load??0,0,"Activation rebuilt an unchanged graph");assert.equal(git(one,"branch","--show-current"),"main","Single branch clicks must not check out a branch");
    await page.evaluate(()=>window.__fastSwitchGate.restore());
    const indexBytes=root=>fs.readFileSync(path.join(root,".git/index"));

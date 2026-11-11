@@ -47,8 +47,12 @@ export async function gitConnectionsSmoke({exe,work,check,out}){
       fs.writeFileSync(path.join(seed,"file.txt"),"incoming\n");git(seed,"add",".");git(seed,"commit","-qm","Incoming over SSH");git(seed,"push",bare,"main");const incoming=git(seed,"rev-parse","HEAD");
       await page.getByTitle("Fetch all remotes",{exact:true}).click();await answer(()=>git(root,"rev-parse","origin/main")===incoming);await settled();await page.getByTitle("Pull",{exact:true}).click();await answer(()=>git(root,"rev-parse","HEAD")===incoming);await settled();
       for(const [k,v]of [["user.name","SSH Tester"],["user.email","ssh@example.invalid"],["commit.gpgsign","false"]])git(root,"config",k,v);fs.writeFileSync(path.join(root,"file.txt"),"outgoing\n");git(root,"add",".");git(root,"commit","-qm","Outgoing over SSH");const outgoing=git(root,"rev-parse","HEAD");
-      // This commit came from the fixture CLI. Wait for the app to observe its
-      // HEAD and status before opening a guarded push confirmation.
+      // Refresh after the fixture's CLI commit has completed. The history and
+      // outgoing count can already reflect the new tip while a read started
+      // during the external commit still carries an older push precondition.
+      const refresh=page.getByTitle("Refresh (F5)",{exact:true});
+      await refresh.click();
+      await refresh.and(page.locator('[aria-busy="false"]')).waitFor();
       await page.getByText("Outgoing over SSH",{exact:true}).first().waitFor();
       await page.waitForFunction(()=>document.querySelector('.topbar button[title="Push"] .count')?.textContent.trim()==="1");
       await page.getByTitle("Push",{exact:true}).click();await page.getByRole("heading",{name:"Push",exact:true}).waitFor();await button("Push").click();await answer(()=>git(bare,"rev-parse","main")===outgoing);await settled();
