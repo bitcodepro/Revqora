@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type KeyboardEvent, type MouseEvent } from "react";
-import { actionFor, comboFromEvent, matchesShortcut } from "./shortcuts";
+import { actionFor, matchesShortcut } from "./shortcuts";
 
 const editable = "input,textarea,select,[role='textbox'],[contenteditable]:not([contenteditable='false']),.cm-editor";
 
@@ -18,7 +18,7 @@ export function useFileListNavigation() {
   }, []);
   const onKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
     if (e.defaultPrevented || e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
-    const combo = comboFromEvent(e); if (combo && actionFor(combo)) return;
+    if (actionFor(e)) return;
     if (document.querySelector(".modal-backdrop,.ctx-menu,.conflict-overlay")) return;
     const target = e.target as HTMLElement;
     if (target.closest(editable) || target.closest("button,a") && !target.closest("button[data-file-nav]")) return;
@@ -32,7 +32,7 @@ export function useFileListNavigation() {
     const onKey = (e: globalThis.KeyboardEvent) => {
       const next = matchesShortcut(e, "previewNextFile");
       if (!next && !matchesShortcut(e, "previewPreviousFile")) return;
-      const combo=comboFromEvent(e);if(combo&&actionFor(combo))return;
+      if (actionFor(e)) return;
       if (document.activeElement?.closest(editable) || document.querySelector(".modal-backdrop,.ctx-menu,.conflict-overlay")) return;
       if (move(next ? "ArrowDown" : "ArrowUp")) e.preventDefault();
     };

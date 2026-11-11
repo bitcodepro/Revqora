@@ -89,7 +89,17 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   for (const name of ["api", "worker", "platform"]) await repository(name).waitFor();
   assert.equal(await repository("extension").count(), 0);
   await shot?.("workspace-and-group-trees");
+  await repos.getByRole("button", { name: "All repositories", exact: true }).click();
+  const overview = page.locator(".repository-overview");
+  assert.equal(await overview.getByRole("textbox", { name: "Find repository in overview", exact: true }).inputValue(), "");
+  for (const action of ["Sync", "Fetch", "Pull"]) {
+    await overview.getByRole("button", { name: action + " filtered", exact: true }).waitFor();
+    assert.equal(await overview.getByRole("button", { name: action + " all", exact: true }).count(), 0);
+  }
+  assert.equal(await overview.getByRole("button", { name: "extension", exact: true }).count(), 0);
   await groups.getByRole("button", { name: "All groups", exact: true }).click();
+  await overview.getByRole("button", { name: "Fetch all", exact: true }).waitFor();
+  await overview.getByRole("button", { name: "Close repository overview", exact: true }).click();
   await groups.getByRole("button", { name: "Hide Groups", exact: true }).click();
 
   await page.getByRole("button", { name: "Settings", exact: true }).click();
@@ -106,5 +116,43 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await input.setInputFiles({ name: "Rider.xml", mimeType: "application/xml", buffer: Buffer.from('<keymap><action id="Vcs.Push"><keyboard-shortcut first-keystroke="ctrl alt F12"/></action></keymap>') });
   await review.locator(".shortcut-import-match").getByText("Vcs.Push", { exact: true }).waitFor();
   await review.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  await input.setInputFiles({ name: "shifted.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify([
+    {command:"workbench.action.openSettings",key:"ctrl+shift+["},
+    {command:"workbench.action.showCommands",key:"ctrl+shift+1"},
+  ])) });
+  await review.getByRole("button", { name: "Select matches", exact: true }).click();
+  await review.getByRole("button", { name: "Apply 2 selected", exact: true }).click();
+  await review.waitFor({ state: "detached" });
+  await settings.getByRole("button", { name: "Done", exact: true }).click();
+
+  const keyboard = await page.context().newCDPSession(page);
+  async function pressKey(code, key, windowsVirtualKeyCode, modifiers) {
+    const event = { code, key, windowsVirtualKeyCode, modifiers };
+    await keyboard.send("Input.dispatchKeyEvent", { type: "keyDown", ...event });
+    await keyboard.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+  }
+  try {
+    await pressKey("Digit1", "!", 49, 10); // Ctrl + Shift.
+    await page.locator(".palette input").waitFor();
+    await page.keyboard.press("Escape");
+    await page.locator(".palette input").waitFor({ state: "detached" });
+    await pressKey("BracketLeft", "{", 219, 10);
+    await settings.waitFor();
+    await settings.getByRole("button", { name: "Shortcuts", exact: true }).click();
+    await settings.getByTitle("Reset shortcut for Command palette", { exact: true }).click();
+    await input.setInputFiles({ name: "revqora-shortcuts.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({
+      format: "revqora.shortcuts", version: 1, shortcuts: [{ id: "settings", label: "Settings", key: "Ctrl+Ф" }],
+    })) });
+    await review.getByRole("button", { name: "Select matches", exact: true }).click();
+    await review.getByRole("button", { name: "Apply 1 selected", exact: true }).click();
+    await review.waitFor({ state: "detached" });
+    await settings.getByRole("button", { name: "Done", exact: true }).click();
+    await settings.waitFor({ state: "detached" });
+    await pressKey("KeyA", "ф", 65, 2); // Ctrl on a Cyrillic layout.
+    await settings.waitFor();
+  } finally { await keyboard.detach(); }
+  await settings.getByRole("button", { name: "Shortcuts", exact: true }).click();
+  await settings.getByTitle("Reset shortcut for Settings", { exact: true }).click();
   await settings.getByRole("button", { name: "Done", exact: true }).click();
 }

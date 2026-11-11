@@ -311,7 +311,7 @@ export function RepositoryOverview() {
   const incoming = order.filter((r) => !!repositorySidebarStatus(tabs[r])?.behind).length;
   return (
     <div className="repository-overview">
-      <header><div><h2>Repositories</h2><span className="faint">{workspace?.name ?? "All Workspaces"} · {order.length} open · {incoming} with incoming commits</span></div><div className="spacer" /><SyncButtons roots={visible} scoped={!!query.trim()} /><button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button><button type="button" className="icon-btn" title="Close repository overview" aria-label="Close repository overview" onClick={toggleRepositoryOverview}><X size={16}/></button></header>
+      <header><div><h2>Repositories</h2><span className="faint">{workspace?.name ?? "All Workspaces"} · {order.length} open · {incoming} with incoming commits</span></div><div className="spacer" /><SyncButtons roots={visible} scoped={!!query.trim() || !!group} /><button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button><button type="button" className="icon-btn" title="Close repository overview" aria-label="Close repository overview" onClick={toggleRepositoryOverview}><X size={16}/></button></header>
       <div className="repository-overview-search input-wrap"><Search size={14} /><input className="input" placeholder="Find repository…" aria-label="Find repository in overview" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {group && <button className="btn sm" type="button" onClick={() => useUi.setState({ repositoryGroup: null })}>Clear group filter · {group.name}</button>}
       {groupDraft && <InlineGroupName cancel={() => setGroupDraft(null)} save={name => {

@@ -136,51 +136,94 @@ export const SHORTCUTS: ShortcutDef[] = [
 ];
 
 const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta"]);
+type ShortcutEvent = KeyboardEvent | React.KeyboardEvent;
 
-/** "Ctrl+Shift+K" style description of a key event, or null for lone modifiers. */
-export function comboFromEvent(e: KeyboardEvent | React.KeyboardEvent): string | null {
-  if (MODIFIER_KEYS.has(e.key)) return null;
+// Key positions used by IDE bindings that spell out the unshifted key.
+const SHIFTED_POSITIONS = new Map<string, [base: string, shifted: string]>([
+  ["Digit0", ["0", ")"]], ["Digit1", ["1", "!"]], ["Digit2", ["2", "@"]],
+  ["Digit3", ["3", "#"]], ["Digit4", ["4", "$"]], ["Digit5", ["5", "%"]],
+  ["Digit6", ["6", "^"]], ["Digit7", ["7", "&"]], ["Digit8", ["8", "*"]], ["Digit9", ["9", "("]],
+  ["Backquote", ["`", "~"]], ["Minus", ["-", "_"]], ["Equal", ["=", "+"]],
+  ["BracketLeft", ["[", "{"]], ["BracketRight", ["]", "}"]], ["Backslash", ["\\", "|"]],
+  ["Semicolon", [";", ":"]], ["Quote", ["'", "\""]], ["Comma", [",", "<"]],
+  ["Period", [".", ">"]], ["Slash", ["/", "?"]],
+]);
+const US_SHIFT_ALIASES = new Map([...SHIFTED_POSITIONS.values()].map(([base, shifted]) => [shifted, base]));
+
+function eventModifiers(e: ShortcutEvent): string[] {
   const parts: string[] = [];
   if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
   if (e.altKey) parts.push("Alt");
   if (e.shiftKey) parts.push("Shift");
+  return parts;
+}
+
+/** "Ctrl+Shift+K" style description of a key event, or null for lone modifiers. */
+export function comboFromEvent(e: ShortcutEvent): string | null {
+  if (MODIFIER_KEYS.has(e.key)) return null;
   let k = e.key;
   if (k === " ") k = "Space";
   else if (k.length === 1) k = k.toUpperCase();
-  parts.push(k);
-  return parts.join("+");
+  return [...eventModifiers(e), k].join("+");
+}
+
+function eventBindings(event: ShortcutEvent): string[] {
+  if (event.defaultPrevented || ("nativeEvent" in event ? event.nativeEvent.isComposing : event.isComposing)) return [];
+  const captured = comboFromEvent(event);
+  if (!captured) return [];
+  const exact = captured.toLowerCase();
+  const positional = shiftedPositionBinding(event);
+  // A shortcut captured in the user's layout takes precedence over a positional match.
+  return positional && positional !== exact ? [exact, positional] : [exact];
+}
+
+function shiftedPositionBinding(event: ShortcutEvent): string | undefined {
+  const position = event.shiftKey ? SHIFTED_POSITIONS.get(event.code) : undefined;
+  return position && [...eventModifiers(event), position[0]].join("+").toLowerCase();
+}
+
+function conflictKey(combo: string): string {
+  return combo.toLowerCase().replace(/^((?:(?:ctrl|alt)\+)*shift\+)(.+)$/, (_, modifiers, key) =>
+    modifiers + (US_SHIFT_ALIASES.get(key) ?? key));
 }
 
 export function bindingFor(id: string, overrides = useSettings.getState().shortcuts): string {
   return overrides[id] ?? SHORTCUTS.find((s) => s.id === id)?.default ?? "";
 }
 
-/** Action id bound to a key combination. */
-export function actionFor(combo: string): string | null {
+/** Resolve a global action, trying the produced key before its unshifted position. */
+export function actionFor(event: ShortcutEvent): string | null {
   const o = useSettings.getState().shortcuts;
-  for (const s of SHORTCUTS) {
-    if (s.scope) continue;
-    const b = bindingFor(s.id, o);
-    if (b && b.toLowerCase() === combo.toLowerCase()) return s.id;
+  for (const combo of eventBindings(event)) {
+    const action = SHORTCUTS.find(s => !s.scope && bindingFor(s.id, o).toLowerCase() === combo);
+    if (action) return action.id;
   }
   return null;
 }
 
-export function matchesShortcut(event: KeyboardEvent | React.KeyboardEvent, id: string): boolean {
-  if (event.defaultPrevented || ("nativeEvent" in event ? event.nativeEvent.isComposing : event.isComposing)) return false;
-  const binding = bindingFor(id);
-  return !!binding && comboFromEvent(event)?.toLowerCase() === binding.toLowerCase();
+export function matchesShortcut(event: ShortcutEvent, id: string): boolean {
+  const [exact, positional] = eventBindings(event);
+  const overrides = useSettings.getState().shortcuts;
+  const binding = bindingFor(id, overrides).toLowerCase();
+  if (!binding || !exact) return false;
+  if (binding === exact) return true;
+  if (binding !== positional) return false;
+  const scope = SHORTCUTS.find(shortcut => shortcut.id === id)?.scope;
+  return !SHORTCUTS.some(shortcut => shortcut.id !== id && (!shortcut.scope || shortcut.scope === scope)
+    && bindingFor(shortcut.id, overrides).toLowerCase() === exact);
 }
 
 // History can show a file list and a focused diff at the same time.
 const previewScopes = new Set(["history", "files", "diff"]);
 
-export function shortcutConflict(id: string, combo: string, overrides: Record<string, string>) {
-  const key = combo.toLowerCase();
+export function shortcutConflict(id: string, combo: string, overrides: Record<string, string>, capturedEvent?: ShortcutEvent) {
+  const key = conflictKey(combo);
   if (!key) return undefined;
+  const positional = capturedEvent && shiftedPositionBinding(capturedEvent);
   const scope = SHORTCUTS.find((shortcut) => shortcut.id === id)?.scope;
   return SHORTCUTS.find((shortcut) => {
-    if (shortcut.id === id || bindingFor(shortcut.id, overrides).toLowerCase() !== key) return false;
+    const assigned = conflictKey(bindingFor(shortcut.id, overrides));
+    if (shortcut.id === id || (assigned !== key && assigned !== positional)) return false;
     // Ctrl+F is shared by design: the focused diff handles it before History does.
     if (key === "ctrl+f" && ((id === "diffFind" && shortcut.id === "historyFind")
       || (id === "historyFind" && shortcut.id === "diffFind"))) return false;

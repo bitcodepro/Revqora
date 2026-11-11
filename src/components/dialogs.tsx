@@ -994,7 +994,7 @@ function ShortcutSettings() {
                     setError("Use Ctrl, Command or Alt with a key, or use a function key.");
                     return;
                   }
-                  const conflict = shortcutConflict(sc.id, combo, overrides);
+                  const conflict = shortcutConflict(sc.id, combo, overrides, e);
                   if (conflict) { setError(`${prettyCombo(combo)} is already assigned to ${conflict.label}.`); return; }
                   set({ shortcuts: { ...overrides, [sc.id]: combo } });
                   setError("");

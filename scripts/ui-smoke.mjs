@@ -843,7 +843,7 @@ try {
     await page.waitForSelector(".branches-slot", { state: "visible" });
     const navigation = page.getByRole("group", { name: "Repository navigation", exact: true });
     const navigationButtons = await navigation.getByRole("button").evaluateAll(buttons => buttons.map(button => button.getAttribute("aria-label")));
-    if (navigationButtons.join("|") !== "Toggle Workspaces panel|Toggle repositories panel|Toggle branches panel") throw new Error("Sidebar toggles are out of order");
+    if (navigationButtons.join("|") !== "Toggle Workspaces panel|Toggle Groups panel|Toggle repositories panel|Toggle branches panel") throw new Error("Sidebar toggles are out of order");
     const repositoryActions = page.getByRole("group", { name: "Repository actions", exact: true });
     await repositoryActions.getByRole("button", { name: "All repositories", exact: true }).waitFor();
     await repositoryActions.getByRole("button", { name: "Repository library and workspaces", exact: true }).waitFor();
@@ -873,6 +873,17 @@ try {
     await workspaces.waitFor({ state: workspacesOpen ? "hidden" : "visible" });
     await page.keyboard.press("Control+Alt+w");
     await workspaces.waitFor({ state: workspacesOpen ? "visible" : "hidden" });
+    const groups = page.getByRole("complementary", { name: "Groups", exact: true });
+    const groupsToggle = navigation.getByRole("button", { name: "Toggle Groups panel", exact: true });
+    const groupsOpen = await groups.isVisible();
+    await groupsToggle.click();
+    await groups.waitFor({ state: groupsOpen ? "hidden" : "visible" });
+    if (await workspaces.isVisible() !== workspacesOpen || await branchesToggle.getAttribute("aria-expanded") !== "true" ||
+        !await page.locator(".repository-slot").isVisible()) {
+      throw new Error("Toggling Groups changed another navigation panel");
+    }
+    await groupsToggle.click();
+    await groups.waitFor({ state: groupsOpen ? "visible" : "hidden" });
     // Give a growing pane actual headroom instead of depending on the runner's display.
     await page.setViewportSize({ width: 1600, height: 900 });
     const before = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);

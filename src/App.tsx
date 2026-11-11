@@ -18,7 +18,7 @@ import { PullRequestsView } from "./components/PullRequests";
 import { useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
 import { openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
-import { actionFor, comboFromEvent, matchesShortcut, PANEL_NAMES, shortcutTitle } from "./lib/shortcuts";
+import { actionFor, matchesShortcut, PANEL_NAMES, shortcutTitle } from "./lib/shortcuts";
 import { settingsDialog } from "./components/dialogs";
 import { repoToolsDialog } from "./components/RepoTools";
 import { Onboarding } from "./components/Onboarding";
@@ -404,11 +404,9 @@ function MainApp() {
         }, error => toast.error(error));
         return;
       }
-      const combo = comboFromEvent(e);
-      if (!combo) return;
       const typing = (e.target as HTMLElement)?.closest?.("input, textarea, .cm-editor");
       if (typing && !e.ctrlKey && !e.metaKey && !e.altKey && !/^F\d+$/.test(e.key)) return;
-      const id = actionFor(combo);
+      const id = actionFor(e);
       if (!id) return;
       const st = useRepos.getState();
       const a = st.active;
