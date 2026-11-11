@@ -1,0 +1,59 @@
+name: Prepare cached dependencies
+description: Restore download-only caches, install locked dependencies, and save trusted main caches
+inputs:
+  cargo:
+    description: Fetch the locked Rust dependencies as well as npm packages
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Restore npm package downloads
+      id: npm
+      continue-on-error: true # A cache outage is a miss, not a skipped install/check.
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ${{ github.workspace }}/.ci-cache/npm/_cacache
+        key: deps-v1-npm-${{ runner.os }}-${{ runner.arch }}-node24-${{ hashFiles('package-lock.json') }}
+    - name: Install locked npm dependencies
+      shell: bash
+      env:
+        NPM_CONFIG_CACHE: ${{ github.workspace }}/.ci-cache/npm
+      run: npm ci --prefer-offline
+    - name: Save trusted npm downloads
+      if: >-
+        github.ref == 'refs/heads/main' &&
+        (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+        steps.npm.outputs.cache-hit != 'true'
+      continue-on-error: true # A cache outage is a miss, not a skipped install/check.
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ${{ github.workspace }}/.ci-cache/npm/_cacache
+        key: ${{ steps.npm.outputs.cache-primary-key }}
+    - name: Restore Cargo crate downloads
+      id: cargo
+      if: inputs.cargo == 'true'
+      continue-on-error: true # A cache outage is a miss, not a skipped install/check.
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+        key: deps-v1-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
+    - name: Fetch locked Cargo dependencies
+      if: inputs.cargo == 'true'
+      shell: bash
+      # Fetch the complete lockfile so a faster matrix job cannot save a partial
+      # immutable cache that repeatedly misses dependencies used by another job.
+      run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+    - name: Save trusted Cargo downloads
+      if: >-
+        inputs.cargo == 'true' && github.ref == 'refs/heads/main' &&
+        (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+        steps.cargo.outputs.cache-hit != 'true'
+      continue-on-error: true # A cache outage is a miss, not a skipped install/check.
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+        key: ${{ steps.cargo.outputs.cache-primary-key }}

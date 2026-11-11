@@ -100,6 +100,9 @@ class WorkflowTests(unittest.TestCase):
                 if "uses" not in job:
                     self.assertIn("timeout-minutes", job)
                 for step in job.get("steps", []):
+                    if "uses" in step and step["uses"].startswith("./"):
+                        self.assertEqual(step["uses"], "./.github/actions/dependency-cache")
+                        continue
                     if "uses" in step:
                         self.assertRegex(step["uses"], r"^[\w/-]+@[0-9a-f]{40}$")
                         if step["uses"].startswith("actions/checkout@"):
@@ -168,3 +171,60 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(upload["if"], "always()")
         self.assertEqual(upload["with"]["path"], "ci-results/verify-stages.json")
         self.assertTrue(checks["env"]["REVQORA_VERIFY_TIMINGS"].endswith("/" + upload["with"]["path"]))
+
+
+    def test_linux_dependencies_use_bounded_shared_signed_installer(self):
+        jobs = (self.ci['jobs']['build-and-test'], self.package['jobs']['package'])
+        for job in jobs:
+            steps = [s for s in job['steps'] if s.get('name') == 'Install Linux native dependencies']
+            self.assertEqual(len(steps), 1)
+            self.assertEqual(steps[0]['if'], "runner.os == 'Linux'")
+            self.assertEqual(steps[0]['timeout-minutes'], '15')
+            self.assertEqual(steps[0]['run'], 'sudo python3 scripts/install-linux-deps.py')
+            self.assertNotIn('continue-on-error', steps[0])
+
+    def test_dependency_cache_does_not_skip_installs_or_share_privileged_data(self):
+        action = yaml.load((ROOT / '.github/actions/dependency-cache/action.yml').read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(action['runs']['using'], 'composite')
+        steps = action['runs']['steps']
+        install = next(s for s in steps if s.get('run', '').startswith('npm ci'))
+        self.assertEqual(install['run'], 'npm ci --prefer-offline')
+        self.assertNotIn('if', install)
+        self.assertNotIn('continue-on-error', install)
+        fetch = next(s for s in steps if s.get('run', '').startswith('cargo fetch'))
+        self.assertIn('--locked', fetch['run'])
+        self.assertEqual(fetch['if'], "inputs.cargo == 'true'")
+        self.assertNotIn('continue-on-error', fetch)
+        caches = [s for s in steps if 'uses' in s]
+        self.assertEqual(len(caches), 4)
+        for step in caches:
+            self.assertRegex(step['uses'], r'^actions/cache/(restore|save)@[0-9a-f]{40}$')
+            self.assertEqual(step['continue-on-error'], 'true')
+            self.assertNotIn('restore-keys', step['with'])
+            paths = step['with']['path'].splitlines()
+            self.assertIn(paths, [['${{ github.workspace }}/.ci-cache/npm/_cacache'], ['~/.cargo/registry/index', '~/.cargo/registry/cache']])
+            if step['uses'].startswith('actions/cache/save@'):
+                self.assertIn("github.ref == 'refs/heads/main'", step['if'])
+                self.assertIn("github.event_name == 'push'", step['if'])
+                self.assertIn("github.event_name == 'workflow_dispatch'", step['if'])
+                self.assertIn("cache-hit != 'true'", step['if'])
+            else:
+                key = step['with']['key']
+                self.assertIn('runner.os', key)
+                self.assertIn('runner.arch', key)
+                self.assertIn('hashFiles(', key)
+                self.assertNotIn('github.sha', key)
+                self.assertNotIn('github.run_id', key)
+
+    def test_all_dependency_consumers_use_the_shared_action(self):
+        cargo_jobs = [self.ci['jobs'][key] for key in ('build-and-test', 'windows-automation', 'windows-native-build')]
+        cargo_jobs.append(self.package['jobs']['package'])
+        for job in cargo_jobs:
+            cache = [s for s in job['steps'] if s.get('uses') == './.github/actions/dependency-cache']
+            self.assertEqual(len(cache), 1)
+            self.assertEqual(cache[0]['with']['cargo'], 'true')
+        smoke_cache = [s for s in self.ci['jobs']['windows-smoke']['steps'] if s.get('uses') == './.github/actions/dependency-cache']
+        self.assertEqual(len(smoke_cache), 1)
+        self.assertNotIn('with', smoke_cache[0])
+        # The publisher only consumes verified exact-SHA artifacts, not caches.
+        self.assertFalse(any('cache' in s.get('uses', '') for s in self.ci['jobs']['release']['steps']))
