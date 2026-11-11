@@ -1,10 +1,10 @@
 # Connect an external AI client through MCP
 
-1. Open **Settings → General → MCP** and select **Enable MCP for this session**.
+1. Open **Settings → General → MCP** and select **Enable MCP**.
 2. Choose your client and select **Copy MCP configuration**. Paste the entry into the client's configuration and restart it.
 3. Keep Revqora running. Ask the client to call `list_repositories` to discover the repositories you have open.
 
-Revqora starts its local MCP server when you launch the installed executable with `--mcp`. The generated configuration includes the path and arguments. Re-enable access after restarting Revqora.
+The client launches the installed executable with `--mcp`. Revqora remembers the **Enable MCP** setting and starts the local bridge when the desktop app opens. The generated configuration includes the path and arguments.
 
 An enabled client can read status, branches, commit history, diffs and PR discussions available in the current workspace. It can open views and propose Git or PR operations. The **MCP request** dialog in Revqora shows the proposed action and its target. Review each request in the desktop app. Operations such as Push and branch deletion can open an additional review. `action_status` reports the handoff, and the operation log shows what Revqora ran.
 

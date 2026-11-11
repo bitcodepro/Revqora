@@ -1,14 +1,16 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import { McpToolError, mcpError } from "./mcpErrors";
+import { loadBranchPreferences } from "./branchManager";
+import { deletionProtection } from "./branchProtection";
 import * as A from "./actions";
 import { basename } from "./format";
 import { useRepos } from "./store";
 import { useLibrary } from "./repositoryLibrary";
 import { useSettings } from "./settings";
 import { closeOverlay, openOverlay, showDialog, useUi } from "./ui";
-import type { FileDiff, PrState, SearchMode } from "./types";
+import type { BranchInfo, FileDiff, PrState, SearchMode, StatusSummary } from "./types";
 import { Modal } from "../components/Modal";
 import { validBranchName } from "../components/dialogs";
 import { createPullRequest } from "../components/PullRequests";
@@ -30,7 +32,11 @@ interface DesktopRequest {
   request: { name: string; arguments: Arguments };
 }
 type Phase = "preparing" | "awaiting_confirmation" | "running" | "cancelled" | "succeeded" | "handed_off" | "failed";
-interface ActionStatus { id: string; session: string; action: string; phase: Phase; message?: string; errorCode?: string; commit?: string; runId?: string }
+type ActionResult =
+  | { sha: string }
+  | { branch: string; sha: string | null }
+  | { previousBranch: string | null; currentBranch: string; conflicts: string[] };
+interface ActionStatus { id: string; session: string; action: string; phase: Phase; message?: string; errorCode?: string; commit?: string; runId?: string; result?: ActionResult }
 const actions = new Map<string, ActionStatus>();
 let activeAction: string | null = null;
 
@@ -126,36 +132,91 @@ const actionNames: Record<string, string> = {
   start_workflow: "Create waiting workflow run", review_workflow_step: "Open workflow step review",
 };
 
-function Approval({ action, description, details, close }: { action: string; description: string; details: string[]; close: (approved: boolean) => void }) {
+interface ApprovalField { label: string; initial: string; multiline?: boolean; validate: (value: string) => string | null }
+interface ApprovalResult { value: string }
+
+function Approval({ action, description, details, field, close }: {
+  action: string; description: string; details: string[]; field?: ApprovalField; close: (approved: ApprovalResult | null) => void;
+}) {
+  const [value, setValue] = useState(field?.initial ?? "");
+  const error = field?.validate(value);
   useEffect(() => {
-    const timer = window.setTimeout(() => close(false), 120_000);
+    const timer = window.setTimeout(() => close(null), 120_000);
     return () => window.clearTimeout(timer);
   }, [close]);
-  return <Modal title={`MCP request · ${action}`} subtitle={description} wide onClose={() => close(false)} onSubmit={() => close(true)}
-    footer={<><button className="btn" type="button" onClick={() => close(false)}>Decline</button>
-      <button className="btn primary" type="submit">Approve in Revqora</button></>}>
+  return <Modal title={`MCP request · ${action}`} subtitle={description} wide onClose={() => close(null)} onSubmit={() => { if (!error) close({value}); }}
+    footer={<><button className="btn" type="button" onClick={() => close(null)}>Decline</button>
+      <button className="btn primary" type="submit" disabled={!!error}>Approve in Revqora</button></>}>
     <p className="muted">A local MCP client requested this action. This approval applies to this request only.</p>
+    {field && <>
+      <label className="field">{field.label}
+        {field.multiline ? <textarea className="textarea mono" rows={5} value={value} onChange={e => setValue(e.target.value)}/>
+          : <input className="input" value={value} onChange={e => setValue(e.target.value)}/>}
+      </label>
+      {error && <span className="red" role="alert">{error}</span>}
+    </>}
     {details.length > 0 && <pre className="code-list">{details.join("\n")}</pre>}
   </Modal>;
 }
 
-async function runAction(event: DesktopRequest, root: string, a: Arguments, status: ActionStatus) {
+const branchActions = new Set(["create_branch", "checkout", "delete_branch"]);
+interface BranchReview { baseline: StatusSummary; branches: BranchInfo[]; tip?: string }
+
+function branchNameError(value: string) {
+  if (!value || value.trim() !== value || new TextEncoder().encode(value).length > 512) return "Supply a valid local branch name.";
+  if (value === "@" || /[\x00-\x20\x7f]/.test(value) || value.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".lock"))) {
+    return "This name is not a valid Git branch.";
+  }
+  return validBranchName(value);
+}
+
+function duplicateBranch(root: string, name: string, branches: BranchInfo[]) {
+  const windowsPath = /^[a-z]:[\\/]|^[\\/]{2}/i.test(root);
+  const normalize = (value: string) => windowsPath ? value.toLowerCase() : value;
+  const candidate = normalize(name);
+  return branches.find(branch => {
+    const current = normalize(branch.name);
+    return current === candidate || current.startsWith(candidate + "/") || candidate.startsWith(current + "/");
+  });
+}
+
+async function reviewBranchAction(root: string, action: string, target?: string): Promise<BranchReview> {
+  const invalid = branchNameError(target ?? "");
+  if (!target || invalid) throw new McpToolError("invalid_arguments", invalid ?? "Supply a local branch name.");
+  const baseline = await api.status(root);
+  if (!baseline.oid) throw new McpToolError("initial_commit_required", `Create the first commit on ${baseline.branch ?? "the current branch"} before using this Git branch action.`);
+  const { local: branches } = await api.refs(root);
+  if (action === "create_branch") {
+    const existing = duplicateBranch(root, target, branches);
+    if (existing) throw new McpToolError("branch_exists", `The name conflicts with local branch ${existing.name}.`);
+    return {baseline,branches};
+  }
+  const tip = branches.find(branch => branch.name === target)?.oid;
+  if (!tip) throw new McpToolError("branch_not_found", "The local branch does not exist.");
+  if (action === "delete_branch") {
+    if (target === baseline.branch) throw new McpToolError("branch_checked_out", "Switch away from this branch before deleting it.");
+    const protectedReason = deletionProtection(loadBranchPreferences(root).protections, target, null);
+    if (protectedReason) throw new McpToolError("branch_protected", protectedReason);
+  }
+  return {baseline,branches,tip};
+}
+
+async function runAction(event: DesktopRequest, root: string, a: Arguments, status: ActionStatus, branchReview?: BranchReview) {
   const action = status.action;
   try {
-    const target = a.target;
+    let target = a.target;
     const number = a.number;
     const title = actionNames[action];
     const detail: string[] = [];
     if ((action === "stage" || action === "unstage") && !a.paths?.length) throw new Error("Supply exact paths from repository_status.");
-    if (["create_branch", "checkout", "delete_branch"].includes(action) && (!target || target.trim() !== target || validBranchName(target))) throw new Error("Supply a valid local branch name.");
     if (action === "cherry_pick") exactCommit(target);
     if (["review_pr", "merge_pr", "pr_workflow"].includes(action) && !number) throw new Error("Supply a PR number.");
     if (action === "commit" && !a.message?.trim()) throw new Error("Supply a commit message.");
     if (action === "start_workflow" && (!a.branch || !a.base)) throw new Error("Supply the workflow branch and base.");
-    if (target) detail.push(`Target: ${target}`);
+    if (target && action !== "create_branch") detail.push(`Target: ${target}`);
     if (number) detail.push(`Pull request #${number}`);
     const paths = [...new Set(a.paths ?? [])];
-    const baseline = await api.status(root, action === "unstage" || action === "commit");
+    const baseline = branchReview?.baseline ?? await api.status(root, action === "unstage" || action === "commit");
     const expectedState = baseline.stateToken;
     if (!expectedState) throw new Error("Repository status is not ready. Refresh and inspect it first.");
     const pullMode = useSettings.getState().pullMode;
@@ -170,12 +231,17 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       }
       detail.push(...paths);
     }
-    let targetOid: string | undefined;
-    if (action === "checkout" || action === "delete_branch") {
-      targetOid = (await api.refs(root)).local.find(branch => branch.name === target)?.oid;
-      if (!targetOid) throw new Error("The local branch does not exist.");
-      if (action === "delete_branch" && target === baseline.branch) throw new Error("Switch away from this branch before deleting it.");
-      detail.push(`Branch tip: ${targetOid}`);
+    const targetOid = branchReview?.tip;
+    if (targetOid) detail.push(`Branch tip: ${targetOid}`);
+    let field: ApprovalField | undefined;
+    if (action === "create_branch") {
+      detail.push(`Starting commit: ${baseline.oid}`);
+      field = {label:"Branch name",initial:target!,validate:value=>{
+        const error = branchNameError(value);
+        if (error) return error;
+        const existing = duplicateBranch(root, value, branchReview?.branches ?? []);
+        return existing ? `The name conflicts with local branch ${existing.name}.` : null;
+      }};
     }
     const pr = ["review_pr", "merge_pr", "pr_workflow"].includes(action) ? await prContext(root, number!) : null;
     if (pr) detail.push(pr.detail.pull.title, `${pr.detail.pull.head} → ${pr.detail.pull.base} · ${pr.detail.pull.headSha}`);
@@ -184,7 +250,10 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       if (info.state.kind !== "none" || baseline.conflictCount || !baseline.stagedCount) throw new Error("Stage changes and finish the current Git operation before committing.");
       const limit = useSettings.getState().largeFileMb;
       const large = await api.largeStagedFiles(root, limit * 1024 * 1024);
-      detail.push(a.message!.trim(), "", `${baseline.stagedCount} staged file(s)`);
+      detail.push(`${baseline.stagedCount} staged file(s)`);
+      field = {label:"Commit message",initial:a.message!,multiline:true,validate:value=>
+        !value.trim() || value.includes("\0") ? "Supply a commit message."
+          : new TextEncoder().encode(value).length > 8192 ? "Keep the commit message within 8 KiB." : null};
       if (large.length) detail.push("", `Warning: ${large.length} file(s) exceed ${limit} MiB. Approval commits them as staged.`,
         ...large.slice(0, 50).map(file => file.path));
     }
@@ -203,25 +272,61 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     requireRepo(root);
     if (!await api.mcpLease(event.session)) throw new Error("The MCP session ended.");
     status.phase = "awaiting_confirmation";
-    const approved = await showDialog<boolean>(close => <Approval action={title}
-      description={`${root} · ${baseline.branch ?? "detached HEAD"}`} details={detail} close={close} />);
+    const approved = await showDialog<ApprovalResult | null>(close => <Approval action={title}
+      description={`${root} · ${baseline.branch ?? "detached HEAD"}`} details={detail} field={field} close={close} />);
     if (!approved || !await api.mcpLease(event.session)) { status.phase = "cancelled"; return; }
+    if (action === "create_branch") target = approved.value;
     requireRepo(root);
-    if ((await api.status(root)).stateToken !== expectedState) throw new Error("The repository changed during approval. Review the current state and submit a new request.");
-    if (targetOid && (await api.refs(root)).local.find(branch => branch.name === target)?.oid !== targetOid) throw new Error("The target branch changed during approval.");
+    if ((await api.status(root)).stateToken !== expectedState) throw new McpToolError("stale_state", "The repository changed during approval. Review the current state and submit a new request.");
+    if (targetOid && (await api.refs(root)).local.find(branch => branch.name === target)?.oid !== targetOid) throw new McpToolError("stale_state", "The target branch changed during approval.");
+    if (action === "create_branch") {
+      const existing = duplicateBranch(root, target!, (await api.refs(root)).local);
+      if (existing) throw new McpToolError("branch_exists", `The name conflicts with local branch ${existing.name}.`);
+    }
     if (!await api.mcpLease(event.session)) { status.phase = "cancelled"; return; }
     status.phase = "running";
+    const authorize = async () => {
+      if (!await api.mcpLease(event.session)) return false;
+      requireRepo(root);
+      return true;
+    };
     switch (action) {
       case "stage": await api.stage(root, paths, expectedState); break;
       case "unstage": await api.unstage(root, paths, expectedState, true); break;
       case "commit": {
         const signing = await api.signingGet(root);
         if (!await api.mcpLease(event.session)) { status.phase = "cancelled"; return; }
-        status.commit = await api.commit(root, a.message!.trim(), { sign: signing.signCommits }, expectedState, true);
+        status.commit = await api.commit(root, approved.value, { sign: signing.signCommits }, expectedState, true);
+        status.result = {sha:status.commit};
         break;
       }
       case "create_branch":
-        await api.branchCreate(root, target!, baseline.oid, false, expectedState); break;
+        await api.branchCreate(root, target!, baseline.oid, false, expectedState);
+        status.result = {branch:target!,sha:baseline.oid};
+        break;
+      case "checkout": {
+        const result = await A.checkoutWithOutcome(root, target!, "local", expectedState, authorize);
+        if (result.status === "cancelled") { status.phase = "cancelled"; return; }
+        if (result.status === "failed") throw result.error;
+        status.result = {previousBranch:baseline.branch,currentBranch:result.switch.branch,conflicts:result.switch.conflicts};
+        status.message = result.switch.warning ?? undefined;
+        break;
+      }
+      case "delete_branch": {
+        status.phase = "awaiting_confirmation";
+        const result = await A.deleteBranchWithOutcome(root, target!, {
+          expectedState, localOnly:true, protectionRules:loadBranchPreferences(root).protections,
+          authorize:async () => {
+            if (!await authorize()) return false;
+            status.phase = "running";
+            return true;
+          },
+        });
+        if (result.status === "cancelled") { status.phase = "cancelled"; return; }
+        if (result.status === "failed") throw result.error;
+        status.result = {branch:result.branch,sha:result.oid};
+        break;
+      }
       case "start_workflow": {
         const started = await api.workflowBegin(root, target!, catalog!.revision, { branch: a.branch!, base: a.base! });
         status.runId = started.id;
@@ -241,8 +346,6 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
         status.phase = "handed_off";
         status.message = "Continue in Revqora and verify the result with the read tools.";
         switch (action) {
-          case "checkout": await A.checkout(root, target!, "local", expectedState); break;
-          case "delete_branch": await A.deleteBranch(root, target!); break;
           case "stash": await A.stash(root, expectedState); break;
           case "pull": await A.pull(root, pullMode, expectedState); break;
           case "push": await A.push(root); break;
@@ -279,15 +382,21 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
   }
 }
 
-function requestAction(event: DesktopRequest, root: string, a: Arguments) {
+async function requestAction(event: DesktopRequest, root: string, a: Arguments) {
   if (activeAction || useUi.getState().dialogs.length) throw new McpToolError("review_pending", "Finish the existing Revqora review before requesting another action.");
   const id = event.id;
-  const status: ActionStatus = { id, session: event.session, action: a.action!, phase: "preparing" };
   activeAction = id;
-  actions.set(id, status);
-  if (actions.size > 50) actions.delete(actions.keys().next().value!);
-  void runAction(event, root, a, status);
-  return { id, phase: status.phase, message: "Switch to Revqora to review this action. Poll action_status for the outcome." };
+  try {
+    const branchReview = branchActions.has(a.action!) ? await reviewBranchAction(root, a.action!, a.target) : undefined;
+    const status: ActionStatus = { id, session: event.session, action: a.action!, phase: "preparing" };
+    actions.set(id, status);
+    if (actions.size > 50) actions.delete(actions.keys().next().value!);
+    void runAction(event, root, a, status, branchReview);
+    return { id, phase: status.phase, message: "Switch to Revqora to review this action. Poll action_status for the outcome." };
+  } catch (error) {
+    activeAction = null;
+    throw error;
+  }
 }
 
 async function dispatch(event: DesktopRequest): Promise<unknown> {

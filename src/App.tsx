@@ -336,8 +336,15 @@ function MainApp() {
 
   // Backend events.
   useEffect(() => {
+    let disposed = false;
     const unsubs: Promise<() => void>[] = [];
-    unsubs.push(listenMcpDesktop());
+    const mcpListener = listenMcpDesktop();
+    unsubs.push(mcpListener);
+    const restoreMcp = mcpListener.then(() => {
+      if (!disposed) return api.mcpRestore();
+    }).catch(error => {
+      if (!disposed) toast.error(error, "Could not restore MCP access");
+    });
     unsubs.push(
       listen<{ repo: string; git: boolean; worktree: boolean }>("repo-changed", (e) => {
         const { repo, git } = e.payload;
@@ -357,7 +364,11 @@ function MainApp() {
         }
       }
     }));
-    const disposeOpenPaths = startup.current!.listener(listen<string[]>("open-paths", (e) => e.payload.forEach((p) => A.openRepoPath(p))));
+    const openPathsListener = listen<string[]>("open-paths", (e) => e.payload.forEach((p) => A.openRepoPath(p)));
+    const disposeOpenPaths = startup.current!.listener(openPathsListener.then(async stop => {
+      await restoreMcp;
+      return stop;
+    }));
     unsubs.push(
       getCurrentWebview().onDragDropEvent((e) => {
         if (e.payload.type === "over" || e.payload.type === "enter") setDropping(true);
@@ -369,8 +380,9 @@ function MainApp() {
       }),
     );
     return () => {
+      disposed = true;
       disposeOpenPaths();
-      unsubs.forEach((u) => u.then((f) => f()));
+      unsubs.forEach(u => void u.then(stop => stop(), () => {}));
     };
   }, []);
 

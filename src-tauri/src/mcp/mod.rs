@@ -6,9 +6,10 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fs::File;
 use std::io;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc,
@@ -18,7 +19,7 @@ use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 pub use protocol::stdio;
 
-const DISABLED: &str = "Open Revqora and enable MCP for this session under Settings → General → MCP.";
+const DISABLED: &str = "Open Revqora and enable MCP under Settings → General → MCP.";
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(25);
 const WORKERS: usize = 8;
 type Reply = Result<Value, ToolError>;
@@ -139,9 +140,65 @@ fn info(bridge: &Bridge) -> Result<Info, String> {
     Ok(Info { enabled: bridge.0.lock().is_some(), executable: executable.to_owned() })
 }
 
+fn preference_path() -> Result<PathBuf, String> {
+    crate::portable::runtime_dir().map(|dir| dir.join("mcp-enabled.json")).map_err(|error| format!("Could not access the saved MCP setting. {error}"))
+}
+
+fn saved_enabled(path: &Path) -> io::Result<bool> {
+    match File::open(path) {
+        Ok(file) => Ok(serde_json::from_reader(file)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn save_enabled(path: &Path, enabled: bool) -> io::Result<()> {
+    let dir = path.parent().ok_or_else(|| io::Error::other("Missing portable data folder."))?;
+    let mut file = crate::git::atomic_file::new_in(dir)?;
+    serde_json::to_writer(&mut file, &enabled)?;
+    file.as_file().sync_all()?;
+    crate::git::atomic_file::replace(file, path)
+}
+
+fn start(app: AppHandle) -> io::Result<Arc<Session>> {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    listener.set_nonblocking(true)?;
+    let session = Arc::new(Session {
+        id: transport::random_id()?,
+        key: transport::secret()?,
+        descriptor: transport::descriptor_path()?,
+        stopped: AtomicBool::new(false),
+        workers: AtomicUsize::new(0),
+        pending: Mutex::new(HashMap::new()),
+    });
+    transport::publish(&session.descriptor, listener.local_addr()?.port(), &session.key)?;
+    let thread_session = Arc::clone(&session);
+    if let Err(error) = std::thread::Builder::new().name("revqora-mcp".into()).spawn(move || listen(listener, thread_session, app)) {
+        session.stop();
+        return Err(error);
+    }
+    Ok(session)
+}
+
+fn start_error(error: io::Error) -> String {
+    format!("Could not start the local MCP bridge. {error}")
+}
+
 #[tauri::command]
 pub(crate) fn mcp_info(bridge: State<'_, Bridge>) -> Result<Info, String> {
     info(&bridge)
+}
+
+#[tauri::command]
+pub(crate) fn mcp_restore(app: AppHandle, window: WebviewWindow, bridge: State<'_, Bridge>) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Manage MCP from the main Revqora window.".into());
+    }
+    let mut active = bridge.0.lock();
+    if active.is_none() && saved_enabled(&preference_path()?).map_err(|error| format!("Could not read the saved MCP setting. {error}"))? {
+        *active = Some(start(app).map_err(start_error)?);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -150,28 +207,16 @@ pub(crate) fn mcp_enable(app: AppHandle, window: WebviewWindow, bridge: State<'_
         return Err("Manage MCP from the main Revqora window.".into());
     }
     let mut active = bridge.0.lock();
-    if enabled && active.is_none() {
-        let start = || -> io::Result<_> {
-            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
-            listener.set_nonblocking(true)?;
-            let descriptor = transport::descriptor_path()?;
-            let session = Arc::new(Session {
-                id: transport::random_id()?,
-                key: transport::secret()?,
-                descriptor,
-                stopped: AtomicBool::new(false),
-                workers: AtomicUsize::new(0),
-                pending: Mutex::new(HashMap::new()),
-            });
-            transport::publish(&session.descriptor, listener.local_addr()?.port(), &session.key)?;
-            let thread_session = Arc::clone(&session);
-            if let Err(error) = std::thread::Builder::new().name("revqora-mcp".into()).spawn(move || listen(listener, thread_session, app)) {
-                session.stop();
-                return Err(error);
-            }
-            Ok(session)
-        };
-        *active = Some(start().map_err(|e| format!("Could not start the local MCP bridge. {e}"))?);
+    let path = preference_path()?;
+    let started = if enabled && active.is_none() { Some(start(app).map_err(start_error)?) } else { None };
+    if let Err(error) = save_enabled(&path, enabled) {
+        if let Some(session) = started {
+            session.stop();
+        }
+        return Err(format!("Could not save the MCP setting. {error}"));
+    }
+    if let Some(session) = started {
+        *active = Some(session);
     } else if !enabled {
         if let Some(session) = active.take() {
             session.stop();

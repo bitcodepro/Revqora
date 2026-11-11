@@ -2332,6 +2332,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             mcp::mcp_info,
             mcp::mcp_enable,
+            mcp::mcp_restore,
             mcp::mcp_lease,
             mcp::mcp_reply,
             branch_cleanup_review,

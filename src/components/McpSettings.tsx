@@ -28,8 +28,8 @@ export function McpSettings() {
       <span className="muted">Local access</span>
       <div className="vstack">
         <label className="check"><input type="checkbox" aria-describedby="mcp-access-help" checked={info?.enabled ?? false} disabled={!info || busy}
-          onChange={e => void toggle(e.target.checked)} /> Enable MCP for this session</label>
-        <small id="mcp-access-help" className="muted">Local MCP clients can read open repositories, including code and PR discussions. Git and PR actions ask for confirmation in Revqora. Keep this window's app running while connected.</small>
+          onChange={e => void toggle(e.target.checked)} /> Enable MCP</label>
+        <small id="mcp-access-help" className="muted">Revqora remembers this setting and starts MCP when it opens. While Revqora is running, local MCP clients can read open repositories, including code and PR discussions. Git and PR actions ask for confirmation in Revqora.</small>
       </div>
       <label htmlFor="mcp-client">Client</label>
       <select id="mcp-client" className="select" value={client} onChange={e => setClient(e.target.value as McpClient)}>
@@ -41,7 +41,7 @@ export function McpSettings() {
       <div className="vstack">
         <textarea id="mcp-config" className="textarea mono" rows={client === "codex" ? 3 : 11} value={config} readOnly spellCheck={false} />
         <button type="button" className="btn sm" disabled={!config} onClick={() => void copyText(config, "MCP configuration copied")}><Copy size={14} /> Copy MCP configuration</button>
-        <small className="muted">{client === "claude" ? "Add this entry to the project's .mcp.json." : "Add this entry to your client's user configuration."} Restart the client after configuring it. Enable access again when you reopen Revqora.</small>
+        <small className="muted">{client === "claude" ? "Add this entry to the project's .mcp.json." : "Add this entry to your client's user configuration."} Restart the client after configuring it.</small>
       </div>
     </div>
     {error && <p className="error-text" role="alert">{error}</p>}

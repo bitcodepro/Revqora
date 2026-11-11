@@ -60,7 +60,7 @@ fn tools() -> Vec<Tool> {
         Tool { name:"pull_request", description:"Inspect a PR overview, changed file list, one diff, discussion threads or CI checks. For diff, pass a fileId and revision returned by the files section. Discussion feeds depend on the provider.", properties:json!({"repository":repo(),"number":pr(),"section":choices(&["overview","files","diff","discussions","checks"]),"feed":choices(&["threads","comments","reviews"]),"cursor":text(4096),"offset":count(0,1_000_000),"fileId":text(4096),"revision":text(4096)}), required:&["repository","number"], read_only:true, uses_provider:true },
         Tool { name:"open_view", description:"Select an already open repository and navigate to a Revqora view.", properties:json!({"repository":repo(),"view":choices(&["history","changes","pull_requests","branches","worktrees","workflows","agents"])}), required:&["repository","view"], read_only:false, uses_provider:false },
         Tool { name:"request_action", description:"Ask the person in Revqora to review an action. Supply paths for stage/unstage, target for branch actions or cherry-pick (full SHA), message for commit, number for PR review/merge/workflow, or target with the workflow recipe/run ID for start_workflow/review_workflow_step. Starting a saved workflow also requires branch and base. Poll action_status before submitting another request.", properties:json!({"repository":repo(),"action":choices(&["stage","unstage","commit","create_branch","checkout","delete_branch","cherry_pick","stash","fetch","pull","push","sync","create_pr","review_pr","merge_pr","pr_workflow","start_workflow","review_workflow_step"]),"paths":paths(),"target":text(512),"message":text(8192),"number":pr(),"branch":text(1024),"base":text(1024)}), required:&["repository","action"], read_only:false, uses_provider:true },
-        Tool { name:"action_status", description:"Read the status of a previous request_action. handed_off means the native Revqora review opened; verify Git or PR state after the person finishes it.", properties:json!({"id":text(64)}), required:&["id"], read_only:true, uses_provider:false },
+        Tool { name:"action_status", description:"Read the status of a previous request_action. Commit, branch creation, checkout and local branch deletion return a terminal status and the Git result on success. Other actions may hand off to a native review.", properties:json!({"id":text(64)}), required:&["id"], read_only:true, uses_provider:false },
     ]
 }
 
@@ -184,7 +184,15 @@ fn error_reason(code: &str) -> (&'static str, bool) {
         "provider_unavailable" | "provider_rate_limited" => ("provider", true),
         "provider_error" | "pr_connection_required" => ("provider", false),
         "invalid_arguments" | "invalid_cursor" | "invalid_commit" | "unknown_tool" => ("input", false),
-        "repository_not_open" | "commit_not_found" | "file_not_found" | "stale_state" => ("repository", false),
+        "repository_not_open"
+        | "commit_not_found"
+        | "file_not_found"
+        | "initial_commit_required"
+        | "branch_exists"
+        | "branch_not_found"
+        | "branch_checked_out"
+        | "branch_protected"
+        | "stale_state" => ("repository", false),
         _ => ("internal", false),
     }
 }

@@ -523,7 +523,7 @@ for CLI setup and automation limits.
 
 ### Connect an external agent through MCP
 
-1. Open Revqora, then go to **Settings → General → MCP** and select **Enable MCP for this session**.
+1. Open Revqora, then go to **Settings → General → MCP** and select **Enable MCP**.
 2. Choose **Codex**, **VS Code**, or **Claude Code** and select **Copy MCP configuration**. Add the entry to the client's configuration and restart the client. The snippet includes the absolute path to this installation.
 3. Keep Revqora running. Ask the agent to call `list_repositories` and use the returned repository ID. Enable access again when you reopen Revqora.
 
@@ -552,6 +552,8 @@ Use your actual path, or copy the ready-to-use entry from Settings. Add the VS C
 
 For example, ask the agent to inspect the unstaged diff, propose files to stage and send one staging request. Switch to Revqora and review the exact paths in the **MCP request** dialog. After approval the agent can read the staged state and propose a commit message in a separate request. Branch deletion, push, Sync, and PR review and merge use Revqora's existing review dialogs. An action status of `handed_off` means Revqora took over the review. Check the resulting Git or PR state to confirm what happened.
 
+You can edit a proposed commit message or new branch name in the approval dialog. Commit, branch creation, checkout and local branch deletion report a terminal outcome through `action_status`. Successful results contain the commit SHA, the created or deleted branch and its SHA, or the previous and current branch after checkout. Creating a Git branch through MCP requires a starting commit. Revqora reports `initial_commit_required` or `branch_exists` before showing approval when those conditions apply.
+
 The MCP staged diff includes all staged changes, including sealed stage layers. While sealed layers exist, use **Changes** in Revqora to unstage or commit them.
 
 `search_commits` searches commits reachable from local branches, remote-tracking branches, tags and the current HEAD, including a detached HEAD. It does not add the stash ref to the search. Matching is case-insensitive. `author` matches the Git author name or email, and `message` searches the full commit message. `all` matches the subject, author name or email, ref labels and SHA prefixes. Set `limit` from 1 to 100, with a default of 30. When `hasMore` is true, pass `nextCursor` as `cursor` with the same repository, mode and query. Continue even if the page is empty. Start a fresh search if the repository history changes.
@@ -560,7 +562,7 @@ Search responses report worker and repository queue time in `queueMs`, time spen
 
 `workspace_overview` reports the desktop's last observed repository status. `connection_identity` returns the selected PR account's provider, user ID, display name and login when that identity can be verified.
 
-MCP access is off on startup. When enabled, local clients can read code and PR text from open repositories in the current workspace, and their model provider may receive those results. PR access uses the connection selected in PR Center. Revqora uses an authenticated loopback bridge and a session file in its portable data folder. The copied configuration contains the executable path and arguments. Requests for changes require approval in the desktop app.
+MCP access is off by default. Revqora saves your choice in its portable data folder and starts MCP on launch when enabled. Local clients can read code and PR text from open repositories in the current workspace, and their model provider may receive those results. PR access uses the connection selected in PR Center. Revqora uses an authenticated loopback bridge and creates a fresh session when MCP starts. The copied configuration contains the executable path and arguments. Requests for changes require approval in the desktop app.
 
 ### Explore changed code and dependent branches
 

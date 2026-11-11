@@ -74,6 +74,7 @@ export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 export const api = {
   mcpInfo: () => call<{ enabled: boolean; executable: string }>("mcp_info"),
   mcpEnable: (enabled: boolean) => call<{ enabled: boolean; executable: string }>("mcp_enable", { enabled }),
+  mcpRestore: () => call<void>("mcp_restore"),
   mcpLease: (session: string, id: string | null = null) => call<boolean>("mcp_lease", { session, id }),
   mcpReply: (session: string, id: string, value: unknown, error: import("./mcpErrors").McpError | null = null) => call<void>("mcp_reply", { session, id, value: value ?? null, error }),
   workingFileRead: (repo:string,path:string) => call<{content:string;revision:string}>("working_file_read",{repo,path}),
