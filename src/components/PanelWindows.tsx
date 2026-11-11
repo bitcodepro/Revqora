@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { ExternalLink, PanelTop } from "lucide-react";
 import { contextMenu, openOverlay, toast, useUi, type MenuItem } from "../lib/ui";
 import { registerUiSurface, surfaceDocument } from "../lib/uiSurfaces";
+import { installIconHints } from "../lib/iconHints";
 import { useSettings } from "../lib/settings";
 import { useRepos } from "../lib/store";
 import { workspaceMode } from "../lib/workspaceLayouts";
@@ -10,7 +11,7 @@ import { PANEL_NAMES, bindingFor, prettyCombo } from "../lib/shortcuts";
 
 const panelNames = PANEL_NAMES;
 export type PanelId = keyof typeof panelNames;
-type SidebarId = "workspaces" | "repositories" | "branches";
+type SidebarId = "workspaces" | "groups" | "repositories" | "branches";
 type Panels = Partial<Record<PanelId, Window>>;
 interface PanelWindows {
   panels: Panels;
@@ -22,10 +23,11 @@ const Context = createContext<PanelWindows>({ panels: {}, detach: () => {}, atta
 export const usePanelWindows = () => useContext(Context);
 
 export function PanelWindowsProvider({ children }: { children: ReactNode }) {
+  useEffect(() => installIconHints(document), []);
   const [panels, setPanels] = useState<Panels>({});
   const sessions = useRef(new Map<PanelId, { view: Window; close: () => void; check: () => void }>());
   const toggleSidebar = useCallback((id: SidebarId) => {
-    const view = sessions.current.get(id)?.view;
+    const view = id === "groups" ? undefined : sessions.current.get(id)?.view;
     if (view && !view.closed) { view.focus(); return; }
 
     const repos = useRepos.getState();
@@ -38,6 +40,9 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
     const layout = settings.layouts[mode];
     if (id === "workspaces") {
       settings.set({ workspacesOpen: layout.focusMode || !settings.workspacesOpen });
+      if (layout.focusMode) settings.setLayout(mode, { focusMode: false });
+    } else if (id === "groups") {
+      settings.set({ groupsOpen: layout.focusMode || !settings.groupsOpen });
       if (layout.focusMode) settings.setLayout(mode, { focusMode: false });
     } else if (id === "repositories") {
       settings.setLayout(mode, { repositoriesOpen: layout.focusMode || !layout.repositoriesOpen, focusMode: false });
@@ -83,6 +88,7 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
     if (!view) { toast.warning("Could not open a separate window"); return; }
     const started = performance.now();
     let doc: Document | null = null;
+    let removeHints: (() => void) | undefined;
     const syncTheme = () => {
       if (!doc) return;
       doc.documentElement.dataset.theme = document.documentElement.dataset.theme;
@@ -108,6 +114,7 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
       clearTimeout(resizeTimer);
       view.removeEventListener("resize", onResize);
       doc?.removeEventListener("contextmenu", onContext);
+      removeHints?.();
       if (useUi.getState().menu?.surface === view) useUi.getState().closeMenu();
       useUi.getState().dialogs.filter(dialog => dialog.surface === view).forEach(dialog => dialog.resolve(null));
       if (!view.closed) { rememberSize(); view.close(); }
@@ -126,6 +133,7 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
       }
       if (doc === next) return;
       doc?.removeEventListener("contextmenu", onContext);
+      removeHints?.();
       doc = next;
       doc.title = `${panelNames[id]} · Revqora`;
       syncTheme();
@@ -135,6 +143,7 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
         doc.head.append(copy);
       }
       doc.addEventListener("contextmenu", onContext);
+      removeHints = installIconHints(doc);
       view.addEventListener("resize", onResize);
       setPanels(current => ({ ...current, [id]: view }));
       if (id === "workspaces") useSettings.getState().set({ workspacesOpen: true });

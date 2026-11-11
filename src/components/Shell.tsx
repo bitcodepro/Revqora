@@ -27,6 +27,7 @@ import {
   FolderKanban,
   FolderOpen,
   FolderSearch,
+  FolderTree,
   GitBranch,
   GitBranchPlus,
   GitMerge,
@@ -109,6 +110,7 @@ export function TopBar() {
   const dark = resolvedTheme(theme) === "dark";
   const overview = useUi((s) => s.repositoryOverview);
   const workspacesOpen = useSettings(s => s.workspacesOpen);
+  const groupsOpen = useSettings(s => s.groupsOpen);
   const shortcuts = useSettings(s => s.shortcuts);
   const updatePhase = useUpdate(s => s.phase);
   const { layout: { repositoriesOpen, branchesOpen, focusMode } } = useWorkspaceLayout();
@@ -124,6 +126,7 @@ export function TopBar() {
   };
   const menu: MenuItem[] = [
     { label: "Workspaces", icon: <FolderKanban size={15}/>, checked: workspacesOpen && !focusMode, hint: prettyCombo(bindingFor("workspacesPanel", shortcuts)), onClick: () => toggleSidebar("workspaces") },
+    { label: "Toggle Groups panel", icon: <FolderTree size={15}/>, checked: groupsOpen && !focusMode, hint: prettyCombo(bindingFor("groupsPanel", shortcuts)), onClick: () => toggleSidebar("groups") },
     { label: "Toggle repositories panel", icon: <PanelLeft size={15}/>, hint: prettyCombo(bindingFor("repositoriesPanel", shortcuts)), onClick: () => toggleSidebar("repositories") },
     { label: "Toggle branches panel", icon: <GitBranch size={15}/>, checked: showBranches, disabled: !canToggleBranches, hint: prettyCombo(bindingFor("branchesPanel", shortcuts)), onClick: () => toggleSidebar("branches") },
     { label: overview ? "Close repository overview" : "All repositories", icon: <LayoutGrid size={15}/>, onClick: toggleRepositoryOverview },
@@ -170,6 +173,7 @@ export function TopBar() {
     <div className="topbar" onContextMenu={e => { if (!(e.target as HTMLElement).closest("button, select, input, .repo-current")) contextMenu(e, menu); }}>
       <div className="topbar-navigation" role="group" aria-label="Repository navigation">
         <button type="button" className={`icon-btn ${workspacesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle Workspaces panel", "workspacesPanel")} aria-label="Toggle Workspaces panel" aria-pressed={workspacesOpen && !focusMode} onClick={() => toggleSidebar("workspaces")}><FolderKanban size={16}/></button>
+        <button type="button" className={`icon-btn ${groupsOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle Groups panel", "groupsPanel")} aria-label="Toggle Groups panel" aria-expanded={groupsOpen && !focusMode} onClick={() => toggleSidebar("groups")}><FolderTree size={16}/></button>
         <button type="button" className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle repositories panel", "repositoriesPanel")} aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => toggleSidebar("repositories")}><PanelLeft size={16} /></button>
         <button type="button" className={`icon-btn ${showBranches ? "active" : ""}`} title={shortcutTitle("Toggle branches panel", "branchesPanel")} aria-label="Toggle branches panel" aria-expanded={showBranches} disabled={!canToggleBranches} onClick={() => toggleSidebar("branches")}><GitBranch size={16} /></button>
       </div>

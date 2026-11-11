@@ -3,7 +3,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { FolderGit2, FolderOpen, FolderSearch, Loader2 } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { basename } from "../lib/format";
-import { planFolderWorkspaces, useLibrary } from "../lib/repositoryLibrary";
+import { planFolderWorkspaces, repositoryKey, useLibrary } from "../lib/repositoryLibrary";
+import { folderWorkspaceTree } from "../lib/folderWorkspaceTree";
+import { visibleTree } from "../lib/libraryTree";
 import { importFolderRepositories } from "../lib/repositoryWorkspaces";
 import type { RepositoryFolderScan } from "../lib/types";
 import { showDialog } from "../lib/ui";
@@ -21,19 +23,24 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
   const [selected, setSelected] = useState(new Set<string>());
   const [createWorkspaces, setCreateWorkspaces] = useState(true);
   const [error, setError] = useState("");
-  const groups = new Map<string | null, string[]>();
-  const relativePaths = new Map(scan?.repositories.map((repo) => [repo.root, repo.relativePath]));
-  for (const repo of scan?.repositories ?? []) {
-    const folder = createWorkspaces ? repo.workspaceFolder : null;
-    const roots = groups.get(folder) ?? [];
-    roots.push(repo.root);
-    groups.set(folder, roots);
-  }
-  const workspaceGroups = [...groups].flatMap(([folder, roots]) => {
-    const included = roots.filter((root) => selected.has(root));
-    return folder && included.length ? [{ folder, roots: included }] : [];
-  });
+  const repositories = scan?.repositories ?? [];
+  const allRoots = repositories.map(repo => repo.root);
+  const relativePaths = new Map(repositories.map(repo => [repo.root, repo.relativePath]));
+  const workspaceGroups = createWorkspaces ? folderWorkspaceTree(repositories, selected) : [];
   const plans = planFolderWorkspaces(workspaces, workspaceGroups);
+  const preview = createWorkspaces
+    ? folderWorkspaceTree(repositories, new Set(allRoots)).map(({folder, parentFolder, roots}) => ({
+      id: repositoryKey(folder), parentId: parentFolder ? repositoryKey(parentFolder) : null,
+      name: basename(folder) || "Imported workspace", roots,
+    }))
+    : [{ id: "", parentId: null, name: "Open directly", roots: allRoots }];
+  const subtreeRoots = new Map(preview.map(entry => [entry.id, [...entry.roots]]));
+  for (const entry of [...preview].reverse()) {
+    if (entry.parentId) {
+      const parent = subtreeRoots.get(entry.parentId)!;
+      for (const root of subtreeRoots.get(entry.id)!) parent.push(root);
+    }
+  }
   const selectedCount = selected.size;
   const newCount = plans.filter((plan) => !plan.existing).length;
   const updatedCount = plans.length - newCount;
@@ -111,9 +118,9 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     {scan && <>
       {scan.skipped > 0 && <p className="batch-note" role="status">Skipped {scan.skipped} linked, inaccessible, or invalid entries.</p>}
       {!scan.repositories.length ? <div className="cg-empty">No Git working copies found in this folder.</div> : <>
-        {scan.repositories.some((repo) => repo.workspaceFolder) && <label className="repository-import-option">
-          <input type="checkbox" checked={createWorkspaces} onChange={(event) => setCreateWorkspaces(event.target.checked)} /> Create Workspaces from repository parent folders
-        </label>}
+        <label className="repository-import-option">
+          <input type="checkbox" checked={createWorkspaces} onChange={(event) => setCreateWorkspaces(event.target.checked)} /> Recreate the folder tree as Workspaces
+        </label>
         <div className="workspace-editor-selection">
           <span className="batch-note">{selectedCount} of {scan.repositories.length} selected</span>
           <button type="button" className="btn sm" onClick={() => select(scan.repositories.map((repo) => repo.root), selectedCount !== scan.repositories.length)}>
@@ -121,20 +128,21 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
           </button>
         </div>
         <div className="library-list workspace-editor-list">
-          {[...groups].sort(([a], [b]) => Number(a !== null) - Number(b !== null)).map(([folder, roots]) => {
-            const plan = plans.find((item) => item.folder === folder);
-            const title = folder ? `Workspace · ${plan?.name ?? basename(folder)}` : "Open directly";
-            const included = roots.filter((root) => selected.has(root)).length;
-            return <section key={folder ?? ""} className="repository-import-group">
+          {visibleTree(preview, () => true, () => false, false).map(({entry, depth}) => {
+            const plan = plans.find(item => repositoryKey(item.folder) === entry.id);
+            const title = entry.id ? `Workspace · ${plan?.name ?? entry.name}` : entry.name;
+            const subtree = subtreeRoots.get(entry.id)!;
+            const included = subtree.filter(root => selected.has(root)).length;
+            return <section key={entry.id} className="repository-import-group" style={{ marginInlineStart: Math.min(depth, 8) * 12 }}>
               <label className="repository-import-heading">
-                <input type="checkbox" checked={included === roots.length}
-                  ref={(input) => { if (input) input.indeterminate = included > 0 && included < roots.length; }}
-                  onChange={(event) => select(roots, event.target.checked)} />
+                <input type="checkbox" checked={included === subtree.length}
+                  ref={(input) => { if (input) input.indeterminate = included > 0 && included < subtree.length; }}
+                  onChange={(event) => select(subtree, event.target.checked)} />
                 <b>{title}</b>
                 {plan?.existing && <span className="pill">Existing</span>}
-                <span className="faint">{included === roots.length ? roots.length : `${included}/${roots.length}`}</span>
+                <span className="faint">{included === subtree.length ? subtree.length : `${included}/${subtree.length}`}</span>
               </label>
-              {roots.map((root) => <label className="library-row" key={root}>
+              {entry.roots.map((root) => <label className="library-row" key={root}>
                 <input type="checkbox" checked={selected.has(root)} onChange={(event) => select([root], event.target.checked)} />
                 <FolderGit2 size={15} />
                 <div className="grow-text"><b>{basename(root)}</b><span className="batch-note library-path" title={root}>{relativePaths.get(root) || "."}</span></div>

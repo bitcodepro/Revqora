@@ -7,6 +7,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { canCheckUpdates, useUpdate } from "../lib/update";
 import { SHORTCUTS, bindingFor, comboFromEvent, prettyCombo, shortcutConflict } from "../lib/shortcuts";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { ShortcutTransfer } from "./ShortcutTransfer";
 import {
   AlertTriangle,
   ArrowRight,
@@ -961,6 +962,7 @@ function ShortcutSettings() {
   const filtered = SHORTCUTS.filter((sc) => `${sc.label} ${sc.description} ${prettyCombo(bindingFor(sc.id, overrides))}`.toLowerCase().includes(search));
   return (
     <>
+      <ShortcutTransfer />
       <input className="input shortcut-search" aria-label="Find shortcut" placeholder="Find an action or shortcut…" value={query} onChange={(e) => { setQuery(e.target.value); setError(""); }} />
       <div className="batch-note">Select a shortcut and press a new combination. Press Escape to cancel or Backspace to clear it.</div>
       {error && <div className="callout warn" role="alert">{error}</div>}
@@ -992,7 +994,7 @@ function ShortcutSettings() {
                     setError("Use Ctrl, Command or Alt with a key, or use a function key.");
                     return;
                   }
-                  const conflict = shortcutConflict(sc.id, combo, overrides);
+                  const conflict = shortcutConflict(sc.id, combo, overrides, e);
                   if (conflict) { setError(`${prettyCombo(combo)} is already assigned to ${conflict.label}.`); return; }
                   set({ shortcuts: { ...overrides, [sc.id]: combo } });
                   setError("");

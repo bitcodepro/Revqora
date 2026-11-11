@@ -18,7 +18,7 @@ import { PullRequestsView } from "./components/PullRequests";
 import { useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
 import { openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
-import { actionFor, comboFromEvent, matchesShortcut, PANEL_NAMES, shortcutTitle } from "./lib/shortcuts";
+import { actionFor, matchesShortcut, PANEL_NAMES, shortcutTitle } from "./lib/shortcuts";
 import { settingsDialog } from "./components/dialogs";
 import { repoToolsDialog } from "./components/RepoTools";
 import { Onboarding } from "./components/Onboarding";
@@ -51,6 +51,7 @@ import { RepositoryOverview, RepositorySidebar } from "./components/Repositories
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
 import { WorkspacesSidebar } from "./components/WorkspacesSidebar";
+import { GroupsSidebar } from "./components/GroupsSidebar";
 import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows, type PanelId } from "./components/PanelWindows";
 import "./styles/workspace.css";
 
@@ -90,25 +91,25 @@ function RepositoryRefresh({ root }: { root: string }) {
   </button>;
 }
 
-function RepositoryContent({ tab }: { tab: RepoTab }) {
-  if (!tab.info) return <div className="repository-opening" role="status">
+function RepositoryContent({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: boolean }) {
+  if (!tab.info && !combinedPulls) return <div className="repository-opening" role="status">
     <h2>{tab.root.split(/[\\/]/).filter(Boolean).at(-1)}</h2>
     <p>{tab.error ? "Repository unavailable" : "Opening repository…"}</p>
     <code>{tab.root}</code>
     {tab.error && <><p role="alert">{tab.error}</p><button type="button" className="btn" onClick={() => void A.openRepoPath(tab.root)}>Try again</button></>}
   </div>;
-  return <RepoWorkspace tab={tab} />;
+  return <RepoWorkspace tab={tab} combinedPulls={combinedPulls} />;
 }
 
 const repositoryRemotesKey = (tab: RepoTab) => JSON.stringify(tab.refs?.remotes.map(({ name, fetchUrl }) => [name, fetchUrl]) ?? []);
 
-function RepoWorkspace({ tab }: { tab: RepoTab }) {
+function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: boolean }) {
   const { panels } = usePanelWindows();
   const historyMenu = usePanelTitleMenu("history");
   const changesMenu = usePanelTitleMenu("changes");
   const pullMenu = usePanelTitleMenu("pulls");
   const root = tab.root;
-  const overlay = useUi((s) => (s.overlay && s.overlay.root === tab.root ? s.overlay : null));
+  const overlay = useUi(s => s.overlay && (s.overlay.root === root || (combinedPulls && s.overlay.kind === "workflows" && s.overlay.pull)) ? s.overlay : null);
   const patch = useRepos((s) => s.patch);
   const { mode, layout, setLayout } = useWorkspaceLayout();
   const sidebarW = layout.sidebarWidth;
@@ -157,7 +158,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
 
   return (
     <div className="workspace" style={{ ["--sidebar-w" as string]: `${showBranches ? sw : 0}px` }}>
-      <div className="branches-slot" hidden={!showBranches}>{!panels.branches && <Sidebar tab={tab} />}</div>
+      <div className="branches-slot" hidden={!showBranches}>{!panels.branches && tab.info && <Sidebar key={root} tab={tab} />}</div>
       {showBranches && <Splitter dir="v" style={{ left: sw }} onDrag={(d) => setSw((w) => Math.max(180, Math.min(420, w + d)))} onEnd={() => setLayout({ sidebarWidth: sw })} />}
       <div className="main">
         <div className="main-head">
@@ -171,7 +172,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
             </button>
           </div>
           <button className={`view-tab ${tab.view === "pulls" ? "on" : ""}`} onContextMenu={pullMenu} onClick={() => patch(root, { view: "pulls" })} title={shortcutTitle("Pull requests", "pulls")}>
-            <GitPullRequest size={15} /> {forgeKind === "gitlab" ? "Merge requests" : "Pull requests"}
+            <GitPullRequest size={15} /> {!combinedPulls && forgeKind === "gitlab" ? "Merge requests" : "Pull requests"}
           </button>
           <div className="spacer" />
           {tab.view === "history" && (
@@ -240,7 +241,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
         {overlay?.kind === "worktrees" && !panels.worktrees && <WorktreeManager key={root} root={root} />}
         {overlay?.kind === "stacks" && <StackManager key={root} root={root}/>}
         {overlay?.kind === "historyExplorer" && <HistoryExplorer key={root} root={root}/>}
-        {overlay?.kind === "workflows" && <WorkflowBuilder key={root} root={root} pull={overlay.pull} />}
+        {overlay?.kind === "workflows" && <WorkflowBuilder key={overlay.root} root={overlay.root} pull={overlay.pull} />}
         {overlay?.kind === "agents" && <AgentWorkspace key={root} root={root} />}
         {overlay?.kind === "stash" && <StashView key={`${overlay.root}:${overlay.oid}`} root={overlay.root} index={overlay.index} oid={overlay.oid} />}
         {overlay?.kind === "tree" && <TreeBrowser key={overlay.rev} root={root} rev={overlay.rev} />}
@@ -293,6 +294,8 @@ function MainApp() {
     return () => window.removeEventListener("revqora:forge-accounts", resetPullRequestActivity);
   }, []);
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
+  const prAllRepositories = useSettings(s => s.prAllRepositories);
+  const combinedPulls = prAllRepositories && tab?.view === "pulls";
   const pending = useRepos((s) => Object.values(s.tabs).some((t) => t.pendingMutations > 0));
   const busy = useUi((s) => s.busy.length > 0 || s.repositoryOperations.some(op => op.command !== "fetch_background")) || pending;
   const [dropping, setDropping] = useState(false);
@@ -306,6 +309,7 @@ function MainApp() {
   const { layout } = useWorkspaceLayout(layoutMode);
   const { focusMode, repositoriesOpen } = layout;
   const workspacesOpen = useSettings(s => s.workspacesOpen);
+  const groupsOpen = useSettings(s => s.groupsOpen);
   const repositoryCount = useRepos((s) => s.order.length);
   const hasBookmarks = useLibrary((s) => s.knownRoots.length > 0);
   const repositoryScope = useLibrary((s) => s.activeWorkspaceId) ?? "all";
@@ -400,11 +404,9 @@ function MainApp() {
         }, error => toast.error(error));
         return;
       }
-      const combo = comboFromEvent(e);
-      if (!combo) return;
       const typing = (e.target as HTMLElement)?.closest?.("input, textarea, .cm-editor");
       if (typing && !e.ctrlKey && !e.metaKey && !e.altKey && !/^F\d+$/.test(e.key)) return;
-      const id = actionFor(combo);
+      const id = actionFor(e);
       if (!id) return;
       const st = useRepos.getState();
       const a = st.active;
@@ -418,6 +420,7 @@ function MainApp() {
         refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && refreshRepositoryView(a),
         overview: toggleRepositoryOverview,
         workspacesPanel: () => toggleSidebar("workspaces"),
+        groupsPanel: () => toggleSidebar("groups"),
         repositoriesPanel: () => toggleSidebar("repositories"),
         branchesPanel: () => toggleSidebar("branches"),
         focusMode: () => useSettings.getState().setLayout(mode, { focusMode: !layout.focusMode }),
@@ -522,8 +525,9 @@ function MainApp() {
       <ActivityIndicator active={busy} />
       <div className="app-body">
         {workspacesOpen && !focusMode && !panels.workspaces && <WorkspacesSidebar onClose={() => useSettings.getState().set({ workspacesOpen: false })}/>}
+        {groupsOpen && !focusMode && <GroupsSidebar />}
         <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode || (!repositoryCount && !hasBookmarks)}>{!panels.repositories && <RepositorySidebar key={repositoryScope} />}</div>
-        <div className="workspace-host">{overview ? <RepositoryOverview key={repositoryScope} /> : tab ? <RepositoryContent key={tab.root} tab={tab} /> : <Welcome />}</div>
+        <div className="workspace-host">{overview ? <RepositoryOverview key={repositoryScope} /> : tab ? <RepositoryContent key={combinedPulls ? "all-pull-requests" : tab.root} tab={tab} combinedPulls={combinedPulls} /> : <Welcome />}</div>
       </div>
       <StatusBar />
       <ContextMenuHost />
@@ -539,7 +543,7 @@ function MainApp() {
       <DetachedPanel id="branches">{tab?.info && <Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/>}</DetachedPanel>
       <DetachedPanel id="history">{tab?.info && <GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/>}</DetachedPanel>
       <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <CommitDetails root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/> : null}</DetachedPanel>
-      <DetachedPanel id="pulls">{tab?.info && <PullRequestsView key={tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/>}</DetachedPanel>
+      <DetachedPanel id="pulls">{tab && (tab.info || prAllRepositories) && <PullRequestsView key={prAllRepositories ? "all-pull-requests" : tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/>}</DetachedPanel>
       <DetachedPanel id="changes">{tab?.info && <ChangesView key={tab.root} tab={tab} onOpenConflict={path => showMainChanges(tab.root, path)}/>}</DetachedPanel>
       <DetachedPanel id="worktrees">{tab?.info && <WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/>}</DetachedPanel>
     </div></WorkspaceLayoutContext.Provider>

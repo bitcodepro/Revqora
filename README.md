@@ -139,6 +139,18 @@ In **Manage library → Workspaces**, choose **New workspace** and select reposi
 from the library. Use **Edit repositories** to update a saved set. **Switch** opens
 that set with its saved layout. **Add to session** opens the whole set alongside
 your current repositories. Removing a repository from a workspace keeps it in the library.
+
+**Import folder…** can recreate the on-disk folder hierarchy in **Workspaces**.
+Select a workspace to open its direct repositories. Expand it to reach its child
+workspaces. Drag a workspace by its handle onto another workspace or onto **Move
+to top level**. The move updates the library tree and keeps working copies in place.
+
+Use **Ctrl** or **Shift** to select repositories, then right-click and choose
+**Create group**. Enter the name in the sidebar. Open the **Groups** panel to
+filter repositories by a group and its subgroups. Select groups in the same way
+to wrap them in a parent group. Press **F2** on a focused workspace or repository
+row to rename its label.
+
 See [repository workspaces](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md).
 
 ### Give the code more room
@@ -573,6 +585,12 @@ version, author and links to this guide, the project and issue reporting.
 
 These are defaults. Change them in **Settings → Shortcuts**. On macOS, shortcut matching also
 accepts Command for Ctrl-based actions.
+
+Use **Export shortcuts…** to save a Revqora JSON backup. **Import shortcuts…**
+accepts a Revqora backup, a [VS Code keybindings file](https://code.visualstudio.com/docs/configure/keybindings)
+or a [Rider custom keymap XML](https://www.jetbrains.com/help/rider/Configuring_Keyboard_and_Mouse_Shortcuts.html).
+Review suggested matches and choose which assignments to apply. Revqora uses
+single key combinations and its own shortcut scopes.
 
 | Keys | Action |
 | --- | --- |
