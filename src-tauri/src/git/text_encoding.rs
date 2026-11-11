@@ -47,16 +47,11 @@ impl Codec {
         match self {
             Self::Standard(encoding) => encoding.decode_without_bom_handling_and_without_replacement(bytes).map(|text| text.into_owned()),
             Self::Utf32Le | Self::Utf32Be => {
-                let units = bytes.chunks_exact(4);
-                if !units.remainder().is_empty() {
+                let (units, remainder) = bytes.as_chunks::<4>();
+                if !remainder.is_empty() {
                     return None;
                 }
-                units
-                    .map(|unit| {
-                        let unit: [u8; 4] = unit.try_into().unwrap();
-                        char::from_u32(if self == Self::Utf32Le { u32::from_le_bytes(unit) } else { u32::from_be_bytes(unit) })
-                    })
-                    .collect()
+                units.iter().map(|&unit| char::from_u32(if self == Self::Utf32Le { u32::from_le_bytes(unit) } else { u32::from_be_bytes(unit) })).collect()
             }
         }
     }
@@ -99,8 +94,9 @@ fn decoded(codec: Codec, bytes: &[u8], bom: bool, guessed: bool) -> Option<Decod
 fn wide_without_bom(bytes: &[u8]) -> Option<DecodedText> {
     let sample = &bytes[..bytes.len().min(4096)];
     if bytes.len().is_multiple_of(4) && sample.len() >= 16 {
-        let units = sample.len() / 4;
-        let lanes = sample.chunks_exact(4).fold([0; 4], |mut sums, unit| {
+        let (chunks, _) = sample.as_chunks::<4>();
+        let units = chunks.len();
+        let lanes = chunks.iter().fold([0; 4], |mut sums, unit| {
             for (sum, byte) in sums.iter_mut().zip(unit) {
                 *sum += usize::from(*byte == 0);
             }
@@ -117,8 +113,9 @@ fn wide_without_bom(bytes: &[u8]) -> Option<DecodedText> {
     if !bytes.len().is_multiple_of(2) || sample.len() < 4 {
         return None;
     }
-    let units = sample.len() / 2;
-    let lanes = sample.chunks_exact(2).fold([0; 2], |mut sums, unit| {
+    let (chunks, _) = sample.as_chunks::<2>();
+    let units = chunks.len();
+    let lanes = chunks.iter().fold([0; 2], |mut sums, unit| {
         for (sum, byte) in sums.iter_mut().zip(unit) {
             *sum += usize::from(*byte <= 8);
         }
