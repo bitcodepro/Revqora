@@ -123,11 +123,13 @@ export function AheadBehind({ ahead, behind }: { ahead: number; behind: number }
 export function FileGroups<T extends { path: string }>({
   items,
   tree,
+  expandAll = false,
   render,
   idPrefix,
 }: {
   items: T[];
   tree: boolean;
+  expandAll?: boolean;
   render: (item: T, grouped: boolean) => React.ReactNode;
   idPrefix: string;
 }) {
@@ -143,12 +145,12 @@ export function FileGroups<T extends { path: string }>({
   return (
     <>
       {dirs.map((d) => {
-        const isClosed = closed.has(d);
+        const isClosed = !expandAll && closed.has(d);
         return (
           <div key={`${idPrefix}:${d}`}>
             <div
               className="file-row folder-row"
-              onClick={() => setClosed((c) => (c.has(d) ? new Set([...c].filter((x) => x !== d)) : new Set([...c, d])))}
+              onClick={() => { if (!expandAll) setClosed((c) => (c.has(d) ? new Set([...c].filter((x) => x !== d)) : new Set([...c, d]))); }}
             >
               {isClosed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
               <Folder size={13} style={{ color: "var(--text-faint)", flex: "none" }} />

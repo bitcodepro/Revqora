@@ -58,6 +58,8 @@
   --diff-del-word: rgba(248, 81, 73, 0.4);
   --diff-hunk: rgba(90, 168, 255, 0.08);
   --diff-sel: rgba(139, 124, 255, 0.3);
+  --word-selection-bg: #315d9a;
+  --word-selection-text: #fff;
   --conflict-ours: rgba(90, 168, 255, 0.13);
   --conflict-ours-strong: rgba(90, 168, 255, 0.35);
   --conflict-theirs: rgba(241, 122, 198, 0.12);
@@ -132,6 +134,8 @@
   --diff-del-word: #f5b5af;
   --diff-hunk: #eef4ff;
   --diff-sel: rgba(101, 80, 240, 0.22);
+  --word-selection-bg: #c8ddff;
+  --word-selection-text: #122b4d;
   --conflict-ours: rgba(31, 111, 224, 0.08);
   --conflict-ours-strong: rgba(31, 111, 224, 0.22);
   --conflict-theirs: rgba(196, 55, 143, 0.07);

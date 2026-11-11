@@ -37,6 +37,15 @@ button {
 ::selection {
   background: var(--diff-sel);
 }
+::highlight(revqora-diff-word) {
+  background-color: var(--word-selection-bg);
+  color: var(--word-selection-text);
+}
+.diff-body .code::selection,
+.diff-body .code *::selection {
+  background-color: var(--word-selection-bg);
+  color: var(--word-selection-text);
+}
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
@@ -1623,6 +1632,18 @@ select[size="1"]:not([multiple]) {
   flex: 1;
   overflow: auto;
   padding: 4px 6px 8px;
+}
+.changes-list-tools {
+  flex: none;
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px 4px;
+}
+.changes-list-tools .hstack { justify-content: space-between; }
+.changes-file-search > .input { padding-right: 32px; }
+.changes-file-search > button {
+  position: absolute;
+  right: 3px;
 }
 .cg-head {
   display: flex;

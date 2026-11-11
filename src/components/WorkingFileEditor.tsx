@@ -3,6 +3,7 @@ import { Compartment, EditorState, StateEffect, StateField } from "@codemirror/s
 import { Decoration, EditorView, drawSelection, highlightActiveLine, highlightWhitespace, keymap, lineNumbers, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo, undoDepth, redoDepth } from "@codemirror/commands";
 import { indentUnit, syntaxHighlighting } from "@codemirror/language";
+import { highlightSelectionMatches } from "@codemirror/search";
 import { classHighlighter } from "@lezer/highlight";
 import { api, errorMessage, isGitError } from "../lib/api";
 import { editorDocument, tabsToSpaces } from "../lib/textEditing";
@@ -117,7 +118,7 @@ function WorkingCode({path,initial,diff,displayDiff,disabled,changed}: {
     const editor=new EditorView({parent:host.current,state:EditorState.create({doc,extensions:[
       // Keep CodeMirror's normalized document so pasted LF/CRLF text is parsed
       // correctly; serialize every line with the original separator on save.
-      history(),lineNumbers(),drawSelection(),highlightActiveLine(),syntaxHighlighting(classHighlighter),changedLines,keymap.of([indentWithTab,...defaultKeymap,...historyKeymap]),
+      history(),lineNumbers(),drawSelection(),highlightActiveLine(),highlightSelectionMatches({ wholeWords: true }),syntaxHighlighting(classHighlighter),changedLines,keymap.of([indentWithTab,...defaultKeymap,...historyKeymap]),
       EditorView.contentAttributes.of({"aria-label":"Working file content"}),
       c.options.of([]),c.editable.of([]),c.language.of([]),
       EditorView.updateListener.of(update=>{if(update.docChanged){edited.current=true;publishText(bom+update.state.doc.sliceString(0,undefined,eol));}}),

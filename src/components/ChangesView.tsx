@@ -29,14 +29,16 @@ import {
   Info,
   Combine,
   ScanSearch,
+  Search,
   List,
   FolderTree,
   HardDrive,
+  X,
 } from "lucide-react";
 import { api, errorMessage, isGitError, newOpId } from "../lib/api";
 import { useRepos, type ChangeSel, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
-import { bindingFor, matchesShortcut, prettyCombo } from "../lib/shortcuts";
+import { bindingFor, matchesShortcut, prettyCombo, shortcutTitle } from "../lib/shortcuts";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { contextMenu, copyText, endBusy, openOverlay, showDialog, startBusy, toast, updateBusy, type MenuItem } from "../lib/ui";
 import * as A from "../lib/actions";
@@ -228,6 +230,8 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const { mode, layout: { changesListWidth: width }, setLayout: setSettings } = useWorkspaceLayout();
   const opts = useDiffOpts();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [fileQuery, setFileQuery] = useState("");
+  const fileSearch = useRef<HTMLInputElement>(null);
   const [editing, setEditing] = useState<{ root: string; path: string; untracked: boolean; diff: FileDiff | null } | null>(null);
   const [diffResult, setDiffResult] = useState<{ key: string; view: string; loading: boolean; value?: FileDiff; error?: string } | null>(()=>{
     const view=JSON.stringify([root,tab.changeSel,opts]);const value=workingDiffSnapshot(root,view);
@@ -245,6 +249,17 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const unstaged = files.filter((f) => !f.conflict && f.worktree !== ".");
   const staged = files.filter((f) => !f.conflict && f.index !== ".");
   const layers = tab.layers?.active ? tab.layers : null;
+  const query = fileQuery.trim().toLowerCase().replaceAll("\\", "/");
+  const matchesFile = (f: { path: string; origPath?: string | null }) =>
+    f.path.toLowerCase().includes(query) || !!f.origPath?.toLowerCase().includes(query);
+  const visibleConflicts = query ? conflicts.filter(matchesFile) : conflicts;
+  const visibleUnstaged = query ? unstaged.filter(matchesFile) : unstaged;
+  const visibleStaged = query ? staged.filter(matchesFile) : staged;
+  const visibleOpenFiles = query ? layers?.openFiles.filter(matchesFile) : layers?.openFiles;
+  const visibleLayers = layers?.layers.map(layer => ({ layer, files: query ? layer.files.filter(matchesFile) : layer.files }));
+  const allStagedCount = layers ? layers.layers.reduce((sum, layer) => sum + layer.files.length, layers.openFiles.length) : staged.length;
+  const visibleStagedCount = visibleLayers ? visibleLayers.reduce((sum, entry) => sum + entry.files.length, visibleOpenFiles?.length ?? 0) : visibleStaged.length;
+  const noMatches = !!tab.status && !!query && !visibleConflicts.length && !visibleUnstaged.length && !visibleStagedCount;
   const sel = tab.changeSel;
   const kind = sel?.kind;
   const path = sel?.path;
@@ -403,11 +418,13 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
           },
         }
       : {};
-  const head = (id: string, title: string, count: number, actions?: ReactNode) => (
-    <div className={`cg-head ${collapsed[id] ? "collapsed" : ""} ${dropOn === id ? "drop-on" : ""}`} onClick={() => setCollapsed((c) => ({ ...c, [id]: !c[id] }))} {...dropProps(id)}>
+  const sectionClosed = (id: string) => !query && collapsed[id];
+  const bulkTitle = (label: string) => query ? `${label} (includes files hidden by search)` : label;
+  const head = (id: string, title: string, count: number, visible: number, actions?: ReactNode) => (
+    <div className={`cg-head ${sectionClosed(id) ? "collapsed" : ""} ${dropOn === id ? "drop-on" : ""}`} onClick={() => { if (!query) setCollapsed((c) => ({ ...c, [id]: !c[id] })); }} {...dropProps(id)}>
       <ChevronDown size={14} className="chev" />
       <span className="t">{title}</span>
-      <span className="pill">{count}</span>
+      <span className="pill">{visible === count ? count : `${visible}/${count}`}</span>
       <div className="actions" onClick={(e) => e.stopPropagation()}>
         {actions}
       </div>
@@ -461,6 +478,13 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
 
   return (
     <div className="changes" data-pending={pending} data-diff-context={tab.status?.diffContextToken ?? ""} style={{ ["--changes-w" as string]: `${w}px` }} onKeyDown={e => {
+      if (matchesShortcut(e, "changesFindFile")) {
+        e.preventDefault();
+        e.stopPropagation();
+        fileSearch.current?.focus();
+        fileSearch.current?.select();
+        return;
+      }
       if (!canEdit || editing || e.repeat || !matchesShortcut(e, "workingFileEdit") ||
         (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
       e.preventDefault();
@@ -468,8 +492,8 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
       openWorkingEditor();
     }}>
       <div className="changes-left">
-        <div className="changes-lists" {...fileNavigation} aria-label="Changed files">
-          <div className="hstack" style={{ justifyContent: "flex-end", padding: "4px 4px 0" }}>
+        <div className="changes-list-tools">
+          <div className="hstack">
             <button className="btn sm" style={{ marginRight: "auto" }} onClick={() => repositoryFiles(root, "ignored")}>Ignored</button>
             <div className="seg">
               <button className={!treeView ? "on" : ""} title="Flat list" onClick={() => useSettings.getState().set({ fileView: "list" })}>
@@ -480,18 +504,37 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
               </button>
             </div>
           </div>
-          {conflicts.length > 0 && (
+          <div className="input-wrap changes-file-search">
+            <Search size={14} aria-hidden="true" />
+            <input ref={fileSearch} type="text" className="input sm" aria-label="Find changed files" placeholder="Find changed files…" title={shortcutTitle("Find changed files", "changesFindFile")}
+              value={fileQuery} onChange={e => setFileQuery(e.target.value)} onKeyDown={e => {
+                if (e.key === "Escape" && fileQuery) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setFileQuery("");
+                }
+              }} />
+            {fileQuery && <button type="button" className="icon-btn sm" aria-label="Clear file search" title="Clear file search" onClick={() => {
+              setFileQuery("");
+              fileSearch.current?.focus();
+            }}><X size={13} /></button>}
+          </div>
+        </div>
+        <div className="changes-lists" {...fileNavigation} aria-label="Changed files">
+          {noMatches && <div className="cg-empty" role="status">No matching files.</div>}
+          {visibleConflicts.length > 0 && (
             <>
               {head(
                 "conflicts",
                 "Conflicts",
                 conflicts.length,
-                <button className="btn sm warn" onClick={() => onOpenConflict(conflicts[0].path)}>
+                visibleConflicts.length,
+                <button className="btn sm warn" onClick={() => onOpenConflict(visibleConflicts[0].path)}>
                   <Swords size={12} /> Resolve
                 </button>,
               )}
-              {!collapsed.conflicts &&
-                conflicts.map((f) => (
+              {!sectionClosed("conflicts") &&
+                visibleConflicts.map((f) => (
                   <div
                     key={f.path}
                     data-file-nav=""
@@ -523,26 +566,27 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
             "unstaged",
             "Unstaged",
             unstaged.length,
+            visibleUnstaged.length,
             unstaged.length > 0 && (
               <>
-                <button className="icon-btn sm" title="Stash all changes" onClick={() => A.stash(root)}>
+                <button className="icon-btn sm" title={bulkTitle("Stash all changes")} onClick={() => A.stash(root)}>
                   <Archive size={13} />
                 </button>
-                <button className="icon-btn sm" title="Discard all…" onClick={discardAll}>
+                <button className="icon-btn sm" title={bulkTitle("Discard all…")} onClick={discardAll}>
                   <Undo2 size={13} />
                 </button>
-                <button className="icon-btn sm" title="Stage all into a new layer" onClick={stageNewLayerAll}>
+                <button className="icon-btn sm" title={bulkTitle("Stage all into a new layer")} onClick={stageNewLayerAll}>
                   <ListPlus size={14} />
                 </button>
-                <button className="btn sm" title="Stage all" onClick={() => A.stagePaths(root, unstaged.map((f) => f.path))}>
+                <button className="btn sm" title={bulkTitle("Stage all")} onClick={() => A.stagePaths(root, unstaged.map((f) => f.path))}>
                   <Plus size={12} /> Stage all
                 </button>
               </>
             ),
           )}
-          {!collapsed.unstaged && unstaged.length === 0 && <div className="cg-empty">No unstaged changes.</div>}
-          {!collapsed.unstaged &&
-            <FileGroups items={unstaged} tree={treeView} idPrefix="u" render={(f, grouped) => (
+          {!query && !sectionClosed("unstaged") && unstaged.length === 0 && <div className="cg-empty">No unstaged changes.</div>}
+          {!sectionClosed("unstaged") &&
+            <FileGroups items={visibleUnstaged} tree={treeView} expandAll={!!query} idPrefix="u" render={(f, grouped) => (
               <div
                 key={f.path}
                 className={`file-row ${selectedIs("unstaged", f.path) ? "selected" : ""}`}
@@ -576,7 +620,8 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
           {head(
             "staged",
             layers ? "Staged · layers" : "Staged",
-            layers ? layers.layers.reduce((a, l) => a + l.files.length, 0) + layers.openFiles.length : staged.length,
+            allStagedCount,
+            visibleStagedCount,
             <>
               {(layers ? layers.openFiles.length > 0 : staged.length > 0) && (
                 <button disabled={pending} className="icon-btn sm" aria-label="Seal staged changes into a layer" title="Stage layers: seal the currently staged changes into a layer. Later staging goes into a new layer on top. Each layer can be unstaged, discarded or committed independently." onClick={() => layerAct(root, () => api.layerSeal(root, null), "Layer created")}>
@@ -598,16 +643,16 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 </button>
               )}
               {!layers && staged.length > 0 && (
-                <button className="btn sm" onClick={() => A.unstagePaths(root, staged.map((f) => f.path))}>
+                <button className="btn sm" title={query ? bulkTitle("Unstage all") : undefined} onClick={() => A.unstagePaths(root, staged.map((f) => f.path))}>
                   <Minus size={12} /> Unstage all
                 </button>
               )}
             </>,
           )}
-          {!collapsed.staged && !layers && staged.length === 0 && <div className="cg-empty">Nothing staged. Double-click a file or use + to stage it.</div>}
-          {!collapsed.staged &&
+          {!query && !sectionClosed("staged") && !layers && staged.length === 0 && <div className="cg-empty">Nothing staged. Double-click a file or use + to stage it.</div>}
+          {!sectionClosed("staged") &&
             !layers &&
-            <FileGroups items={staged} tree={treeView} idPrefix="s" render={(f, grouped) => (
+            <FileGroups items={visibleStaged} tree={treeView} expandAll={!!query} idPrefix="s" render={(f, grouped) => (
               <div
                 key={f.path}
                 className={`file-row ${selectedIs("staged", f.path) ? "selected" : ""}`}
@@ -628,9 +673,9 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 </div>
               </div>
             )} />}
-          {!collapsed.staged &&
+          {!sectionClosed("staged") &&
             layers &&
-            layers.layers.map((l) => (
+            visibleLayers?.filter(entry => !query || entry.files.length > 0).map(({ layer: l, files }) => (
               <div className="layer" key={l.index} style={{ ["--layer-c" as string]: layerColor(l.index) }} onContextMenu={(e) => contextMenu(e, layerMenu(root, l, layers.layers.length))}>
                 <div className="layer-head">
                   <span className="layer-badge">{l.index + 1}</span>
@@ -650,7 +695,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                   </div>
                 </div>
                 <div className="layer-files">
-                  {l.files.map((f) => (
+                  {files.map((f) => (
                     <div
                       key={f.path}
                       className={`file-row ${selectedIs("layer", f.path, l.index) ? "selected" : ""}`}
@@ -676,7 +721,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 </div>
               </div>
             ))}
-          {!collapsed.staged && layers && (
+          {!sectionClosed("staged") && layers && (!query || !!visibleOpenFiles?.length) && (
             <div className="layer open-layer" style={{ ["--layer-c" as string]: layerColor(layers.layers.length) }}>
               <div className="layer-head">
                 <span className="layer-badge">{layers.layers.length + 1}</span>
@@ -697,7 +742,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
               </div>
               <div className="layer-files">
                 {layers.openFiles.length === 0 && <div className="cg-empty">Empty — stage files to add them here.</div>}
-                {layers.openFiles.map((f) => (
+                {visibleOpenFiles?.map((f) => (
                   <div
                     key={f.path}
                     className={`file-row ${selectedIs("staged", f.path) ? "selected" : ""}`}

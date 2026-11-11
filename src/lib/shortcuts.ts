@@ -123,6 +123,7 @@ export const SHORTCUTS: ShortcutDef[] = [
     ["historyCopyHash", "Copy selected commit hash", "Ctrl+C"],
   ].map(([id, label, key]) => ({ id, label, description: "Runs from the commit list in History.", default: key, scope: "history" as const })),
   { id: "previewNextFile", label: "Next changed file", description: "Preview the next changed file.", default: "Ctrl+ArrowDown", scope: "files" },
+  { id: "changesFindFile", label: "Find changed files", description: "Focus the file filter in Changes.", default: "", scope: "files" },
   { id: "previewPreviousFile", label: "Previous changed file", description: "Preview the previous changed file.", default: "Ctrl+ArrowUp", scope: "files" },
   { id: "previewNextFileAlternate", label: "Next changed file (alternate)", description: "Preview the next changed file with a second binding.", default: "Alt+ArrowDown", scope: "files" },
   { id: "previewPreviousFileAlternate", label: "Previous changed file (alternate)", description: "Preview the previous changed file with a second binding.", default: "Alt+ArrowUp", scope: "files" },
