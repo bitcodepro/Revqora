@@ -221,10 +221,11 @@ the source later cannot change the recorded creator. Explicit revisions such as
 `HEAD~1`, `main^` and historical reflog selectors are supported. Branch creation
 also accepts Git's unique merge-base shorthand (`main...other`, `...other`,
 `main...`); multiple or missing merge bases leave the repository unchanged.
-Upstream/push selectors are case-insensitive and do not establish historical
-local creation. Older unqualified named
-sources are ambiguous and stay unknown; today's branches or tags cannot prove
-which namespace was selected at creation time.
+Upstream and push selectors are case-insensitive and do not establish historical
+local creation. The creator can still be read from a Git creation entry with a
+differently named source such as `main`. A same-name tracking checkout leaves
+the original creator unknown. Revqora enables the creation reflog for new local
+branches it creates, including in new worktrees.
 Git does not publish branch creators over Fetch/Clone. Imported remote branches,
 expired/missing creation logs, unsupported reftable logs and oversized logs have
 unknown creators and are excluded rather than guessed. This is a local navigation

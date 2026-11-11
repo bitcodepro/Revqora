@@ -232,6 +232,10 @@ fn historical_creation_does_not_change_when_source_refs_are_renamed_deleted_or_s
     ops::create_branch(r, "local-child", Some("feature/local"), false).unwrap();
     ops::create_branch(r, "tag-child", Some("starting-tag"), false).unwrap();
     ops::create_branch(r, "remote-child", Some("origin/topic"), false).unwrap();
+    git(&["branch", "cli-child", "feature/local"]);
+    git(&["branch", "cli-from-main", "main"]);
+    git(&["update-ref", "refs/remotes/origin/cli-from-main", "HEAD"]);
+    git(&["branch", "--set-upstream-to=origin/cli-from-main", "cli-from-main"]);
     let head = git(&["rev-parse", "HEAD"]);
     let index = std::fs::read(r.join(".git/index")).ok();
     let verify = || {
@@ -239,7 +243,7 @@ fn historical_creation_does_not_change_when_source_refs_are_renamed_deleted_or_s
         let manager = revqora_lib::git::branch_manager::snapshot(r, None).unwrap();
         assert!(sidebar.local.iter().find(|b| b.name == "topic").unwrap().creator.is_none());
         assert!(manager.branches.iter().find(|b| b.local && b.name == "topic").unwrap().creator.is_none());
-        for name in ["local-child", "tag-child", "remote-child"] {
+        for name in ["local-child", "tag-child", "remote-child", "cli-child", "cli-from-main"] {
             assert_eq!(sidebar.local.iter().find(|b| b.name == name).unwrap().creator.as_ref().unwrap().email, "creator@example.invalid", "{name}");
             assert_eq!(
                 manager.branches.iter().find(|b| b.local && b.name == name).unwrap().creator.as_ref().unwrap().email,
@@ -297,6 +301,7 @@ fn revision_expressions_and_new_worktrees_record_local_creation_without_changing
         git(&["branch", name, start]);
     }
     git(&["branch", "topic", "origin/topic"]);
+    git(&["config", "core.logAllRefUpdates", "false"]);
     ops::create_branch(r, "app-ancestor", Some("HEAD~1"), false).unwrap();
     assert_eq!(git(&["rev-parse", "app-ancestor"]), a);
     git(&["config", "branch.autoSetupMerge", "always"]);
@@ -337,6 +342,7 @@ fn revision_expressions_and_new_worktrees_record_local_creation_without_changing
     assert!(snapshot.local.iter().find(|b| b.name == "checkout-qualified-remote").unwrap().upstream.is_none());
     assert_eq!(git(&["branch", "--show-current"]), "checkout-qualified-remote");
     assert!(refs::snapshot(&wt).unwrap().local.iter().find(|b| b.name == "worktree-created").unwrap().creator.is_some());
+    assert_eq!(git(&["config", "core.logAllRefUpdates"]), "false");
 }
 
 #[test]

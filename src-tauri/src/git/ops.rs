@@ -307,7 +307,13 @@ pub fn create_branch(repo: &Path, name: &str, start: Option<&str>, checkout: boo
     let name = name.trim();
     runner::run(repo, ["check-ref-format", "--branch", name]).map_err(|_| GitError::new(format!("'{name}' is not a valid branch name.")))?;
     let qualified = start.map(|s| super::branch_origin::branch_start(repo, s)).transpose()?;
-    let mut args = if checkout { vec!["switch", "--no-overwrite-ignore", "-c", name] } else { vec!["branch", name] };
+    let mut args = if checkout {
+        let mut args = super::branch_origin::RECORD_CREATION_REFLOG.to_vec();
+        args.extend(["switch", "--no-overwrite-ignore", "-c", name]);
+        args
+    } else {
+        vec!["branch", "--create-reflog", name]
+    };
     if let Some(s) = start {
         if checkout && qualified.as_deref().is_some_and(|reference| reference.starts_with("refs/remotes/")) {
             args.push("--no-track");
