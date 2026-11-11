@@ -72,8 +72,9 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
-  mcpInfo: () => call<{ enabled: boolean; executable: string }>("mcp_info"),
-  mcpEnable: (enabled: boolean) => call<{ enabled: boolean; executable: string }>("mcp_enable", { enabled }),
+  mcpInfo: () => call<import("./types").McpInfo>("mcp_info"),
+  mcpEnable: (enabled: boolean) => call<import("./types").McpInfo>("mcp_enable", { enabled }),
+  mcpSetApprovalMode: (approvalMode: import("./types").McpApprovalMode) => call<import("./types").McpInfo>("mcp_set_approval_mode", { approvalMode }),
   mcpRestore: () => call<void>("mcp_restore"),
   mcpCherryPickStatus: (repo: string, id: string) => call<{ phase: "succeeded"; sha: string } | { phase: "cancelled" | "failed"; reason: string } | null>("mcp_cherry_pick_status", { repo, id }),
   mcpLease: (session: string, id: string | null = null) => call<boolean>("mcp_lease", { session, id }),
@@ -235,8 +236,8 @@ export const api = {
   undoCommit: (repo: string) => call<void>("undo_commit", { repo }),
 
   fetch: (repo: string, remote: string | null, prune: boolean, opId: string) => call<string>("fetch", { repo, remote, prune, opId }),
-  pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string) =>
-    call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState }),
+  pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string, pruneRemote?: boolean) =>
+    call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState, pruneRemote }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
   pushRef: (repo: string, remote: string, refspec: string, opId: string, expectedState?: string | null) => call<string>("push_ref", { repo, remote, refspec, opId, expectedState }),
   remoteAdd: (repo: string, name: string, url: string) => call<void>("remote_add", { repo, name, url }),

@@ -70,6 +70,7 @@ pub struct Plan {
     pub notices: Vec<String>,
     pub queue_state: Option<String>,
     pub merged: bool,
+    pub source_branch_may_be_deleted: bool,
 }
 impl Plan {
     fn block(&mut self, s: impl Into<String>) {
@@ -112,6 +113,7 @@ fn prepare(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<P
         notices: vec![],
         queue_state: None,
         merged: d.pull.state == "merged",
+        source_branch_may_be_deleted: matches!(f.kind.as_str(), "github" | "bitbucket-server"),
     };
     if !oid(&p.source_sha) || !oid(&p.target_sha) {
         p.block("The server has not provided complete source and target commit IDs.");
@@ -124,6 +126,9 @@ fn prepare(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<P
     }
     // Closed PRs still expose completion state, without needing protected-branch read scopes.
     let raw = if d.pull.state == "open" { providers::inspect(repo, &f, &d, &v, &mut p)? } else { Value::Null };
+    if p.source_branch_may_be_deleted {
+        p.notices.push("The provider may delete the source branch after merging.".into());
+    }
     p.notices.push("The server enforces its current permissions and policies. Revqora never requests a policy bypass. Target branches can advance during a server request.".into());
     scoped(repo, n, connection, revision)?;
     p.revision = hash(serde_json::to_vec(&json!([&p, &raw])).map_err(|_| error("Could not fingerprint merge review."))?);

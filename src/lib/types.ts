@@ -1,5 +1,8 @@
 // Mirrors of the Rust backend types (serde camelCase).
 
+export type McpApprovalMode = "ask" | "full" | "delete_only";
+export interface McpInfo { enabled: boolean; executable: string; approvalMode: McpApprovalMode }
+
 export interface RemoteBranchTarget {
   label: string;
   remote: string;
@@ -866,7 +869,7 @@ export interface ForgeConnections {revision:string;activeRemote:string|null;remo
 
 export interface PrMergeMethod { id: string; label: string; explanation: string }
 export interface PrMergeRule { label: string; state: string; required: boolean }
-export interface PrMergePlan { revision: string; detailRevision: string; sourceSha: string; targetSha: string; actor: string; actorId: string; methods: PrMergeMethod[]; checks: Check[]; rules: PrMergeRule[]; blockers: string[]; notices: string[]; queueState: string | null; merged: boolean }
+export interface PrMergePlan { revision: string; detailRevision: string; sourceSha: string; targetSha: string; actor: string; actorId: string; methods: PrMergeMethod[]; checks: Check[]; rules: PrMergeRule[]; blockers: string[]; notices: string[]; queueState: string | null; merged: boolean; sourceBranchMayBeDeleted?: boolean }
 export interface PrMergeInput { planRevision: string; method: string; message: string }
 export interface PrMergeResult { state: "merged" | "queued" | "accepted"; commit: string | null; message: string }
 export interface PrCleanupInput { local: boolean; remote: boolean; force: boolean; protectionRules: string[]; reviewToken: string }

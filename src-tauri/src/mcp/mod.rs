@@ -46,7 +46,16 @@ impl ToolError {
 }
 
 #[derive(Default)]
-pub(crate) struct Bridge(Mutex<Option<Arc<Session>>>);
+pub(crate) struct Bridge(Mutex<Option<Arc<Session>>>, Mutex<ApprovalMode>);
+
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ApprovalMode {
+    #[default]
+    Ask,
+    Full,
+    DeleteOnly,
+}
 
 struct Session {
     id: String,
@@ -137,15 +146,17 @@ fn listen(listener: TcpListener, session: Arc<Session>, app: AppHandle) {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct Info {
     enabled: bool,
     executable: String,
+    approval_mode: ApprovalMode,
 }
 
 fn info(bridge: &Bridge) -> Result<Info, String> {
     let exe = crate::update::launch().ok_or("Could not locate the installed Revqora executable.")?.installed_exe();
     let executable = exe.to_str().ok_or("The executable path cannot be represented in an MCP configuration.")?;
-    Ok(Info { enabled: bridge.0.lock().is_some(), executable: executable.to_owned() })
+    Ok(Info { enabled: bridge.0.lock().is_some(), executable: executable.to_owned(), approval_mode: *bridge.1.lock() })
 }
 
 fn preference_path() -> Result<PathBuf, String> {
@@ -153,17 +164,21 @@ fn preference_path() -> Result<PathBuf, String> {
 }
 
 fn saved_enabled(path: &Path) -> io::Result<bool> {
+    saved_preference(path)
+}
+
+fn saved_preference<T: serde::de::DeserializeOwned + Default>(path: &Path) -> io::Result<T> {
     match File::open(path) {
         Ok(file) => Ok(serde_json::from_reader(file)?),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(T::default()),
         Err(error) => Err(error),
     }
 }
 
-fn save_enabled(path: &Path, enabled: bool) -> io::Result<()> {
+fn save_preference(path: &Path, value: impl Serialize) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| io::Error::other("Missing portable data folder."))?;
     let mut file = crate::git::atomic_file::new_in(dir)?;
-    serde_json::to_writer(&mut file, &enabled)?;
+    serde_json::to_writer(&mut file, &value)?;
     file.as_file().sync_all()?;
     crate::git::atomic_file::replace(file, path)
 }
@@ -204,8 +219,12 @@ pub(crate) fn mcp_restore(app: AppHandle, window: WebviewWindow, bridge: State<'
         return Err("Manage MCP from the main Revqora window.".into());
     }
     let mut active = bridge.0.lock();
-    if active.is_none() && saved_enabled(&preference_path()?).map_err(|error| format!("Could not read the saved MCP setting. {error}"))? {
-        *active = Some(start(app).map_err(start_error)?);
+    let path = preference_path()?;
+    if active.is_none() {
+        *bridge.1.lock() = saved_preference(&path.with_file_name("mcp-approval.json")).unwrap_or_default();
+        if saved_enabled(&path).map_err(|error| format!("Could not read the saved MCP setting. {error}"))? {
+            *active = Some(start(app).map_err(start_error)?);
+        }
     }
     Ok(())
 }
@@ -218,7 +237,7 @@ pub(crate) fn mcp_enable(app: AppHandle, window: WebviewWindow, bridge: State<'_
     let mut active = bridge.0.lock();
     let path = preference_path()?;
     let started = if enabled && active.is_none() { Some(start(app).map_err(start_error)?) } else { None };
-    if let Err(error) = save_enabled(&path, enabled) {
+    if let Err(error) = save_preference(&path, enabled) {
         if let Some(session) = started {
             session.stop(ToolError::disabled());
         }
@@ -232,6 +251,20 @@ pub(crate) fn mcp_enable(app: AppHandle, window: WebviewWindow, bridge: State<'_
         }
     }
     drop(active);
+    info(&bridge)
+}
+
+#[tauri::command]
+pub(crate) fn mcp_set_approval_mode(window: WebviewWindow, bridge: State<'_, Bridge>, approval_mode: ApprovalMode) -> Result<Info, String> {
+    if window.label() != "main" {
+        return Err("Manage MCP from the main Revqora window.".into());
+    }
+    {
+        let mut mode = bridge.1.lock();
+        save_preference(&preference_path()?.with_file_name("mcp-approval.json"), approval_mode)
+            .map_err(|error| format!("Could not save the MCP approval mode. {error}"))?;
+        *mode = approval_mode;
+    }
     info(&bridge)
 }
 

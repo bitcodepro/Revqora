@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api } from "./api";
+import { api, newOpId } from "./api";
 import { McpToolError, mcpError } from "./mcpErrors";
+import { mcpNeedsApproval, runAutomaticMcpAction, type McpActionOptions } from "./mcpAutomatic";
 import { loadBranchPreferences } from "./branchManager";
 import { deletionProtection } from "./branchProtection";
 import * as A from "./actions";
@@ -10,7 +11,7 @@ import { useRepos } from "./store";
 import { useLibrary } from "./repositoryLibrary";
 import { useSettings } from "./settings";
 import { closeOverlay, openOverlay, showDialog, useUi } from "./ui";
-import type { BranchInfo, FileDiff, IndexConflictSide, PrState, SearchMode, StatusSummary } from "./types";
+import type { BranchInfo, FileDiff, IndexConflictSide, McpApprovalMode, PrState, SearchMode, StatusSummary } from "./types";
 import { Modal } from "../components/Modal";
 import { validBranchName } from "../components/dialogs";
 import { createPullRequest } from "../components/PullRequests";
@@ -19,12 +20,12 @@ import { mergeDialog } from "../components/PrMerge";
 import { syncRepositories } from "../components/SyncRepositories";
 import { openWorkflowStepReview } from "../components/WorkflowBuilder";
 
-type Arguments = {
+type Arguments = McpActionOptions & {
   repository?: string; offset?: number; limit?: number; oid?: string; path?: string; side?: string;
   scope?: string; query?: string; mode?: SearchMode | "all"; state?: PrState;
-  number?: number; section?: string; cursor?: string; revision?: string; fileId?: string;
-  view?: string; id?: string; action?: string; target?: string; paths?: string[]; message?: string;
-  from?: string; to?: string; feed?: string; branch?: string; base?: string;
+  section?: string; cursor?: string; revision?: string; fileId?: string;
+  view?: string; id?: string; action?: string; paths?: string[];
+  from?: string; to?: string; feed?: string;
 };
 interface DesktopRequest {
   id: string;
@@ -32,14 +33,9 @@ interface DesktopRequest {
   request: { name: string; arguments: Arguments };
 }
 type Phase = "preparing" | "awaiting_confirmation" | "running" | "waiting_for_resolution" | "cancelled" | "succeeded" | "handed_off" | "failed";
-type ActionResult =
-  | { sha: string }
-  | { aborted: true }
-  | { branch: string; sha: string | null }
-  | { previousBranch: string | null; currentBranch: string; conflicts: string[] };
 interface ActionStatus {
   id: string; session: string; root: string; action: string; phase: Phase; message?: string; errorCode?: string;
-  reason?: string; conflicts?: string[]; commit?: string; runId?: string; result?: ActionResult;
+  approval?: "manual" | "automatic"; reason?: string; conflicts?: string[]; commit?: string; runId?: string; result?: Record<string, unknown>;
 }
 const actions = new Map<string, ActionStatus>();
 let activeAction: string | null = null;
@@ -241,7 +237,7 @@ async function reviewPendingPick(root: string, action: string): Promise<PickRevi
   return { baseline, incoming: info.state.incoming };
 }
 
-async function runAction(event: DesktopRequest, root: string, a: Arguments, status: ActionStatus, branchReview?: BranchReview, pickReview?: PickReview) {
+async function runAction(event: DesktopRequest, root: string, a: Arguments, status: ActionStatus, mode: McpApprovalMode, branchReview?: BranchReview, pickReview?: PickReview) {
   const action = status.action;
   try {
     let target = a.target;
@@ -261,6 +257,8 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     if (!expectedState) throw new Error("Repository status is not ready. Refresh and inspect it first.");
     const pullMode = useSettings.getState().pullMode;
     if (action === "pull") detail.push(`Upstream: ${baseline.upstream ?? "none configured"}`, `Pull mode: ${pullMode}`);
+    if ((action === "pull" || action === "fetch") && a.prune) detail.push("Prune references removed from the remote.");
+    if (action === "push" && a.force) detail.push("Force push with lease may replace remote history.");
     if (action === "cherry_pick" && (baseline.conflictCount || (await api.repoInfo(root)).state.kind !== "none")) {
       throw new McpToolError("operation_in_progress", "Finish the current Git operation before cherry-picking another commit.");
     }
@@ -285,6 +283,12 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     }
     const targetOid = branchReview?.tip;
     if (targetOid) detail.push(`Branch tip: ${targetOid}`);
+    const deletionPlan = mode !== "ask" && action === "delete_branch" ? await api.branchDeletePlan(root, target!, undefined, null) : undefined;
+    if (deletionPlan) {
+      if (deletionPlan.stateToken !== expectedState || deletionPlan.proof.localOid !== targetOid) throw new McpToolError("stale_state", "The branch changed while preparing deletion.");
+      detail.push(`${deletionPlan.localUnmerged} commit(s) outside the comparison branch. Revqora saves a recovery checkpoint.`);
+      if (a.force) detail.push("Force deletion is requested for this local branch.");
+    }
     let field: ApprovalField | undefined;
     if (action === "create_branch") {
       detail.push(`Starting commit: ${baseline.oid}`);
@@ -296,6 +300,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       }};
     }
     const pr = ["review_pr", "merge_pr", "pr_workflow"].includes(action) ? await prContext(root, number!) : null;
+    if (pr && a.revision && a.revision !== pr.detail.revision) throw new McpToolError("stale_state", "The pull request changed. Read the current revision and submit a new request.");
     if (pr) detail.push(pr.detail.pull.title, `${pr.detail.pull.head} → ${pr.detail.pull.base} · ${pr.detail.pull.headSha}`);
     if (action === "commit") {
       const info = await api.repoInfo(root);
@@ -313,22 +318,35 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     if (catalog) {
       const recipe = catalog.definitions.find(definition => definition.id === target);
       if (!recipe) throw new Error("Choose a recipe ID from list_workflows.");
-      detail.push(`${recipe.name} · ${recipe.steps.length} steps`, `Branch: ${a.branch}`, `Base: ${a.base}`, "Each workflow step requires a separate review.");
+      detail.push(`${recipe.name} · ${recipe.steps.length} steps`, `Branch: ${a.branch}`, `Base: ${a.base}`, "Each workflow step is requested separately.");
     }
     const run = action === "review_workflow_step" && target ? await api.workflowRun(root, target) : null;
     if (action === "review_workflow_step") {
       if (run?.phase !== "ready") throw new Error("Choose a waiting workflow run ID from list_workflows.");
       detail.push(`${run.definition.name} · step ${run.cursor + 1} of ${run.definition.steps.length}`);
     }
-    if (useUi.getState().dialogs.length) throw new Error("Finish the open Revqora dialog before requesting another action.");
+    const mergePlan = mode === "delete_only" && action === "merge_pr" && pr && pr.forge.kind !== "bitbucket"
+      ? await api.prMergePlan(root, number!, pr.connection, pr.detail.revision) : undefined;
+    const mergeMayDelete = !!mergePlan && mergePlan.sourceBranchMayBeDeleted !== false;
+    if (mergeMayDelete) detail.push("The provider may delete the source branch after merging.");
+    const manual = mcpNeedsApproval(mode, action, a, run?.definition.steps[run.cursor]?.kind, mergeMayDelete, pullMode === "rebase");
+    status.approval = manual ? "manual" : "automatic";
+    if (manual && useUi.getState().dialogs.length) throw new Error("Finish the open Revqora dialog before requesting another action.");
     requireRepo(root);
     if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
-    status.phase = "awaiting_confirmation";
-    const approved = await showDialog<ApprovalResult | null>(close => <Approval action={title}
-      description={`${root} · ${baseline.branch ?? "detached HEAD"}`} details={detail} field={field} close={close} />);
-    if (!approved || "reason" in approved) { cancelAction(status, approved?.reason ?? "dialog_dismissed"); return; }
+    let value = field?.initial ?? "";
+    if (manual) {
+      status.phase = "awaiting_confirmation";
+      const approved = await showDialog<ApprovalResult | null>(close => <Approval action={title}
+        description={`${root} · ${baseline.branch ?? "detached HEAD"}`} details={detail} field={field} close={close} />);
+      if (!approved || "reason" in approved) { cancelAction(status, approved?.reason ?? "dialog_dismissed"); return; }
+      value = approved.value;
+    } else {
+      const invalid = field?.validate(value);
+      if (invalid) throw new McpToolError("invalid_arguments", invalid);
+    }
     if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
-    if (action === "create_branch") target = approved.value;
+    if (action === "create_branch") target = value;
     requireRepo(root);
     if ((await api.status(root)).stateToken !== expectedState) throw new McpToolError("stale_state", "The repository changed during approval. Review the current state and submit a new request.");
     if (targetOid && (await api.refs(root)).local.find(branch => branch.name === target)?.oid !== targetOid) throw new McpToolError("stale_state", "The target branch changed during approval.");
@@ -339,17 +357,21 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
     status.phase = "running";
     const authorize = async () => {
+      if (!manual && (await api.mcpInfo()).approvalMode !== mode) {
+        throw new McpToolError("approval_policy_changed", "The MCP approval mode changed. Submit a fresh request.");
+      }
       if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return false; }
       requireRepo(root);
       return true;
     };
+    if (!await authorize()) return;
     switch (action) {
       case "stage": await api.stage(root, paths, expectedState); break;
       case "unstage": await api.unstage(root, paths, expectedState, true); break;
       case "commit": {
         const signing = await api.signingGet(root);
-        if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
-        status.commit = await api.commit(root, approved.value, { sign: signing.signCommits, verbatimMessage: true }, expectedState, true);
+        if (!await authorize()) return;
+        status.commit = await api.commit(root, value, { sign: signing.signCommits, verbatimMessage: true }, expectedState, true);
         status.result = {sha:status.commit};
         break;
       }
@@ -358,7 +380,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
         status.result = {branch:target!,sha:baseline.oid};
         break;
       case "checkout": {
-        const result = await A.checkoutWithOutcome(root, target!, "local", expectedState, authorize);
+        const result = await A.checkoutWithOutcome(root, target!, "local", expectedState, authorize, manual ? undefined : a.dirtyAction ?? "stash");
         if (result.status === "cancelled") { cancelAction(status, status.reason ?? "dialog_dismissed"); return; }
         if (result.status === "failed") throw result.error;
         status.result = {previousBranch:baseline.branch,currentBranch:result.switch.branch,conflicts:result.switch.conflicts};
@@ -366,6 +388,13 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
         break;
       }
       case "delete_branch": {
+        if (deletionPlan) {
+          if (!await authorize()) return;
+          const result = await api.branchDeleteReviewed(root, deletionPlan.proof, false, a.force ?? false, expectedState, loadBranchPreferences(root).protections);
+          status.result = { branch: target!, sha: targetOid, checkpoint: result.checkpoint?.id ?? null };
+          status.message = result.warning ?? undefined;
+          break;
+        }
         status.phase = "awaiting_confirmation";
         const result = await A.deleteBranchWithOutcome(root, target!, {
           expectedState, localOnly:true, protectionRules:loadBranchPreferences(root).protections,
@@ -383,7 +412,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       case "start_workflow": {
         const started = await api.workflowBegin(root, target!, catalog!.revision, { branch: a.branch!, base: a.base! });
         status.runId = started.id;
-        status.message = "Created a waiting run. Request a review for the next step.";
+        status.message = "Created a waiting run. Request the next step separately.";
         break;
       }
       case "cherry_pick": {
@@ -411,14 +440,30 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
         break;
       }
       case "fetch":
-        if (await A.fetchAll(root) === undefined) throw new Error("Fetch failed. See Revqora's operation log.");
+        if (manual && a.prune === undefined) {
+          if (await A.fetchAll(root) === undefined) throw new Error("Fetch failed. See Revqora's operation log.");
+        } else status.message = await api.fetch(root, null, a.prune ?? mode === "full", newOpId());
         break;
+      case "pr_workflow": {
+        const pull = pr!.detail.pull;
+        openOverlay({ kind: "workflows", root, pull: { number: pull.number, head: pull.head, base: pull.base, remote: pr!.forge.remote } });
+        if (manual) { status.phase = "handed_off"; return; }
+        break;
+      }
       default:
+        if (!manual) {
+          const outcome = await runAutomaticMcpAction({ root, action, options: a, baseline, expectedState, mode, pullMode, pr, mergePlan,
+            workflowCursor: run?.cursor, authorize: async () => {
+              if (!await authorize()) throw new McpToolError("session_expired", cancellationMessages.session_expired);
+            } });
+          Object.assign(status, outcome);
+          break;
+        }
         status.phase = "handed_off";
         status.message = "Continue in Revqora and verify the result with the read tools.";
         switch (action) {
           case "stash": await A.stash(root, expectedState); break;
-          case "pull": await A.pull(root, pullMode, expectedState); break;
+          case "pull": await A.pull(root, pullMode, expectedState, a.prune); break;
           case "push": await A.push(root); break;
           case "sync": await syncRepositories([root]); break;
           case "create_pr": await createPullRequest(root, null); break;
@@ -427,11 +472,6 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
             if (pr!.forge.kind === "bitbucket") throw new Error("This PR must be merged in Bitbucket. Review it in PR Center.");
             await mergeDialog({ ...pr!, updated: () => { void useRepos.getState().refresh(root); } });
             break;
-          case "pr_workflow": {
-            const pull = pr!.detail.pull;
-            openOverlay({ kind: "workflows", root, pull: { number: pull.number, head: pull.head, base: pull.base, remote: pr!.forge.remote } });
-            break;
-          }
           case "review_workflow_step": {
             const current = await api.workflowRun(root, target!);
             if (current.phase !== "ready" || current.cursor !== run!.cursor) throw new Error("The workflow advanced during approval.");
@@ -445,6 +485,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     status.phase = "succeeded";
   } catch (reason) {
     const { code, message } = mcpError(reason);
+    if (code === "session_expired") { cancelAction(status, code); return; }
     status.phase = "failed";
     status.errorCode = code;
     status.message = message;
@@ -454,18 +495,20 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
 }
 
 async function requestAction(event: DesktopRequest, root: string, a: Arguments) {
-  if (activeAction || useUi.getState().dialogs.length) throw new McpToolError("review_pending", "Finish the existing Revqora review before requesting another action.");
+  if (activeAction) throw new McpToolError("review_pending", "Finish the existing Revqora review before requesting another action.");
   const id = event.session + event.id;
   activeAction = id;
   try {
+    const { approvalMode } = await api.mcpInfo();
+    if (approvalMode === "ask" && useUi.getState().dialogs.length) throw new McpToolError("review_pending", "Finish the existing Revqora review before requesting another action.");
     const branchReview = branchActions.has(a.action!) ? await reviewBranchAction(root, a.action!, a.target) : undefined;
     const pickReview = a.action === "cherry_pick_continue" || a.action === "cherry_pick_abort" ? await reviewPendingPick(root, a.action) : undefined;
     if (!await api.mcpLease(event.session, event.id)) throw new McpToolError("session_expired", "The MCP request expired before the review could open.");
     const status: ActionStatus = { id, session: event.session, root, action: a.action!, phase: "preparing" };
     actions.set(id, status);
     if (actions.size > 50) actions.delete(actions.keys().next().value!);
-    void runAction(event, root, a, status, branchReview, pickReview);
-    return { id, phase: status.phase, message: "Switch to Revqora to review this action. Poll action_status for the outcome." };
+    void runAction(event, root, a, status, approvalMode, branchReview, pickReview);
+    return { id, phase: status.phase, approvalMode, message: "Poll action_status for the outcome. Revqora opens a confirmation when the selected approval mode requires one." };
   } catch (error) {
     activeAction = null;
     throw error;

@@ -1176,8 +1176,18 @@ async fn fetch_background(app: AppHandle, expected_state: Option<String>, repo: 
 }
 
 #[tauri::command]
-async fn pull(expected_state: Option<String>, app: AppHandle, repo: String, mode: String, op_id: String) -> GitResult<ops::PullOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || ops::pull(&p(&repo), &mode, progress(&app, &op_id))).await
+async fn pull(
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    mode: String,
+    op_id: String,
+    prune_remote: Option<bool>,
+) -> GitResult<ops::PullOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || {
+        ops::pull_with_prune(&p(&repo), &mode, prune_remote.unwrap_or(true), progress(&app, &op_id))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2372,6 +2382,7 @@ pub fn run() {
             mcp::mcp_info,
             mcp::mcp_enable,
             mcp::mcp_restore,
+            mcp::mcp_set_approval_mode,
             mcp::mcp_lease,
             mcp::mcp_reply,
             mcp::cherry_pick::mcp_cherry_pick_status,

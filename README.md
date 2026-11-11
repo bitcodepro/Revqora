@@ -550,7 +550,9 @@ Use your actual path, or copy the ready-to-use entry from Settings. Add the VS C
 | Show me a screen in the app | `open_view` |
 | Prepare a Git or PR operation | `request_action`, then `action_status` |
 
-For example, ask the agent to inspect the unstaged diff, propose files to stage and send one staging request. Switch to Revqora and review the exact paths in the **MCP request** dialog. After approval the agent can read the staged state and propose a commit message in a separate request. Branch deletion, push, Sync, and PR review and merge use Revqora's existing review dialogs. An action status of `handed_off` means Revqora took over the review. Check the resulting Git or PR state to confirm what happened.
+**Settings → General → MCP → Approval mode** controls requests from local MCP clients. **Ask my approval** is the default and opens a desktop review. **Full approve** lets fully specified actions run automatically, including deletions. **Ask before deleting** runs other actions automatically and asks before branch deletion, aborting a cherry-pick, pruning, force-pushing, or running workflow steps that can remove data. Revqora also asks when the provider may delete a PR source branch on merge. The selected mode survives a restart.
+
+In a manual review, inspect the exact paths and targets in the **MCP request** dialog. An action status of `handed_off` means Revqora opened another review. Poll `action_status` for tracked actions, which report whether approval was manual or automatic. An automatic request that needs additional choices returns `action_details_required` with the required fields. Provider permissions and repository state checks apply in all modes.
 
 You can edit a proposed commit message or new branch name in the approval dialog. Revqora passes the approved commit message to Git verbatim, including lines starting with `#`. Commit, branch creation, checkout and local branch deletion report a terminal outcome through `action_status`. Successful results contain the commit SHA, the created or deleted branch and its SHA, or the previous and current branch after checkout. Creating a Git branch through MCP requires a starting commit. Revqora reports `initial_commit_required` or `branch_exists` before showing approval when those conditions apply.
 
@@ -566,7 +568,7 @@ Search responses report worker and repository queue time in `queueMs`, time spen
 
 `workspace_overview` reports the desktop's last observed repository status. `connection_identity` returns the selected PR account's provider, user ID, display name and login when that identity can be verified.
 
-MCP access is off by default. Revqora saves your choice in its portable data folder and starts MCP on launch when enabled. Local clients can read code and PR text from open repositories in the current workspace, and their model provider may receive those results. PR access uses the connection selected in PR Center. Revqora uses an authenticated loopback bridge and creates a fresh session when MCP starts. The copied configuration contains the executable path and arguments. Requests for changes require approval in the desktop app.
+MCP access is off by default. Revqora saves your choice in its portable data folder and starts MCP on launch when enabled. Local clients can read code and PR text from open repositories in the current workspace, and their model provider may receive those results. PR access uses the connection selected in PR Center. Revqora uses an authenticated loopback bridge and creates a fresh session when MCP starts. The copied configuration contains the executable path and arguments.
 
 ### Explore changed code and dependent branches
 

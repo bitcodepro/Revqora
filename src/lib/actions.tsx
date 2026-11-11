@@ -204,7 +204,7 @@ export const fetchAll = async (root: string) => {
   return out;
 };
 
-export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase", expectedState?: string) {
+export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase", expectedState?: string, pruneRemote?: boolean) {
   const mode = modeOverride ?? useSettings.getState().pullMode;
   const opId = newOpId();
   startBusy(opId, "Pulling");
@@ -212,7 +212,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
   let ignoredCollision: GitError | undefined;
   let outcome: PullOutcome | undefined;
   try {
-    outcome = await api.pull(root, mode, opId, expectedState);
+    outcome = await api.pull(root, mode, opId, expectedState, pruneRemote);
   } catch (e) {
     const msg = errorMessage(e).toLowerCase();
     if (isGitError(e) && e.kind === "ignored-collision") ignoredCollision = e;
@@ -224,7 +224,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
     endBusy(opId);
     await useRepos.getState().refresh(root, ALL);
   }
-  if (ignoredCollision && await ignoredCollisionDialog(root, ignoredCollision)) await pull(root, mode);
+  if (ignoredCollision && await ignoredCollisionDialog(root, ignoredCollision)) await pull(root, mode, undefined, pruneRemote);
   if (outcome) {
     if (outcome.status === "upstreamGone" && outcome.upstreamGone) {
       const gone = outcome.upstreamGone;
@@ -259,7 +259,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
         <div className="muted">Merge keeps both histories with a merge commit. Rebase replays your local commits on top of the remote ones for a straight history.</div>
       </Modal>
     ));
-    if (how) await pull(root, how);
+    if (how) await pull(root, how, undefined, pruneRemote);
   }
 }
 
@@ -331,7 +331,7 @@ type CheckoutResult =
   | { status: "failed"; error: unknown };
 
 export async function checkoutWithOutcome(
-  root: string, target: string, kind: "local" | "remote" | "commit", expectedState?: string, authorize?: () => Promise<boolean>,
+  root: string, target: string, kind: "local" | "remote" | "commit", expectedState?: string, authorize?: () => Promise<boolean>, dirtyChoice?: SwitchChoice["action"],
 ): Promise<CheckoutResult> {
   if (switching.has(root)) return {status:"failed",error:new Error("A branch switch is already in progress.")};
   switching.add(root);
@@ -343,7 +343,7 @@ export async function checkoutWithOutcome(
     if (result?.status === "review") {
       const review = result;
       const source = review.source.startsWith("HEAD/") ? `detached HEAD (${shortOid(review.source.slice(5))})` : review.source.slice(11);
-      const action = await showDialog<SwitchChoice["action"] | null>((close) => <Modal
+      const action = dirtyChoice ?? await showDialog<SwitchChoice["action"] | null>((close) => <Modal
         title="Switch with uncommitted changes" subtitle={`${source} → ${target}`} onClose={() => close(null)}
         footer={<>
           <button type="button" className="btn" onClick={() => close(null)}>Cancel</button>

@@ -408,6 +408,8 @@ pub fn fetch(repo: &Path, remote: Option<&str>, prune: bool, on_line: impl FnMut
     }
     if prune {
         args.push("--prune".into());
+    } else {
+        args.extend(["--no-prune".into(), "--no-prune-tags".into()]);
     }
     args.push("--tags".into());
     runner::run_streaming(repo, &args, &[], on_line)
@@ -492,7 +494,7 @@ fn missing_pull_upstream(error: &GitError, reference: &str) -> bool {
     error.message.contains("no such ref was fetched") || error.stderr.lines().any(|line| line.trim() == format!("fatal: couldn't find remote ref {reference}"))
 }
 
-fn deleted_pull_upstream(repo: &Path, branch: &str, remote: &str, reference: &str) -> GitResult<Option<PullOutcome>> {
+fn deleted_pull_upstream(repo: &Path, branch: &str, remote: &str, reference: &str, prune_remote: bool) -> GitResult<Option<PullOutcome>> {
     if !reference.starts_with("refs/heads/") || !runner::exec(repo, ["check-ref-format", reference])?.ok() {
         return Ok(None);
     }
@@ -511,7 +513,7 @@ fn deleted_pull_upstream(repo: &Path, branch: &str, remote: &str, reference: &st
     let mapping =
         runner::run(repo, ["for-each-ref", "--format=%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)", &format!("refs/heads/{branch}")])?;
     let parts: Vec<_> = mapping.trim().split('\0').collect();
-    if parts.len() == 3 && parts[0].starts_with("refs/remotes/") && parts[1] == remote && parts[2] == reference {
+    if prune_remote && parts.len() == 3 && parts[0].starts_with("refs/remotes/") && parts[1] == remote && parts[2] == reference {
         let old = runner::exec(repo, ["rev-parse", "--verify", "--end-of-options", parts[0]])?;
         if old.ok() {
             runner::run(repo, ["update-ref", "--no-deref", "-d", parts[0], old.text().trim()])?;
@@ -525,13 +527,17 @@ fn deleted_pull_upstream(repo: &Path, branch: &str, remote: &str, reference: &st
         operation: OpOutcome {
             status: "upstreamGone".into(),
             conflicts: Vec::new(),
-            message: format!("Upstream {reference} is no longer available from {remote}. Its absence was verified with the server and stale tracking references were reconciled. Local branch {branch} and its working changes are kept; no merge was performed."),
+            message: format!("Upstream {reference} is no longer available from {remote}. Its absence was verified with the server. Local branch {branch} and its working changes are kept; no merge was performed."),
         },
         upstream_gone: Some(MissingUpstream { branch: branch.into(), remote: remote.into(), reference: reference.into(), default_branch }),
     }))
 }
 
-pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
+pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
+    pull_with_prune(repo, mode, true, on_line)
+}
+
+pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
     super::recovery::protect_transport(repo, false, None, None, false)?;
     let before = status::status(repo)?;
     let branch = before.branch.as_deref().ok_or_else(|| GitError::new("Choose a branch with an upstream before pulling."))?;
@@ -549,7 +555,7 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
     }
     let remote = if remote_config.ok() { remote_config.text() } else { "origin".into() };
     let remote = remote.trim();
-    let prune = pull_can_prune(repo, remote)?;
+    let prune = prune_remote && pull_can_prune(repo, remote)?;
     let index_before = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
     let unchanged = || -> GitResult<bool> {
         let after = status::status(repo)?;
@@ -602,7 +608,7 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
     }
     if let Err(error) = fetched {
         if repo::op_state(repo, &repo::git_dir(repo)?).kind == "none" {
-            if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
+            if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0], prune_remote)? {
                 return Ok(outcome);
             }
         }
@@ -620,7 +626,7 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
         .collect();
     if targets.len() != 1 {
         if targets.is_empty() {
-            if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
+            if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0], prune_remote)? {
                 return Ok(outcome);
             }
         }

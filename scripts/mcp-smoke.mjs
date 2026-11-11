@@ -211,7 +211,56 @@ async function branchActions({ page, work, tool, rawTool, waitPhase, original })
   assert.equal(git("branch", "--list", "feature/approved"), "");
   await renameAndCherryPick({ page, root, repository, git, request, rejected, tool, waitPhase, approval, approve, decline });
   await openRepository(page, original);
-  return deletion.id;
+}
+
+async function approvalModes({ page, root, work, tool, waitPhase, selectApproval }) {
+  const request = (action, options = {}) => tool("request_action", { repository: root, action, ...options });
+  const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true }).trimEnd();
+  const noDialog = async () => assert.equal(await page.getByRole("heading", { name: /^MCP request/ }).count(), 0);
+  const automatic = async (action, options) => {
+    const requested = await request(action, options);
+    const result = await waitPhase(requested.id, "succeeded");
+    assert.equal(result.approval, "automatic");
+    await noDialog();
+    return result;
+  };
+
+  await selectApproval("full", "ask");
+  await automatic("create_branch", { target: "mcp-auto-delete" });
+  const removed = await automatic("delete_branch", { target: "mcp-auto-delete" });
+  assert.equal(removed.result.branch, "mcp-auto-delete");
+  assert(removed.result.checkpoint);
+  assert.equal(git("branch", "--list", "mcp-auto-delete"), "");
+
+  await selectApproval("delete_only", "full");
+  await automatic("create_branch", { target: "mcp-reviewed-delete" });
+  const deletion = page.getByRole("dialog", { name: "MCP request · Review branch deletion", exact: true });
+  const declined = await request("delete_branch", { target: "mcp-reviewed-delete" });
+  await deletion.getByRole("button", { name: "Decline", exact: true }).click();
+  assert.equal((await waitPhase(declined.id, "cancelled")).approval, "manual");
+  assert(git("branch", "--list", "mcp-reviewed-delete"));
+  const approved = await request("delete_branch", { target: "mcp-reviewed-delete" });
+  await deletion.getByRole("button", { name: "Approve in Revqora", exact: true }).click();
+  assert.equal((await waitPhase(approved.id, "succeeded")).approval, "manual");
+  assert.equal(git("branch", "--list", "mcp-reviewed-delete"), "");
+
+  const origin = path.join(work, "mcp-approval-origin.git");
+  execFileSync("git", ["init", "--bare", "-q", origin], { windowsHide: true });
+  git("remote", "add", "mcp-approval-origin", origin);
+  try {
+    git("config", "remote.mcp-approval-origin.prune", "true");
+    git("update-ref", "refs/remotes/mcp-approval-origin/stale", "HEAD");
+    await automatic("fetch");
+    assert(git("for-each-ref", "refs/remotes/mcp-approval-origin/stale"));
+    const prune = await request("fetch", { prune: true });
+    const dialog = page.getByRole("dialog", { name: "MCP request · Fetch from all remotes", exact: true });
+    await dialog.getByRole("button", { name: "Approve in Revqora", exact: true }).click();
+    assert.equal((await waitPhase(prune.id, "succeeded")).approval, "manual");
+    assert.equal(git("for-each-ref", "refs/remotes/mcp-approval-origin/stale"), "");
+  } finally {
+    git("remote", "remove", "mcp-approval-origin");
+  }
+  return approved.id;
 }
 
 export async function mcpSmoke({ page, exe, profile, work, restart }) {
@@ -276,6 +325,18 @@ export async function mcpSmoke({ page, exe, profile, work, restart }) {
     const config = await settings.getByLabel("Configuration", { exact: true }).inputValue();
     assert.match(config, /\[mcp_servers\.revqora\]/);
     assert.match(config, /args = \["--mcp"\]/);
+    await settings.getByRole("button", { name: "Done", exact: true }).click();
+  };
+  const selectApproval = async (next, previous) => {
+    await page.getByTitle("Settings", { exact: true }).click();
+    const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+    const mode = settings.getByRole("combobox", { name: "Approval mode", exact: true });
+    await mode.and(page.locator(":enabled")).waitFor();
+    assert.equal(await mode.inputValue(), previous);
+    if (next !== previous) {
+      await mode.selectOption(next);
+      await mode.and(page.locator(`:enabled:has(option[value=${next}]:checked)`)).waitFor();
+    }
     await settings.getByRole("button", { name: "Done", exact: true }).click();
   };
   let fixture;
@@ -343,13 +404,15 @@ export async function mcpSmoke({ page, exe, profile, work, restart }) {
     await page.waitForSelector(".changes[data-pending='false']");
     assert.equal(git("diff", "--cached", "--name-only"), "");
     assert.equal(fs.readFileSync(path.join(root, file), "utf8"), "MCP stage fixture\n");
-    const oldAction = await branchActions({page,work,tool,rawTool,waitPhase,original:root});
+    await branchActions({page,work,tool,rawTool,waitPhase,original:root});
+    const oldAction = await approvalModes({ page, root, work, tool, waitPhase, selectApproval });
     page = await restart(root, async () => {
       const offline = await rawTool("action_status", { id: oldAction });
       assert.equal(offline.structuredContent.code, "desktop_closed");
     });
     const expired = await rawTool("action_status", { id: oldAction });
     assert.equal(expired.structuredContent.code, "session_expired");
+    await selectApproval("delete_only", "delete_only");
     // Desktop startup does not wait for Git to finish loading the active tab.
     assert(Array.isArray((await tool("list_repositories")).repositories));
     await openRepository(page, root);

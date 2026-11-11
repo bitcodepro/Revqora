@@ -27,6 +27,7 @@ fn gh(repo: &Path, f: &ForgeInfo, d: &Detail, p: &mut Plan) -> GitResult<Value> 
     let project = forge::project_path(&f.project);
     let parts = f.project.split_once('/').ok_or_else(|| error("Invalid GitHub repository."))?;
     let r = forge::request(repo, f, "GET", &format!("/repos/{project}"), None)?;
+    p.source_branch_may_be_deleted = r.get("delete_branch_on_merge").and_then(Value::as_bool).unwrap_or(true);
     let rules = forge::request(repo, f, "GET", &format!("/repos/{project}/rules/branches/{}?per_page=100", forge::enc(&d.pull.base)), None)?;
     let rule_rows = rows(&rules, "")?;
     if rule_rows.len() >= 100 {
