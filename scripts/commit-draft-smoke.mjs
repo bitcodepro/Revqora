@@ -195,7 +195,7 @@ export async function commitDraftSmoke({ page, work, returnRoot, shot }) {
     await page.getByTitle("Settings", { exact: true }).click();
     await settings.getByRole("button", { name: "Shortcuts", exact: true }).click();
     await settings.getByRole("textbox", { name: "Find shortcut" }).fill("Next changed file");
-    const rebindNextFile = settings.getByRole("button", { name: "Change shortcut for Next changed file" });
+    const rebindNextFile = settings.getByRole("button", { name: "Change shortcut for Next changed file", exact: true });
     await rebindNextFile.click();
     await rebindNextFile.press("F7");
     await settings.getByRole("alert").getByText("F7 is already assigned to Next change.", { exact: true }).waitFor({ timeout: 5000 });
@@ -218,10 +218,11 @@ export async function commitDraftSmoke({ page, work, returnRoot, shot }) {
     await settings.getByRole("button", { name: "Shortcuts", exact: true }).click();
     await settings.getByTitle("Reset shortcut for Next changed file", { exact: true }).click();
     await settings.getByRole("button", { name: "Done", exact: true }).click();
+    await settings.waitFor({ state: "hidden" });
     console.log("Verified overlapping shortcut rejection and separate hunk/file navigation from the focused diff");
   } finally {
     await restore();
-    await openRepository(page, returnRoot);
-    await page.getByRole("button", { name: "Close commit-drafts", exact: true }).click();
   }
+  await openRepository(page, returnRoot);
+  await page.getByRole("button", { name: "Close commit-drafts", exact: true }).click();
 }
