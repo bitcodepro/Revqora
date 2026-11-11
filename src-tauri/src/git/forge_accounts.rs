@@ -104,13 +104,6 @@ impl Server {
             _ => self.server.clone(),
         }
     }
-    fn identity_path(&self) -> &'static str {
-        if self.kind == "azure" {
-            "/_apis/connectionData?api-version=7.1-preview.1"
-        } else {
-            "/user"
-        }
-    }
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -705,15 +698,20 @@ pub struct GitSource {
     pub remote: String,
     pub fingerprint: String,
 }
-struct Identity {
-    login: String,
-    user_id: String,
-    name: String,
+pub(super) struct Identity {
+    pub login: String,
+    pub user_id: String,
+    pub name: String,
 }
 fn verify(server: &Server, c: &Credential) -> GitResult<Identity> {
-    let v = request_json(&server.kind, &server.api(), c, "GET", server.identity_path(), None)?;
+    verify_identity(&server.kind, &server.api(), c)
+}
+
+pub(super) fn verify_identity(kind: &str, api: &str, c: &Credential) -> GitResult<Identity> {
+    let path = if kind == "azure" { "/_apis/connectionData?api-version=7.1-preview.1" } else { "/user" };
+    let v = request_json(kind, api, c, "GET", path, None)?;
     let text = |p: &str| v.pointer(p).and_then(Value::as_str).unwrap_or("").to_owned();
-    let (login, id, name) = match server.kind.as_str() {
+    let (login, id, name) = match kind {
         "github" => (text("/login"), v.get("id").and_then(Value::as_u64).map(|n| n.to_string()).unwrap_or_default(), text("/name")),
         "gitlab" => (text("/username"), v.get("id").filter(|x| x.is_number()).map(Value::to_string).unwrap_or_default(), text("/name")),
         "bitbucket" => (Some(text("/nickname")).filter(|s| !s.is_empty()).unwrap_or_else(|| text("/display_name")), text("/uuid"), text("/display_name")),
@@ -728,7 +726,7 @@ fn verify(server: &Server, c: &Credential) -> GitResult<Identity> {
         || !valid_text(&id, 256)
         || id == "0"
         || id == "00000000-0000-0000-0000-000000000000"
-        || server.kind == "azure" && (id.eq_ignore_ascii_case("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") || login.eq_ignore_ascii_case("anonymous"))
+        || kind == "azure" && (id.eq_ignore_ascii_case("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") || login.eq_ignore_ascii_case("anonymous"))
         || name.len() > 512
         || name.chars().any(char::is_control)
     {

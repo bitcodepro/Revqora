@@ -545,7 +545,7 @@ Use your actual path, or copy the ready-to-use entry from Settings. Add the VS C
 
 | I want the agent to… | Tools |
 | --- | --- |
-| See what I have open and inspect changes | `list_repositories`, `repository_status`, `list_branches`, `search_commits`, `commit_details`, `file_diff` |
+| See what I have open and inspect changes | `list_repositories`, `workspace_overview`, `repository_status`, `list_branches`, `search_commits`, `commit_details`, `file_diff` |
 | Inspect worktrees, workflows or PRs | `list_worktrees`, `list_workflows`, `list_pull_requests`, `pull_request` |
 | Show me a screen in the app | `open_view` |
 | Prepare a Git or PR operation | `request_action`, then `action_status` |
@@ -553,6 +553,12 @@ Use your actual path, or copy the ready-to-use entry from Settings. Add the VS C
 For example, ask the agent to inspect the unstaged diff, propose files to stage and send one staging request. Switch to Revqora and review the exact paths in the **MCP request** dialog. After approval the agent can read the staged state and propose a commit message in a separate request. Branch deletion, push, Sync, and PR review and merge use Revqora's existing review dialogs. An action status of `handed_off` means Revqora took over the review. Check the resulting Git or PR state to confirm what happened.
 
 The MCP staged diff includes all staged changes, including sealed stage layers. While sealed layers exist, use **Changes** in Revqora to unstage or commit them.
+
+`search_commits` searches commits reachable from local branches, remote-tracking branches, tags and the current HEAD, including a detached HEAD. It does not add the stash ref to the search. Matching is case-insensitive. `author` matches the Git author name or email, and `message` searches the full commit message. `all` matches the subject, author name or email, ref labels and SHA prefixes. Set `limit` from 1 to 100, with a default of 30. When `hasMore` is true, pass `nextCursor` as `cursor` with the same repository, mode and query. Continue even if the page is empty. Start a fresh search if the repository history changes.
+
+Search responses report worker and repository queue time in `queueMs`, time spent running Git in `gitMs`, and MCP execution time in `durationMs`. Tool errors include a readable message and a stable code such as `commit_not_found`, `provider_authentication_failed` or `request_timeout`. Clients using MCP 2025-06-18 or later also receive `operation`, `reason`, `retryable`, `requestId` and `durationMs` in `structuredContent`. The request ID is the client's JSON-RPC ID for that session.
+
+`workspace_overview` reports the desktop's last observed repository status. `connection_identity` returns the selected PR account's provider, user ID, display name and login when that identity can be verified.
 
 MCP access is off on startup. When enabled, local clients can read code and PR text from open repositories in the current workspace, and their model provider may receive those results. PR access uses the connection selected in PR Center. Revqora uses an authenticated loopback bridge and a session file in its portable data folder. The copied configuration contains the executable path and arguments. Requests for changes require approval in the desktop app.
 

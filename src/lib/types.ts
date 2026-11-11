@@ -203,6 +203,13 @@ export interface CommitSearchHit {
   refs: string;
 }
 
+export interface CommitSearchPage {
+  commits: CommitSearchHit[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  diagnostics: {queueMs: number; gitMs: number};
+}
+
 export interface ChangedFile {
   path: string;
   oldPath: string | null;
@@ -657,6 +664,17 @@ export interface ForgeInfo {
   remote: string;
   webUrl: string;
   api: string;
+}
+
+export interface ForgeConnectionIdentity {
+  id: string;
+  name: string;
+  login: string;
+  provider: ForgeInfo["kind"];
+  project: string;
+  remote: string;
+  source: "verified_profile" | "provider";
+  connectionRevision: string | null;
 }
 
 export interface PullRequest {

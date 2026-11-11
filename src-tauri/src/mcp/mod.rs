@@ -3,7 +3,7 @@ mod protocol;
 mod transport;
 
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io;
@@ -21,7 +21,23 @@ pub use protocol::stdio;
 const DISABLED: &str = "Open Revqora and enable MCP for this session under Settings → General → MCP.";
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(25);
 const WORKERS: usize = 8;
-type Reply = Result<Value, String>;
+type Reply = Result<Value, ToolError>;
+
+#[derive(Debug, PartialEq, Deserialize, Serialize)]
+pub(crate) struct ToolError {
+    code: String,
+    message: String,
+}
+
+impl ToolError {
+    fn new(code: &str, message: impl Into<String>) -> Self {
+        Self { code: code.into(), message: message.into() }
+    }
+
+    fn disabled() -> Self {
+        Self::new("mcp_disabled", DISABLED)
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct Bridge(Mutex<Option<Arc<Session>>>);
@@ -43,22 +59,22 @@ impl Session {
     }
 
     fn dispatch(&self, app: &AppHandle, request: protocol::ToolCall) -> Reply {
-        let id = transport::random_id().map_err(|e| e.to_string())?;
+        let id = transport::random_id().map_err(|e| ToolError::new("desktop_unavailable", e.to_string()))?;
         let (send, receive) = mpsc::sync_channel(1);
         {
             let mut pending = self.pending.lock();
             if self.stopped.load(Ordering::Acquire) {
-                return Err(DISABLED.into());
+                return Err(ToolError::disabled());
             }
             pending.insert(id.clone(), send);
         }
         let result = app
             .emit_to("main", "mcp-request", &Event { id: &id, session: &self.id, request })
-            .map_err(|_| "Revqora's main window is unavailable.".to_owned())
+            .map_err(|_| ToolError::new("desktop_unavailable", "Revqora's main window is unavailable."))
             .and_then(|_| match receive.recv_timeout(DISPATCH_TIMEOUT) {
                 Ok(reply) => reply,
-                Err(mpsc::RecvTimeoutError::Timeout) => Err("Revqora did not finish the MCP request in time.".into()),
-                Err(mpsc::RecvTimeoutError::Disconnected) => Err(DISABLED.into()),
+                Err(mpsc::RecvTimeoutError::Timeout) => Err(ToolError::new("request_timeout", "Revqora did not finish the MCP request in time.")),
+                Err(mpsc::RecvTimeoutError::Disconnected) => Err(ToolError::disabled()),
             });
         self.pending.lock().remove(&id);
         result
@@ -172,7 +188,7 @@ pub(crate) fn mcp_lease(window: WebviewWindow, bridge: State<'_, Bridge>, sessio
 }
 
 #[tauri::command]
-pub(crate) fn mcp_reply(window: WebviewWindow, bridge: State<'_, Bridge>, session: String, id: String, value: Value, error: Option<String>) {
+pub(crate) fn mcp_reply(window: WebviewWindow, bridge: State<'_, Bridge>, session: String, id: String, value: Value, error: Option<ToolError>) {
     if window.label() != "main" {
         return;
     }

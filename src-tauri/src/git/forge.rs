@@ -93,6 +93,52 @@ pub fn detect(repo: &Path) -> GitResult<Option<ForgeInfo>> {
     Ok(super::forge_accounts::context(repo)?.map(|c| c.info))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionIdentity {
+    pub id: String,
+    pub name: String,
+    pub login: String,
+    pub provider: String,
+    pub project: String,
+    pub remote: String,
+    pub source: &'static str,
+    pub connection_revision: Option<String>,
+}
+
+pub fn connection_identity(repo: &Path) -> GitResult<ConnectionIdentity> {
+    let context =
+        super::forge_accounts::context(repo)?.ok_or_else(|| GitError::new("Configure an API connection in PR Center.").kind("pr-connection-required"))?;
+    let info = context.info;
+    if info.kind == "bitbucket-server" {
+        return Err(GitError::new("This Bitbucket Server connection does not provide a verified account identity.").kind("identity-unavailable"));
+    }
+    let (id, login, name, source) = if let Some(profile) = context.profile.as_ref().filter(|profile| profile.identity_verified != Some(false)) {
+        (profile.user_id.clone(), profile.login.clone(), profile.name.clone(), "verified_profile")
+    } else {
+        let credential = match context.credential {
+            Some(credential) => credential,
+            None => token(repo, &context.git_url)?,
+        };
+        let identity = if context.profile.is_some() {
+            super::forge_accounts::verify_identity(&info.kind, &info.api, &credential)?
+        } else {
+            send_with_git_credential(&info.kind, credential, |c| super::forge_accounts::verify_identity(&info.kind, &info.api, c))?
+        };
+        (identity.user_id, identity.login, identity.name, "provider")
+    };
+    Ok(ConnectionIdentity {
+        id,
+        name: if name.is_empty() { login.clone() } else { name },
+        login,
+        provider: info.kind,
+        project: info.project,
+        remote: info.remote,
+        source,
+        connection_revision: info.connection_revision,
+    })
+}
+
 /// Provider discovery for navigation uses public remote and account metadata.
 pub fn browse_kind(repo: &Path) -> GitResult<Option<String>> {
     let remotes = super::refs::remotes(repo)?;

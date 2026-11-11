@@ -4,6 +4,7 @@ use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -793,6 +794,7 @@ pub enum SearchMode {
 fn search_arguments(args: &mut Vec<String>, query: &str, mode: SearchMode) {
     match mode {
         SearchMode::Message => args.extend(["--regexp-ignore-case".into(), "--fixed-strings".into(), format!("--grep={query}")]),
+        SearchMode::Author => args.extend(["--regexp-ignore-case".into(), "--fixed-strings".into(), format!("--author={query}")]),
         SearchMode::Content => args.push(format!("-S{query}")),
         _ => {}
     }
@@ -812,14 +814,23 @@ pub struct CommitSearchHit {
     pub refs: String,
 }
 
-/// Search independently of the graph cache, including repositories whose History tab was never opened.
-pub fn search_repository(repo: &Path, query: &str, mode: SearchMode) -> GitResult<Vec<CommitSearchHit>> {
-    const MATCH_LIMIT: usize = 31; // Show 30 and use one extra row to detect truncation.
-    let q = query.trim();
-    if q.is_empty() {
-        return Ok(Vec::new());
+const REPOSITORY_SEARCH_SCAN: usize = 150_000;
+const REPOSITORY_SEARCH_PAGE: usize = 30;
+const MCP_SEARCH_SCAN: usize = 16_384;
+
+fn filter_search_rows(mode: SearchMode) -> bool {
+    matches!(mode, SearchMode::Quick | SearchMode::Hash)
+}
+
+fn repository_search_head(repo: &Path) -> GitResult<Option<String>> {
+    let head = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "HEAD"])?;
+    Ok(head.ok().then(|| head.text().trim().to_owned()))
+}
+
+fn repository_search_rows(repo: &Path, query: &str, mode: SearchMode, offset: usize, limit: usize, head: Option<&str>) -> GitResult<String> {
+    if query.is_empty() {
+        return Ok(String::new());
     }
-    let in_memory = matches!(mode, SearchMode::Quick | SearchMode::Author | SearchMode::Hash);
     let mut args = vec![
         "log".into(),
         "--no-show-signature".into(),
@@ -829,36 +840,119 @@ pub fn search_repository(repo: &Path, query: &str, mode: SearchMode) -> GitResul
         "--branches".into(),
         "--remotes".into(),
         "--tags".into(),
-        format!("--max-count={}", if in_memory { 150_000 } else { MATCH_LIMIT }),
+        format!("--max-count={limit}"),
+        format!("--skip={offset}"),
     ];
-    if runner::exec(repo, ["rev-parse", "--verify", "--quiet", "HEAD"])?.ok() {
-        args.push("HEAD".into());
+    if let Some(head) = head {
+        args.push(head.into());
     }
-    search_arguments(&mut args, q, mode);
-    let raw = runner::run(repo, &args)?;
-    let q = q.to_lowercase();
-    Ok(raw
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.splitn(6, '\0');
-            let (oid, author, email, time, subject, refs) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?);
-            let by_author = || author.to_lowercase().contains(&q) || email.to_lowercase().contains(&q);
-            let matched = match mode {
-                SearchMode::Quick => oid.starts_with(&q) || by_author() || subject.to_lowercase().contains(&q) || refs.to_lowercase().contains(&q),
-                SearchMode::Author => by_author(),
-                SearchMode::Hash => oid.starts_with(&q),
-                _ => true,
-            };
-            matched.then(|| CommitSearchHit {
-                oid: oid.into(),
-                subject: subject.into(),
-                author: author.into(),
-                author_time: time.parse().unwrap_or_default(),
-                refs: refs.into(),
-            })
-        })
-        .take(MATCH_LIMIT)
-        .collect())
+    search_arguments(&mut args, query, mode);
+    runner::run(repo, &args)
+}
+
+fn repository_search_hit(line: &str, q: &str, mode: SearchMode) -> Option<CommitSearchHit> {
+    let mut fields = line.splitn(6, '\0');
+    let (oid, author, email, time, subject, refs) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?);
+    let by_author = || author.to_lowercase().contains(q) || email.to_lowercase().contains(q);
+    let matched = match mode {
+        SearchMode::Quick => oid.starts_with(q) || by_author() || subject.to_lowercase().contains(q) || refs.to_lowercase().contains(q),
+        SearchMode::Hash => oid.starts_with(q),
+        _ => true,
+    };
+    matched.then(|| CommitSearchHit {
+        oid: oid.into(),
+        subject: subject.into(),
+        author: author.into(),
+        author_time: time.parse().unwrap_or_default(),
+        refs: refs.into(),
+    })
+}
+
+/// Search independently of the graph cache, including repositories whose History tab was never opened.
+pub fn search_repository(repo: &Path, query: &str, mode: SearchMode) -> GitResult<Vec<CommitSearchHit>> {
+    let limit = REPOSITORY_SEARCH_PAGE + 1; // The workspace shows 30 and uses one extra row to detect truncation.
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let head = repository_search_head(repo)?;
+    let raw = repository_search_rows(repo, query, mode, 0, if filter_search_rows(mode) { REPOSITORY_SEARCH_SCAN } else { limit }, head.as_deref())?;
+    let q = query.to_lowercase();
+    Ok(raw.lines().filter_map(|line| repository_search_hit(line, &q, mode)).take(limit).collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitSearchPage {
+    pub commits: Vec<CommitSearchHit>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+    pub diagnostics: CommitSearchTimings,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitSearchTimings {
+    pub queue_ms: u128,
+    pub git_ms: u128,
+}
+
+pub fn search_repository_page(repo: &Path, query: &str, mode: SearchMode, cursor: Option<&str>, limit: usize) -> GitResult<CommitSearchPage> {
+    if !(1..=100).contains(&limit) {
+        return Err(GitError::new("Choose a search limit from 1 to 100.").kind("invalid-arguments"));
+    }
+    let queued = Instant::now();
+    super::operations::read(repo, || search_repository_page_locked(repo, query, mode, cursor, limit, queued.elapsed().as_millis()))
+}
+
+fn search_repository_page_locked(
+    repo: &Path,
+    query: &str,
+    mode: SearchMode,
+    cursor: Option<&str>,
+    limit: usize,
+    queue_ms: u128,
+) -> GitResult<CommitSearchPage> {
+    let scan = if filter_search_rows(mode) { MCP_SEARCH_SCAN } else { limit };
+    let query = query.trim();
+    let git_started = Instant::now();
+    let head = repository_search_head(repo)?;
+    let tips = runner::run(repo, ["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes", "refs/tags"])?;
+    let fingerprint_git = git_started.elapsed();
+    let mut hasher = DefaultHasher::new();
+    (repo, query, format!("{mode:?}"), &head, tips).hash(&mut hasher);
+    let scope = format!("{:016x}", hasher.finish());
+    let offset = if let Some(cursor) = cursor {
+        let invalid = || GitError::new("Use the nextCursor from search_commits.").kind("invalid-cursor");
+        let (cursor_scope, offset) = cursor.split_once('/').ok_or_else(invalid)?;
+        if cursor_scope != scope {
+            return Err(GitError::new("The search or repository history changed. Start the search again.").kind("stale-operation"));
+        }
+        offset.parse::<usize>().ok().filter(|offset| *offset <= i32::MAX as usize).ok_or_else(invalid)?
+    } else {
+        0
+    };
+    let log_started = Instant::now();
+    let raw = repository_search_rows(repo, query, mode, offset, scan + 1, head.as_deref())?;
+    let git_ms = (fingerprint_git + log_started.elapsed()).as_millis();
+    let q = query.to_lowercase();
+    let mut commits = Vec::new();
+    let mut next_offset = None;
+    for (index, line) in raw.lines().enumerate() {
+        if index == scan {
+            next_offset = Some(offset + index);
+            break;
+        }
+        if let Some(hit) = repository_search_hit(line, &q, mode) {
+            if commits.len() == limit {
+                next_offset = Some(offset + index);
+                break;
+            }
+            commits.push(hit);
+        }
+    }
+    let next_cursor = next_offset.map(|offset| format!("{scope}/{offset}"));
+    Ok(CommitSearchPage { commits, has_more: next_cursor.is_some(), next_cursor, diagnostics: CommitSearchTimings { queue_ms, git_ms } })
 }
 
 pub fn search(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode) -> GitResult<Vec<usize>> {
@@ -1084,5 +1178,65 @@ mod tests {
             assert_eq!(hits.len(), 1, "{query}");
             assert_eq!(hits[0].oid, commit.trim());
         }
+    }
+
+    #[test]
+    fn paged_author_search_matches_git_across_refs_and_beyond_the_old_scan_cap() {
+        use std::fmt::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        runner::run(repo, ["init", "-qb", "main"]).unwrap();
+        let mut import = String::new();
+        let target = "Developer [One] <Developer@example.com>";
+        let other = "Other Person <other@example.com>";
+        let message = "Example subject\n\nTASK-123 in the body";
+        writeln!(import, "commit refs/heads/main\nmark :1\ncommitter {target} 1700000000 +0000\ndata {}\n{message}\n", message.len()).unwrap();
+        for index in 1..=150_040 {
+            let identity = if index % 4_000 == 0 { target } else { other };
+            writeln!(import, "commit refs/heads/main\ncommitter {identity} {} +0000\ndata 6\nCommit\n", 1_700_000_000 + index).unwrap();
+        }
+        for (index, reference) in ["refs/heads/feature", "refs/remotes/origin/feature", "refs/heads/tag-fixture", "refs/heads/stash-fixture"].iter().enumerate()
+        {
+            writeln!(import, "commit {reference}\ncommitter {target} {} +0000\ndata {}\n{message}\nfrom :1\n", 1_700_151_000 + index, message.len()).unwrap();
+        }
+        runner::run_env(repo, ["fast-import", "--quiet"], &[], Some(import.as_bytes())).unwrap();
+        for (reference, branch) in [("refs/tags/search-fixture", "tag-fixture"), ("refs/stash", "stash-fixture")] {
+            runner::run(repo, ["update-ref", reference, &format!("refs/heads/{branch}")]).unwrap();
+            runner::run(repo, ["update-ref", "-d", &format!("refs/heads/{branch}")]).unwrap();
+        }
+        let direct = |pattern: &str| {
+            runner::run(repo, ["log", "--branches", "--remotes", "--tags", "--fixed-strings", "--regexp-ignore-case", pattern, "--format=%H"])
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let email_matches = direct("--author=developer@example.com");
+        assert_eq!(email_matches.len(), 41);
+        assert_eq!(direct("--author=developer [one]"), email_matches);
+        for (mode, query, expected) in
+            [(SearchMode::Author, "developer@example.com", email_matches), (SearchMode::Message, "task-123", direct("--grep=TASK-123"))]
+        {
+            let mut cursor = None;
+            let mut received = Vec::new();
+            loop {
+                let page = search_repository_page(repo, query, mode, cursor.as_deref(), 7).unwrap();
+                assert!(page.commits.len() <= 7);
+                assert_eq!(page.has_more, page.next_cursor.is_some());
+                assert!(page.next_cursor.is_none() || page.next_cursor != cursor);
+                received.extend(page.commits.into_iter().map(|commit| commit.oid));
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            assert_eq!(received, expected);
+        }
+        let first = search_repository_page(repo, "developer@example.com", SearchMode::Author, None, 5).unwrap();
+        let cursor = first.next_cursor.as_deref();
+        assert_eq!(search_repository_page(repo, "other", SearchMode::Author, cursor, 5).err().unwrap().kind, "stale-operation");
+        runner::run(repo, ["branch", "changed-after-page"]).unwrap();
+        assert_eq!(search_repository_page(repo, "developer@example.com", SearchMode::Author, cursor, 5).err().unwrap().kind, "stale-operation");
     }
 }

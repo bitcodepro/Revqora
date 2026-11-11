@@ -1,3 +1,4 @@
+use super::ToolError;
 #[cfg(windows)]
 use crate::windows_secret::dpapi;
 use ring::{hmac, rand};
@@ -185,9 +186,12 @@ impl Auth {
 }
 
 pub(super) fn call(request: &impl Serialize) -> super::Reply {
-    let (port, key) = descriptor_path().and_then(|path| read_descriptor(&path)).map_err(|_| super::DISABLED.to_owned())?;
+    let (port, key) = descriptor_path().and_then(|path| read_descriptor(&path)).map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => ToolError::disabled(),
+        _ => authentication_failed(),
+    })?;
     let socket = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_secs(3))
-        .map_err(|_| "Could not connect to Revqora's local MCP session. Check Settings → General → MCP.".to_owned())?;
+        .map_err(|_| ToolError::new("desktop_unavailable", "Could not connect to Revqora's local MCP session. Check Settings → General → MCP."))?;
     exchange(socket, &key, request, AUTH_TIMEOUT)
 }
 
@@ -204,29 +208,38 @@ fn exchange(socket: TcpStream, key: &Secret, request: &impl Serialize, auth_time
         auth.verify(b"hello", &[], &hello.tag)?;
         Ok(auth)
     })()
-    .map_err(|_| "Could not authenticate the local MCP session. Check Settings → General → MCP.".to_owned())?;
+    .map_err(|error| match error.kind() {
+        io::ErrorKind::PermissionDenied | io::ErrorKind::InvalidData => authentication_failed(),
+        _ => reply_error(error),
+    })?;
     // Updating a different socket handle left the Windows reader with the
     // handshake timeout. Use the same connection throughout the exchange.
     connection.get_ref().set_read_timeout(Some(REPLY_TIMEOUT)).map_err(reply_error)?;
-    auth.send(connection.get_mut(), b"request", request, REQUEST_MAX).map_err(|_| "Could not send the MCP request to Revqora.".to_owned())?;
+    auth.send(connection.get_mut(), b"request", request, REQUEST_MAX)
+        .map_err(|_| ToolError::new("request_send_failed", "Could not send the MCP request to Revqora."))?;
     auth.receive(&mut connection, b"reply", REPLY_MAX).map_err(reply_error)?
 }
 
-fn reply_error(error: io::Error) -> String {
+fn authentication_failed() -> ToolError {
+    ToolError::new("mcp_authentication_failed", "Could not authenticate the local MCP session. Check Settings → General → MCP.")
+}
+
+fn reply_error(error: io::Error) -> ToolError {
     match error.kind() {
-        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => "Timed out waiting for Revqora's MCP reply.",
-        io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied => "Revqora returned an invalid or unauthenticated MCP reply.",
-        _ => "The local MCP connection closed before Revqora returned a result.",
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => ToolError::new("request_timeout", "Timed out waiting for Revqora's MCP reply."),
+        io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied => {
+            ToolError::new("invalid_desktop_reply", "Revqora returned an invalid or unauthenticated MCP reply.")
+        }
+        _ => ToolError::new("desktop_unavailable", "The local MCP connection closed before Revqora returned a result."),
     }
-    .to_owned()
 }
 
 pub(super) fn serve(mut socket: TcpStream, key: &Secret, dispatch: impl FnOnce(Value) -> super::Reply) -> io::Result<()> {
     // Winsock can inherit the listener's nonblocking mode. The worker reads a
     // complete frame and relies on timeouts while the next bytes are in flight.
     socket.set_nonblocking(false)?;
-    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
-    socket.set_write_timeout(Some(Duration::from_secs(5)))?;
+    socket.set_read_timeout(Some(AUTH_TIMEOUT))?;
+    socket.set_write_timeout(Some(AUTH_TIMEOUT))?;
     let mut reader = BufReader::new(socket.try_clone()?);
     let client = read(&mut reader, AUTH_MAX)?;
     let server = nonce()?;
@@ -299,7 +312,7 @@ mod tests {
                 let auth = Auth::new(&key, client_nonce, hello.nonce);
                 auth.verify(b"hello", &[], &hello.tag).unwrap();
                 auth.send(&mut client, b"request", &Value::Null, REQUEST_MAX).unwrap();
-                let reply: Result<Value, String> = auth.receive(&mut reader, b"reply", REPLY_MAX).unwrap();
+                let reply: super::super::Reply = auth.receive(&mut reader, b"reply", REPLY_MAX).unwrap();
                 assert_eq!(reply, Ok(Value::Bool(true)));
             });
             serve(server, &key, |request| {

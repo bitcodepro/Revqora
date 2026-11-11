@@ -158,7 +158,7 @@ pub fn page(repo: &Path, state: &str, cursor: Option<&str>) -> GitResult<Page> {
     if !["open", "closed", "merged", "all"].contains(&state) {
         return Err(fail("Choose Open, Closed, Merged or All requests."));
     }
-    let f = forge::detect(repo)?.ok_or_else(|| fail("Configure an API connection first."))?;
+    let f = forge::detect(repo)?.ok_or_else(|| fail("Configure an API connection first.").kind("pr-connection-required"))?;
     let connection = f.connection_revision.clone().ok_or_else(|| fail("Missing API connection revision."))?;
     let offset = if let Some(c) = cursor {
         if c.len() > 2048 {

@@ -885,6 +885,24 @@ async fn repository_commit_search(repo: String, query: String, mode: SearchMode)
 }
 
 #[tauri::command]
+async fn repository_commit_search_page(
+    repo: String,
+    query: String,
+    mode: SearchMode,
+    cursor: Option<String>,
+    limit: u32,
+) -> GitResult<graph::CommitSearchPage> {
+    let queued = std::time::Instant::now();
+    blocking(move || {
+        let worker_queue = queued.elapsed().as_millis();
+        let mut page = graph::search_repository_page(&p(&repo), &query, mode, cursor.as_deref(), limit as usize)?;
+        page.diagnostics.queue_ms += worker_queue;
+        Ok(page)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn commit_graph_status(repo: String) -> GitResult<bool> {
     blocking(move || Ok(graph::has_commit_graph(&p(&repo)))).await
 }
@@ -898,8 +916,15 @@ async fn commit_graph_write(expected_state: Option<String>, app: AppHandle, repo
 }
 
 #[tauri::command]
-async fn commit_details(repo: String, oid: String) -> GitResult<CommitDetails> {
-    blocking(move || gcommit::details(&p(&repo), &oid)).await
+async fn commit_details(repo: String, oid: String, exact: Option<bool>) -> GitResult<CommitDetails> {
+    blocking(move || {
+        let root = p(&repo);
+        if exact == Some(true) {
+            gcommit::verify_commit_oid(&root, &oid)?;
+        }
+        gcommit::details(&root, &oid)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1848,6 +1873,11 @@ async fn forge_kind(repo: String) -> GitResult<Option<String>> {
 }
 
 #[tauri::command]
+async fn forge_connection_identity(repo: String) -> GitResult<forge::ConnectionIdentity> {
+    blocking(move || forge::connection_identity(&p(&repo))).await
+}
+
+#[tauri::command]
 async fn repository_web_link(repo: String, reference: Option<String>) -> GitResult<Option<String>> {
     blocking(move || forge::web_link(&p(&repo), reference.as_deref())).await
 }
@@ -2354,6 +2384,7 @@ pub fn run() {
             graph_resolve_lane,
             graph_search,
             repository_commit_search,
+            repository_commit_search_page,
             commit_details,
             commit_graph_status,
             commit_graph_write,
@@ -2478,6 +2509,7 @@ pub fn run() {
             forge_connections,
             forge_connection_select,
             forge_info,
+            forge_connection_identity,
             forge_kind,
             repository_web_link,
             pull_requests,

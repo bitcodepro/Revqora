@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, errorMessage } from "./api";
+import { api } from "./api";
+import { McpToolError, mcpError } from "./mcpErrors";
 import * as A from "./actions";
 import { basename } from "./format";
 import { useRepos } from "./store";
@@ -17,7 +18,7 @@ import { syncRepositories } from "../components/SyncRepositories";
 import { openWorkflowStepReview } from "../components/WorkflowBuilder";
 
 type Arguments = {
-  repository?: string; offset?: number; oid?: string; path?: string; side?: string;
+  repository?: string; offset?: number; limit?: number; oid?: string; path?: string; side?: string;
   scope?: string; query?: string; mode?: SearchMode | "all"; state?: PrState;
   number?: number; section?: string; cursor?: string; revision?: string; fileId?: string;
   view?: string; id?: string; action?: string; target?: string; paths?: string[]; message?: string;
@@ -29,7 +30,7 @@ interface DesktopRequest {
   request: { name: string; arguments: Arguments };
 }
 type Phase = "preparing" | "awaiting_confirmation" | "running" | "cancelled" | "succeeded" | "handed_off" | "failed";
-interface ActionStatus { id: string; session: string; action: string; phase: Phase; message?: string; commit?: string; runId?: string }
+interface ActionStatus { id: string; session: string; action: string; phase: Phase; message?: string; errorCode?: string; commit?: string; runId?: string }
 const actions = new Map<string, ActionStatus>();
 let activeAction: string | null = null;
 
@@ -41,18 +42,14 @@ function permittedRoots() {
 }
 
 function requireRepo(root?: string) {
-  if (!root || !permittedRoots().includes(root)) throw new Error("Choose a repository from list_repositories in the active workspace.");
+  if (!root || !permittedRoots().includes(root)) throw new McpToolError("repository_not_open", "Choose a repository from list_repositories in the active workspace.");
   return root;
 }
 
 const oidPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 function exactCommit(oid?: string) {
-  if (!oid || !oidPattern.test(oid)) throw new Error("Supply the full commit hash.");
+  if (!oid || !oidPattern.test(oid)) throw new McpToolError("invalid_commit", "Supply the full commit hash.");
   return oid;
-}
-
-function safeError(reason: unknown) {
-  return errorMessage(reason).replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1[credentials]@").slice(0, 2000);
 }
 
 function page<T>(items: T[], offset = 0, size = 100) {
@@ -84,7 +81,7 @@ function diffPage(diff: FileDiff, offset: number) {
 async function prContext(root: string, number: number) {
   const forge = await api.forgeInfo(root);
   const connection = forge?.connectionRevision;
-  if (!forge || !connection) throw new Error("Choose an API account and remote in Revqora's PR Center first.");
+  if (!forge || !connection) throw new McpToolError("pr_connection_required", "Choose an API account and remote in Revqora's PR Center first.");
   return { root, forge, connection, detail: await api.prDetail(root, number, connection) };
 }
 
@@ -92,11 +89,11 @@ async function pullRequest(root: string, a: Arguments) {
   const number = a.number!;
   const { connection, detail } = await prContext(root, number);
   const { revision } = detail;
-  if (a.revision && a.revision !== revision) throw new Error("The PR changed. Read its files or overview again.");
+  if (a.revision && a.revision !== revision) throw new McpToolError("stale_state", "The PR changed. Read its files or overview again.");
   switch (a.section) {
     case "files": return { revision, ...await api.prFiles(root, number, connection, revision, a.offset ?? 0) };
     case "diff": {
-      if (!a.revision || !a.fileId) throw new Error("Supply fileId and revision from the files section.");
+      if (!a.revision || !a.fileId) throw new McpToolError("invalid_arguments", "Supply fileId and revision from the files section.");
       const { diff, notice } = await api.prFile(root, number, connection, revision, a.fileId);
       return { revision, notice, diff: diff ? diffPage(diff, a.offset ?? 0) : null };
     }
@@ -107,7 +104,7 @@ async function pullRequest(root: string, a: Arguments) {
 }
 
 function navigate(root: string, view: string) {
-  if (useUi.getState().dialogs.length) throw new Error("Finish the open Revqora dialog before changing views.");
+  if (useUi.getState().dialogs.length) throw new McpToolError("review_pending", "Finish the open Revqora dialog before changing views.");
   useRepos.getState().activate(root);
   switch (view) {
     case "history": case "changes": case "pull_requests":
@@ -273,15 +270,17 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     }
     status.phase = "succeeded";
   } catch (reason) {
+    const { code, message } = mcpError(reason);
     status.phase = "failed";
-    status.message = safeError(reason);
+    status.errorCode = code;
+    status.message = message;
   } finally {
     activeAction = null;
   }
 }
 
 function requestAction(event: DesktopRequest, root: string, a: Arguments) {
-  if (activeAction || useUi.getState().dialogs.length) throw new Error("Finish the existing Revqora review before requesting another action.");
+  if (activeAction || useUi.getState().dialogs.length) throw new McpToolError("review_pending", "Finish the existing Revqora review before requesting another action.");
   const id = event.id;
   const status: ActionStatus = { id, session: event.session, action: a.action!, phase: "preparing" };
   activeAction = id;
@@ -293,14 +292,28 @@ function requestAction(event: DesktopRequest, root: string, a: Arguments) {
 
 async function dispatch(event: DesktopRequest): Promise<unknown> {
   const { name, arguments: a } = event.request;
-  if (name === "list_repositories") {
+  if (name === "list_repositories" || name === "workspace_overview") {
     const roots = permittedRoots();
     const { active, tabs } = useRepos.getState();
-    return { active: active && roots.includes(active) ? active : null, repositories: roots.map(id => ({ id, name: tabs[id].info?.name ?? basename(id), branch: tabs[id].info?.head.branch })) };
+    return {
+      active: active && roots.includes(active) ? active : null,
+      repositories: roots.map(id => {
+        const tab = tabs[id];
+        const repository = { id, name: tab.info?.name ?? basename(id), branch: tab.info?.head.branch };
+        if (name === "list_repositories") return repository;
+        const status = tab.sidebarStatus ?? tab.status;
+        const summary = status ? {
+          oid: status.oid, upstream: status.upstream, ahead: status.ahead, behind: status.behind,
+          staged: status.stagedCount, unstaged: status.unstagedCount, conflicts: status.conflictCount,
+          changed: status.files.length, stateVersion: status.stateVersion ?? null,
+        } : null;
+        return { ...repository, branch: status ? status.branch : repository.branch, status: summary, source: "desktop_snapshot", cached: true };
+      }),
+    };
   }
   if (name === "action_status") {
     const status = actions.get(a.id!);
-    if (!status || status.session !== event.session) throw new Error("Unknown MCP action in this session.");
+    if (!status || status.session !== event.session) throw new McpToolError("unknown_action", "Unknown MCP action in this session.");
     const { session: _session, ...result } = status;
     return result;
   }
@@ -320,21 +333,21 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
     case "compare_branches":
       return api.compareBranchCommits(root, a.from!, a.to!);
     case "search_commits":
-      return { commits: (await api.repositoryCommitSearch(root, a.query!, a.mode && a.mode !== "all" ? a.mode : "quick")).slice(0, 100) };
+      return api.repositoryCommitSearchPage(root, a.query!, a.mode && a.mode !== "all" ? a.mode : "quick", a.cursor ?? null, a.limit ?? 30);
     case "commit_details": {
-      const { files, ...commit } = await api.commitDetails(root, exactCommit(a.oid));
+      const { files, ...commit } = await api.commitDetails(root, exactCommit(a.oid), true);
       return { ...commit, body: commit.body.slice(0, 12000), files: page(files, a.offset, 100) };
     }
     case "file_diff": {
       const path = a.path!;
       if (a.side === "commit") {
         const oid = exactCommit(a.oid);
-        const { files, diffBase } = await api.commitDetails(root, oid);
-        if (!files.some(file => file.path === path)) throw new Error("Choose a changed path from commit_details.");
+        const { files, diffBase } = await api.commitDetails(root, oid, true);
+        if (!files.some(file => file.path === path)) throw new McpToolError("file_not_found", "Choose a changed path from commit_details.");
         return diffPage(await api.revDiff(root, diffBase, oid, path, { disableTextconv: true }), a.offset ?? 0);
       }
       const file = (await api.status(root)).files.find(file => file.path === path);
-      if (!file || path.endsWith("/") || a.side === "staged" && file.untracked) throw new Error("Choose a changed file from repository_status.");
+      if (!file || path.endsWith("/") || a.side === "staged" && file.untracked) throw new McpToolError("file_not_found", "Choose a changed file from repository_status.");
       return diffPage(await api.workingDiff(root, path, a.side === "staged" ? "staged" : "unstaged", file.untracked, { disableTextconv: true }, true), a.offset ?? 0);
     }
     case "list_worktrees": {
@@ -354,10 +367,14 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
       const { forge, items, nextCursor } = await api.prPage(root, a.state ?? "open", a.cursor);
       return { provider: forge.kind, project: forge.project, items, nextCursor };
     }
+    case "connection_identity": {
+      const { connectionRevision: _connectionRevision, ...identity } = await api.forgeConnectionIdentity(root);
+      return identity;
+    }
     case "pull_request": return pullRequest(root, a);
     case "open_view": return navigate(root, a.view!);
     case "request_action": return requestAction(event, root, a);
-    default: throw new Error("Unknown Revqora tool.");
+    default: throw new McpToolError("unknown_tool", "Unknown Revqora tool.");
   }
 }
 
@@ -367,8 +384,8 @@ export function listenMcpDesktop() {
       if (!await api.mcpLease(payload.session, payload.id)) return;
       const result = await dispatch(payload);
       if (payload.request.arguments.repository) requireRepo(payload.request.arguments.repository);
-      if ((JSON.stringify(result)?.length ?? 0) > 180_000) throw new Error("The result is too large to return safely. Use a narrower query or inspect the complete result in Revqora.");
+      if ((JSON.stringify(result)?.length ?? 0) > 180_000) throw new McpToolError("result_too_large", "The result is too large to return safely. Use a narrower query or inspect the complete result in Revqora.");
       await api.mcpReply(payload.session, payload.id, result);
-    })().catch(reason => api.mcpReply(payload.session, payload.id, null, safeError(reason)).catch(() => {}));
+    })().catch(reason => api.mcpReply(payload.session, payload.id, null, mcpError(reason)).catch(() => {}));
   }, { target: "main" });
 }
