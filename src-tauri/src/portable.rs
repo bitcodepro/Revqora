@@ -92,62 +92,133 @@ pub fn configure_environment() -> std::io::Result<()> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct WindowState {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-    pub maximized: bool,
+struct Bounds {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
 }
 
-pub fn load_window_state(dir: &Path) -> Option<WindowState> {
+impl Bounds {
+    fn new(position: tauri::PhysicalPosition<i32>, size: tauri::PhysicalSize<u32>) -> Self {
+        Self { x: position.x, y: position.y, width: size.width, height: size.height }
+    }
+
+    /// Fit the client size and its native frame into this physical work area.
+    fn place(self, size: tauri::PhysicalSize<u32>, frame: tauri::PhysicalSize<u32>, position: Option<tauri::PhysicalPosition<i32>>) -> Self {
+        fn axis(start: i32, available: u32, size: u32, frame: u32, position: Option<i32>) -> (i32, u32) {
+            let size = size.clamp(1, available.saturating_sub(frame).max(1));
+            let space = available.saturating_sub(size.saturating_add(frame));
+            let start = i64::from(start);
+            let pos = position.map_or(start + i64::from(space / 2), |pos| i64::from(pos).clamp(start, start + i64::from(space)));
+            (i32::try_from(pos).unwrap_or(i32::MAX), size)
+        }
+
+        let (x, width) = axis(self.x, self.width, size.width, frame.width, position.map(|p| p.x));
+        let (y, height) = axis(self.y, self.height, size.height, frame.height, position.map(|p| p.y));
+        Self { x, y, width, height }
+    }
+
+    fn position(self) -> tauri::PhysicalPosition<i32> {
+        tauri::PhysicalPosition::new(self.x, self.y)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Display {
+    name: Option<String>,
+    bounds: Bounds,
+    work_area: Bounds,
+    scale: f64,
+}
+
+impl From<tauri::Monitor> for Display {
+    fn from(monitor: tauri::Monitor) -> Self {
+        let bounds = Bounds::new(*monitor.position(), *monitor.size());
+        let area = monitor.work_area();
+        let work_area = if area.size.width > 0 && area.size.height > 0 { Bounds::new(area.position, area.size) } else { bounds };
+        Self { name: monitor.name().cloned(), bounds, work_area, scale: monitor.scale_factor() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct WindowState {
+    display: Display,
+    displays: Vec<Display>,
+    normal: Option<Bounds>,
+}
+
+impl WindowState {
+    fn can_restore(&self, displays: &[Display]) -> bool {
+        displays.contains(&self.display)
+            && displays.len() == self.displays.len()
+            && displays.iter().all(|display| self.displays.contains(display))
+            && self.displays.iter().all(|display| displays.contains(display))
+    }
+}
+
+fn load_window_state(dir: &Path) -> Option<WindowState> {
+    // Legacy files lack the monitor information needed to trust physical bounds.
     serde_json::from_slice(&fs::read(dir.join(WINDOW_FILE)).ok()?).ok()
 }
 
-pub fn save_window_state(dir: &Path, state: &WindowState) {
+fn save_window_state(dir: &Path, state: &WindowState) {
     if let Ok(json) = serde_json::to_vec_pretty(state) {
         let _ = fs::write(dir.join(WINDOW_FILE), json);
     }
 }
 
-/// Restores the normal bounds so Restore returns the user to their last placement.
+/// Prepare the hidden window on the intended monitor before Windows maximizes it.
 pub fn restore_window_bounds(window: &tauri::WebviewWindow) {
-    let saved = data_dir().and_then(load_window_state);
-    let Some(s) = saved.filter(|s| s.width >= 400 && s.height >= 300) else {
+    let displays = window.available_monitors().unwrap_or_default().into_iter().map(Display::from).collect::<Vec<_>>();
+    let saved = data_dir().and_then(load_window_state).filter(|state| state.can_restore(&displays));
+    let display = saved.as_ref().map(|state| state.display.clone()).or_else(|| {
+        window
+            .cursor_position()
+            .ok()
+            .and_then(|point| window.monitor_from_point(point.x, point.y).ok().flatten())
+            .or_else(|| window.current_monitor().ok().flatten())
+            .or_else(|| window.primary_monitor().ok().flatten())
+            .map(Display::from)
+    });
+    let (Some(display), Ok(inner), Ok(outer)) = (display, window.inner_size(), window.outer_size()) else {
         return;
     };
-    let _ = window.set_size(tauri::PhysicalSize::new(s.width, s.height));
-    // Only reuse the position while some monitor still shows the window's top-left area.
-    let visible = window.available_monitors().unwrap_or_default().iter().any(|m| {
-        let (p, z) = (m.position(), m.size());
-        s.x + 40 >= p.x && s.y + 10 >= p.y && s.x + 40 < p.x + z.width as i32 && s.y + 10 < p.y + z.height as i32
-    });
-    if visible {
-        let _ = window.set_position(tauri::PhysicalPosition::new(s.x, s.y));
-    } else {
-        let _ = window.center();
+    let scale = display.scale / window.scale_factor().unwrap_or(display.scale);
+    let scaled = |pixels: u32| (f64::from(pixels) * scale).round() as u32;
+    let frame = tauri::PhysicalSize::new(scaled(outer.width.saturating_sub(inner.width)), scaled(outer.height.saturating_sub(inner.height)));
+    let normal = saved.and_then(|state| state.normal).filter(|bounds| bounds.width >= 400 && bounds.height >= 300);
+    let size = normal
+        .map_or_else(|| tauri::PhysicalSize::new(scaled(inner.width), scaled(inner.height)), |bounds| tauri::PhysicalSize::new(bounds.width, bounds.height));
+    let bounds = display.work_area.place(size, frame, normal.map(Bounds::position));
+    // Move first so any per-monitor DPI change is applied before setting the
+    // final physical size. Reapply the position after Windows adjusts the frame.
+    let _ = window.set_position(bounds.position());
+    let sized = window.set_size(tauri::PhysicalSize::new(bounds.width, bounds.height)).is_ok();
+    if window.set_position(bounds.position()).is_ok() && sized {
+        *NORMAL.lock() = Some((display, bounds));
     }
 }
 
-/// The last normal (not maximized, not minimized) placement seen while the app runs.
-static NORMAL: parking_lot::Mutex<Option<WindowState>> = parking_lot::Mutex::new(None);
+/// The monitor and normal placement that belong together.
+static NORMAL: parking_lot::Mutex<Option<(Display, Bounds)>> = parking_lot::Mutex::new(None);
 
-/// Records the current placement whenever the window is moved or resized in normal state, so a
-/// window that is maximized and then closed still reopens (unmaximized) where it last was.
+fn normal_bounds(window: &tauri::Window) -> Option<Bounds> {
+    Some(Bounds::new(window.outer_position().ok()?, window.inner_size().ok()?))
+}
+
+/// Record the normal geometry for the Restore button.
 pub fn track_window(window: &tauri::Window) {
     if window.is_maximized().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
         return;
     }
-    if let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) {
-        *NORMAL.lock() = Some(WindowState { x: pos.x, y: pos.y, width: size.width, height: size.height, maximized: false });
+    if let (Ok(Some(monitor)), Some(bounds)) = (window.current_monitor(), normal_bounds(window)) {
+        *NORMAL.lock() = Some((monitor.into(), bounds));
     }
 }
 
-/// What to save on close: the latest normal placement plus whether the window is maximized.
-/// Falls back to the current placement (normal state) or the saved one (nothing tracked yet).
-pub fn closing_state(tracked: Option<WindowState>, saved: Option<WindowState>, current: Option<WindowState>, maximized: bool) -> Option<WindowState> {
-    let normal = if maximized { tracked.or(saved) } else { current.or(tracked) };
-    normal.map(|n| WindowState { maximized, ..n })
+fn closing_bounds(display: &Display, tracked: Option<&(Display, Bounds)>, current: Option<Bounds>) -> Option<Bounds> {
+    current.or_else(|| tracked.filter(|(tracked_display, _)| tracked_display == display).map(|(_, bounds)| *bounds))
 }
 
 /// Saves the geometry on close.
@@ -156,38 +227,76 @@ pub fn remember_window(window: &tauri::Window) {
     if window.is_minimized().unwrap_or(false) {
         return;
     }
-    let maximized = window.is_maximized().unwrap_or(false);
-    let current = match (window.outer_position(), window.inner_size()) {
-        (Ok(p), Ok(z)) if !maximized => Some(WindowState { x: p.x, y: p.y, width: z.width, height: z.height, maximized: false }),
-        _ => None,
+    let (Ok(Some(monitor)), Ok(monitors)) = (window.current_monitor(), window.available_monitors()) else {
+        return;
     };
-    if let Some(state) = closing_state(*NORMAL.lock(), load_window_state(dir), current, maximized) {
-        save_window_state(dir, &state);
-    }
+    let display = Display::from(monitor);
+    let displays = monitors.into_iter().map(Display::from).collect();
+    let current = if window.is_maximized().unwrap_or(false) { None } else { normal_bounds(window) };
+    let normal = closing_bounds(&display, NORMAL.lock().as_ref(), current);
+    save_window_state(dir, &WindowState { display, displays, normal });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn laptop() -> Display {
+        let bounds = Bounds { x: 0, y: 0, width: 1920, height: 1080 };
+        Display { name: Some("Laptop".into()), bounds, work_area: Bounds { height: 1040, ..bounds }, scale: 1.25 }
+    }
+
+    fn external() -> Display {
+        let bounds = Bounds { x: -2560, y: -360, width: 2560, height: 1440 };
+        Display { name: Some("External".into()), bounds, work_area: Bounds { height: 1400, ..bounds }, scale: 1.0 }
+    }
+
     #[test]
-    fn maximized_close_keeps_the_latest_normal_placement() {
-        let opened = WindowState { x: 50, y: 40, width: 1200, height: 800, maximized: false };
-        let resized = WindowState { x: 80, y: 60, width: 1400, height: 900, maximized: false };
-        // Reopened at 1200x800, moved/resized to 1400x900 (tracked), maximized, closed.
-        let state = closing_state(Some(resized), Some(opened), None, true).unwrap();
-        assert_eq!(state, WindowState { maximized: true, ..resized });
-        // Closed in normal state: the current placement wins.
-        assert_eq!(closing_state(Some(opened), None, Some(resized), false), Some(resized));
-        // Maximized before anything was tracked: the saved placement is kept.
-        assert_eq!(closing_state(None, Some(opened), None, true), Some(WindowState { maximized: true, ..opened }));
+    fn attaching_disconnecting_or_reconfiguring_a_display_invalidates_saved_bounds() {
+        let laptop = laptop();
+        let external = external();
+        let state = WindowState { display: laptop.clone(), displays: vec![laptop.clone()], normal: None };
+        assert!(state.can_restore(std::slice::from_ref(&laptop)));
+        assert!(!state.can_restore(&[laptop.clone(), external.clone()]));
+        let state = WindowState { displays: vec![laptop.clone(), external.clone()], ..state };
+        assert!(state.can_restore(&[external.clone(), laptop.clone()]));
+        assert!(!state.can_restore(std::slice::from_ref(&laptop)));
+        assert!(!state.can_restore(&[laptop.clone(), Display { scale: 1.5, ..external.clone() }]));
+        assert!(!state.can_restore(&[laptop, Display { work_area: Bounds { height: 1440, ..external.work_area }, ..external }]));
+    }
+
+    #[test]
+    fn maximized_close_uses_only_normal_bounds_for_the_same_display() {
+        let laptop = laptop();
+        let external = external();
+        let opened = Bounds { x: 50, y: 40, width: 1200, height: 800 };
+        let resized = Bounds { x: 80, y: 60, width: 1400, height: 900 };
+        let tracked = (laptop.clone(), opened);
+        assert_eq!(closing_bounds(&laptop, Some(&tracked), None), Some(opened));
+        assert_eq!(closing_bounds(&laptop, Some(&tracked), Some(resized)), Some(resized));
+        assert_eq!(closing_bounds(&external, Some(&tracked), None), None);
+    }
+
+    #[test]
+    fn normal_bounds_are_centered_or_clamped_to_the_monitor_work_area() {
+        let external = external();
+        let frame = tauri::PhysicalSize::new(16, 40);
+        let size = tauri::PhysicalSize::new(1200, 800);
+        assert_eq!(external.work_area.place(size, frame, None), Bounds { x: -1888, y: -80, width: 1200, height: 800 });
+        assert_eq!(
+            external.work_area.place(size, frame, Some(tauri::PhysicalPosition::new(200, -900))),
+            Bounds { x: -1216, y: -360, width: 1200, height: 800 }
+        );
+        assert_eq!(external.work_area.place(tauri::PhysicalSize::new(3000, 2000), frame, None), Bounds { x: -2560, y: -360, width: 2544, height: 1360 });
     }
 
     #[test]
     fn window_state_round_trips() {
         let tmp = tempfile::tempdir().unwrap();
-        let s = WindowState { x: 10, y: 20, width: 1200, height: 800, maximized: false };
+        let s = WindowState { display: laptop(), displays: vec![laptop(), external()], normal: Some(Bounds { x: 10, y: 20, width: 1200, height: 800 }) };
         save_window_state(tmp.path(), &s);
         assert_eq!(load_window_state(tmp.path()), Some(s));
+        fs::write(tmp.path().join(WINDOW_FILE), r#"{"x":10,"y":20,"width":1200,"height":800,"maximized":true}"#).unwrap();
+        assert_eq!(load_window_state(tmp.path()), None);
     }
 }

@@ -2243,10 +2243,12 @@ pub fn run() {
                 portable::automation_startup("webview-build-ready");
                 if remember_window {
                     portable::restore_window_bounds(&w);
+                    // Show first so the initial Windows show state from the
+                    // launcher cannot override the native maximize request.
+                    w.show()?;
                     if let Err(error) = w.maximize() {
                         eprintln!("Could not maximize the main window: {error}");
                     }
-                    w.show()?;
                 }
             }
             if let Some(root) = update::launch().map(|l| l.root.clone()) {
