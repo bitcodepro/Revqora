@@ -15,7 +15,8 @@ export async function prCenterSmoke({page,check,shot,work}) {
   fs.mkdirSync(path.join(root,".github/PULL_REQUEST_TEMPLATE"),{recursive:true});fs.writeFileSync(path.join(root,".github/PULL_REQUEST_TEMPLATE/Feature.md"),"## Template\n\n- [ ] Tests\nТест 😀\n");fs.writeFileSync(path.join(root,"file.txt"),"base\n");git("add",".");git("commit","-qm","PR Center fixture");fs.writeFileSync(path.join(root,"file.txt"),"Keep this local work\n");
   const head=git("rev-parse","HEAD"),index=fs.readFileSync(path.join(root,".git/index"));
   const description="A description with more than ten readable words, several paragraphs and Unicode 😀.\n\n"+"Long review context. ".repeat(300)+"\n<img src='https://must-not-load.invalid/track'>";
-  const pulls=new Map(Array.from({length:52},(_,i)=>[i+1,{number:i+1,title:`Request ${i+1}: improve repository workflow`,body:description,user:{id:i%2?13:99,login:i%2?"pr-tester":"fixture-author"},head:{ref:"topic",sha:a},base:{ref:"main",sha:b},state:"open",draft:false,created_at:"2026-01-01T00:00:00Z",updated_at:`initial-${i+1}`,changed_files:4,html_url:"file:///unsafe.exe"}]));
+  const duplicateNumberTitle="Verify the shared request number";
+  const pulls=new Map(Array.from({length:52},(_,i)=>[i+1,{number:i+1,title:i===1?duplicateNumberTitle:`Request ${i+1}: improve repository workflow`,body:description,user:{id:i%2?13:99,login:i%2?"pr-tester":"fixture-author"},head:{ref:"topic",sha:a},base:{ref:"main",sha:b},state:"open",draft:false,created_at:"2026-01-01T00:00:00Z",updated_at:`initial-${i+1}`,changed_files:4,html_url:"file:///unsafe.exe"}]));
   const patch="diff --git a/src/old.ts b/src/new.ts\nsimilarity index 60%\nrename from src/old.ts\nrename to src/new.ts\n--- a/src/old.ts\n+++ b/src/new.ts\n@@ -1 +1 @@\n-before\n+after\n"+
     "diff --git a/long.txt b/long.txt\nnew file mode 100644\n--- /dev/null\n+++ b/long.txt\n@@ -0,0 +1 @@\n+"+"long-line-".repeat(120)+"\n"+
     "diff --git a/asset.bin b/asset.bin\nBinary files a/asset.bin and b/asset.bin differ\n"+
@@ -34,7 +35,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
       const p=pulls.get(n);if(!p){res.writeHead(404);res.end("{}");return;}
       if(req.headers.accept?.includes("diff")){res.writeHead(200,{"content-type":"text/plain"});res.end(patch);return;}
       if(req.method==="PATCH"){Object.assign(p,entry.body,{base:{...p.base,ref:entry.body.base},updated_at:`edited-${requests.length}`});if(loseEditResponse){loseEditResponse=false;res.writeHead(503);res.end("{}");return;}}
-      return send(p);
+      return send(n===2&&url.pathname.includes("/team/second/")?{...p,body:"Description from the second repository"}:p);
     }
     if(url.pathname.endsWith("/pulls")){
       if(req.method==="POST"){const n=nextCreated++;const p={...pulls.get(1),...entry.body,number:n,head:{ref:entry.body.head,sha:a},base:{ref:entry.body.base,sha:b},updated_at:"created"};pulls.set(n,p);if(loseCreateResponse){loseCreateResponse=false;res.writeHead(503);res.end("{}");return;}return send(p);}
@@ -159,17 +160,29 @@ export async function prCenterSmoke({page,check,shot,work}) {
       await watchMine.click();
       await page.getByRole("combobox",{name:"Pull request scope",exact:true}).selectOption("all");
       const all=page.getByRole("region",{name:"Pull requests across repositories",exact:true});
-      const firstGroup=all.getByRole("region",{name:"stage13-pr-center",exact:true});
-      const secondGroup=all.getByRole("region",{name:"stage13-other-prs",exact:true});
-      await firstGroup.getByText("Request 2: improve repository workflow",{exact:true}).waitFor();
-      const secondPull=secondGroup.getByRole("button",{name:/#2 Request 2:/});
-      await secondPull.waitFor();
-      if(await secondGroup.getByText("Request 1: improve repository workflow",{exact:true}).count())throw Error("Combined My PRs included a different author");
-      await shot("105-pr-across-repositories");
+      const list=all.getByRole("listbox",{name:"Pull requests",exact:true});
+      const search=all.getByRole("textbox",{name:"Search pull requests across repositories",exact:true});
+      await all.locator('[data-pr-loaded="52"]').waitFor();
+      await search.fill("Request 1:");
+      await all.getByText("No matching pull requests.",{exact:true}).waitFor();
+      if(await list.getByRole("option").count())throw Error("Combined My PRs included a different author");
+      await search.fill(duplicateNumberTitle);
+      const firstPull=list.getByRole("option").filter({has:page.getByText("stage13-pr-center",{exact:true})});
+      const secondPull=list.getByRole("option").filter({has:page.getByText("stage13-other-prs",{exact:true})});
+      await firstPull.getByText("topic → main",{exact:true}).waitFor();
+      await secondPull.getByText("topic → main",{exact:true}).waitFor();
+      if(await list.getByRole("option").count()!==2)throw Error("Combined list did not render one row per matching PR");
       await secondPull.click();
       await detail(2);
-      await page.locator(".topbar .repo-current > b").filter({hasText:"stage13-other-prs"}).waitFor();
+      await all.getByText("PR Center · team/second",{exact:true}).waitFor();
+      await all.getByText("Description from the second repository",{exact:true}).waitFor();
+      if(!await page.locator(".topbar .repo-current > b").filter({hasText:"stage13-pr-center"}).isVisible())throw Error("Opening a combined PR switched repositories");
+      await shot("105-pr-across-repositories");
+      await page.locator(".repository-select").filter({hasText:"stage13-local-only"}).click();
+      await detail(2);
+      if(await secondPull.getAttribute("aria-selected")!=="true"||await search.inputValue()!==duplicateNumberTitle)throw Error("Switching repository reset the combined PR list");
       await page.locator(".repository-select").filter({hasText:"stage13-pr-center"}).click();
+      await page.getByRole("combobox",{name:"Pull request scope",exact:true}).selectOption("repository");
       await detail(1);
     });
     await check("long PR descriptions expand without rendering provider HTML or unsafe browser URLs",async()=>{
