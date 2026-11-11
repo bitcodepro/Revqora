@@ -1,6 +1,6 @@
 import { beforeEach, expect, it } from "vitest";
 import { folderWorkspaceTree } from "./folderWorkspaceTree";
-import { treeSelection, visibleTree } from "./libraryTree";
+import { moveTreeEntries, treeSelection, visibleTree } from "./libraryTree";
 import { groupRepositoryRoots, planFolderWorkspaces, restoreLibrary, useLibrary } from "./repositoryLibrary";
 
 beforeEach(() => useLibrary.setState(restoreLibrary({})));
@@ -47,4 +47,16 @@ it("reveals ancestors when filtering and only selects visible ranges", () => {
   expect(visibleTree(entries, entry => entry.id === "b", () => true, true).map(row => [row.entry.id, row.depth])).toEqual([["a",0],["b",1]]);
   expect(treeSelection(["a","b","c"], ["c"], "a", "b", true, false)).toEqual(["a","b"]);
   expect(treeSelection(["a","b","c"], ["c"], "a", "b", false, true)).toEqual(["c","b"]);
+});
+
+it("reorders siblings and preserves the dragged subtree when crossing levels", () => {
+  const entries = [
+    {id:"a", name:"A", parentId:null}, {id:"child", name:"Child", parentId:"a"},
+    {id:"b", name:"B", parentId:null}, {id:"c", name:"C", parentId:"b"},
+  ];
+  const reordered = moveTreeEntries(entries, ["a"], null, {siblingId:"b", after:true});
+  expect(visibleTree(reordered, () => true, () => false, false).map(row => row.entry.id)).toEqual(["b","c","a","child"]);
+  const nested = moveTreeEntries(reordered, ["a"], "b", {siblingId:"c", after:false});
+  expect(visibleTree(nested, () => true, () => false, false).map(row => [row.entry.id, row.depth])).toEqual([["b",0],["a",1],["child",2],["c",1]]);
+  expect(() => moveTreeEntries(nested, ["b"], "a", {siblingId:"child", after:false})).toThrow("cannot contain itself");
 });

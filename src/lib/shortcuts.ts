@@ -71,7 +71,8 @@ export const SHORTCUTS: ShortcutDef[] = [
   ...[
     ["workspace-sub", "Create sub-workspace"],
     ["workspace-unlink", "Remove workspace from its parent"],
-    ["group-create", "Create group from selected repositories or groups"],
+    ["group-create", "Create group"],
+    ["group-selected", "Group selected groups"],
     ["group-sub", "Create subgroup"],
     ["group-unlink", "Remove group from its parent"],
     ["group-remove-workspace", "Remove groups from current workspace"],

@@ -28,6 +28,17 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   const group = name => groups.locator(".library-tree-row").filter({ has: page.getByText(name, { exact: true }) });
   const repository = name => repos.locator(".repository-select").filter({ has: page.getByText(name, { exact: true }) });
   const library = () => page.evaluate(() => JSON.parse(localStorage.getItem("revqora.repositories")).state);
+  const drag = async (source, destination, fraction = 0.5, marker = "workspace-drop-active") => {
+    await destination.scrollIntoViewIfNeeded();
+    const start = await source.boundingBox(), end = await destination.boundingBox();
+    assert(start && end);
+    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+    await page.mouse.down();
+    try {
+      await page.mouse.move(end.x + end.width / 2, end.y + end.height * fraction, {steps: 9});
+      await destination.and(page.locator(`.${marker}`)).waitFor();
+    } finally { await page.mouse.up(); }
+  };
   const tooltip = page.getByRole("tooltip");
   const hideWorkspaces = ws.getByRole("button", { name: "Hide Workspaces", exact: true });
   for (let i = 0; i < 2; i++) {
@@ -52,9 +63,12 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await workspace("product").getByRole("button", { name: "Collapse product", exact: true }).click();
   await workspace("plugins").waitFor({ state: "detached" });
   await workspace("product").getByRole("button", { name: "Expand product", exact: true }).click();
-  await workspace("plugins").locator(".library-drag-handle").dragTo(ws.locator(".repository-overview-link"));
+  await drag(workspace("plugins").locator(".library-drag-handle"), ws.locator(".repository-overview-link"));
   await page.waitForFunction(plugin => JSON.parse(localStorage.getItem("revqora.repositories")).state.workspaces.find(w => w.id === plugin).parentId === null, id("plugins"));
-  await workspace("plugins").locator(".library-drag-handle").dragTo(workspace("worker"));
+  await drag(workspace("plugins").locator(".library-drag-handle"), workspace("navigation-projects"), 0.08, "library-drop-before");
+  const reordered = (await library()).workspaces.map(w => w.id);
+  assert(reordered.indexOf(id("plugins")) < reordered.indexOf(id("navigation-projects")));
+  await drag(workspace("plugins").locator(".library-drag-handle"), workspace("worker"));
   await page.waitForFunction(([plugin, worker]) => JSON.parse(localStorage.getItem("revqora.repositories")).state.workspaces.find(w => w.id === plugin).parentId === worker, [id("plugins"), id("worker")]);
 
   await workspace("product").locator(".repository-select").click();
@@ -71,25 +85,31 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await renameRepo.waitFor();
   await renameRepo.getByRole("button", { name: "Cancel", exact: true }).click();
 
-  async function createGroup(container, row, name) {
+  async function createGroup(row, name, command = "Create group", choose = async () => {}) {
     await row.click({ button: "right" });
-    await page.locator(".ctx-menu").getByText("Create group", { exact: true }).click();
-    await container.getByRole("textbox", { name: "Group name", exact: true }).fill(name);
-    await container.getByRole("button", { name: "Create", exact: true }).click();
+    await page.locator(".ctx-menu").getByText(command, { exact: true }).click();
+    const editor = page.getByRole("dialog", {name: "New group", exact: true});
+    await editor.getByRole("textbox", { name: "Group name", exact: true }).fill(name);
+    await choose(editor);
+    await editor.getByRole("button", { name: "Create group", exact: true }).click();
+    await editor.waitFor({state:"detached"});
     await group(name).waitFor();
   }
   await repository("api").click({ modifiers: ["Control"] });
   await repository("worker").click({ modifiers: ["Control"] });
-  await createGroup(repos, repository("api"), "Delivery");
+  await createGroup(repository("api"), "Delivery");
   assert.equal((await library()).groups.find(item => item.name === "Delivery").roots.length, 2);
   await groups.getByRole("button", { name: "All groups", exact: true }).click();
-  await createGroup(repos, repository("platform"), "Platform");
+  await createGroup(repository("platform"), "Platform");
   await group("Delivery").locator(".repository-select").click({ modifiers: ["Control"] });
   await group("Platform").locator(".repository-select").click({ modifiers: ["Shift"] });
-  await createGroup(groups, group("Delivery").locator(".repository-select"), "Engineering");
+  await createGroup(group("Delivery").locator(".repository-select"), "Engineering", "Group selected…");
   const nested = (await library()).groups;
   const parentId = nested.find(item => item.name === "Engineering").id;
   assert(nested.filter(item => ["Delivery", "Platform"].includes(item.name)).every(item => item.parentId === parentId));
+  await drag(group("Delivery").locator(".library-drag-handle"), group("Platform"), 0.92, "library-drop-after");
+  const orderedGroups = (await library()).groups.map(item => item.name);
+  assert(orderedGroups.indexOf("Platform") < orderedGroups.indexOf("Delivery"));
   for (const name of ["api", "worker", "platform"]) await repository(name).waitFor();
   assert.equal(await repository("extension").count(), 0);
   await shot?.("workspace-and-group-trees");
@@ -119,7 +139,7 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await addApi();
   await menu("Platform").click();
   assert(member(await library(), "Delivery", "api") && member(await library(), "Platform", "api"));
-  await choose(workspaceRow("product"), "New sub-workspace…");
+  await choose(workspaceRow("product"), "Create sub-workspace…");
   const workspaceEditor = page.getByRole("dialog", {name: "New workspace", exact: true});
   const groupFilter = workspaceEditor.getByRole("combobox", {name: "Filter repositories by group", exact: true});
   for (const name of ["Delivery", "Platform"]) {
@@ -127,6 +147,31 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
     await workspaceEditor.getByRole("checkbox", {name: /^api\b/}).waitFor();
   }
   await workspaceEditor.getByRole("button", {name: "Cancel", exact: true}).click();
+  await workspaceRow("product").click();
+  await repository("api").waitFor();
+  const wsList = ws.getByRole("list", {name:"Saved workspaces"});
+  const workspaceListBox = await wsList.boundingBox();
+  assert(workspaceListBox);
+  await wsList.click({button:"right",position:{x:12,y:workspaceListBox.height-5}});
+  await menu("Create workspace…").waitFor();
+  assert.equal(await menu("Create sub-workspace…").count(),0);
+  await menu("Create workspace…").click();
+  const saveWorkspace = async name => {
+    await workspaceEditor.getByRole("textbox",{name:"Workspace name",exact:true}).fill(name);
+    await workspaceEditor.getByRole("checkbox",{name:"Open after creating",exact:true}).uncheck();
+    await workspaceEditor.getByRole("button",{name:"Create workspace",exact:true}).click();
+    await workspace(name).waitFor();
+  };
+  await saveWorkspace("Context root");
+  assert.equal((await library()).workspaces.find(item=>item.name==="Context root").parentId,null);
+  await choose(workspaceRow("worker"), "Create workspace…");
+  await saveWorkspace("Context sibling");
+  assert.equal((await library()).workspaces.find(item=>item.name==="Context sibling").parentId, imported.find(item=>item.id===id("worker")).parentId);
+  await choose(workspaceRow("worker"), "Create sub-workspace…");
+  await saveWorkspace("Context child");
+  assert.equal((await library()).workspaces.find(item=>item.name==="Context child").parentId,id("worker"));
+  await ws.getByRole("button", { name: "All Workspaces", exact: true }).click();
+  await groups.getByRole("button", { name: "All groups", exact: true }).click();
   await groupRow("Delivery").click();
   await choose(repository("api"), "Remove from group · Delivery");
   assert(!member(await library(), "Delivery", "api") && member(await library(), "Platform", "api"));
@@ -154,25 +199,46 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await manage.getByRole("button", {name: "Done", exact: true}).click();
   await group("Engineering").waitFor();
   await ws.getByRole("button", { name: "All Workspaces", exact: true }).click();
+  const groupList = groups.getByRole("list",{name:"Repository groups"});
+  const groupListBox = await groupList.boundingBox();
+  assert(groupListBox);
+  await groupList.click({button:"right",position:{x:12,y:groupListBox.height-5}});
+  assert.equal(await menu("Create subgroup").count(),0);
+  await menu("Create group").click();
+  const groupEditor = page.getByRole("dialog",{name:"New group",exact:true});
+  await groupEditor.getByRole("textbox",{name:"Group name",exact:true}).fill("Context group");
+  await groupEditor.getByRole("checkbox",{name:/^api\b/}).check();
+  await groupEditor.getByRole("button",{name:"Create group",exact:true}).click();
+  await group("Context group").waitFor();
+  assert(member(await library(),"Context group","api"));
+  await createGroup(groupRow("Context group"),"Context subgroup","Create subgroup");
+  const contextGroups = (await library()).groups;
+  assert.equal(contextGroups.find(item=>item.name==="Context subgroup").parentId,contextGroups.find(item=>item.name==="Context group").id);
+  await groups.getByRole("button", { name: "All groups", exact: true }).click();
+  await repository("extension").waitFor();
+  await drag(repository("extension"),group("Context subgroup"));
+  assert(member(await library(),"Context subgroup","extension"));
   await groupRow("Engineering").click({modifiers: ["Control"]});
   await groupRow("Platform").click({modifiers: ["Control"]});
   await groupRow("Platform").press("Delete");
-  const deleteGroups = page.getByRole("dialog", {name: "Delete 2 groups?", exact: true});
-  await deleteGroups.getByRole("button", {name: "Delete 2 groups", exact: true}).click();
+  const deleteGroups = page.getByRole("dialog", {name: "Delete 3 groups?", exact: true});
+  await deleteGroups.getByRole("button", {name: "Delete 3 groups", exact: true}).click();
   await group("Engineering").waitFor({state: "detached"});
   await group("Platform").waitFor({state: "detached"});
-  await group("Delivery").waitFor();
-  assert.equal((await library()).groups.find(item => item.name === "Delivery").parentId, null);
+  await group("Delivery").waitFor({state: "detached"});
+  await group("Context subgroup").waitFor();
 
   await choose(workspaceRow("worker"), "Remove from parent workspace");
   assert.equal((await library()).workspaces.find(item => item.name === "worker").parentId, null);
-  await workspaceRow("worker").click();
+  await workspaceRow("Context child").click();
+  await workspace("Context child").locator(".repository-select[aria-current=true]").waitFor();
   await workspaceRow("worker").press("Delete");
   const deleteWorkspace = page.getByRole("dialog", {name: "Delete saved workspace?", exact: true});
   await deleteWorkspace.getByRole("button", {name: "Delete workspace", exact: true}).click();
   await workspace("worker").waitFor({state: "detached"});
   await ws.getByRole("button", {name: "All Workspaces", exact: true}).and(page.locator('[aria-current="true"]')).waitFor();
-  assert.equal((await library()).workspaces.find(item => item.name === "plugins").parentId, null);
+  assert(!(await library()).workspaces.some(item => item.name === "plugins" || item.name === "Context child"));
+  await workspace("Context sibling").waitFor();
   for (const name of ["api", "worker", "platform"]) {
     await repository(name).waitFor();
     assert(fs.existsSync(path.join((await library()).knownRoots.find(root => path.basename(root) === name), ".git")));

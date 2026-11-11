@@ -42,26 +42,42 @@ describe("portable repository library", () => {
     expect(after.knownRoots).toContain("D:/repo");
     expect(after.favorites).toEqual(["D:/repo"]);
   });
-  it("excludes group subtrees from just one workspace and keeps undeleted children", () => {
+  it("excludes group subtrees from one workspace and deletes entire selected trees", () => {
     const s = useLibrary.getState();
     const parent = s.createGroup("Project", ["/product"], []);
     const child = s.createGroup("Build", ["/tools"], [], parent);
+    const leaf = s.createGroup("Leaf", [], [], child);
     const other = s.group("Other");
     const snapshot = { roots: ["/product", "/tools"], activeRoot: "/product", views: {}, layouts: restoreWorkspaceLayouts(), historyMode: "graph" as const };
     const work = s.save("Work", snapshot);
     const backup = s.save("Backup", snapshot, false, work);
+    const nested = s.save("Nested", snapshot, true, backup);
+    const unrelated = s.save("Unrelated", snapshot, false);
+    s.favoriteWorkspace(nested);
     s.setWorkspaceGroupsExcluded(work, [parent], true);
     const restored = restoreLibrary(useLibrary.getState());
     expect(groupsInWorkspace(restored.groups, restored.workspaces[0]).map(g => g.id)).toEqual([other]);
-    expect(groupsInWorkspace(restored.groups, restored.workspaces[1]).map(g => g.id)).toEqual([parent, child, other]);
+    expect(groupsInWorkspace(restored.groups, restored.workspaces[1]).map(g => g.id)).toEqual([parent, child, leaf, other]);
     expect(restored.workspaces[0].roots).toEqual(snapshot.roots);
     s.setWorkspaceGroupsExcluded(work, [parent], false);
-    expect(groupsInWorkspace(useLibrary.getState().groups, useLibrary.getState().workspaces[0])).toHaveLength(3);
+    expect(groupsInWorkspace(useLibrary.getState().groups, useLibrary.getState().workspaces[0])).toHaveLength(4);
+    s.setWorkspaceGroupsExcluded(unrelated, [leaf], true);
     s.removeGroups([parent, other]);
-    expect(useLibrary.getState().groups).toMatchObject([{ id: child, parentId: null, roots: ["/tools"] }]);
+    expect(useLibrary.getState().groups).toEqual([]);
     s.remove(work);
-    expect(useLibrary.getState().workspaces).toMatchObject([{ id: backup, parentId: null, roots: snapshot.roots }]);
+    expect(useLibrary.getState().workspaces).toMatchObject([{ id: unrelated, parentId: null, roots: snapshot.roots, excludedGroupIds: [] }]);
+    expect(useLibrary.getState().activeWorkspaceId).toBeNull();
+    expect(useLibrary.getState().favoriteWorkspaceIds).toEqual([]);
     expect(useLibrary.getState().knownRoots).toEqual(snapshot.roots);
+  });
+  it("moves a repository out of its source group and keeps its other memberships", () => {
+    const s = useLibrary.getState();
+    const origin = s.createGroup("Origin", ["/nested/repo"], []);
+    const other = s.createGroup("Other", [], []);
+    const target = s.createGroup("Target", [], []);
+    s.addToGroup(["/nested/repo"], other);
+    s.moveGroupRepositories(["/nested/repo"], origin, target);
+    expect(useLibrary.getState().groups.map(group => group.roots)).toEqual([[], ["/nested/repo"], ["/nested/repo"]]);
   });
   it("relinks a moved or aliased folder across groups, favorites and workspace views", () => {
     const s = useLibrary.getState(), g = s.group("Project");

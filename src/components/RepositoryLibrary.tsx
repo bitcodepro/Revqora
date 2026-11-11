@@ -1,17 +1,16 @@
 import { useId, useLayoutEffect, useState } from "react";
 import { namePathMenu } from "./NamePathMenu";
-import { ArrowRightLeft, ChevronDown, ChevronRight, Library, Star } from "lucide-react";
+import { ArrowRightLeft, ChevronDown, ChevronRight, FolderPlus, Library, Plus, Star } from "lucide-react";
 import { basename } from "../lib/format";
 import { errorMessage } from "../lib/api";
-import { groupRepositoryRoots, groupsInWorkspace, useLibrary, repositoryKey, uniqueRoots, type SavedWorkspace } from "../lib/repositoryLibrary";
-import { visibleTree } from "../lib/libraryTree";
+import { groupRepositoryRoots, groupsInWorkspace, useLibrary, repositoryKey, uniqueRoots, type RepositoryGroup, type SavedWorkspace } from "../lib/repositoryLibrary";
+import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
 import { matchesShortcut } from "../lib/shortcuts";
 import { useRepos } from "../lib/store";
 import { editWorkspaceRepositories, moveWorkspaceRepositories, openAllWorkspaces, switchWorkspace, workspaceBusy, workspaceSnapshot, workspaceWithRepositories } from "../lib/repositoryWorkspaces";
 import { retainedConflictDrafts } from "../lib/conflictStudio";
-import { contextMenu, showDialog, toast, useUi } from "../lib/ui";
+import { contextMenu, showDialog, toast, useUi, type MenuItem } from "../lib/ui";
 import { confirmDialog, promptDialog } from "./dialogs";
-import { deleteGroupsDialog } from "./GroupsSidebar";
 import { isDeleteShortcut, repositoryMembershipMenu } from "./LibraryMenus";
 import { Modal } from "./Modal";
 
@@ -45,7 +44,9 @@ export async function openWorkspace(id: string, add = false) {
 
 const discoveringRepositories = (state: ReturnType<typeof useRepos.getState>) => state.order.some((root) => state.tabs[root]?.opening);
 
-function WorkspaceEditor({ workspace, parentId, close }: { workspace?: SavedWorkspace; parentId?: string; close: () => void }) {
+interface GroupDraft { roots?: string[]; children?: string[]; parentId?: string | null; onCreated?: () => void }
+
+function WorkspaceEditor({ workspace, parentId, groupDraft, close }: { workspace?: SavedWorkspace; parentId?: string; groupDraft?: GroupDraft; close: () => void }) {
   const order = useRepos((s) => s.order);
   const discovering = useRepos(discoveringRepositories);
   const known = useLibrary((s) => s.knownRoots), allGroups = useLibrary((s) => s.groups);
@@ -57,7 +58,7 @@ function WorkspaceEditor({ workspace, parentId, close }: { workspace?: SavedWork
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("");
   const [openAfter, setOpenAfter] = useState(true);
-  const [selected, setSelected] = useState(() => new Set((savedRoots ?? workspace?.roots ?? order).map(repositoryKey)));
+  const [selected, setSelected] = useState(() => new Set((groupDraft ? groupDraft.roots ?? [] : savedRoots ?? workspace?.roots ?? order).map(repositoryKey)));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useLayoutEffect(() => {
@@ -78,7 +79,7 @@ function WorkspaceEditor({ workspace, parentId, close }: { workspace?: SavedWork
     return unsubscribe;
   }, []);
   const original = new Set((savedRoots ?? []).map(repositoryKey));
-  const roots = uniqueRoots([...(savedRoots ?? []), ...order, ...known]);
+  const roots = uniqueRoots([...(savedRoots ?? []), ...(groupDraft?.roots ?? []), ...order, ...known]);
   const paths = roots.filter((root) => selected.has(repositoryKey(root)));
   const ungrouped = group === "ungrouped";
   const groupedRoots = new Set((ungrouped ? groups.flatMap(item => item.roots) : groupRepositoryRoots(groups, group)).map(repositoryKey));
@@ -98,6 +99,17 @@ function WorkspaceEditor({ workspace, parentId, close }: { workspace?: SavedWork
   const submit = async () => {
     if (!canSave || discoveringRepositories(useRepos.getState())) return;
     setError(null);
+    if (groupDraft) {
+      try {
+        const library = useLibrary.getState();
+        const id = library.createGroup(name, paths, groupDraft.children ?? [], groupDraft.parentId);
+        if (groupDraft.parentId && library.groups.find(group => group.id === groupDraft.parentId)?.collapsed) library.collapse(groupDraft.parentId);
+        useUi.setState({ repositoryGroup: id });
+        groupDraft.onCreated?.();
+        close();
+      } catch (e) { setError(errorMessage(e)); }
+      return;
+    }
     if (!workspace) {
       try {
         const current = workspaceSnapshot();
@@ -123,11 +135,12 @@ function WorkspaceEditor({ workspace, parentId, close }: { workspace?: SavedWork
     } catch (e) { setError(errorMessage(e)); }
     finally { setSubmitting(false); }
   };
-  return <Modal title={workspace ? `Edit repositories · ${workspace.name}` : "New workspace"} wide
+  return <Modal title={workspace ? `Edit repositories · ${workspace.name}` : groupDraft ? "New group" : "New workspace"} wide
     subtitle="Check the repositories to include. Unchecked repositories stay in the library and on disk."
     onClose={() => { if (!submitting) close(); }} onSubmit={() => void submit()}
-    footer={<><button type="button" className="btn" disabled={submitting} onClick={close}>Cancel</button><button type="submit" className="btn primary" disabled={!canSave}>{submitting ? "Saving…" : workspace ? "Save changes" : "Create workspace"}</button></>}>
-    {!workspace && <label className="field">Workspace name<input className="input" maxLength={80} value={name} onChange={(e) => setName(e.target.value)} /></label>}
+    footer={<><button type="button" className="btn" disabled={submitting} onClick={close}>Cancel</button><button type="submit" className="btn primary" disabled={!canSave}>{submitting ? "Saving…" : workspace ? "Save changes" : groupDraft ? "Create group" : "Create workspace"}</button></>}>
+    {!workspace && <label className="field">{groupDraft ? "Group name" : "Workspace name"}<input className="input" maxLength={80} value={name} onChange={(e) => setName(e.target.value)} /></label>}
+    {!!groupDraft?.children?.length && <div className="batch-note">{groupDraft.children.length} groups will move into the new group.</div>}
     <div className="workspace-editor-filters">
       <input className="input" aria-label="Find repository" placeholder="Find by name or path…" value={query} onChange={(e) => setQuery(e.target.value)} />
       {groups.length > 0 && <select className="input" aria-label="Filter repositories by group" value={group} onChange={(e) => setGroup(e.target.value)}><option value="">All groups</option>{groups.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}<option value="ungrouped">Ungrouped</option></select>}
@@ -143,7 +156,7 @@ function WorkspaceEditor({ workspace, parentId, close }: { workspace?: SavedWork
       </label>)}
       {!shown.length && <div className="cg-empty">{roots.length ? "No matching repositories." : "Open a repository to add it to the library."}</div>}
     </div>
-    {!workspace && <label className="check-row"><input type="checkbox" checked={openAfter} onChange={(e) => setOpenAfter(e.target.checked)} />Open after creating</label>}
+    {!workspace && !groupDraft && <label className="check-row"><input type="checkbox" checked={openAfter} onChange={(e) => setOpenAfter(e.target.checked)} />Open after creating</label>}
     {discovering && <div className="batch-note" role="status">Opening repositories… You can save when they are ready.</div>}
     {error && <div className="callout warn workspace-editor-error" role="alert">{error}</div>}
   </Modal>;
@@ -153,22 +166,67 @@ export function workspaceEditorDialog(workspace?: SavedWorkspace, parentId?: str
   return showDialog<void>((close) => <WorkspaceEditor workspace={workspace} parentId={parentId} close={close} />);
 }
 
+export function groupEditorDialog(groupDraft: GroupDraft = {}) {
+  return showDialog<void>(close => <WorkspaceEditor groupDraft={groupDraft} close={close}/>);
+}
+
+export function workspaceCreationMenu(workspace?: SavedWorkspace, disabled = false): MenuItem[] {
+  return [
+    { label: "Create workspace…", shortcut: "workspace-create", icon: <Plus size={14}/>, disabled, onClick: () => void workspaceEditorDialog(undefined, workspace?.parentId ?? undefined) },
+    ...(workspace ? [{ label: "Create sub-workspace…", shortcut: "workspace-sub", icon: <Plus size={14}/>, disabled, onClick: () => void workspaceEditorDialog(undefined, workspace.id) }] : []),
+  ];
+}
+
+export function groupCreationMenu(group?: RepositoryGroup): MenuItem[] {
+  return [
+    { label: "Create group", shortcut: "group-create", icon: <FolderPlus size={14}/>, onClick: () => void groupEditorDialog() },
+    ...(group ? [{ label: "Create subgroup", shortcut: "group-sub", icon: <FolderPlus size={14}/>, onClick: () => void groupEditorDialog({parentId: group.id}) }] : []),
+  ];
+}
+
+export function renameGroupDialog(group: RepositoryGroup) {
+  return named("Rename group", group.name, name => { useLibrary.getState().group(name, group.id); });
+}
+
+export async function deleteGroupsDialog(ids: string[]) {
+  const library = useLibrary.getState();
+  const selected = treeSubtreeIds(library.groups, ids);
+  const affected = library.groups.filter(group => selected.has(group.id));
+  if (!affected.length) return null;
+  const title = affected.length === 1 ? "Delete group" : `Delete ${affected.length} groups`;
+  if (!await confirmDialog({
+    title: title + "?",
+    confirm: title,
+    message: "Selected groups and their subgroups will be removed. Repositories stay in the library and in their workspaces.",
+    details: affected.map(group => group.name),
+    danger: true,
+  })) return null;
+  const current = useLibrary.getState();
+  const removed = treeSubtreeIds(current.groups, ids);
+  current.removeGroups(ids);
+  const active = useUi.getState().repositoryGroup;
+  if (active && removed.has(active)) useUi.setState({repositoryGroup: null});
+  return removed;
+}
+
 export function renameWorkspaceDialog(workspace: SavedWorkspace) {
   return named("Rename workspace", workspace.name, name => useLibrary.getState().rename(workspace.id, name));
 }
 
 export async function deleteWorkspaceDialog(workspace: SavedWorkspace) {
   if (workspaceBusy()) return;
-  const hasChildren = useLibrary.getState().workspaces.some(item => item.parentId === workspace.id);
-  if (await confirmDialog({ title: "Delete saved workspace?", message: workspace.name + " will be removed from Workspaces. Repositories and their files stay available." + (hasChildren ? " Its sub-workspaces move to the top level." : ""), confirm: "Delete workspace", danger: true })) {
+  const { workspaces } = useLibrary.getState();
+  const subtree = treeSubtreeIds(workspaces, [workspace.id]);
+  const descendants = workspaces.filter(item => item.id !== workspace.id && subtree.has(item.id));
+  if (await confirmDialog({ title: "Delete saved workspace?", message: workspace.name + (descendants.length ? " and its sub-workspaces will be removed from Workspaces." : " will be removed from Workspaces.") + " Repositories and their files stay available.", details: descendants.map(item => item.name), confirm: "Delete workspace", danger: true })) {
     if (workspaceBusy()) {
       toast.warning("Wait for the current operation before deleting the workspace.");
       return;
     }
     const library = useLibrary.getState();
-    const active = library.activeWorkspaceId === workspace.id;
+    const active = library.activeWorkspaceId;
     library.remove(workspace.id);
-    if (active) openAllWorkspaces();
+    if (active && useLibrary.getState().activeWorkspaceId === null) openAllWorkspaces();
   }
 }
 
@@ -293,16 +351,15 @@ function RepositoryLibrary({ close }: { close: () => void }) {
       <button type="button" className="btn sm" disabled={busy} onClick={() => { void openLibraryRepository(root); close(); }}>{tabs[root] ? "Activate" : "Open"}</button>
     </div>;
     })}</div>{!roots.length && <div className="cg-empty">Open a repository to add it to your library.</div>}</>}
-    {section === "groups" && <><button type="button" className="btn sm" onClick={() => void named("New project group", "", (name) => { lib.group(name); })}>New group</button><div className="library-list">{groupRows.map(({entry: g, depth}) => <div className="library-row" key={g.id} style={{ paddingInlineStart: 8 + Math.min(depth, 8) * 12 }}>
+    {section === "groups" && <><div className="library-list library-tree-menu" aria-label="Saved groups" onContextMenu={e => contextMenu(e, groupCreationMenu())}>{groupRows.map(({entry: g, depth}) => <div className="library-row" key={g.id} style={{ paddingInlineStart: 8 + Math.min(depth, 8) * 12 }} onContextMenu={e => contextMenu(e, groupCreationMenu(g))}>
       <button type="button" className="icon-btn sm" title={g.collapsed ? "Expand group in navigation" : "Collapse group in navigation"} aria-expanded={!g.collapsed} onClick={() => lib.collapse(g.id)}>{g.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}</button><div className="grow-text"><b>{g.name}</b><div className="batch-note">{groupRepositoryRoots(lib.groups, g.id).length} repositories</div></div>
       <button type="button" className="btn sm" disabled={busy || !groupRepositoryRoots(lib.groups, g.id).length} onClick={async () => { const roots = groupRepositoryRoots(lib.groups, g.id); const results = await useRepos.getState().openMany(roots, roots[0]); for (const result of results) if (result.status === "rejected") toast.error(result.reason, "Could not open repository"); }}>Open group</button>
-      <button type="button" className="btn sm" onClick={() => void named("Rename group", g.name, (n) => { lib.group(n, g.id); })}>Rename</button>
+      <button type="button" className="btn sm" onClick={() => void renameGroupDialog(g)}>Rename</button>
       {activeWorkspace?.excludedGroupIds?.includes(g.id) && <button type="button" className="btn sm" onClick={() => lib.setWorkspaceGroupsExcluded(activeWorkspace.id, [g.id], false)}>Restore to workspace</button>}
       <button type="button" className="btn sm" onClick={() => void deleteGroupsDialog([g.id])}>Delete</button>
     </div>)}</div><div className="batch-note">Assign repositories to groups on the Repositories tab.</div></>}
     {section === "workspaces" && <><div className="callout">Each workspace remembers its repository set, active repository, selected views and panel sizes for every mode. Changes are saved automatically. Switching opens folders and restores the layout; Git branches and working files stay as they are.</div>
-      <button type="button" className="btn sm" disabled={busy} onClick={() => void workspaceEditorDialog()}>New workspace…</button>
-      <div className="library-list">{workspaceRows.map(({entry: w, depth}) => <div className="library-row" key={w.id} tabIndex={0} style={{ paddingInlineStart: 8 + Math.min(depth, 8) * 12 }} onKeyDown={e => {
+      <div className="library-list library-tree-menu" aria-label="Saved workspaces" onContextMenu={e => contextMenu(e, workspaceCreationMenu(undefined, busy))}>{workspaceRows.map(({entry: w, depth}) => <div className="library-row" key={w.id} tabIndex={0} style={{ paddingInlineStart: 8 + Math.min(depth, 8) * 12 }} onContextMenu={e => contextMenu(e, workspaceCreationMenu(w, busy))} onKeyDown={e => {
         if (isDeleteShortcut(e)) {
           e.preventDefault();
           e.stopPropagation();

@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { restoreWorkspaceLayouts, type HistoryMode, type WorkspaceLayout, type WorkspaceMode } from "./workspaceLayouts";
 import { basename } from "./format";
-import { moveTreeEntries, treeAncestors, type TreeEntry } from "./libraryTree";
+import { moveTreeEntries, treeAncestors, treeSubtreeIds, type TreeEntry, type TreePlacement } from "./libraryTree";
 
 export type RepositoryView = "history" | "changes" | "pulls";
 export interface RepositoryGroup extends TreeEntry { roots: string[]; collapsed: boolean }
@@ -131,15 +131,16 @@ interface LibraryStore extends LibraryData {
   favoriteWorkspace: (id: string) => void;
   group: (name: string, id?: string) => string;
   createGroup: (name: string, roots: string[], groupIds: string[], parentId?: string | null) => string;
-  moveGroups: (ids: string[], parentId: string | null) => void;
+  moveGroups: (ids: string[], parentId: string | null, placement?: TreePlacement) => void;
   move: (root: string, id: string | null) => void;
   addToGroup: (roots: string[], id: string) => void;
+  moveGroupRepositories: (roots: string[], from: string | null, to: string | null) => void;
   removeFromGroups: (roots: string[], id?: string) => void;
   setWorkspaceGroupsExcluded: (workspaceId: string, groupIds: string[], excluded: boolean) => void;
   collapse: (id: string) => void;
   removeGroups: (ids: string[]) => void;
   save: (name: string, snapshot: WorkspaceSnapshot, activate?: boolean, parentId?: string | null) => string;
-  moveWorkspace: (id: string, parentId: string | null) => void;
+  moveWorkspace: (id: string, parentId: string | null, placement?: TreePlacement) => void;
   collapseWorkspace: (id: string) => void;
   update: (id: string, snapshot: WorkspaceSnapshot) => void;
   rename: (id: string, name: string) => void;
@@ -154,10 +155,6 @@ function checkedName(name: string, names: string[]) {
 }
 const newId = () => crypto.randomUUID();
 const siblings = <T extends TreeEntry>(entries: T[], parentId: string | null, except?: string) => entries.filter(item => (item.parentId ?? null) === parentId && item.id !== except).map(item => item.name);
-function deleteTreeEntries<T extends TreeEntry>(entries: T[], ids: ReadonlySet<string>): T[] {
-  // Keep child folders and their contents accessible at the root.
-  return entries.filter(entry => !ids.has(entry.id)).map(entry => entry.parentId && ids.has(entry.parentId) ? { ...entry, parentId: null } : entry);
-}
 export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
   ...restoreLibrary({}),
   remember: (root, alias) => {
@@ -196,13 +193,25 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
     set({ groups: groupIds.length ? moveTreeEntries(groups, groupIds, id) : groups, knownRoots: uniqueRoots([...s.knownRoots, ...members]) });
     return id;
   },
-  moveGroups: (ids, parentId) => set(s => ({ groups: moveTreeEntries(s.groups, ids, parentId) })),
+  moveGroups: (ids, parentId, placement) => set(s => ({ groups: moveTreeEntries(s.groups, ids, parentId, placement) })),
   move: (root, id) => { const s = get(); if (id && !s.groups.some((g) => g.id === id)) return; set({ knownRoots: uniqueRoots([...s.knownRoots, root]), groups: s.groups.map((g) => ({ ...g, roots: [...g.roots.filter((r) => repositoryKey(r) !== repositoryKey(root)), ...(g.id === id ? [root] : [])] })) }); },
   addToGroup: (roots, id) => set(s => {
     if (!s.groups.some(g => g.id === id)) return s;
     return {
       knownRoots: uniqueRoots([...s.knownRoots, ...roots]),
       groups: s.groups.map(g => g.id === id ? { ...g, roots: uniqueRoots([...g.roots, ...roots]) } : g),
+    };
+  }),
+  moveGroupRepositories: (roots, from, to) => set(s => {
+    if (from === to || to && !s.groups.some(group => group.id === to)) return s;
+    const keys = new Set(roots.map(repositoryKey));
+    return {
+      knownRoots: uniqueRoots([...s.knownRoots, ...roots]),
+      groups: s.groups.map(group => {
+        if (group.id === from) return { ...group, roots: group.roots.filter(root => !keys.has(repositoryKey(root))) };
+        if (group.id === to) return { ...group, roots: uniqueRoots([...group.roots, ...roots]) };
+        return group;
+      }),
     };
   }),
   removeFromGroups: (roots, id) => set(s => {
@@ -219,9 +228,9 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
   }),
   collapse: (id) => set({ groups: get().groups.map((g) => g.id === id ? { ...g, collapsed: !g.collapsed } : g) }),
   removeGroups: (ids) => set(s => {
-    const removed = new Set(ids);
+    const removed = treeSubtreeIds(s.groups, ids);
     return {
-      groups: deleteTreeEntries(s.groups, removed),
+      groups: s.groups.filter(group => !removed.has(group.id)),
       workspaces: s.workspaces.map(w => w.excludedGroupIds?.some(id => removed.has(id)) ? { ...w, excludedGroupIds: w.excludedGroupIds.filter(id => !removed.has(id)) } : w),
     };
   }),
@@ -236,10 +245,17 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
     });
     return id;
   },
-  moveWorkspace: (id, parentId) => set(s => ({ workspaces: moveTreeEntries(s.workspaces, [id], parentId) })),
+  moveWorkspace: (id, parentId, placement) => set(s => ({ workspaces: moveTreeEntries(s.workspaces, [id], parentId, placement) })),
   collapseWorkspace: (id) => set(s => ({ workspaces: s.workspaces.map(w => w.id === id ? { ...w, collapsed: !w.collapsed } : w) })),
   update: (id, snapshot) => set({ workspaces: get().workspaces.map((w) => w.id === id ? { ...w, ...structuredClone(snapshot) } : w) }),
   rename: (id, name) => { const s = get(), old = s.workspaces.find(w => w.id === id); if (!old) return; const next = checkedName(name, siblings(s.workspaces, old.parentId ?? null, id)); set({ workspaces: s.workspaces.map(w => w.id === id ? { ...w, name: next } : w) }); },
-  remove: (id) => set(s => ({ workspaces: deleteTreeEntries(s.workspaces, new Set([id])), favoriteWorkspaceIds: s.favoriteWorkspaceIds.filter(key => key !== id), activeWorkspaceId: s.activeWorkspaceId === id ? null : s.activeWorkspaceId })),
+  remove: (id) => set(s => {
+    const removed = treeSubtreeIds(s.workspaces, [id]);
+    return {
+      workspaces: s.workspaces.filter(workspace => !removed.has(workspace.id)),
+      favoriteWorkspaceIds: s.favoriteWorkspaceIds.filter(key => !removed.has(key)),
+      activeWorkspaceId: s.activeWorkspaceId && removed.has(s.activeWorkspaceId) ? null : s.activeWorkspaceId,
+    };
+  }),
   select: (id) => set({ activeWorkspaceId: id && get().workspaces.some((w) => w.id === id) ? id : null }),
 }), { name: "revqora.repositories", version: 1, merge: (stored, current) => ({ ...current, ...restoreLibrary(stored) }) }));
