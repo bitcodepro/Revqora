@@ -464,6 +464,24 @@
 .workspace-star[aria-pressed="true"] svg { fill: currentColor; }
 .repository-item.batch-selected { background: var(--bg-selected); box-shadow: inset 2px 0 var(--accent); }
 .repository-item.workspace-drop-active { background: var(--accent-soft); outline: 1px solid var(--accent); }
+.repository-overview-link.workspace-drop-active { background: var(--accent-soft); outline: 1px solid var(--accent); }
+.library-tree-row { padding-inline-start: calc(var(--tree-depth, 0) * 11px); }
+.library-tree-spacer { width: 24px; flex: none; }
+.library-drag-handle { color: var(--text-faint); display: grid; place-items: center; flex: none; width: 20px; align-self: stretch; cursor: grab; opacity: .55; }
+.library-drag-handle:hover, .library-tree-row:hover .library-drag-handle { opacity: 1; }
+.library-drag-handle:active { cursor: grabbing; }
+.inline-group-form { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+.inline-group-form input { min-width: 60px; flex: 1; }
+.inline-group-form small { flex-basis: 100%; }
+.repository-table tr.batch-selected { background: var(--accent-soft); }
+.revqora-tooltip { position: fixed; z-index: 2500; pointer-events: none; width: max-content; max-width: min(340px, calc(100vw - 16px)); padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-elev); color: var(--text); box-shadow: 0 3px 12px #0003; font-size: var(--fs-xs); line-height: 1.35; white-space: pre-line; overflow-wrap: anywhere; }
+.shortcut-transfer-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.shortcut-transfer-actions > .input { flex: 1; min-width: 140px; }
+.shortcut-import-list { min-height: 80px; max-height: 50vh; overflow: auto; }
+.shortcut-import-row { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(130px, 45%); align-items: start; gap: 9px; padding: 8px; border-inline-start: 2px solid transparent; border-bottom: 1px solid var(--border); }
+.shortcut-import-row .field { min-width: 0; margin: 0; }
+.shortcut-import-row .grow-text { overflow-wrap: anywhere; }
+.shortcut-import-match { border-inline-start-color: var(--accent); }
 .repository-selection-note { color: var(--text-faint); padding: 3px 10px; flex: none; }
 .repository-drag-label { position: fixed; top: 0; left: 0; z-index: 1500; pointer-events: none; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--accent); background: var(--bg-elev); box-shadow: var(--shadow-pop); }
 .detached-panel { height: 100dvh; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }

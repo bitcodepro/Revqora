@@ -18,6 +18,7 @@ import { bitbucketTokenSmoke } from "./bitbucket-token-smoke.mjs";
 import {gitConnectionsSmoke} from "./git-connections-smoke.mjs";
 import {fastSwitchSmoke} from "./fast-switch-smoke.mjs";
 import { repositoryFolderImportSmoke } from "./repository-folder-import-smoke.mjs";
+import { repositoryNavigationSmoke } from "./repository-navigation-smoke.mjs";
 
 const arg=name=>process.argv[process.argv.indexOf(name)+1];
 const suite=process.env.REVQORA_SMOKE_SUITE;
@@ -50,7 +51,10 @@ try{
     await cloneInputSmoke({page,check,shot,work});
     await gitConnectionsSmoke({exe:path.resolve(arg("--exe")),work,check,out});
     await fastSwitchSmoke({exe:path.resolve(arg("--exe")),work,check,out});
-    await check("folder import opens direct repositories, creates reusable workspaces and supports moving their repositories", () => repositoryFolderImportSmoke({ page, work, shot }));
+    await check("folder import, nested navigation, inline groups and shortcut transfer", async () => {
+      await repositoryFolderImportSmoke({ page, work, shot });
+      await repositoryNavigationSmoke({ page, work, shot });
+    });
   }else if(suite==="cleanup") await branchCleanupSmoke({page,check,shot,work});
   else {await worktreeManagerSmoke({page,check,shot,work});await forgeAccountsSmoke({page,check,shot,work,profile:path.join(work,"profile"),restart});await prCenterSmoke({page:app.page,check,shot,work});await agentWorkspaceSmoke({page:app.page,check,shot,work,restart,deferCleanup});await workflowSmoke({page:app.page,check,shot,work,restart});await futureStagesSmoke({page:app.page,check,shot,work,restart});}
   if(suite==="worktrees")await bitbucketTokenSmoke({exe:path.resolve(arg("--exe")),work,check,out});

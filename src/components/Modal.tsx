@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from "react";
 import { scheduleDialogFocus } from "../lib/dialogFocus";
 import { useWindowSize, WindowResizeGrip } from "./WindowResize";
 
@@ -17,6 +17,7 @@ interface ModalProps {
 
 export function Modal({ title, subtitle, icon, tone = "accent", wide, children, footer, onClose, onSubmit, sizeKey }: ModalProps) {
   const ref = useRef<HTMLFormElement>(null);
+  const titleId = useId();
   const size = useWindowSize(sizeKey ?? (typeof title === "string" ? title : wide ? "Wide dialog" : "Dialog"));
   // Callers pass a new onClose on every render; keep the latest without re-running the effect,
   // which would re-focus and select the input after each keystroke (typing replaced the text).
@@ -61,7 +62,7 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
         className={`modal ${wide ? "wide" : ""}`}
         ref={ref}
         style={size.style}
-        role="dialog" aria-modal="true"
+        role="dialog" aria-modal="true" aria-labelledby={titleId}
         onSubmit={(e) => {
           e.preventDefault();
           onSubmit?.();
@@ -76,7 +77,7 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
         <div className="modal-head">
           {icon && <div className={`mi ${tone === "accent" ? "" : tone}`}>{icon}</div>}
           <div style={{ minWidth: 0 }}>
-            <h3>{title}</h3>
+            <h3 id={titleId}>{title}</h3>
             {subtitle && <div className="sub">{subtitle}</div>}
           </div>
         </div>

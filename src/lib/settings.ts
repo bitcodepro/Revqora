@@ -30,6 +30,8 @@ export interface Settings {
   openLibraryOnStartup: boolean;
   activeTab: string | null;
   workspacesOpen: boolean;
+  groupsOpen: boolean;
+  groupsWidth: number;
   repositoryActionsCollapsed: boolean;
   workspaceFavoritesOnly: boolean;
   layouts: Record<WorkspaceMode, WorkspaceLayout>;
@@ -89,6 +91,8 @@ export const useSettings = create<Settings>()(
       openLibraryOnStartup: true,
       activeTab: null,
       workspacesOpen: false,
+      groupsOpen: false,
+      groupsWidth: 220,
       repositoryActionsCollapsed: false,
       workspaceFavoritesOnly: false,
       layouts: restoreWorkspaceLayouts(),

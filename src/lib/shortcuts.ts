@@ -73,6 +73,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "reviewMode", label: "Cycle history layouts: Graph, Review, Columns", description: "Cycle through Graph, Review and Columns.", default: "Ctrl+Shift+R" },
   { id: "overview", label: "All repositories", description: "Open the overview of repositories in the current session.", default: "Ctrl+Shift+O" },
   { id: "workspacesPanel", label: "Toggle Workspaces panel", description: "Show or hide the Workspaces sidebar.", default: "Ctrl+Alt+W" },
+  { id: "groupsPanel", label: "Toggle Groups panel", description: "Show or hide the Groups sidebar.", default: "" },
   { id: "repositoriesPanel", label: "Toggle repositories panel", description: "Show or hide the repository sidebar.", default: "Ctrl+Alt+R" },
   { id: "branchesPanel", label: "Toggle branches panel", description: "Show or hide the branches sidebar.", default: "Ctrl+Alt+B" },
   { id: "focusMode", label: "Focus on code", description: "Toggle the layout that gives code more space.", default: "Ctrl+Shift+Enter" },

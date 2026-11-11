@@ -499,14 +499,15 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
         }}
       />
       <span className="count">{q ? (hits.length ? `${Math.min(hitIdx, hits.length - 1) + 1} / ${hits.length}` : "No matches") : ""}</span>
-      <button className="icon-btn sm" onClick={() => setHitIdx((i) => (hits.length ? (i + hits.length - 1) % hits.length : 0))} disabled={!hits.length}>
+      <button className="icon-btn sm" aria-label="Previous diff match" onClick={() => setHitIdx((i) => (hits.length ? (i + hits.length - 1) % hits.length : 0))} disabled={!hits.length}>
         <ChevronsUp size={13} />
       </button>
-      <button className="icon-btn sm" onClick={() => setHitIdx((i) => (hits.length ? (i + 1) % hits.length : 0))} disabled={!hits.length}>
+      <button className="icon-btn sm" aria-label="Next diff match" onClick={() => setHitIdx((i) => (hits.length ? (i + 1) % hits.length : 0))} disabled={!hits.length}>
         <ChevronsDown size={13} />
       </button>
       <button
         className="icon-btn sm"
+        aria-label="Close diff search"
         onClick={() => {
           setFindOpen(false);
           setFind("");

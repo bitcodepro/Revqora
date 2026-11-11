@@ -73,7 +73,7 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
 
   init("flat-import/flat-group/flat-repo");
   dialog = await preview(1, path.join(parent, "flat-import"));
-  await dialog.getByRole("checkbox", { name: "Create Workspaces from repository parent folders", exact: true }).uncheck();
+  await dialog.getByRole("checkbox", { name: "Recreate the folder tree as Workspaces", exact: true }).uncheck();
   await confirm(dialog, 1);
   await repoInOverview("flat-repo").waitFor();
   assert.equal(await picker.locator("option").getByText("flat-group", { exact: true }).count(), 0);

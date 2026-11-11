@@ -51,6 +51,7 @@ import { RepositoryOverview, RepositorySidebar } from "./components/Repositories
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
 import { WorkspacesSidebar } from "./components/WorkspacesSidebar";
+import { GroupsSidebar } from "./components/GroupsSidebar";
 import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows, type PanelId } from "./components/PanelWindows";
 import "./styles/workspace.css";
 
@@ -308,6 +309,7 @@ function MainApp() {
   const { layout } = useWorkspaceLayout(layoutMode);
   const { focusMode, repositoriesOpen } = layout;
   const workspacesOpen = useSettings(s => s.workspacesOpen);
+  const groupsOpen = useSettings(s => s.groupsOpen);
   const repositoryCount = useRepos((s) => s.order.length);
   const hasBookmarks = useLibrary((s) => s.knownRoots.length > 0);
   const repositoryScope = useLibrary((s) => s.activeWorkspaceId) ?? "all";
@@ -420,6 +422,7 @@ function MainApp() {
         refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && refreshRepositoryView(a),
         overview: toggleRepositoryOverview,
         workspacesPanel: () => toggleSidebar("workspaces"),
+        groupsPanel: () => toggleSidebar("groups"),
         repositoriesPanel: () => toggleSidebar("repositories"),
         branchesPanel: () => toggleSidebar("branches"),
         focusMode: () => useSettings.getState().setLayout(mode, { focusMode: !layout.focusMode }),
@@ -524,6 +527,7 @@ function MainApp() {
       <ActivityIndicator active={busy} />
       <div className="app-body">
         {workspacesOpen && !focusMode && !panels.workspaces && <WorkspacesSidebar onClose={() => useSettings.getState().set({ workspacesOpen: false })}/>}
+        {groupsOpen && !focusMode && <GroupsSidebar />}
         <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode || (!repositoryCount && !hasBookmarks)}>{!panels.repositories && <RepositorySidebar key={repositoryScope} />}</div>
         <div className="workspace-host">{overview ? <RepositoryOverview key={repositoryScope} /> : tab ? <RepositoryContent key={combinedPulls ? "all-pull-requests" : tab.root} tab={tab} combinedPulls={combinedPulls} /> : <Welcome />}</div>
       </div>

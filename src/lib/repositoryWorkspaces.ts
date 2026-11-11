@@ -1,7 +1,7 @@
 import { api, errorMessage, newOpId } from "./api";
 import { useRepos } from "./store";
 import { useSettings } from "./settings";
-import { planFolderWorkspaces, repositoryKey, uniqueRoots, useLibrary, type FolderWorkspace, type SavedWorkspace, type WorkspaceSnapshot } from "./repositoryLibrary";
+import { planFolderWorkspaces, repairTree, repositoryKey, uniqueRoots, useLibrary, type FolderWorkspace, type SavedWorkspace, type WorkspaceSnapshot } from "./repositoryLibrary";
 import { endBusy, startBusy, useUi } from "./ui";
 import { validationRunning } from "./validation";
 
@@ -35,7 +35,8 @@ function capture() {
   const library = useLibrary.getState(), saved = library.workspaces.find((w) => w.id === library.activeWorkspaceId);
   if (!saved) return;
   const snapshot = workspaceSnapshot();
-  const { id: _id, name: _name, importedFrom: _importedFrom, ...old } = saved;
+  const { roots, activeRoot, views, layouts, historyMode } = saved;
+  const old = { roots, activeRoot, views, layouts, historyMode };
   if (JSON.stringify(old) !== JSON.stringify(snapshot)) library.update(saved.id, snapshot);
 }
 export function finishWorkspaceStartup() {
@@ -73,6 +74,7 @@ function registerAllWorkspaceRepositories(preferred?: string) {
   // Publish the full roster while workspace capture is suspended.
   void repos.openMany(roots, repos.active ? undefined : preferred ?? roots[0]);
   library.select(null);
+  useUi.setState({ repositoryGroup: null });
   if (overview && !repos.active && roots.length) useUi.setState({ repositoryOverview: true });
 }
 
@@ -85,14 +87,14 @@ export function importFolderRepositories(roots: string[], groups: FolderWorkspac
     const snapshot = workspaceSnapshot();
     const library = useLibrary.getState();
     const workspaces = [...library.workspaces];
-    for (const { folder, roots, existing, name } of planFolderWorkspaces(workspaces, groups)) {
+    for (const { folder, roots, existing, name, id, parentId } of planFolderWorkspaces(workspaces, groups)) {
       const members = uniqueRoots([...(existing?.roots ?? []), ...roots]);
       const layout = workspaceWithRepositories(existing ?? snapshot, members);
-      const imported = { ...layout, id: existing?.id ?? crypto.randomUUID(), name, importedFrom: folder };
+      const imported = { ...existing, ...layout, id, name, parentId, importedFrom: folder };
       if (existing) workspaces[workspaces.indexOf(existing)] = imported;
       else workspaces.push(imported);
     }
-    useLibrary.setState({ knownRoots: uniqueRoots([...library.knownRoots, ...roots]), workspaces });
+    useLibrary.setState({ knownRoots: uniqueRoots([...library.knownRoots, ...roots]), workspaces: repairTree(workspaces) });
     registerAllWorkspaceRepositories(roots[0]);
     useUi.setState({ repositoryOverview: true });
   } finally { switching = false; }
@@ -243,7 +245,7 @@ async function applyWorkspace(saved: SavedWorkspace, add: boolean, onApplied?: (
     useRepos.getState().arrange(target.roots.map(root => mapped.get(root)!).filter(Boolean), active);
     for (const [root, view] of Object.entries(target.views)) { const actual = mapped.get(root); if (actual) useRepos.getState().patch(actual, { view }); }
     useSettings.getState().set({ layouts: structuredClone(target.layouts), historyMode: target.historyMode });
-    useUi.setState({ overlay: null, repositoryOverview: false });
+    useUi.setState({ overlay: null, repositoryOverview: false, ...(useLibrary.getState().activeWorkspaceId !== target.id ? { repositoryGroup: null } : {}) });
     onApplied?.(workspaceSnapshot());
     useLibrary.getState().select(target.id);
     keepAsUnsaved = false;
