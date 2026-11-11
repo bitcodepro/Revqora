@@ -75,6 +75,7 @@ interface RowProps {
   dim: boolean;
   hl: number | null;
   pinnedLaneMember: boolean;
+  branchMember: boolean;
   animDelay: number | null;
   dateStyle: "relative" | "absolute";
   showRemote: boolean;
@@ -171,7 +172,7 @@ const Row = memo(function Row(p: RowProps) {
         : absoluteTime(r.authorTime);
     return (
       <div
-        className={`grow compact ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${r.incoming ? "incoming" : ""}`}
+        className={`grow compact ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.branchMember ? "branch-member" : ""} ${r.incoming ? "incoming" : ""}`}
         style={{ top, height: p.rowH }}
         onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
         onContextMenu={(e) => p.onMenu(r, e)}
@@ -200,7 +201,7 @@ ${r.oid}`
   }
   return (
     <div
-      className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""} ${p.pinnedLaneMember ? "lane-member" : ""} ${r.incoming ? "incoming" : ""}`}
+      className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""} ${p.pinnedLaneMember ? "lane-member" : ""} ${p.branchMember ? "branch-member" : ""} ${r.incoming ? "incoming" : ""}`}
       style={{ top, height: p.rowH, ...anim, ["--pinned-lane-color" as string]: p.pinnedLaneMember ? nodeColor : undefined }}
       onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
       onContextMenu={(e) => p.onMenu(r, e)}
@@ -362,6 +363,18 @@ export function GraphView({
     void loadGraph(root);
   };
   const summary = tab.graph;
+  const graphKey = summary?.key;
+  const viewedBranch = tab.viewedBranch;
+  const [branchMembers, setBranchMembers] = useState<{ key: string; reference: string; rows: Set<number> } | null>(null);
+  useEffect(() => {
+    if (!graphKey || !viewedBranch) return;
+    let current = true;
+    void api.graphBranchMembers(root, graphKey, viewedBranch).then(rows => {
+      if (current) setBranchMembers({ key: graphKey, reference: viewedBranch, rows: new Set(rows) });
+    }).catch(() => {});
+    return () => { current = false; };
+  }, [root, graphKey, viewedBranch]);
+  const highlightedRows = branchMembers && branchMembers.key === graphKey && branchMembers.reference === viewedBranch ? branchMembers.rows : undefined;
   const patch = useRepos((s) => s.patch);
   const toggleIncoming = () => {
     const settings = useSettings.getState();
@@ -606,9 +619,9 @@ export function GraphView({
     void api.graphFind(root, oid, summary.key).then((index) => {
       const latest = useRepos.getState().tabs[root];
       if (!current || latest?.graph?.key !== summary.key || latest.historyJump !== oid) return;
-      if (latest.selected === oid && index != null) {
+      if ((latest.selected === oid || latest.selected === null) && index != null) {
         if (!scrollToIndex(index, true)) return;
-        anchor.current = index;
+        anchor.current = latest.selected === oid ? index : null;
       }
       patch(root, { historyJump: null });
     }).catch(() => {});
@@ -899,6 +912,7 @@ export function GraphView({
           }
           hl={hl}
           pinnedLaneMember={!!r && r.oid !== WORKTREE && r.laneId === pinned}
+          branchMember={highlightedRows?.has(idx) ?? false}
           animDelay={drawing ? Math.max(0, i - first) * 16 : null}
           dateStyle={dateStyle}
           showRemote={showRemote}

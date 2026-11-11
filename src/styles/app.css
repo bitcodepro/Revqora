@@ -1186,6 +1186,12 @@ select[size="1"]:not([multiple]) {
 .grow.multi {
   background: var(--bg-selected);
 }
+.grow.branch-member:not(.lane-member, .incoming) {
+  border-left-color: var(--accent);
+}
+.grow.branch-member:not(.selected, .multi, .lane-member, .incoming) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
 .grow.lane-member {
   border-left-color: var(--pinned-lane-color);
 }

@@ -121,10 +121,21 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await preview.getByText("Advance pinned history line", { exact: true }).waitFor();
   await preview.getByRole("button", { name: "Close", exact: true }).click();
 
-  const viewedBranch = page.locator('.sidebar [data-branch-kind="local"][data-branch-name="target"]');
-  await viewedBranch.click();
-  await page.locator('.sidebar [data-branch-name="target"].viewed-branch').waitFor();
-  await page.locator('.sidebar [data-branch-name="main"].current').waitFor();
+  const viewedBranch = branchRow("target");
+  for (const mode of ["Graph", "Review", "Columns"]) {
+    await page.locator(".history-mode").getByRole("button", { name: mode, exact: true }).click();
+    // Select a different branch first so a previously rendered highlight cannot satisfy the check.
+    await branchRow("main").click();
+    await graph.locator(".grow.branch-member").getByText("Advance pinned history line", { exact: true }).waitFor({ state: "attached" });
+    await viewedBranch.click();
+    await page.locator('.sidebar [data-branch-name="target"].viewed-branch').waitFor();
+    await branchRow("main").and(page.locator(".current")).waitFor();
+    await graph.locator(".grow.branch-member").getByText("Destination change", { exact: true }).waitFor({ state: "attached" });
+    assert.equal(await graph.locator(".grow.branch-member").getByText("History line 98", { exact: true }).count(), 0);
+    assert.equal(await preview.count(), 0, `Selecting a branch in ${mode} must leave commit details closed`);
+  }
+  await page.locator(".history-mode").getByRole("button", { name: "Graph", exact: true }).click();
+  await graph.locator(".grow.branch-member").getByText("Destination change", { exact: true }).click();
   assert.equal(git(root, "branch", "--show-current"), "main");
   await preview.getByText("Destination change", { exact: true }).waitFor();
   await preview.getByRole("button", { name: "Close", exact: true }).click();
@@ -268,6 +279,7 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await active("branch-history");
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
   await branchRow("main").click();
+  await graph.locator(".grow.branch-member").getByText("Advance pinned history line", { exact: true }).click();
   await preview.waitFor();
   await branchRow("target").click({ modifiers: ["Control"] });
   await waitBranch("target");

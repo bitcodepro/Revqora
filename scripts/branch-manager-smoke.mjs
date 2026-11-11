@@ -165,7 +165,8 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
       document.querySelector(".commit-preview .commit-subject")?.textContent === subject &&
       [...document.querySelectorAll('.commit-preview .hash-chip[title="Copy full hash"], .commit-preview .hash-chip[title="Copy commit hash"]')].some(node=>node.textContent.includes(oid.slice(0,8))),{oid,subject});
     await login.click();
-    await expectPreview(tip,"Add authentication flow");
+    await page.locator(".graph-scroll .grow.branch-member").filter({hasText:"Add authentication flow"}).waitFor({state:"attached"});
+    if(await page.locator(".commit-preview").count()) throw new Error("Selecting a branch opened its tip");
     // The distinct tips must remain directly navigable after removing the
     // duplicate remote row. Verify rendered history, not only a menu label.
     if(other === tip) throw new Error("Upstream navigation fixture requires distinct tips");

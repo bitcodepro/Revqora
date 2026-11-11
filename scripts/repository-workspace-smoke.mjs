@@ -141,7 +141,8 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
         await closeActiveTab(root);
         if (!await canonical.isChecked()) throw new Error("Closing the resolved tab cleared the workspace selection");
         await open(root);
-        await page.locator('.repository-item[data-repository-state="open"]', { hasText: "stage8-workspace" }).waitFor();
+        // Focus mode can keep the open row hidden.
+        await page.locator('.repository-item[data-repository-state="open"]', { hasText: "stage8-workspace" }).waitFor({ state: "attached" });
         if (!await canonical.isChecked()) throw new Error("Reopening the tab cleared the workspace selection");
         await closeActiveTab(root);
         await editor.getByText("1 selected", { exact: true }).waitFor();

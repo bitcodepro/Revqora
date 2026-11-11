@@ -1,4 +1,4 @@
-import { useLibrary, uniqueRoots, repositoryKey, groupRepositoryRoots, type SavedWorkspace } from "../lib/repositoryLibrary";
+import { useLibrary, uniqueRoots, repositoryKey, groupRepositoryRoots, groupsInWorkspace, type SavedWorkspace } from "../lib/repositoryLibrary";
 import { treeAncestors, treeSelection, visibleTree } from "../lib/libraryTree";
 import { InlineGroupName } from "./GroupsSidebar";
 import { FavoriteButton, openLibraryRepository, renameRepositoryDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
@@ -22,9 +22,11 @@ import { Splitter } from "./Overlays";
 import { usePanelTitleMenu } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
 import { matchesShortcut, prettyCombo, bindingFor } from "../lib/shortcuts";
+import { repositoryMembershipMenu } from "./LibraryMenus";
 
-const repositoryMenu = (root: string, name: string, createGroup: () => void) => [
+const repositoryMenu = (root: string, name: string, roots: string[], groupId: string | undefined, createGroup: () => void) => [
   { label: "Create group", icon: <FolderPlus size={14}/>, onClick: createGroup },
+  ...repositoryMembershipMenu(roots, groupId),
   { label: "Rename repository…", icon: <Pencil size={14}/>, hint: prettyCombo(bindingFor("renameItem")), onClick: () => void renameRepositoryDialog(root) },
   ...namePathMenu(name, root, null),
 ];
@@ -204,19 +206,24 @@ export function RepositorySidebar() {
   const count = open.filter((r) => (repositorySidebarStatus(tabs[r])?.behind ?? 0) > 0).length;
   const candidates = workspace ? open : uniqueRoots([...order, ...library.knownRoots, ...library.favorites, ...library.groups.flatMap((g) => g.roots)]);
   const candidateKeys = new Set(candidates.map(repositoryKey));
-  const groups = visibleTree(library.groups, () => true, () => false, false)
-    .filter(({entry}) => !workspace || groupRepositoryRoots(library.groups, entry.id).some(root => candidateKeys.has(repositoryKey(root))));
+  const workspaceGroups = groupsInWorkspace(library.groups, workspace);
+  const groups = visibleTree(workspaceGroups, () => true, () => false, false)
+    .filter(({entry}) => !workspace || groupRepositoryRoots(workspaceGroups, entry.id).some(root => candidateKeys.has(repositoryKey(root))));
   const favorite = (r: string) => library.favorites.some((p) => repositoryKey(p) === repositoryKey(r));
-  const groupFilter = library.groups.find(g => g.id === groupId);
-  const groupKeys = groupFilter && new Set(groupRepositoryRoots(library.groups, groupFilter.id).map(repositoryKey));
+  const groupFilter = workspaceGroups.find(g => g.id === groupId);
+  const groupKeys = groupFilter && new Set(groupRepositoryRoots(workspaceGroups, groupFilter.id).map(repositoryKey));
   const displayName = (r: string) => library.repositoryNames[repositoryKey(r)] ?? tabs[r]?.info?.name ?? basename(r);
   const filterUpdates = updatesOnly && !actionsCollapsed;
   const visible = candidates.filter((r) => (r + " " + displayName(r)).toLowerCase().includes(query.trim().toLowerCase()) && (!filterUpdates || !!repositorySidebarStatus(tabs[r])?.behind) && (!favoritesOnly || favorite(r)) && (!groupKeys || groupKeys.has(repositoryKey(r))));
   const collapsed = new Set(library.groups.filter(g => g.collapsed).map(g => g.id));
-  const inlineGroups = groupsOpen ? [] : groups.filter(({entry}) => groupFilter || query || !treeAncestors(library.groups, entry.id).some(id => collapsed.has(id)));
+  const inlineGroups = groupsOpen ? [] : groups.filter(({entry}) => {
+    const ancestors = treeAncestors(workspaceGroups, entry.id);
+    if (groupFilter) return entry.id === groupFilter.id || ancestors.includes(groupFilter.id);
+    return query || !ancestors.some(id => collapsed.has(id));
+  });
   const sections = [...inlineGroups.map(({entry: g, depth}) => ({ ...g, depth, roots: visible.filter((r) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r))) })),
     { id: "ungrouped", name: "Ungrouped", depth: 0, collapsed: false, roots: groupsOpen ? visible : visible.filter((r) => !groups.some(({entry: g}) => g.roots.some((p) => repositoryKey(p) === repositoryKey(r)))) }];
-  const displayed = sections.flatMap(group => !group.collapsed || query || groupFilter ? group.roots : []);
+  const displayed = uniqueRoots(sections.flatMap(group => !group.collapsed || query || groupFilter ? group.roots : []));
   const selected = displayed.filter(root => selection.includes(root));
   return (
     <div className="repository-sidebar" style={{ width: w }}>
@@ -240,7 +247,10 @@ export function RepositorySidebar() {
           const t = tabs[r];
           return (
             <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""} ${selected.includes(r) ? "batch-selected" : ""}`} key={r} onKeyDown={e => renameOnKey(e, r)}
-              onContextMenu={e => contextMenu(e, repositoryMenu(r, displayName(r), () => setGroupDraft(selected.includes(r) ? selected : [r])))}>
+              onContextMenu={e => {
+                const roots = selected.includes(r) ? selected : [r];
+                contextMenu(e, repositoryMenu(r, displayName(r), roots, group.id === "ungrouped" ? groupFilter?.id : group.id, () => setGroupDraft(roots)));
+              }}>
               <FavoriteButton root={r} />
               <button className="repository-select" aria-current={r === active && !overview} onPointerDown={e => { if (canDragToWorkspace) drag.start(e, selected.includes(r) ? selected : [r]); }}
                 onClick={e => {
@@ -296,7 +306,8 @@ export function RepositoryOverview() {
   const anchor = useRef<string | null>(null);
   const [groupDraft, setGroupDraft] = useState<string[] | null>(null);
   const groupId = useUi(s => s.repositoryGroup);
-  const groups = useLibrary(s => s.groups);
+  const allGroups = useLibrary(s => s.groups);
+  const groups = groupsInWorkspace(allGroups, workspace);
   const group = groups.find(g => g.id === groupId);
   const groupKeys = group && new Set(groupRepositoryRoots(groups, group.id).map(repositoryKey));
   const displayName = (r: string) => names[repositoryKey(r)] ?? tabs[r]?.info?.name ?? basename(r);
@@ -328,7 +339,10 @@ export function RepositoryOverview() {
               <tr key={r} className={`${r === active ? "active" : ""} ${selected.includes(r) ? "batch-selected" : ""}`} onKeyDown={e => {
                 if (e.key === "Escape") setSelected([]);
                 renameOnKey(e, r);
-              }} onClick={e => { if (!(e.target as HTMLElement).closest("button")) select(e, r); }} onContextMenu={e => contextMenu(e, repositoryMenu(r, displayName(r), () => setGroupDraft(selected.includes(r) ? visible.filter(root => selected.includes(root)) : [r])))}>
+              }} onClick={e => { if (!(e.target as HTMLElement).closest("button")) select(e, r); }} onContextMenu={e => {
+                const roots = selected.includes(r) ? visible.filter(root => selected.includes(root)) : [r];
+                contextMenu(e, repositoryMenu(r, displayName(r), roots, group?.id, () => setGroupDraft(roots)));
+              }}>
                 <td><button className="repository-name" title={r} onClick={e => select(e, r)}><FolderGit2 size={15} />{displayName(r)}</button></td>
                 <td title={t?.info?.head.branch ?? ""} onContextMenu={e => { if (t?.info?.head.branch) contextMenu(e, namePathMenu(t.info.head.branch, r, `refs/heads/${t.info.head.branch}`)); }}><GitBranch size={12} /> {t?.info?.head.branch ?? (t?.info?.head.detached ? "Detached HEAD" : "—")}</td>
                 <td>{status ? <AheadBehind ahead={status.ahead} behind={status.behind} /> : "…"}</td>

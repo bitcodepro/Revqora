@@ -76,6 +76,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.locator(".modal").getByRole("button",{name:"Close",exact:true}).click();
     await history();const toggle=page.getByRole("button",{name:"Toggle branches panel",exact:true});if(await toggle.getAttribute("aria-expanded")!=="true")await toggle.click();
     await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="main"]').click();
+    await page.locator(".graph-scroll .grow.branch-member").getByText("Files for keyboard navigation",{exact:true}).click();
     const commitFiles=page.getByLabel("Commit files",{exact:true});await commitFiles.locator("[data-file-nav]").first().click();await page.keyboard.press("ArrowDown");
     await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="b.txt");
     await page.keyboard.press("Alt+ArrowDown");await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="c.txt");

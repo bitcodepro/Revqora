@@ -839,6 +839,13 @@ fn graph_find(state: State<'_, AppState>, repo: String, oid: String, expected_ke
 }
 
 #[tauri::command]
+async fn graph_branch_members(state: State<'_, AppState>, repo: String, reference: String, key: String) -> GitResult<Vec<usize>> {
+    let cache = state.graphs.lock().get(&repo).cloned().ok_or_else(|| GitError::new("History is not loaded."))?;
+    cache.check_key(Some(&key))?;
+    blocking(move || Ok(cache.branch_members(&reference))).await
+}
+
+#[tauri::command]
 fn graph_lane_anchor(state: State<'_, AppState>, repo: String, key: String, id: u64) -> Option<graph::LaneAnchor> {
     state.graphs.lock().get(&repo)?.lane_anchor(&key, id)
 }
@@ -2327,6 +2334,7 @@ pub fn run() {
             graph_load,
             graph_rows,
             graph_find,
+            graph_branch_members,
             graph_lane_anchor,
             graph_resolve_lane,
             graph_search,

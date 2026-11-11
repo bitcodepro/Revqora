@@ -108,17 +108,17 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
     if(!panels.history&&useUi.getState().repositoryOverview)useUi.setState({repositoryOverview:false});
     void useRepos.getState().refresh(root, { graph: true });
   };
-  const viewBranch = (branch: BranchInfo) => {
+  const viewBranch = (branch: BranchInfo, showTip = false) => {
     const repos = useRepos.getState();
     const revealHistory = useUi.getState().repositoryOverview && !panels.history;
     const shown = tab.branchFilter === CURRENT_HISTORY_BRANCH ? `refs/heads/${current ?? ""}` : tab.branchFilter;
     const scope = tab.branchFilter && shown !== branch.fullName ? branch.fullName : tab.branchFilter;
-    if (tab.view === "history" && !revealHistory && scope === tab.branchFilter && tab.graph) {
+    if (showTip && tab.view === "history" && !revealHistory && scope === tab.branchFilter && tab.graph) {
       repos.patch(root, { viewedBranch: branch.fullName });
       jumpToCommit(root, branch.oid);
       return;
     }
-    repos.patch(root, { viewedBranch: branch.fullName, view: "history", selected: branch.oid, multi: [], branchFilter: scope, historyJump: branch.oid });
+    repos.patch(root, { viewedBranch: branch.fullName, view: "history", selected: showTip ? branch.oid : null, multi: [], branchFilter: scope, historyJump: branch.oid });
     if (revealHistory) {
       useUi.setState({ repositoryOverview: false });
       window.focus();
@@ -276,7 +276,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               ] : [
                 ...branchMenu(root, b.name, kind),
                 ...(upstream ? [{ label: `Upstream: ${upstream.name}`, icon: <Cloud size={14} />, children: [
-                  { label: "Show tip in history", icon: <GitBranch size={14} />, onClick: () => viewBranch(upstream) },
+                  { label: "Show tip in history", icon: <GitBranch size={14} />, onClick: () => viewBranch(upstream, true) },
                   { label: "Show only this branch in graph", icon: <Eye size={14} />, onClick: () => filterGraph(upstream.fullName) },
                   { separator: true },
                   ...branchMenu(root, upstream.name, "remote"),

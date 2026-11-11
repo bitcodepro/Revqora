@@ -197,6 +197,21 @@ struct IncomingHistory {
 }
 
 impl GraphCache {
+    pub fn branch_members(&self, reference: &str) -> Vec<usize> {
+        let Some(tip) = self.refs.iter().find(|(name, _)| name == reference).and_then(|(_, oid)| self.index.get(oid)) else {
+            return Vec::new();
+        };
+        let mut visited = vec![false; self.rows.len()];
+        let mut pending = vec![*tip];
+        while let Some(index) = pending.pop() {
+            if std::mem::replace(&mut visited[index], true) {
+                continue;
+            }
+            pending.extend(self.rows[index].parents.iter().filter_map(|oid| self.index.get(oid).copied()));
+        }
+        visited.into_iter().enumerate().filter_map(|(index, member)| member.then_some(index)).collect()
+    }
+
     pub fn lane_anchor(&self, key: &str, id: u64) -> Option<LaneAnchor> {
         let anchors = if key == self.key {
             &self.lane_anchors
@@ -814,8 +829,10 @@ mod tests {
             runner::run(repo, ["rev-parse", "HEAD"]).unwrap().trim().to_owned()
         };
         let base = commit("Base");
+        runner::run(repo, ["branch", "side", &base]).unwrap();
         let tip = commit("Original tip");
         let before = build(repo, None, false, 100, false).unwrap();
+        assert_eq!(before.branch_members("refs/heads/side"), vec![before.index[&base]]);
         let id = before.rows[before.index[&tip]].lane_id;
         let anchor = before.lane_anchor(&before.key, id).unwrap();
 
@@ -829,6 +846,7 @@ mod tests {
 
         let filtered = build(repo, Some(&base), false, 100, false).unwrap();
         assert_eq!(filtered.resolve_lane(&anchor), None);
+        assert!(filtered.branch_members("refs/heads/main").is_empty());
     }
 
     #[test]
