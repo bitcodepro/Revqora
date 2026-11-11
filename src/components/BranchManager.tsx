@@ -15,6 +15,7 @@ import { reviewBranchCleanup } from "./BranchCleanup";
 import type { BranchCleanupRequest } from "../lib/types";
 import { renameRemoteBranch } from "./RemoteRename";
 import { useSettings } from "../lib/settings";
+import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { repositoryKey } from "../lib/repositoryLibrary";
 import { primaryBranchMenuItem } from "./menus";
 import { useToolDetailSize, useWindowSize, WindowResizeGrip } from "./WindowResize";
@@ -163,11 +164,26 @@ export function BranchManager({ root }: { root: string }) {
       <div className="bm-list">
         <div className="bm-row bm-columns"><span>Branch</span><span>Upstream</span><span>Last commit</span><span>Message</span></div>
         <div className="bm-viewport" ref={viewport} role="listbox" aria-label="Branches" tabIndex={0} aria-activedescendant={branch ? `bm-row-${rows.indexOf(branch)}` : undefined} onScroll={e => setScroll(e.currentTarget.scrollTop)} onKeyDown={e => {
+          if (matchesShortcut(e, "renameItem")) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!e.repeat && branch && destructive && !worktrees.length) void action(() => branch.local ? A.renameBranch(root, branch.name) : renameRemoteBranch(root, branch.name));
+            return;
+          }
+          if (matchesShortcut(e, "deleteItem") || matchesShortcut(e, "branch-delete")) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!e.repeat && !loading && !pending && !error) {
+              if (Object.keys(checked).length) void cleanupReview();
+              else if (branch && destructive && !branch.current && !worktrees.length) void action(() => branch.local ? A.deleteBranch(root, branch.name, prefs.protections) : A.deleteRemoteBranch(root, branch.name, prefs.protections));
+            }
+            return;
+          }
           if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) { e.preventDefault(); choose(e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : rows.findIndex(b => b.fullRef === selected) + (e.key === "ArrowDown" ? 1 : -1)); }
           if (e.key === "Enter" && branch && ready) { closeOverlay(); jumpToCommit(root, branch.oid); }
         }}>
           <div className="bm-canvas" style={{ height: rows.length * ROW }}><div className="bm-window" style={{ transform: `translateY(${start * ROW}px)` }}>
-          {rows.slice(start, end).map((b, i) => <div className={`bm-row ${b.fullRef === selected ? "selected" : ""}`} id={`bm-row-${start + i}`} key={b.fullRef} role="option" aria-selected={b.fullRef === selected} data-branch-ref={b.fullRef} onClick={() => setSelected(b.fullRef)} onContextMenu={e => contextMenu(e, [...namePathMenu(b.name, root, b.fullRef), {separator:true}, primaryBranchMenuItem(root, b.fullRef)])}>
+          {rows.slice(start, end).map((b, i) => <div className={`bm-row ${b.fullRef === selected ? "selected" : ""}`} id={`bm-row-${start + i}`} key={b.fullRef} role="option" aria-selected={b.fullRef === selected} data-branch-ref={b.fullRef} onClick={() => { setSelected(b.fullRef); viewport.current?.focus({ preventScroll: true }); }} onContextMenu={e => contextMenu(e, [...namePathMenu(b.name, root, b.fullRef), {separator:true}, primaryBranchMenuItem(root, b.fullRef)])}>
             <div title={b.fullRef} className="bm-name"><input type="checkbox" aria-label={`Select ${b.fullRef} for cleanup`} checked={!!checked[b.fullRef]} disabled={pending || (!checked[b.fullRef] && Object.keys(checked).length >= 50)} onClick={e => e.stopPropagation()} onChange={e => checkBranch(b, e.target.checked)} /><div><b>{b.name}</b><small>{b.local ? "Local" : "Remote"}{b.current ? " · HEAD" : ""}{b.fullRef === primaryRef && <span className="branch-primary-mark"> · Primary</span>}{branchWorktrees(b, snapshot?.worktrees ?? []).length ? " · Worktree" : ""}{isProtected(b, prefs.protections) ? " · Protected" : ""}</small></div></div>
             <div title={b.upstream ?? "No upstream"}><span>{b.upstream?.replace(/^refs\/(remotes|heads)\//, "") ?? "—"}</span><small>{isRemoteDeleted(b) ? <><CloudOff size={11} /> Remote deleted</> : b.gone ? "Local upstream missing" : b.upstream ? `↑${b.ahead} ↓${b.behind}` : "No upstream"}</small></div>
             <div title={`${b.author} <${b.authorEmail}>${b.time > 0 ? ` · ${new Date(b.time * 1000).toLocaleString()}` : ""}`}><span>{b.author || "—"}</span><small>{b.time > 0 ? relativeTime(b.time) : "Unknown date"}</small></div>
@@ -194,7 +210,7 @@ export function BranchManager({ root }: { root: string }) {
           <button className="btn" disabled={!ready || !base} onClick={() => base && openOverlay({ kind: "compare", root, from: base, to: branch.oid, direct: true })}>Compare files</button>
           <button className="btn" disabled={!ready || branch.current || !!worktrees.length} onClick={() => action(() => A.checkout(root, branch.name, branch.local ? "local" : "remote"))}>Checkout</button>
           {branch.local && <button className="btn" disabled={!ready} onClick={() => action(() => A.setUpstream(root, branch.name))}>Set upstream…</button>}
-          <button className="btn" disabled={!destructive || !!worktrees.length} onClick={() => action(() => branch.local ? A.renameBranch(root, branch.name) : renameRemoteBranch(root, branch.name))}>Rename…</button>
+          <button className="btn" title={shortcutTitle("Rename branch", "renameItem")} disabled={!destructive || !!worktrees.length} onClick={() => action(() => branch.local ? A.renameBranch(root, branch.name) : renameRemoteBranch(root, branch.name))}>Rename…</button>
           <button className="btn danger" disabled={!destructive || branch.current || !!worktrees.length} onClick={() => action(() => branch.local ? A.deleteBranch(root, branch.name, prefs.protections) : A.deleteRemoteBranch(root, branch.name, prefs.protections))}>Review deletion…</button>
         </div>
       </> : <p>Select a branch to inspect its history and worktrees.</p>}</aside>

@@ -5,7 +5,7 @@ import {GitConnectionFields,defaultGitConnection,gitTransport} from "./GitConnec
 import type {GitConnectionOptions} from "../lib/types";
 import { useEffect, useState, type ReactNode } from "react";
 import { canCheckUpdates, useUpdate } from "../lib/update";
-import { SHORTCUTS, bindingFor, comboFromEvent, prettyCombo, shortcutConflict } from "../lib/shortcuts";
+import { SHORTCUTS, acceptsPlainShortcut, bindingFor, comboFromEvent, prettyCombo, shortcutConflict } from "../lib/shortcuts";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ShortcutTransfer } from "./ShortcutTransfer";
 import {
@@ -984,13 +984,13 @@ function ShortcutSettings() {
                   e.preventDefault();
                   e.stopPropagation();
                   if (e.key === "Escape") { setError(""); return setCapturing(null); }
-                  if ((e.key === "Backspace" || e.key === "Delete") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+                  if (e.key === "Backspace" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
                     set({ shortcuts: { ...overrides, [sc.id]: "" } });
                     return setCapturing(null);
                   }
                   const combo = comboFromEvent(e);
                   if (!combo) return;
-                  if (!e.ctrlKey && !e.metaKey && !e.altKey && !/^F\d+$/.test(e.key)) {
+                  if (!e.ctrlKey && !e.metaKey && !e.altKey && !/^F\d+$/.test(e.key) && !acceptsPlainShortcut(sc.id, combo)) {
                     setError("Use Ctrl, Command or Alt with a key, or use a function key.");
                     return;
                   }

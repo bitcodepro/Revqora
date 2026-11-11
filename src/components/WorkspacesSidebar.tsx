@@ -5,12 +5,12 @@ import { dropWorkspaceRepositories, openAllWorkspaces } from "../lib/repositoryW
 import { treeAncestors, visibleTree } from "../lib/libraryTree";
 import { useSettings } from "../lib/settings";
 import { contextMenu, toast, useUi, type MenuItem } from "../lib/ui";
-import { matchesShortcut, prettyCombo, bindingFor } from "../lib/shortcuts";
+import { prettyCombo, bindingFor } from "../lib/shortcuts";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { Splitter } from "./Overlays";
 import { usePanelTitleMenu } from "./PanelWindows";
-import { isPlainDelete } from "./LibraryMenus";
-import { deleteWorkspaceDialog, openWorkspace, renameWorkspaceDialog, repositoryLibraryDialog, workspaceEditorDialog } from "./RepositoryLibrary";
+import { runMenuShortcut } from "./menus";
+import { deleteWorkspaceDialog, openWorkspace, renameWorkspaceDialog, workspaceEditorDialog } from "./RepositoryLibrary";
 
 export function WorkspacesSidebar({ onClose }: { onClose: () => void }) {
   const workspaces = useLibrary(s => s.workspaces);
@@ -19,10 +19,10 @@ export function WorkspacesSidebar({ onClose }: { onClose: () => void }) {
   const busy = useUi(s => s.busy.length > 0 || s.repositoryOperations.length > 0);
   const menu = (workspace?: SavedWorkspace): MenuItem[] => [
     { label: "New workspace…", icon: <Plus size={14}/>, disabled: busy, onClick: () => void workspaceEditorDialog() },
-    ...(workspace ? [{ label: "New sub-workspace…", icon: <Plus size={14}/>, disabled: busy, onClick: () => void workspaceEditorDialog(undefined, workspace.id) }] : []),
-    { label: "Rename workspace…", icon: <Pencil size={14}/>, hint: prettyCombo(bindingFor("renameItem")), disabled: !workspace, onClick: () => { if (workspace) void renameWorkspaceDialog(workspace); } },
-    ...(workspace?.parentId ? [{ label: "Remove from parent workspace", icon: <Unlink size={14}/>, onClick: () => move(workspace.id, null) }] : []),
-    { label: "Delete workspace…", icon: <Trash2 size={14}/>, hint: "Delete", danger: true, disabled: busy || !workspace, onClick: () => { if (workspace) void deleteWorkspaceDialog(workspace); } },
+    ...(workspace ? [{ label: "New sub-workspace…", shortcut: "workspace-sub", icon: <Plus size={14}/>, disabled: busy, onClick: () => void workspaceEditorDialog(undefined, workspace.id) }] : []),
+    { label: "Rename workspace…", shortcut: "renameItem", icon: <Pencil size={14}/>, disabled: !workspace, onClick: () => { if (workspace) void renameWorkspaceDialog(workspace); } },
+    ...(workspace?.parentId ? [{ label: "Remove from parent workspace", shortcut: "workspace-unlink", icon: <Unlink size={14}/>, onClick: () => move(workspace.id, null) }] : []),
+    { label: "Delete workspace…", shortcut: "deleteItem", icon: <Trash2 size={14}/>, danger: true, disabled: busy || !workspace, onClick: () => { if (workspace) void deleteWorkspaceDialog(workspace); } },
   ];
   const activeWorkspace = workspaces.find(w => w.id === active);
   const panelMenu = usePanelTitleMenu("workspaces", menu(activeWorkspace));
@@ -59,16 +59,6 @@ export function WorkspacesSidebar({ onClose }: { onClose: () => void }) {
       move(moving, id);
     },
   });
-  const keyAction = (e: React.KeyboardEvent, w: SavedWorkspace) => {
-    const deleting = isPlainDelete(e);
-    if (!deleting && (e.repeat || !matchesShortcut(e, "renameItem"))) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (deleting) {
-      if (!busy) void deleteWorkspaceDialog(w);
-    } else void renameWorkspaceDialog(w);
-  };
-
   return <aside className="repository-sidebar workspace-sidebar" aria-label="Workspaces" style={{ width }} onContextMenu={e => {
     if (!(e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) contextMenu(e, menu(activeWorkspace));
   }}>
@@ -79,7 +69,7 @@ export function WorkspacesSidebar({ onClose }: { onClose: () => void }) {
     <div className="repository-list" role="list" aria-label="Saved workspaces">
       {rows.map(({entry: w, depth, hasChildren, expanded}) => <div role="listitem" className={`repository-item library-tree-row ${active === w.id ? "active" : ""} ${dropTarget === w.id ? "workspace-drop-active" : ""}`}
         style={{ "--tree-depth": Math.min(depth, 8) } as React.CSSProperties} key={w.id} data-workspace-drop={!busy && active !== w.id ? w.id : undefined} {...targetProps(w.id)}
-        onKeyDown={e => keyAction(e, w)} onContextMenu={e => contextMenu(e, menu(w))}>
+        onKeyDown={e => runMenuShortcut(e, menu(w))} onContextMenu={e => contextMenu(e, menu(w))}>
         {hasChildren ? <button type="button" className="icon-btn sm" aria-label={`${expanded ? "Collapse" : "Expand"} ${w.name}`} aria-expanded={expanded} onClick={() => useLibrary.getState().collapseWorkspace(w.id)}>{expanded ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="library-tree-spacer"/>}
         <button type="button" className="icon-btn sm workspace-star" title={favorites.includes(w.id) ? "Remove favorite" : "Add favorite"} aria-label={`Favorite workspace ${w.name}`} aria-pressed={favorites.includes(w.id)} onClick={() => useLibrary.getState().favoriteWorkspace(w.id)}><Star size={13}/></button>
         <button type="button" className="repository-select" aria-current={active === w.id} aria-disabled={busy} title={w.name} onClick={() => { if (!busy && active !== w.id) void openWorkspace(w.id); }}><span className="repository-label">{w.name}</span><small className="faint">{w.roots.length}</small></button>
@@ -91,7 +81,6 @@ export function WorkspacesSidebar({ onClose }: { onClose: () => void }) {
       </div>)}
       {!rows.length && <div className="cg-empty">No matching workspaces</div>}
     </div>
-    <button type="button" className="btn sm repository-add" onClick={() => void repositoryLibraryDialog()}>Manage library…</button>
     <Splitter dir="v" style={{ right: -3, left: "auto" }} onDrag={delta => setWidth(w => Math.max(150, Math.min(390, w + delta)))} onEnd={() => setLayout({ workspacesWidth: width })}/>
   </aside>;
 }
@@ -103,7 +92,10 @@ async function dropRepositories(source: string | null, target: string, roots: st
   try {
     const errors = await dropWorkspaceRepositories(source, target, roots);
     if (errors.length) toast.warning("Workspace could not open every repository", errors.join("\n"));
-    else toast.success(`${roots.length} ${roots.length === 1 ? "repository" : "repositories"} ${source ? "moved" : "added"}`, `${workspace.name} · Ctrl+Z to undo`);
+    else {
+      const undo = prettyCombo(bindingFor("workspaceUndo"));
+      toast.success(`${roots.length} ${roots.length === 1 ? "repository" : "repositories"} ${source ? "moved" : "added"}`, undo ? `${workspace.name} · ${undo} to undo` : workspace.name);
+    }
   } catch (error) { toast.error(error); }
 }
 

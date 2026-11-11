@@ -1,0 +1,1 @@
+[Revqora user guide](https://github.com/bitcodepro/Revqora/wiki/Home) · Author: [bitcodepro](https://github.com/bitcodepro) · [Source code](https://github.com/bitcodepro/Revqora) · [Releases](https://github.com/bitcodepro/Revqora/releases) · [Issues](https://github.com/bitcodepro/Revqora/issues)

@@ -19,6 +19,9 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   if (await wsToggle.getAttribute("aria-pressed") === "false") await wsToggle.click();
   if (await groupToggle.getAttribute("aria-expanded") === "false") await groupToggle.click();
   const ws = page.getByRole("complementary", { name: "Workspaces", exact: true });
+  await ws.waitFor();
+  assert.equal(await ws.getByRole("button", { name: "Manage library…", exact: true }).count(), 0);
+  await page.getByRole("button", { name: "Repository library and workspaces", exact: true }).waitFor();
   const groups = page.getByRole("complementary", { name: "Groups", exact: true });
   const repos = page.locator(".repository-slot > .repository-sidebar");
   const workspace = name => ws.locator(".library-tree-row").filter({ has: page.getByText(name, { exact: true }) });

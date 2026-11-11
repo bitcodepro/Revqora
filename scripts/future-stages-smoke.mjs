@@ -33,12 +33,29 @@ export async function futureStagesSmoke({page,check,shot,work,restart}) {
  await check("a failed automatic command stops all later steps without an implicit retry",async()=>{
   const failed=await recipe("Failed automatic validation",[step("command","echo expected-failure && exit 7"),step("command","echo forbidden > forbidden-validation.txt")]);await selectRun("Failed automatic validation");await page.getByRole("checkbox",{name:"Automatic workflow validation",exact:true}).check();await until(async()=>(await invoke("workflow_run",{id:failed.id})).phase==="failed","Failed validation did not stop");const r=await invoke("workflow_run",{id:failed.id});if(r.results[0].exitCode!==7||r.results[1].phase!=="pending"||fs.existsSync(path.join(root,"forbidden-validation.txt")))throw Error("A failed command advanced the sequence");await page.getByRole("button",{name:"Close Workflow Builder",exact:true}).click();
  });
- const semantic=async(file,name)=>{await page.evaluate(({root,oid})=>window.dispatchEvent(new CustomEvent("revqora:jump",{detail:{root,oid}})),{root,oid:source});await page.locator(".details .file-row").filter({hasText:file}).click();await page.getByRole("button",{name:"Show semantic summary",exact:true}).click();await page.locator(".semantic-change").filter({hasText:name}).first().waitFor();await page.locator(".diff .dl.add, .diff .split-dl .half.add").first().waitFor();};
- await check("JSON summary shows changed JSON pointers while preserving the complete text diff",async()=>{await semantic("config.json","/ports/http");const d=await page.evaluate(async({root,source})=>{try{await window.__TAURI_INTERNALS__.invoke("semantic_diff",{repo:root,path:"config.json",old:{rev:`${source}^:config.json`},new:{rev:`${source}:config.json`}});return null;}catch(e){return e;}},{root,source}); // UI uses exact OIDs; shorthand is intentionally refused.
-  if(d?.kind!=="semantic-preview")throw Error("Unexpected shorthand validation result: "+JSON.stringify(d));await withViewport(page,{width:1028,height:749},async()=>{for(const mode of ["Unified","Side by side"]){await page.getByTitle(mode,{exact:true}).click();await page.locator(mode==="Unified"?".diff .dl.add":".diff .split-dl .half.add").first().waitFor();const sizes=await page.locator(".diff").evaluate(e=>({total:e.clientHeight,summary:e.querySelector(".semantic-panel").getBoundingClientRect().height,text:e.querySelector(".diff-body").getBoundingClientRect().height,code:e.querySelector(".diff-body").textContent}));if(sizes.text<48||sizes.summary>sizes.total*.5||!sizes.code.includes("81"))throw Error("Small-window summary obscured the original diff: "+JSON.stringify(sizes));await shot(mode==="Unified"?"143-json-small-unified":"143-json-small-split");}});await shot("143-json-semantic");
+ const openDiff=async(file)=>{
+  await page.evaluate(({root,oid})=>window.dispatchEvent(new CustomEvent("revqora:jump",{detail:{root,oid}})),{root,oid:source});
+  await page.locator(".details .file-row").filter({hasText:file}).click();
+  await page.locator(".diff .dl.add, .diff .split-dl .half.add").first().waitFor();
+  if(await page.getByRole("button",{name:/semantic summary/i}).count())throw Error("The diff still exposes a semantic summary button");
+ };
+ await check("JSON text diff remains usable in both modes at a narrow window size",async()=>{
+  await openDiff("config.json");
+  await withViewport(page,{width:1028,height:749},async()=>{
+   for(const mode of ["Unified","Side by side"]){
+    await page.getByTitle(mode,{exact:true}).click();
+    const addition=page.locator(mode==="Unified"?".diff .dl.add":".diff .split-dl .half.add").filter({hasText:"81"});
+    await addition.waitFor();
+    if((await page.locator(".diff-body").boundingBox()).height<48)throw Error("The diff pane is too short");
+   }
+  });
  });
- await check("TypeScript summary identifies the changed function with its old and new line locations",async()=>{await semantic("logic.ts","refreshToken");if(!(await page.locator(".semantic-content").innerText()).includes("TypeScript"))throw Error("Wrong syntax grammar");await shot("144-typescript-semantic");});
- await check("CSharp summary groups an edited method and retains the original code below it",async()=>{await semantic("Service.cs","Service.Run");if(!(await page.locator(".semantic-content").innerText()).includes("C#"))throw Error("Wrong C# grammar");await shot("145-csharp-semantic");});
+ for(const [language,file] of [["TypeScript","logic.ts"],["C#","Service.cs"]]) {
+  await check(`${language} changed source stays visible in the text diff`,async()=>{
+   await openDiff(file);
+   await page.locator(".diff .dl.add, .diff .split-dl .half.add").filter({hasText:"x + 1"}).waitFor();
+  });
+ }
  await check("History Explorer finds literal code changes and opens their actual commit",async()=>{
   await page.getByRole("button",{name:"History Explorer",exact:true}).click();await page.getByRole("textbox",{name:"Changed code or symbol",exact:true}).fill("x + 1");await page.getByRole("textbox",{name:"History path",exact:true}).fill("logic.ts");await page.getByRole("button",{name:"Search changes",exact:true}).click();await page.locator(".history-result").filter({hasText:"Update structured settings and token flow"}).waitFor();await page.getByRole("combobox",{name:"History search mode",exact:true}).selectOption("symbol");await page.getByRole("textbox",{name:"Changed code or symbol",exact:true}).fill("refreshToken");await page.getByRole("button",{name:"Search changes",exact:true}).click();await page.locator(".history-result").filter({hasText:"Update structured settings and token flow"}).waitFor();const body=await invoke("symbol_history",{path:"logic.ts",query:"refreshToken",anchor:null,offset:0});if(body.unavailable||!body.items.some(r=>r.oid===source))throw Error("Symbol history missed a body-only edit");await shot("146-history-explorer");await page.locator(".history-result").filter({hasText:"Update structured settings and token flow"}).click();await page.locator(".history-explorer").waitFor({state:"detached"});
   fs.unlinkSync(path.join(root,"automated-validation.txt"));

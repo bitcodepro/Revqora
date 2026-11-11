@@ -1,9 +1,9 @@
 # Repository library and reviewed Sync
 
-Open the library from the toolbar's library icon or **Manage library** in the
-repository panel. A star keeps a repository accessible after its tab is closed.
-Project groups have persistent collapse state; each repository belongs to at most
-one group. Search, favorites and the group selector scope the panel's bulk actions
+Open **Repository library and workspaces** from the toolbar, or **Manage library**
+from the Repositories panel. A star keeps a repository accessible after its tab is
+closed. Groups can contain other groups and repositories can belong to several.
+Search, favorites and the group selector scope the panel's bulk actions
 to matching **open** repositories. Closed bookmarks do not perform background Git
 or network work until opened. The library keeps previously opened paths available.
 
@@ -50,6 +50,18 @@ opens the correct location. An empty, deinitialized module remains uninitialized
 
 ## Workspaces
 
+The **Workspaces** icon opens a searchable tree beside **Groups** and
+**Repositories**. **Import folder…** walks the chosen folder, including the
+contents of Git repositories, to build a workspace tree. Select a workspace to see
+its direct repositories and expand it to reach children. Drag its handle onto a
+workspace to nest it or onto **Move to top level** to promote it.
+
+Select repository rows with **Ctrl** or **Shift** and drag them onto a workspace.
+**Ctrl+Z** undoes the latest such move. Right-click selected repositories to
+**Create group** in the sidebar. In **Groups**, select groups the same way and
+use **Create group** to place them under a new parent. Use the context menu to
+remove a repository's group memberships or remove a group from the current workspace.
+
 In **Manage library → Workspaces**, choose **New workspace**, enter a name and
 check the repositories to include. The currently open repositories are preselected.
 Search by name or path, or filter by group and select or clear the shown rows.
@@ -77,7 +89,7 @@ Running Git operations and validation block replacement. Unsaved conflict buffer
 in closing tabs require confirmation and remain available for the app session.
 Save those buffers before quitting. Missing folders are reported individually;
 successful opens remain available, no original tabs are closed, and the named
-snapshot is preserved. The partial result becomes an unsaved session.
+snapshot is preserved.
 
 Library metadata uses the same executable-local WebView profile as other settings.
 It contains paths and UI preferences, not credentials or copies of working files.

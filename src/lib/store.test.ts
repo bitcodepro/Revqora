@@ -4,7 +4,7 @@ vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), h
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() } }));
 import { api } from "./api";
-import { loadGraph, useRepos, type RepoTab } from "./store";
+import { hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, useRepos, type RepoTab } from "./store";
 import { previewGeneration } from "./commitPreview";
 import { repositoryCall, type Invoke } from "./operationClient";
 import type { RepoInfo, StatusSummary } from "./types";
@@ -73,6 +73,21 @@ describe("background repository observation", () => {
     expect(tab.graph?.key).toBe("latest-branch");
     expect(tab.graphVersion).toBe(1);
     expect(tab.graphLoading).toBe(false);
+  });
+  it("loads a bounded history, expands it on demand and starts the next branch with a fresh window", async () => {
+    vi.mocked(api.graphLoad).mockImplementation(async (_root, scope, _worktree, limit) => ({
+      key: String(scope) + limit, total: limit!, commitCount: 5275, maxLanes: 1, headIndex: 0,
+    }));
+    const store = useRepos.getState();
+    store.patch(root, { branchFilter: "refs/heads/main", graphVersion: 0 });
+    await loadGraph(root, false);
+    expect(hasMoreHistory(useRepos.getState().tabs[root])).toBe(true);
+    await loadGraph(root, false, INITIAL_GRAPH_COMMITS * 2);
+    await loadEntireHistory(root);
+    expect(hasMoreHistory(useRepos.getState().tabs[root])).toBe(false);
+    store.patch(root, { branchFilter: "refs/heads/topic" });
+    await loadGraph(root, false);
+    expect(vi.mocked(api.graphLoad).mock.calls.map(args => args[3])).toEqual([200, 400, 5275, 200]);
   });
   it("updates the full mutation guard without invalidating previews for ordinary worktree activity", async () => {
     const generation = previewGeneration(root);

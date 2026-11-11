@@ -400,24 +400,7 @@ silently enabled by a saved recipe.
   limits. CLI worktrees separate files, not OS permissions; agents can still run
   tools outside Revqora. No claim of sandbox enforcement or unconditional Undo.
 
-## Stage 19 — Semantic diff and history tools
-
-- On-demand syntax-aware summaries supplement local commit, working/index, range
-  and stash text diffs. Embedded Tree-sitter grammars parse C#, TypeScript/TSX and
-  strict JSON locally. Nothing is sent to AI or a remote service for this view.
-- Code changes are grouped by named declarations (including overload signatures),
-  with added/removed/changed/moved entries, original line positions and bounded
-  before/after previews. JSON uses escaped JSON pointers, array indices and exact
-  number tokens; duplicate keys and invalid syntax are refused rather than guessed.
-- The original diff, mode/rename metadata and all ordinary diff controls remain
-  visible. Syntax grouping is not compiler/type/binding analysis or proof of equal
-  behavior. Comments, formatting and unclassified changes require the text view;
-  unavailable/partial summaries say so explicitly. Provider patches alone do not
-  enable summaries without complete local file snapshots.
-- Parsing is bounded (512 KiB per side, 500 ms parsing callback budget, structural
-  depth/count limits, first 500 summary rows, 2 KiB previews per side). Refreshing a
-  working-file diff invalidates its old summary. Oversized/binary/invalid UTF-8 files
-  keep their ordinary text/binary diff rather than showing a false empty summary.
+## Stage 19 — History Explorer
 - History Explorer searches literal case-sensitive code in added/deleted lines
   across local branches, remote-tracking refs, tags and HEAD, optionally scoped to
   a literal repository path. It opens the actual matching commit in existing review.

@@ -1,4 +1,4 @@
-import { SHORTCUTS, shortcutConflict } from "./shortcuts";
+import { acceptsPlainShortcut, SHORTCUTS, shortcutConflict } from "./shortcuts";
 
 export const SHORTCUT_FILE_LIMIT = 2 * 1024 * 1024;
 const format = "revqora.shortcuts";
@@ -47,13 +47,13 @@ export function normalizeShortcutKey(input: string, rider = false): string | nul
   return [...["Ctrl", "Alt", "Shift"].filter(mod => mods.has(mod)), main].join("+");
 }
 
-function nativeShortcutKey(input: string): string | null {
+function nativeShortcutKey(id: string, input: string): string | null {
   if (!input) return "";
   // Revqora exports the original KeyboardEvent key, which can be Unicode or a
   // browser key name. Only validate the native structure and preserve the key.
   const modifiers = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?/.exec(input)![0];
   const key = input.slice(modifiers.length);
-  if (!key || /\p{Cc}/u.test(key) || (!/^(?:Ctrl|Alt)\+/.test(modifiers) && !/^F\d+$/.test(key))) return null;
+  if (!key || /\p{Cc}/u.test(key) || (!/^(?:Ctrl|Alt)\+/.test(modifiers) && !/^F\d+$/.test(key) && (modifiers || !acceptsPlainShortcut(id, key)))) return null;
   return input;
 }
 
@@ -103,7 +103,7 @@ export function readShortcutFile(text: string): ShortcutImport {
   }
   const seen = new Set<string>();
   const rows = input.flatMap(({command, label, key, context}) => {
-    const normalized = source === "Revqora" ? nativeShortcutKey(key) : normalizeShortcutKey(key, source === "Rider");
+    const normalized = source === "Revqora" ? nativeShortcutKey(command, key) : normalizeShortcutKey(key, source === "Rider");
     if (!command || normalized === null || (!normalized && source !== "Revqora")) { skipped++; return []; }
     const id = JSON.stringify([command, normalized]);
     if (seen.has(id)) return [];

@@ -12,7 +12,7 @@ import { retainedConflictDrafts } from "../lib/conflictStudio";
 import { contextMenu, showDialog, toast, useUi } from "../lib/ui";
 import { confirmDialog, promptDialog } from "./dialogs";
 import { deleteGroupsDialog } from "./GroupsSidebar";
-import { isPlainDelete, repositoryMembershipMenu } from "./LibraryMenus";
+import { isDeleteShortcut, repositoryMembershipMenu } from "./LibraryMenus";
 import { Modal } from "./Modal";
 
 export async function openLibraryRepository(root: string) {
@@ -303,7 +303,7 @@ function RepositoryLibrary({ close }: { close: () => void }) {
     {section === "workspaces" && <><div className="callout">Each workspace remembers its repository set, active repository, selected views and panel sizes for every mode. Changes are saved automatically. Switching opens folders and restores the layout; Git branches and working files stay as they are.</div>
       <button type="button" className="btn sm" disabled={busy} onClick={() => void workspaceEditorDialog()}>New workspace…</button>
       <div className="library-list">{workspaceRows.map(({entry: w, depth}) => <div className="library-row" key={w.id} tabIndex={0} style={{ paddingInlineStart: 8 + Math.min(depth, 8) * 12 }} onKeyDown={e => {
-        if (isPlainDelete(e)) {
+        if (isDeleteShortcut(e)) {
           e.preventDefault();
           e.stopPropagation();
           if (!busy) void deleteWorkspaceDialog(w);

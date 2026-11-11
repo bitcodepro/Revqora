@@ -363,6 +363,28 @@ impl GraphCache {
         let end = start.saturating_add(count).min(self.rows.len());
         Ok(if start >= end { Vec::new() } else { self.rows[start..end].to_vec() })
     }
+
+    pub fn commit_count(&self, repo: &Path, include_worktree: bool) -> Option<usize> {
+        let loaded = self.rows.len().saturating_sub(usize::from(include_worktree));
+        if loaded < self.limit {
+            return Some(loaded);
+        }
+        let mut args = vec!["rev-list".to_string(), "--count".into()];
+        if let Some(context) = &self.branch_context {
+            args.push("--end-of-options".into());
+            args.extend(context.tips(&self.refs));
+        } else if let Some(reference) = &self.filter {
+            let tip = self.refs.iter().find(|(name, _)| name == reference).map_or(reference, |(_, oid)| oid);
+            args.extend(["--end-of-options".into(), tip.clone()]);
+            if let Some(incoming) = &self.incoming {
+                args.push(incoming.tip.clone());
+            }
+        } else {
+            args.extend(["--branches", "--remotes", "--tags", "HEAD"].map(str::to_string));
+        }
+        args.push("--".into());
+        runner::run(repo, &args).ok()?.trim().parse::<usize>().ok().filter(|&count| count >= loaded)
+    }
 }
 
 /// refname → oid for everything the graph shows, plus HEAD.
@@ -409,6 +431,11 @@ fn parse_log(text: &str) -> Vec<CommitMeta> {
 fn reuse_history(repo: &Path, prev: &GraphCache, refs: &[(String, String)]) -> Option<(Vec<CommitMeta>, &'static str)> {
     if prev.refs == refs {
         return Some(((*prev.commits).clone(), "reused"));
+    }
+    // A capped prefix cannot be stitched to new refs without ordering the
+    // commits outside that prefix against the newly visible commits.
+    if prev.commits.len() >= prev.limit {
+        return None;
     }
     let old: HashMap<&str, &str> = prev.refs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let new: HashMap<&str, &str> = refs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
@@ -459,6 +486,7 @@ pub struct GraphSummary {
     pub head_oid: String,
     pub key: String,
     pub total: usize,
+    pub commit_count: Option<usize>,
     pub max_lanes: u16,
     pub head_index: Option<usize>,
     pub branch_context: Option<BranchContext>,
@@ -653,7 +681,7 @@ pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool,
     })?;
 
     let upstream_commits = incoming.as_ref().map_or(&[][..], |history| history.commits.as_slice());
-    let local_limit = if upstream_commits.is_empty() { commits.len() } else { limit.saturating_sub(upstream_commits.len()).min(commits.len()) };
+    let local_limit = limit.saturating_sub(upstream_commits.len()).min(commits.len());
     let shown = upstream_commits.iter().chain(&commits[..local_limit]);
     let mut order: Vec<(String, Vec<String>)> = Vec::with_capacity(upstream_commits.len() + local_limit + 1);
     if include_worktree && !head_oid.is_empty() {
@@ -1001,12 +1029,19 @@ mod tests {
         commit("Unrelated");
 
         let request = BranchContextRequest { reference: "refs/heads/topic".into(), primary: Some("refs/heads/main".into()) };
-        let graph = build_for_view(repo, ViewScope { branch: None, context: Some(&request), show_incoming: false }, false, 100, false, None).unwrap();
+        let scope = || ViewScope { branch: None, context: Some(&request), show_incoming: false };
+        let first = build_for_view(repo, scope(), true, 2, false, None).unwrap();
+        assert_eq!(first.rows.len(), 3);
+        assert_eq!(first.commit_count(repo, true), Some(4));
+        let graph = build_for_view(repo, scope(), true, 100, false, Some(&first)).unwrap();
+        assert_eq!(graph.commit_count(repo, true), Some(4));
+        assert_eq!(first.rows.iter().map(|row| &row.oid).collect::<Vec<_>>(), graph.rows.iter().take(3).map(|row| &row.oid).collect::<Vec<_>>());
+        assert_eq!(search(repo, &graph, "Common", SearchMode::Quick).unwrap(), vec![4]);
         let context = graph.branch_context.as_ref().unwrap();
         assert_eq!(context.base.as_deref(), Some("refs/heads/develop"));
         assert!(context.recorded);
         assert_eq!(context.primary.as_deref(), Some("refs/heads/main"));
-        let subjects: std::collections::HashSet<_> = graph.rows.iter().map(|row| row.subject.as_str()).collect();
+        let subjects: std::collections::HashSet<_> = graph.rows.iter().filter(|row| row.oid != WORKTREE_OID).map(|row| row.subject.as_str()).collect();
         assert_eq!(subjects, ["Common", "Source only", "Topic only", "Primary only"].into_iter().collect());
         assert_eq!(graph.branch_members(&request.reference).iter().map(|&i| graph.rows[i].subject.as_str()).collect::<Vec<_>>(), vec!["Topic only"]);
         let ordinary = build(repo, None, false, 100, false).unwrap();
