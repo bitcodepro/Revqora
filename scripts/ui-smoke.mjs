@@ -1,35 +1,22 @@
-import { futureStagesSmoke } from "./future-stages-smoke.mjs";
 import { repositoryRosterState } from "./repository-roster.mjs";
 import { stashSnapshotSmoke } from "./stash-snapshot-smoke.mjs";
 import { treeResponseSmoke } from "./tree-response-smoke.mjs";
 import { liveDiffSmoke, sealedLayerAttributesSmoke, submoduleHeadSmoke } from "./live-diff-smoke.mjs";
-import {workflowSmoke} from "./workflow-smoke.mjs";
-import {forgeAccountsSmoke} from "./forge-accounts-smoke.mjs";
-import {prCenterSmoke} from "./pr-center-smoke.mjs";
-import {agentWorkspaceSmoke} from "./agent-workspace-smoke.mjs";
-import { worktreeManagerSmoke } from "./worktree-manager-smoke.mjs";
 import { repositoryIsActive } from "./ui-readiness.mjs";
 import { fillWorktreeFolder, reviewWorktreeCreation } from "./worktree-manager-fixture.mjs";
-import { smokeTimings, assertSmokeCoverage } from "./ci-timing.mjs";
-import { branchCleanupSmoke } from "./branch-cleanup-smoke.mjs";
-import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
-import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manager-smoke.mjs";
+import { smokeTimings, SMOKE_SUITES, assertSmokeCoverage } from "./ci-timing.mjs";
 import { remoteRenameSmoke } from "./remote-rename-smoke.mjs";
-import { cloneInputSmoke } from "./clone-input-smoke.mjs";
-import { bitbucketTokenSmoke } from "./bitbucket-token-smoke.mjs";
-import {gitConnectionsSmoke} from "./git-connections-smoke.mjs";
-import {fastSwitchSmoke} from "./fast-switch-smoke.mjs";
 // End-to-end UI smoke test against the built app (WebView2 + CDP).
 //   node scripts/ui-smoke.mjs [--exe path] [--out dir] [--keep] [--visible]
 // Builds a demo repository, drives the real UI through the main workflows and
 // verifies the resulting git state with the git CLI. Screenshots go to --out.
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
+import { spawnSync } from "node:child_process";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createProfile, launch, withViewport, openCommitAction } from "./ui-driver.mjs";
-import { shutdownAndCleanup } from "./ui-cleanup.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
 import { mcpSmoke } from "./mcp-smoke.mjs";
 
@@ -40,8 +27,25 @@ const arg = (name, def) => {
   return i >= 0 ? process.argv[i + 1] : def;
 };
 const suite = process.env.REVQORA_SMOKE_SUITE || "all";
-if (!["all", "core"].includes(suite)) throw new Error("Use ui-suite.mjs for independent workspace/cleanup suites");
 const exe = arg("--exe", path.join(projectRoot, "src-tauri/target/release/revqora.exe"));
+if (suite === "all") {
+  // Use the same independent runners and fresh profiles as the CI matrix.
+  const output = arg("--out", process.env.REVQORA_SMOKE_OUT);
+  const flags = ["--keep", "--visible"].filter(flag => process.argv.includes(flag));
+  let status = 0;
+  for (const name of Object.keys(SMOKE_SUITES)) {
+    const driver = name === "core" ? "ui-smoke.mjs" : "ui-suite.mjs";
+    const env = { ...process.env, REVQORA_SMOKE_SUITE: name };
+    if (output) env.REVQORA_SMOKE_OUT = path.resolve(output, name);
+    const result = spawnSync(process.execPath, [path.join(here, driver), "--exe", path.resolve(exe), ...flags], { env, stdio: "inherit" });
+    if (result.status !== 0) {
+      status = 1;
+      console.error(`Native UI suite ${name} failed: ${result.error?.message ?? result.signal ?? result.status}`);
+    }
+  }
+  process.exit(status);
+}
+if (suite !== "core") throw new Error("Use ui-suite.mjs for independent workspace, cleanup and worktrees suites");
 const work = createProfile("revqora-smoke-");
 const out = arg("--out", process.env.REVQORA_SMOKE_OUT || path.join(work, "shots"));
 fs.mkdirSync(out, { recursive: true });
@@ -64,7 +68,6 @@ process.env.REVQORA_UPDATE_FEED = `http://127.0.0.1:${feed.address().port}/`;
 
 let step = 0;
 const results = [];
-const cleanups = [], deferCleanup = cleanup => cleanups.push(cleanup);
 // Exercise the portable-profile-inside-repo case without adding runtime files
 // to staging/checkpoints. The production watcher must ignore this exact folder.
 const smokeProfile = path.join(repo, ".revqora-smoke-profile");
@@ -2016,45 +2019,6 @@ try {
   });
   await conflictStudioSmoke({ page, check, shot, work });
   await check("MCP stdio scopes reads and stages files only after desktop approval", () => mcpSmoke({ page, exe, profile: smokeProfile, work }));
-  // Earlier scenarios relaunch with an explicit repository argument. App reload
-  // intentionally reapplies that argument, overriding the saved active tab.
-  // Replay the UI preferences in a separate fixture profile without CLI requests.
-  // The crash-test driver kills WebView2, so recent localStorage writes are not
-  // guaranteed to have reached disk when the previous process is stopped.
-  const workspaceActive = await page.locator(".topbar .repo-current > b").innerText();
-  const workspacePreferences = await page.evaluate(() => Object.fromEntries(
-    ["revqora.settings", "revqora.repositories"].map((key) => [key, localStorage.getItem(key)]),
-  ));
-  await close();
-  const workspaceProfile = path.join(work, "workspace-profile");
-  ({ page, close, child } = await launch({ exe, args: [], profile: workspaceProfile, port: 0 }));
-  attachPage();
-  // Wait for the empty startup's own settings write before installing fixtures.
-  await page.waitForFunction(() => localStorage.getItem("revqora.settings") !== null);
-  await page.evaluate((preferences) => { for (const [key, value] of Object.entries(preferences)) if (value !== null) localStorage.setItem(key, value); }, workspacePreferences);
-  await page.reload();
-  await page.locator(".topbar .repo-current > b").filter({ hasText: workspaceActive }).waitFor();
-  const restartWorkspace = async () => {
-    await close();
-    ({page,close,child} = await launch({exe,profile:workspaceProfile,port:0}));
-    attachPage();return page;
-  };
-  if (suite === "all") {
-    await repositoryWorkspaceSmoke({ page, check, shot, work });
-    await branchManagerSmoke({ page, check, shot, work });
-    await branchManagerProtectionSmoke({ page, check, shot, work });
-    await cloneInputSmoke({ page, check, shot, work });
-    await gitConnectionsSmoke({exe,work,check,out});
-    await fastSwitchSmoke({exe,work,check,out});
-    await branchCleanupSmoke({ page, check, shot, work });
-    await worktreeManagerSmoke({ page, check, shot, work });
-    await forgeAccountsSmoke({page,check,shot,work,profile:workspaceProfile,restart:restartWorkspace});
-    await bitbucketTokenSmoke({exe,work,check,out});
-    await prCenterSmoke({page,check,shot,work});
-    await agentWorkspaceSmoke({page,check,shot,work,restart:restartWorkspace,deferCleanup});
-    await workflowSmoke({page,check,shot,work,restart:restartWorkspace});
-    await futureStagesSmoke({page,check,shot,work,restart:restartWorkspace});
-  }
   assertSmokeCoverage(suite, step);
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {
@@ -2062,7 +2026,7 @@ try {
   if (!results.some((r) => r.startsWith("FAIL"))) results.push("FAIL " + e.message);
 } finally {
   let cleanupSucceeded = false;
-  try { await shutdownAndCleanup(() => close(), cleanups); cleanupSucceeded = true; }
+  try { await close(); cleanupSucceeded = true; }
   catch (e) { failed = true; results.push("FAIL native shutdown/cleanup: " + e.message); console.error(e); }
   feed.close();
   smokeTimings.finish();
