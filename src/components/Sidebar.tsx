@@ -363,7 +363,8 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           <button className="icon-btn sm" title="New branch" onClick={() => A.createBranch(root, null, current ?? "HEAD")}>
             <Plus size={13} />
           </button>,
-          collapsed.local ? [] : local.length ? renderTree(buildTree(local,0,branchPrefs.sort==="recent"), "local", 0, "") : empty("empty-local", f||branchPrefs.onlyMine ? "No matches" : "No branches yet"),
+          collapsed.local ? [] : local.length ? renderTree(buildTree(local,0,branchPrefs.sort==="recent"), "local", 0, "") :
+            pinned?.fullName.startsWith("refs/heads/") ? [] : empty("empty-local", f||branchPrefs.onlyMine ? "No matches" : "No branches yet"),
         ),
         ...section(
           "remotes",

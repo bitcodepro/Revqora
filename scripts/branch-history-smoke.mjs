@@ -32,6 +32,7 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
     env: { ...process.env, GIT_AUTHOR_DATE: targetDate, GIT_COMMITTER_DATE: targetDate },
   });
   git(root, "switch", "-q", "main");
+  git(root, "config", "user.email", "current-user@example.test");
   for (const suffix of ["a", "b"]) {
     git(other, "switch", "-qc", `review-${suffix}`, "main");
     put(other, `picked-${suffix}.txt`, suffix);
@@ -130,11 +131,23 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   const myBranches = page.getByRole("button", {name:"My branches",exact:true});
   if (await myBranches.getAttribute("aria-pressed") !== "true") await myBranches.click();
   assert.equal(await myBranches.getAttribute("aria-pressed"), "true");
+  await viewedBranch.waitFor({state:"detached"});
+  await pinnedBranch.waitFor();
   await branchSearch.fill("no-matching-branches");
   await pinnedBranch.waitFor();
   assert.equal(await branchRow("main").count(), 1);
   await branchSearch.clear();
   await myBranches.click();
+  await page.locator(".sidebar .branches-heading").click({button:"right"});
+  await page.locator(".ctx-menu").getByText("Branch manager",{exact:true}).click();
+  const manager = page.locator(".branch-manager");
+  const primaryInManager = manager.locator('[data-branch-ref="refs/heads/main"]');
+  await primaryInManager.waitFor();
+  await manager.getByRole("button",{name:"My branches",exact:true}).click();
+  await manager.getByRole("textbox",{name:"Search branches",exact:true}).fill("no-matching-branches");
+  await primaryInManager.getByText("· Primary",{exact:true}).waitFor();
+  assert(await manager.getByRole("button",{name:"Select filtered (up to 50)",exact:true}).isDisabled());
+  await manager.getByRole("button",{name:"Close branch manager",exact:true}).click();
   const historyScope = page.getByRole("combobox", {name:"History scope",exact:true});
   for (const mode of ["Graph", "Review", "Columns"]) {
     await page.locator(".history-mode").getByRole("button", { name: mode, exact: true }).click();
