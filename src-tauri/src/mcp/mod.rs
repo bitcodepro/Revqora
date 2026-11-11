@@ -18,7 +18,8 @@ use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 pub use protocol::stdio;
 
-const DISABLED: &str = "Open Revqora and turn on Settings → MCP for this session.";
+const DISABLED: &str = "Open Revqora and enable MCP for this session under Settings → General → MCP.";
+const DISPATCH_TIMEOUT: Duration = Duration::from_secs(25);
 const WORKERS: usize = 8;
 type Reply = Result<Value, String>;
 
@@ -54,12 +55,11 @@ impl Session {
         let result = app
             .emit_to("main", "mcp-request", &Event { id: &id, session: &self.id, request })
             .map_err(|_| "Revqora's main window is unavailable.".to_owned())
-            .and_then(|_| {
-                receive
-                    .recv_timeout(Duration::from_secs(25))
-                    .map_err(|_| "Revqora did not return a result. Check the desktop before retrying an action.".to_owned())
-            })
-            .and_then(|reply| reply);
+            .and_then(|_| match receive.recv_timeout(DISPATCH_TIMEOUT) {
+                Ok(reply) => reply,
+                Err(mpsc::RecvTimeoutError::Timeout) => Err("Revqora did not finish the MCP request in time.".into()),
+                Err(mpsc::RecvTimeoutError::Disconnected) => Err(DISABLED.into()),
+            });
         self.pending.lock().remove(&id);
         result
     }

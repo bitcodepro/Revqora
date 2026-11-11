@@ -14,6 +14,8 @@ pub(super) type Secret = Zeroizing<[u8; 32]>;
 const REQUEST_MAX: usize = 128 * 1024;
 const REPLY_MAX: usize = 2 * 1024 * 1024;
 const AUTH_MAX: usize = 1024;
+const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+const REPLY_TIMEOUT: Duration = super::DISPATCH_TIMEOUT.saturating_add(Duration::from_secs(5));
 
 fn nonce() -> io::Result<[u8; 32]> {
     rand::generate::<[u8; 32]>(&rand::SystemRandom::new()).map(rand::Random::expose).map_err(|_| io::Error::other("Secure randomness is unavailable."))
@@ -121,7 +123,7 @@ pub(super) fn frame(reader: &mut impl BufRead, limit: usize) -> io::Result<Optio
 }
 
 fn read<T: DeserializeOwned>(reader: &mut impl BufRead, limit: usize) -> io::Result<T> {
-    let line = frame(reader, limit)?.ok_or_else(denied)?;
+    let line = frame(reader, limit)?.ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "The local MCP connection closed."))?;
     Ok(serde_json::from_slice(&line)?)
 }
 
@@ -184,22 +186,39 @@ impl Auth {
 
 pub(super) fn call(request: &impl Serialize) -> super::Reply {
     let (port, key) = descriptor_path().and_then(|path| read_descriptor(&path)).map_err(|_| super::DISABLED.to_owned())?;
-    let exchange = || -> io::Result<super::Reply> {
-        let mut socket = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_secs(3))?;
-        socket.set_read_timeout(Some(Duration::from_secs(5)))?;
-        socket.set_write_timeout(Some(Duration::from_secs(5)))?;
-        let mut reader = BufReader::new(socket.try_clone()?);
+    let socket = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_secs(3))
+        .map_err(|_| "Could not connect to Revqora's local MCP session. Check Settings → General → MCP.".to_owned())?;
+    exchange(socket, &key, request, AUTH_TIMEOUT)
+}
+
+fn exchange(socket: TcpStream, key: &Secret, request: &impl Serialize, auth_timeout: Duration) -> super::Reply {
+    let mut connection = BufReader::new(socket);
+    let auth = (|| -> io::Result<Auth> {
+        let socket = connection.get_mut();
+        socket.set_read_timeout(Some(auth_timeout))?;
+        socket.set_write_timeout(Some(auth_timeout))?;
         let client = nonce()?;
-        write(&mut socket, &client, AUTH_MAX)?;
-        let hello: Hello = read(&mut reader, AUTH_MAX)?;
-        let auth = Auth::new(&key, client, hello.nonce);
+        write(socket, &client, AUTH_MAX)?;
+        let hello: Hello = read(&mut connection, AUTH_MAX)?;
+        let auth = Auth::new(key, client, hello.nonce);
         auth.verify(b"hello", &[], &hello.tag)?;
-        auth.send(&mut socket, b"request", request, REQUEST_MAX)?;
-        socket.set_read_timeout(Some(Duration::from_secs(30)))?;
-        auth.receive(&mut reader, b"reply", REPLY_MAX)
-    };
-    exchange()
-        .map_err(|_| "Could not reach the authenticated Revqora desktop. Check Settings → MCP and inspect any pending action before retrying.".to_owned())?
+        Ok(auth)
+    })()
+    .map_err(|_| "Could not authenticate the local MCP session. Check Settings → General → MCP.".to_owned())?;
+    // Updating a different socket handle left the Windows reader with the
+    // handshake timeout. Use the same connection throughout the exchange.
+    connection.get_ref().set_read_timeout(Some(REPLY_TIMEOUT)).map_err(reply_error)?;
+    auth.send(connection.get_mut(), b"request", request, REQUEST_MAX).map_err(|_| "Could not send the MCP request to Revqora.".to_owned())?;
+    auth.receive(&mut connection, b"reply", REPLY_MAX).map_err(reply_error)?
+}
+
+fn reply_error(error: io::Error) -> String {
+    match error.kind() {
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => "Timed out waiting for Revqora's MCP reply.",
+        io::ErrorKind::InvalidData | io::ErrorKind::PermissionDenied => "Revqora returned an invalid or unauthenticated MCP reply.",
+        _ => "The local MCP connection closed before Revqora returned a result.",
+    }
+    .to_owned()
 }
 
 pub(super) fn serve(mut socket: TcpStream, key: &Secret, dispatch: impl FnOnce(Value) -> super::Reply) -> io::Result<()> {
@@ -233,6 +252,29 @@ mod tests {
         assert!(auth.verify(b"reply", message, &tag).is_err());
         assert!(Auth::new(&key, [3; 32], [2; 32]).verify(b"request", message, &tag).is_err());
         assert!(Auth::new(&key, [1; 32], [3; 32]).verify(b"request", message, &tag).is_err());
+    }
+
+    #[test]
+    fn authenticated_replies_can_outlast_the_handshake_timeout() {
+        let key = secret().unwrap();
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let auth_timeout = Duration::from_secs(1);
+        let request = serde_json::json!({ "name": "list_pull_requests" });
+        let result = serde_json::json!({ "items": [{ "number": 12, "title": "Fix API calls" }] });
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                serve(server, &key, |received| {
+                    assert_eq!(received, request);
+                    std::thread::sleep(auth_timeout + Duration::from_millis(250));
+                    Ok(result.clone())
+                })
+                .unwrap();
+            });
+            assert_eq!(exchange(client, &key, &request, auth_timeout), Ok(result.clone()));
+            worker.join().unwrap();
+        });
     }
 
     #[test]
