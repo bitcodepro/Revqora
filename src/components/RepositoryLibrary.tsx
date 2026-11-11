@@ -3,7 +3,7 @@ import { namePathMenu } from "./NamePathMenu";
 import { ArrowRightLeft, ChevronDown, ChevronRight, Library, Star } from "lucide-react";
 import { basename } from "../lib/format";
 import { errorMessage } from "../lib/api";
-import { groupRepositoryRoots, useLibrary, repositoryKey, uniqueRoots, type SavedWorkspace } from "../lib/repositoryLibrary";
+import { groupRepositoryRoots, groupsInWorkspace, useLibrary, repositoryKey, uniqueRoots, type SavedWorkspace } from "../lib/repositoryLibrary";
 import { visibleTree } from "../lib/libraryTree";
 import { matchesShortcut } from "../lib/shortcuts";
 import { useRepos } from "../lib/store";
@@ -48,8 +48,10 @@ const discoveringRepositories = (state: ReturnType<typeof useRepos.getState>) =>
 function WorkspaceEditor({ workspace, parentId, close }: { workspace?: SavedWorkspace; parentId?: string; close: () => void }) {
   const order = useRepos((s) => s.order);
   const discovering = useRepos(discoveringRepositories);
-  const known = useLibrary((s) => s.knownRoots), groups = useLibrary((s) => s.groups);
-  const savedRoots = useLibrary((s) => s.workspaces.find((item) => item.id === workspace?.id)?.roots);
+  const known = useLibrary((s) => s.knownRoots), allGroups = useLibrary((s) => s.groups);
+  const saved = useLibrary((s) => s.workspaces.find(item => item.id === workspace?.id));
+  const savedRoots = saved?.roots;
+  const groups = groupsInWorkspace(allGroups, saved);
   const busy = useUi((s) => s.busy.length > 0);
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
@@ -78,9 +80,10 @@ function WorkspaceEditor({ workspace, parentId, close }: { workspace?: SavedWork
   const original = new Set((savedRoots ?? []).map(repositoryKey));
   const roots = uniqueRoots([...(savedRoots ?? []), ...order, ...known]);
   const paths = roots.filter((root) => selected.has(repositoryKey(root)));
-  const groupByRoot = new Map(groups.flatMap((item) => item.roots.map((root) => [repositoryKey(root), item.id] as const)));
+  const ungrouped = group === "ungrouped";
+  const groupedRoots = new Set((ungrouped ? groups.flatMap(item => item.roots) : groupRepositoryRoots(groups, group)).map(repositoryKey));
   const search = query.trim().toLowerCase();
-  const shown = roots.filter((root) => root.toLowerCase().includes(search) && (!group || (groupByRoot.get(repositoryKey(root)) ?? "ungrouped") === group));
+  const shown = roots.filter(root => root.toLowerCase().includes(search) && (!group || groupedRoots.has(repositoryKey(root)) !== ungrouped));
   const allShownSelected = shown.every((root) => selected.has(repositoryKey(root)));
   const changed = paths.length !== original.size || paths.some((root) => !original.has(repositoryKey(root)));
   const canSave = !busy && !submitting && !discovering && (workspace ? changed : !!name.trim());

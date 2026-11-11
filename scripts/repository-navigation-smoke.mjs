@@ -116,6 +116,14 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await addApi();
   await menu("Platform").click();
   assert(member(await library(), "Delivery", "api") && member(await library(), "Platform", "api"));
+  await choose(workspaceRow("product"), "New sub-workspace…");
+  const workspaceEditor = page.getByRole("dialog", {name: "New workspace", exact: true});
+  const groupFilter = workspaceEditor.getByRole("combobox", {name: "Filter repositories by group", exact: true});
+  for (const name of ["Delivery", "Platform"]) {
+    await groupFilter.selectOption({label: name});
+    await workspaceEditor.getByRole("checkbox", {name: /^api\b/}).waitFor();
+  }
+  await workspaceEditor.getByRole("button", {name: "Cancel", exact: true}).click();
   await groupRow("Delivery").click();
   await choose(repository("api"), "Remove from group · Delivery");
   assert(!member(await library(), "Delivery", "api") && member(await library(), "Platform", "api"));
