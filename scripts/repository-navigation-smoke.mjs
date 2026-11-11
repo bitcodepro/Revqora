@@ -134,7 +134,7 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   }
   try {
     await pressKey("Digit1", "!", 49, 10); // Ctrl + Shift.
-    await page.locator(".palette input").waitFor();
+    await page.waitForFunction(() => document.activeElement?.matches(".palette input"));
     await page.keyboard.press("Escape");
     await page.locator(".palette input").waitFor({ state: "detached" });
     await pressKey("BracketLeft", "{", 219, 10);
