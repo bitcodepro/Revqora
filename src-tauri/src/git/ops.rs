@@ -249,7 +249,9 @@ fn commit_confirmed(repo: &Path, message: &str, opts: &CommitOptions) -> GitResu
     }
     let file = temp_file(repo, "COMMIT_MSG", message)?;
     let fp = file.to_string_lossy().into_owned();
-    let mut args = vec!["commit", "-F", fp.as_str(), "--cleanup=strip"];
+    // This message comes from a Revqora editor or an explicitly approved
+    // request. Git's strip mode would treat a leading # as a template comment.
+    let mut args = vec!["commit", "-F", fp.as_str(), "--cleanup=whitespace"];
     if opts.amend {
         args.push("--amend");
     }
