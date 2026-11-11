@@ -10,6 +10,7 @@ import {
   Copy,
   Eraser,
   FileEdit,
+  Flag,
   GitBranch,
   GitBranchPlus,
   GitCommitHorizontal,
@@ -35,7 +36,9 @@ import type { MenuItem } from "../lib/ui";
 import { copyText, openOverlay } from "../lib/ui";
 import * as A from "../lib/actions";
 import * as X from "../lib/extraActions";
-import { getTab } from "../lib/store";
+import { getTab, loadGraph } from "../lib/store";
+import { repositoryKey } from "../lib/repositoryLibrary";
+import { useSettings } from "../lib/settings";
 import { api } from "../lib/api";
 import { branchCard } from "./BranchCard";
 import { branchReflogDialog, savePatch } from "./RepoTools";
@@ -66,6 +69,8 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote")
   const current = tab?.info?.head.branch;
   const isCurrent = kind === "local" && name === current;
   const reference = `refs/${kind === "local" ? "heads" : "remotes"}/${name}`;
+  const key = repositoryKey(root);
+  const primary = useSettings.getState().primaryBranchByRepo[key] === reference;
   const items: MenuItem[] = [...namePathMenu(name, root, reference), { separator: true }];
   if (!isCurrent) items.push({ label: kind === "remote" ? `Check out as local branch` : `Check out ${name}`, shortcut: "branch-checkout", icon: <Check size={I} />, onClick: () => A.checkout(root, name, kind) });
   items.push({ label: "Create branch from here…", icon: <GitBranchPlus size={I} />, onClick: () => A.createBranch(root, name, name) });
@@ -73,6 +78,14 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote")
   items.push({ label: "Branch history (reflog)…", icon: <History size={I} />, onClick: () => branchReflogDialog(root, name) });
   items.push({ label: "Browse files", icon: <FolderTree size={I} />, onClick: () => openOverlay({ kind: "tree", root, rev: name }) });
   items.push({ label: "Compare branch commits…", shortcut: "branch-compare", icon: <GitCompareArrows size={I} />, onClick: () => branchCommitCompare(root, reference) });
+  items.push({ label: primary ? "Clear primary branch" : "Set as primary branch", shortcut: "branch-primary", icon: <Flag size={I} />, onClick: () => {
+    const settings = useSettings.getState();
+    const primaryBranchByRepo = { ...settings.primaryBranchByRepo };
+    if (primaryBranchByRepo[key] === reference) delete primaryBranchByRepo[key];
+    else primaryBranchByRepo[key] = reference;
+    settings.set({ primaryBranchByRepo });
+    if (getTab(root)?.branchContext) void loadGraph(root);
+  } });
   items.push({ label: "Compare with working tree", icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: reference, to: WORKTREE }) });
   if (!isCurrent) items.push({ label: `Compare with ${current ?? "HEAD"}`, icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: current ? `refs/heads/${current}` : "HEAD", to: reference }) });
   if (!isCurrent && current) {

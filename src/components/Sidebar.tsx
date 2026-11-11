@@ -8,6 +8,7 @@ import {
   Copy,
   Eraser,
   Eye,
+  Flag,
   Folder,
   FolderGit2,
   FolderOpen,
@@ -46,6 +47,8 @@ import {sidebarBranchesKey,sidebarBranchPreferences,selectSidebarBranches} from 
 import {loadBranchPreferences,preferencesKey} from "../lib/branchManager";
 import { matchesShortcut } from "../lib/shortcuts";
 import { renameRemoteBranch } from "./RemoteRename";
+import { repositoryKey } from "../lib/repositoryLibrary";
+import { useSettings } from "../lib/settings";
 
 interface TreeNode {
   name: string;
@@ -96,15 +99,17 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({});
   const [selection, setSelection] = useState<BranchInfo[]>([]);
   const selectionAnchor = useRef<string | null>(null);
-  const checkoutFromCurrentHistory = useRef<string | null>(null);
+  const beforeDoubleClick = useRef<Pick<RepoTab, "branchFilter" | "branchContext" | "viewedBranch"> & { reference: string } | null>(null);
   const cleanupPending = useRef(false);
   const refs = tab.refs;
   const extras = tab.extras;
   const f = filter.trim().toLowerCase();
   const match = (s: string) => !f || s.toLowerCase().includes(f);
   const current = tab.info?.head.branch;
+  const key = repositoryKey(root);
+  const primaryBranch = useSettings(settings => settings.primaryBranchByRepo[key]);
   const filterGraph = (reference: string) => {
-    useRepos.getState().patch(root, { view: "history", branchFilter: reference, viewedBranch: reference, selected: null, multi: [], historyJump: null });
+    useRepos.getState().patch(root, { view: "history", branchFilter: reference, branchContext: null, viewedBranch: reference, selected: null, multi: [], historyJump: null });
     if(!panels.history&&useUi.getState().repositoryOverview)useUi.setState({repositoryOverview:false});
     void useRepos.getState().refresh(root, { graph: true });
   };
@@ -112,32 +117,38 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
     const repos = useRepos.getState();
     const revealHistory = useUi.getState().repositoryOverview && !panels.history;
     const shown = tab.branchFilter === CURRENT_HISTORY_BRANCH ? `refs/heads/${current ?? ""}` : tab.branchFilter;
-    const scope = tab.branchFilter && shown !== branch.fullName ? branch.fullName : tab.branchFilter;
-    if (showTip && tab.view === "history" && !revealHistory && scope === tab.branchFilter && tab.graph) {
+    const scope = showTip && (tab.branchContext || (tab.branchFilter && shown !== branch.fullName)) ? branch.fullName : showTip ? tab.branchFilter : null;
+    const branchContext = showTip ? null : branch.fullName;
+    const scopeChanged = scope !== tab.branchFilter || branchContext !== (tab.branchContext ?? null);
+    if (showTip && tab.view === "history" && !revealHistory && !scopeChanged && tab.graph) {
       repos.patch(root, { viewedBranch: branch.fullName });
       jumpToCommit(root, branch.oid);
       return;
     }
-    repos.patch(root, { viewedBranch: branch.fullName, view: "history", selected: showTip ? branch.oid : null, multi: [], branchFilter: scope, historyJump: branch.oid });
+    repos.patch(root, { viewedBranch: branch.fullName, view: "history", selected: showTip ? branch.oid : null, multi: [], branchFilter: scope, branchContext, historyJump: branch.oid });
     if (revealHistory) {
       useUi.setState({ repositoryOverview: false });
       window.focus();
     }
-    if (scope !== tab.branchFilter || !tab.graph) void repos.refresh(root, { graph: true });
+    if (scopeChanged || !tab.graph) void loadGraph(root);
   };
 
   const pairs = useMemo(() => branchPairs(refs?.local ?? [], refs?.remote ?? []), [refs]);
-  const local = useMemo(() => selectSidebarBranches(refs?.local??[],branchPrefs,authorQuery,refs?.identityEmail??null,filter), [refs,branchPrefs,authorQuery,filter]);
+  const pinned = [...(refs?.local ?? []), ...(refs?.remote ?? [])].find(branch => branch.fullName === primaryBranch);
+  const local = useMemo(() => selectSidebarBranches(refs?.local??[],branchPrefs,authorQuery,refs?.identityEmail??null,filter)
+    .filter(branch => branch.fullName !== primaryBranch), [refs,branchPrefs,authorQuery,filter,primaryBranch]);
   const remoteByName = useMemo(() => {
     const m = new Map<string, BranchInfo[]>();
     for (const r of refs?.remotes ?? []) m.set(r.name, []);
-    for (const b of selectSidebarBranches(branchPairs(local,refs?.remote??[]).remoteOnly,branchPrefs,authorQuery,refs?.identityEmail??null,filter)) {
+    const pairing = pinned?.fullName.startsWith("refs/heads/") ? [...local, pinned] : local;
+    for (const b of selectSidebarBranches(branchPairs(pairing,refs?.remote??[]).remoteOnly,branchPrefs,authorQuery,refs?.identityEmail??null,filter)) {
+      if (b.fullName === primaryBranch) continue;
       const k = b.remote ?? "origin";
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(b);
     }
     return m;
-  }, [refs,local,branchPrefs,authorQuery,filter]);
+  }, [refs,local,branchPrefs,authorQuery,filter,pinned,primaryBranch]);
   const tags = (refs?.tags ?? []).filter((t) => match(t.name));
   const stashes = (refs?.stashes ?? []).filter((s) => match(s.message));
 
@@ -215,11 +226,13 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               e.currentTarget.focus({ preventScroll: true });
               const modifier = e.ctrlKey || e.metaKey;
               if (modifier && !e.shiftKey) {
-                checkoutFromCurrentHistory.current = null;
+                beforeDoubleClick.current = null;
                 if (!isCur && e.detail <= 1) void A.checkout(root, b.name, kind);
                 return;
               }
-              if (e.detail <= 1) checkoutFromCurrentHistory.current = tab.branchFilter === CURRENT_HISTORY_BRANCH && !e.shiftKey ? b.fullName : null;
+              if (e.detail <= 1) beforeDoubleClick.current = e.shiftKey ? null : {
+                reference: b.fullName, branchFilter: tab.branchFilter, branchContext: tab.branchContext, viewedBranch: tab.viewedBranch,
+              };
               chooseBranch(b, modifier, e.shiftKey && !modifier);
             }}
             onKeyDown={(e) => {
@@ -259,13 +272,13 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
             onMouseLeave={() => highlightBranch(root, null)}
             onDoubleClick={(e) => {
               if (isCur || e.ctrlKey || e.metaKey || e.shiftKey) return;
-              const restoreCurrentHistory = checkoutFromCurrentHistory.current === b.fullName;
-              checkoutFromCurrentHistory.current = null;
+              const previous = beforeDoubleClick.current;
+              beforeDoubleClick.current = null;
               useRepos.getState().patch(root, {
-                ...(restoreCurrentHistory ? { branchFilter: CURRENT_HISTORY_BRANCH } : {}),
+                ...(previous?.reference === b.fullName ? { branchFilter: previous.branchFilter, branchContext: previous.branchContext, viewedBranch: previous.viewedBranch } : {}),
                 selected: null, multi: [], historyJump: null,
               });
-              if (restoreCurrentHistory) void loadGraph(root);
+              if (previous?.reference === b.fullName) void loadGraph(root);
               void A.checkout(root, b.name, kind);
             }}
             onContextMenu={(e) =>
@@ -293,6 +306,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
             {kind === "local" ? <GitBranch size={13} style={{ flex: "none", color: isCur ? "var(--accent)" : undefined }} /> : <Cloud size={13} style={{ flex: "none" }} />}
             <span className="label">{n.name}</span>
             <span className="meta">
+              {primaryBranch === b.fullName && <Flag size={12} className="branch-primary-mark" role="img" aria-label="Primary branch"/>}
               {kind === "local" && <span className={`branch-connection ${connection.kind}`} role="img" aria-label={connection.title} title={connection.title}>{connection.kind === "gone" ? <CloudOff size={13} /> : connection.kind === "paired" ? <Cloud size={13} /> : <HardDrive size={13} />}</span>}
               {kind === "local" && tab.squashMerged.includes(b.name) && (
                 <span className="pill amber" title={`Changes appear integrated in ${current ?? "the current branch"}. Original commit SHAs can still be outside it; review unique history before deletion.`}>
@@ -337,7 +351,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
     </div>,
   ];
 
-  const branchesByRef = useMemo(() => new Map([...local, ...[...remoteByName.values()].flat()].map((branch) => [branch.fullName, branch])), [local, remoteByName]);
+  const branchesByRef = useMemo(() => new Map([...(pinned ? [pinned] : []), ...local, ...[...remoteByName.values()].flat()].map((branch) => [branch.fullName, branch])), [local, remoteByName, pinned]);
   const selected = selection.filter((branch) => branchesByRef.has(branch.fullName));
   const selectedSet = new Set(selected.map((branch) => branch.fullName));
   const branchRows = [
@@ -400,7 +414,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
         ),
   ];
   // Use the complete visible order, including rows outside the virtual viewport.
-  const visibleRefs = (branchRows as ReactElement[]).map((row) => String(row.key)).filter((ref) => branchesByRef.has(ref));
+  const visibleRefs = [...(pinned ? [pinned.fullName] : []), ...(branchRows as ReactElement[]).map(row => String(row.key)).filter(ref => branchesByRef.has(ref))];
 
   return (
     <aside className="sidebar" onKeyDown={(e) => {
@@ -429,6 +443,9 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           <button type="button" className="icon-btn sm" title="Clear branch selection" aria-label="Clear branch selection" onClick={clearSelection}><ClearIcon size={14} /></button>
         </div>}
       </div>
+      {pinned && <div className="sb-primary-branch" role="group" aria-label="Primary branch">
+        {renderTree(buildTree([pinned], 0, true), pinned.fullName.startsWith("refs/heads/") ? "local" : "remote", 0, "")}
+      </div>}
       <VirtualRows
         rows={[
         ...branchRows,

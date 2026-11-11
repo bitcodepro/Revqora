@@ -24,6 +24,7 @@ export interface Settings {
   confirmDiscard: boolean;
   showRemoteBranchesInGraph: boolean;
   hideIncomingByRepo: Record<string, true>;
+  primaryBranchByRepo: Record<string, string>;
   wrapDiff: boolean;
   recent: string[];
   openTabs: string[];
@@ -85,6 +86,7 @@ export const useSettings = create<Settings>()(
       confirmDiscard: true,
       showRemoteBranchesInGraph: true,
       hideIncomingByRepo: {},
+      primaryBranchByRepo: {},
       wrapDiff: false,
       recent: [],
       openTabs: [],

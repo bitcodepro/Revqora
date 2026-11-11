@@ -41,6 +41,7 @@ export interface RepoTab {
   graphLoading: boolean;
   graphHasWorktree: boolean;
   branchFilter: string | null;
+  branchContext?: string | null;
   viewedBranch?: string | null;
   graphLimit: number;
   view: View;
@@ -253,6 +254,7 @@ function persistTabs() {
 
 function includeWorkingChanges(tab: RepoTab, dirty: boolean) {
   const branch = tab.info?.head?.branch;
+  if (tab.branchContext) return dirty && !!branch && tab.branchContext === `refs/heads/${branch}`;
   return dirty && (!tab.branchFilter || tab.branchFilter === CURRENT_HISTORY_BRANCH || !!branch && tab.branchFilter === `refs/heads/${branch}`);
 }
 
@@ -422,9 +424,9 @@ async function refreshOnce(root: string, parts: Parts) {
   void infoP.then(info=>{if(info&&current())useRepos.getState().patch(root,{info});}).catch(()=>{});
   void refsP.then(refs=>{
     if(!refs||!current())return;
-    const state=useRepos.getState(), scope=state.tabs[root]?.branchFilter;
+    const state=useRepos.getState(), scope=state.tabs[root]?.branchContext ?? state.tabs[root]?.branchFilter;
     const missing=scope?.startsWith("refs/") && !refs.local.some(branch=>branch.fullName===scope) && !refs.remote.some(branch=>branch.fullName===scope);
-    state.patch(root,missing?{refs,branchFilter:CURRENT_HISTORY_BRANCH,selected:null,multi:[],historyJump:null}:{refs});
+    state.patch(root,missing?{refs,branchFilter:CURRENT_HISTORY_BRANCH,branchContext:null,viewedBranch:null,selected:null,multi:[],historyJump:null}:{refs});
     if(missing)void loadGraph(root);
   }).catch(()=>{});
   for (const p of [infoP, refsP]) p.catch(() => {}); // rejections are handled below
@@ -480,17 +482,19 @@ async function loadGraphOnce(root: string, includeWorktree: boolean | undefined,
   const tab = store.tabs[root];
   if (!tab) return;
   const dirty = includeWorkingChanges(tab, includeWorktree ?? (!!tab.status && tab.status.files.length > 0));
-  const showIncoming = !useSettings.getState().hideIncomingByRepo[root];
+  const settings = useSettings.getState();
+  const showIncoming = !settings.hideIncomingByRepo[root];
+  const scope = tab.branchContext ? { reference: tab.branchContext, primary: settings.primaryBranchByRepo[repositoryKey(root)] ?? null } : tab.branchFilter;
   store.patch(root, { graphLoading: true });
   try {
     // First paint: the newest commits without the full ordered walk, then the whole history.
     if (!tab.graph) {
-      const quick = await api.graphLoad(root, tab.branchFilter, dirty, 2000, true, showIncoming).catch(() => null);
+      const quick = await api.graphLoad(root, scope, dirty, 2000, true, showIncoming).catch(() => null);
       if (!current()) return;
       const t0 = useRepos.getState().tabs[root];
       if (quick && t0 && !t0.graph) useRepos.getState().patch(root, { graph: quick, graphVersion: t0.graphVersion + 1, graphHasWorktree: dirty });
     }
-    const summary = await api.graphLoad(root, tab.branchFilter, dirty, useRepos.getState().tabs[root]?.graphLimit ?? tab.graphLimit, false, showIncoming);
+    const summary = await api.graphLoad(root, scope, dirty, useRepos.getState().tabs[root]?.graphLimit ?? tab.graphLimit, false, showIncoming);
     if (!current()) return;
     const t = useRepos.getState().tabs[root];
     if (!t) return;

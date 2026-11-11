@@ -185,7 +185,7 @@ export const api = {
     call<string>("commit", { repo, message, opts, expectedState, requireUnsealed }),
   lastMessage: (repo: string) => call<string>("last_message", { repo }),
 
-  graphLoad: (repo: string, branch: string | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean) =>
+  graphLoad: (repo: string, branch: string | { reference: string; primary: string | null } | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean) =>
     call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast, showIncoming }),
   graphRows: (repo: string, start: number, count: number,expectedKey?:string) => call<GraphRow[]>("graph_rows", { repo, start, count,expectedKey }),
   graphFind: (repo: string, oid: string, expectedKey?: string) => call<number | null>("graph_find", { repo, oid, expectedKey }),

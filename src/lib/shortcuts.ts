@@ -113,6 +113,7 @@ export const SHORTCUTS: ShortcutDef[] = [
     ["checkout", "Check out focused branch"],
     ["details", "Show focused branch details"],
     ["compare", "Compare focused branch commits"],
+    ["primary", "Set or clear primary branch"],
     ["merge", "Merge focused branch into current"],
     ["rebase", "Rebase current branch onto focused branch"],
     ["upstream", "Set upstream for focused branch"],
