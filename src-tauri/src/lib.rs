@@ -802,20 +802,23 @@ async fn graph_load(
     let key = repo.clone();
     let fast = fast.unwrap_or(false);
     let prev = state.graphs.lock().get(&repo).cloned();
-    let cache = blocking(move || {
+    let (cache, commit_count) = blocking(move || {
         let (branch, context) = match &branch {
             Some(graph::HistorySelection::Reference(reference)) => (Some(reference.as_str()), None),
             Some(graph::HistorySelection::Context(context)) => (None, Some(context)),
             None => (None, None),
         };
-        graph::build_for_view(
-            &p(&repo),
+        let path = p(&repo);
+        let cache = graph::build_for_view(
+            &path,
             graph::ViewScope { branch, show_incoming: show_incoming.unwrap_or(false), context },
             include_worktree,
             limit.unwrap_or(150_000),
             fast,
             prev.as_deref(),
-        )
+        )?;
+        let count = cache.commit_count(&path, include_worktree);
+        Ok((cache, count))
     })
     .await?;
     let head_index = cache.rows.iter().position(|r| r.is_head);
@@ -823,6 +826,7 @@ async fn graph_load(
         head_oid: cache.head_oid.clone(),
         key: cache.key.clone(),
         total: cache.rows.len(),
+        commit_count,
         max_lanes: cache.max_lanes,
         head_index,
         branch_context: cache.branch_context.clone(),

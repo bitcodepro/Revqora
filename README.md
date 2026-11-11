@@ -11,9 +11,9 @@ React and TypeScript. Distributed under the [MIT license](LICENSE).
 [Quick start](#quick-start) · [Features](#features) · [How to use](#how-to-use) ·
 [Keyboard shortcuts](#keyboard-shortcuts) · [Report an issue](https://github.com/bitcodepro/Revqora/issues)
 
-![Revqora history in the dark theme](docs/screenshots/history-dark.png)
+![Revqora Graph with branch context and nested workspaces and groups](docs/screenshots/history-dark.png)
 
-| Light theme | Conflict editor | Stage layers |
+| Columns in the light theme | Conflict editor | Stage layers |
 | --- | --- | --- |
 | ![Light theme](docs/screenshots/history-light.png) | ![Conflict editor](docs/screenshots/merge-editor.png) | ![Stage layers](docs/screenshots/stage-layers.png) |
 
@@ -115,17 +115,17 @@ or check out anything.
 | Agent Workspace | Run an installed CLI in a reviewed worktree; inspect logs and changes, stop its process tree and keep native task history across restarts. |
 | Workflow Builder | Save ordered checks, commands and reviewed Git/service steps; PR follow-up recipes connect agents, validation, publication, CI and re-review. |
 | MCP server | Connect a local agent to Revqora to inspect repositories and request Git or PR actions for desktop review. |
-| Code exploration | Local syntax-aware summaries for C#, TypeScript/TSX and JSON; literal changed-code search and symbol-body/JSON-subtree history. |
+| Code exploration | Literal changed-code search and symbol-body/JSON-subtree history. |
 | Branch Stacks | Track dependent branches, link PRs, review one-layer restacks, retain recovery and old-parent boundaries after rewrites or squash merges. |
 
 ## How to use
 
 ### Work with many repositories
 
-Show the repository column with **Ctrl+Alt+R**. Search, favorites and project groups
-make large repository sets easier to navigate. Use **Manage library** to organize
-them. The panel shows repository state and incoming/outgoing counts; remote counts
-reflect the last Fetch.
+The four icons at the top left toggle **Workspaces**, **Groups**, **Repositories**
+and **Branches**. Search and favorites help you find workspaces and repositories.
+Open **Repository library and workspaces** from the right side of the toolbar to
+organize saved items. Repository incoming and outgoing counts reflect the last Fetch.
 
 At startup, Revqora opens all saved repositories and restores the last selection.
 Named workspaces keep their own repository set. To restore only previously open
@@ -140,16 +140,22 @@ from the library. Use **Edit repositories** to update a saved set. **Switch** op
 that set with its saved layout. **Add to session** opens the whole set alongside
 your current repositories. Removing a repository from a workspace keeps it in the library.
 
-**Import folder…** can recreate the on-disk folder hierarchy in **Workspaces**.
-Select a workspace to open its direct repositories. Expand it to reach its child
-workspaces. Drag a workspace by its handle onto another workspace or onto **Move
-to top level**. The move updates the library tree and keeps working copies in place.
+**Import folder…** recreates the on-disk folder hierarchy in **Workspaces**, including
+Git repositories inside other repositories. Select a workspace to open its direct
+repositories. Expand it to reach its children. Drag a workspace by its handle onto
+another workspace or onto **Move to top level**. Drag selected repository rows onto
+a workspace to move them. **Ctrl+Z** undoes the most recent repository move.
 
 Use **Ctrl** or **Shift** to select repositories, then right-click and choose
 **Create group**. Enter the name in the sidebar. Open the **Groups** panel to
 filter repositories by a group and its subgroups. Select groups in the same way
-to wrap them in a parent group. Press **F2** on a focused workspace or repository
-row to rename its label.
+to wrap them in a parent group. A repository can belong to multiple groups. Use the
+row's context menu to remove it from one group or from all groups. Workspace and group
+menus also let you move a child to the top level, delete an entry, or hide a group
+from the active workspace. These actions update library metadata and keep working
+copies on disk. Press **F2** to rename the focused workspace, group, repository
+label or branch. **Delete** opens the deletion review for focused workspaces,
+groups or branches.
 
 See [repository workspaces](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md).
 
@@ -157,12 +163,23 @@ See [repository workspaces](https://github.com/bitcodepro/Revqora/blob/main/docs
 
 - **Graph** shows topology; **Review** emphasizes readable commit rows;
   **Columns** arranges commits → changed files → diff.
-- Toggle repository and branch panels with **Ctrl+Alt+R** and **Ctrl+Alt+B**.
+- Toggle Workspaces, Repositories or Branches with **Ctrl+Alt+W**, **Ctrl+Alt+R**
+  or **Ctrl+Alt+B**.
 - Use **Ctrl+Shift+Enter** for focus mode and drag pane dividers to adjust widths.
 - Use **Wrap lines** for long code lines, or keep wrapping off and scroll horizontally.
 - Open a commit's full message with **Message**; **Close** dismisses its preview.
+- Hover a commit in Graph and press **↑ / ↓** to move the highlight. Press **Enter**
+  to open the preview. With a commit selected, **↑ / ↓** change commits and
+  **Ctrl+↑ / Ctrl+↓** change its selected file. In **Changes**, use **↑ / ↓** to
+  move through changed files.
+- Right-click the filename above a diff and choose **Copy name** to copy the full
+  filename, including its extension.
 
-Each history layout remembers its own panel visibility and widths.
+Each history layout remembers its panel visibility and sizes. Resize dialogs from
+the bottom-right corner. To move a supported panel to another display, use
+**Panels in separate windows** on the toolbar or right-click the panel's heading
+and choose **Detach**. Right-click the detached panel's title and choose **Attach**
+to return it to its original place.
 
 ### Create a branch and keep unfinished work
 
@@ -246,6 +263,12 @@ actions stay unavailable until the fresh diff has been checked.
 | **Push** | Publish local commits to the selected remote branch. |
 | **Sync** | Review exact incoming/outgoing commits first. Receive is fast-forward only; sending must be selected explicitly. Dirty, diverged or ambiguous states stop with a reason. |
 
+In a local branch's history, fetched commits waiting for Pull are marked
+**Incoming**. Select one to inspect its diff, or use the eye icon beside
+**History scope** to hide incoming commits. Pull incorporates them into the local
+branch. History initially loads up to 200 commits and extends as you scroll.
+Search includes older commits within the selected scope.
+
 Sync does not resolve divergence by rewriting remote history. Use the individual
 merge/rebase tools when the histories need reconciliation.
 
@@ -255,9 +278,11 @@ Toggle **Show whitespace** (¶) in the diff toolbar to see spaces as dots and ta
 as arrows. This display setting does not ignore whitespace or change file content.
 It is saved and also applies to the built-in editor.
 
-In **Changes**, choose **Edit working file** to edit the current file inside
-Revqora. **Save file** / **Ctrl+S** writes only the working copy; staged content
-stays unchanged. **Undo/Redo** and **Ctrl+Z** operate on the editor draft.
+In **Changes**, choose **Edit working file** to open the full file in the diff
+pane. Added and replaced lines are highlighted, and the editor scrolls to the
+first highlight. **Save file** or **Ctrl+S** writes to the working copy and
+keeps staged content. **Close** returns to the diff. **Undo/Redo** and
+**Ctrl+Z** operate on the editor draft.
 Choose **Spaces per tab** (2/4/8), then **Tabs → spaces** to convert indentation.
 Two leading tabs at width 2 become four spaces. The default scope leaves tabs
 inside strings/content alone; **All tabs in the file** is an explicit alternative.
@@ -332,8 +357,14 @@ See [Conflict Studio](https://github.com/bitcodepro/Revqora/blob/main/docs/CONFL
 5. After the server confirms a merge, use **Source cleanup…** if you want to review
    deletion of the source branch. Cleanup is separate from merging.
 
+Switch **This repository** to **All repositories** to browse PRs across open
+repositories in the current workspace. The list and detail pane work the same
+way, and each request shows its repository and branch names. Repositories with
+zero matching PRs have no rows. Choose **My pull requests** to see your own.
+
 Use the author selector below the PR search field to choose **My pull requests**,
-**All authors**, or a discovered author. Your connected account appears first.
+**All authors**, or a discovered author. The **My pull requests** entry shows your
+resolved author name when available.
 With a token that cannot read its profile, choose your author once or enter your
 hosting username; additional profile permission is not required. Author choices
 are isolated by repository and account. Search and author filters combine. The
@@ -341,7 +372,8 @@ selector collects authors from loaded pages and continues through a few older
 pages when no match is found; **Load more requests** includes further history.
 
 Click the bell next to a PR title to watch that request, or enable **My PRs** in
-the PR Center header to watch open requests you created. Revqora checks watched
+the PR Center header to watch your open requests across repositories in the
+current workspace. The setting follows you when you switch repositories. Revqora checks watched
 requests while you work in other views and shows in-app notifications for new
 approvals, requests for changes, and comments from other authors. The first
 successful check establishes the baseline. If profile access is unavailable,
@@ -525,10 +557,6 @@ MCP access is off on startup. When enabled, local clients can read code and PR t
 
 ### Explore changed code and dependent branches
 
-In a supported C#, TypeScript/TSX or JSON diff, use **Show semantic summary** to
-group changes by declarations or JSON paths. The complete text diff remains
-available. This is syntax analysis, not a compiler or a proof of equivalent behavior.
-
 Open **History Explorer** to search literal changed code or the history of a named
 symbol/JSON subtree. Symbol history follows the current path along a pinned
 first-parent history; limits and unreadable revisions are reported. Use ordinary
@@ -573,7 +601,8 @@ history. Close the application before copying a portable installation.
 Settings also controls auto-fetch, themes, fonts, shortcuts and optional avatars.
 Revqora checks for updates at startup and every hour while open. Turn off
 **Check for updates every hour** in **Settings → Updates** to keep only the
-startup check. Use **Check now** to check manually. An available update appears
+startup check. Use **Check now** in Settings or **Check Updates** in the toolbar
+context menu to check manually. An available update appears
 in the status bar. Revqora verifies package checksums and source metadata before
 installation and preserves portable data.
 Affected older Linux builds need a manual portable-archive update to receive the
@@ -589,8 +618,9 @@ accepts Command for Ctrl-based actions.
 Use **Export shortcuts…** to save a Revqora JSON backup. **Import shortcuts…**
 accepts a Revqora backup, a [VS Code keybindings file](https://code.visualstudio.com/docs/configure/keybindings)
 or a [Rider custom keymap XML](https://www.jetbrains.com/help/rider/Configuring_Keyboard_and_Mouse_Shortcuts.html).
-Review suggested matches and choose which assignments to apply. Revqora uses
-single key combinations and its own shortcut scopes.
+Review suggested matches and choose which assignments to apply. Commands such
+as **Operation log**, group actions and **Copy diff file name** can be assigned
+from this list. Revqora uses single key combinations and its own shortcut scopes.
 
 | Keys | Action |
 | --- | --- |
@@ -598,7 +628,7 @@ single key combinations and its own shortcut scopes.
 | Ctrl+N / Ctrl+Shift+P | Command palette |
 | Ctrl+1 / Ctrl+2 / Ctrl+3 | History / Changes / Pull Requests |
 | Ctrl+Shift+R | Cycle Graph / Review / Columns |
-| Ctrl+Alt+R / Ctrl+Alt+B | Toggle repository / branch panel |
+| Ctrl+Alt+W / Ctrl+Alt+R / Ctrl+Alt+B | Toggle workspace / repository / branch panel |
 | Ctrl+Shift+Enter | Focus on code |
 | Ctrl+B | Create branch |
 | Ctrl+Shift+F | Fetch |
@@ -606,7 +636,10 @@ single key combinations and its own shortcut scopes.
 | Ctrl+Shift+S | Stash |
 | Ctrl+Enter | Commit from the commit form |
 | F5 | Refresh |
-| F2 | Rename the focused workspace, branch, or repository display name |
+| F2 | Rename the focused workspace, group, branch, or repository display name |
+| Delete | Review deletion of the focused workspace, group or branch |
+| ↑ / ↓ | Navigate commits in History or files in Changes |
+| Ctrl+↑ / Ctrl+↓ | Previous / next changed file in the current commit |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous repository tab |
 | Ctrl+W | Close repository tab |
 | Ctrl+, | Settings |
@@ -646,8 +679,8 @@ Demo helpers: `scripts/make-demo-repo.sh` and `scripts/make-big-repo.py`.
 
 ## Documentation and feedback
 
-Until the wiki is available, this README is the starting guide. Detailed behavior
-and limitations are documented in:
+The [Revqora Wiki](https://github.com/bitcodepro/Revqora/wiki) has step-by-step
+guides. See also:
 
 - [Implementation roadmap and provider capabilities](https://github.com/bitcodepro/Revqora/blob/main/docs/ROADMAP.md)
 - [Repository library, workspaces and Sync](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md)

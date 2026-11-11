@@ -3,10 +3,9 @@ import { ChevronDown, ChevronRight, Folder, FolderPlus, FolderTree, GripVertical
 import { treeAncestors, treeSelection, visibleTree } from "../lib/libraryTree";
 import { groupRepositoryRoots, groupsInWorkspace, useLibrary } from "../lib/repositoryLibrary";
 import { useSettings } from "../lib/settings";
-import { matchesShortcut } from "../lib/shortcuts";
-import { contextMenu, toast, useUi } from "../lib/ui";
+import { contextMenu, toast, useUi, type MenuItem } from "../lib/ui";
 import { confirmDialog } from "./dialogs";
-import { isPlainDelete } from "./LibraryMenus";
+import { runMenuShortcut } from "./menus";
 import { Splitter } from "./Overlays";
 
 export function InlineGroupName({ initial = "", label = "Group name", save, cancel }: {
@@ -122,28 +121,20 @@ export function GroupsSidebar() {
         const ids = selected.includes(group.id) ? visible.filter(id => selected.includes(id)) : [group.id];
         const parent = groups.every(item => !ids.includes(item.id) || (item.parentId ?? null) === (group.parentId ?? null)) ? group.parentId : null;
         const rename = () => setEdit({ids: [], rename: group.id});
+        const menu: MenuItem[] = [
+          { label: "Create group", shortcut: "group-create", icon: <FolderPlus size={14}/>, onClick: () => setEdit({ ids, parent }) },
+          { label: "Create subgroup", shortcut: "group-sub", icon: <FolderPlus size={14}/>, onClick: () => setEdit({ ids: [], parent: group.id }) },
+          { label: "Rename group…", shortcut: "renameItem", icon: <Pencil size={14}/>, onClick: rename },
+          ...(group.parentId ? [{ label: "Remove from parent group", shortcut: "group-unlink", icon: <Unlink size={14}/>, onClick: () => move([group.id], null) }] : []),
+          ...(workspace ? [{ label: `Remove from workspace · ${workspace.name}`, shortcut: "group-remove-workspace", icon: <Unlink size={14}/>, onClick: () => removeFromWorkspace(ids) }] : []),
+          { label: ids.length === 1 ? "Delete group…" : `Delete ${ids.length} groups…`, shortcut: "deleteItem", icon: <Trash2 size={14}/>, danger: true, onClick: () => void deleteSelected(ids) },
+        ];
         return <div key={group.id} role="listitem" style={{ "--tree-depth": Math.min(depth, 8) } as CSSProperties}
           className={`repository-item library-tree-row ${active === group.id ? "active" : ""} ${selected.includes(group.id) ? "batch-selected" : ""} ${target === group.id ? "workspace-drop-active" : ""}`}
           {...drop(group.id)} onKeyDown={e => {
             if (e.key === "Escape") setSelected([]);
-            if (isPlainDelete(e)) {
-              e.preventDefault();
-              e.stopPropagation();
-              void deleteSelected(ids);
-              return;
-            }
-            if (e.repeat || !matchesShortcut(e, "renameItem")) return;
-            e.preventDefault();
-            e.stopPropagation();
-            rename();
-          }} onContextMenu={e => contextMenu(e, [
-            { label: "Create group", icon: <FolderPlus size={14}/>, onClick: () => setEdit({ ids, parent }) },
-            { label: "Create subgroup", icon: <FolderPlus size={14}/>, onClick: () => setEdit({ ids: [], parent: group.id }) },
-            { label: "Rename group…", icon: <Pencil size={14}/>, onClick: rename },
-            ...(group.parentId ? [{ label: "Remove from parent group", icon: <Unlink size={14}/>, onClick: () => move([group.id], null) }] : []),
-            ...(workspace ? [{ label: `Remove from workspace · ${workspace.name}`, icon: <Unlink size={14}/>, onClick: () => removeFromWorkspace(ids) }] : []),
-            { label: ids.length === 1 ? "Delete group…" : `Delete ${ids.length} groups…`, icon: <Trash2 size={14}/>, hint: "Delete", danger: true, onClick: () => void deleteSelected(ids) },
-          ])}>
+            runMenuShortcut(e, menu);
+          }} onContextMenu={e => contextMenu(e, menu)}>
           {hasChildren ? <button type="button" className="icon-btn sm" aria-label={`${expanded ? "Collapse" : "Expand"} ${group.name}`} aria-expanded={expanded} onClick={() => useLibrary.getState().collapse(group.id)}>
             {expanded ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}
           </button> : <span className="library-tree-spacer"/>}

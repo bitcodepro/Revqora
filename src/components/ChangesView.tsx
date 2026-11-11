@@ -1,5 +1,5 @@
 import { repositoryFiles } from "./RepositoryFiles";
-import { editWorkingFile } from "./WorkingFileEditor";
+import { WorkingFileEditor } from "./WorkingFileEditor";
 import { useFileListNavigation } from "../lib/useFileListNavigation";
 import {workingDiffSnapshot,rememberWorkingDiff} from "../lib/workingDiffSnapshot";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
@@ -217,7 +217,7 @@ function dragFile(e: React.DragEvent, from: "unstaged" | "staged", path: string)
 // ───────────── component ─────────────
 
 export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConflict: (path: string) => void }) {
-  const fileNavigation = useFileListNavigation();
+  const fileNavigation = useFileListNavigation(true);
   const root = tab.root;
   const interpretation = useSyncExternalStore(
     useCallback((listener) => subscribePreview(root, listener), [root]),
@@ -228,6 +228,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const { mode, layout: { changesListWidth: width }, setLayout: setSettings } = useWorkspaceLayout();
   const opts = useDiffOpts();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [editing, setEditing] = useState<{ root: string; path: string; untracked: boolean; diff: FileDiff | null } | null>(null);
   const [diffResult, setDiffResult] = useState<{ key: string; view: string; loading: boolean; value?: FileDiff; error?: string } | null>(()=>{
     const view=JSON.stringify([root,tab.changeSel,opts]);const value=workingDiffSnapshot(root,view);
     return value?{key:"revalidate",view,loading:true,value}:null;
@@ -327,7 +328,10 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
     return () => { diffRequest.current++; };
   }, [loadDiff]);
 
-  const select = (s: ChangeSel) => patch(root, { changeSel: s });
+  const select = (s: ChangeSel) => {
+    if (editing?.path !== s.path) setEditing(null);
+    patch(root, { changeSel: s });
+  };
 
   const onApply = async (selection: [number, number][], action: LineAction) => {
     if (!diff || !sel || (sel.kind !== "unstaged" && sel.kind !== "staged") || action === "apply") return;
@@ -422,9 +426,14 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
     !!sel && sel.kind === kind && sel.path === path && (kind !== "layer" || (sel.kind === "layer" && sel.layer === layer));
 
   const diffMode = sel?.kind === "unstaged" ? "unstaged" : sel?.kind === "staged" ? "staged" : "readonly";
+  const canEdit = !!sel && sel.kind !== "conflict" && !file?.submodule && file?.worktree !== "D" && !sel.path.endsWith("/") && !pending;
+  const openWorkingEditor = () => {
+    if (canEdit && sel) setEditing({ root, path: sel.path, untracked: !!file?.untracked, diff: sel.kind === "unstaged" ? null : diff });
+  };
   const diffActions = sel && sel.kind !== "conflict" && (
     <>
-      {!file?.submodule && file?.worktree !== "D" && !sel.path.endsWith("/") && <button type="button" className="btn sm" disabled={pending} onClick={()=>void editWorkingFile(root,sel.path)}><Pencil size={13}/> Edit working file</button>}
+      {!file?.submodule && file?.worktree !== "D" && !sel.path.endsWith("/") && <button type="button" className="btn sm" disabled={pending}
+        onClick={openWorkingEditor}><Pencil size={13}/> Edit working file</button>}
       {sel.kind === "unstaged" && (
         <>
           <button className="btn sm" onClick={() => A.stagePaths(root, [sel.path])}>
@@ -451,7 +460,13 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const conflictSel = sel?.kind === "conflict" ? conflicts.find((f) => f.path === sel.path) : undefined;
 
   return (
-    <div className="changes" data-pending={pending} data-diff-context={tab.status?.diffContextToken ?? ""} style={{ ["--changes-w" as string]: `${w}px` }}>
+    <div className="changes" data-pending={pending} data-diff-context={tab.status?.diffContextToken ?? ""} style={{ ["--changes-w" as string]: `${w}px` }} onKeyDown={e => {
+      if (!canEdit || editing || e.repeat || !matchesShortcut(e, "workingFileEdit") ||
+        (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openWorkingEditor();
+    }}>
       <div className="changes-left">
         <div className="changes-lists" {...fileNavigation} aria-label="Changed files">
           <div className="hstack" style={{ justifyContent: "flex-end", padding: "4px 4px 0" }}>
@@ -721,6 +736,9 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
       />
       {conflictSel ? (
         <ConflictSummary root={root} file={conflictSel} onOpen={() => onOpenConflict(conflictSel.path)} />
+      ) : editing?.root === root ? (
+        <WorkingFileEditor key={JSON.stringify([root, editing.path])} root={root} path={editing.path} untracked={editing.untracked}
+          displayDiff={editing.diff} close={() => setEditing(null)} />
       ) : (
         <DiffView
           diff={diff}

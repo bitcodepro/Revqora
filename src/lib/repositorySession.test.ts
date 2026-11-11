@@ -5,7 +5,7 @@ vi.mock("./settings", () => ({ useSettings: { getState: () => saved } }));
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => saved } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() } }));
 import { api } from "./api";
-import { useRepos } from "./store";
+import { INITIAL_GRAPH_COMMITS, useRepos } from "./store";
 import { repositoryKey } from "./repositoryLibrary";
 import type { RepoInfo, StatusSummary } from "./types";
 
@@ -113,7 +113,8 @@ describe("repository session restoration", () => {
     expect(api.graphLoad).not.toHaveBeenCalled();
     expect(api.layersState).not.toHaveBeenCalled();
     useRepos.getState().activate("/background");
-    await vi.waitFor(() => expect(api.graphLoad).toHaveBeenCalledWith("/background", "HEAD", false, 2000, true, true));
+    await vi.waitFor(() => expect(api.graphLoad).toHaveBeenCalledWith("/background", "HEAD", false, INITIAL_GRAPH_COMMITS, false, true));
+    expect(api.graphLoad).toHaveBeenCalledTimes(1);
   });
 
   it("keeps lightweight observations out of mutation guards and reads full proofs for an explicit bulk preview", async () => {

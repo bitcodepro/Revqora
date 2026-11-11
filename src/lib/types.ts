@@ -187,6 +187,7 @@ export interface GraphSummary {
   headOid?: string;
   key: string;
   total: number;
+  commitCount?: number | null;
   maxLanes: number;
   headIndex: number | null;
   branchContext?: { reference: string; base: string | null; recorded: boolean; primary: string | null } | null;

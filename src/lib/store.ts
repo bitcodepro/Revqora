@@ -14,6 +14,7 @@ import { setOperationHooks } from "./operationClient";
 
 export type View = "history" | "changes" | "pulls";
 export const CURRENT_HISTORY_BRANCH = "HEAD";
+export const INITIAL_GRAPH_COMMITS = 200;
 
 export type ChangeSel =
   | { kind: "unstaged"; path: string; untracked: boolean }
@@ -44,6 +45,7 @@ export interface RepoTab {
   branchContext?: string | null;
   viewedBranch?: string | null;
   graphLimit: number;
+  graphScope?: string;
   view: View;
   selected: string | null;
   multi: string[];
@@ -104,7 +106,7 @@ function emptyTab(root: string): RepoTab {
     graphLoading: false,
     graphHasWorktree: false,
     branchFilter: CURRENT_HISTORY_BRANCH,
-    graphLimit: 150_000,
+    graphLimit: INITIAL_GRAPH_COMMITS,
     view: "history",
     selected: null,
     multi: [],
@@ -464,20 +466,31 @@ const graphQueues = new Map<string, Promise<void>>();
 
 // The backend has one graph-row cache per repository. Serialize builds so an
 // older filter cannot finish last and replace the cache behind a newer view.
-export async function loadGraph(root: string, includeWorktree?: boolean) {
+export async function loadGraph(root: string, includeWorktree?: boolean, minimumCommits = INITIAL_GRAPH_COMMITS) {
   const request = (graphRequests.get(root) ?? 0) + 1;
   graphRequests.set(root, request);
   const previous = graphQueues.get(root);
   const job = (async () => {
     if (previous) await previous.catch(() => {});
     if (graphRequests.get(root) !== request) return;
-    await loadGraphOnce(root, includeWorktree, () => graphRequests.get(root) === request);
+    await loadGraphOnce(root, includeWorktree, minimumCommits, () => graphRequests.get(root) === request);
   })();
   graphQueues.set(root, job);
   try { await job; } finally { if (graphQueues.get(root) === job) graphQueues.delete(root); }
 }
 
-async function loadGraphOnce(root: string, includeWorktree: boolean | undefined, current: () => boolean) {
+export function hasMoreHistory(tab: RepoTab) {
+  const loaded = (tab.graph?.total ?? 0) - Number(tab.graphHasWorktree);
+  return loaded >= tab.graphLimit && (tab.graph?.commitCount == null || loaded < tab.graph.commitCount);
+}
+
+export async function loadEntireHistory(root: string) {
+  await graphQueues.get(root);
+  const tab = useRepos.getState().tabs[root];
+  if (tab && hasMoreHistory(tab)) await loadGraph(root, undefined, tab.graph?.commitCount ?? 2_147_483_647);
+}
+
+async function loadGraphOnce(root: string, includeWorktree: boolean | undefined, minimumCommits: number, current: () => boolean) {
   const store = useRepos.getState();
   const tab = store.tabs[root];
   if (!tab) return;
@@ -485,22 +498,18 @@ async function loadGraphOnce(root: string, includeWorktree: boolean | undefined,
   const settings = useSettings.getState();
   const showIncoming = !settings.hideIncomingByRepo[root];
   const scope = tab.branchContext ? { reference: tab.branchContext, primary: settings.primaryBranchByRepo[repositoryKey(root)] ?? null } : tab.branchFilter;
+  const head = tab.info?.head;
+  const scopeKey = JSON.stringify([scope, showIncoming, scope === CURRENT_HISTORY_BRANCH ? (head?.branch ?? head?.oid) : null]);
+  const limit = Math.max(tab.graphScope === scopeKey ? tab.graphLimit : INITIAL_GRAPH_COMMITS, minimumCommits);
   store.patch(root, { graphLoading: true });
   try {
-    // First paint: the newest commits without the full ordered walk, then the whole history.
-    if (!tab.graph) {
-      const quick = await api.graphLoad(root, scope, dirty, 2000, true, showIncoming).catch(() => null);
-      if (!current()) return;
-      const t0 = useRepos.getState().tabs[root];
-      if (quick && t0 && !t0.graph) useRepos.getState().patch(root, { graph: quick, graphVersion: t0.graphVersion + 1, graphHasWorktree: dirty });
-    }
-    const summary = await api.graphLoad(root, scope, dirty, useRepos.getState().tabs[root]?.graphLimit ?? tab.graphLimit, false, showIncoming);
+    const summary = await api.graphLoad(root, scope, dirty, limit, false, showIncoming);
     if (!current()) return;
     const t = useRepos.getState().tabs[root];
     if (!t) return;
     let selected = t.selected;
     if (selected === WORKTREE && !dirty) selected = null;
-    useRepos.getState().patch(root, { graph: summary, graphVersion: t.graphVersion + 1, graphLoading: false, graphHasWorktree: dirty, selected });
+    useRepos.getState().patch(root, { graph: summary, graphScope: scopeKey, graphLimit: limit, graphVersion: t.graphVersion + 1, graphLoading: false, graphHasWorktree: dirty, selected });
   } catch (e) {
     if (!current()) return;
     useRepos.getState().patch(root, { graphLoading: false, error: errorMessage(e) });

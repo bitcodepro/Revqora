@@ -175,12 +175,12 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
     }
   };
 
-  const deleteSelected = async () => {
-    if (cleanupPending.current || !selected.length || selected.length > 50) return;
+  const deleteSelected = async (branches = selected) => {
+    if (cleanupPending.current || !branches.length || branches.length > 50) return;
     cleanupPending.current = true;
     try {
-      if (selected.length === 1) {
-        const branch = selected[0];
+      if (branches.length === 1) {
+        const branch = branches[0];
         if (branch.fullName.startsWith("refs/heads/")) {
           if (branch.name !== current) await A.deleteBranch(root, branch.name);
         } else {
@@ -193,7 +193,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
       const preferredBase = bases.find((branch) => branch.reference === preferences.base)?.reference;
       await reviewBranchCleanup({
         root, rules: preferences.protections, bases,
-        initial: selected.map(({ fullName: reference, oid }) => ({ reference, oid, mode: reference.startsWith("refs/heads/") ? "local" : "remote" })),
+        initial: branches.map(({ fullName: reference, oid }) => ({ reference, oid, mode: reference.startsWith("refs/heads/") ? "local" : "remote" })),
         initialBase: preferredBase ?? (current ? `refs/heads/${current}` : ""),
       });
     } finally {
@@ -241,7 +241,13 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                 if (!e.repeat) void (kind === "local" ? A.renameBranch(root, b.name) : renameRemoteBranch(root, b.name));
                 return;
               }
-              if ((e.ctrlKey || e.altKey || e.metaKey || /^F\d+$/.test(e.key)) && runMenuShortcut(e, branchMenu(root, b.name, kind), "branch-")) return;
+              if (matchesShortcut(e, "deleteItem") || matchesShortcut(e, "branch-delete")) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!e.repeat) void deleteSelected(selected.some(branch => branch.fullName === b.fullName) ? selected : [b]);
+                return;
+              }
+              if (runMenuShortcut(e, branchMenu(root, b.name, kind), "branch-")) return;
               if (e.key !== "Enter" && e.key !== " ") return;
               e.preventDefault();
               chooseBranch(b, e.ctrlKey || e.metaKey, e.shiftKey);
@@ -424,11 +430,6 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
         e.preventDefault();
         e.stopPropagation();
         clearSelection();
-      }
-      if (e.key === "Delete" && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        void deleteSelected();
       }
     }}>
       <div className="branches-heading" onContextMenu={panelMenu}><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={onHide ?? (() => setLayout({ branchesOpen: false }))}><ClearIcon size={13} /></button></div>

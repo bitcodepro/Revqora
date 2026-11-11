@@ -6,7 +6,7 @@ export interface ShortcutDef {
   label: string;
   description: string;
   default: string;
-  scope?: "commit" | "diff" | "history" | "files" | "conflicts" | "editor" | "navigation";
+  scope?: "commit" | "diff" | "history" | "files" | "fileList" | "conflicts" | "editor" | "navigation";
 }
 
 export const PANEL_NAMES = {
@@ -66,7 +66,18 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "palette", label: "Command palette", description: "Search actions, branches and repositories.", default: "Ctrl+N" },
   { id: "open", label: "Open repository", description: "Open a local Git repository.", default: "Ctrl+O" },
   { id: "refresh", label: "Refresh", description: "Reload the current repository or overview.", default: "F5" },
-  { id: "renameItem", label: "Rename focused item", description: "Rename a workspace, branch or repository label from its navigation panel.", default: "F2", scope: "navigation" },
+  { id: "renameItem", label: "Rename focused item", description: "Rename a focused workspace, group, branch or repository label.", default: "F2", scope: "navigation" },
+  { id: "deleteItem", label: "Delete focused item", description: "Review deletion of the selected workspace, groups or branches.", default: "Delete", scope: "navigation" },
+  ...[
+    ["workspace-sub", "Create sub-workspace"],
+    ["workspace-unlink", "Remove workspace from its parent"],
+    ["group-create", "Create group from selected repositories or groups"],
+    ["group-sub", "Create subgroup"],
+    ["group-unlink", "Remove group from its parent"],
+    ["group-remove-workspace", "Remove groups from current workspace"],
+    ["repo-remove-group", "Remove repositories from the current group"],
+    ["repo-remove-all-groups", "Remove repositories from all groups"],
+  ].map(([id, label]) => ({ id, label, description: "Runs from the focused row in Workspaces, Groups or Repositories.", default: "", scope: "navigation" as const })),
   { id: "history", label: "Show history", description: "Open the commit history for the current repository.", default: "Ctrl+1" },
   { id: "changes", label: "Show changes", description: "Show staged and unstaged changes.", default: "Ctrl+2" },
   { id: "pulls", label: "Show pull requests", description: "Open the repository’s pull or merge requests.", default: "Ctrl+3" },
@@ -95,19 +106,41 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "diffNext", label: "Next change", description: "Jump to the next changed block in the diff.", default: "F7", scope: "diff" },
   { id: "diffPrevious", label: "Previous change", description: "Jump to the previous changed block in the diff.", default: "Shift+F7", scope: "diff" },
   { id: "diffFind", label: "Find in diff", description: "Open text search for the focused diff.", default: "Ctrl+F", scope: "diff" },
+  { id: "diffCopyName", label: "Copy diff file name", description: "Copy the full name of the file displayed in the focused diff.", default: "", scope: "diff" },
   ...["Stage", "Unstage", "Stash", "Discard", "Apply"].flatMap(action => [
     { id: `diff-${action.toLowerCase()}-hunk`, label: `${action} hunk`, description: `${action} the focused block of changes in the diff.`, default: "", scope: "diff" as const },
     { id: `diff-${action.toLowerCase()}-lines`, label: `${action} selected lines`, description: `${action} only the selected lines in the diff.`, default: "", scope: "diff" as const },
   ]),
   { id: "historyFind", label: "Find commits", description: "Focus the search field in History.", default: "Ctrl+F", scope: "history" },
-  { id: "previewNextFile", label: "Next changed file", description: "Preview the next file from the diff or commit list.", default: "Alt+ArrowDown", scope: "files" },
-  { id: "previewPreviousFile", label: "Previous changed file", description: "Preview the previous file from the diff or commit list.", default: "Alt+ArrowUp", scope: "files" },
+  ...[
+    ["historyNextCommit", "Next commit", "ArrowDown"],
+    ["historyPreviousCommit", "Previous commit", "ArrowUp"],
+    ["historyOpenCommit", "Open highlighted commit", "Enter"],
+    ["historyNextPage", "Next page of commits", "PageDown"],
+    ["historyPreviousPage", "Previous page of commits", "PageUp"],
+    ["historyFirstCommit", "First commit", "Home"],
+    ["historyLastCommit", "Last commit", "End"],
+    ["historyCopyHash", "Copy selected commit hash", "Ctrl+C"],
+  ].map(([id, label, key]) => ({ id, label, description: "Runs from the commit list in History.", default: key, scope: "history" as const })),
+  { id: "previewNextFile", label: "Next changed file", description: "Preview the next changed file.", default: "Ctrl+ArrowDown", scope: "files" },
+  { id: "previewPreviousFile", label: "Previous changed file", description: "Preview the previous changed file.", default: "Ctrl+ArrowUp", scope: "files" },
+  { id: "previewNextFileAlternate", label: "Next changed file (alternate)", description: "Preview the next changed file with a second binding.", default: "Alt+ArrowDown", scope: "files" },
+  { id: "previewPreviousFileAlternate", label: "Previous changed file (alternate)", description: "Preview the previous changed file with a second binding.", default: "Alt+ArrowUp", scope: "files" },
+  ...[
+    ["fileListNext", "Next file in the file list", "ArrowDown"],
+    ["fileListPrevious", "Previous file in the file list", "ArrowUp"],
+    ["fileListFirst", "First file in the file list", "Home"],
+    ["fileListLast", "Last file in the file list", "End"],
+  ].map(([id, label, key]) => ({ id, label, description: "Runs from Changes or a focused file list.", default: key, scope: "fileList" as const })),
   { id: "conflictNext", label: "Next conflict", description: "Jump to the next conflict in the merge editor.", default: "Alt+ArrowDown", scope: "conflicts" },
   { id: "conflictPrevious", label: "Previous conflict", description: "Jump to the previous conflict in the merge editor.", default: "Alt+ArrowUp", scope: "conflicts" },
   { id: "conflictNextFile", label: "Next conflicted file", description: "Open the next conflicted file in the merge editor.", default: "Alt+PageDown", scope: "conflicts" },
   { id: "conflictPreviousFile", label: "Previous conflicted file", description: "Open the previous conflicted file in the merge editor.", default: "Alt+PageUp", scope: "conflicts" },
   { id: "conflictSave", label: "Save merge result", description: "Save and stage the current merge result.", default: "Ctrl+S", scope: "conflicts" },
   { id: "workingFileSave", label: "Save working file", description: "Save the file in the working-file editor.", default: "Ctrl+S", scope: "editor" },
+  { id: "workingFileEdit", label: "Edit working file", description: "Edit the working copy of the selected file from Changes.", default: "", scope: "files" },
+  { id: "workingFileClose", label: "Close working file editor", description: "Return to the diff for the selected file.", default: "Escape", scope: "editor" },
+  { id: "workingFileReload", label: "Reload working file from disk", description: "Read the current file from disk in the working-file editor.", default: "", scope: "editor" },
   { id: "workspaceUndo", label: "Undo workspace move", description: "Return moved repositories to their previous workspaces.", default: "Ctrl+Z", scope: "navigation" },
   ...[
     ["checkout", "Check out focused branch"],
@@ -192,6 +225,14 @@ export function bindingFor(id: string, overrides = useSettings.getState().shortc
   return overrides[id] ?? SHORTCUTS.find((s) => s.id === id)?.default ?? "";
 }
 
+export function acceptsPlainShortcut(id: string, key: string) {
+  const action = SHORTCUTS.find(item => item.id === id);
+  if (!action?.scope) return false;
+  if (action.default === key) return true;
+  return (action.scope === "history" || action.scope === "fileList") &&
+    /^(ArrowUp|ArrowDown|PageUp|PageDown|Home|End|Enter)$/.test(key);
+}
+
 /** Resolve a global action, trying the produced key before its unshifted position. */
 export function actionFor(event: ShortcutEvent): string | null {
   const o = useSettings.getState().shortcuts;
@@ -229,6 +270,7 @@ export function shortcutConflict(id: string, combo: string, overrides: Record<st
     if (key === "ctrl+f" && ((id === "diffFind" && shortcut.id === "historyFind")
       || (id === "historyFind" && shortcut.id === "diffFind"))) return false;
     return !scope || !shortcut.scope || scope === shortcut.scope
+      || (scope === "fileList" && shortcut.scope === "files") || (scope === "files" && shortcut.scope === "fileList")
       || (previewScopes.has(scope) && previewScopes.has(shortcut.scope));
   });
 }

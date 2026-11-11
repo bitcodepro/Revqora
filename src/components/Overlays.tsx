@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { AlertCircle, CheckCircle2, ChevronRight, Info, TriangleAlert, X } from "lucide-react";
 import { useUi, type MenuItem } from "../lib/ui";
 import { surfaceDocument } from "../lib/uiSurfaces";
+import { bindingFor, prettyCombo } from "../lib/shortcuts";
 
 export function ContextMenuHost() {
   const menu = useUi((s) => s.menu);
@@ -45,8 +46,9 @@ function Menu({ x, y, items, onDone }: { x: number; y: number; items: MenuItem[]
   return (
     <>
       <div className="ctx-menu" ref={ref} style={{ left: pos.x, top: pos.y }} onContextMenu={(e) => e.preventDefault()}>
-        {items.map((it, i) =>
-          it.separator ? (
+        {items.map((it, i) => {
+          const hint = it.hint ?? (it.shortcut ? prettyCombo(bindingFor(it.shortcut)) : "");
+          return it.separator ? (
             <div key={i} className="ctx-sep" />
           ) : (
             <div
@@ -66,10 +68,10 @@ function Menu({ x, y, items, onDone }: { x: number; y: number; items: MenuItem[]
             >
               <span className="ic">{it.checked ? <CheckCircle2 size={14} /> : it.icon}</span>
               <span>{it.label}</span>
-              {it.children ? <ChevronRight size={14} className="hint" /> : it.hint ? <span className="hint">{it.hint}</span> : null}
+              {it.children ? <ChevronRight size={14} className="hint" /> : hint && <span className="hint">{hint}</span>}
             </div>
-          ),
-        )}
+          );
+        })}
       </div>
       {sub && items[sub.i]?.children && <Menu x={sub.x} y={sub.y} items={items[sub.i].children!} onDone={onDone} />}
     </>

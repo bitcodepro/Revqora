@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -14,10 +14,10 @@ import {
 import { api, newOpId } from "../lib/api";
 import {cachedGraphRows,rememberGraphRows,rememberGraphPosition} from "../lib/graphRowsCache";
 import * as A from "../lib/actions";
-import { CURRENT_HISTORY_BRANCH, loadGraph, useRepos, type RepoTab } from "../lib/store";
+import { CURRENT_HISTORY_BRANCH, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
 import { repositoryKey } from "../lib/repositoryLibrary";
-import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
+import { actionFor, matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
 import type { GraphLaneAnchor, GraphRow, GraphSummary, RefLabel, SearchMode, Seg } from "../lib/types";
 import { WORKTREE } from "../lib/types";
@@ -80,6 +80,7 @@ interface RowProps {
   lanes: number;
   columns: { author: boolean; date: boolean; hash: boolean };
   selected: boolean;
+  keyboardHighlighted: boolean;
   multi: boolean;
   match: boolean;
   dim: boolean;
@@ -217,7 +218,8 @@ ${r.oid}`
   }
   return (
     <div
-      className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""} ${p.pinnedLaneMember ? "lane-member" : ""} ${branchStyle} ${r.incoming ? "incoming" : ""}`}
+      className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""} ${p.pinnedLaneMember ? "lane-member" : ""} ${branchStyle} ${r.incoming ? "incoming" : ""} ${p.keyboardHighlighted ? "keyboard-highlighted" : ""}`}
+      data-commit-index={wip ? undefined : r.index}
       style={{ top, height: p.rowH, ...anim, ["--pinned-lane-color" as string]: p.pinnedLaneMember ? nodeColor : undefined }}
       onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
       onContextMenu={(e) => p.onMenu(r, e)}
@@ -409,6 +411,9 @@ export function GraphView({
   const dateStyle = useSettings((s) => s.dateStyle);
   const showRemote = useSettings((s) => s.showRemoteBranchesInGraph);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const hoveredCommit = useRef<{ index: number; version: number; x: number; y: number } | null>(null);
+  const [keyboardCommit, setKeyboardCommit] = useState<{ index: number; version: number } | null>(null);
+  const keyboardIndex = !compact && keyboardCommit?.version === tab.graphVersion ? keyboardCommit.index : null;
   const [restoredRows]=useState(()=>cachedGraphRows(root,tab.graphVersion));
   const cache = useRef(restoredRows?.rows??new Map<number, GraphRow>());
   const cacheKey = useRef(restoredRows ? summary?.key : undefined);
@@ -462,19 +467,20 @@ export function GraphView({
   const matchSet = useMemo(() => new Set(results), [results]);
 
   const total = summary?.total ?? 0;
+  const commitCount = summary?.commitCount ?? total - Number(tab.graphHasWorktree);
 
   // Offer git's commit-graph cache for large histories (once per repository).
   const dismissed = useSettings((s) => s.commitGraphDismissed.includes(root));
   const [cgMissing, setCgMissing] = useState(false);
   const [cgBusy, setCgBusy] = useState(false);
   useEffect(() => {
-    if (total > 20000 && !dismissed)
+    if (commitCount > 20000 && !dismissed)
       api.commitGraphStatus(root).then(
         (ok) => setCgMissing(!ok),
         () => {},
       );
     else setCgMissing(false);
-  }, [root, total > 20000, dismissed]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [root, commitCount > 20000, dismissed]); // eslint-disable-line react-hooks/exhaustive-deps
   const writeCommitGraph = async () => {
     const id = newOpId();
     setCgBusy(true);
@@ -591,15 +597,14 @@ export function GraphView({
 
   const rowAt = (i: number) => cache.current.get(i);
 
-  // Reaching the end of a capped history loads the next chunk.
-  const limitHit = !!summary && total - Number(tab.graphHasWorktree) >= tab.graphLimit;
+  const moreHistory = hasMoreHistory(tab);
+  const expandedFrom = useRef<string | undefined>(undefined);
+  // Extend the ordered prefix as the user approaches the end of the loaded rows.
   useEffect(() => {
-    if (!limitHit || tab.graphLoading) return;
-    if (last >= count - 50) {
-      patch(root, { graphLimit: tab.graphLimit + 150_000 });
-      setTimeout(() => loadGraph(root), 0);
-    }
-  }, [limitHit, last, count, tab.graphLoading, tab.graphLimit, root, patch]);
+    if (!moreHistory || tab.graphLoading || indexList || scrollTop <= 0 || last < count - 24 || expandedFrom.current === graphKey) return;
+    expandedFrom.current = graphKey;
+    void loadGraph(root, undefined, Math.min(summary?.commitCount ?? Infinity, tab.graphLimit + INITIAL_GRAPH_COMMITS));
+  }, [moreHistory, last, count, graphKey, indexList, scrollTop, summary?.commitCount, tab.graphLoading, tab.graphLimit, root]);
   const selectedIndex = useMemo(() => {
     if (!tab.selected) return -1;
     for (const [i, r] of cache.current) if (r.oid === tab.selected) return i;
@@ -638,6 +643,13 @@ export function GraphView({
     void api.graphFind(root, oid, summary.key).then((index) => {
       const latest = useRepos.getState().tabs[root];
       if (!current || latest?.graph?.key !== summary.key || latest.historyJump !== oid) return;
+      if (index == null && hasMoreHistory(latest)) {
+        void loadEntireHistory(root).then(() => {
+          const state = useRepos.getState().tabs[root];
+          if (state?.graph?.key === summary.key && state.historyJump === oid && !state.graphLoading) patch(root, { historyJump: null });
+        });
+        return;
+      }
       if ((latest.selected === oid || latest.selected === null) && index != null) {
         if (!scrollToIndex(index, true)) return;
         anchor.current = latest.selected === oid ? index : null;
@@ -649,19 +661,20 @@ export function GraphView({
 
   const selectIndex = useCallback(
     async (idx: number) => {
-      if (idx < 0 || idx >= total) return;
-      let r = rowAt(idx);
+      const current = useRepos.getState().tabs[root];
+      if (!current?.graph || idx < 0 || idx >= current.graph.total) return;
+      const key = current.graph.key;
+      let r = cacheVersion.current === current.graphVersion ? cache.current.get(idx) : undefined;
       if (!r) {
-        const rows = await api.graphRows(root, idx, 1,useRepos.getState().tabs[root]?.graph?.key).catch(() => []);
+        const rows = await api.graphRows(root, idx, 1, key).catch(() => []);
         r = rows[0];
       }
-      if (!r) return;
+      if (!r || useRepos.getState().tabs[root]?.graph?.key !== key) return;
       patch(root, { selected: r.oid, multi: [] });
       anchor.current = idx;
       scrollToIndex(idx);
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [root, total, scrollToIndex],
+    [root, patch, scrollToIndex],
   );
 
   const onSelect = useCallback(
@@ -755,6 +768,10 @@ export function GraphView({
         const latest = useRepos.getState().tabs[root];
         if(request!==jump||latest?.selected!==oid)return;
         if (idx === null || idx === undefined) {
+          if (hasMoreHistory(latest)) {
+            patch(root, { historyJump: oid });
+            return;
+          }
           if (latest.branchFilter || latest.branchContext) {
             patch(root, { branchFilter: null, branchContext: null, viewedBranch: null, historyJump: oid });
             void loadGraph(root);
@@ -808,6 +825,8 @@ export function GraphView({
     const t = setTimeout(async () => {
       setSearching(true);
       try {
+        await loadEntireHistory(root);
+        if (!current) return;
         const res = await api.graphSearch(root, query, mode);
         if (!current) return;
         setResults(res);
@@ -823,7 +842,7 @@ export function GraphView({
     }, delay);
     return () => { current = false; clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, mode, root, tab.graphVersion]);
+  }, [query, mode, root, tab.branchFilter, tab.branchContext, tab.graphVersion]);
 
   const gotoResult = (dir: number) => {
     if (!results.length) return;
@@ -853,18 +872,60 @@ export function GraphView({
     return () => view.removeEventListener("keydown", onKey);
   }, [root, tab.view]);
 
+  const navigateHoveredCommit = (e: KeyboardEvent) => {
+    if (compact || tab.selected || e.defaultPrevented || actionFor(e)) return false;
+    const el = scrollRef.current;
+    if (!el || el.ownerDocument.querySelector(".modal, .ctx-menu")) return false;
+    const focused = el.ownerDocument.activeElement;
+    if (focused !== el && focused?.closest("input, textarea, select, button, a[href], [contenteditable], [role=combobox]")) return false;
+
+    if (e.key === "Escape" && keyboardIndex !== null) {
+      setKeyboardCommit(null);
+    } else if (matchesShortcut(e, "historyOpenCommit") && keyboardIndex !== null && rowAt(keyboardIndex)) {
+      void selectIndex(keyboardIndex);
+      setKeyboardCommit(null);
+    } else {
+      const nextCommit = matchesShortcut(e, "historyNextCommit");
+      if (!nextCommit && !matchesShortcut(e, "historyPreviousCommit")) return false;
+      const hover = hoveredCommit.current;
+      const current = keyboardIndex ?? (hover?.version === tab.graphVersion ? hover.index : null);
+      if (current === null) return false;
+      const position = indexList ? indexList.indexOf(current) : current;
+      const firstCommit = !indexList && tab.graphHasWorktree ? 1 : 0;
+      if (position < firstCommit || position >= count) return false;
+      const next = Math.max(firstCommit, Math.min(count - 1, position + (nextCommit ? 1 : -1)));
+      const index = indexList ? indexList[next] : next;
+      setKeyboardCommit({ index, version: tab.graphVersion });
+      el.focus({ preventScroll: true });
+      scrollToIndex(index);
+    }
+    e.preventDefault();
+    return true;
+  };
+
+  const navigateUnfocusedGraph = useEffectEvent((e: KeyboardEvent) => {
+    if (hoveredCommit.current && e.target !== scrollRef.current) navigateHoveredCommit(e);
+  });
+  useEffect(() => {
+    if (compact) return;
+    const view = scrollRef.current?.ownerDocument.defaultView;
+    const listener = (e: KeyboardEvent) => navigateUnfocusedGraph(e);
+    view?.addEventListener("keydown", listener);
+    return () => view?.removeEventListener("keydown", listener);
+  }, [compact]);
+
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.defaultPrevented || actionFor(e)) return;
+    if (navigateHoveredCommit(e.nativeEvent)) return;
     if (tab.selected && tab.selected !== WORKTREE && (e.ctrlKey || e.altKey || e.metaKey || /^F\d+$/.test(e.key))) {
       const row = [...cache.current.values()].find(candidate => candidate.oid === tab.selected);
       if (row) {
         const multi = tab.multi.includes(row.oid) ? tab.multi : [];
         const selected = [...cache.current.values()].filter(candidate => multi.includes(candidate.oid));
         if (selected.length !== multi.length) return;
-        if (runMenuShortcut(e, commitMenu(root, row, selected.length > 1 ? selected : [row]), "commit-")) return;
+      if (runMenuShortcut(e, commitMenu(root, row, selected.length > 1 ? selected : [row]), "commit-")) return;
       }
     }
-    // Leave modified navigation keys to file previews and other shortcuts.
-    if ((e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) && (e.key.startsWith("Arrow") || ["PageUp", "PageDown", "Home", "End"].includes(e.key))) return;
     const cur =
       selectedIndex >= 0 ? selectedIndex : tab.selected === WORKTREE ? 0 : -1;
     const pageRows = Math.max(1, Math.floor(viewH / rowH) - 1);
@@ -874,29 +935,33 @@ export function GraphView({
     } else if (e.key === "Escape" && tab.selected) {
       e.preventDefault();
       useRepos.getState().patch(tab.root, { selected: null, multi: [] });
-    } else if (e.key === "ArrowDown") {
+    } else if (matchesShortcut(e, "historyNextCommit")) {
       e.preventDefault();
       selectIndex(Math.min(total - 1, cur + 1));
-    } else if (e.key === "ArrowUp") {
+    } else if (matchesShortcut(e, "historyPreviousCommit")) {
       e.preventDefault();
       selectIndex(Math.max(0, cur - 1));
-    } else if (e.key === "PageDown") {
+    } else if (matchesShortcut(e, "historyNextPage")) {
       e.preventDefault();
       selectIndex(Math.min(total - 1, cur + pageRows));
-    } else if (e.key === "PageUp") {
+    } else if (matchesShortcut(e, "historyPreviousPage")) {
       e.preventDefault();
       selectIndex(Math.max(0, cur - pageRows));
-    } else if (e.key === "Home") {
+    } else if (matchesShortcut(e, "historyFirstCommit")) {
       e.preventDefault();
       selectIndex(0);
-    } else if (e.key === "End") {
+    } else if (matchesShortcut(e, "historyLastCommit")) {
       e.preventDefault();
-      selectIndex(total - 1);
-    } else if (e.key === "Enter" && tab.selected === WORKTREE) {
+      void loadEntireHistory(root).then(() => {
+        const latest = useRepos.getState().tabs[root];
+        if (latest && latest.branchFilter === tab.branchFilter && latest.branchContext === tab.branchContext && latest.selected === tab.selected && latest.graph) {
+          void selectIndex(latest.graph.total - 1);
+        }
+      });
+    } else if (matchesShortcut(e, "historyOpenCommit") && tab.selected === WORKTREE) {
       onEnterChanges();
     } else if (
-      (e.ctrlKey || e.metaKey) &&
-      e.key.toLowerCase() === "c" &&
+      matchesShortcut(e, "historyCopyHash") &&
       tab.selected &&
       tab.selected !== WORKTREE
     ) {
@@ -920,6 +985,7 @@ export function GraphView({
           lanes={lanes}
           columns={columns}
           selected={!!r && r.oid === tab.selected}
+          keyboardHighlighted={idx === keyboardIndex}
           multi={!!r && multiSet.has(r.oid)}
           match={matchSet.has(idx)}
           dim={
@@ -1066,7 +1132,7 @@ export function GraphView({
         <div className="spacer" />
         <span className="faint" style={{ fontSize: "var(--fs-xs)" }}>
           {total
-            ? `${(total - (tab.graphHasWorktree ? 1 : 0)).toLocaleString()} commits`
+            ? `${commitCount.toLocaleString()}${summary?.commitCount == null && moreHistory ? "+" : ""} commits`
             : ""}
           {tab.graphLoading && (
             <Loader2
@@ -1084,7 +1150,7 @@ export function GraphView({
         >
           <Zap size={15} />
           <div style={{ flex: 1 }}>
-            This history has {total.toLocaleString()} commits. Writing git's{" "}
+            This history has {commitCount.toLocaleString()} commits. Writing git's{" "}
             <b>commit-graph</b> cache makes ordering and branch comparisons
             faster. It only adds a file under .git and changes nothing else.
           </div>
@@ -1221,10 +1287,21 @@ export function GraphView({
       )}
       <div
         ref={scrollRef}
-        className={`graph-scroll ${drawing ? "drawing" : ""}`}
+        className={`graph-scroll ${drawing ? "drawing" : ""} ${keyboardIndex !== null ? "keyboard-navigation" : ""}`}
         tabIndex={0}
         onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
         onKeyDown={onKeyDown}
+        onPointerMove={e => {
+          if (compact) return;
+          const previous = hoveredCommit.current;
+          if (previous?.x === e.clientX && previous.y === e.clientY) return;
+          const row = (e.target as Element).closest<HTMLElement>("[data-commit-index]");
+          hoveredCommit.current = row ? { index: Number(row.dataset.commitIndex), version: tab.graphVersion, x: e.clientX, y: e.clientY } : null;
+          if (keyboardIndex !== null) setKeyboardCommit(null);
+        }}
+        onPointerLeave={() => { hoveredCommit.current = null; }}
+        onPointerDown={() => { hoveredCommit.current = null; setKeyboardCommit(null); }}
+        onBlur={() => setKeyboardCommit(null)}
         data-hl={hl !== null ? hl : undefined}
         data-pinned-lane={pinned ?? undefined}
       >

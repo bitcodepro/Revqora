@@ -23,9 +23,10 @@ import { usePanelTitleMenu } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
 import { matchesShortcut, prettyCombo, bindingFor } from "../lib/shortcuts";
 import { repositoryMembershipMenu } from "./LibraryMenus";
+import { runMenuShortcut } from "./menus";
 
 const repositoryMenu = (root: string, name: string, roots: string[], groupId: string | undefined, createGroup: () => void) => [
-  { label: "Create group", icon: <FolderPlus size={14}/>, onClick: createGroup },
+  { label: "Create group", shortcut: "group-create", icon: <FolderPlus size={14}/>, onClick: createGroup },
   ...repositoryMembershipMenu(roots, groupId),
   { label: "Rename repository…", icon: <Pencil size={14}/>, hint: prettyCombo(bindingFor("renameItem")), onClick: () => void renameRepositoryDialog(root) },
   ...namePathMenu(name, root, null),
@@ -36,6 +37,8 @@ const renameOnKey = (e: React.KeyboardEvent, root: string) => {
   e.stopPropagation();
   void renameRepositoryDialog(root);
 };
+const matchesGroupShortcut = (e: React.KeyboardEvent) => !e.repeat &&
+  ["group-create", "repo-remove-group", "repo-remove-all-groups"].some(id => matchesShortcut(e, id));
 
 let running = false;
 let choosingPull = false;
@@ -246,7 +249,12 @@ export function RepositorySidebar() {
         {sections.filter((group) => !workspace || group.roots.length > 0 || inlineGroups.some(({entry}) => entry.id === group.id)).map((group) => <div key={group.id}>{inlineGroups.length > 0 && <button type="button" className="repository-group" style={{ paddingInlineStart: 8 + Math.min(group.depth, 8) * 10 }} aria-expanded={!group.collapsed} onClick={() => group.id !== "ungrouped" && library.collapse(group.id)}>{group.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{group.name}<span className="faint">{group.roots.length}</span></button>}{(!group.collapsed || !!query || !!groupFilter) && group.roots.map((r) => {
           const t = tabs[r];
           return (
-            <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""} ${selected.includes(r) ? "batch-selected" : ""}`} key={r} onKeyDown={e => renameOnKey(e, r)}
+            <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""} ${selected.includes(r) ? "batch-selected" : ""}`} key={r} onKeyDown={e => {
+              renameOnKey(e, r);
+              if (!matchesGroupShortcut(e)) return;
+              const roots = selected.includes(r) ? selected : [r];
+              runMenuShortcut(e, repositoryMenu(r, displayName(r), roots, group.id === "ungrouped" ? groupFilter?.id : group.id, () => setGroupDraft(roots)));
+            }}
               onContextMenu={e => {
                 const roots = selected.includes(r) ? selected : [r];
                 contextMenu(e, repositoryMenu(r, displayName(r), roots, group.id === "ungrouped" ? groupFilter?.id : group.id, () => setGroupDraft(roots)));
@@ -339,6 +347,9 @@ export function RepositoryOverview() {
               <tr key={r} className={`${r === active ? "active" : ""} ${selected.includes(r) ? "batch-selected" : ""}`} onKeyDown={e => {
                 if (e.key === "Escape") setSelected([]);
                 renameOnKey(e, r);
+                if (!matchesGroupShortcut(e)) return;
+                const roots = selected.includes(r) ? visible.filter(root => selected.includes(root)) : [r];
+                runMenuShortcut(e, repositoryMenu(r, displayName(r), roots, group?.id, () => setGroupDraft(roots)));
               }} onClick={e => { if (!(e.target as HTMLElement).closest("button")) select(e, r); }} onContextMenu={e => {
                 const roots = selected.includes(r) ? visible.filter(root => selected.includes(root)) : [r];
                 contextMenu(e, repositoryMenu(r, displayName(r), roots, group?.id, () => setGroupDraft(roots)));

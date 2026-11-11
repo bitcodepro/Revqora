@@ -7,6 +7,7 @@ import {
   ChevronsDown,
   ChevronsUp,
   Columns2,
+  Copy,
   FileDiff as FileDiffIcon,
   FileWarning,
   Maximize2,
@@ -25,9 +26,9 @@ import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { highlightLines, languageFor, type Tok } from "../lib/languages";
 import { wordDiff, type Span } from "../lib/worddiff";
 import { basename, dirname } from "../lib/format";
+import { contextMenu, copyText } from "../lib/ui";
 import { DIFF_TAB_SIZE, measureDiffLine } from "../lib/diffMetrics";
 import type { LanguageSupport } from "@codemirror/language";
-import { SemanticDiff, supportsSemantic } from "./SemanticDiff";
 import { ImageDiff, isImagePath, type ImageSides } from "./ImageDiff";
 
 export type DiffMode = "unstaged" | "staged" | "readonly" | "pick";
@@ -303,6 +304,10 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       e.stopPropagation();
       setFindOpen(true);
       setTimeout(() => findRef.current?.select(), 0);
+    } else if (!e.repeat && matchesShortcut(e, "diffCopyName") && !(e.target as HTMLElement).closest("input, textarea, [contenteditable]")) {
+      e.preventDefault();
+      e.stopPropagation();
+      void copyText(basename(path), "Name copied");
     } else if (interactive && !busy && !e.repeat && !(e.target as HTMLElement).closest("input, textarea, [contenteditable]")) {
       const actions: LineAction[] = mode === "unstaged"
         ? ["stage", ...(canStash ? ["stash" as const] : []), ...(!loading ? ["discard" as const] : [])]
@@ -415,7 +420,9 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
 
   const head = (
     <div className="diff-head">
-      <div className="path" title={path}>
+      <div className="path" title={path} onContextMenu={e => contextMenu(e, [
+        { label: "Copy name", shortcut: "diffCopyName", icon: <Copy size={14} />, onClick: () => copyText(basename(path), "Name copied") },
+      ])}>
         {dirname(path) && <span className="dir">{dirname(path)}/</span>}
         {basename(path)}
       </div>
@@ -597,7 +604,6 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     <div className={`diff ${s.showWhitespace?"diff-whitespace":""}`} aria-busy={!!loading} data-diff-hash={diff?.hash} style={{ ["--diff-view-width" as string]: `${viewW}px`, ["--split-scroll" as string]: `${splitPan ? horizontal.position : 0}px`, ["--diff-tab-size" as string]: DIFF_TAB_SIZE }} onKeyDown={onKeyDown} tabIndex={-1}>
       {path && head}
       {findBar}
-      {root&&images&&diff&&!diff.binary&&supportsSemantic(path)&&diff.oldMode!=="120000"&&diff.newMode!=="120000"&&<SemanticDiff key={path} root={root} path={path} version={diff} sides={{old:diff.isNew?null:images.old,new:diff.isDeleted?null:images.new}}/>}
       <div ref={bodyRef} className={`diff-body ${!diff && loading && !error ? "diff-loading" : ""} ${s.wrapDiff ? "wrap" : ""}`} onScroll={(e) => {
         const el = e.currentTarget;
         setScroll(el.scrollTop);

@@ -1,12 +1,15 @@
-.working-file-editor{min-height:240px;display:flex;flex-direction:column;gap:8px}
-.file-editor-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.working-file-editor{min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+.working-file-editor .callout{margin:8px 12px}
+.working-file-editor .diff-controls{justify-content:safe end}
+.file-editor-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid var(--border)}
 .file-editor-tools label{display:flex;align-items:center;gap:6px;white-space:nowrap}
-.working-code{height:55vh;min-height:200px;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.working-code{flex:1;min-height:0;min-width:0;overflow:hidden}
 .working-code .cm-editor{height:100%;background:var(--bg);color:var(--text)}
 .working-code .cm-scroller{overflow:auto;font-family:var(--font-code);font-size:var(--fs-code)}
 .working-code .cm-gutters{background:var(--bg);color:var(--text-faint);border-color:var(--border)}
 .working-code .cm-cursor{border-left-color:var(--text)}
 .working-code .cm-activeLine{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.working-code .cm-line.cm-working-change{background:var(--diff-add)}
 .working-code .cm-selectionBackground,.working-code .cm-focused .cm-selectionBackground{background:color-mix(in srgb,var(--accent) 22%,transparent)!important}
 .diff-whitespace .ws-space{background-image:radial-gradient(circle,var(--text-faint) 1px,transparent 1px);background-size:1ch 1em;background-position:0 .1em}
 .diff-whitespace .ws-tab{position:relative}

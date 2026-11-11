@@ -49,7 +49,7 @@ import { matchesShortcut } from "../lib/shortcuts";
 
 const I = 14;
 
-export function runMenuShortcut(event: React.KeyboardEvent, items: MenuItem[], prefix: string): boolean {
+export function runMenuShortcut(event: React.KeyboardEvent, items: MenuItem[], prefix = ""): boolean {
   if (event.repeat) return false;
   for (const item of items) {
     if (item.disabled) continue;

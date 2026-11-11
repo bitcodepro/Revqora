@@ -37,6 +37,8 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.locator(".changes .ws-tab").first().waitFor();assert.equal(await page.locator(".changes .diff-body").textContent(),raw,"Whitespace markers must not replace actual source text");
     await page.getByRole("button",{name:"Edit working file",exact:true}).click();
     const content=page.getByRole("textbox",{name:"Working file content",exact:true});await content.waitFor();
+    assert.equal(await page.locator(".modal").count(),0,"The editor should use the Changes diff pane");
+    await page.locator(".changes .cm-working-change").filter({hasText:"alpha value"}).waitFor();
     await page.getByLabel("Spaces per tab",{exact:true}).selectOption("2");await page.getByRole("button",{name:"Tabs → spaces",exact:true}).click();
     await page.waitForFunction(()=>!document.querySelector(".working-code .cm-highlightTab"));
     assert.equal(fs.readFileSync(file,"utf8"),initial,"Conversion must remain a draft until Save");
@@ -55,17 +57,16 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
         assert.equal(fs.readFileSync(file,"utf8"),initial,"A competing writer must prevent any save");
       } finally {fs.closeSync(externalWriter);}
     }
-    await content.press("Control+s");await page.waitForFunction(()=>{const button=document.querySelector(".modal button.primary");return button?.disabled&&button.textContent==="Save file"&&document.querySelector(".modal [role='status']")?.textContent==="Saved";});
+    await content.press("Control+s");await page.waitForFunction(()=>{const button=document.querySelector(".working-file-editor button.primary");return button?.disabled&&button.textContent==="Save file"&&document.querySelector(".working-file-editor [role='status']")?.textContent==="Saved";});
     assert.equal(fs.readFileSync(file,"utf8"),"\uFEFF    alpha value\r\n    beta // edited\r\n\tpasted\r\nend");assert(index.equals(fs.readFileSync(path.join(root,".git/index"))));
     if(shot)await shot("working-file-editor");
     await content.press("Control+End");await page.keyboard.insertText(" draft retained");
     await content.press("Escape");
-    await page.waitForFunction(()=>document.querySelectorAll(".modal").length===2&&document.activeElement?.textContent==="Cancel");
+    await page.waitForFunction(()=>document.querySelectorAll(".modal").length===1&&document.activeElement?.textContent==="Cancel");
     const draft=await page.locator(".working-code .cm-content").innerText();
     await page.keyboard.type("BLOCKEDINPUT");await page.keyboard.press("Control+s");
     assert.equal(await page.locator(".working-code .cm-content").innerText(),draft,"Typing under the confirmation changed the draft");
     assert.equal(fs.readFileSync(file,"utf8"),"\uFEFF    alpha value\r\n    beta // edited\r\n\tpasted\r\nend","Ctrl+S under the confirmation saved the draft");
-    assert.equal(await page.locator(".modal-backdrop[inert]").count(),1);
     await page.getByRole("button",{name:"Cancel",exact:true}).click();
     await page.waitForFunction(()=>!!document.activeElement?.closest(".working-code"));
     assert((await content.innerText()).includes("draft retained"),"Cancelling Close must retain the editor draft");
@@ -73,13 +74,13 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.getByRole("alert").filter({hasText:"Your draft is kept"}).waitFor();assert((await content.innerText()).includes("draft retained"));assert.equal(fs.readFileSync(file,"utf8"),"IDE latest\n");
     await page.getByRole("button",{name:"Reload from disk",exact:true}).click();await page.getByRole("button",{name:"Discard draft",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector(".working-code .cm-content")?.textContent.includes("IDE latest"));
-    await page.locator(".modal").getByRole("button",{name:"Close",exact:true}).click();
+    await page.locator(".working-file-editor").getByRole("button",{name:"Close",exact:true}).click();
     await history();const toggle=page.getByRole("button",{name:"Toggle branches panel",exact:true});if(await toggle.getAttribute("aria-expanded")!=="true")await toggle.click();
     await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="main"]').click();
     await page.locator(".graph-scroll .grow.branch-member").getByText("Files for keyboard navigation",{exact:true}).click();
     const commitFiles=page.getByLabel("Commit files",{exact:true});await commitFiles.locator("[data-file-nav]").first().click();await page.keyboard.press("ArrowDown");
     await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="b.txt");
-    await page.keyboard.press("Alt+ArrowDown");await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="c.txt");
+    await page.keyboard.press("Control+ArrowDown");await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="c.txt");
     const settings=page.locator(".modal").last();
     const openShortcuts=async()=>{
       await page.getByTitle("Settings",{exact:true}).click();
