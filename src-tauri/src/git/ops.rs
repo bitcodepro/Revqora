@@ -1696,7 +1696,7 @@ pub(super) fn stash_apply_ref(repo: &Path, name: &str, pop: bool, restore_index:
     }
     check_ignored_paths(repo, &super::workspace_files::ignored(repo)?, &paths, "ignored")?;
     let before = status::status(repo)?.state_token;
-    let mut args = vec!["stash", if pop { "pop" } else { "apply" }];
+    let mut args = vec!["-c", "stash.index=false", "stash", if pop { "pop" } else { "apply" }];
     if restore_index {
         args.push("--index");
     }
@@ -1728,7 +1728,7 @@ pub(super) fn stash_apply_ref(repo: &Path, name: &str, pop: bool, restore_index:
         return Err(runner::to_error("git stash apply", &out));
     }
     // Keep the only saved index even when the caller requested Pop.
-    let out2 = runner::exec(repo, ["stash", "apply", snapshot])?;
+    let out2 = runner::exec(repo, ["-c", "stash.index=false", "stash", "apply", snapshot])?;
     if out2.ok() {
         let staging = stash_staging_difference(repo, &base, &index).ok();
         return Ok(StashApplyOutcome {

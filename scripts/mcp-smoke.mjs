@@ -323,6 +323,7 @@ async function diffStageAndStash({ page, original, work, tool, rawTool, waitPhas
   assert.equal(git("diff", "--cached", "--name-only"), "a.txt");
   git("reset", "--hard", "HEAD");
 
+  git("config", "stash.index", "true");
   put("a.txt", "staged a\n"); put("b.txt", "staged b\n"); git("add", "-A");
   put("b.txt", "working b\n"); put("new.txt", "untracked\n");
   git("stash", "push", "-u", "-m", "Mixed staging fixture");
