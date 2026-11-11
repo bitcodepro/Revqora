@@ -57,15 +57,12 @@ export async function mcpSmoke({ page, exe, profile, work }) {
     throw new Error(`MCP action did not reach ${phase}: ${JSON.stringify(result)}`);
   };
   const settings = page.getByRole("dialog").filter({ has: page.getByRole("heading", { name: "Settings", exact: true }) });
-  const access = settings.getByRole("checkbox", { name: "Enable MCP for this session" });
+  const access = settings.getByRole("checkbox", { name: "Enable MCP for this session", exact: true });
   const toggle = async enabled => {
     await page.getByTitle("Settings", { exact: true }).click();
     // The controlled checkbox changes only after the native access request returns.
     await access.click();
-    await page.waitForFunction(expected => {
-      const input = document.querySelector("#mcp-enabled");
-      return input && !input.disabled && input.checked === expected;
-    }, enabled);
+    await access.and(page.locator(enabled ? ":checked:enabled" : ":not(:checked):enabled")).waitFor();
     const config = await settings.getByLabel("Configuration", { exact: true }).inputValue();
     assert.match(config, /\[mcp_servers\.revqora\]/);
     assert.match(config, /args = \["--mcp"\]/);

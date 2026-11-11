@@ -18,6 +18,12 @@ export async function interceptClipboard(page) {
 
 export async function namePathCopySmoke({page,root}) {
   const repoName=path.basename(root);
+  // A registered tab can be active before its repository info is loaded.
+  // Until then the disabled toggle reports false even for an open layout.
+  const toggle=page.getByRole("button",{name:"Toggle branches panel",exact:true}).and(page.locator(":enabled"));
+  await toggle.waitFor();
+  const branchesWereOpen=await toggle.getAttribute("aria-expanded")==="true";
+  const mainBranch=page.locator('.sidebar [data-branch-kind="local"][data-branch-name="main"]');
   await interceptClipboard(page);
   const copy=async(target,name)=>{
     for(const [label,expected] of [["Copy name",name],["Copy path",root]]) {
@@ -27,14 +33,14 @@ export async function namePathCopySmoke({page,root}) {
       assert.equal(await page.locator(".topbar .repo-current > b").innerText(),repoName,"Right click/copy must not activate another repository");
     }
   };
-  const toggle=page.getByRole("button",{name:"Toggle branches panel",exact:true});
-  const branchesWereOpen=await toggle.getAttribute("aria-expanded")==="true";
   try {
     if(!branchesWereOpen)await toggle.click();
+    await toggle.and(page.locator('[aria-expanded="true"]')).waitFor();
+    await mainBranch.waitFor();
     await copy(page.locator(".topbar .repo-current > b"),repoName);
     await copy(page.locator(".topbar .repo-current > span"),"main");
     await copy(page.locator(".repository-select").filter({hasText:repoName}),repoName);
-    await copy(page.locator('.sidebar [data-branch-kind="local"][data-branch-name="main"]'),"main");
+    await copy(mainBranch,"main");
     await copy(page.locator(".graph-scroll .ref.head").filter({hasText:"main"}).first(),"main");
     await page.getByRole("button",{name:"Open branch manager",exact:true}).click();
     const manager=page.getByRole("region",{name:"Branch manager",exact:true});
@@ -59,7 +65,7 @@ export async function namePathCopySmoke({page,root}) {
     await page.locator(".ctx-menu").waitFor({state:"detached"});
     assert.equal(await search.inputValue(),repoName,"First Escape must retain the library search");
     await page.keyboard.press("Escape");await page.locator(".modal").waitFor({state:"detached"});
-    await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="main"]').click({button:"right"});
+    await mainBranch.click({button:"right"});
     await page.locator(".ctx-menu").getByText("Branch details…",{exact:true}).click();
     await page.locator(".modal").last().waitFor();
     await page.locator(".modal").last().locator("h3 > span").click({button:"right"});await page.locator(".ctx-menu").waitFor();
