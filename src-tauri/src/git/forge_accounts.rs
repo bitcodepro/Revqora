@@ -643,7 +643,7 @@ impl Manager {
 }
 
 /// Do not infer a destination from arbitrary prompt text or a lookalike host.
-fn git_https_prompt(prompt: &str) -> Option<(bool, Url)> {
+pub(crate) fn git_https_prompt(prompt: &str) -> Option<(bool, Url)> {
     let (username, value) =
         if let Some(value) = prompt.strip_prefix("Username for '") { (true, value) } else { (false, prompt.strip_prefix("Password for '")?) };
     let address = value.strip_suffix("': ")?;
@@ -808,7 +808,7 @@ pub(super) fn request_content(
         }
         Err(ureq::Error::Status(code, _)) => {
             let mut error = fail(match code {
-                401 => "Token rejected. Reconnect this account.".into(),
+                401 => "Token rejected. It may have expired or been revoked. Reconnect this account.".into(),
                 403 => "Access denied. Check token permissions and organization SSO authorization.".into(),
                 429 => "API rate limit reached. Wait and try again.".into(),
                 _ => format!("API request failed with HTTP {code}."),

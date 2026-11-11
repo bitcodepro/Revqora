@@ -303,6 +303,24 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       e.stopPropagation();
       setFindOpen(true);
       setTimeout(() => findRef.current?.select(), 0);
+    } else if (interactive && !busy && !e.repeat && !(e.target as HTMLElement).closest("input, textarea, [contenteditable]")) {
+      const actions: LineAction[] = mode === "unstaged"
+        ? ["stage", ...(canStash ? ["stash" as const] : []), ...(!loading ? ["discard" as const] : [])]
+        : mode === "staged" ? ["unstage"] : ["apply"];
+      for (const action of actions) {
+        const lines = matchesShortcut(e, `diff-${action}-lines`);
+        if (!lines && !matchesShortcut(e, `diff-${action}-hunk`)) continue;
+        const element = (e.target as HTMLElement).closest<HTMLElement>("[data-hunk], [data-line]");
+        const focused = element?.dataset.hunk ?? element?.dataset.line?.split(":")[0];
+        const hunk = focused === undefined ? anchor?.h ?? (diff?.hunks.length === 1 ? 0 : -1) : Number(focused);
+        const selection = lines ? selectedPairs() : diff?.hunks[hunk] ? hunkSelection(hunk) : [];
+        if (selection.length) {
+          e.preventDefault();
+          e.stopPropagation();
+          void apply(selection, action);
+        }
+        break;
+      }
     }
   };
 
@@ -359,9 +377,9 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
                 <Plus size={12} /> Stage hunk
               </button>
               {canStash && <button className="btn sm" disabled={busy} onClick={() => apply(hunkSelection(hi), "stash")}><Archive size={12} /> Stash hunk</button>}
-              <button className="btn sm ghost" disabled={busy} onClick={() => apply(hunkSelection(hi), "discard")} title="Discard hunk">
+              {!loading && <button className="btn sm ghost" disabled={busy} onClick={() => apply(hunkSelection(hi), "discard")} title="Discard hunk">
                 <Trash2 size={12} />
-              </button>
+              </button>}
             </>
           )}
           {mode === "staged" && (
@@ -608,9 +626,9 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
                 <Plus size={12} /> Stage lines
               </button>
               {canStash && <button className="btn sm" disabled={busy} onClick={() => apply(selectedPairs(), "stash")}><Archive size={12} /> Stash lines</button>}
-              <button className="btn sm danger" disabled={busy} onClick={() => apply(selectedPairs(), "discard")}>
+              {!loading && <button className="btn sm danger" disabled={busy} onClick={() => apply(selectedPairs(), "discard")}>
                 <Trash2 size={12} /> Discard lines
-              </button>
+              </button>}
             </>
           )}
           {mode === "staged" && (

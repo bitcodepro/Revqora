@@ -1,5 +1,7 @@
 mod desktop;
 pub mod git_credentials;
+#[cfg(windows)]
+mod windows_secret;
 #[tauri::command]
 async fn symbol_history(repo: String, path: String, query: String, anchor: Option<String>, offset: usize) -> GitResult<git::semantic::SymbolHistoryPage> {
     blocking(move || git::semantic::symbol_history(&p(&repo), &path, &query, anchor.as_deref(), offset)).await
@@ -279,7 +281,7 @@ use git::ops::{self, CommitOptions, OpOutcome, PushOptions, ReflogEntry, Rewrite
 use git::rebase_studio as studio;
 use git::recovery;
 use git::refs::{self, RefsSnapshot};
-use git::repo::{self, RepoInfo};
+use git::repo::{self, RepoInfo, SourceHead};
 use git::runner::{self, GitError, GitResult};
 use git::status::{self, StatusSummary};
 use git::watcher::{self, RepoWatcher};
@@ -499,8 +501,8 @@ async fn git_configure(state: State<'_, AppState>) -> GitResult<git::locate::Git
 }
 
 #[tauri::command]
-fn askpass_respond(id: u64, value: Option<String>) -> bool {
-    askpass::respond(id, value)
+fn askpass_respond(id: u64, value: Option<String>, remember: Option<bool>, email: Option<String>) -> bool {
+    askpass::respond_with_storage(id, value, remember.unwrap_or(false), email)
 }
 
 #[tauri::command]
@@ -595,6 +597,18 @@ async fn git_connection_test(repo: String, remote: String, expected_url_fingerpr
 }
 
 #[tauri::command]
+async fn git_connection_forget(repo: String) -> GitResult<()> {
+    blocking(move || {
+        #[cfg(windows)]
+        crate::git_credentials::forget(&p(&repo)).map_err(|_| GitError::new("Could not remove Revqora's saved Git tokens."))?;
+        #[cfg(not(windows))]
+        let _ = repo;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn repo_info(repo: String) -> GitResult<RepoInfo> {
     blocking(move || repo::info(&p(&repo))).await
 }
@@ -663,6 +677,8 @@ async fn rev_diff(repo: String, from: Option<String>, to: String, path: String, 
 async fn apply_selection(
     app: AppHandle,
     expected_state: Option<String>,
+    source_head: Option<SourceHead>,
+    stage_snapshot: Option<u64>,
     repo: String,
     path: String,
     mode: SelectionMode,
@@ -674,6 +690,16 @@ async fn apply_selection(
     let checkpoint_expected = expected_state.clone();
     mutating(repo.clone(), expected_state, app.clone(), "apply_selection", None, move || {
         let r = p(&repo);
+        if mode == SelectionMode::Stage {
+            if let Some(head) = source_head {
+                head.verify(&r)?;
+            }
+            if let Some(snapshot) = stage_snapshot {
+                if diff::stage_selection_snapshot(&r, &path, &selection, snapshot)? {
+                    return Ok(());
+                }
+            }
+        }
         if mode == SelectionMode::Discard {
             recovery::automatic_expected(&r, "discard_lines", true, false, checkpoint_expected.as_deref())?;
         }
@@ -684,8 +710,15 @@ async fn apply_selection(
 }
 
 #[tauri::command]
-async fn stage(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "stage", None, move || ops::stage_paths(&p(&repo), &paths)).await
+async fn stage(app: AppHandle, expected_state: Option<String>, source_head: Option<SourceHead>, repo: String, paths: Vec<String>) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "stage", None, move || {
+        let r = p(&repo);
+        if let Some(head) = source_head {
+            head.verify(&r)?;
+        }
+        ops::stage_paths(&r, &paths)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -913,7 +946,7 @@ async fn checkout(
     target: String,
     kind: String,
     choice: Option<git::branch_switch::SwitchChoice>,
-    source_head: Option<git::branch_switch::SourceHead>,
+    source_head: Option<SourceHead>,
 ) -> GitResult<git::branch_switch::SwitchOutcome> {
     let reviewed_state = expected_state.clone();
     mutating(repo.clone(), expected_state, app, "checkout", None, move || {
@@ -2220,12 +2253,16 @@ pub fn run() {
                 std::thread::spawn(move || update::cleanup(&root));
             }
             let handle = app.handle().clone();
+            let warning_handle = handle.clone();
             let exe = std::env::current_exe()?;
-            if let Err(e) = askpass::start(
+            if let Err(e) = askpass::start_with_storage_warning(
                 &exe,
                 &portable::runtime_dir()?.join("helpers"),
                 std::sync::Arc::new(move |req| {
                     let _ = handle.emit("askpass-request", req);
+                }),
+                std::sync::Arc::new(move || {
+                    let _ = warning_handle.emit("git-credential-storage-warning", ());
                 }),
             ) {
                 eprintln!("askpass server failed to start: {e}");
@@ -2272,6 +2309,7 @@ pub fn run() {
             git_connection_snapshot,
             git_connection_save,
             git_connection_test,
+            git_connection_forget,
             repo_info,
             status,
             identity_get,

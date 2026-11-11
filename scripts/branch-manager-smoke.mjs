@@ -147,7 +147,7 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
 
     // Workspaces deliberately remember a collapsed sidebar. Establish this
     // scenario's UI precondition via its real control, not saved-state edits.
-    const branches = page.getByRole("button", { name:"Branches",exact:true });
+    const branches = page.getByRole("button", { name:"Toggle branches panel",exact:true });
     if(await branches.getAttribute("aria-expanded") === "false") await branches.click();
     await page.locator(".branches-slot:not([hidden])").waitFor();
     const search = page.locator(".sidebar input[placeholder^='Filter branches']");
@@ -156,6 +156,9 @@ export async function branchManagerSmoke({ page, check, shot, work }) {
     await page.locator('.sidebar [data-branch-kind="local"][data-branch-name="feature/login"] .branch-connection.paired').waitFor();
     if(await page.locator('.sidebar [data-branch-kind="remote"][data-branch-name="origin/innocent"]').count()) throw new Error("Paired remote still appears separately");
     const login = page.locator('.sidebar [data-branch-kind="local"][data-branch-name="feature/login"]');
+    await login.press("F2");
+    const rename = page.getByRole("dialog").filter({ has: page.getByRole("heading", { name: "Rename feature/login", exact: true }) });
+    await rename.getByRole("button", { name: "Cancel", exact: true }).click();
     if(!await login.locator(".ab.up").isVisible()) throw new Error("Pairing hid outgoing commit counts");
     if(!await login.locator(".ab.down").isVisible()) throw new Error("Pairing hid incoming commit counts");
     const expectPreview = async (oid,subject) => page.waitForFunction(({oid,subject}) =>

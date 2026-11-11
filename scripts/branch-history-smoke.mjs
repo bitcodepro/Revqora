@@ -36,7 +36,11 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
     git(other, "switch", "-qc", `review-${suffix}`, "main");
     put(other, `picked-${suffix}.txt`, suffix);
     git(other, "add", ".");
-    git(other, "commit", "-qm", `Pick review-${suffix}`);
+    const authorDate = suffix === "a" ? "2024-02-02T12:00:00Z" : "2024-02-01T12:00:00Z";
+    const committerDate = suffix === "a" ? "2024-03-01T12:00:00Z" : "2024-03-02T12:00:00Z";
+    execFileSync("git", ["-C", other, "commit", "--date", authorDate, "-qm", `Pick review-${suffix}`], {
+      env: { ...process.env, GIT_COMMITTER_DATE: committerDate },
+    });
   }
   git(other, "switch", "-q", "main");
   for (const suffix of ["c", "d"]) git(other, "branch", `review-${suffix}`);
@@ -53,9 +57,12 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await page.locator(".view-tab").filter({ hasText: "History" }).click();
   await page.locator(".history-mode").getByRole("button", { name: "Graph", exact: true }).click();
   await page.getByRole("combobox", { name: "History scope", exact: true }).selectOption("");
-  const toggle = page.getByTitle("Toggle branches panel", { exact: true });
+  const toggle = page.getByRole("button", { name: "Toggle branches panel", exact: true });
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
   const graph = page.locator(".graph-scroll");
+  // The previous scope can still render while the All branches graph loads.
+  const crossing = graph.locator(".grow").filter({ has: page.getByText("Destination change", { exact: true }) });
+  await crossing.waitFor();
   const tip = graph.locator(".grow").filter({ has: page.getByText("History line 99", { exact: true }) });
   const line = tip.locator(".lane-hit").last();
   const point = await line.evaluate((path) => {
@@ -71,7 +78,6 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   assert.equal(pinned, await line.getAttribute("data-lane"), "Clicking the line must pin its identity");
   const members = graph.locator(".grow.lane-member");
   await members.getByText("History line 99", { exact: true }).waitFor();
-  const crossing = graph.locator(".grow").filter({ has: page.getByText("Destination change", { exact: true }) });
   await crossing.locator(".lane-line.hl").first().waitFor({ state: "attached" });
   assert.equal(await members.getByText("Destination change", { exact: true }).count(), 0, "A passing line must not highlight another lane's commit");
   await page.getByRole("button", { name: "Search all repositories", exact: true }).hover();
@@ -168,7 +174,9 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await searchQuery.click();
   await searchQuery.fill("shared searchable");
   for (const name of ["branch-history", "branch-history-other"]) await search.getByRole("heading", { name, exact: true }).waitFor();
-  await search.getByText("Shared searchable branch-history", { exact: true }).click();
+  const matchingCommit = search.getByRole("button", { name: /^Shared searchable branch-history / });
+  assert.equal(await matchingCommit.locator("mark").textContent(), "Shared searchable");
+  await matchingCommit.click();
   const selected = graph.locator(".grow.selected").filter({ has: page.getByText("Shared searchable branch-history", { exact: true }) });
   await selected.waitFor();
   await page.waitForFunction(() => {
@@ -182,6 +190,13 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   assert(!await page.getByTitle("Show only matching commits", { exact: true }).evaluate((button) => button.classList.contains("active")));
 
   await page.getByRole("button", { name: "Search all repositories", exact: true }).click();
+  await searchMode.selectOption("message");
+  await searchQuery.fill("pick review-");
+  const orderedHits = search.locator(".workspace-search-group")
+    .filter({ has: page.getByRole("heading", { name: "branch-history-other", exact: true }) })
+    .locator(".workspace-search-hit > b");
+  await orderedHits.nth(1).waitFor();
+  assert.deepEqual(await orderedHits.allTextContents(), ["Pick review-a", "Pick review-b"]);
   await search.getByRole("textbox", { name: "Search commits across repositories" }).fill("shared searchable");
   await search.getByRole("button", { name: /Shared searchable branch-history-other/ }).click();
   await active("branch-history-other");

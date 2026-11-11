@@ -22,7 +22,7 @@ import type { GraphLaneAnchor, GraphRow, SearchMode, Seg } from "../lib/types";
 import { WORKTREE } from "../lib/types";
 import { absoluteTime, fullTime, relativeTime, shortOid } from "../lib/format";
 import { Avatar, RefBadge } from "./bits";
-import { branchMenu, commitMenu, tagMenu } from "./menus";
+import { branchMenu, commitMenu, runMenuShortcut, tagMenu } from "./menus";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { usePanelTitleMenu } from "./PanelWindows";
 
@@ -822,6 +822,15 @@ export function GraphView({
   }, [root, tab.view]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (tab.selected && tab.selected !== WORKTREE && (e.ctrlKey || e.altKey || e.metaKey || /^F\d+$/.test(e.key))) {
+      const row = [...cache.current.values()].find(candidate => candidate.oid === tab.selected);
+      if (row) {
+        const multi = tab.multi.includes(row.oid) ? tab.multi : [];
+        const selected = [...cache.current.values()].filter(candidate => multi.includes(candidate.oid));
+        if (selected.length !== multi.length) return;
+        if (runMenuShortcut(e, commitMenu(root, row, selected.length > 1 ? selected : [row]), "commit-")) return;
+      }
+    }
     // Leave modified navigation keys to file previews and other shortcuts.
     if ((e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) && (e.key.startsWith("Arrow") || ["PageUp", "PageDown", "Home", "End"].includes(e.key))) return;
     const cur =

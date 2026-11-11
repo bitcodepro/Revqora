@@ -35,6 +35,13 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
   hooks.pending?.(repo, 1);
   let refresh = true;
   try {
+    const stage = command === "stage" || (command === "apply_selection" && args?.mode === "stage");
+    if (stage && typeof args?.expectedState !== "string") {
+      const sourceHead = hooks.observedHead?.(repo);
+      // Stage reads the selected files in the queue. Line staging also verifies
+      // its displayed diff on the backend.
+      if (sourceHead) return await invoke<T>(command, { ...args, expectedState: null, sourceHead });
+    }
     if (command === "checkout" && args?.kind !== "commit" && !args?.choice && typeof args?.expectedState !== "string") {
       const sourceHead = hooks.observedHead?.(repo);
       if (sourceHead) {

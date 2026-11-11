@@ -18,6 +18,7 @@ export interface MenuItem {
   label?: string;
   icon?: ReactNode;
   hint?: string;
+  shortcut?: string;
   danger?: boolean;
   disabled?: boolean;
   separator?: boolean;
@@ -141,6 +142,10 @@ export function contextMenu(e: { clientX: number; clientY: number; currentTarget
   e.preventDefault();
   e.stopPropagation?.();
   useUi.getState().openMenu(e.clientX, e.clientY, items, (e.currentTarget as HTMLElement | null)?.ownerDocument?.defaultView ?? undefined);
+}
+
+export function toggleRepositoryOverview() {
+  useUi.setState(state => ({ repositoryOverview: !state.repositoryOverview }));
 }
 
 export function startBusy(id: string, label: string) {

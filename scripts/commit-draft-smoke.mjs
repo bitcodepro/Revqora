@@ -118,7 +118,10 @@ export async function commitDraftSmoke({ page, work, returnRoot, shot }) {
     const previousLimit = await limit.inputValue();
     await limit.fill("1");
     await settings.getByRole("button", { name: "Shortcuts", exact: true }).click();
-    await settings.getByRole("textbox", { name: "Find shortcut" }).fill("Commit from the message fields");
+    const shortcutSearch = settings.getByRole("textbox", { name: "Find shortcut" });
+    const searchHasRoom = await shortcutSearch.evaluate(input => input.offsetHeight >= 32 && input.clientHeight >= parseFloat(getComputedStyle(input).fontSize) + 10);
+    if (!searchHasRoom) throw Error("The Shortcuts search field was compressed by the results list");
+    await shortcutSearch.fill("Commit from the message fields");
     const rebind = settings.getByRole("button", { name: "Change shortcut for Commit from the message fields" });
     await rebind.click();
     await rebind.press("Control+o");
@@ -127,7 +130,18 @@ export async function commitDraftSmoke({ page, work, returnRoot, shot }) {
     await rebind.click();
     await rebind.press("Control+Alt+m");
     await rebind.getByText("Ctrl+Alt+M", { exact: true }).waitFor();
+    await shortcutSearch.fill("Operation log");
+    const logBinding = settings.getByRole("button", { name: "Change shortcut for Operation log", exact: true });
+    if ((await logBinding.innerText()).trim() !== "—") throw Error("Operation log unexpectedly has a default shortcut");
+    await logBinding.click();
+    await logBinding.press("Control+Alt+l");
+    await logBinding.getByText("Ctrl+Alt+L", { exact: true }).waitFor();
     await settings.getByRole("button", { name: "Done", exact: true }).click();
+    await page.keyboard.press("Control+Alt+l");
+    const operationLog = page.getByRole("dialog").filter({ has: page.getByRole("heading", { name: "Operation log", exact: true }) });
+    await operationLog.waitFor();
+    await operationLog.getByRole("button", { name: "Close", exact: true }).click();
+    await operationLog.waitFor({ state: "detached" });
 
     const base = git("rev-parse", "HEAD");
     const big = "large fixture.bin";

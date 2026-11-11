@@ -6,20 +6,23 @@ import type { AskpassRequest, ForgeAccountsSnapshot } from "../lib/types";
 import { bitbucketPromptKind } from "../lib/bitbucketCredentials";
 import {gitHttpsPrompt,gitAccountMatches} from "../lib/gitCredentials";
 import { Modal } from "./Modal";
+import { toast } from "../lib/ui";
 
 /** Answers credential / passphrase / host-key prompts that git and ssh send to Revqora. */
 export function AskpassHost() {
   const [queue, setQueue] = useState<AskpassRequest[]>([]);
   useEffect(() => {
     const un = listen<AskpassRequest>("askpass-request", (e) => setQueue((q) => [...q, e.payload]));
+    const warn = listen("git-credential-storage-warning", () => toast.warning("Could not access saved Git tokens", "Check access to the data folder beside Revqora."));
     return () => {
       un.then((f) => f());
+      warn.then((f) => f());
     };
   }, []);
   const current = queue[0];
   if (!current) return null;
-  const answer = (value: string | null) => {
-    api.askpassRespond(current.id, value).catch(() => {});
+  const answer = (value: string | null, remember?: boolean, email?: string) => {
+    api.askpassRespond(current.id, value, remember, email).catch(() => {});
     setQueue((q) => q.slice(1));
   };
   return <AskpassDialog key={current.id} req={current} onAnswer={answer} onAnswered={() => setQueue(q => q.filter(item => item.id !== current.id))} />;
@@ -32,7 +35,7 @@ function splitPrompt(prompt: string): { detail: string; question: string } {
   return { detail: lines.join("\n"), question };
 }
 
-function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onAnswer: (v: string | null) => void; onAnswered: () => void }) {
+function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onAnswer: (v: string | null, remember?: boolean, email?: string) => void; onAnswered: () => void }) {
   const bitbucket = bitbucketPromptKind(req.prompt, req.origin);
   const destination=gitHttpsPrompt(req.prompt,req.origin);
   const [value, setValue] = useState(bitbucket === "username" ? "x-bitbucket-api-token-auth" : "");
@@ -54,6 +57,8 @@ function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onA
     } catch (e) { setError(errorMessage(e)); setSending(false); }
   };
   const [show, setShow] = useState(false);
+  const [remember, setRemember] = useState(req.canRemember);
+  const [email, setEmail] = useState("");
   const { detail, question } = splitPrompt(req.prompt);
   const host = req.prompt.match(/(?:https?:\/\/[^'\s]+|[\w.-]+@[\w.-]+|for '([^']+)')/)?.[0];
 
@@ -92,7 +97,7 @@ function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onA
       subtitle={req.origin === "ssh" ? "Requested by SSH" : host ? `Requested by git for ${host.replace(/^for '|'$/g, "")}` : "Requested by git"}
       icon={req.kind === "username" ? <UserRound size={18} /> : <KeyRound size={18} />}
       onClose={() => { if (!sending) onAnswer(null); }}
-      onSubmit={() => { if (!sending) onAnswer(value); }}
+      onSubmit={() => { if (!sending) onAnswer(value, remember, email.trim() || undefined); }}
       footer={
         <>
           <button type="button" className="btn" disabled={sending} onClick={() => onAnswer(null)}>
@@ -123,8 +128,10 @@ function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onA
             </button>
           )}
         </div>
-        <div className="help">{req.origin==="git"?"Git-approved HTTPS credentials can be reused for this repository during this session, including PR access. Revqora keeps this cache in memory; use Accounts to save a token in the encrypted vault.":"The answer goes straight to SSH and is not reused as an API token."}</div>
+        <div className="help">{req.origin==="git"?"Git-approved HTTPS credentials can also be used for pull requests.":"The answer goes straight to SSH and is not reused as an API token."}</div>
       </div>
+      {req.canRemember && <label className="check"><input type="checkbox" checked={remember} onChange={e=>setRemember(e.target.checked)}/>Remember in Revqora on this Windows account</label>}
+      {remember && bitbucket === "secret" && <label className="field">Atlassian email for pull requests (API tokens)<input className="input" type="email" value={email} autoComplete="email" onChange={e=>setEmail(e.target.value)}/></label>}
       {bitbucket && <>
         <p className="help">For an API token, use your Bitbucket username or <code>x-bitbucket-api-token-auth</code> as the Git username and paste the token when Git asks for a password. For an OAuth access token, use <code>x-token-auth</code>. Git needs repository read permission for Fetch/Pull and write permission for Push.</p>
         <p className="help">Pull Requests can reuse this credential. If Bitbucket asks for your Atlassian email, open Accounts and API connections, add a Bitbucket account and select Use existing Git token.</p>

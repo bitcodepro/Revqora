@@ -6,6 +6,8 @@ import { api, errorMessage } from "../lib/api";
 import { basename, shortOid } from "../lib/format";
 import type { OperationLogDetail, OperationLogEntry, OperationLogFilter, OperationLogHealth, OperationLogStatus, OperationLogStep } from "../lib/types";
 import { copyText, showDialog, toast } from "../lib/ui";
+import { useSettings } from "../lib/settings";
+import { bindingFor, prettyCombo } from "../lib/shortcuts";
 import { confirmDialog } from "./dialogs";
 import { Modal } from "./Modal";
 import "../styles/operationLog.css";
@@ -25,6 +27,7 @@ export function operationLogDialog(root: string | null = null) {
 
 export function OperationLogButton({ root }: { root?: string | null }) {
   const [health, setHealth] = useState<OperationLogHealth | null>(null);
+  const binding = useSettings(s => bindingFor("operation-log", s.shortcuts));
   useEffect(() => {
     let alive = true;
     const load = () => { void api.operationLogHealth().then((h) => { if (alive) setHealth(h); }, () => {}); };
@@ -33,7 +36,8 @@ export function OperationLogButton({ root }: { root?: string | null }) {
     return () => { alive = false; void subscription.then((unlisten) => unlisten()); };
   }, []);
   const warning = !!health && (!health.available || !!health.warning);
-  return <button type="button" className={`icon-btn operation-log-open ${warning ? "log-warning" : ""}`} title={warning ? `Operation log needs attention: ${health?.warning ?? "unavailable"}` : "Operation log"} aria-label="Operation log" onClick={() => void operationLogDialog(root ?? null)}><ScrollText size={16} />{warning && <span className="log-warning-dot" />}</button>;
+  const title = warning ? `Operation log needs attention: ${health?.warning ?? "unavailable"}` : "Operation log";
+  return <button type="button" className={`icon-btn operation-log-open ${warning ? "log-warning" : ""}`} title={binding ? `${title} (${prettyCombo(binding)})` : title} aria-label="Operation log" onClick={() => void operationLogDialog(root ?? null)}><ScrollText size={16} />{warning && <span className="log-warning-dot" />}</button>;
 }
 
 function OperationLog({ root, close }: { root: string | null; close: () => void }) {

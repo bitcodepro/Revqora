@@ -26,6 +26,11 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
   const [mode, setMode] = useState(initialMode);
   const [results, setResults] = useState<{ key: string; repositories: Record<string, SearchResult> }>({ key: "", repositories: {} });
   const term = query.trim();
+  const pattern = term ? new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "iu") : null;
+  const highlight = (value: string, field: SearchMode) => {
+    if (!pattern || (mode !== "quick" && mode !== field)) return value;
+    return value.split(pattern).map((part, index) => index % 2 ? <mark key={index}>{part}</mark> : part);
+  };
   const key = JSON.stringify([roots, term, mode]);
   const repositories = results.key === key ? results.repositories : {};
   const completed = Object.keys(repositories).length;
@@ -43,7 +48,7 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
           while (current && next < roots.length) {
             const root = roots[next++];
             const result = await api.repositoryCommitSearch(root, term, mode).then(
-              (hits): SearchResult => ({ hits }),
+              (hits): SearchResult => ({ hits: [...hits].sort((a, b) => b.authorTime - a.authorTime) }),
               (error): SearchResult => ({ hits: [], error: errorMessage(error) }),
             );
             if (current) setResults((previous) => ({ key, repositories: { ...(previous.key === key ? previous.repositories : {}), [root]: result } }));
@@ -81,10 +86,18 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
       return <section className="workspace-search-group" key={root}>
         <h4 title={root}>{useRepos.getState().tabs[root]?.info?.name ?? basename(root)}</h4>
         {result.error && <p className="batch-note amber" role="alert">{result.error}</p>}
-        {result.hits.slice(0, VISIBLE_LIMIT).map((hit) => <button type="button" className="workspace-search-hit" key={hit.oid} onClick={() => open(root, hit)}>
-          <b>{hit.subject || "(no commit message)"}</b>
-          <span className="faint"><code>{shortOid(hit.oid)}</code> · {hit.author} · {relativeTime(hit.authorTime)}{hit.refs && ` · ${hit.refs}`}</span>
-        </button>)}
+        {result.hits.slice(0, VISIBLE_LIMIT).map((hit) => {
+          const matchingHash = (mode === "quick" || mode === "hash") && hit.oid.startsWith(term.toLowerCase());
+          const hash = shortOid(hit.oid, matchingHash ? Math.max(8, term.length) : 8);
+          return <button type="button" className="workspace-search-hit" key={hit.oid} onClick={() => open(root, hit)}>
+            <b>{hit.subject ? highlight(hit.subject, "message") : "(no commit message)"}</b>
+            <span className="faint">
+              <code title={hit.oid}>{matchingHash ? <><mark>{hash.slice(0, term.length)}</mark>{hash.slice(term.length)}</> : hash}</code>
+              {" · "}{highlight(hit.author, "author")}{" · "}{relativeTime(hit.authorTime)}
+              {hit.refs && <>{" · "}{highlight(hit.refs, "quick")}</>}
+            </span>
+          </button>;
+        })}
         {result.hits.length > VISIBLE_LIMIT && <p className="batch-note">Showing the first {VISIBLE_LIMIT} matches. Refine your search to narrow the results.</p>}
       </section>;
     })}

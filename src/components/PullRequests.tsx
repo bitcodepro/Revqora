@@ -19,6 +19,7 @@ import { confirmDialog } from "./dialogs";
 import { virtualRange } from "../lib/virtualRange";
 import {authorSelectionValue,authorScope,authorPreferencesKey,loadAuthorPreferences,mergePrAuthors,matchesPrAuthor,rememberAccountAuthor,restoreAuthorPreferences,samePrAuthor,type PrAuthor,type AuthorPreferences} from "../lib/prAuthors";
 import { useSettings } from "../lib/settings";
+import { onPrRefresh } from "../lib/prRefresh";
 import { copyUrlMenu } from "./NamePathMenu";
 import { EMPTY_PR_WATCH, PR_PAGE_REFRESHED, nextPrListRead, updatePrWatch, viewerAuthor, type PrPageRefresh } from "../lib/prTracking";
 
@@ -65,7 +66,7 @@ export function PullRequestsView({ tab, remotesKey }: { tab: RepoTab; remotesKey
       </select>
       <button type="button" className="btn sm" aria-label="Watch my PRs" aria-pressed={watching} title="Watch your open pull requests across the repository library" onClick={() => useSettings.setState(s => ({ prWatchMineSince: s.prWatchMineSince ? null : Date.now() }))}><Bell size={14}/>My PRs</button>
     </header>
-    {all?<AllPullRequests open={openRequest}/>:!loadingRemotes&&tab.refs?.remotes.length!==0
+    {all?<AllPullRequests root={tab.root} open={openRequest}/>:!loadingRemotes&&tab.refs?.remotes.length!==0
       ?<ConnectedPullRequests key={JSON.stringify([tab.root, remotesKey])} root={tab.root}/>
       :<section className="pr-center pr-list-hidden" aria-label="Pull Request Center">
     <main className="pr-content">
@@ -105,6 +106,11 @@ function ConnectedPullRequests({ root }: { root: string }) {
   const selectedAuthor=authorSelection==="mine"?mine:authorSelection==="all"?null:authors.known.find(a=>a.key===authorSelection)??authors.prefs.chosen;
   const otherAuthors=authors.known.filter(author=>!samePrAuthor(author,mine));
   useEffect(()=>{if(!authors.scope)return;try{localStorage.setItem(authorPreferencesKey(root,authors.scope),JSON.stringify(authors.prefs));}catch{toast.warning("PR author filter could not be saved");}},[root,authors.scope,authors.prefs]);
+  const clearAuthorSelection = () => {
+    if (requestedPull?.root === root) requestedPull = null;
+    preferred.current = null;
+    setSelected(null);
+  };
   const setMyAuthor=async(selectMine:boolean)=>{
     if(!forge)return;
     const scope=authors.scope;
@@ -112,14 +118,12 @@ function ConnectedPullRequests({ root }: { root: string }) {
     if(!chosen)return;
     rememberAccountAuthor(forge,chosen);
     setAuthors(a=>a.scope===scope?{...a,prefs:{...a.prefs,mine:chosen,selection:selectMine?"mine":a.prefs.selection}}:a);
-    if(requestedPull?.root===root)requestedPull=null;
-    setSelected(null);
+    clearAuthorSelection();
   };
   const chooseAuthor=(key:string)=>{
     if(key==="mine"&&!mine){void setMyAuthor(true);return;}
     setAuthors(a=>({...a,prefs:{...a.prefs,selection:key,chosen:a.known.find(x=>x.key===key)??a.prefs.chosen}}));
-    if(requestedPull?.root===root)requestedPull=null;
-    setSelected(null);
+    clearAuthorSelection();
   };
   const savePreferences = (patch: Partial<PrPreferences>) => setPrefs(p => restorePrPreferences({ ...p, ...patch }));
   useEffect(() => { try { localStorage.setItem(prPreferencesKey(root), JSON.stringify(prefs)); } catch { toast.warning("PR Center preferences could not be saved"); } }, [root, prefs]);
@@ -197,7 +201,8 @@ function ConnectedPullRequests({ root }: { root: string }) {
   const direct = pullRequestNumber(query);
   const authorScan=useRef({key:"",pages:0});
   useEffect(()=>{const key=`${authors.scope}:${authors.prefs.selection}:${prefs.state}`;if(authorScan.current.key!==key)authorScan.current={key,pages:0};if(selectedAuthor&&!visible.length&&cursor&&!loading&&!error&&authorScan.current.pages<4){authorScan.current.pages++;void load(cursor);}},[authors.scope,authors.prefs.selection,prefs.state,selectedAuthor,visible.length,cursor,loading,error,load]);
-  const refresh = () => { preferred.current = selected; void load(); };
+  const refresh = useCallback(() => { preferred.current = selected ?? preferred.current; return load(); }, [selected, load]);
+  useEffect(() => onPrRefresh(root, refresh), [root, refresh]);
   const created = async () => { const p = await createPullRequest(root, forge); if (p) { if(requestedPull?.root===root)requestedPull=null; preferred.current = p.number; if (prefs.state !== "open") savePreferences({ state: "open" }); else void load(); } };
   const updated = useCallback((p: PullRequest) => {
     latestListRead.current = nextPrListRead();
@@ -219,7 +224,7 @@ function ConnectedPullRequests({ root }: { root: string }) {
     <main className="pr-content">
       <header className="pr-center-head"><button className="icon-btn" title={prefs.listOpen ? "Hide pull request list" : "Show pull request list"} aria-label={prefs.listOpen ? "Collapse pull request list" : "Show pull request list"} onClick={() => savePreferences({ listOpen: !prefs.listOpen })}><List size={16} /></button><div className="pr-connection"><b className="ellipsis" title={forge?.project}>PR Center{forge ? ` · ${forge.project}` : ""}</b><small>{forge ? `${FORGE_NAMES[forge.kind]} · ${forge.remote} · ${forge.accountLogin ?? "Git credentials"}` : "Choose an API account and remote to browse requests"}</small></div><div className="spacer" /><button className="btn sm" onClick={() => void forgeAccountsDialog(root)}>Accounts…</button>{!prefs.listOpen && <><button className="icon-btn" aria-label="Refresh pull requests" disabled={loading} onClick={refresh}><RefreshCw size={15} /></button><button className="btn sm primary" disabled={!forge?.connectionRevision || loading} onClick={() => void created()}>New PR</button></>}</header>
       {!prefs.listOpen && error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connection settings…</button></div>}
-      {forge?.connectionRevision && selected ? <RequestDetail key={`${forge.connectionRevision}:${selected}:${epoch}`} root={root} forge={forge} number={selected} prefs={prefs} savePreferences={savePreferences} updated={updated} watched={!!watch.selected[selected]} watchOwn={watchMine && !!mine} mine={mine} toggleWatch={() => toggleWatch(selected)} /> : <div className="pr-empty">{loading ? <><Loader2 size={22} className="spin" />Loading pull requests…</> : error ? "Configure the API connection or refresh to continue." : "Select a pull request or open one by number."}</div>}
+      {forge?.connectionRevision && selected ? <RequestDetail key={`${forge.connectionRevision}:${selected}:${epoch}`} root={root} forge={forge} number={selected} prefs={prefs} savePreferences={savePreferences} updated={updated} reloadConnection={refresh} watched={!!watch.selected[selected]} watchOwn={watchMine && !!mine} mine={mine} toggleWatch={() => toggleWatch(selected)} /> : <div className="pr-empty">{loading ? <><Loader2 size={22} className="spin" />Loading pull requests…</> : error ? "Configure the API connection or refresh to continue." : "Select a pull request or open one by number."}</div>}
     </main>
   </section>;
 }
@@ -308,7 +313,7 @@ function PrDescription({ detail, height, save }: { detail: PrDetail; height: num
   </>;
 }
 
-function RequestDetail({ root, forge, number, prefs, savePreferences, updated, watched, watchOwn, mine, toggleWatch }: { watched: boolean; watchOwn: boolean; mine: PrAuthor | null; toggleWatch: () => void; root: string; forge: ForgeInfo; number: number; prefs: PrPreferences; savePreferences: (p: Partial<PrPreferences>) => void; updated: (p: PullRequest) => void }) {
+function RequestDetail({ root, forge, number, prefs, savePreferences, updated, reloadConnection, watched, watchOwn, mine, toggleWatch }: { watched: boolean; watchOwn: boolean; mine: PrAuthor | null; toggleWatch: () => void; root: string; forge: ForgeInfo; number: number; prefs: PrPreferences; savePreferences: (p: Partial<PrPreferences>) => void; updated: (p: PullRequest) => void; reloadConnection: () => Promise<void> }) {
   const connection = forge.connectionRevision!;
   const [detail, setDetail] = useState<PrDetail | null>(null), [error, setError] = useState(""), [loading, setLoading] = useState(true);
 
@@ -329,7 +334,7 @@ function RequestDetail({ root, forge, number, prefs, savePreferences, updated, w
       <div className="pr-detail-actions"><div className="seg"><button className={prefs.section === "overview" ? "on" : ""} onClick={() => savePreferences({ section: "overview" })}>Overview</button><button className={prefs.section === "files" ? "on" : ""} onClick={() => savePreferences({ section: "files" })}><FileDiff size={13} />Files{detail.fileCount !== null ? ` (${detail.fileCount})` : ""}</button><button className={prefs.section === "discussions" ? "on" : ""} onClick={()=>savePreferences({section:"discussions"})}>Discussions</button></div><div className="spacer" /><button type="button" className="btn sm" onClick={()=>openOverlay({kind:"workflows",root,pull:{number:p.number,head:p.head,base:p.base,remote:forge.remote}})}>PR workflow…</button><button className="btn sm" onClick={() => void chooseReview({root,forge,detail},()=>void load(true))}>Review…</button>{p.state === "open" ? (bitbucket ? <button type="button" className="btn sm" onClick={() => browser(p.url)}><ExternalLink size={13} />Merge on Bitbucket</button> : <button className="btn sm primary" onClick={()=>void mergeDialog({root,forge,detail,updated:()=>void load(true)})}>Merge…</button>):p.state==="merged"?<button className="btn sm" onClick={()=>void cleanupDialog({root,forge,detail,updated:()=>void load(true)})}>Source cleanup…</button>:null}<button className="btn sm" onClick={() => void edit()}><Pencil size={13} />Edit PR</button><button className="btn sm" disabled={!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(p.headSha)} onClick={() => void A.act(root, () => api.pullRequestCheckout(root, p.number, connection, p.headSha), { success: b => `Checked out ${b}`, busy: `Fetching #${p.number}` })}><Download size={13} />Check out</button><button className="icon-btn" title="Open pull request in browser" aria-label="Open pull request in browser" onClick={() => browser(p.url)}><ExternalLink size={15} /></button><button className="icon-btn" title="Reload request" aria-label="Reload request" onClick={() => void load()}><RefreshCw size={15} /></button></div>
       <small className="pr-snapshot mono" title={`Target ${detail.baseSha} · source ${p.headSha}`}>Source {shortOid(p.headSha) || "unavailable"} · target {shortOid(detail.baseSha)} · refresh to load newer changes</small>
     </header>
-    {prefs.section === "discussions" ? <PrReviews root={root} forge={forge} detail={detail} refreshToken={reviewEpoch} onSent={()=>void load(true)}/> : prefs.section === "files" ? <RequestFiles root={root} forge={forge} detail={detail} prefs={prefs} savePreferences={savePreferences} onSent={()=>void load(true)}/> : <div className="pr-overview"><PrDescription detail={detail} height={prefs.descriptionHeight} save={descriptionHeight => savePreferences({ descriptionHeight })}/>{bitbucket ? <BitbucketOverview key={`${connection}:${detail.revision}`} root={root} connection={connection} detail={detail} /> : <PrMergePanel root={root} forge={forge} detail={detail} refreshToken={reviewEpoch} updated={()=>void load(true)}/>}</div>}
+    {prefs.section === "discussions" ? <PrReviews root={root} forge={forge} detail={detail} refreshToken={reviewEpoch} onReloadRequest={reloadConnection} onSent={()=>void load(true)}/> : prefs.section === "files" ? <RequestFiles root={root} forge={forge} detail={detail} prefs={prefs} savePreferences={savePreferences} onSent={()=>void load(true)}/> : <div className="pr-overview"><PrDescription detail={detail} height={prefs.descriptionHeight} save={descriptionHeight => savePreferences({ descriptionHeight })}/>{bitbucket ? <BitbucketOverview key={`${connection}:${detail.revision}`} root={root} connection={connection} detail={detail} /> : <PrMergePanel root={root} forge={forge} detail={detail} refreshToken={reviewEpoch} updated={()=>void load(true)}/>}</div>}
   </div>;
 }
 

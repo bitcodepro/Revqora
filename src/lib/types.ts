@@ -133,6 +133,7 @@ export interface FileDiff {
   deletions: number;
   truncated: boolean;
   hash: string;
+  stageSnapshot?: number;
   empty: boolean;
 }
 
@@ -429,6 +430,7 @@ export interface AskpassRequest {
   prompt: string;
   kind: "username" | "secret" | "yesno" | "text";
   origin: "git" | "ssh";
+  canRemember: boolean;
 }
 
 export interface BlameCommit {
@@ -818,7 +820,7 @@ export interface WorktreePruneResult { removed: string[]; kept: string[]; unknow
 
 export type ForgeAccountKind="github"|"gitlab"|"azure"|"bitbucket";
 export interface GitConnectionOptions {https:"auto"|"token"|"browser";ssh:"auto"|"agent"|"key"|"password";privateKey:string;sshProgram:string}
-export interface GitConnectionSnapshot {options:GitConnectionOptions;revision:string;credentialManagerConfigured:boolean}
+export interface GitConnectionSnapshot {options:GitConnectionOptions;revision:string;credentialManagerConfigured:boolean;canRememberTokens:boolean}
 export interface ForgeAccount {id:string;kind:ForgeAccountKind;server:string;login:string;userId:string;name:string;authMode:string;authUsername:string;identityVerified?:boolean|null;storage:"session"|"encrypted";status:"available"|"locked"|"reconnect"}
 export interface ForgeAccountsSnapshot {revision:string;accounts:ForgeAccount[];vaultConfigured:boolean;vaultUnlocked:boolean}
 export interface ForgeAccountInput {id:string|null;kind:ForgeAccountKind;server:string;username:string;token:string;authMode:string;persist:boolean;verifyIdentity?:boolean;gitSource?:{repo:string;remote:string;fingerprint:string}}

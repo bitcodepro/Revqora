@@ -25,10 +25,14 @@ describe("portable repository library", () => {
   it("relinks a moved or aliased folder across groups, favorites and workspace views", () => {
     const s = useLibrary.getState(), g = s.group("Project");
     s.move("E:/OLD", g); s.favorite("E:/OLD");
+    s.renameRepository("e:/old", "Backend API");
     s.save("Work", { roots: ["E:/OLD"], activeRoot: "E:/OLD", views: { "E:/OLD": "changes" }, layouts: restoreWorkspaceLayouts(), historyMode: "columns" });
     s.remember("E:\\actual", "e:/old");
     const lib = useLibrary.getState(); expect(lib.favorites).toEqual(["E:\\actual"]); expect(lib.groups[0].roots).toEqual(["E:\\actual"]);
     expect(lib.workspaces[0]).toMatchObject({ roots: ["E:\\actual"], activeRoot: "E:\\actual", views: { "E:\\actual": "changes" } });
+    expect(restoreLibrary(lib).repositoryNames).toEqual({ "e:/actual": "Backend API" });
+    s.renameRepository("E:/actual", "");
+    expect(useLibrary.getState().repositoryNames).toEqual({});
   });
   it("preserves folder provenance and keeps unrelated workspaces with the same name separate", () => {
     const library = restoreLibrary({ workspaces: [

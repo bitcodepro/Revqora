@@ -142,8 +142,26 @@ function WorkspaceEditor({ workspace, close }: { workspace?: SavedWorkspace; clo
   </Modal>;
 }
 
-function workspaceEditorDialog(workspace?: SavedWorkspace) {
+export function workspaceEditorDialog(workspace?: SavedWorkspace) {
   return showDialog<void>((close) => <WorkspaceEditor workspace={workspace} close={close} />);
+}
+
+export function renameWorkspaceDialog(workspace: SavedWorkspace) {
+  return named("Rename workspace", workspace.name, name => useLibrary.getState().rename(workspace.id, name));
+}
+
+export async function deleteWorkspaceDialog(workspace: SavedWorkspace) {
+  if (await confirmDialog({ title: "Delete saved workspace?", message: workspace.name + " will be removed from Workspaces. Repositories and their files stay available.", confirm: "Delete workspace", danger: true })) {
+    useLibrary.getState().remove(workspace.id);
+  }
+}
+
+export async function renameRepositoryDialog(root: string) {
+  const library = useLibrary.getState();
+  const original = useRepos.getState().tabs[root]?.info?.name ?? basename(root);
+  const initial = library.repositoryNames[repositoryKey(root)] ?? original;
+  const name = await promptDialog({ title: "Rename repository", initial, label: "Display name", help: `This changes the label in Revqora. Enter ${original} to restore the original name.`, validate: v => v.trim().length > 80 ? "Use at most 80 characters." : null });
+  if (name !== null) useLibrary.getState().renameRepository(root, name.trim() === original ? "" : name);
 }
 
 function WorkspaceMove({ fromId, close }: { fromId: string; close: () => void }) {
@@ -237,11 +255,12 @@ function RepositoryLibrary({ close }: { close: () => void }) {
   const lib = useLibrary(), tabs = useRepos((s) => s.tabs), order = useRepos((s) => s.order);
   const busy = useUi((s) => s.busy.length > 0);
   const [section, setSection] = useState("repositories"), [query, setQuery] = useState("");
-  const roots = [...new Set([...order, ...lib.knownRoots])].filter((r) => r.toLowerCase().includes(query.toLowerCase()));
+  const displayName = (root: string) => lib.repositoryNames[repositoryKey(root)] ?? basename(root);
+  const roots = [...new Set([...order, ...lib.knownRoots])].filter((r) => (r + " " + displayName(r)).toLowerCase().includes(query.toLowerCase()));
   return <Modal title="Repository library" wide subtitle="Favorites, project groups and saved workspaces" onClose={close} footer={<button type="button" className="btn primary" onClick={close}>Done</button>}>
     <div className="seg library-tabs">{["repositories", "groups", "workspaces"].map((s) => <button type="button" key={s} className={section === s ? "on" : ""} onClick={() => setSection(s)}>{s[0].toUpperCase() + s.slice(1)}</button>)}</div>
-    {section === "repositories" && <><input className="input" aria-label="Find saved repository" placeholder="Find by name or path…" value={query} onChange={(e) => setQuery(e.target.value)} /><div className="library-list">{roots.map((root) => <div className="library-row" key={root} onContextMenu={e => contextMenu(e, namePathMenu(basename(root), root, null))}>
-      <FavoriteButton root={root} /><div className="grow-text"><b>{basename(root)}</b><div className="batch-note library-path" title={root}>{root}</div></div>
+    {section === "repositories" && <><input className="input" aria-label="Find saved repository" placeholder="Find by name or path…" value={query} onChange={(e) => setQuery(e.target.value)} /><div className="library-list">{roots.map((root) => <div className="library-row" key={root} onContextMenu={e => contextMenu(e, namePathMenu(displayName(root), root, null))}>
+      <FavoriteButton root={root} /><div className="grow-text"><b>{displayName(root)}</b><div className="batch-note library-path" title={root}>{root}</div></div>
       <select className="input sm library-group-select" aria-label={`Group for ${basename(root)}`} value={lib.groups.find((g) => g.roots.some((r) => repositoryKey(r) === repositoryKey(root)))?.id ?? ""} onChange={(e) => lib.move(root, e.target.value || null)}><option value="">Ungrouped</option>{lib.groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select>
       <button type="button" className="btn sm" disabled={busy} onClick={() => { void openLibraryRepository(root); close(); }}>{tabs[root] ? "Activate" : "Open"}</button>
     </div>)}</div>{!roots.length && <div className="cg-empty">Open a repository to add it to your library.</div>}</>}
@@ -259,7 +278,7 @@ function RepositoryLibrary({ close }: { close: () => void }) {
         <button type="button" className="btn sm" title="Move repositories to another workspace" disabled={busy || !w.roots.length || lib.workspaces.length < 2}
           onClick={() => void showDialog<void>((done) => <WorkspaceMove fromId={w.id} close={done} />)}>Move repositories…</button>
         <button type="button" className="btn sm" disabled={busy} onClick={() => { close(); void openWorkspace(w.id, true); }} title="Open all repositories from this workspace in the current session">Add to session</button>
-        <button type="button" className="btn sm" onClick={() => void named("Rename workspace", w.name, (name) => lib.rename(w.id, name))}>Rename</button><button type="button" className="btn sm" onClick={async () => { if (await confirmDialog({ title: "Delete saved workspace?", message: "Open repositories and their files stay as they are.", confirm: "Delete workspace" })) lib.remove(w.id); }}>Delete</button>
+        <button type="button" className="btn sm" onClick={() => void renameWorkspaceDialog(w)}>Rename</button><button type="button" className="btn sm" onClick={() => void deleteWorkspaceDialog(w)}>Delete</button>
       </div>)}</div></>}
   </Modal>;
 }

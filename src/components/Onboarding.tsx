@@ -43,7 +43,7 @@ export function Onboarding() {
   const tips = [
     { icon: <Layers size={16} />, t: "Stage layers", d: "Seal what is staged into a layer and keep staging on top. Unstage, discard or commit any layer on its own." },
     { icon: <GitMerge size={16} />, t: "Merges wait for you", d: "A merge never commits by itself: review the result, resolve conflicts in the editor, then confirm — or abort." },
-    { icon: <Command size={16} />, t: "Command palette", d: "Ctrl+K finds any action, branch or repository." },
+    { icon: <Command size={16} />, t: "Command palette", d: "Ctrl+N finds any action, branch or repository." },
     { icon: <MousePointerClick size={16} />, t: "Right-click and drag", d: "Every commit, branch, file and layer has a context menu. Drag files between Unstaged and Staged, or a branch onto another." },
     { icon: <Keyboard size={16} />, t: "Shortcuts", d: "Change any shortcut in Settings." },
   ];

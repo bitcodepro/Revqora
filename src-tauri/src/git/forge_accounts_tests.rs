@@ -12,7 +12,13 @@ use std::{
 
 type Requests = Arc<Mutex<Vec<(String, String)>>>;
 fn git_prompt(prompt: &str) -> crate::askpass::AskpassRequest {
-    crate::askpass::AskpassRequest { id: 1, prompt: prompt.into(), kind: crate::askpass::classify(prompt).into(), origin: crate::askpass::Origin::Git }
+    crate::askpass::AskpassRequest {
+        id: 1,
+        prompt: prompt.into(),
+        kind: crate::askpass::classify(prompt).into(),
+        origin: crate::askpass::Origin::Git,
+        can_remember: false,
+    }
 }
 
 #[test]

@@ -1,8 +1,13 @@
 //! Unified diff parsing, display model and partial (hunk / line) patch building.
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use super::runner::{self, GitError, GitResult};
@@ -13,6 +18,18 @@ pub fn empty_tree(repo: &Path) -> GitResult<String> {
     Ok(runner::run_env(repo, ["hash-object", "-t", "tree", "--stdin"], &[], Some(&[]))?.trim().to_owned())
 }
 const MAX_DISPLAY_LINES: usize = 20_000;
+const STAGE_SNAPSHOT_LIMIT: usize = 64;
+const STAGE_SNAPSHOT_BYTES: usize = 1024 * 1024;
+
+struct StageSnapshot {
+    id: u64,
+    repo: PathBuf,
+    path: String,
+    raw: Arc<[u8]>,
+}
+
+static STAGE_SNAPSHOTS: Mutex<VecDeque<StageSnapshot>> = Mutex::new(VecDeque::new());
+static NEXT_STAGE_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
 pub struct RawLine {
@@ -80,8 +97,10 @@ pub struct FileDiff {
     pub additions: u32,
     pub deletions: u32,
     pub truncated: bool,
-    /// Fingerprint of the raw diff; partial staging is refused if it changed.
+    /// Fingerprint of the raw diff for actions that require a fresh worktree.
     pub hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage_snapshot: Option<u64>,
     pub empty: bool,
 }
 
@@ -348,7 +367,7 @@ pub enum WorkSide {
 
 /// Raw bytes of a working copy diff for a single path.
 pub fn working_raw(repo: &Path, path: &str, side: WorkSide, base: Option<&str>, untracked: bool, opts: &DiffOptions) -> GitResult<Vec<u8>> {
-    let mut args = vec!["diff".to_string()];
+    let mut args = vec!["diff".to_string(), "--full-index".into()];
     args.extend(base_args(opts));
     if untracked && side == WorkSide::Unstaged {
         args.push("--no-index".into());
@@ -382,10 +401,55 @@ pub fn working_diff(repo: &Path, path: &str, side: WorkSide, base: Option<&str>,
     let files = parse(&raw);
     // Pick the file entry matching the path (renames can produce one entry).
     let pick = files.iter().find(|f| f.new_path.as_deref() == Some(path)).or_else(|| files.first());
-    Ok(match pick {
-        Some(f) => to_display(f, path, hash),
-        None => FileDiff { path: path.to_string(), hash, empty: true, ..Default::default() },
-    })
+    let Some(file) = pick else {
+        return Ok(FileDiff { path: path.to_string(), hash, empty: true, ..Default::default() });
+    };
+    let mut display = to_display(file, path, hash);
+    if side == WorkSide::Unstaged
+        && files.len() == 1
+        && !display.binary
+        && !display.hunks.is_empty()
+        && file.old_path.as_deref().is_none_or(|old| old == path)
+        && file.new_path.as_deref().is_none_or(|new| new == path)
+        && raw.len() <= STAGE_SNAPSHOT_BYTES
+        && (file.is_new || stage_index_base(file).is_some())
+    {
+        let mut snapshots = STAGE_SNAPSHOTS.lock();
+        let id = NEXT_STAGE_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
+        if snapshots.len() == STAGE_SNAPSHOT_LIMIT {
+            snapshots.pop_front();
+        }
+        snapshots.push_back(StageSnapshot { id, repo: repo.into(), path: path.into(), raw: raw.into() });
+        display.stage_snapshot = Some(id);
+    }
+    Ok(display)
+}
+
+fn stage_index_base(file: &RawFileDiff) -> Option<(&str, &str)> {
+    let index = file.header.iter().find_map(|line| std::str::from_utf8(line).ok()?.strip_prefix("index "))?;
+    let (oids, mode) = index.split_once(' ').map_or((index.trim_end(), None), |(oids, mode)| (oids, Some(mode.trim_end())));
+    let (old, _) = oids.split_once("..")?;
+    Some((file.old_mode.as_deref().or(mode)?, old))
+}
+
+/// Stage the exact displayed patch against its original index entry. The
+/// working file may have been rewritten any number of times since display.
+pub fn stage_selection_snapshot(repo: &Path, path: &str, selection: &[(usize, usize)], id: u64) -> GitResult<bool> {
+    let raw = STAGE_SNAPSHOTS.lock().iter().find(|entry| entry.id == id && entry.repo == repo && entry.path == path).map(|entry| Arc::clone(&entry.raw));
+    let Some(raw) = raw else { return Ok(false) };
+    let file = parse(&raw).into_iter().next().ok_or_else(|| GitError::new("Nothing to apply."))?;
+    if !file.is_new {
+        let (mode, oid) = stage_index_base(&file).ok_or_else(|| GitError::new("The displayed patch has no index base."))?;
+        let entry = runner::run_bytes(repo, ["ls-files", "--stage", "-z", "--", &format!(":(literal){path}")])?;
+        let expected = format!("{mode} {oid} 0\t{path}\0");
+        if entry != expected.as_bytes() {
+            return Err(GitError::new("The staged version changed. Review the updated diff before staging these lines.").kind("stale"));
+        }
+    }
+    // Git applies new-file patches to absent or intent-to-add entries. It
+    // refuses to replace a file added to the index after this snapshot.
+    apply_selection_patch(repo, &file, SelectionMode::Stage, selection)?;
+    Ok(true)
 }
 
 /// Diff of a path between two revisions (`from` may be None for a root commit).
@@ -561,7 +625,6 @@ pub fn apply_selection(
     opts: &DiffOptions,
 ) -> GitResult<()> {
     let side = if mode == SelectionMode::Unstage { WorkSide::Staged } else { WorkSide::Unstaged };
-    let mut untracked = untracked;
     let raw = working_raw(repo, path, side, staged_base, untracked, opts)?;
     if fingerprint(&raw) != expected_hash {
         return Err(GitError::new("The file changed since the diff was shown. Refresh and try again.").kind("stale"));
@@ -569,18 +632,22 @@ pub fn apply_selection(
     if untracked && mode == SelectionMode::Stage {
         // Make the file known to the index so a normal patch can be applied.
         runner::run(repo, ["add", "--intent-to-add", "--", path])?;
-        untracked = false;
     }
-    let raw = if untracked { raw } else { working_raw(repo, path, side, staged_base, false, opts)? };
+    // Stage the validated snapshot. A second worktree read can return different
+    // lines while retaining the selection's old numeric coordinates.
+    let raw = if untracked || mode == SelectionMode::Stage { raw } else { working_raw(repo, path, side, staged_base, false, opts)? };
     let files = parse(&raw);
     let Some(file) = files.into_iter().next() else {
         return Err(GitError::new("Nothing to apply."));
     };
-    // Selection indexes refer to the displayed diff, which matches the regenerated one
-    // unless an intent-to-add header was introduced (only headers change, hunks stay).
+    apply_selection_patch(repo, &file, mode, selection)
+}
+
+fn apply_selection_patch(repo: &Path, file: &RawFileDiff, mode: SelectionMode, selection: &[(usize, usize)]) -> GitResult<()> {
+    // Selection indexes refer to the exact diff displayed for this operation.
     let sel: HashSet<(usize, usize)> = selection.iter().copied().collect();
     let reverse = mode != SelectionMode::Stage;
-    let Some(patch) = build_partial_patch(&file, &sel, reverse) else {
+    let Some(patch) = build_partial_patch(file, &sel, reverse) else {
         return Err(GitError::new("No changed lines selected."));
     };
     let mut args = vec!["apply", "--recount", "--whitespace=nowarn"];

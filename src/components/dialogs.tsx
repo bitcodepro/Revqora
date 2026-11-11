@@ -961,7 +961,7 @@ function ShortcutSettings() {
   const filtered = SHORTCUTS.filter((sc) => `${sc.label} ${sc.description} ${prettyCombo(bindingFor(sc.id, overrides))}`.toLowerCase().includes(search));
   return (
     <>
-      <input className="input" aria-label="Find shortcut" placeholder="Find an action or shortcut…" value={query} onChange={(e) => { setQuery(e.target.value); setError(""); }} />
+      <input className="input shortcut-search" aria-label="Find shortcut" placeholder="Find an action or shortcut…" value={query} onChange={(e) => { setQuery(e.target.value); setError(""); }} />
       <div className="batch-note">Select a shortcut and press a new combination. Press Escape to cancel or Backspace to clear it.</div>
       {error && <div className="callout warn" role="alert">{error}</div>}
       <div className="shortcut-settings">

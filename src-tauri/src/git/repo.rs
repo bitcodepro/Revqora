@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::runner::{self, GitError, GitResult};
 
@@ -13,6 +13,22 @@ pub struct HeadInfo {
     pub oid: Option<String>,
     pub detached: bool,
     pub unborn: bool,
+}
+
+#[derive(Deserialize)]
+pub struct SourceHead {
+    pub branch: Option<String>,
+    pub oid: Option<String>,
+}
+
+impl SourceHead {
+    pub fn verify(&self, repo: &Path) -> GitResult<()> {
+        let current = head(repo)?;
+        if self.branch != current.branch || self.oid != current.oid {
+            return Err(GitError::new("The current branch or commit changed. Review the refreshed view before trying again.").kind("stale-operation"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

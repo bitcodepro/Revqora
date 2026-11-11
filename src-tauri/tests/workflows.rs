@@ -520,6 +520,64 @@ fn stale_selection_is_refused() {
     r.write("f.txt", "c\n");
     let err = diff::apply_selection(r.p(), "f.txt", SelectionMode::Stage, &[(0, 0), (0, 1)], &d.hash, None, false, &opts()).unwrap_err();
     assert_eq!(err.kind, "stale");
+    assert_eq!(r.index_blob("f.txt"), "a\n");
+}
+
+#[test]
+fn stage_with_head_guard_uses_the_current_file_and_rejects_a_different_branch() {
+    let r = Repo::new();
+    r.write("live.txt", "base\n");
+    let oid = r.commit_all("base");
+    let source = repo::SourceHead { branch: Some("main".into()), oid: Some(oid) };
+    r.write("live.txt", "first edit\n");
+    let observed = status::status(r.p()).unwrap();
+    r.write("live.txt", "most recent edit\n");
+    assert_ne!(observed.state_token, status::status(r.p()).unwrap().state_token);
+
+    let stage = || {
+        revqora_lib::git::operations::run(
+            r.p(),
+            "stage",
+            None,
+            |_, _| {},
+            || {
+                source.verify(r.p())?;
+                ops::stage_paths(r.p(), &["live.txt".to_string()])
+            },
+        )
+    };
+    stage().unwrap();
+    assert_eq!(r.index_blob("live.txt"), "most recent edit\n");
+
+    r.write("live.txt", "another background write\n");
+    assert_eq!(r.index_blob("live.txt"), "most recent edit\n");
+    assert_eq!(r.read("live.txt"), "another background write\n");
+    r.git(&["switch", "-c", "other"]);
+    assert_eq!(stage().unwrap_err().kind, "stale-operation");
+    assert_eq!(r.index_blob("live.txt"), "most recent edit\n");
+}
+
+#[test]
+fn stage_hunk_uses_the_shown_snapshot_and_can_be_replaced_by_a_newer_edit() {
+    let r = Repo::new();
+    r.write("live.txt", "base\n");
+    r.commit_all("base");
+    r.write("live.txt", "first edit\n");
+    let first = diff::working_diff(r.p(), "live.txt", WorkSide::Unstaged, None, false, &opts()).unwrap();
+    let selection = select_lines(&first, |k, _| k == "+" || k == "-");
+    r.write("live.txt", "second edit\n");
+    let first_id = first.stage_snapshot.unwrap();
+    assert!(diff::stage_selection_snapshot(r.p(), "live.txt", &selection, first_id).unwrap());
+    assert_eq!(r.index_blob("live.txt"), "first edit\n");
+    assert_eq!(r.read("live.txt"), "second edit\n");
+
+    let second = diff::working_diff(r.p(), "live.txt", WorkSide::Unstaged, None, false, &opts()).unwrap();
+    let selection = select_lines(&second, |k, _| k == "+" || k == "-");
+    let second_id = second.stage_snapshot.unwrap();
+    assert!(diff::stage_selection_snapshot(r.p(), "live.txt", &selection, second_id).unwrap());
+    assert_eq!(r.index_blob("live.txt"), "second edit\n");
+    assert_eq!(diff::stage_selection_snapshot(r.p(), "live.txt", &selection, first_id).unwrap_err().kind, "stale");
+    assert_eq!(r.index_blob("live.txt"), "second edit\n");
 }
 
 #[test]

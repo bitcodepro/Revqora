@@ -13,12 +13,12 @@ import { listenMcpDesktop } from "./lib/mcpDesktop";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Columns3, FilePlus2, GitBranch, GitCommitHorizontal, GitGraph, GitPullRequest, Maximize2, Minimize2, RefreshCw, Rows3 } from "lucide-react";
+import { Columns3, FilePlus2, GitCommitHorizontal, GitGraph, GitPullRequest, Maximize2, Minimize2, RefreshCw, Rows3 } from "lucide-react";
 import { PullRequestsView } from "./components/PullRequests";
 import { useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
-import { openOverlay, toast, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
-import { actionFor, comboFromEvent, shortcutTitle } from "./lib/shortcuts";
+import { openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
+import { actionFor, comboFromEvent, matchesShortcut, PANEL_NAMES, shortcutTitle } from "./lib/shortcuts";
 import { settingsDialog } from "./components/dialogs";
 import { repoToolsDialog } from "./components/RepoTools";
 import { Onboarding } from "./components/Onboarding";
@@ -26,7 +26,7 @@ import { GitMissing } from "./components/GitMissing";
 import * as A from "./lib/actions";
 import { api, errorMessage } from "./lib/api";
 import { WORKTREE } from "./lib/types";
-import { CommandPalette, OpBanner, StatusBar, TopBar, Welcome } from "./components/Shell";
+import { CommandPalette, OpBanner, paletteShortcut, StatusBar, TopBar, Welcome } from "./components/Shell";
 import { ContextMenuHost, DialogHost, Splitter, ToastHost } from "./components/Overlays";
 import { bindingFor, prettyCombo } from "./lib/shortcuts";
 import { Sidebar } from "./components/Sidebar";
@@ -46,11 +46,12 @@ import { startUpdateChecks } from "./lib/update";
 import { createAutoFetch, defaultFetch } from "./lib/autofetch";
 import { useBackgroundPoll } from "./lib/backgroundPolling";
 import { checkPullRequestActivity, resetPullRequestActivity } from "./lib/prTracking";
+import { refreshRepositoryView } from "./lib/prRefresh";
 import { RepositoryOverview, RepositorySidebar } from "./components/Repositories";
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
 import { WorkspacesSidebar } from "./components/WorkspacesSidebar";
-import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows } from "./components/PanelWindows";
+import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows, type PanelId } from "./components/PanelWindows";
 import "./styles/workspace.css";
 
 function useAppearance() {
@@ -77,6 +78,18 @@ function useAppearance() {
   }, [s.uiFontSize, s.codeFontSize, s.uiFont, s.codeFont]);
 }
 
+function RepositoryRefresh({ root }: { root: string }) {
+  const [busy, setBusy] = useState(false);
+  const refresh = async () => {
+    setBusy(true);
+    try { await refreshRepositoryView(root); }
+    finally { setBusy(false); }
+  };
+  return <button className="icon-btn" title={shortcutTitle("Refresh", "refresh")} disabled={busy} aria-busy={busy} onClick={() => void refresh()}>
+    <RefreshCw size={15} className={busy ? "spin" : ""} />
+  </button>;
+}
+
 function RepositoryContent({ tab }: { tab: RepoTab }) {
   if (!tab.info) return <div className="repository-opening" role="status">
     <h2>{tab.root.split(/[\\/]/).filter(Boolean).at(-1)}</h2>
@@ -90,7 +103,7 @@ function RepositoryContent({ tab }: { tab: RepoTab }) {
 const repositoryRemotesKey = (tab: RepoTab) => JSON.stringify(tab.refs?.remotes.map(({ name, fetchUrl }) => [name, fetchUrl]) ?? []);
 
 function RepoWorkspace({ tab }: { tab: RepoTab }) {
-  const { panels, toggleSidebar } = usePanelWindows();
+  const { panels } = usePanelWindows();
   const historyMenu = usePanelTitleMenu("history");
   const changesMenu = usePanelTitleMenu("changes");
   const pullMenu = usePanelTitleMenu("pulls");
@@ -148,7 +161,6 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
       {showBranches && <Splitter dir="v" style={{ left: sw }} onDrag={(d) => setSw((w) => Math.max(180, Math.min(420, w + d)))} onEnd={() => setLayout({ sidebarWidth: sw })} />}
       <div className="main">
         <div className="main-head">
-          <button className={`btn sm branches-toggle ${showBranches ? "active" : ""}`} aria-expanded={showBranches} title="Toggle branches panel" onClick={() => toggleSidebar("branches")}><GitBranch size={13} /> Branches</button>
           <div className="view-tabs">
             <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onContextMenu={historyMenu} onClick={() => patch(root, { view: "history" })} title={shortcutTitle("History", "history")}>
               <GitCommitHorizontal size={15} /> History
@@ -172,9 +184,7 @@ function RepoWorkspace({ tab }: { tab: RepoTab }) {
             </div>
           )}
           <button className={`icon-btn focus-toggle ${focusMode ? "active" : ""}`} title={focusMode ? "Exit focus mode" : "Focus on code"} aria-label={focusMode ? "Exit focus mode" : "Focus on code"} aria-pressed={focusMode} onClick={() => setLayout({ focusMode: !focusMode })}>{focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
-          <button className="icon-btn" title={shortcutTitle("Refresh", "refresh")} onClick={() => useRepos.getState().refresh(root)}>
-            <RefreshCw size={15} />
-          </button>
+          <RepositoryRefresh key={root} root={root} />
         </div>
         <OpBanner tab={tab} onResolve={openConflict} />
         {latestSwitchStash && <div className="branch-switch-stash hstack">
@@ -269,7 +279,7 @@ export default function App() {
 }
 
 function MainApp() {
-  const { panels, attach, toggleSidebar } = usePanelWindows();
+  const { panels, attach, detach, toggleSidebar } = usePanelWindows();
   useAppearance();
   useEffect(startUpdateChecks, []);
   useAutoFetch();
@@ -380,7 +390,7 @@ function MainApp() {
       if (e.defaultPrevented || e.isComposing) return;
       const target = e.target as HTMLElement;
       const owner = target?.ownerDocument ?? document;
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" &&
+      if (matchesShortcut(e, "workspaceUndo") &&
           useSettings.getState().workspacesOpen && hasWorkspaceDropToUndo() &&
           !target?.closest?.("input, textarea, select, [contenteditable], .cm-editor") && !owner.querySelector(".modal")) {
         e.preventDefault();
@@ -405,8 +415,8 @@ function MainApp() {
         palette: () => { window.focus(); useUi.getState().setPalette(true); },
         paletteAlternate: () => { window.focus(); useUi.getState().setPalette(true); },
         open: () => A.openRepoDialog(),
-        refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && st.refresh(a),
-        overview: () => useUi.setState({ repositoryOverview: true }),
+        refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && refreshRepositoryView(a),
+        overview: toggleRepositoryOverview,
         workspacesPanel: () => toggleSidebar("workspaces"),
         repositoriesPanel: () => toggleSidebar("repositories"),
         branchesPanel: () => toggleSidebar("branches"),
@@ -448,12 +458,53 @@ function MainApp() {
         e.preventDefault();
         if (["history", "changes", "pulls", "reviewMode"].includes(id)) useUi.setState({ repositoryOverview: false });
         run[id]();
+        return;
+      }
+      if (e.repeat || owner.querySelector(".modal, .palette") || typing) return;
+      const panel = id.startsWith("window-") ? id.slice(7) as PanelId : null;
+      if (panel && Object.hasOwn(PANEL_NAMES, panel)) {
+        if (panels[panel]) { e.preventDefault(); attach(panel); return; }
+        if (panel !== "workspaces" && panel !== "repositories" && !t?.info) return;
+        if (panel === "commit" && (!t?.selected || t.selected === WORKTREE)) return;
+        e.preventDefault();
+        detach(panel);
+        return;
+      }
+      if (id === "repository-actions") {
+        e.preventDefault();
+        const settings = useSettings.getState();
+        settings.set({ repositoryActionsCollapsed: !settings.repositoryActionsCollapsed });
+        if (settings.repositoryActionsCollapsed && (panels.repositories || !layout.repositoriesOpen || layout.focusMode)) toggleSidebar("repositories");
+        return;
+      }
+      const historyMode = HISTORY_MODES.find(value => id === `layout-${value}`);
+      if (historyMode && a && t?.info) {
+        e.preventDefault();
+        useSettings.getState().set({ historyMode });
+        useUi.setState({ repositoryOverview: false });
+        st.patch(a, { view: "history" });
+        return;
+      }
+      if (id === "close-preview" && a && t?.selected && t.selected !== WORKTREE) {
+        e.preventDefault();
+        st.patch(a, { selected: null, multi: [] });
+        return;
+      }
+      if (id === "worktree-manager" && panels.worktrees) {
+        e.preventDefault();
+        panels.worktrees.focus();
+        return;
+      }
+      const command = paletteShortcut(id, t?.info ? t : null);
+      if (command) {
+        e.preventDefault();
+        command();
       }
     };
     const surfaces = [window, ...Object.values(panels)];
     for (const view of surfaces) view.addEventListener("keydown", onKey);
     return () => { for (const view of surfaces) view.removeEventListener("keydown", onKey); };
-  }, [panels, toggleSidebar]);
+  }, [panels, attach, detach, toggleSidebar]);
 
   // Block the default browser context menu outside our own menus.
   useEffect(() => {

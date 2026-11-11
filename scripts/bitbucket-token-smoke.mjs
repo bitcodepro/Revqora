@@ -83,7 +83,7 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       // the connection probe, since account events can also refresh PR lists.
       await page.locator(".main-head").getByRole("button",{name:"History",exact:true}).click();
       await localCenter.waitFor({state:"detached"});
-      await page.getByTitle("Command palette (Ctrl+K)",{exact:true}).click();await page.waitForFunction(()=>document.activeElement===document.querySelector(".palette input"));await page.locator(".palette input").fill("Clone repository");await page.locator(".palette-item").filter({hasText:"Clone repository…"}).click();
+      await page.getByTitle("Command palette (Ctrl+N)",{exact:true}).click();await page.waitForFunction(()=>document.activeElement===document.querySelector(".palette input"));await page.locator(".palette input").fill("Clone repository");await page.locator(".palette-item").filter({hasText:"Clone repository…"}).click();
       await page.getByRole("textbox",{name:"Repository URL",exact:true}).fill(`git clone http://${user}@127.0.0.1:${server.address().port}/team/repo.git`);
       await page.waitForFunction(()=>document.querySelector('[aria-label="Clone folder name"]')?.value==="repo");
       await page.getByRole("textbox",{name:"Clone parent folder",exact:true}).fill(parent);await button("Clone").click();
@@ -134,6 +134,18 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await prButton("Load checks").click();
       await detailPanel.getByText("Build fixture",{exact:true}).waitFor();
       assert.equal(seen.filter(r=>r.path.endsWith("/statuses")).length,1);
+      pr.updated_on="2026-01-02T00:00:00Z";
+      await prButton("Discussions").click();
+      const staleDiscussions=detailPanel.getByRole("alert").filter({hasText:"Reload it to see the latest discussions"});
+      await staleDiscussions.getByRole("button",{name:"Reload pull request",exact:true}).click();
+      await detailPanel.getByText("No matching discussions in the loaded pages.",{exact:true}).waitFor();
+      pr.description="Updated through the main refresh button";
+      const listsBefore=seen.filter(r=>r.path.endsWith("/team/repo/pullrequests")).length;
+      await page.locator(".main-head").getByTitle("Refresh (F5)",{exact:true}).click();
+      await detailPanel.getByText("No matching discussions in the loaded pages.",{exact:true}).waitFor();
+      assert(seen.filter(r=>r.path.endsWith("/team/repo/pullrequests")).length>listsBefore,"Main refresh did not fetch the PR list");
+      await prButton("Overview").click();
+      await detailPanel.getByText(pr.description,{exact:true}).waitFor();
       pr.state="DECLINED";
       await prButton("Reload request").click();
       await detailPanel.getByText("Declined",{exact:true}).waitFor();

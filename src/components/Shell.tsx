@@ -2,7 +2,11 @@ import {forgeAccountsDialog} from "./ForgeAccounts";
 import { aboutDialog } from "./AboutDialog";
 import { branchCommitCompare } from "./BranchCommitCompare";
 import { SyncButton, syncRepositories } from "./SyncRepositories";
-import { RepositoryLibraryButton, WorkspacePicker, repositoryLibraryDialog } from "./RepositoryLibrary";
+import { RepositoryLibraryButton, WorkspacePicker, repositoryLibraryDialog, workspaceEditorDialog } from "./RepositoryLibrary";
+import { fetchRepositories, pullRepositories } from "./Repositories";
+import { openAllWorkspaces } from "../lib/repositoryWorkspaces";
+import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
+import { repositoryKey, useLibrary } from "../lib/repositoryLibrary";
 import { PanelWindowsButton, usePanelWindowMenu, usePanelWindows } from "./PanelWindows";
 import { WORKTREE } from "../lib/types";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
@@ -56,7 +60,7 @@ import {
 import { useRepos, type RepoTab } from "../lib/store";
 import { resolvedTheme, useSettings } from "../lib/settings";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { contextMenu, endBusy, openOverlay, startBusy, toast, useUi, type MenuItem } from "../lib/ui";
+import { contextMenu, endBusy, openOverlay, startBusy, toast, toggleRepositoryOverview, useUi, type MenuItem } from "../lib/ui";
 import { namePathMenu } from "./NamePathMenu";
 import * as A from "../lib/actions";
 import * as XA from "../lib/extraActions";
@@ -74,6 +78,21 @@ import { OperationLogButton, operationLogDialog } from "./OperationLog";
 import { recoveryDialog } from "./RecoveryCenter";
 import {gitConnectionDialog} from "./GitConnections";
 
+async function checkUpdates() {
+  const update = useUpdate.getState();
+  if (!canCheckUpdates(update.phase)) return;
+  const id = newOpId();
+  startBusy(id, "Checking for updates");
+  try {
+    const info = await update.check(true);
+    const error = useUpdate.getState().error;
+    if (error) toast.error(error, "Could not check for updates");
+    else if (info && !info.available) toast.info("Revqora is up to date", `Version ${info.current}`);
+  } finally {
+    endBusy(id);
+  }
+}
+
 // ───────────── top bar ─────────────
 
 export function TopBar() {
@@ -86,12 +105,15 @@ export function TopBar() {
   const status = tab?.status;
   const stashCount = tab?.refs?.stashes.length ?? 0;
   const root = tab?.root;
+  const repositoryName = useLibrary(s => root ? s.repositoryNames[repositoryKey(root)] : undefined) ?? tab?.info?.name ?? (root ? basename(root) : "Repositories");
   const dark = resolvedTheme(theme) === "dark";
   const overview = useUi((s) => s.repositoryOverview);
   const workspacesOpen = useSettings(s => s.workspacesOpen);
   const shortcuts = useSettings(s => s.shortcuts);
   const updatePhase = useUpdate(s => s.phase);
-  const { layout: { repositoriesOpen, focusMode } } = useWorkspaceLayout();
+  const { layout: { repositoriesOpen, branchesOpen, focusMode } } = useWorkspaceLayout();
+  const canToggleBranches = !!tab?.info;
+  const showBranches = canToggleBranches && !overview && branchesOpen && !focusMode && !panels.branches;
   const hasCommit = !!tab?.selected && tab.selected !== WORKTREE;
   const panelWindowMenu = usePanelWindowMenu(!!tab?.info, hasCommit);
   const openWorktrees = (repo: string) => panels.worktrees ? panels.worktrees.focus() : openOverlay({ kind: "worktrees", root: repo });
@@ -100,24 +122,11 @@ export function TopBar() {
     useUi.setState({ repositoryOverview: false });
     useRepos.getState().patch(root, { view });
   };
-  const checkUpdates = async () => {
-    const update = useUpdate.getState();
-    if (!canCheckUpdates(update.phase)) return;
-    const id = newOpId();
-    startBusy(id, "Checking for updates");
-    try {
-      const info = await update.check(true);
-      const error = useUpdate.getState().error;
-      if (error) toast.error(error, "Could not check for updates");
-      else if (info && !info.available) toast.info("Revqora is up to date", `Version ${info.current}`);
-    } finally {
-      endBusy(id);
-    }
-  };
   const menu: MenuItem[] = [
     { label: "Workspaces", icon: <FolderKanban size={15}/>, checked: workspacesOpen && !focusMode, hint: prettyCombo(bindingFor("workspacesPanel", shortcuts)), onClick: () => toggleSidebar("workspaces") },
     { label: "Toggle repositories panel", icon: <PanelLeft size={15}/>, hint: prettyCombo(bindingFor("repositoriesPanel", shortcuts)), onClick: () => toggleSidebar("repositories") },
-    { label: "All repositories", icon: <LayoutGrid size={15}/>, onClick: () => useUi.setState({ repositoryOverview: true }) },
+    { label: "Toggle branches panel", icon: <GitBranch size={15}/>, checked: showBranches, disabled: !canToggleBranches, hint: prettyCombo(bindingFor("branchesPanel", shortcuts)), onClick: () => toggleSidebar("branches") },
+    { label: overview ? "Close repository overview" : "All repositories", icon: <LayoutGrid size={15}/>, onClick: toggleRepositoryOverview },
     { label: "Repository library and workspaces", onClick: () => void repositoryLibraryDialog() },
     { label: "Open repositories…", icon: <Plus size={15}/>, onClick: () => void A.openRepoDialog() },
     { label: "Import folder…", icon: <FolderSearch size={15}/>, onClick: () => void repositoryFolderImportDialog() },
@@ -126,7 +135,6 @@ export function TopBar() {
       { label: "History", onClick: () => showView("history") },
       { label: "Changes", onClick: () => showView("changes") },
       { label: "Pull requests / Merge requests", onClick: () => showView("pulls") },
-      { label: "Toggle branches panel", hint: prettyCombo(bindingFor("branchesPanel", shortcuts)), onClick: () => toggleSidebar("branches") },
       { label: "Refresh repository", icon: <RefreshCw size={15}/>, onClick: () => void useRepos.getState().refresh(root) },
       { separator: true },
       { label: "Sync…", onClick: () => void syncRepositories([root]) },
@@ -151,7 +159,7 @@ export function TopBar() {
     { separator: true },
     { label: "Panels in separate windows", children: panelWindowMenu },
     { label: "Command palette", icon: <Command size={15}/>, onClick: () => useUi.getState().setPalette(true) },
-    { label: "Operation log", onClick: () => void operationLogDialog(root ?? null) },
+    { label: "Operation log", hint: prettyCombo(bindingFor("operation-log", shortcuts)), onClick: () => void operationLogDialog(root ?? null) },
     { label: dark ? "Light theme" : "Dark theme", icon: dark ? <Sun size={15}/> : <Moon size={15}/>, onClick: () => setS({ theme: dark ? "light" : "dark" }) },
     { label: "Accounts and API connections…", icon: <UserRound size={15}/>, onClick: () => void forgeAccountsDialog(root ?? null) },
     { label: "Check Updates", icon: <Download size={15}/>, disabled: !canCheckUpdates(updatePhase), onClick: () => void checkUpdates() },
@@ -163,12 +171,11 @@ export function TopBar() {
       <div className="topbar-navigation" role="group" aria-label="Repository navigation">
         <button type="button" className={`icon-btn ${workspacesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle Workspaces panel", "workspacesPanel")} aria-label="Toggle Workspaces panel" aria-pressed={workspacesOpen && !focusMode} onClick={() => toggleSidebar("workspaces")}><FolderKanban size={16}/></button>
         <button type="button" className={`icon-btn ${repositoriesOpen && !focusMode ? "active" : ""}`} title={shortcutTitle("Toggle repositories panel", "repositoriesPanel")} aria-label="Toggle repositories panel" aria-expanded={repositoriesOpen && !focusMode} onClick={() => toggleSidebar("repositories")}><PanelLeft size={16} /></button>
-        <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" onClick={() => useUi.setState({ repositoryOverview: true })}><LayoutGrid size={16} /></button>
-        <RepositoryLibraryButton />
+        <button type="button" className={`icon-btn ${showBranches ? "active" : ""}`} title={shortcutTitle("Toggle branches panel", "branchesPanel")} aria-label="Toggle branches panel" aria-expanded={showBranches} disabled={!canToggleBranches} onClick={() => toggleSidebar("branches")}><GitBranch size={16} /></button>
       </div>
       <WorkspacePicker />
-      <div className="repo-current" title={root ?? ""} onContextMenu={e => { if (root && !overview) contextMenu(e, namePathMenu(tab?.info?.name ?? basename(root), root, null)); }}>
-        <b>{overview ? "All repositories" : tab?.info?.name ?? (root ? basename(root) : "Repositories")}</b>
+      <div className="repo-current" title={root ?? ""} onContextMenu={e => { if (root && !overview) contextMenu(e, namePathMenu(repositoryName, root, null)); }}>
+        <b>{overview ? "All repositories" : repositoryName}</b>
         {!overview && tab?.info && <span onContextMenu={e => { if (root && tab.info?.head.branch) contextMenu(e, namePathMenu(tab.info.head.branch, root, `refs/heads/${tab.info.head.branch}`)); }}><GitBranch size={12} />{tab.info.head.branch ?? shortOid(tab.info.head.oid ?? "")}</span>}
       </div>
       <button className="icon-btn" title={shortcutTitle("Open repository", "open")} aria-label="Open repositories" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>
@@ -211,11 +218,16 @@ export function TopBar() {
           <button className="icon-btn" title="Open terminal here" onClick={() => api.openTerminal(root)}>
             <SquareTerminal size={16} />
           </button>
-          <button className="icon-btn" title="Show in Explorer" onClick={() => api.revealPath(root)}>
-            <FolderOpen size={16} />
-          </button>
         </div>
       )}
+      <div className="topbar-empty" aria-hidden="true"/>
+      <div className="topbar-repository-actions" role="group" aria-label="Repository actions">
+        <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={16} /></button>
+        <RepositoryLibraryButton />
+        {root && tab?.info && !overview && <button type="button" className="icon-btn" title="Show in Explorer" onClick={() => api.revealPath(root)}>
+          <FolderOpen size={16} />
+        </button>}
+      </div>
       <div className="tb-sep" />
       <PanelWindowsButton hasRepository={!!tab?.info} hasCommit={hasCommit}/>
       <button className="icon-btn" title={shortcutTitle("Command palette", "palette")} onClick={() => useUi.getState().setPalette(true)}>
@@ -229,7 +241,6 @@ export function TopBar() {
       <button className="icon-btn" title="Settings" onClick={() => settingsDialog(root ?? null)}>
         <Settings2 size={16} />
       </button>
-      <div className="topbar-empty" aria-hidden="true"/>
     </div>
   );
 }
@@ -421,6 +432,11 @@ const QUIET_OPERATIONS: ReturnType<typeof useUi.getState>["repositoryOperations"
 export function StatusBar() {
   const version = useAppVersion();
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
+  const hasOpenRepositories = useRepos((s) => s.order.length > 0);
+  const hasBookmarks = useLibrary((s) => s.knownRoots.length > 0);
+  const actionsCollapsed = useSettings((s) => s.repositoryActionsCollapsed);
+  const { panels, toggleSidebar } = usePanelWindows();
+  const { layout: { repositoriesOpen, focusMode } } = useWorkspaceLayout();
   const busy = useUi((s) => s.busy);
   const operations = useUi((s) => s.repositoryOperations.some(op => op.command !== "fetch_background") ? s.repositoryOperations : QUIET_OPERATIONS);
   const [git, setGit] = useState("");
@@ -436,6 +452,10 @@ export function StatusBar() {
   return (
     <div className="statusbar">
       <div className="statusbar-context">
+        {actionsCollapsed && (hasOpenRepositories || hasBookmarks) && <button type="button" className="item statusbar-repository-actions" aria-label="Show repository actions" title="Show repository actions" onClick={() => {
+          useSettings.getState().set({ repositoryActionsCollapsed: false });
+          if (panels.repositories || !repositoriesOpen || focusMode) toggleSidebar("repositories");
+        }}><FolderGit2 size={14} /></button>}
         {tab && head && (
           <span className="item" onContextMenu={e => { if (head.branch) contextMenu(e, namePathMenu(head.branch, tab.root, `refs/heads/${head.branch}`)); }}>
             <GitBranch size={12} />
@@ -584,6 +604,96 @@ function score(q: string, s: string): number {
   return qi === q.length ? 10 : 0;
 }
 
+function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
+  const list: Cmd[] = [
+    { id: "open", label: "Open repository…", group: "Repository", icon: <FolderOpen size={15} />, run: () => A.openRepoDialog() },
+    { id: "import-folder", label: "Import repositories from a folder…", group: "Repository", icon: <FolderSearch size={15} />, run: () => void repositoryFolderImportDialog() },
+    { id: "clone", label: "Clone repository…", group: "Repository", icon: <Download size={15} />, run: () => A.cloneRepo() },
+    { id: "init", label: "New repository…", group: "Repository", icon: <Plus size={15} />, run: () => A.initRepoDialog() },
+    {id:"forge-accounts",label:"Accounts and API connections",group:"App",icon:<UserRound size={15}/>,run:()=>forgeAccountsDialog(tab?.root??null)},
+    { id: "settings", label: "Settings", group: "App", icon: <Settings2 size={15} />, run: () => settingsDialog(tab?.root ?? null) },
+    { id: "about", label: "About Revqora", group: "App", icon: <Info size={15} />, run: () => aboutDialog() },
+    { id: "operation-log", label: "Operation log…", group: "App", icon: <History size={15} />, run: () => operationLogDialog(tab?.root ?? null) },
+    { id: "repository-library", label: "Repository library and workspaces…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => repositoryLibraryDialog() },
+    { id: "workspace-create", label: "Create workspace…", group: "Repository", icon: <FolderKanban size={15} />, run: () => workspaceEditorDialog() },
+    { id: "all-workspaces", label: "All Workspaces", group: "Repository", icon: <FolderKanban size={15} />, run: openAllWorkspaces },
+    { id: "check-updates", label: "Check Updates", group: "App", icon: <Download size={15} />, run: checkUpdates },
+    { id: "workspace-search", label: "Search all repositories", group: "History", icon: <FolderSearch size={15} />, run: () => workspaceCommitSearch("", "quick") },
+    { id: "sync-all", label: "Sync all repositories…", group: "Remote", icon: <RefreshCw size={15} />, run: () => { const roots = useRepos.getState().order; if (roots.length) void syncRepositories(roots); } },
+    { id: "fetch-all", label: "Fetch all repositories", group: "Remote", icon: <Download size={15} />, run: () => fetchRepositories() },
+    { id: "pull-all", label: "Pull all repositories…", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => { const roots = useRepos.getState().order; if (roots.length) void pullRepositories(roots); } },
+    ...(tab ? [{ id: "recovery-center", label: "Undo Center…", group: "Repository", icon: <ShieldCheck size={15} />, run: () => recoveryDialog(tab.root) }] : []),
+    {
+      id: "theme",
+      label: "Toggle dark / light theme",
+      group: "App",
+      icon: <Moon size={15} />,
+      run: () => {
+        const s = useSettings.getState();
+        s.set({ theme: resolvedTheme(s.theme) === "dark" ? "light" : "dark" });
+      },
+    },
+  ];
+  if (tab) {
+    const root = tab.root;
+    list.push(
+      { id: "fetch", label: "Fetch", group: "Remote", icon: <RefreshCw size={15} />, run: () => A.fetchAll(root) },
+      { id: "sync", label: "Sync repository…", group: "Remote", icon: <RefreshCw size={15} />, run: () => syncRepositories([root]) },
+      { id:"git-connections",label:"Git connection settings…",group:"Remote",icon:<KeyRound size={15}/>,run:()=>gitConnectionDialog(root) },
+      { id: "pull", label: "Pull", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => A.pull(root) },
+      { id: "push", label: "Push…", group: "Remote", icon: <ArrowUpFromLine size={15} />, run: () => A.push(root) },
+      { id: "branch", label: "New branch…", group: "Branch", icon: <GitBranchPlus size={15} />, run: () => A.createBranch(root, null, tab.info?.head.branch ?? "HEAD") },
+      { id: "branch-manager", label: "Branch manager…", group: "Branch", icon: <GitBranch size={15} />, run: () => openOverlay({ kind: "branches", root }) },
+      { id: "stash", label: "Stash changes…", group: "Changes", icon: <Archive size={15} />, run: () => A.stash(root) },
+      { id: "pop-stash", label: "Pop latest stash", group: "Changes", icon: <ArchiveRestore size={15} />, run: () => { if (tab.refs?.stashes.length) void A.stashApply(root, 0, true); } },
+      { id: "tools", label: "Repository tools (gc, maintenance)…", group: "Repository", icon: <Wrench size={15} />, run: () => repoToolsDialog(root) },
+      { id: "deleted", label: "Recently deleted branches…", group: "Branch", icon: <Undo2 size={15} />, run: () => repoToolsDialog(root, "deleted") },
+      { id: "patch", label: "Apply patch file…", group: "Repository", icon: <Plus size={15} />, run: () => applyPatchFile(root) },
+      { id: "browse", label: "Browse files (HEAD)", group: "Repository", icon: <FolderOpen size={15} />, run: () => openOverlay({ kind: "tree", root, rev: "HEAD" }) },
+      { id: "worktree-manager", label: "Worktree manager…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => openOverlay({ kind: "worktrees", root }) },
+      {id:"branch-stacks",label:"Branch Stacks…",group:"Branch",icon:<GitBranch size={16}/>,run:()=>openOverlay({kind:"stacks",root})},
+      { id:"history-explorer",label:"History Explorer: search changed code…",group:"Repository",icon:<Search size={16}/>,run:()=>openOverlay({kind:"historyExplorer",root}) },
+      { id: "workflow-builder", label: "Workflow Builder", group: "Repository", icon: <Workflow size={16}/>, run: () => root && openOverlay({kind:"workflows",root}) },
+      { id: "agent-workspace", label: "Agent Workspace…", group: "Repository", icon: <Bot size={15} />, run: () => openOverlay({ kind: "agents", root }) },
+      { id: "worktree", label: "New worktree…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => XA.addWorktree(root) },
+      { id: "submodule", label: "Add submodule…", group: "Repository", icon: <Plus size={15} />, run: () => XA.addSubmodule(root) },
+      { id: "submodules", label: "Update submodules", group: "Repository", icon: <RefreshCw size={15} />, run: () => XA.updateSubmodules(root) },
+      { id: "lfs", label: "Track files with Git LFS…", group: "Repository", icon: <Plus size={15} />, run: () => XA.lfsTrack(root) },
+      {
+        id: "compare",
+        label: "Compare branches…",
+        group: "History",
+        icon: <GitMerge size={15} />,
+        run: () => void branchCommitCompare(root),
+      },
+      { id: "history", label: "Show history", group: "View", icon: <History size={15} />, run: () => useRepos.getState().patch(root, { view: "history" }) },
+      { id: "changes", label: "Show changes", group: "View", icon: <FilePlus2 size={15} />, run: () => useRepos.getState().patch(root, { view: "changes" }) },
+      { id: "reflog", label: "Undo history (reflog)…", group: "History", icon: <History size={15} />, run: () => reflogDialog(root, (oid) => A.resetTo(root, oid, "reflog entry")) },
+      { id: "undo", label: "Undo last commit (keep changes)", group: "History", icon: <Undo2 size={15} />, run: () => A.undoLastCommit(root) },
+      { id: "terminal", label: "Open terminal here", group: "Repository", icon: <SquareTerminal size={15} />, run: () => api.openTerminal(root) },
+      { id: "show-folder", label: "Show in Explorer", group: "Repository", icon: <FolderOpen size={15} />, run: () => api.revealPath(root) },
+    );
+    if (tab.view === "changes" && !useUi.getState().repositoryOverview && !tab.pendingMutations && tab.status) {
+      const sel = tab.changeSel;
+      const unstaged = tab.status.files.filter(file => !file.conflict && file.worktree !== ".");
+      const staged = tab.layers?.active ? tab.layers.openFiles : tab.status.files.filter(file => !file.conflict && file.index !== ".");
+      if (sel?.kind === "unstaged" && unstaged.some(file => file.path === sel.path && !(file.untracked && file.path.endsWith("/")))) {
+        list.push({ id: "stage-file", label: "Stage selected file", group: "Changes", icon: <Plus size={15} />, run: () => A.stagePaths(root, [sel.path]) });
+      }
+      if (sel?.kind === "staged" && staged.some(file => file.path === sel.path)) {
+        list.push({ id: "unstage-file", label: "Unstage selected file", group: "Changes", icon: <Undo2 size={15} />, run: () => A.unstagePaths(root, [sel.path]) });
+      }
+      if (unstaged.length) list.push({ id: "stage-all", label: "Stage all files", group: "Changes", icon: <Plus size={15} />, run: () => A.stagePaths(root, unstaged.map(file => file.path)) });
+      if (staged.length) list.push({ id: "unstage-all", label: "Unstage all files", group: "Changes", icon: <Undo2 size={15} />, run: () => A.unstagePaths(root, staged.map(file => file.path)) });
+    }
+  }
+  return list;
+}
+
+export function paletteShortcut(id: string, tab: RepoTab | null | undefined) {
+  return paletteActions(tab).find(command => command.id === id)?.run;
+}
+
 export function CommandPalette() {
   const open = useUi((s) => s.paletteOpen);
   const setOpen = useUi((s) => s.setPalette);
@@ -602,63 +712,9 @@ export function CommandPalette() {
   }, [open]);
 
   const cmds = useMemo<Cmd[]>(() => {
-    const list: Cmd[] = [
-      { id: "open", label: "Open repository…", group: "Repository", icon: <FolderOpen size={15} />, run: () => A.openRepoDialog() },
-      { id: "import-folder", label: "Import repositories from a folder…", group: "Repository", icon: <FolderSearch size={15} />, run: () => void repositoryFolderImportDialog() },
-      { id: "clone", label: "Clone repository…", group: "Repository", icon: <Download size={15} />, run: () => A.cloneRepo() },
-      { id: "init", label: "New repository…", group: "Repository", icon: <Plus size={15} />, run: () => A.initRepoDialog() },
-      {id:"forge-accounts",label:"Accounts and API connections",group:"App",icon:<UserRound size={15}/>,run:()=>forgeAccountsDialog(tab?.root??null)},
-      { id: "settings", label: "Settings", group: "App", icon: <Settings2 size={15} />, run: () => settingsDialog(tab?.root ?? null) },
-      { id: "about", label: "About Revqora", group: "App", icon: <Info size={15} />, run: () => aboutDialog() },
-      { id: "operation-log", label: "Operation log…", group: "App", icon: <History size={15} />, run: () => operationLogDialog(tab?.root ?? null) },
-      ...(tab ? [{ id: "recovery-center", label: "Undo Center…", group: "Repository", icon: <ShieldCheck size={15} />, run: () => recoveryDialog(tab.root) }] : []),
-      {
-        id: "theme",
-        label: "Toggle dark / light theme",
-        group: "App",
-        icon: <Moon size={15} />,
-        run: () => {
-          const s = useSettings.getState();
-          s.set({ theme: resolvedTheme(s.theme) === "dark" ? "light" : "dark" });
-        },
-      },
-    ];
+    const list = paletteActions(tab);
     if (tab) {
       const root = tab.root;
-      list.push(
-        { id: "fetch", label: "Fetch", group: "Remote", icon: <RefreshCw size={15} />, run: () => A.fetchAll(root) },
-        { id:"git-connections",label:"Git connection settings…",group:"Remote",icon:<KeyRound size={15}/>,run:()=>gitConnectionDialog(root) },
-        { id: "pull", label: "Pull", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => A.pull(root) },
-        { id: "push", label: "Push…", group: "Remote", icon: <ArrowUpFromLine size={15} />, run: () => A.push(root) },
-        { id: "branch", label: "New branch…", group: "Branch", icon: <GitBranchPlus size={15} />, run: () => A.createBranch(root, null, tab.info?.head.branch ?? "HEAD") },
-        { id: "branch-manager", label: "Branch manager…", group: "Branch", icon: <GitBranch size={15} />, run: () => openOverlay({ kind: "branches", root }) },
-        { id: "stash", label: "Stash changes…", group: "Changes", icon: <Archive size={15} />, run: () => A.stash(root) },
-        { id: "tools", label: "Repository tools (gc, maintenance)…", group: "Repository", icon: <Wrench size={15} />, run: () => repoToolsDialog(root) },
-        { id: "deleted", label: "Recently deleted branches…", group: "Branch", icon: <Undo2 size={15} />, run: () => repoToolsDialog(root, "deleted") },
-        { id: "patch", label: "Apply patch file…", group: "Repository", icon: <Plus size={15} />, run: () => applyPatchFile(root) },
-        { id: "browse", label: "Browse files (HEAD)", group: "Repository", icon: <FolderOpen size={15} />, run: () => openOverlay({ kind: "tree", root, rev: "HEAD" }) },
-        { id: "worktree-manager", label: "Worktree manager…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => openOverlay({ kind: "worktrees", root }) },
-        {id:"branch-stacks",label:"Branch Stacks…",group:"Branch",icon:<GitBranch size={16}/>,run:()=>openOverlay({kind:"stacks",root})},
-        { id:"history-explorer",label:"History Explorer: search changed code…",group:"Repository",icon:<Search size={16}/>,run:()=>openOverlay({kind:"historyExplorer",root}) },
-        { id: "workflow-builder", label: "Workflow Builder", group: "Repository", icon: <Workflow size={16}/>, run: () => root && openOverlay({kind:"workflows",root}) },
-      { id: "agent-workspace", label: "Agent Workspace…", group: "Repository", icon: <Bot size={15} />, run: () => openOverlay({ kind: "agents", root }) },
-        { id: "worktree", label: "New worktree…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => XA.addWorktree(root) },
-        { id: "submodule", label: "Add submodule…", group: "Repository", icon: <Plus size={15} />, run: () => XA.addSubmodule(root) },
-        { id: "submodules", label: "Update submodules", group: "Repository", icon: <RefreshCw size={15} />, run: () => XA.updateSubmodules(root) },
-        { id: "lfs", label: "Track files with Git LFS…", group: "Repository", icon: <Plus size={15} />, run: () => XA.lfsTrack(root) },
-        {
-          id: "compare",
-          label: "Compare branches…",
-          group: "History",
-          icon: <GitMerge size={15} />,
-          run: () => void branchCommitCompare(root),
-        },
-        { id: "history", label: "Show history", group: "View", icon: <History size={15} />, run: () => useRepos.getState().patch(root, { view: "history" }) },
-        { id: "changes", label: "Show changes", group: "View", icon: <FilePlus2 size={15} />, run: () => useRepos.getState().patch(root, { view: "changes" }) },
-        { id: "reflog", label: "Undo history (reflog)…", group: "History", icon: <History size={15} />, run: () => reflogDialog(root, (oid) => A.resetTo(root, oid, "reflog entry")) },
-        { id: "undo", label: "Undo last commit (keep changes)", group: "History", icon: <Undo2 size={15} />, run: () => A.undoLastCommit(root) },
-        { id: "terminal", label: "Open terminal here", group: "Repository", icon: <SquareTerminal size={15} />, run: () => api.openTerminal(root) },
-      );
       for (const b of tab.refs?.local ?? []) {
         if (b.isHead) continue;
         list.push({ id: "co:" + b.name, label: `Check out ${b.name}`, group: "Branch", icon: <GitBranch size={15} />, run: () => A.checkout(root, b.name, "local") });

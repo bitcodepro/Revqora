@@ -60,6 +60,25 @@ describe("repository operation client", () => {
     expect(f.calls[0]).toEqual({ cmd: "checkout", args: { repo: "repo", target: "topic", kind: "local", expectedState: null, sourceHead } });
     expect(f.calls.map(c => c.cmd)).toEqual(["checkout", "status", "repo_info"]);
   });
+  it.each([
+    ["stage", { paths: ["live.json"] }],
+    ["apply_selection", { path: "live.json", mode: "stage", hash: "displayed-diff" }],
+  ])("checks HEAD without requiring an unchanged worktree for %s", async (command, args) => {
+    const f = fixture();
+    const sourceHead = { branch: "main", oid: "displayed-head" };
+    setOperationHooks({ observed: () => "older-worktree", observedHead: () => sourceHead, refreshed: () => {} });
+    await repositoryCall(f.invoke, command, { repo: "repo", ...args });
+    expect(f.calls[0]).toEqual({ cmd: command, args: { repo: "repo", ...args, expectedState: null, sourceHead } });
+    expect(f.calls.map(c => c.cmd)).toEqual([command, "status", "repo_info"]);
+  });
+  it("keeps an explicit reviewed staging precondition and the displayed discard precondition", async () => {
+    const f = fixture();
+    setOperationHooks({ observed: () => "displayed", observedHead: () => ({ branch: "main", oid: "displayed-head" }), refreshed: () => {} });
+    await repositoryCall(f.invoke, "stage", { repo: "repo", paths: ["live.json"], expectedState: "reviewed" });
+    await repositoryCall(f.invoke, "apply_selection", { repo: "repo", path: "live.json", mode: "discard" });
+    expect(f.calls[0].args).toEqual({ repo: "repo", paths: ["live.json"], expectedState: "reviewed" });
+    expect(f.calls[3].args).toEqual({ repo: "repo", path: "live.json", mode: "discard", expectedState: "displayed" });
+  });
   it("returns a dirty branch review without refreshing or weakening confirmation", async () => {
     const f = fixture();
     const sourceHead = { branch: "main", oid: "displayed-head" };

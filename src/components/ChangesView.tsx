@@ -254,8 +254,8 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const file = files.find((f) => f.path === path);
   const viewKey = JSON.stringify([root, sel, opts]);
   const diffKey = JSON.stringify([viewKey, kind === "layer" ? interpretation : file?.diffToken ?? tab.status?.stateToken, file?.submodule ? interpretation : null, layers?.stagedBase, fromTree, toTree, tab.diffRefreshVersion]);
-  // Keep the same file readable during revalidation. Its line actions remain
-  // unavailable until the new response is current; another file never reuses it.
+  // Keep the same file readable during revalidation. Only staging can safely
+  // act on the retained diff; another file never reuses it.
   const currentDiff = diffResult?.view === viewKey ? diffResult : null;
   const diff = currentDiff?.value ?? null;
   const diffErr = currentDiff?.key === diffKey ? currentDiff.error ?? null : null;
@@ -284,7 +284,10 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
               ? layers.openFiles.some((f) => f.path === sel.path)
               : staged.some((f) => f.path === sel.path)
             : !!layers?.layers[sel.layer]?.files.some((f) => f.path === sel.path);
-    if (exists) return;
+    if (exists) {
+      if (sel.kind === "unstaged" && file && file.untracked !== sel.untracked) patch(root, { changeSel: { ...sel, untracked: file.untracked } });
+      return;
+    }
     const u = unstaged.find((f) => f.path === sel.path);
     const s = layers ? layers.openFiles.find((f) => f.path === sel.path) : staged.find((f) => f.path === sel.path);
     let next: ChangeSel | null = null;
@@ -327,7 +330,8 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const select = (s: ChangeSel) => patch(root, { changeSel: s });
 
   const onApply = async (selection: [number, number][], action: LineAction) => {
-    if (diffLoading || !diff || !sel || (sel.kind !== "unstaged" && sel.kind !== "staged") || action === "apply") return;
+    if (!diff || !sel || (sel.kind !== "unstaged" && sel.kind !== "staged") || action === "apply") return;
+    if (diffLoading && (action !== "stage" || !diff.stageSnapshot)) return;
     if (action === "stash") {
       if (sel.kind !== "unstaged") return;
       const expected = tab.status?.stateToken ?? null;
@@ -346,7 +350,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
       if (!ok) return;
     }
     try {
-      await api.applySelection(root, sel.path, action, selection, diff.hash, sel.kind === "unstaged" && sel.untracked, opts);
+      await api.applySelection(root, sel.path, action, selection, diff.hash, sel.kind === "unstaged" && sel.untracked, opts, action === "stage" ? diff.stageSnapshot : undefined);
     } catch (e) {
       toast.error(e);
     }
@@ -725,7 +729,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
           mode={diffMode}
           path={sel?.path ?? ""}
           actions={diffActions}
-          onApply={diffLoading ? undefined : onApply}
+          onApply={diffLoading && (sel?.kind !== "unstaged" || !diff?.stageSnapshot) ? undefined : onApply}
           canStash={!diffLoading && sel?.kind === "unstaged" && !sel.untracked && !files.find((f) => f.path === sel.path)?.submodule && !opts.ignoreWhitespace && !!diff && !diff.binary && !diff.isNew && !diff.isDeleted && !diff.truncated && diff.oldPath === null && diff.oldMode === diff.newMode}
           root={root}
           images={

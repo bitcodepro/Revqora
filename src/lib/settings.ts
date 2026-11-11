@@ -30,6 +30,7 @@ export interface Settings {
   openLibraryOnStartup: boolean;
   activeTab: string | null;
   workspacesOpen: boolean;
+  repositoryActionsCollapsed: boolean;
   workspaceFavoritesOnly: boolean;
   layouts: Record<WorkspaceMode, WorkspaceLayout>;
   setLayout: (mode: WorkspaceMode, patch: Partial<WorkspaceLayout>) => void;
@@ -88,6 +89,7 @@ export const useSettings = create<Settings>()(
       openLibraryOnStartup: true,
       activeTab: null,
       workspacesOpen: false,
+      repositoryActionsCollapsed: false,
       workspaceFavoritesOnly: false,
       layouts: restoreWorkspaceLayouts(),
       setLayout: (mode, patch) => set((state) => ({ layouts: { ...state.layouts, [mode]: { ...state.layouts[mode], ...patch } } })),

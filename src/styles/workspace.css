@@ -32,6 +32,10 @@
 .repository-dirty { width: 5px; height: 5px; border-radius: 50%; background: var(--amber); flex: none; }
 .repository-updates { padding: 9px 10px; border: 0; border-top: 1px solid var(--border-soft); background: transparent; color: var(--text-faint); text-align: left; font-size: var(--fs-xs); }
 .repository-updates.active { color: var(--accent); background: var(--accent-soft); }
+.repository-actions { display: flex; flex: none; flex-direction: column; border-top: 1px solid var(--border-soft); }
+.repository-actions-head { display: flex; align-items: center; padding-right: 8px; }
+.repository-actions-head .repository-updates { flex: 1; border: 0; }
+.repository-actions-head .icon-btn { flex: none; }
 .repository-add { margin: 0 8px 8px; flex: none; }
 .branches-slot { display: flex; grid-column: 1; min-width: 0; min-height: 0; }
 .branches-slot > .sidebar { flex: 1; min-width: 0; }
@@ -40,7 +44,7 @@
 .main-head { height: auto; min-height: 44px; padding-top: 6px; padding-bottom: 6px; gap: 6px; flex-wrap: wrap; }
 .main-head .view-tab { padding: 0 9px; white-space: nowrap; }
 .main-head .history-mode { flex: none; }
-.focus-toggle, .branches-toggle { flex: none; }
+.focus-toggle { flex: none; }
 .btn.active, .btn[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 .review { grid-template-columns: minmax(0, 1fr); }
 .review-list { grid-area: 1 / 1; border-right: none; border-bottom: 1px solid var(--border); }

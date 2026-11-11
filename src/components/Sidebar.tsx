@@ -16,7 +16,6 @@ import {
   HardDrive,
   Lock,
   Package,
-  PanelLeftClose,
   Pencil,
   Play,
   Plus,
@@ -36,7 +35,7 @@ import * as A from "../lib/actions";
 import { api } from "../lib/api";
 import { basename, joinPath, relativeTime } from "../lib/format";
 import { AheadBehind } from "./bits";
-import { branchMenu, tagMenu } from "./menus";
+import { branchMenu, runMenuShortcut, tagMenu } from "./menus";
 import { reviewBranchCleanup } from "./BranchCleanup";
 import { usePanelTitleMenu, usePanelWindows } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
@@ -45,6 +44,8 @@ import { promptDialog } from "./dialogs";
 import { branchConnection, branchPairs } from "../lib/branchPresentation";
 import {sidebarBranchesKey,sidebarBranchPreferences,selectSidebarBranches} from "../lib/sidebarBranches";
 import {loadBranchPreferences,preferencesKey} from "../lib/branchManager";
+import { matchesShortcut } from "../lib/shortcuts";
+import { renameRemoteBranch } from "./RemoteRename";
 
 interface TreeNode {
   name: string;
@@ -81,7 +82,7 @@ function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
 }
 
 export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) {
-  const panelMenu = usePanelTitleMenu("branches");
+  const panelMenu = usePanelTitleMenu("branches", [{ label: "Branch manager", icon: <GitBranch size={14}/>, onClick: () => openOverlay({ kind: "branches", root: tab.root }) }]);
   const { panels } = usePanelWindows();
   const { setLayout } = useWorkspaceLayout();
   const root = tab.root;
@@ -222,6 +223,12 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               chooseBranch(b, modifier, e.shiftKey && !modifier);
             }}
             onKeyDown={(e) => {
+              if (matchesShortcut(e, "renameItem")) {
+                e.preventDefault();
+                if (!e.repeat) void (kind === "local" ? A.renameBranch(root, b.name) : renameRemoteBranch(root, b.name));
+                return;
+              }
+              if ((e.ctrlKey || e.altKey || e.metaKey || /^F\d+$/.test(e.key)) && runMenuShortcut(e, branchMenu(root, b.name, kind), "branch-")) return;
               if (e.key !== "Enter" && e.key !== " ") return;
               e.preventDefault();
               chooseBranch(b, e.ctrlKey || e.metaKey, e.shiftKey);
@@ -409,7 +416,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
         void deleteSelected();
       }
     }}>
-      <div className="branches-heading" onContextMenu={panelMenu}><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" aria-label="Branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root: tab.root })}><GitBranch size={14} /></button><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={onHide ?? (() => setLayout({ branchesOpen: false }))}><PanelLeftClose size={14} /></button></div>
+      <div className="branches-heading" onContextMenu={panelMenu}><GitBranch size={14} /><b>Branches</b><div className="spacer" /><button className="icon-btn sm" title="Hide branches" aria-label="Hide branches" onClick={onHide ?? (() => setLayout({ branchesOpen: false }))}><ClearIcon size={13} /></button></div>
       <div className="sb-repo">
         <div className="input-wrap">
           <Search size={13} />

@@ -1,17 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ExternalLink, PanelTop } from "lucide-react";
-import { contextMenu, openOverlay, toast, useUi } from "../lib/ui";
+import { contextMenu, openOverlay, toast, useUi, type MenuItem } from "../lib/ui";
 import { registerUiSurface, surfaceDocument } from "../lib/uiSurfaces";
 import { useSettings } from "../lib/settings";
 import { useRepos } from "../lib/store";
 import { workspaceMode } from "../lib/workspaceLayouts";
+import { PANEL_NAMES, bindingFor, prettyCombo } from "../lib/shortcuts";
 
-const panelNames = {
-  workspaces: "Workspaces", repositories: "Repositories", branches: "Branches",
-  history: "Commit history", commit: "Commit preview", changes: "Changes",
-  pulls: "Pull requests", worktrees: "Worktree manager",
-};
+const panelNames = PANEL_NAMES;
 export type PanelId = keyof typeof panelNames;
 type SidebarId = "workspaces" | "repositories" | "branches";
 type Panels = Partial<Record<PanelId, Window>>;
@@ -159,19 +156,22 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
 
 export function usePanelWindowMenu(hasRepository: boolean, hasCommit: boolean) {
   const { panels, attach, detach } = usePanelWindows();
+  const shortcuts = useSettings((s) => s.shortcuts);
   return (Object.keys(panelNames) as PanelId[]).map(id => ({
       label: panels[id] ? `Return ${panelNames[id]} to main window` : `Open ${panelNames[id]} in separate window`,
       icon: panels[id] ? <PanelTop size={14}/> : <ExternalLink size={14}/>,
       disabled: !panels[id] && (id === "commit" ? !hasCommit : id !== "workspaces" && id !== "repositories" && !hasRepository),
+      hint: prettyCombo(bindingFor(`window-${id}`, shortcuts)),
       onClick: () => panels[id] ? attach(id) : detach(id),
   }));
 }
 
-export function usePanelTitleMenu(id: PanelId) {
+export function usePanelTitleMenu(id: PanelId, items: MenuItem[] = []) {
   const { panels, detach } = usePanelWindows();
   return (event: ReactMouseEvent<HTMLElement>) => {
-    if (panels[id] || (event.target as HTMLElement).closest?.("input, textarea, select, [contenteditable]")) return;
-    contextMenu(event, [{ label: "Detach", icon: <ExternalLink size={14}/>, onClick: () => detach(id) }]);
+    if ((event.target as HTMLElement).closest?.("input, textarea, select, [contenteditable]")) return;
+    const menu = panels[id] ? items : [...items, ...(items.length ? [{ separator: true } as const] : []), { label: "Detach", icon: <ExternalLink size={14}/>, onClick: () => detach(id) }];
+    if (menu.length) contextMenu(event, menu);
   };
 }
 

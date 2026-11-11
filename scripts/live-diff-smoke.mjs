@@ -39,12 +39,17 @@ export async function liveDiffSmoke({page,root,file,noise}) {
     await page.waitForFunction(()=>window.__liveDiff.held);
     await frame();
     if(!await page.locator(".changes .diff .dl.add").count()||await page.locator(".changes .diff .loading-center").count())throw Error("Revalidation replaced readable content with a loader");
-    if(await page.getByRole("button",{name:"Stage hunk",exact:true}).count())throw Error("Stale line actions remained available during revalidation");
+    if(await page.getByRole("button",{name:"Stash hunk",exact:true}).count()||await page.getByTitle("Discard hunk",{exact:true}).count())throw Error("Actions that change the working file remained available during revalidation");
+    await page.getByRole("button",{name:"Stage hunk",exact:true}).first().click();
     await page.evaluate(()=>window.__liveDiff.release());
+    await page.waitForFunction(()=>window.__liveDiff.statuses.at(-1)?.files.some(f=>f.path==="watcher-user-probe.txt"&&!f.untracked&&f.index==="A"));
+    const staged=execFileSync("git",["-C",root,"show",":watcher-user-probe.txt"],{encoding:"utf8",windowsHide:true}).trim();
+    if(staged!=="User changes must still be watched"||!fs.readFileSync(file,"utf8").includes("Selected file changed for real"))throw Error("Stage hunk did not preserve the visible snapshot and the newer working file");
     await page.locator(".changes .diff .dl.add").filter({hasText:"Selected file changed for real"}).waitFor();
     await page.getByRole("button",{name:"Stage hunk",exact:true}).first().waitFor();
   } finally {
     await page.evaluate(()=>{const s=window.__liveDiff;s.release();s.observer.disconnect();window.fetch=s.original;delete window.__liveDiff;});
+    execFileSync("git",["-C",root,"rm","--cached","-f","--ignore-unmatch","--","watcher-user-probe.txt"],{windowsHide:true});
     fs.rmSync(noise,{force:true});
     await page.locator(".view-tab").filter({hasText:/History/}).click();
   }
