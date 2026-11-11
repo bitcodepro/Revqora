@@ -60,6 +60,9 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   const toggle = page.getByRole("button", { name: "Toggle branches panel", exact: true });
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
   const graph = page.locator(".graph-scroll");
+  // The previous scope can still render while the All branches graph loads.
+  const crossing = graph.locator(".grow").filter({ has: page.getByText("Destination change", { exact: true }) });
+  await crossing.waitFor();
   const tip = graph.locator(".grow").filter({ has: page.getByText("History line 99", { exact: true }) });
   const line = tip.locator(".lane-hit").last();
   const point = await line.evaluate((path) => {
@@ -75,7 +78,6 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   assert.equal(pinned, await line.getAttribute("data-lane"), "Clicking the line must pin its identity");
   const members = graph.locator(".grow.lane-member");
   await members.getByText("History line 99", { exact: true }).waitFor();
-  const crossing = graph.locator(".grow").filter({ has: page.getByText("Destination change", { exact: true }) });
   await crossing.locator(".lane-line.hl").first().waitFor({ state: "attached" });
   assert.equal(await members.getByText("Destination change", { exact: true }).count(), 0, "A passing line must not highlight another lane's commit");
   await page.getByRole("button", { name: "Search all repositories", exact: true }).hover();
@@ -190,7 +192,9 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await page.getByRole("button", { name: "Search all repositories", exact: true }).click();
   await searchMode.selectOption("message");
   await searchQuery.fill("pick review-");
-  const orderedHits = search.locator(".workspace-search-group").filter({ has: search.getByRole("heading", { name: "branch-history-other", exact: true }) }).locator(".workspace-search-hit > b");
+  const orderedHits = search.locator(".workspace-search-group")
+    .filter({ has: page.getByRole("heading", { name: "branch-history-other", exact: true }) })
+    .locator(".workspace-search-hit > b");
   await orderedHits.nth(1).waitFor();
   assert.deepEqual(await orderedHits.allTextContents(), ["Pick review-a", "Pick review-b"]);
   await search.getByRole("textbox", { name: "Search commits across repositories" }).fill("shared searchable");
