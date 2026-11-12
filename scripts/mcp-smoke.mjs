@@ -266,9 +266,10 @@ async function approvalModes({ page, root, work, tool, waitPhase, selectApproval
 async function diffStageAndStash({ page, original, work, tool, rawTool, waitPhase }) {
   const root = path.join(work, "mcp-diff-stage-stash");
   fs.mkdirSync(root);
-  const git = (...args) => execFileSync("git", ["-C", root, "-c", "core.autocrlf=false", ...args], { encoding: "utf8", windowsHide: true }).trimEnd();
+  const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true }).trimEnd();
   const put = (file, text) => fs.writeFileSync(path.join(root, file), text);
   git("init", "-qb", "main");
+  git("config", "--local", "core.autocrlf", "false");
   git("config", "user.name", "MCP Fixture");
   git("config", "user.email", "mcp@example.invalid");
   git("config", "commit.gpgsign", "false");
