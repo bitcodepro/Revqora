@@ -12,4 +12,49 @@ A staged rename retains both paths in its diff and approval. For a conflicted fi
 
 Pass `diffVersion` with the next page's `offset`. For a long line, use its `lineIndex` as `offset` and `nextTextOffset` as `lineOffset`. `review_pending` returns the active action ID when another MCP request is in progress. Use `list_stashes` to find a stash and `stash_apply` or `stash_pop` to restore it, with optional `restoreIndex`.
 
+## Request action parameters
+
+Every `request_action` requires `repository` and `action`. Extra parameters that the selected action does not use return `invalid_arguments`.
+
+| Action | Required action parameters | Optional parameters |
+| --- | --- | --- |
+| `stage`, `unstage` | `paths` from `repository_status` | |
+| `commit` | `message` | |
+| `create_branch` | `target` is the new branch name | `base` is a local branch or full commit SHA |
+| `checkout` | `target` is a local branch | `dirtyAction` accepts `stash` or `move` |
+| `delete_branch` | `target` is a local branch | `force` for automatic deletion |
+| `cherry_pick` | `target` is a full commit SHA | |
+| `cherry_pick_continue`, `cherry_pick_abort` | | |
+| `stash` | | `message`, `includeUntracked`, `keepIndex` |
+| `stash_apply`, `stash_pop` | `stashIndex` and full stash SHA as `target` | `restoreIndex` defaults to `true` |
+| `stash_drop` | `stashIndex` and full stash SHA as `target` | |
+| `fetch`, `pull` | | `prune` |
+| `push` | | `remote`, `remoteBranch`, `force`, `setUpstream` for automatic push |
+| `sync` | | `receive`, `send` for automatic sync |
+| `create_pr` | `title`, `branch` and `base` for automatic creation | `message`, `draft` for automatic creation |
+| `review_pr` | `number` | `revision`, `reviewKind`, `message` |
+| `merge_pr` | `number` | `revision`, `method`, `message` |
+| `pr_workflow` | `number` | `revision` |
+| `start_workflow` | `target` is the recipe ID, plus `branch` and `base` | |
+| `review_workflow_step` | `target` is the run ID | |
+
+`create_branch` resolves the starting point before confirmation and reports the created branch and SHA. Without `base` it starts from `HEAD`. You can qualify a local branch as `refs/heads/<name>`. A missing branch or commit returns `branch_not_found` or `commit_not_found` before confirmation. A Stage path missing from `repository_status` returns `file_not_found`. If it appears there but cannot be staged, Revqora returns `file_not_eligible`. Revqora rechecks the relevant state before executing.
+
+The MCP confirmation dialog expires after 120 seconds. The action reports `cancelled` with reason `approval_timed_out`, and the desktop releases the next request.
+
+## Checkout and stash recovery
+
+`checkout` reports the previous and current branch, conflicts and the dirty action it used. If it created a stash, `stash` contains its full `oid`, `index`, `switchSource` and whether it was `kept`. A successful `move` restores the changes and removes its temporary stash. `changesRestored` indicates a completed restoration, including the index. Check the reported index against `list_stashes` if other stash operations have run since checkout.
+
+| Checkout `nextStep` | What to do |
+| --- | --- |
+| `return_to_source` | Switch back to the source branch when ready to restore its changes. |
+| `restore_stash` | Use the `restoreStash` index and SHA with `stash_apply` or `stash_pop`. Returning to the branch leaves restoration under your control. |
+| `save_changes_before_restore` | Save the current working changes before applying the identified stash. |
+| `resolve_conflicts` | Resolve the reported conflicts in Revqora. |
+| `inspect_worktree_and_stash` | Read the action message, status and stash list before retrying. |
+| `none` | No follow-up is needed. |
+
+`stash_drop` removes the exact stash entry without applying it. Revqora uses the deletion approval policy and returns a `checkpoint` ID. To recover the entry, open **Undo Center**, find that checkpoint and restore the saved stash reference.
+
 See [installation commands, configuration examples and available tools](https://github.com/bitcodepro/Revqora/blob/main/README.md#connect-an-external-agent-through-mcp).

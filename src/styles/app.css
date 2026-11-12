@@ -3361,6 +3361,13 @@ select[size="1"]:not([multiple]) {
   padding: 0;
   justify-content: flex-start;
 }
+.grow.compact .g-subject .text {
+  min-width: min(8ch, 45%);
+}
+.grow.compact .g-subject .ref {
+  flex-shrink: 1;
+  min-width: 0;
+}
 .grow.compact .c-meta {
   font-size: var(--fs-sm);
   color: var(--text-faint);

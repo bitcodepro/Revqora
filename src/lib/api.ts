@@ -201,6 +201,7 @@ export const api = {
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),
   commitGraphWrite: (repo: string, opId: string) => call<string>("commit_graph_write", { repo, opId }),
   commitDetails: (repo: string, oid: string, exact?: boolean) => call<CommitDetails>("commit_details", { repo, oid, exact }),
+  verifyCommit: (repo: string, oid: string) => call<void>("verify_commit", { repo, oid }),
   fileHistory: (repo: string, path: string) => call<FileHistoryEntry[]>("file_history", { repo, path }),
   fileText: (repo: string, spec: string) => call<string | null>("file_text", { repo, spec }),
   reflog: (repo: string) => call<ReflogEntry[]>("reflog", { repo }),
@@ -275,7 +276,7 @@ export const api = {
   stashList: (repo: string) => call<import("./types").StashInfo[]>("stash_list", { repo }),
   stashApply: (repo: string, index: number, pop: boolean, oid: string, restoreIndex?: boolean, expectedState?: string) =>
     call<import("./types").StashApplyOutcome>("stash_apply", { repo, index, pop, oid, restoreIndex, expectedState }),
-  stashDrop: (repo: string, index: number, oid: string, expectedState?: string | null) => call<void>("stash_drop", { repo, index, oid, expectedState }),
+  stashDrop: (repo: string, index: number, oid: string, expectedState?: string | null) => call<RecoverySummary>("stash_drop", { repo, index, oid, expectedState }),
 
   layersState: (repo: string) => call<LayersState>("layers_state", { repo }),
   layerSeal: (repo: string, name?: string | null) => call<void>("layer_seal", { repo, name }),

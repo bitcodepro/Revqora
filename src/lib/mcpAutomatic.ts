@@ -19,7 +19,7 @@ export interface McpActionOptions {
 export function mcpNeedsApproval(mode: McpApprovalMode, action: string, options: McpActionOptions, step?: WorkflowStep["kind"], mergeMayDelete = false, pullRebases = false) {
   if (mode === "full") return false;
   if (mode !== "delete_only") return true;
-  return action === "delete_branch" || action === "cherry_pick_abort" || action === "stash_pop"
+  return action === "delete_branch" || action === "cherry_pick_abort" || action === "stash_pop" || action === "stash_drop"
     || (action === "fetch" || action === "pull") && options.prune === true
     || action === "pull" && pullRebases
     || action === "push" && options.force === true

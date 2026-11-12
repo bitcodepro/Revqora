@@ -39,7 +39,35 @@ fn count(min: u64, max: u64) -> Value {
     json!({"type":"integer","minimum":min,"maximum":max})
 }
 
+// Required and optional fields for each action beyond repository and action.
+const ACTION_ARGUMENTS: &[(&str, &[&str], &[&str])] = &[
+    ("stage", &["paths"], &[]),
+    ("unstage", &["paths"], &[]),
+    ("commit", &["message"], &[]),
+    ("create_branch", &["target"], &["base"]),
+    ("checkout", &["target"], &["dirtyAction"]),
+    ("delete_branch", &["target"], &["force"]),
+    ("cherry_pick", &["target"], &[]),
+    ("cherry_pick_continue", &[], &[]),
+    ("cherry_pick_abort", &[], &[]),
+    ("stash", &[], &["message", "includeUntracked", "keepIndex"]),
+    ("stash_apply", &["stashIndex", "target"], &["restoreIndex"]),
+    ("stash_pop", &["stashIndex", "target"], &["restoreIndex"]),
+    ("stash_drop", &["stashIndex", "target"], &[]),
+    ("fetch", &[], &["prune"]),
+    ("pull", &[], &["prune"]),
+    ("push", &[], &["remote", "remoteBranch", "force", "setUpstream"]),
+    ("sync", &[], &["receive", "send"]),
+    ("create_pr", &[], &["title", "branch", "base", "message", "draft"]),
+    ("review_pr", &["number"], &["revision", "reviewKind", "message"]),
+    ("merge_pr", &["number"], &["revision", "method", "message"]),
+    ("pr_workflow", &["number"], &["revision"]),
+    ("start_workflow", &["target", "branch", "base"], &[]),
+    ("review_workflow_step", &["target"], &[]),
+];
+
 fn tools() -> Vec<Tool> {
+    let actions: Vec<_> = ACTION_ARGUMENTS.iter().map(|(action, _, _)| *action).collect();
     let repo = || text(4096);
     let pr = || count(1, 9_007_199_254_740_991);
     let paths = || json!({"type":"array","minItems":1,"maxItems":50,"items":text(4096)});
@@ -52,7 +80,7 @@ fn tools() -> Vec<Tool> {
         Tool { name:"search_commits", description:"Search local branches, remote-tracking branches, tags and HEAD. Stash is excluded. Author searches Git author name and email, and message searches the entire commit message. Matching is case insensitive. If hasMore is true, pass nextCursor as cursor with the same repository, query and mode, even if this page was empty.", properties:json!({"repository":repo(),"query":text(512),"mode":choices(&["all","message","hash","author"]),"cursor":text(64),"limit":{"type":"integer","minimum":1,"maximum":100,"default":30}}), required:&["repository","query"], read_only:true, uses_provider:false },
         Tool { name:"commit_details", description:"Read an exact commit and its changed file list.", properties:json!({"repository":repo(),"oid":text(64),"offset":count(0,1_000_000)}), required:&["repository","oid"], read_only:true, uses_provider:false },
         Tool { name:"file_diff", description:"Read a changed path from status or commit_details. Pass diffVersion with nextOffset to continue. Use limit (up to 1200 lines) to request larger pages. For a long line, pass its lineIndex as offset and nextTextOffset as lineOffset, plus diffVersion. A conflict returns index stages; also supply conflictSide when continuing a line of a conflict.", properties:json!({"repository":repo(),"path":text(4096),"side":choices(&["unstaged","staged","commit"]),"oid":text(64),"offset":count(0,1_000_000),"limit":count(1,1200),"diffVersion":text(256),"lineOffset":count(0,100_000_000),"conflictSide":choices(&["base","ours","theirs"])}), required:&["repository","path","side"], read_only:true, uses_provider:false },
-        Tool { name:"list_stashes", description:"List saved stashes. Supply their index and full SHA to stash_apply or stash_pop.", properties:json!({"repository":repo(),"offset":count(0,1_000_000)}), required:&["repository"], read_only:true, uses_provider:false },
+        Tool { name:"list_stashes", description:"List saved stashes. Supply their index and full SHA to stash_apply, stash_pop or stash_drop.", properties:json!({"repository":repo(),"offset":count(0,1_000_000)}), required:&["repository"], read_only:true, uses_provider:false },
         Tool { name:"list_worktrees", description:"Read registered worktrees and their current branches.", properties:json!({"repository":repo(),"offset":count(0,1_000_000)}), required:&["repository"], read_only:true, uses_provider:false },
         Tool { name:"list_workflows", description:"List saved workflow names and recent run states in Revqora.", properties:json!({"repository":repo()}), required:&["repository"], read_only:true, uses_provider:false },
         Tool { name:"workflow_status", description:"Read a workflow run's phase and per-step outcomes. Use the ID from list_workflows or request_action.", properties:json!({"repository":repo(),"id":text(64)}), required:&["repository","id"], read_only:true, uses_provider:false },
@@ -60,7 +88,7 @@ fn tools() -> Vec<Tool> {
         Tool { name:"connection_identity", description:"Identify the current user for a repository's selected PR connection. Returns the provider user ID, name and login without returning credentials.", properties:json!({"repository":repo()}), required:&["repository"], read_only:true, uses_provider:true },
         Tool { name:"pull_request", description:"Inspect PR overview, files, diff, discussions or checks. For diff, pass fileId and revision from the files section. Diff pagination and line continuation use diffVersion, offset, limit and lineOffset as in file_diff.", properties:json!({"repository":repo(),"number":pr(),"section":choices(&["overview","files","diff","discussions","checks"]),"feed":choices(&["threads","comments","reviews"]),"cursor":text(4096),"offset":count(0,1_000_000),"fileId":text(4096),"revision":text(4096),"limit":count(1,1200),"diffVersion":text(256),"lineOffset":count(0,100_000_000)}), required:&["repository","number"], read_only:true, uses_provider:true },
         Tool { name:"open_view", description:"Select an already open repository and navigate to a Revqora view.", properties:json!({"repository":repo(),"view":choices(&["history","changes","pull_requests","branches","worktrees","workflows","agents"])}), required:&["repository","view"], read_only:false, uses_provider:false },
-        Tool { name:"request_action", description:"Request an action under Revqora's approval mode. Poll action_status for the result. Use paths for stage/unstage, target for a branch, cherry-pick SHA or workflow ID, message for commit, and number for PR actions. Automatic PR creation requires title, branch and base; review_pr requires reviewKind; merge_pr accepts a provider method. Push uses a configured upstream or remote. Set send=true to publish through Sync. Checkout with local changes defaults to stashing. Set prune=true to request pruning explicitly. For stash_apply or stash_pop, pass stashIndex and target SHA from list_stashes and optionally restoreIndex (default true).", properties:json!({"repository":repo(),"action":choices(&["stage","unstage","commit","create_branch","checkout","delete_branch","cherry_pick","cherry_pick_continue","cherry_pick_abort","stash","stash_apply","stash_pop","fetch","pull","push","sync","create_pr","review_pr","merge_pr","pr_workflow","start_workflow","review_workflow_step"]),"paths":paths(),"target":text(512),"message":text(8192),"number":pr(),"branch":text(1024),"base":text(1024),"title":text(1024),"revision":text(4096),"reviewKind":choices(&["comment","approve","request_changes"]),"method":text(128),"dirtyAction":choices(&["stash","move"]),"remote":text(1024),"remoteBranch":text(1024),"draft":{"type":"boolean"},"includeUntracked":{"type":"boolean"},"keepIndex":{"type":"boolean"},"prune":{"type":"boolean"},"force":{"type":"boolean"},"setUpstream":{"type":"boolean"},"stashIndex":count(0,1_000_000),"restoreIndex":{"type":"boolean"},"receive":{"type":"boolean"},"send":{"type":"boolean"}}), required:&["repository","action"], read_only:false, uses_provider:true },
+        Tool { name:"request_action", description:"Request an action under Revqora's approval mode and poll action_status. Stage and unstage use paths from repository_status. Create_branch uses target for the new name and base for a local branch or full commit SHA (default current HEAD). Checkout uses target for a local branch and optional dirtyAction; the result describes any stash and the next step. Cherry_pick uses target for the full commit SHA. Stash_apply, stash_pop and stash_drop require stashIndex and target SHA from list_stashes. Apply and Pop accept restoreIndex (default true); Drop creates a recovery checkpoint without applying the stash. Unused parameters are rejected. PR actions use number, and automatic PR creation requires title, branch and base. Push uses a configured upstream or remote; Sync only sends when send=true.", properties:json!({"repository":repo(),"action":choices(&actions),"paths":paths(),"target":text(512),"message":text(8192),"number":pr(),"branch":text(1024),"base":text(1024),"title":text(1024),"revision":text(4096),"reviewKind":choices(&["comment","approve","request_changes"]),"method":text(128),"dirtyAction":choices(&["stash","move"]),"remote":text(1024),"remoteBranch":text(1024),"draft":{"type":"boolean"},"includeUntracked":{"type":"boolean"},"keepIndex":{"type":"boolean"},"prune":{"type":"boolean"},"force":{"type":"boolean"},"setUpstream":{"type":"boolean"},"stashIndex":count(0,1_000_000),"restoreIndex":{"type":"boolean"},"receive":{"type":"boolean"},"send":{"type":"boolean"}}), required:&["repository","action"], read_only:false, uses_provider:true },
         Tool { name:"action_status", description:"Read the status of a previous request_action. A paused cherry-pick reports waiting_for_resolution until it is continued, skipped or aborted in Revqora. Cancellation includes a reason. IDs from a previous session return session_expired.", properties:json!({"id":text(64)}), required:&["id"], read_only:true, uses_provider:false },
     ]
 }
@@ -93,6 +121,23 @@ pub(super) fn validate(value: Value) -> Result<ToolCall, ToolError> {
     for (name, value) in &call.arguments {
         if !valid(value, &tool.properties[name]) {
             return Err(ToolError::new("invalid_arguments", format!("Invalid argument: {name}.")));
+        }
+    }
+    if call.name == "request_action" {
+        let action = call.arguments["action"].as_str().unwrap_or_default();
+        let (_, required, optional) =
+            ACTION_ARGUMENTS.iter().find(|(name, _, _)| *name == action).ok_or_else(|| ToolError::new("invalid_arguments", "Unknown Revqora action."))?;
+        for key in *required {
+            if !call.arguments.contains_key(*key) {
+                return Err(ToolError::new("invalid_arguments", format!("{action} requires {key}.")));
+            }
+        }
+        if let Some(key) = call
+            .arguments
+            .keys()
+            .find(|key| !matches!(key.as_str(), "repository" | "action") && !required.contains(&key.as_str()) && !optional.contains(&key.as_str()))
+        {
+            return Err(ToolError::new("invalid_arguments", format!("{action} does not support {key}.")));
         }
     }
     Ok(call)
@@ -192,6 +237,7 @@ fn error_reason(code: &str) -> (&'static str, bool) {
         "repository_not_open"
         | "commit_not_found"
         | "file_not_found"
+        | "file_not_eligible"
         | "initial_commit_required"
         | "branch_exists"
         | "branch_not_found"
@@ -276,6 +322,25 @@ mod tests {
         assert_eq!(responses[6]["result"]["isError"], false);
         assert_eq!(responses[7]["result"]["isError"], false);
         assert_eq!(responses[8]["result"]["isError"], true);
+    }
+
+    #[test]
+    fn actions_validate_their_own_parameters() {
+        let call = |arguments| validate(json!({"name":"request_action","arguments":arguments}));
+        assert!(call(json!({"repository":"fixture","action":"create_branch","target":"topic","base":"branch-B"})).is_ok());
+        assert!(call(json!({"repository":"fixture","action":"stash_drop","stashIndex":0,"target":"saved-sha"})).is_ok());
+        for (arguments, message) in [
+            (json!({"repository":"fixture","action":"checkout","target":"topic","base":"main"}), "checkout does not support base."),
+            (json!({"repository":"fixture","action":"stash_drop","target":"saved-sha"}), "stash_drop requires stashIndex."),
+            (
+                json!({"repository":"fixture","action":"stash_drop","stashIndex":0,"target":"saved-sha","restoreIndex":true}),
+                "stash_drop does not support restoreIndex.",
+            ),
+        ] {
+            let error = call(arguments).err().expect("invalid action arguments");
+            assert_eq!(error.code, "invalid_arguments");
+            assert_eq!(error.message, message);
+        }
     }
 
     #[test]

@@ -1750,11 +1750,12 @@ pub(super) fn stash_apply_ref(repo: &Path, name: &str, pop: bool, restore_index:
 }
 
 pub fn check_stash(repo: &Path, index: u32, expected_oid: &str) -> GitResult<()> {
-    let actual = runner::run(repo, ["rev-parse", "--verify", &format!("stash@{{{index}}}")])?;
-    if actual.trim() != expected_oid {
-        return Err(GitError::new("The stash list changed. Reopen the stash before trying again.").kind("stale-operation"));
+    let actual = runner::exec(repo, ["rev-parse", "--verify", "--quiet", &format!("stash@{{{index}}}")])?;
+    match actual.code {
+        0 if actual.text().trim().eq_ignore_ascii_case(expected_oid) => Ok(()),
+        0 | 1 => Err(GitError::new("The stash list changed. Reopen the stash before trying again.").kind("stale-operation")),
+        _ => Err(runner::to_error("git rev-parse", &actual)),
     }
-    Ok(())
 }
 
 pub fn stash_apply_reviewed(repo: &Path, index: u32, expected_oid: &str, pop: bool) -> GitResult<StashApplyOutcome> {
@@ -1769,6 +1770,13 @@ pub fn stash_apply_reviewed_with_index(repo: &Path, index: u32, expected_oid: &s
 pub fn stash_drop_reviewed(repo: &Path, index: u32, expected_oid: &str) -> GitResult<()> {
     check_stash(repo, index, expected_oid)?;
     stash_drop(repo, index)
+}
+
+pub fn stash_drop_with_checkpoint(repo: &Path, index: u32, oid: &str, expected: Option<&str>) -> GitResult<super::recovery::Summary> {
+    check_stash(repo, index, oid)?;
+    let checkpoint = super::recovery::reference_checkpoint(repo, "stash_drop", "Before stash drop", &[], expected)?;
+    stash_drop_reviewed(repo, index, oid)?;
+    Ok(checkpoint)
 }
 
 pub fn stash_drop(repo: &Path, index: u32) -> GitResult<()> {

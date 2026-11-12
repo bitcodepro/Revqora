@@ -32,6 +32,7 @@ const gitErrorCodes = new Map([
   ["identity-unavailable", "identity_unavailable"],
   ["pr-connection-required", "pr_connection_required"],
   ["file-not-found", "file_not_found"],
+  ["checkpoint-failed", "checkpoint_failed"],
   ["output-limit", "result_too_large"],
 ]);
 

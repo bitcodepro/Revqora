@@ -122,18 +122,24 @@ export const toast = {
 };
 
 /** Opens a modal and resolves with whatever the dialog passes to `close`. */
-export function showDialog<T>(render: (close: (v: T) => void) => ReactNode): Promise<T> {
+export function showDialog<T>(render: (close: (v: T) => void) => ReactNode, timeout?: { ms: number; value: T }): Promise<T> {
   return new Promise<T>((resolve) => {
     const id = ++dialogId;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let closed = false;
     const dialog: Dialog = {
       id,
       surface: focusedUiSurface(),
       render: render as (close: (v: unknown) => void) => ReactNode,
       resolve: (v) => {
+        if (closed) return;
+        closed = true;
+        clearTimeout(timer);
         useUi.setState({ dialogs: useUi.getState().dialogs.filter((d) => d.id !== id) });
         resolve(v as T);
       },
     };
+    if (timeout) timer = setTimeout(() => dialog.resolve(timeout.value), timeout.ms);
     useUi.setState({ dialogs: [...useUi.getState().dialogs, dialog] });
   });
 }

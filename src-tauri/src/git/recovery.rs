@@ -974,7 +974,7 @@ pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<(
             | "conflict_validation"
             | "conflict_save"
     );
-    let refs = matches!(command, "branch_delete" | "branch_delete_remote" | "stash_drop" | "push" | "push_ref");
+    let refs = matches!(command, "branch_delete" | "branch_delete_remote" | "push" | "push_ref");
     if workspace || refs {
         automatic_expected(root, command, workspace, false, expected)?;
     }
