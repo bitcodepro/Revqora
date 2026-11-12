@@ -91,7 +91,18 @@ async function renameAndCherryPick({ page, root, repository, git, request, rejec
 
   const third = await pick();
   put("resolved version\n");
-  git("add", file);
+  const outdatedResolution = await request("stage", { paths: [file] });
+  const stageReview = approval("Stage files");
+  await stageReview.waitFor();
+  put("updated resolution\n");
+  await approve(stageReview);
+  assert.equal((await waitPhase(outdatedResolution.id, "failed")).errorCode, "stale_state");
+  assert.equal((await tool("repository_status", { repository })).conflictCount, 1);
+  const resolution = await request("stage", { paths: [file] });
+  await approve(stageReview);
+  await waitPhase(resolution.id, "succeeded");
+  assert.equal((await tool("repository_status", { repository })).conflictCount, 0);
+  assert.equal(git("show", `:${file}`), "updated resolution");
   const dismissed = await request("cherry_pick_continue");
   await approval("Continue cherry-pick").waitFor();
   await page.keyboard.press("Escape");
@@ -292,6 +303,10 @@ async function approvalModes({ page, root, work, tool, waitPhase, selectApproval
     git("update-ref", "refs/remotes/mcp-approval-origin/stale", "HEAD");
     await automatic("fetch");
     assert(git("for-each-ref", "refs/remotes/mcp-approval-origin/stale"));
+    await selectApproval("full", "delete_only");
+    await automatic("fetch");
+    assert(git("for-each-ref", "refs/remotes/mcp-approval-origin/stale"));
+    await selectApproval("delete_only", "full");
     const prune = await request("fetch", { prune: true });
     const dialog = page.getByRole("dialog", { name: "MCP request · Fetch from all remotes", exact: true });
     await dialog.getByRole("button", { name: "Approve in Revqora", exact: true }).click();

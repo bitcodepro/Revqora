@@ -219,7 +219,7 @@ export interface CommitSearchPage {
   commits: CommitSearchHit[];
   nextCursor: string | null;
   hasMore: boolean;
-  diagnostics: {queueMs: number; gitMs: number};
+  diagnostics: {queueMs: number; gitMs: number; refsMs: number; logMs: number; cacheHit: boolean};
 }
 
 export interface ChangedFile {

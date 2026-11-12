@@ -237,7 +237,8 @@ async function reviewPaths(root: string, action: "stage" | "unstage", paths: str
   for (const path of new Set(paths)) {
     const file = (action === "unstage" ? renamed.get(path) : undefined) ?? files.get(path);
     if (!file) throw new McpToolError("file_not_found", `Path is not listed in repository_status: ${path}`);
-    if (file.conflict || (action === "stage" ? !file.untracked && file.worktree === "." : file.untracked || file.index === ".")) {
+    const eligible = action === "stage" ? file.untracked || file.worktree !== "." : !file.conflict && !file.untracked && file.index !== ".";
+    if (!eligible) {
       throw new McpToolError("file_not_eligible", `Path is not eligible for ${action}: ${path}`);
     }
     selected.add(file.path);
@@ -289,6 +290,9 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       if (action === "cherry_pick_abort") detail.push("Git will return to the state before this cherry-pick.");
     }
     detail.push(...paths);
+    if (action === "stage" && baseline.files.some(file => file.conflict && paths.includes(file.path))) {
+      detail.push("Staging conflicted paths marks their working versions as resolved.");
+    }
     if (stash) {
       detail.push(`stash@{${stash.index}} · ${stash.message}`);
       if (action === "stash_drop") detail.push("Delete the stash without applying it. Revqora saves a recovery checkpoint.");
@@ -492,8 +496,8 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       }
       case "fetch":
         if (manual && a.prune === undefined) {
-          if (await A.fetchAll(root) === undefined) throw new Error("Fetch failed. See Revqora's operation log.");
-        } else status.message = await api.fetch(root, null, a.prune ?? mode === "full", newOpId());
+          if (await A.fetchAll(root, false) === undefined) throw new Error("Fetch failed. See Revqora's operation log.");
+        } else status.message = await api.fetch(root, null, a.prune ?? false, newOpId());
         break;
       case "stash_drop": {
         const checkpoint = await api.stashDrop(root, stash!.index, stash!.oid, expectedState);
@@ -526,7 +530,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
         status.message = "Continue in Revqora and verify the result with the read tools.";
         switch (action) {
           case "stash": await A.stash(root, expectedState); break;
-          case "pull": await A.pull(root, pullMode, expectedState, a.prune); break;
+          case "pull": await A.pull(root, pullMode, expectedState, a.prune ?? false); break;
           case "push": await A.push(root); break;
           case "sync": await syncRepositories([root]); break;
           case "create_pr": await createPullRequest(root, null); break;

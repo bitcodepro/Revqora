@@ -1,9 +1,9 @@
 //! Commit history loading and lane layout for the graph view.
 
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -777,7 +777,7 @@ pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool,
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SearchMode {
     /// Message, author, hash and refs over the loaded history (instant).
@@ -804,7 +804,7 @@ fn search_arguments(args: &mut Vec<String>, query: &str, mode: SearchMode) {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitSearchHit {
     pub oid: String,
@@ -817,6 +817,9 @@ pub struct CommitSearchHit {
 const REPOSITORY_SEARCH_SCAN: usize = 150_000;
 const REPOSITORY_SEARCH_PAGE: usize = 30;
 const MCP_SEARCH_SCAN: usize = 16_384;
+const MCP_SEARCH_MATCH_BATCH: usize = 512;
+const MCP_SEARCH_BATCH_BYTES: usize = 4 * 1024 * 1024;
+const MCP_SEARCH_CACHED_BATCHES: usize = 4;
 
 fn filter_search_rows(mode: SearchMode) -> bool {
     matches!(mode, SearchMode::Quick | SearchMode::Hash)
@@ -895,6 +898,9 @@ pub struct CommitSearchPage {
 pub struct CommitSearchTimings {
     pub queue_ms: u128,
     pub git_ms: u128,
+    pub refs_ms: u128,
+    pub log_ms: u128,
+    pub cache_hit: bool,
 }
 
 pub fn search_repository_page(repo: &Path, query: &str, mode: SearchMode, cursor: Option<&str>, limit: usize) -> GitResult<CommitSearchPage> {
@@ -905,6 +911,56 @@ pub fn search_repository_page(repo: &Path, query: &str, mode: SearchMode, cursor
     super::operations::read(repo, || search_repository_page_locked(repo, query, mode, cursor, limit, queued.elapsed().as_millis()))
 }
 
+struct SearchBatch {
+    scope: u64,
+    start: usize,
+    end: usize,
+    has_more: bool,
+    hits: Vec<(usize, CommitSearchHit)>,
+}
+
+impl SearchBatch {
+    fn contains(&self, scope: u64, offset: usize) -> bool {
+        self.scope == scope && (self.start..self.end).contains(&offset)
+    }
+
+    fn page(&self, offset: usize, limit: usize, diagnostics: CommitSearchTimings) -> CommitSearchPage {
+        let start = self.hits.partition_point(|(index, _)| *index < offset);
+        let end = (start + limit).min(self.hits.len());
+        let next = self.hits.get(end).map(|(index, _)| *index).or(self.has_more.then_some(self.end));
+        let next_cursor = next.map(|offset| format!("{:016x}/{offset}", self.scope));
+        let commits = self.hits[start..end].iter().map(|(_, hit)| hit.clone()).collect();
+        CommitSearchPage { commits, has_more: next_cursor.is_some(), next_cursor, diagnostics }
+    }
+}
+
+fn search_batches() -> &'static parking_lot::Mutex<VecDeque<Arc<SearchBatch>>> {
+    static BATCHES: OnceLock<parking_lot::Mutex<VecDeque<Arc<SearchBatch>>>> = OnceLock::new();
+    BATCHES.get_or_init(Default::default)
+}
+
+fn search_scope(repo: &Path, query: &str, mode: SearchMode) -> GitResult<(u64, Option<String>)> {
+    // One Git process for HEAD (including detached HEAD) and the refs that affect results.
+    let output = runner::exec(repo, ["show-ref", "--head"])?;
+    if !(output.ok() || output.code == 1 && output.stdout.is_empty() && output.stderr.is_empty()) {
+        return Err(runner::to_error("Read search references", &output));
+    }
+    let mut hasher = DefaultHasher::new();
+    (repo, query, mode).hash(&mut hasher);
+    let mut head = None;
+    for (oid, name) in output.text().lines().filter_map(|line| line.split_once(' ')) {
+        if name == "HEAD" {
+            head = Some(oid.to_owned());
+        }
+        if matches!(name, "HEAD" | "refs/stash")
+            || ["refs/heads/", "refs/remotes/", "refs/tags/", "refs/replace/"].iter().any(|prefix| name.starts_with(prefix))
+        {
+            (name, oid).hash(&mut hasher);
+        }
+    }
+    Ok((hasher.finish(), head))
+}
+
 fn search_repository_page_locked(
     repo: &Path,
     query: &str,
@@ -913,46 +969,56 @@ fn search_repository_page_locked(
     limit: usize,
     queue_ms: u128,
 ) -> GitResult<CommitSearchPage> {
-    let scan = if filter_search_rows(mode) { MCP_SEARCH_SCAN } else { limit };
     let query = query.trim();
-    let git_started = Instant::now();
-    let head = repository_search_head(repo)?;
-    let tips = runner::run(repo, ["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes", "refs/tags"])?;
-    let fingerprint_git = git_started.elapsed();
-    let mut hasher = DefaultHasher::new();
-    (repo, query, format!("{mode:?}"), &head, tips).hash(&mut hasher);
-    let scope = format!("{:016x}", hasher.finish());
+    let refs_started = Instant::now();
+    let (scope, head) = search_scope(repo, query, mode)?;
+    let refs_time = refs_started.elapsed();
+    let mut diagnostics = CommitSearchTimings { queue_ms, git_ms: refs_time.as_millis(), refs_ms: refs_time.as_millis(), log_ms: 0, cache_hit: false };
     let offset = if let Some(cursor) = cursor {
         let invalid = || GitError::new("Use the nextCursor from search_commits.").kind("invalid-cursor");
         let (cursor_scope, offset) = cursor.split_once('/').ok_or_else(invalid)?;
-        if cursor_scope != scope {
+        if u64::from_str_radix(cursor_scope, 16).map_err(|_| invalid())? != scope {
             return Err(GitError::new("The search or repository history changed. Start the search again.").kind("stale-operation"));
         }
-        offset.parse::<usize>().ok().filter(|offset| *offset <= i32::MAX as usize).ok_or_else(invalid)?
+        let offset = offset.parse::<usize>().ok().filter(|offset| *offset <= i32::MAX as usize).ok_or_else(invalid)?;
+        let cached = search_batches().lock().iter().rev().find(|batch| batch.contains(scope, offset)).cloned();
+        if let Some(batch) = cached {
+            diagnostics.cache_hit = true;
+            return Ok(batch.page(offset, limit, diagnostics));
+        }
+        offset
     } else {
         0
     };
+
+    let scan = if filter_search_rows(mode) { MCP_SEARCH_SCAN } else { MCP_SEARCH_MATCH_BATCH };
     let log_started = Instant::now();
     let raw = repository_search_rows(repo, query, mode, offset, scan + 1, head.as_deref())?;
-    let git_ms = (fingerprint_git + log_started.elapsed()).as_millis();
+    let log_time = log_started.elapsed();
+    diagnostics.git_ms = (refs_time + log_time).as_millis();
+    diagnostics.log_ms = log_time.as_millis();
     let q = query.to_lowercase();
-    let mut commits = Vec::new();
-    let mut next_offset = None;
-    for (index, line) in raw.lines().enumerate() {
-        if index == scan {
-            next_offset = Some(offset + index);
-            break;
-        }
+    let mut lines = raw.lines();
+    let mut hits = Vec::new();
+    let mut end = offset;
+    for line in lines.by_ref().take(scan) {
         if let Some(hit) = repository_search_hit(line, &q, mode) {
-            if commits.len() == limit {
-                next_offset = Some(offset + index);
-                break;
-            }
-            commits.push(hit);
+            hits.push((end, hit));
         }
+        end += 1;
     }
-    let next_cursor = next_offset.map(|offset| format!("{scope}/{offset}"));
-    Ok(CommitSearchPage { commits, has_more: next_cursor.is_some(), next_cursor, diagnostics: CommitSearchTimings { queue_ms, git_ms } })
+    let batch = SearchBatch { scope, start: offset, end, has_more: lines.next().is_some(), hits };
+    let page = batch.page(offset, limit, diagnostics);
+    // The raw length bounds the cached string payload. Cursors can be resumed after eviction.
+    if page.has_more && raw.len() <= MCP_SEARCH_BATCH_BYTES {
+        let mut batches = search_batches().lock();
+        batches.retain(|item| item.scope != scope);
+        if batches.len() == MCP_SEARCH_CACHED_BATCHES {
+            batches.pop_front();
+        }
+        batches.push_back(Arc::new(batch));
+    }
+    Ok(page)
 }
 
 pub fn search(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode) -> GitResult<Vec<usize>> {
@@ -1222,6 +1288,7 @@ mod tests {
             let mut received = Vec::new();
             loop {
                 let page = search_repository_page(repo, query, mode, cursor.as_deref(), 7).unwrap();
+                assert_eq!(page.diagnostics.cache_hit, cursor.is_some());
                 assert!(page.commits.len() <= 7);
                 assert_eq!(page.has_more, page.next_cursor.is_some());
                 assert!(page.next_cursor.is_none() || page.next_cursor != cursor);
@@ -1235,6 +1302,14 @@ mod tests {
         }
         let first = search_repository_page(repo, "developer@example.com", SearchMode::Author, None, 5).unwrap();
         let cursor = first.next_cursor.as_deref();
+        let scope = u64::from_str_radix(cursor.unwrap().split_once('/').unwrap().0, 16).unwrap();
+        let cached = search_repository_page(repo, "developer@example.com", SearchMode::Author, cursor, 3).unwrap();
+        assert!(cached.diagnostics.cache_hit);
+        search_batches().lock().retain(|batch| batch.scope != scope);
+        let resumed = search_repository_page(repo, "developer@example.com", SearchMode::Author, cursor, 3).unwrap();
+        assert!(!resumed.diagnostics.cache_hit);
+        assert_eq!(cached.next_cursor, resumed.next_cursor);
+        assert_eq!(cached.commits.iter().map(|hit| &hit.oid).collect::<Vec<_>>(), resumed.commits.iter().map(|hit| &hit.oid).collect::<Vec<_>>());
         assert_eq!(search_repository_page(repo, "other", SearchMode::Author, cursor, 5).err().unwrap().kind, "stale-operation");
         runner::run(repo, ["branch", "changed-after-page"]).unwrap();
         assert_eq!(search_repository_page(repo, "developer@example.com", SearchMode::Author, cursor, 5).err().unwrap().kind, "stale-operation");

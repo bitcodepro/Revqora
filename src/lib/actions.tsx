@@ -198,14 +198,14 @@ export async function cloneRepo() {
 
 // ───────────── remotes ─────────────
 
-async function fetchRemotes(root: string, name: string | null) {
-  const out = await remote(root, name ? `Fetching ${name}` : "Fetching", (id) => api.fetch(root, name, true, id),
+async function fetchRemotes(root: string, name: string | null, prune = true) {
+  const out = await remote(root, name ? `Fetching ${name}` : "Fetching", (id) => api.fetch(root, name, prune, id),
     () => name ? `Fetched ${name}` : "Fetched from all remotes");
   useRepos.getState().patch(root, out !== undefined ? { lastFetchedAt: Date.now(), fetchError: null } : { fetchError: "Fetch failed. Try Fetch again to sign in or see the error." });
   return out;
 }
 
-export const fetchAll = (root: string) => fetchRemotes(root, null);
+export const fetchAll = (root: string, prune?: boolean) => fetchRemotes(root, null, prune);
 export const fetchRemote = (root: string, name: string) => fetchRemotes(root, name);
 
 type PullTarget = { branch: string; upstream: string };

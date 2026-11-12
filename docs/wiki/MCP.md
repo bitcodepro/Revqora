@@ -8,7 +8,7 @@ The client launches the installed executable with `--mcp`. Revqora remembers the
 
 An enabled client can read status, branches, commit history, diffs and PR discussions available in the current workspace. It can open views and request Git or PR operations. Under **Approval mode**, choose **Ask my approval** for desktop review, **Full approve** for automatic execution, or **Ask before deleting** for confirmation of operations that delete or discard data. Revqora saves the mode. Automatic requests that need additional choices return the required fields through `action_status`.
 
-A staged rename retains both paths in its diff and approval. For a conflicted file, `file_diff` can show the base, ours and theirs index stages. A paused cherry-pick stays in `waiting_for_resolution` until you continue, skip or abort it in Revqora. The client can request approval to continue or abort with `cherry_pick_continue` or `cherry_pick_abort`.
+A staged rename retains both paths in its diff and approval. For a conflicted file, `file_diff` can show the base, ours and theirs index stages. A paused cherry-pick stays in `waiting_for_resolution` until you continue, skip or abort it in Revqora. After resolving the working file, the client can `stage` its path to mark it resolved, then request `cherry_pick_continue`. Use `cherry_pick_abort` to cancel the cherry-pick.
 
 Pass `diffVersion` with the next page's `offset`. For a long line, use its `lineIndex` as `offset` and `nextTextOffset` as `lineOffset`. `review_pending` returns the active action ID when another MCP request is in progress. Use `list_stashes` to find a stash and `stash_apply` or `stash_pop` to restore it, with optional `restoreIndex`.
 
@@ -28,7 +28,7 @@ Every `request_action` requires `repository` and `action`. Extra parameters that
 | `stash` | | `message`, `includeUntracked`, `keepIndex` |
 | `stash_apply`, `stash_pop` | `stashIndex` and full stash SHA as `target` | `restoreIndex` defaults to `true` |
 | `stash_drop` | `stashIndex` and full stash SHA as `target` | |
-| `fetch`, `pull` | | `prune` |
+| `fetch`, `pull` | | `prune` defaults to `false` in all approval modes |
 | `push` | | `remote`, `remoteBranch`, `force`, `setUpstream` for automatic push |
 | `sync` | | `receive`, `send` for automatic sync |
 | `create_pr` | `title`, `branch` and `base` for automatic creation | `message`, `draft` for automatic creation |
@@ -39,6 +39,8 @@ Every `request_action` requires `repository` and `action`. Extra parameters that
 | `review_workflow_step` | `target` is the run ID | |
 
 `create_branch` resolves the starting point before confirmation and reports the created branch and SHA. Without `base` it starts from `HEAD`. You can qualify a local branch as `refs/heads/<name>`. A missing branch or commit returns `branch_not_found` or `commit_not_found` before confirmation. A Stage path missing from `repository_status` returns `file_not_found`. If it appears there but cannot be staged, Revqora returns `file_not_eligible`. Revqora rechecks the relevant state before executing.
+
+If a provider write returns `result_unverified`, inspect the PR, reviews or merge status on the provider before retrying. Revqora guards against duplicate writes when the first result is uncertain.
 
 The MCP confirmation dialog expires after 120 seconds. The action reports `cancelled` with reason `approval_timed_out`, and the desktop releases the next request.
 
