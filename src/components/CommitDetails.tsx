@@ -265,6 +265,7 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
                 key={f.path}
                 className={`file-row ${file === f.path ? "selected" : ""}`}
                 data-file-nav=""
+                data-file-path={f.path}
                 onClick={() => setFile(f.path)}
                 onContextMenu={(e) =>
                   contextMenu(e, [
