@@ -94,7 +94,8 @@ async function renameAndCherryPick({ page, root, repository, git, request, rejec
   const outdatedResolution = await request("stage", { paths: [file] });
   const stageReview = approval("Stage files");
   await stageReview.waitFor();
-  put("updated resolution\n");
+  const resolved = "updated resolution";
+  put(`${resolved}\n`);
   await approve(stageReview);
   assert.equal((await waitPhase(outdatedResolution.id, "failed")).errorCode, "stale_state");
   assert.equal((await tool("repository_status", { repository })).conflictCount, 1);
@@ -102,7 +103,7 @@ async function renameAndCherryPick({ page, root, repository, git, request, rejec
   await approve(stageReview);
   await waitPhase(resolution.id, "succeeded");
   assert.equal((await tool("repository_status", { repository })).conflictCount, 0);
-  assert.equal(git("show", `:${file}`), "updated resolution");
+  assert.equal(git("show", `:${file}`), resolved);
   const dismissed = await request("cherry_pick_continue");
   await approval("Continue cherry-pick").waitFor();
   await page.keyboard.press("Escape");
@@ -113,7 +114,7 @@ async function renameAndCherryPick({ page, root, repository, git, request, rejec
   await waitPhase(proceed.id, "succeeded");
   const result = await waitPhase(third.id, "succeeded");
   assert.equal(result.result.sha, git("rev-parse", "HEAD"));
-  assert.equal(git("show", `HEAD:${file}`), "resolved version");
+  assert.equal(git("show", `HEAD:${file}`), resolved);
   assert.equal((await tool("repository_status", { repository })).operation, "none");
   await rejected("cherry_pick_abort", undefined, "no_cherry_pick");
 }
