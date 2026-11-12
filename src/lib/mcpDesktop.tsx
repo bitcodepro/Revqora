@@ -262,8 +262,9 @@ async function reviewStash(root: string, index: number, oid: string): Promise<St
 
 async function runAction(event: DesktopRequest, root: string, a: Arguments, status: ActionStatus, mode: McpApprovalMode, prepared: PreparedAction) {
   const action = status.action;
-  const { branch: branchReview, pendingPick: pickReview, paths: pathReview, stash, pickOid } = prepared;
+  const { branch: branchReview, pendingPick: pickReview, stash, pickOid } = prepared;
   try {
+    const pathReview = action === "unstage" ? await reviewPaths(root, action, a.paths!) : prepared.paths;
     let target = stash?.oid ?? pickOid ?? a.target;
     const number = a.number;
     const title = actionNames[action];
@@ -574,7 +575,7 @@ async function requestAction(event: DesktopRequest, root: string, a: Arguments) 
       prepared.pickOid = exactCommit(a.target);
       await api.verifyCommit(root, prepared.pickOid);
     }
-    if (action === "stage" || action === "unstage") prepared.paths = await reviewPaths(root, action, a.paths!);
+    if (action === "stage") prepared.paths = await reviewPaths(root, action, a.paths!);
     if (action === "stash_apply" || action === "stash_pop" || action === "stash_drop") {
       prepared.stash = await reviewStash(root, a.stashIndex!, exactCommit(a.target));
     }
