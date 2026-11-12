@@ -306,6 +306,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    const editable = (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]");
     const next = matchesShortcut(e, "diffNext");
     if (next || matchesShortcut(e, "diffPrevious")) {
       e.preventDefault();
@@ -316,18 +317,18 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       e.stopPropagation();
       setFindOpen(true);
       setTimeout(() => findRef.current?.select(), 0);
-    } else if (!e.repeat && matchesShortcut(e, "codeCopySelection")) {
+    } else if (!editable && !e.repeat && matchesShortcut(e, "codeCopySelection")) {
       const text = wordSelection.selectedText();
       if (text) {
         e.preventDefault();
         e.stopPropagation();
         void copyText(text);
       }
-    } else if (!e.repeat && matchesShortcut(e, "diffCopyName") && !(e.target as HTMLElement).closest("input, textarea, [contenteditable]")) {
+    } else if (!editable && !e.repeat && matchesShortcut(e, "diffCopyName")) {
       e.preventDefault();
       e.stopPropagation();
       void copyText(basename(path), "Name copied");
-    } else if (interactive && !busy && !e.repeat && !(e.target as HTMLElement).closest("input, textarea, [contenteditable]")) {
+    } else if (interactive && !busy && !e.repeat && !editable) {
       const actions: LineAction[] = mode === "unstaged"
         ? ["stage", ...(canStash ? ["stash" as const] : []), ...(!loading ? ["discard" as const] : [])]
         : mode === "staged" ? ["unstage"] : ["apply"];
