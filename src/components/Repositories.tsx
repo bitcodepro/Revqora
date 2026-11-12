@@ -140,13 +140,13 @@ function RepoState({ tab }: { tab: RepoTab }) {
   return <span className="faint">Clean</span>;
 }
 
-function SyncButtons({ roots, scoped = false }: { roots: string[]; scoped?: boolean }) {
+function SyncButtons({ roots }: { roots: string[] }) {
   const busy = useUi((s) => s.busy.length > 0);
   return (
     <div className="repository-sync">
-      <SyncButton roots={roots} label={scoped ? "Sync filtered" : "Sync all"} />
-      <button className="btn sm" disabled={busy || !roots.length} onClick={() => void fetchRepositories(roots)}><RefreshCw size={13} /> {scoped ? "Fetch filtered" : "Fetch all"}</button>
-      <button className="btn sm" disabled={busy || !roots.length} onClick={() => void pullRepositories(roots)}><ArrowDownToLine size={13} /> {scoped ? "Pull filtered" : "Pull all"}</button>
+      <SyncButton roots={roots} label="Sync all" />
+      <button className="btn sm" disabled={busy || !roots.length} onClick={() => void fetchRepositories(roots)}><RefreshCw size={13} /> Fetch all</button>
+      <button className="btn sm" disabled={busy || !roots.length} onClick={() => void pullRepositories(roots)}><ArrowDownToLine size={13} /> Pull all</button>
     </div>
   );
 }
@@ -201,7 +201,7 @@ export function RepositorySidebar() {
       <header onContextMenu={panelMenu}><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{candidates.length}</span><div className="spacer" /><button className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
       <div className="repository-filter input-wrap"><Search size={13} /><input className="input sm" placeholder="Find repository…" aria-label="Find repository" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupId ?? ""} onChange={event => library.selectGroup(event.target.value || null)}><option value="">All repositories</option>{groups.map(({ entry, depth }) => <option key={entry.id} value={entry.id}>{"　".repeat(depth)}{entry.name}</option>)}</select>}
-      <SyncButtons roots={visible.filter((r) => !!tabs[r])} scoped={!!query.trim() || filterUpdates || favoritesOnly || !!groupFilter} />
+      {!search && !filterUpdates && !favoritesOnly && !groupFilter && <SyncButtons roots={order} />}
       <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites{favoritesOnly ? " · Show all" : ""}</button>
       <button className={`repository-overview-link ${overview ? "active" : ""}`} aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={14} /> All repositories</button>
       {selected.length > 0 && <small className="repository-selection-note">{selected.length} selected</small>}
@@ -271,7 +271,7 @@ export function RepositoryOverview() {
   const incoming = scoped.filter(root => !!repositorySidebarStatus(tabs[root])?.behind).length;
   return (
     <div className="repository-overview">
-      <header><div><h2>Repositories</h2><span className="faint">{group?.name ?? "All repositories"} · {scoped.length} open · {incoming} with incoming commits</span></div><div className="spacer" /><SyncButtons roots={visible} scoped={!!query.trim() || !!group} /><button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button><button type="button" className="icon-btn" title="Close repository overview" aria-label="Close repository overview" onClick={toggleRepositoryOverview}><X size={16}/></button></header>
+      <header><div><h2>Repositories</h2><span className="faint">{group?.name ?? "All repositories"} · {scoped.length} open · {incoming} with incoming commits</span></div><div className="spacer" />{!query.trim() && !group && <SyncButtons roots={order} />}<button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button><button type="button" className="icon-btn" title="Close repository overview" aria-label="Close repository overview" onClick={toggleRepositoryOverview}><X size={16}/></button></header>
       <div className="repository-overview-search input-wrap"><Search size={14} /><input className="input" placeholder="Find repository…" aria-label="Find repository in overview" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {group && <button className="btn sm" type="button" onClick={() => useLibrary.getState().selectGroup(null)}>Clear group filter · {group.name}</button>}
       <div className="repository-table-scroll">

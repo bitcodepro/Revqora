@@ -30,7 +30,7 @@ These buttons are below the repository search field. They also appear in **All r
 - **Pull all** runs Pull for their current branches; individual failures are reported.
 - **Sync all** prepares a review of receiving and sending commits for each repository.
 
-When a search, favorites/group filter or another scope is active, the buttons may read **Fetch filtered**, **Pull filtered** or **Sync filtered**. Check the visible scope before starting. Closed library bookmarks are not included.
+The buttons are available in the unfiltered repository list and apply to open repositories.
 
 Incoming/outgoing counts reflect known Git data. Fetch before relying on a count if the server may have changed.
 

@@ -19,6 +19,7 @@ import {
   Link2,
   Pencil,
   RotateCcw,
+  RefreshCw,
   Shuffle,
   Info,
   Tag,
@@ -43,7 +44,7 @@ import { api } from "../lib/api";
 import { branchCard } from "./BranchCard";
 import { branchReflogDialog, savePatch } from "./RepoTools";
 import { WORKTREE } from "../lib/types";
-import type { GraphRow } from "../lib/types";
+import type { BranchInfo, GraphRow, RefsSnapshot } from "../lib/types";
 import { shortOid } from "../lib/format";
 import { matchesShortcut } from "../lib/shortcuts";
 
@@ -98,8 +99,9 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote")
     items.push({ label: `Rebase ${current} onto ${name}`, shortcut: "branch-rebase", icon: <GitPullRequestArrow size={I} />, onClick: () => A.rebaseOnto(root, name) });
   }
   items.push({ separator: true });
+  if (isCurrent) items.push({ label: "Push…", icon: <CloudUpload size={I} />, onClick: () => A.push(root) });
+  items.push(...branchRemoteItems(root, reference, kind, current, tab?.refs));
   if (kind === "local") {
-    if (isCurrent) items.push({ label: "Push…", icon: <CloudUpload size={I} />, onClick: () => A.push(root) });
     items.push({ label: "Set upstream…", shortcut: "branch-upstream", icon: <Link2 size={I} />, onClick: () => A.setUpstream(root, name) });
     items.push({ label: "Rename…", icon: <Pencil size={I} />, onClick: () => A.renameBranch(root, name) });
     items.push({ label: "Delete…", shortcut: "branch-delete", icon: <Trash2 size={I} />, danger: true, disabled: isCurrent, onClick: () => A.deleteBranch(root, name) });
@@ -108,6 +110,42 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote")
     items.push({ label: "Delete on remote…", shortcut: "branch-delete", icon: <Trash2 size={I} />, danger: true, onClick: () => A.deleteRemoteBranch(root, name) });
   }
   return items;
+}
+
+function branchRemoteItems(root: string, reference: string, kind: "local" | "remote", current: string | null | undefined, refs: RefsSnapshot | null | undefined): MenuItem[] {
+  const local = refs?.local ?? [];
+  const branch = local.find(candidate => candidate.fullName === reference);
+  const remoteRef = kind === "remote" ? reference : branch?.upstreamFullName;
+  const remotes = refs?.remotes ?? [];
+  const upstreamRemote = remotes.reduce<string | undefined>((matched, remote) =>
+    remoteRef?.startsWith(`refs/remotes/${remote.name}/`) && remote.name.length > (matched?.length ?? 0) ? remote.name : matched, undefined);
+  const fetchRemotes = upstreamRemote ? [upstreamRemote] : kind === "local" ? remotes.map(remote => remote.name) : [];
+  let fetchItem: MenuItem = { label: "Fetch", icon: <RefreshCw size={I} /> };
+  if (fetchRemotes.length === 1) {
+    const remote = fetchRemotes[0]!;
+    fetchItem = { ...fetchItem, shortcut: "branch-fetch", onClick: () => A.fetchRemote(root, remote) };
+  } else if (fetchRemotes.length > 1) {
+    fetchItem.children = fetchRemotes.map(remote => ({ label: remote, onClick: () => A.fetchRemote(root, remote) }));
+  } else {
+    fetchItem = { ...fetchItem, disabled: true, hint: "No remote configured" };
+  }
+
+  const targets = kind === "local"
+    ? branch?.upstream ? [branch] : []
+    : local.filter(candidate => candidate.upstreamFullName === reference && candidate.upstream);
+  const pull = (target: BranchInfo) => () => {
+    if (target.upstream) return A.pullBranch(root, { branch: target.name, upstream: target.upstream });
+  };
+  const preferred = targets.find(target => target.name === current) ?? (targets.length === 1 ? targets[0] : undefined);
+  let pullItem: MenuItem = { label: "Pull", icon: <ArrowDown size={I} /> };
+  if (preferred) {
+    pullItem = { ...pullItem, label: preferred.name === current ? "Pull" : "Pull…", shortcut: "branch-pull", onClick: pull(preferred) };
+  } else if (targets.length > 1) {
+    pullItem.children = targets.map(target => ({ label: target.name, onClick: pull(target) }));
+  } else {
+    pullItem = { ...pullItem, disabled: true, hint: kind === "local" ? "Set an upstream first" : "Check out a tracking branch first" };
+  }
+  return [pullItem, fetchItem];
 }
 
 export function tagMenu(root: string, name: string, oid: string): MenuItem[] {

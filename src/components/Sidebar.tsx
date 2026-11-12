@@ -395,7 +395,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                     title={info?.fetchUrl}
                     onContextMenu={(e) =>
                       contextMenu(e, [
-                        { label: `Fetch ${name}`, icon: <Play size={14} />, onClick: () => A.act(root, () => api.fetch(root, name, true, `f-${Date.now()}`), { success: `Fetched ${name}`, busy: `Fetching ${name}` }) },
+                        { label: `Fetch ${name}`, icon: <Play size={14} />, onClick: () => A.fetchRemote(root, name) },
                         { label: "Copy URL", icon: <Copy size={14} />, onClick: () => copyText(info?.fetchUrl ?? "", "URL copied") },
                         {
                           label: "Change URL…",

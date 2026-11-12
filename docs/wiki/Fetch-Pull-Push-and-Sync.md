@@ -23,7 +23,9 @@ For a local branch with the wrong tracking relationship, use its context menu â†
 
 Open the left **Repositories** panel with **Ctrl+Alt+R**. **Fetch all** is below its search field, beside **Sync all**. **All repositories** also exposes these actions.
 
-The top-bar **Fetch** operates on the current repository's remotes. The left-panel **Fetch all** operates across matching open repositories. With active filters, the labels change to **Fetch filtered**, **Pull filtered** and **Sync filtered**.
+The top-bar **Fetch** operates on the current repository's remotes. **Fetch all**, **Pull all** and **Sync all** are available in the unfiltered repository list.
+
+Right-click a branch for **Fetch** or **Pull**. **Fetch** updates its remote, or offers a choice of remotes for a local branch without an upstream. **Pull** uses the selected local branch's upstream and asks before switching branches. For a remote branch, **Pull** uses a local branch that tracks it.
 
 ## A normal daily routine
 

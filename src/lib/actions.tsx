@@ -198,13 +198,36 @@ export async function cloneRepo() {
 
 // ───────────── remotes ─────────────
 
-export const fetchAll = async (root: string) => {
-  const out = await remote(root, "Fetching", (id) => api.fetch(root, null, true, id), () => "Fetched from all remotes");
+async function fetchRemotes(root: string, name: string | null) {
+  const out = await remote(root, name ? `Fetching ${name}` : "Fetching", (id) => api.fetch(root, name, true, id),
+    () => name ? `Fetched ${name}` : "Fetched from all remotes");
   useRepos.getState().patch(root, out !== undefined ? { lastFetchedAt: Date.now(), fetchError: null } : { fetchError: "Fetch failed. Try Fetch again to sign in or see the error." });
   return out;
-};
+}
 
-export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase", expectedState?: string, pruneRemote?: boolean) {
+export const fetchAll = (root: string) => fetchRemotes(root, null);
+export const fetchRemote = (root: string, name: string) => fetchRemotes(root, name);
+
+type PullTarget = { branch: string; upstream: string };
+
+export async function pullBranch(root: string, target: PullTarget) {
+  try {
+    const status = await api.status(root);
+    if (status.branch !== target.branch) {
+      if (!status.stateToken || !await confirmDialog({
+        title: `Check out and pull ${target.branch}?`,
+        message: `Switch to ${target.branch} and pull from ${target.upstream}.`,
+        confirm: "Check out and Pull",
+      })) return;
+      if (await checkout(root, target.branch, "local", status.stateToken) !== target.branch) return;
+    }
+    await pull(root, undefined, undefined, undefined, target);
+  } catch (error) {
+    toast.error(error, "Could not prepare branch pull");
+  }
+}
+
+export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase", expectedState?: string, pruneRemote?: boolean, target?: PullTarget) {
   const mode = modeOverride ?? useSettings.getState().pullMode;
   const opId = newOpId();
   startBusy(opId, "Pulling");
@@ -212,6 +235,14 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
   let ignoredCollision: GitError | undefined;
   let outcome: PullOutcome | undefined;
   try {
+    if (target) {
+      const status = await api.status(root);
+      if (status.branch !== target.branch || status.upstream !== target.upstream || !status.stateToken) {
+        toast.warning("Branch or upstream changed", "Review the branch and try Pull again.");
+        return;
+      }
+      expectedState = status.stateToken;
+    }
     outcome = await api.pull(root, mode, opId, expectedState, pruneRemote);
   } catch (e) {
     const msg = errorMessage(e).toLowerCase();
@@ -224,7 +255,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
     endBusy(opId);
     await useRepos.getState().refresh(root, ALL);
   }
-  if (ignoredCollision && await ignoredCollisionDialog(root, ignoredCollision)) await pull(root, mode, undefined, pruneRemote);
+  if (ignoredCollision && await ignoredCollisionDialog(root, ignoredCollision)) await pull(root, mode, undefined, pruneRemote, target);
   if (outcome) {
     if (outcome.status === "upstreamGone" && outcome.upstreamGone) {
       const gone = outcome.upstreamGone;
@@ -259,7 +290,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
         <div className="muted">Merge keeps both histories with a merge commit. Rebase replays your local commits on top of the remote ones for a straight history.</div>
       </Modal>
     ));
-    if (how) await pull(root, how, undefined, pruneRemote);
+    if (how) await pull(root, how, undefined, pruneRemote, target);
   }
 }
 

@@ -146,6 +146,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     ["merge", "Merge focused branch into current"],
     ["rebase", "Rebase current branch onto focused branch"],
     ["upstream", "Set upstream for focused branch"],
+    ["fetch", "Fetch remote for focused branch"],
+    ["pull", "Pull focused branch"],
     ["delete", "Review deletion of focused branch"],
   ].map(([id, label]) => ({ id: `branch-${id}`, label, description: "Runs from the focused row in Branches.", default: "", scope: "navigation" as const })),
   ...[
