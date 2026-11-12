@@ -34,13 +34,15 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
     return { x, y };
   };
   const drag = async (source, destination, fraction = 0.5, marker = "workspace-drop-active") => {
-    await destination.scrollIntoViewIfNeeded();
     await source.scrollIntoViewIfNeeded();
     const start = await dragPoint(source, 0.5);
-    const end = await dragPoint(destination, fraction);
     await page.mouse.move(start.x, start.y);
     await page.mouse.down();
     try {
+      await page.mouse.move(start.x + 8, start.y);
+      // Earlier workspace scenarios can leave enough rows to put the two endpoints on different screens.
+      await destination.scrollIntoViewIfNeeded();
+      const end = await dragPoint(destination, fraction);
       await page.mouse.move(end.x, end.y, {steps: 9});
       await destination.and(page.locator(`.${marker}`)).waitFor();
     } finally { await page.mouse.up(); }
