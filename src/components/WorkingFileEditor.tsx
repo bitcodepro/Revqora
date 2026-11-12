@@ -11,8 +11,8 @@ import { languageFor } from "../lib/languages";
 import { useSettings } from "../lib/settings";
 import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { useRepos } from "../lib/store";
-import { contextMenu, useUi } from "../lib/ui";
-import { copyFileNameItem } from "./NamePathMenu";
+import { contextMenu, copyText, useUi } from "../lib/ui";
+import { copyFileNameItem, copySelectionItem } from "./NamePathMenu";
 import type { FileDiff } from "../lib/types";
 import { confirmDialog } from "./dialogs";
 import "../styles/fileEditor.css";
@@ -153,6 +153,11 @@ function WorkingCode({path,initial,diff,displayDiff,disabled,changed}: {
   }, [diff, displayDiff]);
   useEffect(()=>{view.current?.dispatch({effects:compartments.current.options.reconfigure([EditorState.tabSize.of(size),indentUnit.of(" ".repeat(size)),...(whitespace?[highlightWhitespace()]:[])])});},[size,whitespace]);
   useEffect(()=>{view.current?.dispatch({effects:compartments.current.editable.reconfigure([EditorState.readOnly.of(disabled),...(disabled?[EditorState.transactionFilter.of(tr=>tr.docChanged?[]:tr)]:[])])});},[disabled]);
+  const selectedText = () => {
+    const state = view.current?.state;
+    return state ? state.selection.ranges.filter(range => !range.empty)
+      .map(range => state.sliceDoc(range.from, range.to)).join(state.lineBreak) : "";
+  };
   const convert=()=>{
     const editor=view.current;if(!editor||disabled)return;
     const before=editor.state.sliceDoc(), after=tabsToSpaces(before,size,all);
@@ -166,5 +171,10 @@ function WorkingCode({path,initial,diff,displayDiff,disabled,changed}: {
     <label>Spaces per tab <select className="select" aria-label="Spaces per tab" value={size} disabled={disabled} onChange={e=>setSize(Number(e.target.value))}>{[2,4,8].map(n=><option key={n} value={n}>{n}</option>)}</select></label>
     <label>Convert <select className="select" aria-label="Tab conversion scope" value={all?"all":"indent"} disabled={disabled} onChange={e=>setAll(e.target.value==="all")}><option value="indent">Leading indentation only</option><option value="all">All tabs in the file</option></select></label>
     <button type="button" className="btn sm" disabled={disabled} onClick={convert}>Tabs → spaces</button><span className="muted">{shortcutTitle("Save", "workingFileSave")} · Ctrl+Z undoes</span>
-  </div><div className="working-code" ref={host}/></>;
+  </div><div className="working-code" ref={host} onContextMenu={e => contextMenu(e, [copySelectionItem(selectedText())])}
+    onKeyDownCapture={e => {
+      if (e.repeat || !matchesShortcut(e, "codeCopySelection")) return;
+      const text = selectedText();
+      if (text) { e.preventDefault(); e.stopPropagation(); void copyText(text); }
+    }}/></>;
 }

@@ -73,8 +73,8 @@ export function visibleTree<T extends TreeEntry>(
 
 export function treeSelection(ids: string[], selected: string[], anchor: string | null, id: string, range: boolean, toggle: boolean): string[] {
   const start = anchor ? ids.indexOf(anchor) : -1, end = ids.indexOf(id);
-  if (range && start >= 0 && end >= 0) {
-    const between = ids.slice(Math.min(start, end), Math.max(start, end) + 1);
+  if (range && end >= 0) {
+    const between = start < 0 ? [id] : ids.slice(Math.min(start, end), Math.max(start, end) + 1);
     return toggle ? [...new Set([...selected, ...between])] : between;
   }
   return toggle && selected.includes(id) ? selected.filter(item => item !== id) : toggle ? [...selected, id] : [id];

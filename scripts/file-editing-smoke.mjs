@@ -31,10 +31,9 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
       }
     } finally { await page.evaluate(()=>window.__restoreNamePathClipboard?.()); }
   };
-  const selectWord=async(scope,word)=>{
-    const line=scope.locator(".diff-body .code").filter({hasText:word}).first();
+  const wordPoint=async(line,word)=>{
     await line.scrollIntoViewIfNeeded();
-    const point=await line.evaluate((code,word)=>{
+    return line.evaluate((code,word)=>{
       const walker=document.createTreeWalker(code,NodeFilter.SHOW_TEXT);
       for(let node=walker.nextNode();node;node=walker.nextNode()){
         const start=node.textContent.indexOf(word);
@@ -45,6 +44,17 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
       }
       throw Error("The test word was not rendered");
     },word);
+  };
+  const checkSelectionCopy=async(point,word)=>{
+    await interceptClipboard(page);
+    try {
+      await page.mouse.click(point.x,point.y,{button:"right"});
+      await page.locator(".ctx-menu").getByText("Copy",{exact:true}).click();
+      await page.waitForFunction(text=>window.__namePathCopies.at(-1)===text,word);
+    } finally { await page.evaluate(()=>window.__restoreNamePathClipboard?.()); }
+  };
+  const selectWord=async(scope,word)=>{
+    const point=await wordPoint(scope.locator(".diff-body .code").filter({hasText:word}).first(),word);
     await page.mouse.dblclick(point.x,point.y);
     await page.waitForFunction(word=>{
       const ranges=[...(CSS.highlights.get("revqora-diff-word")??[])];
@@ -53,6 +63,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
       const actual=await page.evaluate(()=>({selection:getSelection()?.toString(),matches:[...(CSS.highlights.get("revqora-diff-word")??[])].map(range=>range.toString())}));
       throw new Error(`Double-click selection for ${word}: ${JSON.stringify(actual)}`,{cause:error});
     });
+    return point;
   };
   try {
     await changes();await page.getByTitle("Flat list",{exact:true}).click();
@@ -69,7 +80,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.keyboard.press("ArrowDown");await diff("latest B");
     const changesDiff=page.locator(".changes .diff");
     await changesDiff.getByTitle("Unified",{exact:true}).click();
-    await selectWord(changesDiff,"item_id");
+    await checkSelectionCopy(await selectWord(changesDiff,"item_id"),"item_id");
     await changesDiff.getByTitle("Side by side",{exact:true}).click();
     await page.waitForFunction(()=>[...(CSS.highlights.get("revqora-diff-word")??[])].filter(range=>range.toString()==="item_id").length===2);
     await changesDiff.getByTitle(prefs.diffMode==="split"?"Side by side":"Unified",{exact:true}).click();
@@ -93,7 +104,11 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.getByRole("button",{name:"Edit working file",exact:true}).click();
     const content=page.getByRole("textbox",{name:"Working file content",exact:true});await content.waitFor();
     assert.equal(await page.locator(".modal").count(),0,"The editor should use the Changes diff pane");
-    await page.locator(".changes .cm-working-change").filter({hasText:"alpha value"}).waitFor();
+    const changedLine=page.locator(".changes .cm-working-change").filter({hasText:"alpha value"});
+    await changedLine.waitFor();
+    const alpha=await wordPoint(changedLine,"alpha");
+    await page.mouse.dblclick(alpha.x,alpha.y);
+    await checkSelectionCopy(alpha,"alpha");
     await page.getByLabel("Spaces per tab",{exact:true}).selectOption("2");await page.getByRole("button",{name:"Tabs → spaces",exact:true}).click();
     await page.waitForFunction(()=>!document.querySelector(".working-code .cm-highlightTab"));
     assert.equal(fs.readFileSync(file,"utf8"),initial,"Conversion must remain a draft until Save");

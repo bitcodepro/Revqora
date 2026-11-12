@@ -24,6 +24,11 @@ function copyNameItem(name: string, shortcut?: string): MenuItem {
   return { label: "Copy name", shortcut, icon: <Copy size={14} />, onClick: () => { void copyText(name, "Name copied"); } };
 }
 
+export function copySelectionItem(text: string): MenuItem {
+  return { label: "Copy", shortcut: "codeCopySelection", icon: <Copy size={14} />, disabled: !text,
+    onClick: () => { if (text) void copyText(text); } };
+}
+
 export function copyFileNameItem(path: string, shortcut?: string): MenuItem {
   return copyNameItem(basename(path), shortcut);
 }

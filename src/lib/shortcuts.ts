@@ -66,6 +66,13 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "refresh", label: "Refresh", description: "Reload the current repository or overview.", default: "F5" },
   { id: "renameItem", label: "Rename focused item", description: "Rename a focused group, branch or repository label.", default: "F2", scope: "navigation" },
   { id: "deleteItem", label: "Delete focused item", description: "Review deletion of the selected groups or branches.", default: "Delete", scope: "navigation" },
+  ...[
+    ["explorerNextRow", "Focus next Explorer row", "ArrowDown", "Move down through visible folders and repositories."],
+    ["explorerPreviousRow", "Focus previous Explorer row", "ArrowUp", "Move up through visible folders and repositories."],
+    ["explorerExtendNext", "Extend Explorer selection down", "Shift+ArrowDown", "Select the next sibling at the focused row's level."],
+    ["explorerExtendPrevious", "Extend Explorer selection up", "Shift+ArrowUp", "Select the previous sibling at the focused row's level."],
+    ["explorerSelectAll", "Select all at the current Explorer level", "Ctrl+A", "Select visible folders and repositories in the same parent. Press again to move up one level."],
+  ].map(([id, label, key, description]) => ({ id, label, description, default: key, scope: "navigation" as const })),
   { id: "navigationClearSelection", label: "Clear group or repository selection", description: "Clear the current selection in Explorer or Repositories.", default: "Escape", scope: "navigation" },
   { id: "navigationToggleSelection", label: "Toggle focused group or repository selection", description: "Add or remove the focused row from the selection.", default: "Ctrl+Space", scope: "navigation" },
   { id: "navigationSelectRange", label: "Select a range of groups or repositories", description: "Select from the last focused row to this row.", default: "Shift+Space", scope: "navigation" },
@@ -105,6 +112,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "diffNext", label: "Next change", description: "Jump to the next changed block in the diff.", default: "F7", scope: "diff" },
   { id: "diffPrevious", label: "Previous change", description: "Jump to the previous changed block in the diff.", default: "Shift+F7", scope: "diff" },
   { id: "diffFind", label: "Find in diff", description: "Open text search for the focused diff.", default: "Ctrl+F", scope: "diff" },
+  { id: "codeCopySelection", label: "Copy selected code", description: "Copy the selected text from a diff or the working-file editor.", default: "", scope: "diff" },
   { id: "diffCopyName", label: "Copy diff file name", description: "Copy the full name of the file displayed in the focused diff.", default: "", scope: "diff" },
   ...["Stage", "Unstage", "Stash", "Discard", "Apply"].flatMap(action => [
     { id: `diff-${action.toLowerCase()}-hunk`, label: `${action} hunk`, description: `${action} the focused block of changes in the diff.`, default: "", scope: "diff" as const },

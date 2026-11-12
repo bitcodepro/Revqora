@@ -1,5 +1,5 @@
-import { useEffect, useState, type CSSProperties } from "react";
-import { ChevronDown, ChevronRight, Folder, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Pencil, Search, Star, Trash2, Unlink, X } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Pencil, Search, Star, Trash2, Unlink, X } from "lucide-react";
 import { defaultGroupRoots, explorerRepositoryKey, orderExplorerSiblings, repositoryKey, uniqueRoots, useLibrary, type RepositoryGroup, type RepositoryPlacement } from "../lib/repositoryLibrary";
 import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
 import { findExplorerDrop, useLibraryPointerDrag } from "../lib/libraryDrag";
@@ -23,6 +23,13 @@ type ExplorerEntry =
   | { kind: "group"; id: string; parentId?: string | null; name: string; group: RepositoryGroup }
   | { kind: "repository"; id: string; parentId: string | null; name: string; root: string };
 
+const rowSteps = [
+  { shortcut: "explorerNextRow", step: 1, extend: false },
+  { shortcut: "explorerPreviousRow", step: -1, extend: false },
+  { shortcut: "explorerExtendNext", step: 1, extend: true },
+  { shortcut: "explorerExtendPrevious", step: -1, extend: true },
+];
+
 export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const groups = useLibrary(s => s.groups), known = useLibrary(s => s.knownRoots);
   const activeGroup = useLibrary(s => s.activeGroupId), names = useLibrary(s => s.repositoryNames);
@@ -37,6 +44,9 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const [incomingOnly, setIncomingOnly] = useState(false);
   const [collapsedFavorites, setCollapsedFavorites] = useState<Set<string>>(() => new Set());
   const navigation = useNavigationSelection<HTMLElement>();
+  const tree = useRef<HTMLDivElement>(null);
+  const [focusedEntry, setFocusedEntry] = useState<string | null>();
+  const focusedId = focusedEntry === undefined ? activeGroup : focusedEntry;
   const { selection, clear: clearSelection } = navigation;
   const folderDrag = useLibraryPointerDrag(), repositoryDrag = useRepositoryDrag();
   const library = useLibrary.getState;
@@ -64,20 +74,47 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     !!search || favoritesOnly || incomingOnly, !favoritesOnly && (!!search || incomingOnly),
     (siblings, parentId) => orderExplorerSiblings(siblings, explorerOrder[parentId ?? ""],
       entry => entry.kind === "group" ? entry.id : explorerRepositoryKey(entry.root)));
-  const selectedRows = rows.filter(({ entry }) => selection.includes(entry.id)).map(({ entry }) => entry);
-  const selectionContext = (entry: ExplorerEntry) => {
-    const peers = rows.map(row => row.entry).filter(row => row.kind === entry.kind);
-    const current = entry.kind === "group" ? activeGroup
-      : peers.find(row => row.kind === "repository" && row.root === active && row.parentId === entry.parentId)?.id ?? null;
-    return { ids: peers.map(row => row.id), current };
-  };
+  const visibleEntries = rows.map(row => row.entry);
+  const visibleIds = visibleEntries.map(entry => entry.id);
+  const selectedRows = visibleEntries.filter(entry => selection.includes(entry.id));
+  const siblingIds = (entry: ExplorerEntry) => visibleEntries
+    .filter(row => (row.parentId ?? null) === (entry.parentId ?? null)).map(row => row.id);
   const select = (event: React.MouseEvent, entry: ExplorerEntry, activate: () => void) => {
-    const { ids, current } = selectionContext(entry);
-    if (!navigation.select(ids, entry.id, current, event.shiftKey, event.ctrlKey || event.metaKey)) activate();
+    setFocusedEntry(entry.id);
+    if (!navigation.select(visibleIds, entry.id, null, event.shiftKey, event.ctrlKey || event.metaKey, siblingIds(entry))) activate();
   };
-  const selectionKeys = (event: React.KeyboardEvent, entry: ExplorerEntry) => {
-    const { ids, current } = selectionContext(entry);
-    navigation.keyDown(event, ids, entry.id, current);
+  const focusRow = (id: string) => {
+    const row = tree.current?.querySelector<HTMLButtonElement>(`[data-explorer-entry="${CSS.escape(id)}"] > .repository-select`);
+    row?.focus({ preventScroll: true });
+    row?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+  const rowIdFrom = (target: EventTarget) => (target as HTMLElement).closest<HTMLElement>("[data-explorer-entry]")?.dataset.explorerEntry;
+  const selectionKeys = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const id = rowIdFrom(event.target);
+    const entry = visibleEntries.find(row => row.id === id);
+    if (!entry || event.currentTarget.ownerDocument.body.classList.contains("explorer-dragging")) return;
+    const consume = () => { event.preventDefault(); event.stopPropagation(); };
+    if (matchesShortcut(event, "explorerSelectAll")) {
+      consume();
+      if (event.repeat) return;
+      const parent = navigation.selectedAllAt(entry.id) && visibleEntries.find(row => row.id === entry.parentId);
+      const target = parent || entry;
+      navigation.selectAll(siblingIds(target), target.id);
+      if (parent) focusRow(parent.id);
+      return;
+    }
+    const step = rowSteps.find(item => matchesShortcut(event, item.shortcut));
+    if (step) {
+      consume();
+      const ids = step.extend ? siblingIds(entry) : visibleIds;
+      const next = ids[ids.indexOf(entry.id) + step.step];
+      if (next) {
+        navigation.select(visibleIds, next, entry.id, step.extend, false, ids);
+        focusRow(next);
+      }
+      return;
+    }
+    navigation.keyDown(event, visibleIds, entry.id, null, siblingIds(entry));
   };
   const groupIds = (id: string) => selection.includes(id)
     ? selectedRows.filter(entry => entry.kind === "group").map(entry => entry.id) : [id];
@@ -120,22 +157,23 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
       <button type="button" className={`repository-updates ${incomingOnly ? "active" : ""}`} aria-pressed={incomingOnly}
         title="Show repositories with incoming commits" onClick={() => setIncomingOnly(!incomingOnly)}>Incoming{incoming.size ? ` · ${incoming.size}` : ""}</button>
     </div>
-    <button type="button" className={`repository-overview-link ${activeGroup === null ? "active" : ""}`} aria-current={activeGroup === null} aria-label="All repositories"
-      data-tree-group="" data-tooltip="Show all repositories or drop items here to move them to the top level" onClick={() => { clearSelection(); library().selectGroup(null); }}>
+    <button type="button" className={`repository-overview-link ${activeGroup === null && focusedId === null ? "active" : ""}`} aria-current={activeGroup === null} aria-label="All repositories"
+      data-tree-group="" data-tooltip="Show all repositories or drop items here to move them to the top level" onClick={() => { clearSelection(); setFocusedEntry(null); library().selectGroup(null); }}>
       <LayoutGrid size={14}/><span className="explorer-overview-text">All repositories</span><span className="explorer-overview-drop-text" aria-hidden="true">Move to top level</span>
     </button>
-    <div className="repository-list explorer-tree" role="tree" aria-label="Groups and repositories" aria-multiselectable="true" onClick={event => {
-      if (!(event.target as HTMLElement).closest("button")) clearSelection();
-    }}>
+    <div ref={tree} className="repository-list explorer-tree" role="tree" aria-label="Groups and repositories" aria-multiselectable="true"
+      onKeyDown={selectionKeys} onFocus={event => { const id = rowIdFrom(event.target); if (id) setFocusedEntry(id); }}
+      onClick={event => {
+        if (!(event.target as HTMLElement).closest("button")) { clearSelection(); setFocusedEntry(null); }
+      }}>
       {rows.map(({ entry, depth, expanded, hasChildren }) => {
         if (entry.kind === "repository") {
           const items = placements(entry);
           return <RepositoryNavigationRow key={entry.id} root={entry.root} name={entry.name} tab={tabs[entry.root]}
-            depth={depth} current={entry.root === active && !overview} selected={selection.includes(entry.id)} groupId={entry.parentId ?? undefined}
+            depth={depth} explorer={{ id: entry.id, focused: focusedId === entry.id }} current={entry.root === active && !overview} selected={selection.includes(entry.id)} groupId={entry.parentId ?? undefined}
             selection={uniqueRoots(items.map(item => item.root))}
             createGroup={() => void groupEditorDialog({ roots: uniqueRoots(items.map(item => item.root)), parentId: entry.parentId, onCreated: clearSelection })}
             onPointerDown={event => repositoryDrag.start(event, items)}
-            onSelectionKeyDown={event => selectionKeys(event, entry)}
             onClick={event => {
               if (repositoryDrag.suppressClick.current) return;
               select(event, entry, () => {
@@ -164,8 +202,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
           });
         };
         return <div key={group.id} role="treeitem" aria-level={depth + 1} aria-label={group.name} aria-selected={selected}
-          aria-expanded={hasChildren ? expanded : undefined} data-tree-group={group.id}
-          className={`repository-item library-tree-row ${chosen ? "active" : ""} ${selected ? "batch-selected" : ""}`}
+          aria-expanded={hasChildren ? expanded : undefined} data-tree-group={group.id} data-explorer-entry={entry.id}
+          className={`repository-item library-tree-row ${chosen ? "active" : ""} ${focusedId === entry.id ? "explorer-focused" : ""} ${selected ? "batch-selected" : ""}`}
           style={{ "--tree-depth": Math.min(depth, 12) } as CSSProperties}
           onContextMenu={event => contextMenu(event, groupMenu(group))}
           onKeyDown={event => {
@@ -180,10 +218,10 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
           </button> : <span className="library-tree-spacer"/>}
           <button type="button" className="repository-select" aria-current={chosen} title={group.name}
             data-shortcut="renameItem" data-tooltip="Rename group · Drag to move · Shift+click selects a range"
-            onPointerDown={startDrag} onKeyDown={event => selectionKeys(event, entry)}
+            onPointerDown={startDrag}
             onDoubleClick={event => { if (hasChildren && !event.ctrlKey && !event.metaKey && !event.shiftKey) toggle(); }}
             onClick={event => { if (!folderDrag.suppressClick.current) select(event, entry, () => library().selectGroup(group.id)); }}>
-            <Folder size={15}/>
+            {expanded && hasChildren ? <FolderOpen size={15}/> : <Folder size={15}/>}
             <span className="repository-label">{group.name}</span>
           </button>
           <button type="button" className={`icon-btn sm repository-star ${group.favorite ? "active" : ""}`}

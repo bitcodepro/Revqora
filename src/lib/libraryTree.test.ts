@@ -49,6 +49,13 @@ it("reveals ancestors when filtering and only selects visible ranges", () => {
   expect(treeSelection(["a","b","c"], ["c"], "a", "b", false, true)).toEqual(["c","b"]);
 });
 
+it("starts a new Shift range when the anchor is outside the sibling list", () => {
+  const siblings = ["folder", "repo"];
+  expect(treeSelection(siblings, ["other"], "other", "repo", true, false)).toEqual(["repo"]);
+  expect(treeSelection(siblings, ["other", "repo"], "other", "repo", true, true)).toEqual(["other", "repo"]);
+  expect(treeSelection(siblings, [], "folder", "repo", true, false)).toEqual(["folder", "repo"]);
+});
+
 it("reorders siblings and preserves the dragged subtree when crossing levels", () => {
   const entries = [
     {id:"a", name:"A", parentId:null}, {id:"child", name:"Child", parentId:"a"},

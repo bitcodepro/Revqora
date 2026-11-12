@@ -8,10 +8,12 @@ export function useNavigationSelection<T extends HTMLElement>() {
   const [selection, setSelection] = useState<string[]>([]);
   const anchor = useRef<string | null>(null);
   const plainSelection = useRef<string | null>(null);
+  const allSelection = useRef<string[] | null>(null);
   const clear = useCallback(() => {
     setSelection(current => current.length ? [] : current);
     anchor.current = null;
     plainSelection.current = null;
+    allSelection.current = null;
   }, []);
 
   useEffect(() => {
@@ -37,7 +39,8 @@ export function useNavigationSelection<T extends HTMLElement>() {
     };
   }, [clear]);
 
-  function select(ids: string[], id: string, active: string | null, range: boolean, toggle: boolean) {
+  function select(ids: string[], id: string, active: string | null, range: boolean, toggle: boolean, rangeIds = ids) {
+    allSelection.current = null;
     const previous = anchor.current && ids.includes(anchor.current) ? anchor.current : active;
     if (range || toggle) {
       const plain = plainSelection.current;
@@ -45,9 +48,9 @@ export function useNavigationSelection<T extends HTMLElement>() {
       setSelection(current => {
         const selected = current.filter(item => ids.includes(item));
         if (plain && ids.includes(plain) && !selected.includes(plain)) selected.push(plain);
-        return treeSelection(ids, selected, previous, id, range, toggle);
+        return treeSelection(range ? rangeIds : ids, selected, previous, id, range, toggle);
       });
-      if (!range || !previous || !ids.includes(previous)) anchor.current = id;
+      if (!range || !previous || !rangeIds.includes(previous)) anchor.current = id;
       return true;
     }
     setSelection([]);
@@ -56,7 +59,14 @@ export function useNavigationSelection<T extends HTMLElement>() {
     return false;
   }
 
-  function keyDown(event: React.KeyboardEvent, ids: string[], id: string, active: string | null) {
+  function selectAll(ids: string[], id: string) {
+    allSelection.current = ids;
+    anchor.current = id;
+    plainSelection.current = null;
+    setSelection(ids);
+  }
+
+  function keyDown(event: React.KeyboardEvent, ids: string[], id: string, active: string | null, rangeIds = ids) {
     if (event.repeat) return;
     const extend = matchesShortcut(event, "navigationAddSelectionRange");
     const range = extend || matchesShortcut(event, "navigationSelectRange");
@@ -64,8 +74,9 @@ export function useNavigationSelection<T extends HTMLElement>() {
     if (!range && !toggle) return;
     event.preventDefault();
     event.stopPropagation();
-    select(ids, id, active, range, toggle);
+    select(ids, id, active, range, toggle, rangeIds);
   }
 
-  return { panel, selection, clear, select, keyDown };
+  const selectedAllAt = (id: string) => allSelection.current === selection && anchor.current === id;
+  return { panel, selection, clear, select, keyDown, selectAll, selectedAllAt };
 }

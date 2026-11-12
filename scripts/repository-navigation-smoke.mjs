@@ -68,7 +68,10 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   assert.equal(imported.find(item => item.id === id("product")).parentId, id("navigation-projects"));
   assert.equal(imported.find(item => item.id === id("plugins")).parentId, id("worker"));
   assert.equal(await treeRepo("extension").getAttribute("aria-level"), "6");
+  const folderIcon = () => folder("product").locator("svg").getAttribute("class");
+  const expandedIcon = await folderIcon();
   await group("product").getByRole("button", { name: "Collapse product", exact: true }).click();
+  assert.notEqual(await folderIcon(), expandedIcon);
   await treeRepo("extension").waitFor({ state: "detached" });
   const search = explorer.getByRole("textbox", { name: "Find in Explorer" });
   await search.fill("extension");
@@ -77,6 +80,7 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await search.clear();
   await treeRepo("extension").waitFor({ state: "detached" });
   await group("product").getByRole("button", { name: "Expand product", exact: true }).click();
+  assert.equal(await folderIcon(), expandedIcon);
 
   await drag(folder("plugins"), explorer.locator("[data-explorer-root-drop]"));
   assert.equal((await library()).groups.find(item => item.id === id("plugins")).parentId, null);
@@ -98,6 +102,36 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   assert.notEqual(await activeFolder.evaluate(row => getComputedStyle(row).backgroundColor), "rgba(0, 0, 0, 0)");
   assert.equal(await explorer.getByRole("treeitem", { name: "Default group", exact: true }).count(), 0);
   await shot?.("explorer-and-flat-repositories");
+
+  const focusedRow = explorer.locator(".explorer-focused");
+  const selectedNames = async () => (await explorer.locator('[aria-selected="true"]').evaluateAll(rows =>
+    rows.map(row => row.getAttribute("aria-label")))).sort();
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await focusedRow.getAttribute("aria-label"), "components");
+  await page.keyboard.press("ArrowUp");
+  assert.equal(await focusedRow.getAttribute("aria-label"), "product");
+  const api = treeRepo("api").locator(".repository-select");
+  await api.click();
+  await search.hover();
+  assert.equal(await focusedRow.getAttribute("aria-label"), "api");
+  assert.notEqual(await treeRepo("api").evaluate(row => getComputedStyle(row).backgroundColor), "rgba(0, 0, 0, 0)");
+  assert.equal(await folder("product").getAttribute("aria-current"), "true");
+  await page.keyboard.press("Control+a");
+  assert.deepEqual(await selectedNames(), ["api", "components"]);
+  await page.keyboard.press("Control+a");
+  assert.equal(await focusedRow.getAttribute("aria-label"), "product");
+  assert.deepEqual(await selectedNames(), ["infra", "product"]);
+  await page.keyboard.press("Control+a");
+  assert.equal(await focusedRow.getAttribute("aria-label"), "navigation-projects");
+  assert.deepEqual(await selectedNames(), ["navigation-projects"]);
+  await folder("components").click();
+  await api.click({ modifiers: ["Shift"] });
+  assert.deepEqual(await selectedNames(), ["api", "components"]);
+  await treeRepo("worker").locator(".repository-select").click({ modifiers: ["Shift"] });
+  assert.deepEqual(await selectedNames(), ["worker"]);
+  await page.keyboard.press("Escape");
+  assert.deepEqual(await selectedNames(), []);
+  await folder("product").click();
 
   const flatRows = flat.locator(".repository-select");
   await flatRows.first().click();
