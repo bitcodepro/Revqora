@@ -120,11 +120,15 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   assert.deepEqual(await selectedNames(), ["api", "components"]);
   await page.keyboard.press("Control+a");
   assert.equal(await focusedRow.getAttribute("aria-label"), "product");
-  assert.deepEqual(await selectedNames(), ["infra", "product"]);
+  assert.deepEqual(await selectedNames(), ["api", "components", "infra", "product"]);
   await page.keyboard.press("Control+a");
   assert.equal(await focusedRow.getAttribute("aria-label"), "navigation-projects");
-  assert.deepEqual(await selectedNames(), ["navigation-projects"]);
+  const selectedThroughRoot = ["api", "components", "infra", "navigation-projects", "product"];
+  assert.deepEqual(await selectedNames(), selectedThroughRoot);
+  await page.keyboard.press("Control+a");
+  assert.deepEqual(await selectedNames(), selectedThroughRoot);
   await folder("components").click();
+  assert.deepEqual(await selectedNames(), []);
   await api.click({ modifiers: ["Shift"] });
   assert.deepEqual(await selectedNames(), ["api", "components"]);
   await treeRepo("worker").locator(".repository-select").click({ modifiers: ["Shift"] });

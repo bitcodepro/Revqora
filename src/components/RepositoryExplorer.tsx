@@ -97,9 +97,10 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     if (matchesShortcut(event, "explorerSelectAll")) {
       consume();
       if (event.repeat) return;
-      const parent = navigation.selectedAllAt(entry.id) && visibleEntries.find(row => row.id === entry.parentId);
+      const extend = navigation.selectedAllAt(entry.id);
+      const parent = extend && visibleEntries.find(row => row.id === entry.parentId);
       const target = parent || entry;
-      navigation.selectAll(siblingIds(target), target.id);
+      navigation.selectAll(siblingIds(target), target.id, extend);
       if (parent) focusRow(parent.id);
       return;
     }

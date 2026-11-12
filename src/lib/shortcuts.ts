@@ -71,7 +71,7 @@ export const SHORTCUTS: ShortcutDef[] = [
     ["explorerPreviousRow", "Focus previous Explorer row", "ArrowUp", "Move up through visible folders and repositories."],
     ["explorerExtendNext", "Extend Explorer selection down", "Shift+ArrowDown", "Select the next sibling at the focused row's level."],
     ["explorerExtendPrevious", "Extend Explorer selection up", "Shift+ArrowUp", "Select the previous sibling at the focused row's level."],
-    ["explorerSelectAll", "Select all at the current Explorer level", "Ctrl+A", "Select visible folders and repositories in the same parent. Press again to move up one level."],
+    ["explorerSelectAll", "Select all at the current Explorer level", "Ctrl+A", "Select visible folders and repositories in the same parent. Press again to add the level above."],
   ].map(([id, label, key, description]) => ({ id, label, description, default: key, scope: "navigation" as const })),
   { id: "navigationClearSelection", label: "Clear group or repository selection", description: "Clear the current selection in Explorer or Repositories.", default: "Escape", scope: "navigation" },
   { id: "navigationToggleSelection", label: "Toggle focused group or repository selection", description: "Add or remove the focused row from the selection.", default: "Ctrl+Space", scope: "navigation" },

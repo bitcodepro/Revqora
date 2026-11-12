@@ -59,11 +59,12 @@ export function useNavigationSelection<T extends HTMLElement>() {
     return false;
   }
 
-  function selectAll(ids: string[], id: string) {
-    allSelection.current = ids;
+  function selectAll(ids: string[], id: string, extend: boolean) {
+    const next = extend ? [...new Set([...selection, ...ids])] : ids;
+    allSelection.current = next;
     anchor.current = id;
     plainSelection.current = null;
-    setSelection(ids);
+    setSelection(next);
   }
 
   function keyDown(event: React.KeyboardEvent, ids: string[], id: string, active: string | null, rangeIds = ids) {
