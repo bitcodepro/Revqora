@@ -473,17 +473,18 @@
 .topbar-empty { flex: 1 1 12px; min-width: 2px; align-self: stretch; }
 .explorer-sidebar { min-width: min(175px, 100%); max-width: min(420px, 32vw); }
 .explorer-filters { display: flex; align-items: center; gap: 4px; }
-.explorer-tree { --explorer-indent: 12px; }
+.explorer-tree { --explorer-indent: 12px; --explorer-toggle-size: 22px; }
 .explorer-tree > .repository-item {
   position: relative;
   user-select: none;
   --indent: min(calc(var(--tree-depth, 0) * var(--explorer-indent)), max(0px, calc(100% - 132px)));
   padding-inline-start: var(--indent);
-  background-image: repeating-linear-gradient(to right, transparent 0 5px, var(--border) 5px 6px, transparent 6px var(--explorer-indent));
+  background-image: repeating-linear-gradient(to right, transparent 0 10px, var(--border) 10px 11px, transparent 11px var(--explorer-indent));
   background-size: var(--indent) 100%;
   background-repeat: no-repeat;
 }
 .explorer-tree > .repository-item .repository-select { min-height: 30px; padding-block: 5px; }
+.explorer-tree .repository-select > svg { inline-size: 15px; block-size: 15px; }
 .explorer-tree > .explorer-focused:not(.workspace-drop-active) { background-color: var(--bg-explorer-current); }
 .explorer-tree > .library-tree-row .repository-label { font-weight: 600; }
 .repository-item .repository-select { touch-action: none; user-select: none; }
@@ -518,7 +519,10 @@
 .explorer-dragging .explorer-root-drop { border-color: var(--border-strong); }
 .explorer-dragging .explorer-root-drop > span { visibility: visible; }
 .explorer-root-drop.workspace-drop-active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
-.library-tree-spacer { width: 24px; flex: none; }
+.explorer-tree :is(.library-tree-toggle, .library-tree-spacer) {
+  inline-size: var(--explorer-toggle-size);
+  flex: 0 0 var(--explorer-toggle-size);
+}
 .explorer-tree .repository-select { cursor: grab; }
 .explorer-dragging .explorer-tree .repository-select { cursor: grabbing; }
 .library-tree-menu { min-height: 64px; }

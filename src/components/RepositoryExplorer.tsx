@@ -213,7 +213,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
               event.preventDefault(); event.stopPropagation(); void remove(groupIds(group.id));
             } else runMenuShortcut(event, groupMenu(group));
           }}>
-          {hasChildren ? <button type="button" className="icon-btn sm" aria-label={`${expanded ? "Collapse" : "Expand"} ${group.name}`} aria-expanded={expanded} onClick={toggle}>
+          {hasChildren ? <button type="button" className="icon-btn sm library-tree-toggle" aria-label={`${expanded ? "Collapse" : "Expand"} ${group.name}`} aria-expanded={expanded} onClick={toggle}>
             {expanded ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
           </button> : <span className="library-tree-spacer"/>}
           <button type="button" className="repository-select" aria-current={chosen} title={group.name}
