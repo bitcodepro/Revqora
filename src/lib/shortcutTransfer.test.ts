@@ -13,6 +13,11 @@ it("round-trips the shortcut catalog including intentional removals", () => {
   expect(imported.skipped).toBe(0);
   expect(imported.rows.find(row => row.suggested === "open")?.key).toBe("Alt+O");
   expect(imported.rows.find(row => row.suggested === "renameItem")?.key).toBe("");
+  for (const [id, key] of [
+    ["explorerExtendNext", "Shift+ArrowDown"],
+    ["explorerExtendPrevious", "Shift+ArrowUp"],
+    ["navigationSelectRange", "Shift+Space"],
+  ]) expect(imported.rows.find(row => row.suggested === id)?.key).toBe(key);
   expect(reviewShortcutAssignments({}, imported.rows.map(row => ({id:row.suggested, key:row.key}))).errors.size).toBe(0);
 });
 

@@ -12,7 +12,7 @@ import { useSettings } from "../lib/settings";
 import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { useRepos } from "../lib/store";
 import { contextMenu, copyText, useUi } from "../lib/ui";
-import { copyFileNameItem, copySelectionItem } from "./NamePathMenu";
+import { copyFileNameItem, useCopySelectionMenu } from "./NamePathMenu";
 import type { FileDiff } from "../lib/types";
 import { confirmDialog } from "./dialogs";
 import "../styles/fileEditor.css";
@@ -158,6 +158,7 @@ function WorkingCode({path,initial,diff,displayDiff,disabled,changed}: {
     return state ? state.selection.ranges.filter(range => !range.empty)
       .map(range => state.sliceDoc(range.from, range.to)).join(state.lineBreak) : "";
   };
+  const selectionMenu = useCopySelectionMenu(selectedText);
   const convert=()=>{
     const editor=view.current;if(!editor||disabled)return;
     const before=editor.state.sliceDoc(), after=tabsToSpaces(before,size,all);
@@ -171,7 +172,7 @@ function WorkingCode({path,initial,diff,displayDiff,disabled,changed}: {
     <label>Spaces per tab <select className="select" aria-label="Spaces per tab" value={size} disabled={disabled} onChange={e=>setSize(Number(e.target.value))}>{[2,4,8].map(n=><option key={n} value={n}>{n}</option>)}</select></label>
     <label>Convert <select className="select" aria-label="Tab conversion scope" value={all?"all":"indent"} disabled={disabled} onChange={e=>setAll(e.target.value==="all")}><option value="indent">Leading indentation only</option><option value="all">All tabs in the file</option></select></label>
     <button type="button" className="btn sm" disabled={disabled} onClick={convert}>Tabs → spaces</button><span className="muted">{shortcutTitle("Save", "workingFileSave")} · Ctrl+Z undoes</span>
-  </div><div className="working-code" ref={host} onContextMenu={e => contextMenu(e, [copySelectionItem(selectedText())])}
+  </div><div className="working-code" ref={host} {...selectionMenu}
     onKeyDownCapture={e => {
       if (e.repeat || !matchesShortcut(e, "codeCopySelection")) return;
       const text = selectedText();

@@ -26,7 +26,7 @@ import { highlightLines, languageFor, type Tok } from "../lib/languages";
 import { wordDiff, type Span } from "../lib/worddiff";
 import { basename, dirname } from "../lib/format";
 import { contextMenu, copyText } from "../lib/ui";
-import { copyFileNameItem, copySelectionItem } from "./NamePathMenu";
+import { copyFileNameItem, useCopySelectionMenu } from "./NamePathMenu";
 import { DIFF_TAB_SIZE, measureDiffLine } from "../lib/diffMetrics";
 import type { LanguageSupport } from "@codemirror/language";
 import { ImageDiff, isImagePath, type ImageSides } from "./ImageDiff";
@@ -160,7 +160,6 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   const [horizontal, setHorizontal] = useState({ max: 0, position: 0 });
   const bodyRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const wordSelection = useDiffWordSelection(contentRef, JSON.stringify([root, path, diff?.hash]));
   const findRef = useRef<HTMLInputElement>(null);
 
   const totalLines = diff?.hunks.reduce((a, h) => a + h.lines.length, 0) ?? 0;
@@ -255,6 +254,16 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     });
     return out;
   }, [diff, collapsed]);
+  const wordSelection = useDiffWordSelection(contentRef, JSON.stringify([root, path, diff?.hash]), function* () {
+    if (!diff) return;
+    for (const row of flat) {
+      if (row.kind !== "line") continue;
+      const line = diff.hunks[row.h].lines[row.l];
+      yield line.text;
+      if (s.diffMode === "split" && line.kind === " ") yield line.text;
+    }
+  });
+  const selectionMenu = useCopySelectionMenu(wordSelection.selectedText);
 
   const q = find.trim().toLowerCase();
   const hits = useMemo(() => {
@@ -296,13 +305,6 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     if (idx >= 0) el.scrollTop = Math.max(0, tops[idx] - 8);
   };
 
-  const selectedText = () => {
-    const content = contentRef.current;
-    const selection = content?.ownerDocument.getSelection();
-    return selection?.anchorNode && selection.focusNode
-      && content?.contains(selection.anchorNode) && content.contains(selection.focusNode) ? selection.toString() : "";
-  };
-
   const onKeyDown = (e: React.KeyboardEvent) => {
     const next = matchesShortcut(e, "diffNext");
     if (next || matchesShortcut(e, "diffPrevious")) {
@@ -315,7 +317,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       setFindOpen(true);
       setTimeout(() => findRef.current?.select(), 0);
     } else if (!e.repeat && matchesShortcut(e, "codeCopySelection")) {
-      const text = selectedText();
+      const text = wordSelection.selectedText();
       if (text) {
         e.preventDefault();
         e.stopPropagation();
@@ -620,7 +622,11 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   }
 
   return (
-    <div className={`diff ${s.showWhitespace?"diff-whitespace":""}`} aria-busy={!!loading} data-diff-hash={diff?.hash} style={{ ["--diff-view-width" as string]: `${viewW}px`, ["--split-scroll" as string]: `${splitPan ? horizontal.position : 0}px`, ["--diff-tab-size" as string]: DIFF_TAB_SIZE }} onKeyDown={onKeyDown} tabIndex={-1}>
+    <div className={`diff ${s.showWhitespace?"diff-whitespace":""}`} aria-busy={!!loading} data-diff-hash={diff?.hash} style={{ ["--diff-view-width" as string]: `${viewW}px`, ["--split-scroll" as string]: `${splitPan ? horizontal.position : 0}px`, ["--diff-tab-size" as string]: DIFF_TAB_SIZE }} onKeyDown={onKeyDown} tabIndex={-1} onCopy={event => {
+      if (!wordSelection.all || (event.target as HTMLElement).closest("input, textarea, [contenteditable]")) return;
+      const text = wordSelection.selectedText();
+      if (text) { event.preventDefault(); event.clipboardData.setData("text/plain", text); }
+    }}>
       {path && head}
       {findBar}
       <div ref={bodyRef} className={`diff-body ${!diff && loading && !error ? "diff-loading" : ""} ${s.wrapDiff ? "wrap" : ""}`} onScroll={(e) => {
@@ -629,11 +635,10 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
         if (!splitPan) setHorizontal((h) => h.position === el.scrollLeft ? h : { ...h, position: el.scrollLeft });
       }}>
         <div ref={contentRef} className={`diff-content ${virtual ? "virtual-content" : ""} ${s.diffMode === "split" ? "split-content" : ""}`}
-          onClick={e => { if (e.detail === 1) wordSelection.clear(); }} onDoubleClick={wordSelection.onDoubleClick}
+          onMouseDown={wordSelection.onMouseDown} onClick={wordSelection.onClick}
+          onMouseDownCapture={selectionMenu.onMouseDownCapture}
           onContextMenu={e => {
-            if (!(e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) {
-              contextMenu(e, [copySelectionItem(selectedText())]);
-            }
+            if (!(e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) selectionMenu.onContextMenu(e);
           }}>{body}</div>
       </div>
       {!s.wrapDiff && horizontal.max > 1 && (

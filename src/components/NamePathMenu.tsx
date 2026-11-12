@@ -1,8 +1,9 @@
+import { useRef, type MouseEvent } from "react";
 import { Copy, Link2 } from "lucide-react";
 import { api } from "../lib/api";
 import { basename } from "../lib/format";
 import { safeWebUrl } from "../lib/prCenter";
-import { copyText, toast, type MenuItem } from "../lib/ui";
+import { contextMenu, copyText, toast, type MenuItem } from "../lib/ui";
 
 export function copyUrlMenu(resolve: () => string | null | Promise<string | null>, unavailable: string): MenuItem {
   return {
@@ -24,9 +25,20 @@ function copyNameItem(name: string, shortcut?: string): MenuItem {
   return { label: "Copy name", shortcut, icon: <Copy size={14} />, onClick: () => { void copyText(name, "Name copied"); } };
 }
 
-export function copySelectionItem(text: string): MenuItem {
-  return { label: "Copy", shortcut: "codeCopySelection", icon: <Copy size={14} />, disabled: !text,
-    onClick: () => { if (text) void copyText(text); } };
+export function useCopySelectionMenu(readSelection: () => string) {
+  const pending = useRef<string | null>(null);
+  return {
+    onMouseDownCapture(event: MouseEvent) {
+      // WebView may update the selection between pressing the right button and opening the menu.
+      pending.current = event.button === 2 ? readSelection() : null;
+    },
+    onContextMenu(event: MouseEvent) {
+      const text = pending.current ?? readSelection();
+      pending.current = null;
+      contextMenu(event, [{ label: "Copy", shortcut: "codeCopySelection", icon: <Copy size={14}/>, disabled: !text,
+        onClick: () => { if (text) void copyText(text); } }]);
+    },
+  };
 }
 
 export function copyFileNameItem(path: string, shortcut?: string): MenuItem {

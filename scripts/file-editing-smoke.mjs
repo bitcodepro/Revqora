@@ -31,35 +31,38 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
       }
     } finally { await page.evaluate(()=>window.__restoreNamePathClipboard?.()); }
   };
-  const wordPoint=async(line,word)=>{
+  const wordPoint=async(line,word,occurrence=0)=>{
     await line.scrollIntoViewIfNeeded();
-    return line.evaluate((code,word)=>{
+    return line.evaluate((code,{word,occurrence})=>{
       const walker=document.createTreeWalker(code,NodeFilter.SHOW_TEXT);
       for(let node=walker.nextNode();node;node=walker.nextNode()){
-        const start=node.textContent.indexOf(word);
-        if(start<0)continue;
-        const range=document.createRange();range.setStart(node,start);range.setEnd(node,start+word.length);
-        const rect=range.getBoundingClientRect();
-        return {x:rect.x+rect.width/2,y:rect.y+rect.height/2};
+        for(let start=node.textContent.indexOf(word);start>=0;start=node.textContent.indexOf(word,start+word.length)){
+          if(occurrence--!==0)continue;
+          const range=document.createRange();range.setStart(node,start);range.setEnd(node,start+word.length);
+          const rect=range.getBoundingClientRect();
+          return {x:rect.x+rect.width/2,y:rect.y+rect.height/2};
+        }
       }
       throw Error("The test word was not rendered");
-    },word);
+    },{word,occurrence});
   };
   const checkSelectionCopy=async(point,word)=>{
     await interceptClipboard(page);
     try {
       await page.mouse.click(point.x,point.y,{button:"right"});
-      await page.locator(".ctx-menu").getByText("Copy",{exact:true}).click();
-      await page.waitForFunction(text=>window.__namePathCopies.at(-1)===text,word);
+      const copy=page.locator(".ctx-item").filter({has:page.getByText("Copy",{exact:true})});
+      await copy.waitFor();
+      const beforeCopy=await page.evaluate(()=>getSelection()?.toString());
+      assert(!(await copy.evaluate(el=>el.classList.contains("disabled"))),`Copy is disabled with selection ${JSON.stringify(beforeCopy)}`);
+      await copy.click();
+      const copies=await page.evaluate(()=>window.__namePathCopies);
+      assert.deepEqual(copies,[word],`Copy with DOM selection ${JSON.stringify(beforeCopy)}`);
     } finally { await page.evaluate(()=>window.__restoreNamePathClipboard?.()); }
   };
   const selectWord=async(scope,word)=>{
     const point=await wordPoint(scope.locator(".diff-body .code").filter({hasText:word}).first(),word);
     await page.mouse.dblclick(point.x,point.y);
-    await page.waitForFunction(word=>{
-      const ranges=[...(CSS.highlights.get("revqora-diff-word")??[])];
-      return ranges.length===2&&ranges.every(range=>range.toString()===word)&&getSelection()?.toString().trim()===word;
-    },word).catch(async error=>{
+    await page.waitForFunction(word=>getSelection()?.toString()===word&&!CSS.highlights.has("revqora-diff-word"),word).catch(async error=>{
       const actual=await page.evaluate(()=>({selection:getSelection()?.toString(),matches:[...(CSS.highlights.get("revqora-diff-word")??[])].map(range=>range.toString())}));
       throw new Error(`Double-click selection for ${word}: ${JSON.stringify(actual)}`,{cause:error});
     });
@@ -80,10 +83,28 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.keyboard.press("ArrowDown");await diff("latest B");
     const changesDiff=page.locator(".changes .diff");
     await changesDiff.getByTitle("Unified",{exact:true}).click();
-    await checkSelectionCopy(await selectWord(changesDiff,"item_id"),"item_id");
+    const firstItem=await selectWord(changesDiff,"item_id");
+    await checkSelectionCopy(firstItem,"item_id");
+    await page.mouse.click(firstItem.x,firstItem.y);
+    await selectWord(changesDiff,"item_id");
+    await page.mouse.dblclick(firstItem.x,firstItem.y);
+    await page.waitForFunction(()=>{
+      const ranges=[...(CSS.highlights.get("revqora-diff-word")??[])];
+      return ranges.length===2&&ranges.every(range=>range.toString()==="item_id");
+    });
+    const codeLine=changesDiff.locator(".diff-body .code").filter({hasText:"item_id"}).first();
+    const secondItem=await wordPoint(codeLine,"item_id",1);
+    await checkSelectionCopy(secondItem,"item_id\nitem_id");
     await changesDiff.getByTitle("Side by side",{exact:true}).click();
     await page.waitForFunction(()=>[...(CSS.highlights.get("revqora-diff-word")??[])].filter(range=>range.toString()==="item_id").length===2);
-    await changesDiff.getByTitle(prefs.diffMode==="split"?"Side by side":"Unified",{exact:true}).click();
+    await changesDiff.getByTitle("Unified",{exact:true}).click();
+    await page.mouse.click(firstItem.x,firstItem.y);
+    await codeLine.evaluate(code=>{
+      const range=document.createRange();range.selectNodeContents(code);
+      getSelection().removeAllRanges();getSelection().addRange(range);
+    });
+    await checkSelectionCopy(await wordPoint(codeLine,"item_id",1),"item_id item_id item_identifier");
+    if(prefs.diffMode==="split")await changesDiff.getByTitle("Side by side",{exact:true}).click();
     await page.getByLabel("Changed files",{exact:true}).focus();
     await page.keyboard.press("ArrowDown");await diff("latest C");
     await page.waitForFunction(()=>!CSS.highlights.has("revqora-diff-word"));
