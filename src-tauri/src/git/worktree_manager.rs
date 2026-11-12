@@ -607,8 +607,13 @@ pub fn create(root: &Path, review: &CreationReview) -> GitResult<Created> {
     if creation_review(root, review.request.clone())? != *review {
         return Err(stale());
     }
-    let mut args = vec!["worktree".to_owned(), "add".into(), "--no-guess-remote".into()];
-    if review.request.mode == CreateMode::New {
+    let create_branch = review.request.mode == CreateMode::New;
+    let mut args = Vec::new();
+    if create_branch {
+        args.extend(super::branch_origin::RECORD_CREATION_REFLOG.map(str::to_owned));
+    }
+    args.extend(["worktree".to_owned(), "add".into(), "--no-guess-remote".into()]);
+    if create_branch {
         args.extend(["-b".into(), review.request.branch.clone()]);
     }
     if review.request.mode == CreateMode::Detached {

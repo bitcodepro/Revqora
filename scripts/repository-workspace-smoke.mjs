@@ -62,7 +62,8 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
   };
   const save = async (name, choose = async () => {}) => {
     await library("Workspaces");
-    await page.getByRole("button", { name: "New workspace…", exact: true }).click();
+    await page.getByLabel("Saved workspaces", { exact: true }).click({button:"right",position:{x:3,y:3}});
+    await page.locator(".ctx-menu").getByText("Create workspace…", { exact: true }).click();
     const editor = page.locator(".modal").last();
     await editor.getByLabel("Workspace name", { exact: true }).fill(name);
     await choose(editor);
@@ -99,7 +100,12 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     await commitDraftSmoke({ page, work, returnRoot: root, shot });
     await branchHistorySmoke({ page, work, returnRoot: root });
     await page.getByRole("button", { name: "Favorite stage8-workspace", exact: true }).click();
-    await library("Groups"); await page.getByRole("button", { name: "New group", exact: true }).click(); await page.locator(".modal").last().locator("input").fill("Stage 8 projects"); await page.locator(".modal").last().getByRole("button", { name: "OK", exact: true }).click();
+    await library("Groups");
+    await page.getByLabel("Saved groups", { exact: true }).click({button:"right",position:{x:3,y:3}});
+    await page.locator(".ctx-menu").getByText("Create group", { exact: true }).click();
+    const groupEditor = page.getByRole("dialog", { name: "New group", exact: true });
+    await groupEditor.getByRole("textbox", { name: "Group name", exact: true }).fill("Stage 8 projects");
+    await groupEditor.getByRole("button", { name: "Create group", exact: true }).click();
     await page.locator(".library-tabs").getByRole("button", { name: "Repositories", exact: true }).click();
     const group = await page.getByLabel("Group for stage8-workspace", { exact: true }).locator("option", { hasText: "Stage 8 projects" }).getAttribute("value");
     await page.getByLabel("Group for stage8-workspace", { exact: true }).selectOption(group); await done();
@@ -211,7 +217,7 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     const workspaceRow = name => workspacePanel.locator(".repository-select").filter({ hasText: name });
     await workspaceRow("Stage8 focused").click({ button: "right" });
     const workspaceMenu = page.locator(".ctx-menu");
-    for (const label of ["New workspace…", "Rename workspace…", "Delete workspace…"]) {
+    for (const label of ["Create workspace…", "Create sub-workspace…", "Rename workspace…", "Delete workspace…"]) {
       await workspaceMenu.getByText(label, { exact: true }).waitFor();
     }
     await page.keyboard.press("Escape");

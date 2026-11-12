@@ -14,8 +14,14 @@ import "../styles/branchReview.css";
 const targetVersion = (t: RemoteBranchTarget | null | undefined) => t ? JSON.stringify([deletionTargetKey(t), t.pushUrl, t.trackingRef, t.oid]) : "";
 const integrationText = (value: string) => value === "reachable" ? "Commits reachable from target" : value === "content-integrated" ? "Changes appear integrated (squash/rebase estimate)" : value === "not-integrated" ? "Changes not confirmed as integrated" : "Content integration could not be determined";
 
-export function DeleteBranchDialog({ root, name, targets, expectedState, remoteOnly = false, protectionRules, onClose }: {
-  root: string; name: string; targets: RemoteBranchTarget[]; expectedState?: string | null; remoteOnly?: boolean; protectionRules?: string[]; onClose: () => void;
+export type DeleteBranchOutcome =
+  | { status: "succeeded"; branch: string; oid: string | null }
+  | { status: "cancelled" }
+  | { status: "failed"; error: unknown };
+
+export function DeleteBranchDialog({ root, name, targets, expectedState, remoteOnly = false, protectionRules, authorize, onClose }: {
+  root: string; name: string; targets: RemoteBranchTarget[]; expectedState?: string | null; remoteOnly?: boolean;
+  protectionRules?: string[]; authorize?: () => Promise<boolean>; onClose: (outcome: DeleteBranchOutcome) => void;
 }) {
   const [includeRemote, setIncludeRemote] = useState(remoteOnly);
   const [createCheckpoint, setCreateCheckpoint] = useState(true);
@@ -37,6 +43,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
   const first = useRef(true);
   const localDoneRef = useRef(false);
   const deletedLocalOid = useRef<string | undefined>(undefined);
+  const failure = useRef<unknown>(null);
   const target = review?.target ?? targets.find((t) => deletionTargetKey(t) === selected);
   const localProtection = deletionProtection(protectionRules, !remoteOnly && !localDone ? name : null, null);
   const remoteProtection = deletionProtection(protectionRules, null, target);
@@ -50,11 +57,12 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
     try {
       const next = await api.branchDeletePlan(root, name, base, target ?? null, localDoneRef.current ? deletedLocalOid.current : undefined, remoteOnly);
       if (v !== version.current) return;
+      failure.current = null;
       const changedInitially = first.current && !explicit && !!expectedState && next.stateToken !== expectedState;
       first.current = false;
       setPlan(next); setStale(changedInitially);
       if (changedInitially) setError("The repository changed while opening this confirmation. Refresh the review and inspect the new tips before deleting.");
-    } catch (e) { if (v === version.current) { setError(errorMessage(e)); setStale(true); } }
+    } catch (e) { if (v === version.current) { failure.current = e; setError(errorMessage(e)); setStale(true); } }
     finally { if (v === version.current) setLoading(false); }
   }, [root, name, base, target, expectedState, remoteOnly]);
   useEffect(() => { void loadPlan(!first.current); return () => { version.current++; }; }, [loadPlan]);
@@ -65,9 +73,9 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
   const close = () => {
     if (busy) return;
     if (localDone) toast.warning(`Local branch ${name} deleted`, `Remote deletion of ${target?.label ?? ""} was not completed. ${checkpoint ? "The recovery checkpoint remains available." : "No recovery checkpoint was created."}`);
-    onClose();
+    onClose(failure.current ? {status:"failed",error:failure.current} : {status:"cancelled"});
   };
-  const openCheckpoint = (id: string) => { onClose(); void recoveryDialog(root, id); };
+  const openCheckpoint = (id: string) => { close(); void recoveryDialog(root, id); };
   const submit = async () => {
     if (blocked || !plan) return;
     // Recheck the exact proof sent to the backend, including a refreshed target.
@@ -80,6 +88,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
     let saved = checkpoint;
     const warnings: string[] = [];
     try {
+      if (authorize && !await authorize()) { onClose({status:"cancelled"}); return; }
       if (!remoteOnly && !deletedLocal) {
         const result = await api.branchDeleteReviewed(root, plan.proof, includeRemote, force, plan.stateToken, protectionRules, createCheckpoint);
         saved = result.checkpoint; setCheckpoint(saved);
@@ -100,8 +109,9 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
         detail: [warnings.join("\n"), point ? `Recovery checkpoint ${point.id} saved` : "Deleted without a recovery checkpoint"].filter(Boolean).join("\n"),
         action: point ? { label: "Open recovery checkpoint", run: () => { void recoveryDialog(root, point.id); } } : undefined,
       }, 20000);
-      onClose();
+      onClose({status:"succeeded",branch:name,oid:deletedLocalOid.current ?? target?.oid ?? null});
     } catch (e) {
+      failure.current = e;
       if (isGitError(e) && e.kind === "not-merged") setForceRequired(true);
       else {
         if (isGitError(e) && e.kind === "remote-changed") { setRemoteChanged(true); setReviewConfirmed(false); }
@@ -160,7 +170,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
           {plan.worktrees.length > 0 && !localDone && <div className="callout warn branch-review-worktrees">
             <b>{remoteOnly ? "Local worktrees stay checked out. Only the server branch will be removed." : "This branch is checked out. Switch its worktree to another branch first."}</b>
             {plan.worktrees.map((w) => <div key={w.path}><code>{w.path}</code><span>{w.current ? "Current worktree · " : ""}{w.dirty === null ? "State unavailable" : w.dirty ? `${w.changedFiles} changed files` : "Clean"}{w.operation && w.operation !== "none" ? ` · ${w.operation} in progress` : ""}</span>
-              {w.error && <small>{w.error}</small>}<button type="button" className="btn sm" disabled={busy} onClick={() => { onClose(); void useRepos.getState().open(w.path); }}><FolderOpen size={13} /> Open worktree</button></div>)}
+              {w.error && <small>{w.error}</small>}<button type="button" className="btn sm" disabled={busy} onClick={() => { close(); void useRepos.getState().open(w.path); }}><FolderOpen size={13} /> Open worktree</button></div>)}
           </div>}
           <div className="branch-review-checkpoint"><ShieldCheck size={18} /><div><b>{checkpoint ? `Checkpoint saved: ${checkpoint.id}` : createCheckpoint ? "Recovery checkpoint before deletion" : "Recovery checkpoint disabled"}</b>
             <span>{checkpoint ? "The saved branch tips are available in Undo Center." : createCheckpoint ? "Reviewed branch tips are preserved before removal. Available in Undo Center for up to 30 days / 100 checkpoints." : "This deletion will not save the reviewed tips in Recovery Center."}</span>

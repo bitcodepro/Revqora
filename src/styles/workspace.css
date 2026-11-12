@@ -132,6 +132,15 @@
 .diff-body { min-width: 0; min-height: 0; }
 .diff .diff-body .code { tab-size: var(--diff-tab-size, 4); }
 .diff-content { width: max-content; min-width: 100%; }
+.diff-content:has(.decoded-preview) { width: 100%; min-width: 0; }
+.decoded-preview { padding: 12px; min-width: 0; }
+.decoded-preview-tools { margin-bottom: 12px; }
+.decoded-preview-tools label, .decoded-preview-side header { display: flex; align-items: center; gap: 8px; }
+.decoded-preview-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 12px; }
+.decoded-preview-side { min-width: 0; border: 1px solid var(--border); border-radius: 8px; }
+.decoded-preview-side header { padding: 8px 12px; background: var(--bg-elev); border-bottom: 1px solid var(--border); }
+.decoded-preview-side pre { margin: 0; padding: 12px; overflow: auto; user-select: text; font: var(--fs-sm) / 1.5 var(--font-mono); }
+.diff-body.wrap .decoded-preview-side pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff-body.diff-loading { display: flex; }
 .diff-loading > .diff-content { display: flex; flex: 1; width: 100%; min-width: 0; }
 .diff-content .hunk { content-visibility: visible; contain-intrinsic-size: none; }
@@ -466,14 +475,15 @@
 .repository-item.batch-selected { background: var(--bg-selected); box-shadow: inset 2px 0 var(--accent); }
 .repository-item.workspace-drop-active { background: var(--accent-soft); outline: 1px solid var(--accent); }
 .repository-overview-link.workspace-drop-active { background: var(--accent-soft); outline: 1px solid var(--accent); }
+.repository-group.workspace-drop-active { background: var(--accent-soft); outline: 1px solid var(--accent); }
+.library-drop-before { box-shadow: inset 0 2px var(--accent); }
+.library-drop-after { box-shadow: inset 0 -2px var(--accent); }
 .library-tree-row { padding-inline-start: calc(var(--tree-depth, 0) * 11px); }
 .library-tree-spacer { width: 24px; flex: none; }
-.library-drag-handle { color: var(--text-faint); display: grid; place-items: center; flex: none; width: 20px; align-self: stretch; cursor: grab; opacity: .55; }
+.library-drag-handle { color: var(--text-faint); display: grid; place-items: center; flex: none; width: 20px; align-self: stretch; cursor: grab; opacity: .55; touch-action: none; user-select: none; }
 .library-drag-handle:hover, .library-tree-row:hover .library-drag-handle { opacity: 1; }
 .library-drag-handle:active { cursor: grabbing; }
-.inline-group-form { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
-.inline-group-form input { min-width: 60px; flex: 1; }
-.inline-group-form small { flex-basis: 100%; }
+.library-tree-menu { min-height: 64px; }
 .repository-table tr.batch-selected { background: var(--accent-soft); }
 .revqora-tooltip { position: fixed; z-index: 2500; pointer-events: none; width: max-content; max-width: min(340px, calc(100vw - 16px)); padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-elev); color: var(--text); box-shadow: 0 3px 12px #0003; font-size: var(--fs-xs); line-height: 1.35; white-space: pre-line; overflow-wrap: anywhere; }
 .shortcut-transfer-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

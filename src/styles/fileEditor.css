@@ -9,6 +9,7 @@
 .working-code .cm-gutters{background:var(--bg);color:var(--text-faint);border-color:var(--border)}
 .working-code .cm-cursor{border-left-color:var(--text)}
 .working-code .cm-activeLine{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.working-code .cm-editor .cm-selectionMatch{background:var(--word-selection-bg);color:var(--word-selection-text)}
 .working-code .cm-line.cm-working-change{background:var(--diff-add)}
 .working-code .cm-selectionBackground,.working-code .cm-focused .cm-selectionBackground{background:color-mix(in srgb,var(--accent) 22%,transparent)!important}
 .diff-whitespace .ws-space{background-image:radial-gradient(circle,var(--text-faint) 1px,transparent 1px);background-size:1ch 1em;background-position:0 .1em}

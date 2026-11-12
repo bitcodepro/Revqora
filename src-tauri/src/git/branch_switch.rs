@@ -157,12 +157,14 @@ pub fn switch(
             {
                 return Err(stale());
             }
-            let result = ops::stash_apply_ref(repo, &stash.oid, false)?;
-            conflicts = result.conflicts;
-            if conflicts.is_empty() {
+            let result = ops::stash_apply_ref(repo, &stash.oid, false, true)?;
+            conflicts = result.operation.conflicts;
+            if result.operation.status == "done" {
                 moved = true;
                 let latest = find_stash(repo, &message)?;
                 ops::stash_drop_reviewed(repo, latest.index, &stash.oid)?;
+            } else if result.operation.status == "index_not_restored" {
+                warning = Some(result.operation.message);
             }
             Ok(())
         })();
@@ -254,7 +256,7 @@ mod tests {
         let stash = refs::stashes(repo).unwrap().remove(0);
         assert_eq!(stash.switch_source.as_deref(), Some("refs/heads/main"));
         switch(repo, "main", "local", None, None, None).unwrap();
-        assert_eq!(ops::stash_apply_reviewed(repo, stash.index, &stash.oid, true).unwrap().status, "done");
+        assert_eq!(ops::stash_apply_reviewed(repo, stash.index, &stash.oid, true).unwrap().operation.status, "done");
         assert_eq!(git(repo, &["show", ":file.txt"]), "staged");
         assert_eq!(fs::read_to_string(repo.join("file.txt")).unwrap(), "working\n");
         assert_eq!(fs::read_to_string(repo.join("new.txt")).unwrap(), "new\n");

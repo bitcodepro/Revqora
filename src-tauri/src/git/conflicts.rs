@@ -107,27 +107,74 @@ fn labels(repo: &Path) -> (String, String) {
     }
 }
 
-pub fn info(repo: &Path, path: &str) -> GitResult<ConflictInfo> {
+struct IndexStage {
+    mode: String,
+    oid: String,
+}
+
+fn index_stages(repo: &Path, path: &str) -> GitResult<[Option<IndexStage>; 4]> {
     let raw = runner::run_env(repo, ["ls-files", "-u", "-z", "--", path], &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
-    let mut stages: [Option<String>; 4] = [None, None, None, None];
+    let mut stages = [None, None, None, None];
     for rec in runner::split_nul(&raw) {
         // "<mode> <oid> <stage>\t<path>"
-        let (meta, _p) = rec.split_once('\t').unwrap_or((rec, ""));
-        let f: Vec<&str> = meta.split(' ').collect();
-        if f.len() == 3 {
-            if let Ok(s) = f[2].parse::<usize>() {
-                if s < 4 {
-                    stages[s] = Some(f[1].to_string());
-                }
+        let Some((meta, entry_path)) = rec.split_once('\t') else { continue };
+        if entry_path != path {
+            continue;
+        }
+        let mut fields = meta.split(' ');
+        if let (Some(mode), Some(oid), Some(stage)) = (fields.next(), fields.next(), fields.next().and_then(|value| value.parse::<usize>().ok())) {
+            if (1..=3).contains(&stage) {
+                stages[stage] = Some(IndexStage { mode: mode.into(), oid: oid.into() });
             }
         }
     }
     if stages[1].is_none() && stages[2].is_none() && stages[3].is_none() {
         return Err(GitError::new(format!("{path} is not in conflict.")).kind("not-conflicted"));
     }
-    let (base, base_raw) = side(repo, stages[1].as_deref())?;
-    let (ours, ours_raw) = side(repo, stages[2].as_deref())?;
-    let (theirs, theirs_raw) = side(repo, stages[3].as_deref())?;
+    Ok(stages)
+}
+
+#[derive(Serialize)]
+pub struct IndexConflictSide {
+    oid: String,
+    mode: String,
+    text: Option<String>,
+    omitted: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+pub struct IndexConflict {
+    base: Option<IndexConflictSide>,
+    ours: Option<IndexConflictSide>,
+    theirs: Option<IndexConflictSide>,
+}
+
+pub fn index_conflict(repo: &Path, path: &str) -> GitResult<IndexConflict> {
+    const MAX_SIDE_BYTES: usize = 128 * 1024;
+    let [_, base, ours, theirs] = index_stages(repo, path)?;
+    let read = |stage: Option<IndexStage>| -> GitResult<_> {
+        let Some(IndexStage { mode, oid }) = stage else { return Ok(None) };
+        let (text, omitted) = if mode == "160000" {
+            (None, Some("gitlink"))
+        } else if runner::run(repo, ["cat-file", "-s", &oid])?.trim().parse::<usize>().unwrap_or(usize::MAX) > MAX_SIDE_BYTES {
+            (None, Some("too_large"))
+        } else {
+            let bytes = runner::run_bytes(repo, ["cat-file", "blob", &oid])?;
+            match super::text_encoding::decode(&bytes, None)? {
+                Some(decoded) => (Some(decoded.content), None),
+                None => (None, Some("binary")),
+            }
+        };
+        Ok(Some(IndexConflictSide { oid, mode, text, omitted }))
+    };
+    Ok(IndexConflict { base: read(base)?, ours: read(ours)?, theirs: read(theirs)? })
+}
+
+pub fn info(repo: &Path, path: &str) -> GitResult<ConflictInfo> {
+    let [_, base, ours, theirs] = index_stages(repo, path)?;
+    let (base, base_raw) = side(repo, base.as_ref().map(|entry| entry.oid.as_str()))?;
+    let (ours, ours_raw) = side(repo, ours.as_ref().map(|entry| entry.oid.as_str()))?;
+    let (theirs, theirs_raw) = side(repo, theirs.as_ref().map(|entry| entry.oid.as_str()))?;
     let code = match (base.exists, ours.exists, theirs.exists) {
         (_, true, true) if !base.exists => "AA",
         (true, true, true) => "UU",

@@ -9,6 +9,7 @@ use std::sync::{
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::runner::{self, GitError, GitResult};
 
@@ -88,6 +89,7 @@ pub struct FileDiff {
     pub path: String,
     pub old_path: Option<String>,
     pub binary: bool,
+    pub encoded_text: bool,
     pub is_new: bool,
     pub is_deleted: bool,
     pub old_mode: Option<String>,
@@ -113,15 +115,11 @@ pub struct DiffOptions {
     pub ignore_whitespace: bool,
     #[serde(default)]
     pub disable_textconv: bool,
+    pub rename_from: Option<String>,
 }
 
 pub fn fingerprint(data: &[u8]) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in data {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("{h:016x}")
+    format!("{:x}", Sha256::digest(data))
 }
 
 fn parse_range(s: &str) -> (u32, u32) {
@@ -300,6 +298,7 @@ pub fn to_display(raw: &RawFileDiff, path_hint: &str, hash: String) -> FileDiff 
         let mut new_no = h.new_start;
         let mut lines = Vec::with_capacity(h.lines.len());
         for l in &h.lines {
+            d.encoded_text |= std::str::from_utf8(&l.content).is_err();
             let (o, n) = match l.kind {
                 b' ' => {
                     let r = (Some(old_no), Some(new_no));
@@ -339,7 +338,7 @@ pub fn to_display(raw: &RawFileDiff, path_hint: &str, hash: String) -> FileDiff 
         }
     }
     d.truncated = shown > MAX_DISPLAY_LINES;
-    d.empty = raw.hunks.is_empty() && !raw.binary && raw.old_mode == raw.new_mode && !raw.is_new && !raw.is_deleted;
+    d.empty = raw.hunks.is_empty() && !raw.binary && raw.old_mode == raw.new_mode && !raw.is_new && !raw.is_deleted && d.old_path.is_none();
     d
 }
 
@@ -388,6 +387,11 @@ pub fn working_raw(repo: &Path, path: &str, side: WorkSide, base: Option<&str>, 
     }
     args.push("--".into());
     args.push(path.into());
+    if side == WorkSide::Staged {
+        if let Some(old) = opts.rename_from.as_ref().filter(|old| old.as_str() != path) {
+            args.push(old.clone());
+        }
+    }
     let out = runner::exec_full(repo, &args, &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
     if !out.ok() {
         return Err(runner::to_error("git diff", &out));
@@ -463,6 +467,9 @@ pub fn rev_raw(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &Dif
     args.push(to.to_string());
     args.push("--".into());
     args.push(path.into());
+    if let Some(old) = opts.rename_from.as_ref().filter(|old| old.as_str() != path) {
+        args.push(old.clone());
+    }
     let out = runner::exec_full(repo, &args, &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
     if !out.ok() {
         return Err(runner::to_error("git diff", &out));

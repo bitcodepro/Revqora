@@ -8,6 +8,9 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+pub(super) const RECORD_CREATION_REFLOG: [&str; 2] = ["-c", "core.logAllRefUpdates=true"];
+pub(super) const STACK_LAYER_CREATION: &str = "Revqora: add dependent stack layer";
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Creator {
@@ -162,9 +165,14 @@ fn local_creation_source(start: &str, name: &str) -> bool {
     if start.starts_with("refs/heads/") || start.starts_with("refs/tags/") {
         return true;
     }
-    // An unqualified name does not establish its historical namespace. Never
-    // reclassify it because a source ref/tag appeared, moved or disappeared.
-    start.starts_with("refs/remotes/") && !start.ends_with(&format!("/{name}"))
+    // A differently named source records creation of this local branch, even
+    // when Git logged the start as "main" instead of "refs/heads/main".
+    // A same-name remote source can be a tracking checkout. Its actor does
+    // not prove who originally created that branch on the server.
+    let Some(source) = start.strip_prefix("refs/remotes/").or_else(|| (!start.starts_with("refs/")).then_some(start)) else {
+        return false;
+    };
+    !source.is_empty() && source != name && !source.ends_with(&format!("/{name}"))
 }
 
 fn parse(log: &str, name: &str) -> Option<Creator> {
@@ -182,7 +190,8 @@ fn parse(log: &str, name: &str) -> Option<Creator> {
     // Expired history starts unknown, but a later copy is itself a new branch
     // creation and still identifies its copier (even if it is the first entry).
     let created = old.bytes().all(|b| b == b'0')
-        && (message.starts_with("commit (initial): ")
+        && (message == STACK_LAYER_CREATION
+            || message.starts_with("commit (initial): ")
             || message.strip_prefix("branch: Created from ").is_some_and(|start| local_creation_source(start, original)));
     let mut creator = created.then_some(who);
     for line in log.lines() {
@@ -207,6 +216,11 @@ mod tests {
             + &line('a', "other@example.invalid", "commit: Others work")
             + &line('a', "renamer@example.invalid", "Branch: renamed refs/heads/a to refs/heads/b");
         assert_eq!(parse(&log, "b").unwrap().email, "creator@example.invalid");
+    }
+    #[test]
+    fn stack_layer_creation_records_its_creator() {
+        assert_eq!(parse(&line('0', "creator@example.invalid", STACK_LAYER_CREATION), "layer").unwrap().email, "creator@example.invalid");
+        assert!(parse(&line('a', "editor@example.invalid", STACK_LAYER_CREATION), "layer").is_none());
     }
     #[test]
     fn cloning_tracking_and_expired_logs_do_not_claim_ownership() {
@@ -241,6 +255,16 @@ mod tests {
         assert_eq!(parse(&local, "topic").unwrap().email, "creator@example.invalid");
         let remote = line('0', "creator@example.invalid", "branch: Created from refs/remotes/feature/topic");
         assert!(parse(&remote, "topic").is_none());
+    }
+    #[test]
+    fn differently_named_starts_keep_the_actual_reflog_actor() {
+        for start in ["main", "feature/other", "origin/main", "refs/remotes/origin/main"] {
+            let log =
+                line('0', "creator@example.invalid", &format!("branch: Created from {start}")) + &line('a', "other@example.invalid", "commit: Later work");
+            assert_eq!(parse(&log, "topic").unwrap().email, "creator@example.invalid", "{start}");
+        }
+        let same = line('0', "creator@example.invalid", "branch: Created from topic");
+        assert!(parse(&same, "topic").is_none());
     }
     #[test]
     fn explicit_revision_expressions_are_not_plain_remote_imports() {

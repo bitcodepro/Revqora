@@ -8,10 +8,10 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
   const root=path.join(work,"keyboard-file-editor");fs.mkdirSync(root,{recursive:true});
   const git=(...args)=>execFileSync("git",["-C",root,...args],{encoding:"utf8",windowsHide:true,env:{...process.env,GIT_OPTIONAL_LOCKS:"0"}}).trim();
   git("init","-qb","main");for(const [k,v] of [["user.name","File editor"],["user.email","edit@example.invalid"],["commit.gpgsign","false"],["core.autocrlf","false"]])git("config",k,v);
-  fs.mkdirSync(path.join(root,"z"));for(const [file,text] of [["a.txt","base A\n"],["b.txt","base B\n"],["z/c.txt","base C\n"]])fs.writeFileSync(path.join(root,file),text);
+  fs.mkdirSync(path.join(root,"z"));for(const [file,text] of [["a.txt","base A\n"],["b.txt","base B\nbase_token base_token base_token_extra\n"],["z/c.txt","base C\n"]])fs.writeFileSync(path.join(root,file),text);
   git("add",".");git("commit","-qm","Files for keyboard navigation");const head=git("rev-parse","HEAD");
   fs.writeFileSync(path.join(root,"b.txt"),"prepared B\n");git("add","b.txt");
-  fs.writeFileSync(path.join(root,"b.txt"),"latest B\n");fs.writeFileSync(path.join(root,"z/c.txt"),"latest C\n");
+  fs.writeFileSync(path.join(root,"b.txt"),"latest B\nitem_id item_id item_identifier\n");fs.writeFileSync(path.join(root,"z/c.txt"),"latest C\n");
   const initial="\uFEFF\t\talpha value\r\n\t\tbeta",file=path.join(root,"a.txt");fs.writeFileSync(file,initial);
   const index=fs.readFileSync(path.join(root,".git/index"));
   const prefs=await page.evaluate(()=>JSON.parse(localStorage.getItem("revqora.settings")).state);
@@ -20,15 +20,58 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
   const history=()=>page.locator(".view-tab").filter({hasText:/History/}).click();
   const selected=()=>page.locator(".changes [data-file-nav].selected .fname");
   const diff=text=>page.locator(".changes .diff-body").filter({hasText:text}).waitFor();
+  const selectWord=async(scope,word)=>{
+    const line=scope.locator(".diff-body .code").filter({hasText:word}).first();
+    await line.scrollIntoViewIfNeeded();
+    const point=await line.evaluate((code,word)=>{
+      const walker=document.createTreeWalker(code,NodeFilter.SHOW_TEXT);
+      for(let node=walker.nextNode();node;node=walker.nextNode()){
+        const start=node.textContent.indexOf(word);
+        if(start<0)continue;
+        const range=document.createRange();range.setStart(node,start);range.setEnd(node,start+word.length);
+        const rect=range.getBoundingClientRect();
+        return {x:rect.x+rect.width/2,y:rect.y+rect.height/2};
+      }
+      throw Error("The test word was not rendered");
+    },word);
+    await page.mouse.dblclick(point.x,point.y);
+    await page.waitForFunction(word=>{
+      const ranges=[...(CSS.highlights.get("revqora-diff-word")??[])];
+      return ranges.length===2&&ranges.every(range=>range.toString()===word)&&getSelection()?.toString().trim()===word;
+    },word).catch(async error=>{
+      const actual=await page.evaluate(()=>({selection:getSelection()?.toString(),matches:[...(CSS.highlights.get("revqora-diff-word")??[])].map(range=>range.toString())}));
+      throw new Error(`Double-click selection for ${word}: ${JSON.stringify(actual)}`,{cause:error});
+    });
+  };
   try {
     await changes();await page.getByTitle("Flat list",{exact:true}).click();
+    const search=page.getByRole("textbox",{name:"Find changed files",exact:true});
+    const names=page.locator(".changes [data-file-nav] .fname");
+    await names.filter({hasText:"b.txt"}).nth(1).waitFor();
+    await search.fill("B.TXT");
+    assert.deepEqual(await names.allTextContents(),["b.txt","b.txt"],"The filter should include both staging sides");
+    await search.fill("absent");await page.getByText("No matching files.",{exact:true}).waitFor();
+    await page.getByRole("button",{name:"Clear file search",exact:true}).click();
+    assert.equal(await names.count(),4);
     await page.locator(".changes [data-file-nav]").filter({has:page.getByText("a.txt",{exact:true})}).first().click();
     await page.keyboard.press("ArrowDown");await diff("latest B");
+    const changesDiff=page.locator(".changes .diff");
+    await changesDiff.getByTitle("Unified",{exact:true}).click();
+    await selectWord(changesDiff,"item_id");
+    await changesDiff.getByTitle("Side by side",{exact:true}).click();
+    await page.waitForFunction(()=>[...(CSS.highlights.get("revqora-diff-word")??[])].filter(range=>range.toString()==="item_id").length===2);
+    await changesDiff.getByTitle(prefs.diffMode==="split"?"Side by side":"Unified",{exact:true}).click();
+    await page.getByLabel("Changed files",{exact:true}).focus();
     await page.keyboard.press("ArrowDown");await diff("latest C");
+    await page.waitForFunction(()=>!CSS.highlights.has("revqora-diff-word"));
     await page.keyboard.press("ArrowDown");await diff("prepared B"); // Same path, different staging side.
     await page.keyboard.press("Home");await diff("alpha value");assert.equal(await selected().innerText(),"a.txt");
     await page.keyboard.press("ArrowUp");assert.equal(await selected().innerText(),"a.txt");
     await page.getByTitle("Group by folder",{exact:true}).click();await page.locator(".changes .folder-row").filter({has:page.getByText("z",{exact:true})}).click();
+    await search.fill("z\\C.TXT");
+    assert.deepEqual(await names.allTextContents(),["c.txt"],"Search should reveal matches inside collapsed folders");
+    await search.press("Escape");
+    assert.equal(await names.filter({hasText:"c.txt"}).count(),0,"Clearing search should restore collapsed folders");
     await page.getByLabel("Changed files",{exact:true}).focus();await page.keyboard.press("End");await diff("prepared B");
     await page.keyboard.press("Home");await diff("alpha value");
     const raw=await page.locator(".changes .diff-body").textContent();
@@ -80,6 +123,8 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.locator(".graph-scroll .grow.branch-member").getByText("Files for keyboard navigation",{exact:true}).click();
     const commitFiles=page.getByLabel("Commit files",{exact:true});await commitFiles.locator("[data-file-nav]").first().click();await page.keyboard.press("ArrowDown");
     await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="b.txt");
+    await selectWord(page.locator(".commit-preview .diff"),"base_token");
+    await commitFiles.focus();
     await page.keyboard.press("Control+ArrowDown");await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="c.txt");
     const settings=page.locator(".modal").last();
     const openShortcuts=async()=>{
@@ -114,6 +159,16 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await historyBinding.getByText(originalBinding,{exact:true}).waitFor();
     await done();
     assert.equal(git("rev-parse","HEAD"),head);assert(index.equals(fs.readFileSync(path.join(root,".git/index"))));
+    fs.writeFileSync(path.join(root,"encoded.txt"),Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from("UTF-16 fixture\r\nПривет","utf16le")]));
+    fs.writeFileSync(path.join(root,"genuine-binary.dat"),Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,1,2]));
+    await changes();
+    const encoded=page.locator(".changes [data-file-nav]").filter({has:page.getByText("encoded.txt",{exact:true})});
+    await encoded.click();
+    const preview=page.getByRole("region",{name:"File contents preview",exact:true});
+    await preview.getByText("UTF-16 fixture",{exact:false}).waitFor();
+    await preview.getByText("UTF-16LE · BOM",{exact:true}).waitFor();
+    await page.locator(".changes [data-file-nav]").filter({has:page.getByText("genuine-binary.dat",{exact:true})}).click();
+    await preview.getByRole("heading",{name:"Binary file",exact:true}).waitFor();
     console.log("File navigation/editor: stage-side identity, collapsed folders, shortcut validation and rebinding, whitespace, undo, CRLF/BOM, stale-save rejection and index/HEAD preservation passed");
   } catch(error) {
     // Retain the actual UI and original failure for the caller's screenshot.

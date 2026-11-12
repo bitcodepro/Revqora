@@ -162,8 +162,13 @@ pub fn worktrees(repo: &Path) -> GitResult<Vec<Worktree>> {
 
 /// Adds a worktree at `path`: checks out `branch`, or creates `new_branch` from `start`.
 pub fn worktree_add(repo: &Path, path: &str, branch: Option<&str>, new_branch: Option<&str>, start: Option<&str>) -> GitResult<()> {
-    let mut args: Vec<String> = vec!["worktree".into(), "add".into()];
-    if let Some(nb) = new_branch.filter(|s| !s.trim().is_empty()) {
+    let new_branch = new_branch.filter(|s| !s.trim().is_empty());
+    let mut args: Vec<String> = Vec::new();
+    if new_branch.is_some() {
+        args.extend(super::branch_origin::RECORD_CREATION_REFLOG.map(str::to_owned));
+    }
+    args.extend(["worktree".into(), "add".into()]);
+    if let Some(nb) = new_branch {
         args.push("-b".into());
         args.push(nb.trim().into());
         args.push(path.into());

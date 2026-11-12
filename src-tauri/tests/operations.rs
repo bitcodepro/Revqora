@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use revqora_lib::git::{operations, runner, status};
+use revqora_lib::git::{operations, ops, runner, status};
 
 struct Repo {
     dir: tempfile::TempDir,
@@ -40,6 +40,20 @@ impl Repo {
 
 fn receive<T>(rx: &mpsc::Receiver<T>) -> T {
     rx.recv_timeout(Duration::from_secs(15)).expect("queue did not make progress")
+}
+
+#[test]
+fn commit_keeps_a_hash_prefix_in_the_subject_and_body() {
+    let r = Repo::new();
+    r.git(&["config", "core.commentChar", "#"]);
+    let messages = ["#TEST-1: Initialize the fixture", "#TEST-2: Preserve this subject\n\nExplain the change.\n# Include the literal metadata line."];
+    for (index, message) in messages.into_iter().enumerate() {
+        fs::write(r.p().join("file.txt"), format!("revision {index}\n")).unwrap();
+        r.git(&["add", "file.txt"]);
+        let oid = ops::commit(r.p(), message, &ops::CommitOptions::default()).unwrap();
+        assert_eq!(oid, r.git(&["rev-parse", "HEAD"]));
+        assert_eq!(r.git(&["log", "-1", "--format=%B"]), message);
+    }
 }
 
 #[test]

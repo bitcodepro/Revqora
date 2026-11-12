@@ -2018,7 +2018,16 @@ try {
     await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
   });
   await conflictStudioSmoke({ page, check, shot, work });
-  await check("MCP stdio scopes reads and stages files only after desktop approval", () => mcpSmoke({ page, exe, profile: smokeProfile, work }));
+  await check("MCP restores access after restart and requires desktop approval for Git actions", () => mcpSmoke({
+    page, exe, profile: smokeProfile, work,
+    restart: async (root, whileClosed) => {
+      await close();
+      await whileClosed?.();
+      ({ page, close, child } = await launch({ exe, args: [root], profile: smokeProfile, port: 0 }));
+      attachPage();
+      return page;
+    },
+  }));
   assertSmokeCoverage(suite, step);
   if (errors.length) throw new Error("console errors: " + errors.join(" | "));
 } catch (e) {

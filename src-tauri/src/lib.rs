@@ -710,11 +710,21 @@ async fn apply_selection(
 }
 
 #[tauri::command]
-async fn stage(app: AppHandle, expected_state: Option<String>, source_head: Option<SourceHead>, repo: String, paths: Vec<String>) -> GitResult<()> {
+async fn stage(
+    app: AppHandle,
+    expected_state: Option<String>,
+    source_head: Option<SourceHead>,
+    repo: String,
+    paths: Vec<String>,
+    review: Option<status::StageReview>,
+) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "stage", None, move || {
         let r = p(&repo);
         if let Some(head) = source_head {
             head.verify(&r)?;
+        }
+        if let Some(review) = review {
+            review.verify(&r, &paths)?;
         }
         ops::stage_paths(&r, &paths)
     })
@@ -885,6 +895,24 @@ async fn repository_commit_search(repo: String, query: String, mode: SearchMode)
 }
 
 #[tauri::command]
+async fn repository_commit_search_page(
+    repo: String,
+    query: String,
+    mode: SearchMode,
+    cursor: Option<String>,
+    limit: u32,
+) -> GitResult<graph::CommitSearchPage> {
+    let queued = std::time::Instant::now();
+    blocking(move || {
+        let worker_queue = queued.elapsed().as_millis();
+        let mut page = graph::search_repository_page(&p(&repo), &query, mode, cursor.as_deref(), limit as usize)?;
+        page.diagnostics.queue_ms += worker_queue;
+        Ok(page)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn commit_graph_status(repo: String) -> GitResult<bool> {
     blocking(move || Ok(graph::has_commit_graph(&p(&repo)))).await
 }
@@ -898,8 +926,15 @@ async fn commit_graph_write(expected_state: Option<String>, app: AppHandle, repo
 }
 
 #[tauri::command]
-async fn commit_details(repo: String, oid: String) -> GitResult<CommitDetails> {
-    blocking(move || gcommit::details(&p(&repo), &oid)).await
+async fn commit_details(repo: String, oid: String, exact: Option<bool>) -> GitResult<CommitDetails> {
+    blocking(move || {
+        let root = p(&repo);
+        if exact == Some(true) {
+            gcommit::verify_commit_oid(&root, &oid)?;
+        }
+        gcommit::details(&root, &oid)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -935,6 +970,11 @@ async fn branch_commit_page(repo: String, from: String, to: String, offset: usiz
 #[tauri::command]
 async fn blob(repo: String, spec: git::inspect::BlobSpec) -> GitResult<Option<git::inspect::BlobData>> {
     blocking(move || git::inspect::blob(&p(&repo), &spec)).await
+}
+
+#[tauri::command]
+async fn text_blob(repo: String, spec: git::inspect::BlobSpec, encoding: Option<String>) -> GitResult<Option<git::inspect::DecodedText>> {
+    blocking(move || git::inspect::text_blob(&p(&repo), &spec, encoding.as_deref())).await
 }
 
 #[tauri::command]
@@ -1146,8 +1186,18 @@ async fn fetch_background(app: AppHandle, expected_state: Option<String>, repo: 
 }
 
 #[tauri::command]
-async fn pull(expected_state: Option<String>, app: AppHandle, repo: String, mode: String, op_id: String) -> GitResult<ops::PullOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || ops::pull(&p(&repo), &mode, progress(&app, &op_id))).await
+async fn pull(
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    mode: String,
+    op_id: String,
+    prune_remote: Option<bool>,
+) -> GitResult<ops::PullOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || {
+        ops::pull_with_prune(&p(&repo), &mode, prune_remote.unwrap_or(true), progress(&app, &op_id))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1188,14 +1238,27 @@ async fn merge_start(app: AppHandle, expected_state: Option<String>, repo: Strin
 #[tauri::command]
 async fn op_abort(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<studio::StepOutcome> {
     let expected = expected_state.clone();
-    mutating(repo.clone(), expected_state, app.clone(), "op_abort", None, move || studio::abort(&p(&repo), &kind, expected.as_deref())).await
+    mutating(repo.clone(), expected_state, app.clone(), "op_abort", None, move || {
+        let root = p(&repo);
+        let pick = mcp::cherry_pick::before_step(&app, &root, &kind);
+        let result = studio::abort(&root, &kind, expected.as_deref())?;
+        mcp::cherry_pick::finish(&app, &root, pick, Some("cherry_pick_aborted"));
+        Ok(result)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn op_continue(app: AppHandle, expected_state: Option<String>, repo: String, kind: String, message: Option<String>) -> GitResult<studio::StepOutcome> {
     let expected = expected_state.clone();
     mutating(repo.clone(), expected_state, app.clone(), "op_continue", None, move || {
-        studio::step(&p(&repo), &kind, expected.as_deref(), || ops::continue_op(&p(&repo), &kind, message.as_deref()))
+        let root = p(&repo);
+        let pick = mcp::cherry_pick::before_step(&app, &root, &kind);
+        let result = studio::step(&root, &kind, expected.as_deref(), || ops::continue_op(&root, &kind, message.as_deref()))?;
+        if result.outcome.status == "done" {
+            mcp::cherry_pick::finish(&app, &root, pick, None);
+        }
+        Ok(result)
     })
     .await
 }
@@ -1204,14 +1267,35 @@ async fn op_continue(app: AppHandle, expected_state: Option<String>, repo: Strin
 async fn op_skip(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<studio::StepOutcome> {
     let expected = expected_state.clone();
     mutating(repo.clone(), expected_state, app.clone(), "op_skip", None, move || {
-        studio::step(&p(&repo), &kind, expected.as_deref(), || ops::skip_op(&p(&repo), &kind))
+        let root = p(&repo);
+        let pick = mcp::cherry_pick::before_step(&app, &root, &kind);
+        let result = studio::step(&root, &kind, expected.as_deref(), || ops::skip_op(&root, &kind))?;
+        if result.outcome.status == "done" {
+            mcp::cherry_pick::finish(&app, &root, pick, Some("cherry_pick_skipped"));
+        }
+        Ok(result)
     })
     .await
 }
 
 #[tauri::command]
-async fn cherry_pick(app: AppHandle, expected_state: Option<String>, repo: String, oids: Vec<String>, no_commit: bool) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "cherry_pick", None, move || ops::cherry_pick(&p(&repo), &oids, no_commit)).await
+async fn cherry_pick(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    oids: Vec<String>,
+    no_commit: bool,
+    mcp_id: Option<String>,
+) -> GitResult<OpOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "cherry_pick", None, move || {
+        let root = p(&repo);
+        let result = ops::cherry_pick(&root, &oids, no_commit)?;
+        if let Some(id) = mcp_id.filter(|_| matches!(result.status.as_str(), "conflicts" | "stopped")) {
+            mcp::cherry_pick::track(&app, &id, &root);
+        }
+        Ok(result)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1295,6 +1379,11 @@ async fn rebase_studio_capture(app: AppHandle, expected_state: Option<String>, r
 async fn conflict_info(repo: String, path: String) -> GitResult<Observed<ConflictInfo>> {
     blocking(move || git::operations::inspect(&p(&repo), || conflicts::info(&p(&repo), &path)).map(|(value, state_token)| Observed { value, state_token }))
         .await
+}
+
+#[tauri::command]
+async fn conflict_index_sides(repo: String, path: String) -> GitResult<conflicts::IndexConflict> {
+    blocking(move || git::operations::read(&p(&repo), || conflicts::index_conflict(&p(&repo), &path))).await
 }
 
 #[tauri::command]
@@ -1388,8 +1477,24 @@ async fn stash_save(
 }
 
 #[tauri::command]
-async fn stash_apply(app: AppHandle, expected_state: Option<String>, repo: String, index: u32, oid: String, pop: bool) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "stash_apply", None, move || ops::stash_apply_reviewed(&p(&repo), index, &oid, pop)).await
+async fn stash_apply(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    index: u32,
+    oid: String,
+    pop: bool,
+    restore_index: Option<bool>,
+) -> GitResult<ops::StashApplyOutcome> {
+    mutating(repo.clone(), expected_state, app.clone(), "stash_apply", None, move || {
+        ops::stash_apply_reviewed_with_index(&p(&repo), index, &oid, pop, restore_index.unwrap_or(true))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn stash_list(repo: String) -> GitResult<Vec<refs::StashInfo>> {
+    blocking(move || git::operations::read(&p(&repo), || refs::stashes(&p(&repo)))).await
 }
 
 #[tauri::command]
@@ -1848,6 +1953,11 @@ async fn forge_kind(repo: String) -> GitResult<Option<String>> {
 }
 
 #[tauri::command]
+async fn forge_connection_identity(repo: String) -> GitResult<forge::ConnectionIdentity> {
+    blocking(move || forge::connection_identity(&p(&repo))).await
+}
+
+#[tauri::command]
 async fn repository_web_link(repo: String, reference: Option<String>) -> GitResult<Option<String>> {
     blocking(move || forge::web_link(&p(&repo), reference.as_deref())).await
 }
@@ -2297,8 +2407,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             mcp::mcp_info,
             mcp::mcp_enable,
+            mcp::mcp_restore,
+            mcp::mcp_set_approval_mode,
             mcp::mcp_lease,
             mcp::mcp_reply,
+            mcp::cherry_pick::mcp_cherry_pick_status,
             branch_cleanup_review,
             branch_cleanup_execute,
             branch_manager_snapshot,
@@ -2354,6 +2467,7 @@ pub fn run() {
             graph_resolve_lane,
             graph_search,
             repository_commit_search,
+            repository_commit_search_page,
             commit_details,
             commit_graph_status,
             commit_graph_write,
@@ -2365,6 +2479,7 @@ pub fn run() {
             compare_branch_commits,
             branch_commit_page,
             blob,
+            text_blob,
             refs_snapshot,
             fetch_background,
             squash_merged,
@@ -2409,6 +2524,7 @@ pub fn run() {
             rebase_studio_capture,
             interactive_rebase,
             conflict_info,
+            conflict_index_sides,
             semantic_diff,
             code_history,
             symbol_history,
@@ -2453,6 +2569,7 @@ pub fn run() {
             remote_branch_rename,
             stash_save,
             stash_apply,
+            stash_list,
             stash_drop,
             layers_state,
             layer_seal,
@@ -2478,6 +2595,7 @@ pub fn run() {
             forge_connections,
             forge_connection_select,
             forge_info,
+            forge_connection_identity,
             forge_kind,
             repository_web_link,
             pull_requests,

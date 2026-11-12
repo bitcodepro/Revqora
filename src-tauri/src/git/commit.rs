@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::diff::empty_tree;
-use super::runner::{self, GitResult};
+use super::runner::{self, GitError, GitResult};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +82,18 @@ fn parse_changed_files(raw: &str) -> GitResult<Vec<ChangedFile>> {
     Ok(files)
 }
 
+pub fn verify_commit_oid(repo: &Path, oid: &str) -> GitResult<()> {
+    if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(GitError::new("Supply the full commit hash.").kind("invalid-commit"));
+    }
+    let out = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{oid}^{{commit}}")])?;
+    match out.code {
+        0 if out.text().trim().eq_ignore_ascii_case(oid) => Ok(()),
+        0 | 1 => Err(GitError::new("No commit with that hash was found in this repository.").kind("commit-not-found")),
+        _ => Err(runner::to_error("git rev-parse", &out)),
+    }
+}
+
 pub fn details(repo: &Path, oid: &str) -> GitResult<CommitDetails> {
     let raw = runner::run(repo, ["show", "--no-show-signature", "-s", "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%B", oid])?;
     let f: Vec<&str> = raw.splitn(9, '\x1f').collect();
@@ -150,11 +162,10 @@ pub fn file_history(repo: &Path, path: &str, limit: usize) -> GitResult<Vec<File
 
 /// Contents of a file at a revision ("" = index stage 0, ":2" etc. allowed via `spec`).
 pub fn blob_text(repo: &Path, spec: &str) -> GitResult<Option<String>> {
-    let out = runner::exec_limited(repo, ["cat-file", "blob", spec], 25 * 1024 * 1024)?;
-    if !out.ok() {
-        return Ok(None);
-    }
-    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+    let Some(bytes) = super::inspect::revision_blob(repo, spec, 25 * 1024 * 1024)? else { return Ok(None) };
+    super::text_encoding::decode(&bytes, None)?
+        .map(|text| Some(text.content))
+        .ok_or_else(|| GitError::new("No readable text is available for this file.").kind("binary-file"))
 }
 
 #[cfg(test)]

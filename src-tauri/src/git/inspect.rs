@@ -237,6 +237,32 @@ pub struct BlobData {
 }
 
 const MAX_BLOB: usize = 25 * 1024 * 1024;
+const MAX_TEXT_PREVIEW: usize = 2 * 1024 * 1024;
+
+pub use super::text_encoding::DecodedText;
+
+pub(super) fn revision_blob(repo: &Path, revision: &str, limit: usize) -> GitResult<Option<Vec<u8>>> {
+    let out = runner::exec_limited(repo, ["cat-file", "blob", revision], limit)?;
+    Ok(out.ok().then_some(out.stdout))
+}
+
+pub fn text_blob(repo: &Path, spec: &BlobSpec, encoding: Option<&str>) -> GitResult<Option<DecodedText>> {
+    let bytes = if let Some(path) = &spec.worktree {
+        let full = super::file_editor::checked_path(repo, path)?;
+        let mut bytes = Vec::new();
+        std::fs::File::open(full)?.take(MAX_TEXT_PREVIEW as u64 + 1).read_to_end(&mut bytes)?;
+        bytes
+    } else if let Some(revision) = &spec.rev {
+        let Some(bytes) = revision_blob(repo, revision, MAX_TEXT_PREVIEW)? else { return Ok(None) };
+        bytes
+    } else {
+        return Ok(None);
+    };
+    if bytes.len() > MAX_TEXT_PREVIEW {
+        return Err(GitError::new("This file exceeds the 2 MiB text preview limit.").kind("output-limit"));
+    }
+    super::text_encoding::decode(&bytes, encoding)
+}
 
 pub fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -281,12 +307,9 @@ pub fn blob(repo: &Path, spec: &BlobSpec) -> GitResult<Option<BlobData>> {
             Err(_) => return Ok(None),
         }
     } else if let Some(r) = &spec.rev {
-        let out = runner::exec_limited(repo, ["cat-file", "blob", r], MAX_BLOB)?;
-        if !out.ok() {
-            return Ok(None);
-        }
+        let Some(data) = revision_blob(repo, r, MAX_BLOB)? else { return Ok(None) };
         let path = r.split_once(':').map(|(_, p)| p.to_string()).unwrap_or_default();
-        (out.stdout, path)
+        (data, path)
     } else {
         return Ok(None);
     };

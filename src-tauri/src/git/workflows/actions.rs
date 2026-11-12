@@ -1,5 +1,5 @@
 use super::*;
-use crate::git::{forge, history, ops, pr_center, recovery, repo, runner, status, sync};
+use crate::git::{branch_origin, forge, history, ops, pr_center, recovery, repo, runner, status, sync};
 fn expand(r: &Run, s: &str) -> String {
     match s {
         "${branch}" => r.parameters.branch.clone(),
@@ -316,7 +316,10 @@ pub(super) fn execute_action(root: &Path, original: &Run, prepared: &Review, job
                     "Branch condition passed.".into()
                 }
                 "branch" => {
-                    runner::run(root, ["switch", "--no-overwrite-ignore", "-c", &s.value, &prepared.resolved[0]])?;
+                    runner::run(
+                        root,
+                        branch_origin::RECORD_CREATION_REFLOG.into_iter().chain(["switch", "--no-overwrite-ignore", "-c", &s.value, &prepared.resolved[0]]),
+                    )?;
                     format!("Created and checked out {}.", s.value)
                 }
                 "cherryPick" => {

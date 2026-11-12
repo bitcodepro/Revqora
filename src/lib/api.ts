@@ -72,10 +72,13 @@ let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;
 
 export const api = {
-  mcpInfo: () => call<{ enabled: boolean; executable: string }>("mcp_info"),
-  mcpEnable: (enabled: boolean) => call<{ enabled: boolean; executable: string }>("mcp_enable", { enabled }),
+  mcpInfo: () => call<import("./types").McpInfo>("mcp_info"),
+  mcpEnable: (enabled: boolean) => call<import("./types").McpInfo>("mcp_enable", { enabled }),
+  mcpSetApprovalMode: (approvalMode: import("./types").McpApprovalMode) => call<import("./types").McpInfo>("mcp_set_approval_mode", { approvalMode }),
+  mcpRestore: () => call<void>("mcp_restore"),
+  mcpCherryPickStatus: (repo: string, id: string) => call<{ phase: "succeeded"; sha: string } | { phase: "cancelled" | "failed"; reason: string } | null>("mcp_cherry_pick_status", { repo, id }),
   mcpLease: (session: string, id: string | null = null) => call<boolean>("mcp_lease", { session, id }),
-  mcpReply: (session: string, id: string, value: unknown, error: string | null = null) => call<void>("mcp_reply", { session, id, value: value ?? null, error }),
+  mcpReply: (session: string, id: string, value: unknown, error: import("./mcpErrors").McpError | null = null) => call<void>("mcp_reply", { session, id, value: value ?? null, error }),
   workingFileRead: (repo:string,path:string) => call<{content:string;revision:string}>("working_file_read",{repo,path}),
   workingFileSave: (repo:string,path:string,expectedRevision:string,content:string) => call<{file:{content:string;revision:string};backupPath:string|null}>("working_file_save",{repo,path,expectedRevision,content}),
   symbolHistory:(repo:string,path:string,query:string,anchor:string|null,offset:number)=>call<import("./types").SymbolHistoryPage>("symbol_history",{repo,path,query,anchor,offset}),
@@ -178,7 +181,7 @@ export const api = {
     opts?: DiffOptions,
     stageSnapshot?: number,
   ) => call<void>("apply_selection", { repo, path, mode, selection, hash, untracked, opts, stageSnapshot }),
-  stage: (repo: string, paths: string[], expectedState?: string) => call<void>("stage", { repo, paths, expectedState }),
+  stage: (repo: string, paths: string[], expectedState?: string, review?: import("./types").StageReview) => call<void>("stage", { repo, paths, expectedState, review }),
   unstage: (repo: string, paths: string[], expectedState?: string, requireUnsealed?: boolean) => call<void>("unstage", { repo, paths, expectedState, requireUnsealed }),
   discard: (repo: string, tracked: string[], untracked: string[], expectedState?: string | null) => call<string>("discard", { repo, tracked, untracked, expectedState }),
   commit: (repo: string, message: string, opts?: CommitOptions, expectedState?: string | null, requireUnsealed?: boolean) =>
@@ -194,9 +197,10 @@ export const api = {
   graphResolveLane: (repo: string, key: string, anchor: import("./types").GraphLaneAnchor) => call<number | null>("graph_resolve_lane", { repo, key, anchor }),
   graphSearch: (repo: string, query: string, mode: SearchMode) => call<number[]>("graph_search", { repo, query, mode }),
   repositoryCommitSearch: (repo: string, query: string, mode: SearchMode) => call<import("./types").CommitSearchHit[]>("repository_commit_search", { repo, query, mode }),
+  repositoryCommitSearchPage: (repo: string, query: string, mode: SearchMode, cursor: string | null, limit: number) => call<import("./types").CommitSearchPage>("repository_commit_search_page", { repo, query, mode, cursor, limit }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),
   commitGraphWrite: (repo: string, opId: string) => call<string>("commit_graph_write", { repo, opId }),
-  commitDetails: (repo: string, oid: string) => call<CommitDetails>("commit_details", { repo, oid }),
+  commitDetails: (repo: string, oid: string, exact?: boolean) => call<CommitDetails>("commit_details", { repo, oid, exact }),
   fileHistory: (repo: string, path: string) => call<FileHistoryEntry[]>("file_history", { repo, path }),
   fileText: (repo: string, spec: string) => call<string | null>("file_text", { repo, spec }),
   reflog: (repo: string) => call<ReflogEntry[]>("reflog", { repo }),
@@ -205,6 +209,7 @@ export const api = {
   compareBranchCommits: (repo: string, from: string, to: string) => call<import("./types").BranchCommitComparison>("compare_branch_commits", { repo, from, to }),
   branchCommitPage: (repo: string, from: string, to: string, offset: number) => call<import("./types").RangeCommit[]>("branch_commit_page", { repo, from, to, offset }),
   blob: (repo: string, spec: BlobSpec) => call<BlobData | null>("blob", { repo, spec }),
+  textBlob: (repo: string, spec: BlobSpec, encoding: string | null = null) => call<import("./types").DecodedText | null>("text_blob", { repo, spec, encoding }),
 
   refs: (repo: string) => call<RefsSnapshot>("refs_snapshot", { repo }),
   fetchBackground: (repo: string) => call<string>("fetch_background", { repo }),
@@ -231,8 +236,8 @@ export const api = {
   undoCommit: (repo: string) => call<void>("undo_commit", { repo }),
 
   fetch: (repo: string, remote: string | null, prune: boolean, opId: string) => call<string>("fetch", { repo, remote, prune, opId }),
-  pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string) =>
-    call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState }),
+  pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string, pruneRemote?: boolean) =>
+    call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState, pruneRemote }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
   pushRef: (repo: string, remote: string, refspec: string, opId: string, expectedState?: string | null) => call<string>("push_ref", { repo, remote, refspec, opId, expectedState }),
   remoteAdd: (repo: string, name: string, url: string) => call<void>("remote_add", { repo, name, url }),
@@ -243,7 +248,7 @@ export const api = {
   opAbort: (repo: string, kind: string, expectedState?: string | null) => call<OpOutcome>("op_abort", { repo, kind, expectedState }),
   opContinue: (repo: string, kind: string, message?: string | null, expectedState?: string | null) => call<OpOutcome>("op_continue", { repo, kind, message, expectedState }),
   opSkip: (repo: string, kind: string) => call<OpOutcome>("op_skip", { repo, kind }),
-  cherryPick: (repo: string, oids: string[], noCommit: boolean, expectedState?: string) => call<OpOutcome>("cherry_pick", { repo, oids, noCommit, expectedState }),
+  cherryPick: (repo: string, oids: string[], noCommit: boolean, expectedState?: string, mcpId?: string) => call<OpOutcome>("cherry_pick", { repo, oids, noCommit, expectedState, mcpId }),
   cherryPickComparedCommit: (repo: string, pick: import("./types").ComparedCherryPick, expectedState: string) =>
     call<OpOutcome>("cherry_pick_compared_commit", { repo, pick, expectedState }),
   revert: (repo: string, oid: string, noCommit: boolean) => call<OpOutcome>("revert", { repo, oid, noCommit }),
@@ -259,6 +264,7 @@ export const api = {
     call<OpOutcome>("interactive_rebase", { repo, base, items, expectedState }),
 
   conflictInfo: (repo: string, path: string) => call<ConflictInfo>("conflict_info", { repo, path }),
+  conflictIndexSides: (repo: string, path: string) => call<Record<"base" | "ours" | "theirs", import("./types").IndexConflictSide | null>>("conflict_index_sides", { repo, path }),
   conflictSave: (repo: string, path: string, content: string, stage: boolean, expectedState?: string | null) => call<void>("conflict_save", { repo, path, content, stage, expectedState }),
   conflictTake: (repo: string, path: string, which: "ours" | "theirs" | "base" | "delete", expectedState?: string | null) => call<void>("conflict_take", { repo, path, which, expectedState }),
   conflictMarkResolved: (repo: string, paths: string[]) => call<void>("conflict_mark_resolved", { repo, paths }),
@@ -266,7 +272,9 @@ export const api = {
 
   stashSave: (repo: string, message: string, includeUntracked: boolean, keepIndex: boolean, paths?: string[], expectedState?: string) =>
     call<void>("stash_save", { repo, message, includeUntracked, keepIndex, paths, expectedState }),
-  stashApply: (repo: string, index: number, pop: boolean, oid: string) => call<OpOutcome>("stash_apply", { repo, index, pop, oid }),
+  stashList: (repo: string) => call<import("./types").StashInfo[]>("stash_list", { repo }),
+  stashApply: (repo: string, index: number, pop: boolean, oid: string, restoreIndex?: boolean, expectedState?: string) =>
+    call<import("./types").StashApplyOutcome>("stash_apply", { repo, index, pop, oid, restoreIndex, expectedState }),
   stashDrop: (repo: string, index: number, oid: string, expectedState?: string | null) => call<void>("stash_drop", { repo, index, oid, expectedState }),
 
   layersState: (repo: string) => call<LayersState>("layers_state", { repo }),
@@ -324,6 +332,7 @@ export const api = {
   commitHelpers: (repo: string) => call<CommitHelpers>("commit_helpers", { repo }),
   saveTextFile: (path: string, content: string) => call<void>("save_text_file", { path, content }),
   forgeInfo: (repo: string) => call<ForgeInfo | null>("forge_info", { repo }),
+  forgeConnectionIdentity: (repo: string) => call<import("./types").ForgeConnectionIdentity>("forge_connection_identity", { repo }),
   forgeKind: (repo: string) => call<string | null>("forge_kind", { repo }),
   repositoryWebLink: (repo: string, reference: string | null) => call<string | null>("repository_web_link", { repo, reference }),
   pullRequests: (repo: string) => call<{ forge: ForgeInfo; items: PullRequest[] }>("pull_requests", { repo }),

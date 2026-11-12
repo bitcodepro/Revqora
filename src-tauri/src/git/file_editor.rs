@@ -25,7 +25,7 @@ pub struct Saved {
     pub backup_path: Option<String>,
 }
 
-fn checked_path(root: &Path, path: &str) -> GitResult<PathBuf> {
+pub(super) fn checked_path(root: &Path, path: &str) -> GitResult<PathBuf> {
     let relative = Path::new(path);
     if relative.as_os_str().is_empty()
         || relative.components().any(|c| !matches!(c, Component::Normal(_)) || c.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git"))

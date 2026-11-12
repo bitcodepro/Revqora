@@ -5,10 +5,10 @@ import { ALL, getTab, useRepos, type Parts } from "./store";
 import { endBusy, showDialog, startBusy, toast, useUi } from "./ui";
 import { GitMerge } from "lucide-react";
 import { Modal } from "../components/Modal";
-import { DeleteBranchDialog } from "../components/DeleteBranchDialog";
+import { DeleteBranchDialog, type DeleteBranchOutcome } from "../components/DeleteBranchDialog";
 import { ignoredCollisionDialog } from "../components/IgnoredCollisionDialog";
 import { useSettings } from "./settings";
-import type { GitError, OpOutcome, PullOutcome, SwitchChoice } from "./types";
+import type { GitError, OpOutcome, PullOutcome, SwitchChoice, SwitchOutcome } from "./types";
 import { shortOid } from "./format";
 import {
   cloneDialog,
@@ -30,6 +30,7 @@ interface ActOptions<T> {
   refresh?: Parts | false;
   busy?: string;
   quiet?: boolean;
+  onError?: (error: unknown) => void;
 }
 
 /** Establish the state shown by a confirmation, then keep it fixed until submission. */
@@ -62,8 +63,10 @@ export async function act<T>(root: string, fn: () => Promise<T>, o: ActOptions<T
   } catch (e) {
     if (isGitError(e) && e.kind === "identity") {
       if (await identityDialog(root)) return act(root, fn, o);
+      o.onError?.(e);
       return undefined;
     }
+    o.onError?.(e);
     if (isGitError(e) && e.kind === "dirty-worktree") {
       useUi.getState().toast({
         kind: "error",
@@ -201,7 +204,7 @@ export const fetchAll = async (root: string) => {
   return out;
 };
 
-export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase", expectedState?: string) {
+export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase", expectedState?: string, pruneRemote?: boolean) {
   const mode = modeOverride ?? useSettings.getState().pullMode;
   const opId = newOpId();
   startBusy(opId, "Pulling");
@@ -209,7 +212,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
   let ignoredCollision: GitError | undefined;
   let outcome: PullOutcome | undefined;
   try {
-    outcome = await api.pull(root, mode, opId, expectedState);
+    outcome = await api.pull(root, mode, opId, expectedState, pruneRemote);
   } catch (e) {
     const msg = errorMessage(e).toLowerCase();
     if (isGitError(e) && e.kind === "ignored-collision") ignoredCollision = e;
@@ -221,7 +224,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
     endBusy(opId);
     await useRepos.getState().refresh(root, ALL);
   }
-  if (ignoredCollision && await ignoredCollisionDialog(root, ignoredCollision)) await pull(root, mode);
+  if (ignoredCollision && await ignoredCollisionDialog(root, ignoredCollision)) await pull(root, mode, undefined, pruneRemote);
   if (outcome) {
     if (outcome.status === "upstreamGone" && outcome.upstreamGone) {
       const gone = outcome.upstreamGone;
@@ -256,7 +259,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
         <div className="muted">Merge keeps both histories with a merge commit. Rebase replays your local commits on top of the remote ones for a straight history.</div>
       </Modal>
     ));
-    if (how) await pull(root, how);
+    if (how) await pull(root, how, undefined, pruneRemote);
   }
 }
 
@@ -318,15 +321,29 @@ export async function addRemote(root: string) {
 const switching = new Set<string>();
 
 export async function checkout(root: string, target: string, kind: "local" | "remote" | "commit", expectedState?: string) {
-  if (switching.has(root)) return;
+  const result = await checkoutWithOutcome(root, target, kind, expectedState);
+  if (result.status === "succeeded" && !result.switch.conflicts.length && !result.switch.warning) return result.switch.branch;
+}
+
+type CheckoutResult =
+  | { status: "succeeded"; switch: Extract<SwitchOutcome, {status:"switched"}> }
+  | { status: "cancelled" }
+  | { status: "failed"; error: unknown };
+
+export async function checkoutWithOutcome(
+  root: string, target: string, kind: "local" | "remote" | "commit", expectedState?: string, authorize?: () => Promise<boolean>, dirtyChoice?: SwitchChoice["action"],
+): Promise<CheckoutResult> {
+  if (switching.has(root)) return {status:"failed",error:new Error("A branch switch is already in progress.")};
   switching.add(root);
   try {
+    let failure: unknown;
+    const onError = (error: unknown) => { failure = error; };
     // The operation client already refreshes HEAD and status before returning.
-    let result = await act(root, () => api.checkout(root, target, kind, undefined, expectedState), { busy: "Switching branch", refresh: false });
+    let result = await act(root, () => api.checkout(root, target, kind, undefined, expectedState), { busy: "Switching branch", refresh: false, onError });
     if (result?.status === "review") {
       const review = result;
       const source = review.source.startsWith("HEAD/") ? `detached HEAD (${shortOid(review.source.slice(5))})` : review.source.slice(11);
-      const action = await showDialog<SwitchChoice["action"] | null>((close) => <Modal
+      const action = dirtyChoice ?? await showDialog<SwitchChoice["action"] | null>((close) => <Modal
         title="Switch with uncommitted changes" subtitle={`${source} → ${target}`} onClose={() => close(null)}
         footer={<>
           <button type="button" className="btn" onClick={() => close(null)}>Cancel</button>
@@ -338,10 +355,11 @@ export async function checkout(root: string, target: string, kind: "local" | "re
         <p><b>Stash and switch</b> saves the changes for {source}. Restore them when you return.</p>
         <p><b>Move changes</b> applies them on {target}. If there are conflicts, resolve them in Changes. The stash stays available until the move succeeds.</p>
       </Modal>);
-      if (!action || !getTab(root)) return;
+      if (!action || !getTab(root) || authorize && !await authorize()) return {status:"cancelled"};
       result = await act(root, () => api.checkout(root, target, kind, { action, targetOid: review.targetOid }, review.stateToken), {
         busy: action === "move" ? "Moving changes" : "Stashing and switching",
         refresh: false,
+        onError,
       });
     }
     const repos = useRepos.getState();
@@ -349,18 +367,18 @@ export async function checkout(root: string, target: string, kind: "local" | "re
       repos.patch(root, { selected: null, multi: [], historyJump: null });
     }
     void repos.refresh(root, { refs: true, graph: true, layers: true });
-    if (result?.status !== "switched") return;
+    if (result?.status !== "switched") return {status:"failed",error:failure ?? new Error("The branch switch did not finish.")};
     if (result.conflicts.length) {
       showStashConflicts(root, result.conflicts);
-      return;
+      return {status:"succeeded",switch:result};
     }
     const label = kind === "commit" ? `Checked out ${shortOid(target)} (detached HEAD)` : `Switched to ${result.branch}`;
     if (result.warning) {
       toast.warning(label, result.warning);
-      return;
+      return {status:"succeeded",switch:result};
     }
     toast.success(label, result.moved ? "Changes moved to this branch." : result.saved ? "Changes saved for the source branch." : undefined);
-    return result.branch;
+    return {status:"succeeded",switch:result};
   } finally {
     switching.delete(root);
   }
@@ -383,13 +401,21 @@ export async function renameBranch(root: string, name: string) {
 }
 
 export async function deleteBranch(root: string, name: string, protectionRules?: string[]) {
+  await deleteBranchWithOutcome(root, name, {protectionRules});
+}
+
+export async function deleteBranchWithOutcome(root: string, name: string, options: {
+  expectedState?: string; localOnly?: boolean; protectionRules?: string[]; authorize?: () => Promise<boolean>;
+}): Promise<DeleteBranchOutcome> {
   try {
-    const expectedState = await prepareOperation(root);
-  if (!expectedState) return;
-    const targets = await api.branchDeleteTargets(root, name);
-    await showDialog<void>((close) => <DeleteBranchDialog expectedState={expectedState} root={root} name={name} targets={targets} protectionRules={protectionRules} onClose={() => close()} />);
+    const expectedState = options.expectedState ?? await prepareOperation(root);
+    if (!expectedState) return {status:"failed",error:new Error("The repository state could not be prepared for deletion.")};
+    const targets = options.localOnly ? [] : await api.branchDeleteTargets(root, name);
+    return await showDialog<DeleteBranchOutcome>(close => <DeleteBranchDialog expectedState={expectedState} root={root} name={name}
+      targets={targets} protectionRules={options.protectionRules} authorize={options.authorize} onClose={close} />);
   } catch (e) {
     toast.error(e);
+    return {status:"failed",error:e};
   }
 }
 
@@ -537,6 +563,16 @@ export async function stashApply(root: string, index: number, pop: boolean, oid 
   if (!oid) return toast.warning("Stash unavailable", "Refresh the stash list before trying again.");
   const out = await act(root, () => api.stashApply(root, index, pop, oid));
   if (out?.status === "conflicts") showStashConflicts(root, out.conflicts);
+  else if (out?.status === "index_not_restored") {
+    const rows = out.staging ?? [];
+    await showDialog<void>(close => <Modal title="Stash applied with different staging" tone="warn" wide onClose={() => close()}
+      footer={<button type="button" className="btn primary" onClick={() => close()}>Done</button>}>
+      <p>{out.message}</p>
+      {out.staging === null ? <p>Open Changes to inspect the current index.</p> : rows.length > 0 ? <ul>
+        {rows.map(row => <li key={row.path}><code>{row.path}</code> · {row.currentlyStaged ? "currently staged" : "outside staging"} · {row.matchesSavedIndex ? "matches the saved index" : "differs from the saved index"}</li>)}
+      </ul> : <p>This stash had no staged paths.</p>}
+    </Modal>);
+  }
   else if (out) toast.success(pop ? "Stash popped" : "Stash applied");
 }
 

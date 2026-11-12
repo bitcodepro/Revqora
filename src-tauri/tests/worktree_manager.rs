@@ -1,5 +1,5 @@
 use revqora_lib::git::{
-    operations, recovery, runner, status,
+    operations, recovery, refs, runner, status,
     worktree_manager::{self as wm, CreateMode, CreateRequest},
 };
 use std::{
@@ -104,6 +104,7 @@ fn inventory_is_read_only_and_describes_dirty_locked_missing_and_detached_worktr
 fn creation_modes_freeze_the_start_and_keep_source_files_staging_and_branch() {
     let f = Fixture::new();
     f.git(&f.root, &["branch", "available"]);
+    f.git(&f.root, &["config", "core.logAllRefUpdates", "false"]);
     fs::write(f.root.join("file.txt"), "source staged\n").unwrap();
     f.git(&f.root, &["add", "file.txt"]);
     fs::write(f.root.join("file.txt"), "source unstaged\r\n").unwrap();
@@ -126,6 +127,10 @@ fn creation_modes_freeze_the_start_and_keep_source_files_staging_and_branch() {
             assert_eq!(f.git(&f.path(name), &["symbolic-ref", "--quiet", "HEAD"]), format!("refs/heads/{branch}"));
         }
     }
+    let snapshot = refs::snapshot(&f.root).unwrap();
+    let new_topic = snapshot.local.iter().find(|branch| branch.name == "new-topic").unwrap();
+    assert_eq!(new_topic.creator.as_ref().unwrap().email, "test@example.invalid");
+    assert_eq!(f.git(&f.root, &["config", "--local", "core.logAllRefUpdates"]), "false");
     assert_eq!(f.oid(), head);
     assert_eq!(index, fs::read(f.root.join(".git/index")).unwrap());
     assert_eq!(fs::read(f.root.join("file.txt")).unwrap(), b"source unstaged\r\n");

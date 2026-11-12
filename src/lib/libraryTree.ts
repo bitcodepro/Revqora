@@ -1,4 +1,24 @@
 export interface TreeEntry { id: string; name: string; parentId?: string | null }
+export interface TreePlacement { siblingId: string; after: boolean }
+
+export function treeSubtreeIds(entries: readonly TreeEntry[], roots: readonly string[]): Set<string> {
+  const children = new Map<string, string[]>();
+  for (const { id, parentId } of entries) {
+    if (!parentId) continue;
+    const siblings = children.get(parentId) ?? [];
+    siblings.push(id);
+    children.set(parentId, siblings);
+  }
+  const removed = new Set<string>();
+  const pending = [...roots];
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (removed.has(id)) continue;
+    removed.add(id);
+    pending.push(...(children.get(id) ?? []));
+  }
+  return removed;
+}
 
 export function treeAncestors<T extends TreeEntry>(entries: readonly T[], id: string): string[] {
   return ancestorIds(new Map(entries.map(entry => [entry.id, entry.parentId])), id);
@@ -52,7 +72,7 @@ export function treeSelection(ids: string[], selected: string[], anchor: string 
   return toggle && selected.includes(id) ? selected.filter(item => item !== id) : toggle ? [...selected, id] : [id];
 }
 
-export function moveTreeEntries<T extends TreeEntry>(entries: T[], ids: string[], parentId: string | null): T[] {
+export function moveTreeEntries<T extends TreeEntry>(entries: T[], ids: string[], parentId: string | null, placement?: TreePlacement): T[] {
   const selected = new Set(ids);
   const parents = new Map(entries.map(entry => [entry.id, entry.parentId]));
   if (ids.some(id => !parents.has(id))) throw Error("One of the selected folders no longer exists.");
@@ -66,5 +86,11 @@ export function moveTreeEntries<T extends TreeEntry>(entries: T[], ids: string[]
     if (names.has(name)) throw Error(`“${entry.name}” already exists in the destination.`);
     names.add(name);
   }
-  return entries.map(entry => movingIds.has(entry.id) ? { ...entry, parentId } : entry);
+  const updated = entries.map(entry => movingIds.has(entry.id) ? { ...entry, parentId } : entry);
+  if (!placement) return updated;
+  const remaining = updated.filter(entry => !movingIds.has(entry.id));
+  const index = remaining.findIndex(entry => entry.id === placement.siblingId && (entry.parentId ?? null) === parentId);
+  if (index < 0) throw Error("Choose an existing destination.");
+  remaining.splice(index + Number(placement.after), 0, ...moving.map(entry => ({ ...entry, parentId })));
+  return remaining;
 }

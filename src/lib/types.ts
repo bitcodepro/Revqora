@@ -1,5 +1,8 @@
 // Mirrors of the Rust backend types (serde camelCase).
 
+export type McpApprovalMode = "ask" | "full" | "delete_only";
+export interface McpInfo { enabled: boolean; executable: string; approvalMode: McpApprovalMode }
+
 export interface RemoteBranchTarget {
   label: string;
   remote: string;
@@ -88,6 +91,13 @@ export interface FileStatus {
   submodule: boolean;
 }
 
+export interface StageReview {
+  branch: string | null;
+  oid: string | null;
+  operation: Pick<OpState, "kind" | "incoming" | "step" | "stoppedAt">;
+  files: Record<string, string>;
+}
+
 export interface StatusSummary {
   stateToken?: string | null;
   diffContextToken?: string | null;
@@ -123,6 +133,7 @@ export interface FileDiff {
   path: string;
   oldPath: string | null;
   binary: boolean;
+  encodedText?: boolean;
   isNew: boolean;
   isDeleted: boolean;
   oldMode: string | null;
@@ -141,6 +152,7 @@ export interface DiffOptions {
   context?: number;
   ignoreWhitespace?: boolean;
   disableTextconv?: boolean;
+  renameFrom?: string;
 }
 
 export interface Seg {
@@ -201,6 +213,13 @@ export interface CommitSearchHit {
   author: string;
   authorTime: number;
   refs: string;
+}
+
+export interface CommitSearchPage {
+  commits: CommitSearchHit[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  diagnostics: {queueMs: number; gitMs: number};
 }
 
 export interface ChangedFile {
@@ -317,11 +336,25 @@ export interface OpOutcome {
   studioWarning?: string | null;
 }
 
+export type StashApplyOutcome = Omit<OpOutcome, "status"> & {
+  status: "done" | "conflicts" | "index_not_restored";
+  indexRestored: boolean;
+  stashKept: boolean;
+  staging: { path: string; currentlyStaged: boolean; matchesSavedIndex: boolean }[] | null;
+};
+
 export interface ConflictSide {
   exists: boolean;
   binary: boolean;
   text: string;
   oid: string | null;
+}
+
+export interface IndexConflictSide {
+  oid: string;
+  mode: string;
+  text: string | null;
+  omitted: "binary" | "too_large" | "gitlink" | null;
 }
 
 export interface ConflictInfo {
@@ -371,6 +404,7 @@ export interface ReflogEntry {
 }
 
 export interface CommitOptions {
+  verbatimMessage?: boolean;
   sign?: boolean;
   amend?: boolean;
   noVerify?: boolean;
@@ -501,6 +535,13 @@ export interface BlobData {
   base64: string;
   size: number;
   mime: string;
+}
+
+export interface DecodedText {
+  content: string;
+  encoding: string;
+  bom: boolean;
+  guessed: boolean;
 }
 
 export type RebaseAction = "pick" | "reword" | "edit" | "squash" | "fixup" | "drop";
@@ -657,6 +698,17 @@ export interface ForgeInfo {
   remote: string;
   webUrl: string;
   api: string;
+}
+
+export interface ForgeConnectionIdentity {
+  id: string;
+  name: string;
+  login: string;
+  provider: ForgeInfo["kind"];
+  project: string;
+  remote: string;
+  source: "verified_profile" | "provider";
+  connectionRevision: string | null;
 }
 
 export interface PullRequest {
@@ -831,7 +883,7 @@ export interface ForgeConnections {revision:string;activeRemote:string|null;remo
 
 export interface PrMergeMethod { id: string; label: string; explanation: string }
 export interface PrMergeRule { label: string; state: string; required: boolean }
-export interface PrMergePlan { revision: string; detailRevision: string; sourceSha: string; targetSha: string; actor: string; actorId: string; methods: PrMergeMethod[]; checks: Check[]; rules: PrMergeRule[]; blockers: string[]; notices: string[]; queueState: string | null; merged: boolean }
+export interface PrMergePlan { revision: string; detailRevision: string; sourceSha: string; targetSha: string; actor: string; actorId: string; methods: PrMergeMethod[]; checks: Check[]; rules: PrMergeRule[]; blockers: string[]; notices: string[]; queueState: string | null; merged: boolean; sourceBranchMayBeDeleted?: boolean }
 export interface PrMergeInput { planRevision: string; method: string; message: string }
 export interface PrMergeResult { state: "merged" | "queued" | "accepted"; commit: string | null; message: string }
 export interface PrCleanupInput { local: boolean; remote: boolean; force: boolean; protectionRules: string[]; reviewToken: string }

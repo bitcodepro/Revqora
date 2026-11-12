@@ -1,7 +1,6 @@
 import { useLibrary, uniqueRoots, repositoryKey, groupRepositoryRoots, groupsInWorkspace, type SavedWorkspace } from "../lib/repositoryLibrary";
 import { treeAncestors, treeSelection, visibleTree } from "../lib/libraryTree";
-import { InlineGroupName } from "./GroupsSidebar";
-import { FavoriteButton, openLibraryRepository, renameRepositoryDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
+import { FavoriteButton, groupEditorDialog, openLibraryRepository, renameRepositoryDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
 import { SyncButton } from "./SyncRepositories";
 import { useEffect, useRef, useState } from "react";
@@ -194,7 +193,6 @@ export function RepositorySidebar() {
   const groupId = useUi(s => s.repositoryGroup);
   const setGroupId = (id: string | null) => useUi.setState({ repositoryGroup: id });
   const groupsOpen = useSettings(s => s.groupsOpen);
-  const [groupDraft, setGroupDraft] = useState<string[] | null>(null);
   const workspacesOpen = useSettings(s => s.workspacesOpen);
   const actionsCollapsed = useSettings(s => s.repositoryActionsCollapsed);
   const [selection, setSelection] = useState<string[]>([]);
@@ -237,30 +235,26 @@ export function RepositorySidebar() {
       <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites{favoritesOnly ? " · Show all" : ""}</button>
       <button className={`repository-overview-link ${overview ? "active" : ""}`} aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={14} /> All repositories</button>
       {selected.length > 0 && <small className="repository-selection-note">{selected.length} selected{canDragToWorkspace ? " · Drag to a workspace" : ""}</small>}
-      {groupDraft && <InlineGroupName cancel={() => setGroupDraft(null)} save={name => {
-        const id = library.createGroup(name, groupDraft, [], groupFilter?.id);
-        setGroupDraft(null);
-        setSelection([]);
-        setGroupId(id);
-      }}/>}
       <div className="repository-list" role="list" aria-label="Open repositories" onKeyDown={e => {
         if (e.key === "Escape" && selection.length) { setSelection([]); selectionAnchor.current = null; }
       }}>
-        {sections.filter((group) => !workspace || group.roots.length > 0 || inlineGroups.some(({entry}) => entry.id === group.id)).map((group) => <div key={group.id}>{inlineGroups.length > 0 && <button type="button" className="repository-group" style={{ paddingInlineStart: 8 + Math.min(group.depth, 8) * 10 }} aria-expanded={!group.collapsed} onClick={() => group.id !== "ungrouped" && library.collapse(group.id)}>{group.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{group.name}<span className="faint">{group.roots.length}</span></button>}{(!group.collapsed || !!query || !!groupFilter) && group.roots.map((r) => {
+        {sections.filter((group) => !workspace || group.roots.length > 0 || inlineGroups.some(({entry}) => entry.id === group.id)).map((group) => <div key={group.id}>{inlineGroups.length > 0 && <button type="button" className="repository-group" data-repository-group-drop={group.id === "ungrouped" ? "" : group.id} style={{ paddingInlineStart: 8 + Math.min(group.depth, 8) * 10 }} aria-expanded={!group.collapsed} onClick={() => group.id !== "ungrouped" && library.collapse(group.id)}>{group.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{group.name}<span className="faint">{group.roots.length}</span></button>}{(!group.collapsed || !!query || !!groupFilter) && group.roots.map((r) => {
           const t = tabs[r];
+          const sourceGroup = group.id === "ungrouped" ? groupFilter?.id : group.id;
+          const createGroup = (roots: string[]) => void groupEditorDialog({roots, parentId: sourceGroup, onCreated: () => setSelection([])});
           return (
             <div role="listitem" aria-busy={!!t && (!!t.opening || !t.loaded)} data-repository-state={t ? t.info ? "open" : t.error ? "unavailable" : "opening" : "closed"} className={`repository-item ${r === active && !overview ? "active" : ""} ${selected.includes(r) ? "batch-selected" : ""}`} key={r} onKeyDown={e => {
               renameOnKey(e, r);
               if (!matchesGroupShortcut(e)) return;
               const roots = selected.includes(r) ? selected : [r];
-              runMenuShortcut(e, repositoryMenu(r, displayName(r), roots, group.id === "ungrouped" ? groupFilter?.id : group.id, () => setGroupDraft(roots)));
+              runMenuShortcut(e, repositoryMenu(r, displayName(r), roots, sourceGroup, () => createGroup(roots)));
             }}
               onContextMenu={e => {
                 const roots = selected.includes(r) ? selected : [r];
-                contextMenu(e, repositoryMenu(r, displayName(r), roots, group.id === "ungrouped" ? groupFilter?.id : group.id, () => setGroupDraft(roots)));
+                contextMenu(e, repositoryMenu(r, displayName(r), roots, sourceGroup, () => createGroup(roots)));
               }}>
               <FavoriteButton root={r} />
-              <button className="repository-select" aria-current={r === active && !overview} onPointerDown={e => { if (canDragToWorkspace) drag.start(e, selected.includes(r) ? selected : [r]); }}
+              <button className="repository-select" aria-current={r === active && !overview} onPointerDown={e => drag.start(e, selected.includes(r) ? selected : [r], sourceGroup ?? null, canDragToWorkspace)}
                 onClick={e => {
                   if (drag.suppressClick.current) return;
                   const toggle = e.ctrlKey || e.metaKey;
@@ -312,7 +306,6 @@ export function RepositoryOverview() {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const anchor = useRef<string | null>(null);
-  const [groupDraft, setGroupDraft] = useState<string[] | null>(null);
   const groupId = useUi(s => s.repositoryGroup);
   const allGroups = useLibrary(s => s.groups);
   const groups = groupsInWorkspace(allGroups, workspace);
@@ -333,12 +326,6 @@ export function RepositoryOverview() {
       <header><div><h2>Repositories</h2><span className="faint">{workspace?.name ?? "All Workspaces"} · {order.length} open · {incoming} with incoming commits</span></div><div className="spacer" /><SyncButtons roots={visible} scoped={!!query.trim() || !!group} /><button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button><button type="button" className="icon-btn" title="Close repository overview" aria-label="Close repository overview" onClick={toggleRepositoryOverview}><X size={16}/></button></header>
       <div className="repository-overview-search input-wrap"><Search size={14} /><input className="input" placeholder="Find repository…" aria-label="Find repository in overview" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {group && <button className="btn sm" type="button" onClick={() => useUi.setState({ repositoryGroup: null })}>Clear group filter · {group.name}</button>}
-      {groupDraft && <InlineGroupName cancel={() => setGroupDraft(null)} save={name => {
-        const id = useLibrary.getState().createGroup(name, groupDraft, [], group?.id);
-        useUi.setState({ repositoryGroup: id });
-        setGroupDraft(null);
-        setSelected([]);
-      }}/>}
       <div className="repository-table-scroll">
         <table className="repository-table">
           <thead><tr><th>Repository</th><th>Current branch</th><th>Incoming / outgoing</th><th>Working copy</th><th>Last fetch</th><th /></tr></thead>
@@ -349,10 +336,10 @@ export function RepositoryOverview() {
                 renameOnKey(e, r);
                 if (!matchesGroupShortcut(e)) return;
                 const roots = selected.includes(r) ? visible.filter(root => selected.includes(root)) : [r];
-                runMenuShortcut(e, repositoryMenu(r, displayName(r), roots, group?.id, () => setGroupDraft(roots)));
+                runMenuShortcut(e, repositoryMenu(r, displayName(r), roots, group?.id, () => void groupEditorDialog({roots, parentId: group?.id, onCreated: () => setSelected([])})));
               }} onClick={e => { if (!(e.target as HTMLElement).closest("button")) select(e, r); }} onContextMenu={e => {
                 const roots = selected.includes(r) ? visible.filter(root => selected.includes(root)) : [r];
-                contextMenu(e, repositoryMenu(r, displayName(r), roots, group?.id, () => setGroupDraft(roots)));
+                contextMenu(e, repositoryMenu(r, displayName(r), roots, group?.id, () => void groupEditorDialog({roots, parentId: group?.id, onCreated: () => setSelected([])})));
               }}>
                 <td><button className="repository-name" title={r} onClick={e => select(e, r)}><FolderGit2 size={15} />{displayName(r)}</button></td>
                 <td title={t?.info?.head.branch ?? ""} onContextMenu={e => { if (t?.info?.head.branch) contextMenu(e, namePathMenu(t.info.head.branch, r, `refs/heads/${t.info.head.branch}`)); }}><GitBranch size={12} /> {t?.info?.head.branch ?? (t?.info?.head.detached ? "Detached HEAD" : "—")}</td>

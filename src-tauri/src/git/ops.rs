@@ -221,6 +221,8 @@ pub fn discard_paths(repo: &Path, tracked: &[String], untracked: &[String]) -> G
 #[serde(rename_all = "camelCase")]
 pub struct CommitOptions {
     #[serde(default)]
+    pub verbatim_message: bool,
+    #[serde(default)]
     pub amend: bool,
     #[serde(default)]
     pub no_verify: bool,
@@ -249,7 +251,10 @@ fn commit_confirmed(repo: &Path, message: &str, opts: &CommitOptions) -> GitResu
     }
     let file = temp_file(repo, "COMMIT_MSG", message)?;
     let fp = file.to_string_lossy().into_owned();
-    let mut args = vec!["commit", "-F", fp.as_str(), "--cleanup=strip"];
+    // This message comes from a Revqora editor or an explicitly approved
+    // request. Git's strip mode would treat a leading # as a template comment.
+    let cleanup = if opts.verbatim_message { "--cleanup=verbatim" } else { "--cleanup=whitespace" };
+    let mut args = vec!["commit", "-F", fp.as_str(), cleanup];
     if opts.amend {
         args.push("--amend");
     }
@@ -307,7 +312,13 @@ pub fn create_branch(repo: &Path, name: &str, start: Option<&str>, checkout: boo
     let name = name.trim();
     runner::run(repo, ["check-ref-format", "--branch", name]).map_err(|_| GitError::new(format!("'{name}' is not a valid branch name.")))?;
     let qualified = start.map(|s| super::branch_origin::branch_start(repo, s)).transpose()?;
-    let mut args = if checkout { vec!["switch", "--no-overwrite-ignore", "-c", name] } else { vec!["branch", name] };
+    let mut args = if checkout {
+        let mut args = super::branch_origin::RECORD_CREATION_REFLOG.to_vec();
+        args.extend(["switch", "--no-overwrite-ignore", "-c", name]);
+        args
+    } else {
+        vec!["branch", "--create-reflog", name]
+    };
     if let Some(s) = start {
         if checkout && qualified.as_deref().is_some_and(|reference| reference.starts_with("refs/remotes/")) {
             args.push("--no-track");
@@ -397,6 +408,8 @@ pub fn fetch(repo: &Path, remote: Option<&str>, prune: bool, on_line: impl FnMut
     }
     if prune {
         args.push("--prune".into());
+    } else {
+        args.extend(["--no-prune".into(), "--no-prune-tags".into()]);
     }
     args.push("--tags".into());
     runner::run_streaming(repo, &args, &[], on_line)
@@ -481,7 +494,7 @@ fn missing_pull_upstream(error: &GitError, reference: &str) -> bool {
     error.message.contains("no such ref was fetched") || error.stderr.lines().any(|line| line.trim() == format!("fatal: couldn't find remote ref {reference}"))
 }
 
-fn deleted_pull_upstream(repo: &Path, branch: &str, remote: &str, reference: &str) -> GitResult<Option<PullOutcome>> {
+fn deleted_pull_upstream(repo: &Path, branch: &str, remote: &str, reference: &str, prune_remote: bool) -> GitResult<Option<PullOutcome>> {
     if !reference.starts_with("refs/heads/") || !runner::exec(repo, ["check-ref-format", reference])?.ok() {
         return Ok(None);
     }
@@ -500,7 +513,7 @@ fn deleted_pull_upstream(repo: &Path, branch: &str, remote: &str, reference: &st
     let mapping =
         runner::run(repo, ["for-each-ref", "--format=%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)", &format!("refs/heads/{branch}")])?;
     let parts: Vec<_> = mapping.trim().split('\0').collect();
-    if parts.len() == 3 && parts[0].starts_with("refs/remotes/") && parts[1] == remote && parts[2] == reference {
+    if prune_remote && parts.len() == 3 && parts[0].starts_with("refs/remotes/") && parts[1] == remote && parts[2] == reference {
         let old = runner::exec(repo, ["rev-parse", "--verify", "--end-of-options", parts[0]])?;
         if old.ok() {
             runner::run(repo, ["update-ref", "--no-deref", "-d", parts[0], old.text().trim()])?;
@@ -514,13 +527,17 @@ fn deleted_pull_upstream(repo: &Path, branch: &str, remote: &str, reference: &st
         operation: OpOutcome {
             status: "upstreamGone".into(),
             conflicts: Vec::new(),
-            message: format!("Upstream {reference} is no longer available from {remote}. Its absence was verified with the server and stale tracking references were reconciled. Local branch {branch} and its working changes are kept; no merge was performed."),
+            message: format!("Upstream {reference} is no longer available from {remote}. Its absence was verified with the server. Local branch {branch} and its working changes are kept; no merge was performed."),
         },
         upstream_gone: Some(MissingUpstream { branch: branch.into(), remote: remote.into(), reference: reference.into(), default_branch }),
     }))
 }
 
-pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
+pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
+    pull_with_prune(repo, mode, true, on_line)
+}
+
+pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
     super::recovery::protect_transport(repo, false, None, None, false)?;
     let before = status::status(repo)?;
     let branch = before.branch.as_deref().ok_or_else(|| GitError::new("Choose a branch with an upstream before pulling."))?;
@@ -538,7 +555,7 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
     }
     let remote = if remote_config.ok() { remote_config.text() } else { "origin".into() };
     let remote = remote.trim();
-    let prune = pull_can_prune(repo, remote)?;
+    let prune = prune_remote && pull_can_prune(repo, remote)?;
     let index_before = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
     let unchanged = || -> GitResult<bool> {
         let after = status::status(repo)?;
@@ -591,7 +608,7 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
     }
     if let Err(error) = fetched {
         if repo::op_state(repo, &repo::git_dir(repo)?).kind == "none" {
-            if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
+            if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0], prune_remote)? {
                 return Ok(outcome);
             }
         }
@@ -609,7 +626,7 @@ pub fn pull(repo: &Path, mode: &str, mut on_line: impl FnMut(&str)) -> GitResult
         .collect();
     if targets.len() != 1 {
         if targets.is_empty() {
-            if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0])? {
+            if let Some(outcome) = deleted_pull_upstream(repo, branch, remote, configured[0], prune_remote)? {
                 return Ok(outcome);
             }
         }
@@ -1629,31 +1646,74 @@ pub fn stash_save(repo: &Path, message: &str, include_untracked: bool, keep_inde
     Ok(())
 }
 
-pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<OpOutcome> {
-    let name = format!("stash@{{{index}}}");
-    stash_apply_ref(repo, &name, pop)
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashStagingDifference {
+    path: String,
+    currently_staged: bool,
+    matches_saved_index: bool,
 }
 
-pub(super) fn stash_apply_ref(repo: &Path, name: &str, pop: bool) -> GitResult<OpOutcome> {
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashApplyOutcome {
+    #[serde(flatten)]
+    pub operation: OpOutcome,
+    pub index_restored: bool,
+    pub stash_kept: bool,
+    pub staging: Option<Vec<StashStagingDifference>>,
+}
+
+fn stash_staging_difference(repo: &Path, base: &str, saved_index: &str) -> GitResult<Vec<StashStagingDifference>> {
+    use std::collections::HashSet;
+    let saved = runner::run(repo, ["diff", "--name-only", "--no-renames", "-z", base, saved_index, "--"])?;
+    let actual = runner::run(repo, ["diff", "--cached", "--name-only", "--no-renames", "-z", "--"])?;
+    let different = runner::run(repo, ["diff", "--cached", "--name-only", "--no-renames", "-z", saved_index, "--"])?;
+    let actual: HashSet<_> = runner::split_nul(&actual).collect();
+    let different: HashSet<_> = runner::split_nul(&different).collect();
+    Ok(runner::split_nul(&saved)
+        .map(|path| StashStagingDifference { path: path.into(), currently_staged: actual.contains(path), matches_saved_index: !different.contains(path) })
+        .collect())
+}
+
+pub fn stash_apply(repo: &Path, index: u32, pop: bool) -> GitResult<StashApplyOutcome> {
+    let name = format!("stash@{{{index}}}");
+    stash_apply_ref(repo, &name, pop, true)
+}
+
+pub(super) fn stash_apply_ref(repo: &Path, name: &str, pop: bool, restore_index: bool) -> GitResult<StashApplyOutcome> {
     // A stash can add paths over ignored data on the destination branch.
     // Inspect both tracked snapshots and the optional untracked parent.
-    let base = format!("{name}^1");
-    let index = format!("{name}^2");
-    let untracked = format!("{name}^3");
-    let mut paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &base, name, "--"])?;
+    let snapshot = runner::run(repo, ["rev-parse", "--verify", name])?;
+    let snapshot = snapshot.trim();
+    let base = format!("{snapshot}^1");
+    let index = format!("{snapshot}^2");
+    let untracked = format!("{snapshot}^3");
+    let mut paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &base, snapshot, "--"])?;
     paths.extend(runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &base, &index, "--"])?);
     if runner::exec(repo, ["rev-parse", "--verify", "--quiet", &untracked])?.ok() {
         paths.extend(runner::run_bytes(repo, ["ls-tree", "-r", "--name-only", "-z", &untracked])?);
     }
     check_ignored_paths(repo, &super::workspace_files::ignored(repo)?, &paths, "ignored")?;
     let before = status::status(repo)?.state_token;
-    let out = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, "--index", name])?;
-    if out.ok() {
-        return Ok(OpOutcome::done(out.text()));
+    let mut args = vec!["-c", "stash.index=false", "stash", if pop { "pop" } else { "apply" }];
+    if restore_index {
+        args.push("--index");
     }
-    let c = conflicted(repo);
-    if !c.is_empty() {
-        return Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: "Stash applied with conflicts; it was kept in the list.".into() });
+    args.push(if pop { name } else { snapshot });
+    let out = runner::exec(repo, args)?;
+    if out.ok() {
+        return Ok(StashApplyOutcome { operation: OpOutcome::done(out.text()), index_restored: restore_index, stash_kept: !pop, staging: None });
+    }
+    let conflict_result = |conflicts| StashApplyOutcome {
+        operation: OpOutcome { status: "conflicts".into(), conflicts, message: "Stash applied with conflicts; it was kept in the list.".into() },
+        index_restored: false,
+        stash_kept: true,
+        staging: None,
+    };
+    let conflicts = conflicted(repo);
+    if !conflicts.is_empty() {
+        return Ok(conflict_result(conflicts));
     }
     // Git may have already applied tracked edits before an untracked collision
     // fails. Never replay that partially completed mutation automatically.
@@ -1664,14 +1724,27 @@ pub(super) fn stash_apply_ref(repo: &Path, name: &str, pop: bool) -> GitResult<O
         .kind("partial-operation")
         .details(vec![out.stderr]));
     }
-    // A different index strategy is safe only if the first attempt changed nothing.
-    let out2 = runner::exec(repo, ["stash", if pop { "pop" } else { "apply" }, name])?;
+    if !restore_index {
+        return Err(runner::to_error("git stash apply", &out));
+    }
+    // Keep the only saved index even when the caller requested Pop.
+    let out2 = runner::exec(repo, ["-c", "stash.index=false", "stash", "apply", snapshot])?;
     if out2.ok() {
-        return Ok(OpOutcome::done(out2.text()));
+        let staging = stash_staging_difference(repo, &base, &index).ok();
+        return Ok(StashApplyOutcome {
+            operation: OpOutcome {
+                status: "index_not_restored".into(),
+                conflicts: Vec::new(),
+                message: "Working changes were applied, but the saved staging could not be restored. The stash was kept.".into(),
+            },
+            index_restored: false,
+            stash_kept: true,
+            staging,
+        });
     }
     let c = conflicted(repo);
     if !c.is_empty() {
-        return Ok(OpOutcome { status: "conflicts".into(), conflicts: c, message: "Stash applied with conflicts; it was kept in the list.".into() });
+        return Ok(conflict_result(c));
     }
     Err(runner::to_error("git stash apply", &out2))
 }
@@ -1684,9 +1757,13 @@ pub fn check_stash(repo: &Path, index: u32, expected_oid: &str) -> GitResult<()>
     Ok(())
 }
 
-pub fn stash_apply_reviewed(repo: &Path, index: u32, expected_oid: &str, pop: bool) -> GitResult<OpOutcome> {
+pub fn stash_apply_reviewed(repo: &Path, index: u32, expected_oid: &str, pop: bool) -> GitResult<StashApplyOutcome> {
+    stash_apply_reviewed_with_index(repo, index, expected_oid, pop, true)
+}
+
+pub fn stash_apply_reviewed_with_index(repo: &Path, index: u32, expected_oid: &str, pop: bool, restore_index: bool) -> GitResult<StashApplyOutcome> {
     check_stash(repo, index, expected_oid)?;
-    stash_apply(repo, index, pop)
+    stash_apply_ref(repo, &format!("stash@{{{index}}}"), pop, restore_index)
 }
 
 pub fn stash_drop_reviewed(repo: &Path, index: u32, expected_oid: &str) -> GitResult<()> {
