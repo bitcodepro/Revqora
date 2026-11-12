@@ -1851,7 +1851,7 @@ try {
     fs.writeFileSync(path.join(stage5, ".gitignore"), "ignored.log\n"); fs.writeFileSync(path.join(stage5, "regular.txt"), "must remain unstaged\n");
     const before = fs.readFileSync(path.join(stage5, ".git", "index"));
     await page.click(".view-tab:has-text('Changes')"); await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    const child = page.locator(".changes .file-row[title='nested/child/']");
+    const child = page.locator(".changes .file-row[data-file-path='nested/child/']");
     await child.waitFor();
     await page.click(".changes button[title='Stage all']"); await page.waitForSelector(".toast:has-text('Nested repository')");
     await page.waitForSelector(".changes[data-pending='false']");

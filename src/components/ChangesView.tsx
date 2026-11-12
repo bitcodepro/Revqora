@@ -592,6 +592,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 key={f.path}
                 className={`file-row ${selectedIs("unstaged", f.path) ? "selected" : ""}`}
                 data-file-nav={isNestedFile(f) ? undefined : ""}
+                data-file-path={f.path}
                 onClick={() => isNestedFile(f) ? openNestedFile(root, f) : select({ kind: "unstaged", path: f.path, untracked: f.untracked })}
                 onDoubleClick={() => { if (!isNestedFile(f)) void A.stagePaths(root, [f.path]); }}
                 draggable
