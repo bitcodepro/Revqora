@@ -36,7 +36,7 @@ export async function remoteRenameSmoke({ page, check, shot, git, server, base, 
   });
   await check("a changed remote tip clears rename consent and requires a fresh server review",async()=>{
     server("update-ref","refs/heads/stale-old",base);git("push","origin","HEAD:refs/heads/seed");git("fetch","origin");
-    await page.click("button[title='Refresh (F5)']");await page.locator(".sidebar [data-branch-kind='remote'][data-branch-name='origin/stale-old']").waitFor();
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();await page.locator(".sidebar [data-branch-kind='remote'][data-branch-name='origin/stale-old']").waitFor();
     await openRename("stale-old","stale-new");
     const advanced=git("rev-parse","HEAD");if(advanced===base)throw new Error("Stale rename fixture requires distinct old and new server tips");server("update-ref","refs/heads/stale-old",advanced);
     await page.locator(".modal input[type='checkbox']").check();await page.locator(".modal").last().getByRole("button",{name:"Rename on server",exact:true}).click();

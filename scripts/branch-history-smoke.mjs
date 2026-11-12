@@ -107,7 +107,7 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   });
   assert.equal(await graph.getAttribute("data-pinned-lane"), pinned);
   git(root, "commit", "--allow-empty", "-qm", "Advance pinned history line");
-  await page.getByTitle("Refresh (F5)", { exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await graph.evaluate((el) => { el.scrollTop = 0; });
   const advanced = graph.locator(".grow").filter({ has: page.getByText("Advance pinned history line", { exact: true }) });
   const highlighted = advanced.locator(".lane-line.hl + .lane-hit").first();

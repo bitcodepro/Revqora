@@ -172,7 +172,7 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     if (!await page.getByRole("checkbox", { name: "Receive 1", exact: true }).isChecked()) throw new Error("incoming revision not selected");
     await shot("77-sync-review"); await page.getByRole("button", { name: "Sync selected (1)", exact: true }).click(); await page.waitForSelector(".modal:has-text('Sync results')", { timeout: syncTimeout });
     if (git(root, "rev-parse", "HEAD") !== incoming || !(await page.locator(".modal").innerText()).includes("Incoming commits received")) throw new Error("incoming Sync failed"); await done();
-    const outgoing = commit(root, "workspace outgoing"); await page.getByRole("button", { name: "Refresh (F5)", exact: true }).click();
+    const outgoing = commit(root, "workspace outgoing"); await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.locator(".toolbar").getByRole("button", { name: "Sync", exact: true }).click(); await page.waitForSelector(".modal:has-text('Review Sync')");
     if (await page.getByRole("checkbox", { name: "Send 1", exact: true }).isChecked() || !await page.getByRole("button", { name: "Sync selected (0)", exact: true }).isDisabled()) throw new Error("outgoing publication was implicit");
     if (git(bare, "rev-parse", "main") !== incoming) throw new Error("preview pushed commits");

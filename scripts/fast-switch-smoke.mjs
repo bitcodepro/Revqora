@@ -101,7 +101,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
     if(root===two)assert(await installGate([],two));
     fs.appendFileSync(workingFile(root),`${body}\n`);
     await page.locator(".explorer-sidebar .repository-select").filter({hasText:path.basename(root)}).click();
-    await page.click(".view-tab:has-text('Changes')");await page.click("button[title='Refresh (F5)']");
+    await page.click(".view-tab:has-text('Changes')");await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.locator(".changes .diff[aria-busy='false'] .dl.add",{hasText:body}).waitFor();
     await stageHunk.waitFor();
     if(root===two){

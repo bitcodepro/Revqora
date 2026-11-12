@@ -87,7 +87,7 @@ export async function conflictStudioSmoke({ page, check, shot, work }) {
   };
   await check("Take ours and Mark resolved outside the editor retain recoverable drafts without blocking Run, including after abort", async () => {
     git("merge", "--abort"); try { git("merge", "--no-commit", "incoming"); } catch {}
-    await page.click("button[title='Refresh (F5)']");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
     for (const [file, action, notice] of [["one.txt", "Take ours (current branch)", "Resolved with ours"], ["two.txt", "Mark as resolved", "Marked resolved"]]) {
       await open(); await page.getByLabel("Conflict file", { exact: true }).selectOption(file);
       await page.waitForSelector(`.cf-title .p:has-text('${file}')`); await result().click(); await page.keyboard.press("Control+Home");
@@ -108,7 +108,7 @@ export async function conflictStudioSmoke({ page, check, shot, work }) {
     await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
     await discardRetained("one.txt");
     await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
-    git("merge", "--abort"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".op-banner", { state: "detached" });
+    git("merge", "--abort"); await page.getByRole("button", { name: "Refresh", exact: true }).click(); await page.waitForSelector(".op-banner", { state: "detached" });
     await toolsValidation(); await page.locator("[data-retained-draft='two.txt']").getByRole("button", { name: "View / copy", exact: true }).click();
     if (!(await page.getByLabel("Retained conflict draft").inputValue()).includes("retained two.txt")) throw new Error("abort lost the retained draft");
     await page.locator(".modal").last().getByRole("button", { name: "Close", exact: true }).click();
@@ -117,7 +117,7 @@ export async function conflictStudioSmoke({ page, check, shot, work }) {
   });
   await check("external resolution while the editor is open does not leave its unsaved result blocking validation", async () => {
     try { git("merge", "--no-commit", "incoming"); } catch {}
-    await page.click("button[title='Refresh (F5)']"); await open(); await page.getByLabel("Conflict file", { exact: true }).selectOption("one.txt");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click(); await open(); await page.getByLabel("Conflict file", { exact: true }).selectOption("one.txt");
     await result().click(); await page.keyboard.press("Control+Home"); await page.keyboard.insertText("external recovery draft\n"); await waitText("external recovery draft");
     git("checkout", "--ours", "--", "one.txt"); git("add", "one.txt");
     await page.locator(".cf-head").getByRole("button", { name: "Validate", exact: true }).click();
@@ -125,7 +125,7 @@ export async function conflictStudioSmoke({ page, check, shot, work }) {
     if (await page.locator(".cf-validation").getByRole("button", { name: "Run", exact: true }).isDisabled()) throw new Error("open editor still blocks a resolved file");
     await shot("73-conflict-resolved-while-open");
     await page.locator(".cf-head").getByRole("button", { name: "Close", exact: true }).click();
-    git("merge", "--abort"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".op-banner", { state: "detached" }); await toolsValidation();
+    git("merge", "--abort"); await page.getByRole("button", { name: "Refresh", exact: true }).click(); await page.waitForSelector(".op-banner", { state: "detached" }); await toolsValidation();
   });
   await check("a second validation completes while the first check's terminal sidebar refresh is deferred", async () => {
     await page.evaluate(() => {

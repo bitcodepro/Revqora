@@ -84,7 +84,7 @@ function RepositoryRefresh({ root }: { root: string }) {
     try { await refreshRepositoryView(root); }
     finally { setBusy(false); }
   };
-  return <button className="icon-btn" title={shortcutTitle("Refresh", "refresh")} disabled={busy} aria-busy={busy} onClick={() => void refresh()}>
+  return <button type="button" className="icon-btn" aria-label="Refresh" data-shortcut="refresh" disabled={busy} aria-busy={busy} onClick={() => void refresh()}>
     <RefreshCw size={15} className={busy ? "spin" : ""} />
   </button>;
 }

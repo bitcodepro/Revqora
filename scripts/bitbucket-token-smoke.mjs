@@ -76,7 +76,7 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await localCenter.getByRole("alert").filter({hasText:"Configure an API connection first."}).waitFor();
       assert.equal(git(seed,"remote","get-url","origin"),`${url}/team/repo.git`);
       git(seed,"remote","remove","origin");
-      await page.locator(".main-head").getByTitle("Refresh (F5)",{exact:true}).click();
+      await page.locator(".main-head").getByRole("button", { name: "Refresh", exact: true }).click();
       await localCenter.getByText("No remote configured",{exact:true}).waitFor();
 
       // Cloning inherits the active section. Leave PR Center before measuring
@@ -141,7 +141,7 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await detailPanel.getByText("No matching discussions in the loaded pages.",{exact:true}).waitFor();
       pr.description="Updated through the main refresh button";
       const listsBefore=seen.filter(r=>r.path.endsWith("/team/repo/pullrequests")).length;
-      await page.locator(".main-head").getByTitle("Refresh (F5)",{exact:true}).click();
+      await page.locator(".main-head").getByRole("button", { name: "Refresh", exact: true }).click();
       await detailPanel.getByText("No matching discussions in the loaded pages.",{exact:true}).waitFor();
       assert(seen.filter(r=>r.path.endsWith("/team/repo/pullrequests")).length>listsBefore,"Main refresh did not fetch the PR list");
       await prButton("Overview").click();
