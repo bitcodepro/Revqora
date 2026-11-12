@@ -38,17 +38,17 @@ export async function repositorySessionSmoke({ page, work, shot, template }) {
       // in the first roster, including the three ungrouped repositories.
       settings.state.openTabs = roots.slice(0, 20); settings.state.activeTab = roots[19]; settings.state.autoFetchMinutes = 0;
       settings.state.openLibraryOnStartup = true;
+      settings.state.explorerOpen = false;
       for (const layout of Object.values(settings.state.layouts)) { layout.repositoriesOpen = true; layout.focusMode = false; }
       localStorage.setItem("revqora.settings", JSON.stringify(settings));
-      localStorage.setItem("revqora.repositories", JSON.stringify({ version: 1, state: { knownRoots: roots, favorites: [], groups: [{ id: "backend", name: "Backend", roots: roots.slice(0, 20), collapsed: false }, { id: "frontend", name: "Frontend", roots: roots.slice(20, 37), collapsed: false }], workspaces: [], activeWorkspaceId: null } }));
+      localStorage.setItem("revqora.repositories", JSON.stringify({ version: 1, state: { knownRoots: roots, favorites: [], groups: [{ id: "backend", name: "Backend", roots: roots.slice(0, 20), collapsed: false }, { id: "frontend", name: "Frontend", roots: roots.slice(20, 37), collapsed: false }], activeGroupId: null } }));
       localStorage.setItem("revqora.session-test", "hold");
     }, roots);
     const started = Date.now(); await page.reload();
     await page.waitForFunction(() => document.querySelector(".app")?.dataset.appStartup === "ready" && window.__repositorySessionGate?.held === 4);
     if (await page.locator(".repository-item").count() !== 40) throw Error("The complete saved roster did not appear before discovery finished");
-    for (const [name, count] of [["Backend", 20], ["Frontend", 17], ["Ungrouped", 3]]) {
-      const header = page.locator(".repository-group").filter({ hasText: name });
-      if (await header.locator(".faint").innerText() !== String(count)) throw Error(`${name} did not immediately show ${count} repositories`);
+    for (const name of ["backend-0", "frontend-20", "ungrouped-37"]) {
+      await page.locator(".repository-item .repository-label").getByText(name, { exact: true }).waitFor();
     }
     if (await page.locator(".repository-select .faint").filter({ hasText: "Closed" }).count()) throw Error("Pending discovery was displayed as Closed");
     const first = await page.evaluate(() => ({ calls: window.__repositorySessionGate.calls, errors: window.__repositorySessionGate.errors, firstRoster: window.__repositorySessionGate.firstRoster, firstOpening: window.__repositorySessionGate.firstOpening, rosterMs: window.__repositorySessionGate.rosterMs, active: document.querySelector(".repo-current")?.title }));

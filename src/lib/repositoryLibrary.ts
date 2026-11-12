@@ -1,32 +1,23 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { restoreWorkspaceLayouts, type HistoryMode, type WorkspaceLayout, type WorkspaceMode } from "./workspaceLayouts";
 import { basename } from "./format";
-import { moveTreeEntries, treeAncestors, treeSubtreeIds, type TreeEntry, type TreePlacement } from "./libraryTree";
+import { moveTreeEntries, treeSubtreeIds, type TreeEntry, type TreePlacement } from "./libraryTree";
 
 export type RepositoryView = "history" | "changes" | "pulls";
-export interface RepositoryGroup extends TreeEntry { roots: string[]; collapsed: boolean }
-export interface WorkspaceSnapshot {
+export interface RepositoryGroup extends TreeEntry {
   roots: string[];
-  activeRoot: string | null;
-  views: Record<string, RepositoryView>;
-  layouts: Record<WorkspaceMode, WorkspaceLayout>;
-  historyMode: HistoryMode;
-}
-export interface SavedWorkspace extends WorkspaceSnapshot, TreeEntry {
+  collapsed: boolean;
+  favorite?: boolean;
   importedFrom?: string;
-  collapsed?: boolean;
-  excludedGroupIds?: string[];
 }
-export interface FolderWorkspace { folder: string; roots: string[]; parentFolder?: string | null }
+export interface FolderGroup { folder: string; roots: string[]; parentFolder?: string | null }
+export interface RepositoryPlacement { root: string; groupId: string | null }
 export interface LibraryData {
   knownRoots: string[];
   repositoryNames: Record<string, string>;
   favorites: string[];
   groups: RepositoryGroup[];
-  workspaces: SavedWorkspace[];
-  favoriteWorkspaceIds: string[];
-  activeWorkspaceId: string | null;
+  activeGroupId: string | null;
 }
 
 /** Windows identities are case insensitive; Unix identities are not. */
@@ -61,34 +52,46 @@ export function repairTree<T extends TreeEntry>(entries: T[]): T[] {
 export function restoreLibrary(value: unknown): LibraryData {
   const raw = record(value);
   const ids = new Set<string>();
-  function entries<T>(values: unknown, build: (v: Record<string, unknown>, id: string, name: string) => T): T[] {
-    return (Array.isArray(values) ? values : []).flatMap((value) => {
-      const v = record(value), name = validName(v.name), id = typeof v.id === "string" && /^[\w-]{1,100}$/.test(v.id) ? v.id : "";
-      if (!name || !id || ids.has(id)) return [];
-      ids.add(id);
-      return [build(v, id, name)];
-    });
+  const entries = (values: unknown) => (Array.isArray(values) ? values : []).flatMap(value => {
+    const v = record(value), name = validName(v.name);
+    const id = typeof v.id === "string" && /^[\w-]{1,100}$/.test(v.id) ? v.id : "";
+    return id && name ? [{ id, name, ...parent(v), collapsed: v.collapsed === true, roots: uniqueRoots(v.roots),
+      ...(v.favorite === true ? { favorite: true } : {}),
+      ...(pathValid(v.importedFrom) ? { importedFrom: v.importedFrom } : {}) }] : [];
+  });
+  const deduplicate = (groups: RepositoryGroup[]) => groups.filter(group => !ids.has(group.id) && !!ids.add(group.id));
+  const groups = repairTree(deduplicate(entries(raw.groups)));
+  // Versions with separate workspaces already gave each saved workspace a unique id.
+  // Keep those ids and paths so parent links, active selection and re-imports survive.
+  const saved = repairTree(deduplicate(entries(raw.workspaces)));
+  const favoriteIds = new Set(Array.isArray(raw.favoriteWorkspaceIds) ? raw.favoriteWorkspaceIds : []);
+  for (const item of saved) {
+    groups.push({ ...item, name: availableGroupName(item.name, siblings(groups, item.parentId ?? null)),
+      ...(favoriteIds.has(item.id) ? { favorite: true } : {}) });
   }
-  const groups = repairTree(entries(raw.groups, (v, id, name): RepositoryGroup => ({ id, name, ...parent(v), collapsed: v.collapsed === true, roots: uniqueRoots(v.roots) })));
-  const workspaces = repairTree(entries(raw.workspaces, (v, id, name): SavedWorkspace => {
-    const roots = uniqueRoots(v.roots), views: Record<string, RepositoryView> = {};
-    for (const root of roots) { const view = record(v.views)[root]; if (view === "history" || view === "changes" || view === "pulls") views[root] = view; }
-    const excludedGroupIds = Array.isArray(v.excludedGroupIds) ? groups.filter(g => (v.excludedGroupIds as unknown[]).includes(g.id)).map(g => g.id) : [];
-    return { id, name, ...parent(v), ...(v.collapsed === true ? { collapsed: true } : {}), roots, activeRoot: roots.find((r) => typeof v.activeRoot === "string" && repositoryKey(r) === repositoryKey(v.activeRoot)) ?? roots[0] ?? null, views, layouts: restoreWorkspaceLayouts(v), historyMode: v.historyMode === "review" || v.historyMode === "columns" ? v.historyMode : "graph", ...(pathValid(v.importedFrom) ? { importedFrom: v.importedFrom } : {}), ...(excludedGroupIds.length ? { excludedGroupIds } : {}) };
-  }));
   const favorites = uniqueRoots(raw.favorites);
-  const favoriteWorkspaceIds = Array.isArray(raw.favoriteWorkspaceIds) ? workspaces.filter(w => (raw.favoriteWorkspaceIds as unknown[]).includes(w.id)).map(w => w.id) : [];
-  const knownRoots = uniqueRoots([...uniqueRoots(raw.knownRoots), ...favorites, ...groups.flatMap((g) => g.roots), ...workspaces.flatMap((w) => w.roots)]);
+  const knownRoots = uniqueRoots([...uniqueRoots(raw.knownRoots), ...favorites, ...groups.flatMap(group => group.roots)]);
   const names = record(raw.repositoryNames);
   const repositoryNames = Object.fromEntries(knownRoots.flatMap(root => {
     const key = repositoryKey(root), name = validName(names[key]);
     return name ? [[key, name]] : [];
   }));
-  return { knownRoots, repositoryNames, favorites, groups, workspaces, favoriteWorkspaceIds, activeWorkspaceId: workspaces.some((w) => w.id === raw.activeWorkspaceId) ? raw.activeWorkspaceId as string : null };
+  const requested = raw.activeGroupId === undefined ? raw.activeWorkspaceId : raw.activeGroupId;
+  return { knownRoots, repositoryNames, favorites, groups, activeGroupId: groups.find(group => group.id === requested)?.id ?? null };
 }
 
-export function planFolderWorkspaces(workspaces: SavedWorkspace[], groups: FolderWorkspace[]) {
-  const existingByFolder = new Map(workspaces.filter(w => w.importedFrom).map(w => [repositoryKey(w.importedFrom!), w]));
+function availableGroupName(base: string, names: string[]) {
+  const used = new Set(names.map(name => name.toLowerCase()));
+  let name = base;
+  for (let i = 2; used.has(name.toLowerCase()); i++) {
+    const suffix = ` (${i})`;
+    name = base.slice(0, 80 - suffix.length) + suffix;
+  }
+  return name;
+}
+
+export function planFolderGroups(existingGroups: RepositoryGroup[], groups: FolderGroup[]) {
+  const existingByFolder = new Map(existingGroups.filter(w => w.importedFrom).map(w => [repositoryKey(w.importedFrom!), w]));
   const ids = new Map(groups.map(({folder}) => {
     const key = repositoryKey(folder);
     return [key, existingByFolder.get(key)?.id ?? newId()];
@@ -98,13 +101,13 @@ export function planFolderWorkspaces(workspaces: SavedWorkspace[], groups: Folde
     if (!names.has(id)) names.set(id, new Set());
     return names.get(id)!;
   };
-  for (const workspace of workspaces) namesAt(workspace.parentId ?? null).add(workspace.name.toLowerCase());
+  for (const group of existingGroups) namesAt(group.parentId ?? null).add(group.name.toLowerCase());
   return groups.map(({ folder, roots, parentFolder }) => {
     const key = repositoryKey(folder);
     const existing = existingByFolder.get(key);
     const parentId = existing?.parentId !== undefined ? existing.parentId : parentFolder ? ids.get(repositoryKey(parentFolder)) ?? null : null;
     const siblings = namesAt(parentId);
-    const base = validName(basename(folder)) || "Imported workspace";
+    const base = validName(basename(folder)) || "Imported group";
     let name = existing?.name ?? base;
     for (let i = 2; siblings.has(name.toLowerCase()) && (!existing || (existing.parentId ?? null) !== parentId); i++) {
       const suffix = ` (${i})`;
@@ -115,37 +118,33 @@ export function planFolderWorkspaces(workspaces: SavedWorkspace[], groups: Folde
   });
 }
 
-export function groupRepositoryRoots(groups: RepositoryGroup[], id: string): string[] {
-  return uniqueRoots(groups.filter(group => group.id === id || treeAncestors(groups, group.id).includes(id)).flatMap(group => group.roots));
+export function groupRepositoryRoots(groups: readonly RepositoryGroup[], id: string): string[] {
+  const subtree = treeSubtreeIds(groups, [id]);
+  return uniqueRoots(groups.filter(group => subtree.has(group.id)).flatMap(group => group.roots));
 }
 
-export function groupsInWorkspace(groups: RepositoryGroup[], workspace?: SavedWorkspace): RepositoryGroup[] {
-  if (!workspace?.excludedGroupIds?.length) return groups;
-  const excluded = new Set(workspace.excludedGroupIds);
-  return groups.filter(g => !excluded.has(g.id) && !treeAncestors(groups, g.id).some(id => excluded.has(id)));
+/** Unassigned repositories appear at the root of Explorer, in the implicit Default group. */
+export function defaultGroupRoots(roots: string[], groups: readonly RepositoryGroup[]): string[] {
+  const assigned = new Set(groups.flatMap(group => group.roots.map(repositoryKey)));
+  return roots.filter(root => !assigned.has(repositoryKey(root)));
 }
+
 interface LibraryStore extends LibraryData {
   remember: (root: string, alias?: string) => void;
   renameRepository: (root: string, name: string) => void;
   favorite: (root: string) => void;
-  favoriteWorkspace: (id: string) => void;
+  favoriteGroup: (id: string) => void;
   group: (name: string, id?: string) => string;
   createGroup: (name: string, roots: string[], groupIds: string[], parentId?: string | null) => string;
+  importGroups: (roots: string[], folders: FolderGroup[]) => void;
   moveGroups: (ids: string[], parentId: string | null, placement?: TreePlacement) => void;
   move: (root: string, id: string | null) => void;
   addToGroup: (roots: string[], id: string) => void;
-  moveGroupRepositories: (roots: string[], from: string | null, to: string | null) => void;
+  moveRepositories: (repositories: RepositoryPlacement[], to: string | null) => void;
   removeFromGroups: (roots: string[], id?: string) => void;
-  setWorkspaceGroupsExcluded: (workspaceId: string, groupIds: string[], excluded: boolean) => void;
   collapse: (id: string) => void;
+  selectGroup: (id: string | null) => void;
   removeGroups: (ids: string[]) => void;
-  save: (name: string, snapshot: WorkspaceSnapshot, activate?: boolean, parentId?: string | null) => string;
-  moveWorkspace: (id: string, parentId: string | null, placement?: TreePlacement) => void;
-  collapseWorkspace: (id: string) => void;
-  update: (id: string, snapshot: WorkspaceSnapshot) => void;
-  rename: (id: string, name: string) => void;
-  remove: (id: string) => void;
-  select: (id: string | null) => void;
 }
 function checkedName(name: string, names: string[]) {
   const next = validName(name);
@@ -168,7 +167,8 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
       repositoryNames[to] ??= repositoryNames[from];
       delete repositoryNames[from];
     }
-    set({ knownRoots: uniqueRoots([...list(s.knownRoots), root]), repositoryNames, favorites: list(s.favorites), groups: s.groups.map((g) => ({ ...g, roots: list(g.roots) })), workspaces: s.workspaces.map((w) => ({ ...w, roots: list(w.roots), activeRoot: w.activeRoot ? remap(w.activeRoot) : null, views: Object.fromEntries(Object.entries(w.views).map(([r, v]) => [remap(r), v])) })) });
+    set({ knownRoots: uniqueRoots([...list(s.knownRoots), root]), repositoryNames, favorites: list(s.favorites),
+      groups: s.groups.map(g => ({ ...g, roots: list(g.roots) })) });
   },
   renameRepository: (root, name) => set(s => {
     const repositoryNames = { ...s.repositoryNames }, key = repositoryKey(root), next = validName(name);
@@ -176,8 +176,13 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
     else delete repositoryNames[key];
     return { repositoryNames, knownRoots: uniqueRoots([...s.knownRoots, root]) };
   }),
-  favorite: (root) => { const s = get(); set({ knownRoots: uniqueRoots([...s.knownRoots, root]), favorites: s.favorites.some((r) => repositoryKey(r) === repositoryKey(root)) ? s.favorites.filter((r) => repositoryKey(r) !== repositoryKey(root)) : [...s.favorites, root] }); },
-  favoriteWorkspace: (id) => set(s => !s.workspaces.some(w => w.id === id) ? s : { favoriteWorkspaceIds: s.favoriteWorkspaceIds.includes(id) ? s.favoriteWorkspaceIds.filter(key => key !== id) : [...s.favoriteWorkspaceIds, id] }),
+  favorite: root => set(s => {
+    const key = repositoryKey(root);
+    const exists = s.favorites.some(r => repositoryKey(r) === key);
+    return { knownRoots: uniqueRoots([...s.knownRoots, root]),
+      favorites: exists ? s.favorites.filter(r => repositoryKey(r) !== key) : [...s.favorites, root] };
+  }),
+  favoriteGroup: id => set(s => ({ groups: s.groups.map(group => group.id === id ? { ...group, favorite: !group.favorite } : group) })),
   group: (name, id) => {
     const s = get(), old = s.groups.find(g => g.id === id);
     if (!old) return s.createGroup(name, [], []);
@@ -189,73 +194,67 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
     const s = get(), id = newId(), members = uniqueRoots(roots), keys = new Set(members.map(repositoryKey));
     if (parentId && !s.groups.some(g => g.id === parentId)) throw Error("Choose an existing parent group.");
     const group = { id, name: checkedName(name, siblings(s.groups, parentId)), parentId, roots: members, collapsed: false };
-    const groups = [...s.groups.map(g => ({ ...g, roots: g.roots.filter(root => !keys.has(repositoryKey(root))) })), group];
+    const groups = [...s.groups.map(g => ({ ...g, roots: g.roots.filter(root => !keys.has(repositoryKey(root))), collapsed: g.id === parentId ? false : g.collapsed })), group];
     set({ groups: groupIds.length ? moveTreeEntries(groups, groupIds, id) : groups, knownRoots: uniqueRoots([...s.knownRoots, ...members]) });
     return id;
   },
-  moveGroups: (ids, parentId, placement) => set(s => ({ groups: moveTreeEntries(s.groups, ids, parentId, placement) })),
-  move: (root, id) => { const s = get(); if (id && !s.groups.some((g) => g.id === id)) return; set({ knownRoots: uniqueRoots([...s.knownRoots, root]), groups: s.groups.map((g) => ({ ...g, roots: [...g.roots.filter((r) => repositoryKey(r) !== repositoryKey(root)), ...(g.id === id ? [root] : [])] })) }); },
+  importGroups: (roots, folders) => set(s => {
+    const groups = [...s.groups];
+    for (const { folder, roots: members, existing, id, name, parentId } of planFolderGroups(s.groups, folders)) {
+      const next = { ...existing, id, name, parentId, importedFrom: folder, collapsed: existing?.collapsed ?? false,
+        roots: uniqueRoots([...(existing?.roots ?? []), ...members]) };
+      if (existing) groups[groups.indexOf(existing)] = next;
+      else groups.push(next);
+    }
+    return { groups: repairTree(groups), knownRoots: uniqueRoots([...s.knownRoots, ...roots]) };
+  }),
+  moveGroups: (ids, parentId, placement) => set(s => ({
+    groups: moveTreeEntries(s.groups, ids, parentId, placement).map(group =>
+      group.id === parentId && !placement && group.collapsed ? { ...group, collapsed: false } : group),
+  })),
+  move: (root, id) => set(s => {
+    if (id && !s.groups.some(group => group.id === id)) return s;
+    return { knownRoots: uniqueRoots([...s.knownRoots, root]), groups: s.groups.map(group => ({
+      ...group, roots: [...group.roots.filter(path => repositoryKey(path) !== repositoryKey(root)), ...(group.id === id ? [root] : [])],
+    })) };
+  }),
   addToGroup: (roots, id) => set(s => {
     if (!s.groups.some(g => g.id === id)) return s;
-    return {
-      knownRoots: uniqueRoots([...s.knownRoots, ...roots]),
-      groups: s.groups.map(g => g.id === id ? { ...g, roots: uniqueRoots([...g.roots, ...roots]) } : g),
-    };
+    return { knownRoots: uniqueRoots([...s.knownRoots, ...roots]),
+      groups: s.groups.map(g => g.id === id ? { ...g, roots: uniqueRoots([...g.roots, ...roots]) } : g) };
   }),
-  moveGroupRepositories: (roots, from, to) => set(s => {
-    if (from === to || to && !s.groups.some(group => group.id === to)) return s;
-    const keys = new Set(roots.map(repositoryKey));
-    return {
-      knownRoots: uniqueRoots([...s.knownRoots, ...roots]),
-      groups: s.groups.map(group => {
-        if (group.id === from) return { ...group, roots: group.roots.filter(root => !keys.has(repositoryKey(root))) };
-        if (group.id === to) return { ...group, roots: uniqueRoots([...group.roots, ...roots]) };
-        return group;
-      }),
-    };
+  moveRepositories: (repositories, to) => set(s => {
+    if (to && !s.groups.some(group => group.id === to)) return s;
+    const moving = repositories.filter(item => item.groupId !== to);
+    if (!moving.length) return s;
+    const sources = new Map<string | null, Set<string>>();
+    for (const { root, groupId } of moving) {
+      const keys = sources.get(groupId) ?? new Set();
+      keys.add(repositoryKey(root));
+      sources.set(groupId, keys);
+    }
+    const roots = moving.map(item => item.root);
+    return { knownRoots: uniqueRoots([...s.knownRoots, ...roots]), groups: s.groups.map(group => {
+      if (group.id === to) return { ...group, roots: uniqueRoots([...group.roots, ...roots]), collapsed: false };
+      const keys = sources.get(group.id);
+      return keys ? { ...group, roots: group.roots.filter(root => !keys.has(repositoryKey(root))) } : group;
+    }) };
   }),
   removeFromGroups: (roots, id) => set(s => {
     const keys = new Set(roots.map(repositoryKey));
     return { groups: s.groups.map(g => id === undefined || g.id === id ? { ...g, roots: g.roots.filter(root => !keys.has(repositoryKey(root))) } : g) };
   }),
-  setWorkspaceGroupsExcluded: (workspaceId, groupIds, excluded) => set(s => {
-    const ids = new Set(groupIds.filter(id => s.groups.some(g => g.id === id)));
-    return { workspaces: s.workspaces.map(w => {
-      if (w.id !== workspaceId) return w;
-      const previous = w.excludedGroupIds ?? [];
-      return { ...w, excludedGroupIds: excluded ? [...new Set([...previous, ...ids])] : previous.filter(id => !ids.has(id)) };
-    }) };
-  }),
-  collapse: (id) => set({ groups: get().groups.map((g) => g.id === id ? { ...g, collapsed: !g.collapsed } : g) }),
-  removeGroups: (ids) => set(s => {
+  collapse: id => set(s => ({ groups: s.groups.map(g => g.id === id ? { ...g, collapsed: !g.collapsed } : g) })),
+  selectGroup: id => set(s => ({ activeGroupId: s.groups.some(group => group.id === id) ? id : null })),
+  removeGroups: ids => set(s => {
     const removed = treeSubtreeIds(s.groups, ids);
-    return {
-      groups: s.groups.filter(group => !removed.has(group.id)),
-      workspaces: s.workspaces.map(w => w.excludedGroupIds?.some(id => removed.has(id)) ? { ...w, excludedGroupIds: w.excludedGroupIds.filter(id => !removed.has(id)) } : w),
-    };
+    return { groups: s.groups.filter(group => !removed.has(group.id)),
+      activeGroupId: s.activeGroupId && removed.has(s.activeGroupId) ? null : s.activeGroupId };
   }),
-  save: (name, snapshot, activate = true, parentId = null) => {
-    const s = get(), id = newId();
-    if (parentId && !s.workspaces.some(w => w.id === parentId)) throw Error("Choose an existing parent workspace.");
-    const next = checkedName(name, siblings(s.workspaces, parentId));
-    set({
-      knownRoots: uniqueRoots([...s.knownRoots, ...snapshot.roots]),
-      workspaces: [...s.workspaces, { ...structuredClone(snapshot), id, name: next, parentId }],
-      activeWorkspaceId: activate ? id : s.activeWorkspaceId,
-    });
-    return id;
-  },
-  moveWorkspace: (id, parentId, placement) => set(s => ({ workspaces: moveTreeEntries(s.workspaces, [id], parentId, placement) })),
-  collapseWorkspace: (id) => set(s => ({ workspaces: s.workspaces.map(w => w.id === id ? { ...w, collapsed: !w.collapsed } : w) })),
-  update: (id, snapshot) => set({ workspaces: get().workspaces.map((w) => w.id === id ? { ...w, ...structuredClone(snapshot) } : w) }),
-  rename: (id, name) => { const s = get(), old = s.workspaces.find(w => w.id === id); if (!old) return; const next = checkedName(name, siblings(s.workspaces, old.parentId ?? null, id)); set({ workspaces: s.workspaces.map(w => w.id === id ? { ...w, name: next } : w) }); },
-  remove: (id) => set(s => {
-    const removed = treeSubtreeIds(s.workspaces, [id]);
-    return {
-      workspaces: s.workspaces.filter(workspace => !removed.has(workspace.id)),
-      favoriteWorkspaceIds: s.favoriteWorkspaceIds.filter(key => !removed.has(key)),
-      activeWorkspaceId: s.activeWorkspaceId && removed.has(s.activeWorkspaceId) ? null : s.activeWorkspaceId,
-    };
-  }),
-  select: (id) => set({ activeWorkspaceId: id && get().workspaces.some((w) => w.id === id) ? id : null }),
-}), { name: "revqora.repositories", version: 1, merge: (stored, current) => ({ ...current, ...restoreLibrary(stored) }) }));
+}), {
+  name: "revqora.repositories",
+  version: 2,
+  partialize: ({ knownRoots, repositoryNames, favorites, groups, activeGroupId }) => ({ knownRoots, repositoryNames, favorites, groups, activeGroupId }),
+  migrate: restoreLibrary,
+  merge: (stored, current) => ({ ...current, ...restoreLibrary(stored) }),
+}));

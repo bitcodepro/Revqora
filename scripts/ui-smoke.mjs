@@ -16,7 +16,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProfile, launch, withViewport, openCommitAction } from "./ui-driver.mjs";
+import { createProfile, launch, withViewport, openCommitAction, preferRepositoryList } from "./ui-driver.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
 import { mcpSmoke } from "./mcp-smoke.mjs";
 
@@ -132,6 +132,8 @@ try {
     await page.waitForSelector(".modal:has-text('Welcome to Revqora')", { timeout: 20000 });
     await page.click(".modal button:has-text('Skip')");
     await page.waitForSelector(".modal", { state: "detached" });
+    await page.getByRole("complementary", { name: "Explorer", exact: true }).waitFor();
+    await page.locator(".repository-slot").waitFor({ state: "hidden" });
     // Fixtures deliberately change server refs with the CLI between reviews.
     // An unrelated timer fetch must not invalidate a prepared deletion mid-test.
     // Auto-fetch scheduling itself is covered by the frontend unit tests.
@@ -142,6 +144,7 @@ try {
     // workspace fixture separately verifies the default all-library startup.
     await page.getByRole("checkbox", { name: "Open all saved repositories", exact: true }).uncheck();
     await page.locator(".modal").getByRole("button", { name:"Done", exact:true }).click();
+    await preferRepositoryList(page);
   });
 
   await check("a newer release shows the update chip and Check Updates can show it again", async () => {
@@ -846,10 +849,10 @@ try {
     await page.waitForSelector(".branches-slot", { state: "visible" });
     const navigation = page.getByRole("group", { name: "Repository navigation", exact: true });
     const navigationButtons = await navigation.getByRole("button").evaluateAll(buttons => buttons.map(button => button.getAttribute("aria-label")));
-    if (navigationButtons.join("|") !== "Toggle Workspaces panel|Toggle Groups panel|Toggle repositories panel|Toggle branches panel") throw new Error("Sidebar toggles are out of order");
+    if (navigationButtons.join("|") !== "Toggle Explorer panel|Toggle repositories panel|Toggle branches panel") throw new Error("Sidebar toggles are out of order");
     const repositoryActions = page.getByRole("group", { name: "Repository actions", exact: true });
     await repositoryActions.getByRole("button", { name: "All repositories", exact: true }).waitFor();
-    await repositoryActions.getByRole("button", { name: "Repository library and workspaces", exact: true }).waitFor();
+    await repositoryActions.getByRole("button", { name: "Repository library", exact: true }).waitFor();
     await repositoryActions.getByTitle("Show in Explorer", { exact: true }).waitFor();
     const branchesToggle = navigation.getByRole("button", { name: "Toggle branches panel", exact: true });
     await page.keyboard.press("Control+Alt+b");
@@ -870,23 +873,15 @@ try {
     await page.waitForSelector(".repository-slot", { state: "hidden" });
     await page.click(".topbar button[aria-label='Toggle repositories panel']");
     await page.waitForSelector(".repository-slot", { state: "visible" });
-    const workspaces = page.getByRole("complementary", { name: "Workspaces", exact: true });
-    const workspacesOpen = await workspaces.isVisible();
+    const explorer = page.getByRole("complementary", { name: "Explorer", exact: true });
+    const workspacesOpen = await explorer.isVisible();
     await page.keyboard.press("Control+Alt+w");
-    await workspaces.waitFor({ state: workspacesOpen ? "hidden" : "visible" });
+    await explorer.waitFor({ state: workspacesOpen ? "hidden" : "visible" });
     await page.keyboard.press("Control+Alt+w");
-    await workspaces.waitFor({ state: workspacesOpen ? "visible" : "hidden" });
-    const groups = page.getByRole("complementary", { name: "Groups", exact: true });
-    const groupsToggle = navigation.getByRole("button", { name: "Toggle Groups panel", exact: true });
-    const groupsOpen = await groups.isVisible();
-    await groupsToggle.click();
-    await groups.waitFor({ state: groupsOpen ? "hidden" : "visible" });
-    if (await workspaces.isVisible() !== workspacesOpen || await branchesToggle.getAttribute("aria-expanded") !== "true" ||
-        !await page.locator(".repository-slot").isVisible()) {
-      throw new Error("Toggling Groups changed another navigation panel");
+    await explorer.waitFor({ state: workspacesOpen ? "visible" : "hidden" });
+    if (await branchesToggle.getAttribute("aria-expanded") !== "true" || !await page.locator(".repository-slot").isVisible()) {
+      throw new Error("Toggling Explorer changed another navigation panel");
     }
-    await groupsToggle.click();
-    await groups.waitFor({ state: groupsOpen ? "visible" : "hidden" });
     // Give a growing pane actual headroom instead of depending on the runner's display.
     await page.setViewportSize({ width: 1600, height: 900 });
     const before = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);

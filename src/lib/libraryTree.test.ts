@@ -1,7 +1,7 @@
 import { beforeEach, expect, it } from "vitest";
-import { folderWorkspaceTree } from "./folderWorkspaceTree";
+import { folderGroupTree } from "./folderGroupTree";
 import { moveTreeEntries, treeSelection, visibleTree } from "./libraryTree";
-import { groupRepositoryRoots, planFolderWorkspaces, restoreLibrary, useLibrary } from "./repositoryLibrary";
+import { groupRepositoryRoots, planFolderGroups, restoreLibrary, useLibrary } from "./repositoryLibrary";
 
 beforeEach(() => useLibrary.setState(restoreLibrary({})));
 
@@ -10,20 +10,20 @@ it("maps the import root, nested repositories and all intermediate directories",
     {root: "D:/base/service", relativePath: "service", workspaceFolder: "D:/base"},
     {root: "D:/base/service/generated/deep/worker", relativePath: "service\\generated\\deep\\worker", workspaceFolder: "D:/base/service/generated/deep"},
   ];
-  const tree = folderWorkspaceTree(repositories, new Set(repositories.map(repo => repo.root)));
+  const tree = folderGroupTree(repositories, new Set(repositories.map(repo => repo.root)));
   expect(tree).toEqual([
     {folder: "D:/base", parentFolder: null, roots: ["D:/base/service"]},
     {folder: "D:/base/service", parentFolder: "D:/base", roots: []},
     {folder: "D:/base/service/generated", parentFolder: "D:/base/service", roots: []},
     {folder: "D:/base/service/generated/deep", parentFolder: "D:/base/service/generated", roots: ["D:/base/service/generated/deep/worker"]},
   ]);
-  expect(folderWorkspaceTree(repositories, new Set([repositories[0].root]))).toEqual(tree.slice(0, 1));
-  const plan = planFolderWorkspaces([], tree);
+  expect(folderGroupTree(repositories, new Set([repositories[0].root]))).toEqual(tree.slice(0, 1));
+  const plan = planFolderGroups([], tree);
   expect(plan.map(item => item.parentId)).toEqual([null, plan[0].id, plan[1].id, plan[2].id]);
-  const saved = restoreLibrary({ workspaces: plan.map(({folder, ...item}) => ({ ...item, importedFrom: folder })) }).workspaces;
-  useLibrary.setState({ workspaces: saved });
-  useLibrary.getState().moveWorkspace(plan[3].id, null);
-  expect(planFolderWorkspaces(useLibrary.getState().workspaces, tree)[3].parentId).toBeNull();
+  const saved = restoreLibrary({ groups: plan.map(({folder, ...item}) => ({ ...item, importedFrom: folder })) }).groups;
+  useLibrary.setState({ groups: saved });
+  useLibrary.getState().moveGroups([plan[3].id], null);
+  expect(planFolderGroups(useLibrary.getState().groups, tree)[3].parentId).toBeNull();
 });
 
 it("creates a parent from selected groups, preserves members, and rejects cycles atomically", () => {

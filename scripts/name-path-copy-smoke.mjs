@@ -54,7 +54,7 @@ export async function namePathCopySmoke({page,root}) {
     await copy(worktree.locator("b"),"main");
     await copy(worktree.locator(".mono"),repoName);
     await page.getByRole("button",{name:"Close worktree manager",exact:true}).click();
-    await page.getByRole("button",{name:"Repository library and workspaces",exact:true}).click();
+    await page.getByRole("button",{name:"Repository library",exact:true}).click();
     await copy(page.locator(".library-row").filter({has:page.getByText(repoName,{exact:true})}),repoName);
     const librarySearch=page.getByRole("textbox",{name:"Find saved repository",exact:true});
     // Use the actual search control; Escape must leave both dialog and filter intact.

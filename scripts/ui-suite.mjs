@@ -7,7 +7,7 @@ import { worktreeManagerSmoke } from "./worktree-manager-smoke.mjs";
 // Independent tail suites use a fresh process/profile/repository set on each CI runner.
 import fs from "node:fs";
 import path from "node:path";
-import { createProfile, launch } from "./ui-driver.mjs";
+import { createProfile, launch, preferRepositoryList } from "./ui-driver.mjs";
 import { shutdownAndCleanup } from "./ui-cleanup.mjs";
 import { smokeTimings, SMOKE_SUITES, assertSmokeCoverage } from "./ci-timing.mjs";
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
@@ -43,6 +43,7 @@ try{
     await page.getByTitle("Settings",{exact:true}).click();
     await page.getByRole("combobox",{name:"Git auto-fetch",exact:true}).selectOption("0");
     await page.locator(".modal").getByRole("button",{name:"Done",exact:true}).click();
+    await preferRepositoryList(page);
   });
   if(suite==="workspace"){
     await repositoryWorkspaceSmoke({page,check,shot,work});
@@ -51,7 +52,7 @@ try{
     await cloneInputSmoke({page,check,shot,work});
     await gitConnectionsSmoke({exe:path.resolve(arg("--exe")),work,check,out});
     await fastSwitchSmoke({exe:path.resolve(arg("--exe")),work,check,out});
-    await check("folder import, nested navigation, inline groups and shortcut transfer", async () => {
+    await check("folder import, Explorer drag and drop, flat filtering and shortcut transfer", async () => {
       await repositoryFolderImportSmoke({ page, work, shot });
       await repositoryNavigationSmoke({ page, work, shot });
     });

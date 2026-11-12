@@ -11,7 +11,7 @@ React and TypeScript. Distributed under the [MIT license](LICENSE).
 [Quick start](#quick-start) · [Features](#features) · [How to use](#how-to-use) ·
 [Keyboard shortcuts](#keyboard-shortcuts) · [Report an issue](https://github.com/bitcodepro/Revqora/issues)
 
-![Revqora Graph with branch context and nested workspaces and groups](docs/screenshots/history-dark.png)
+![Revqora Graph with branch context](docs/screenshots/history-dark.png)
 
 | Columns in the light theme | Conflict editor | Stage layers |
 | --- | --- | --- |
@@ -100,7 +100,7 @@ or check out anything.
 
 | Area | What you can do |
 | --- | --- |
-| Repository workspace | Open, initialize and clone repositories; use a searchable repository column, favorites, project groups and saved workspaces; Fetch/Pull/Sync across matching open repositories. |
+| Repository workspace | Open, initialize and clone repositories; browse groups and repositories in Explorer or use a flat repository list; Fetch/Pull/Sync across matching open repositories. |
 | Review layouts | Switch between Graph, Review and Columns; hide repository and branch panels, resize file/diff panes, and keep visibility and widths separately for each layout. |
 | History | Virtualized graph, ref labels, commit and branch details, search by message/author/SHA/code/path, branch comparison, file history, blame and revision browsing. |
 | Diff | Unified and side-by-side views, word highlighting, line wrapping or horizontal scrolling, image comparison, hunk navigation, file-tree and flat file lists. |
@@ -122,48 +122,34 @@ or check out anything.
 
 ### Work with many repositories
 
-The four icons at the top left toggle **Workspaces**, **Groups**, **Repositories**
-and **Branches**. Search and favorites help you find workspaces and repositories.
-Open **Repository library and workspaces** from the right side of the toolbar to
-organize saved items. Repository incoming and outgoing counts reflect the last Fetch.
+The three navigation icons at the top left toggle **Explorer**, **Repositories**
+and **Branches**. Explorer opens by default and shows groups, subgroups and
+repositories in one expandable tree. Repositories outside a named group appear at
+the top level. Use **Import folder…** to recreate the folder hierarchy in Explorer.
 
-At startup, Revqora opens all saved repositories and restores the last selection.
-Named workspaces keep their own repository set. To restore only previously open
-tabs, disable **Settings → Behaviour → Open all saved repositories**.
+Open the optional **Repositories** panel for a flat list. Select a group in Explorer
+to show all of its repositories, including those in subgroups. Select **All
+repositories** in Explorer to clear the filter. Search, favorites and incoming
+commit filters help narrow either view. **Fetch**, **Pull** and **Sync** in the
+flat panel apply to matching open repositories.
 
-Use **Fetch all** to refresh matching open repositories, **Pull all** to receive
-updates, or **Sync all** to review receiving and publishing together. Closed library
-bookmarks do not run background Git operations. Configure auto-fetch in Settings.
+Drag a group by its handle to nest or reorder it. Drag a repository onto a group
+to move it there. Use **Ctrl** or **Shift** to select several items and right-click
+to create a group with them. **F2** renames the focused group, repository label or
+branch. **Delete** opens the deletion review for focused groups or branches.
 
-In **Manage library → Workspaces**, choose **New workspace** and select repositories
-from the library. Use **Edit repositories** to update a saved set. **Switch** opens
-that set with its saved layout. **Add to session** opens the whole set alongside
-your current repositories. Removing a repository from a workspace keeps it in the library.
+Open **Repository library** from the right side of the toolbar to manage saved
+items. At startup Revqora restores the last selection and opens saved repositories.
+To restore only the previous tabs, disable **Settings → Behaviour → Open all saved
+repositories**.
 
-**Import folder…** recreates the on-disk folder hierarchy in **Workspaces**, including
-Git repositories inside other repositories. Select a workspace to open its direct
-repositories. Expand it to reach its children. Drag a workspace by its handle onto
-another workspace or onto **Move to top level**. Drag selected repository rows onto
-a workspace to move them. **Ctrl+Z** undoes the most recent repository move.
-
-Use **Ctrl** or **Shift** to select repositories, then right-click and choose
-**Create group**. Enter the name in the sidebar. Open the **Groups** panel to
-filter repositories by a group and its subgroups. Select groups in the same way
-to wrap them in a parent group. A repository can belong to multiple groups. Use the
-row's context menu to remove it from one group or from all groups. Workspace and group
-menus also let you move a child to the top level, delete an entry, or hide a group
-from the active workspace. These actions update library metadata and keep working
-copies on disk. Press **F2** to rename the focused workspace, group, repository
-label or branch. **Delete** opens the deletion review for focused workspaces,
-groups or branches.
-
-See [repository workspaces](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md).
+See the [Explorer and repository library guide](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md).
 
 ### Give the code more room
 
 - **Graph** shows topology; **Review** emphasizes readable commit rows;
   **Columns** arranges commits → changed files → diff.
-- Toggle Workspaces, Repositories or Branches with **Ctrl+Alt+W**, **Ctrl+Alt+R**
+- Toggle Explorer, Repositories or Branches with **Ctrl+Alt+W**, **Ctrl+Alt+R**
   or **Ctrl+Alt+B**.
 - Use **Ctrl+Shift+Enter** for focus mode and drag pane dividers to adjust widths.
 - Use **Wrap lines** for long code lines, or keep wrapping off and scroll horizontally.
@@ -704,7 +690,7 @@ The [Revqora Wiki](https://github.com/bitcodepro/Revqora/wiki) has step-by-step
 guides. See also:
 
 - [Implementation roadmap and provider capabilities](https://github.com/bitcodepro/Revqora/blob/main/docs/ROADMAP.md)
-- [Repository library, workspaces and Sync](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md)
+- [Explorer, repository library and Sync](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md)
 - [Conflict Studio and validation](https://github.com/bitcodepro/Revqora/blob/main/docs/CONFLICT_STUDIO.md)
 - [Agent Workspace](https://github.com/bitcodepro/Revqora/blob/main/docs/AGENT_WORKSPACE.md)
 

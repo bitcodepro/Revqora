@@ -89,7 +89,7 @@ export function useLibraryPointerDrag() {
 export interface TreeDestination { parentId: string | null; placement?: TreePlacement }
 
 export function findTreeDrop(
-  attribute: "data-tree-workspace" | "data-tree-group",
+  attribute: "data-tree-group",
   entries: readonly TreeEntry[],
   ids: readonly string[],
 ) {

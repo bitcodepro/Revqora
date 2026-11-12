@@ -11,7 +11,7 @@ import { PANEL_NAMES, bindingFor, prettyCombo } from "../lib/shortcuts";
 
 const panelNames = PANEL_NAMES;
 export type PanelId = keyof typeof panelNames;
-type SidebarId = "workspaces" | "groups" | "repositories" | "branches";
+type SidebarId = "explorer" | "repositories" | "branches";
 type Panels = Partial<Record<PanelId, Window>>;
 interface PanelWindows {
   panels: Panels;
@@ -27,7 +27,7 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
   const [panels, setPanels] = useState<Panels>({});
   const sessions = useRef(new Map<PanelId, { view: Window; close: () => void; check: () => void }>());
   const toggleSidebar = useCallback((id: SidebarId) => {
-    const view = id === "groups" ? undefined : sessions.current.get(id)?.view;
+    const view = sessions.current.get(id)?.view;
     if (view && !view.closed) { view.focus(); return; }
 
     const repos = useRepos.getState();
@@ -38,11 +38,8 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
     const settings = useSettings.getState();
     const mode = workspaceMode(overview && id !== "branches" ? "overview" : tab?.view, settings.historyMode);
     const layout = settings.layouts[mode];
-    if (id === "workspaces") {
-      settings.set({ workspacesOpen: layout.focusMode || !settings.workspacesOpen });
-      if (layout.focusMode) settings.setLayout(mode, { focusMode: false });
-    } else if (id === "groups") {
-      settings.set({ groupsOpen: layout.focusMode || !settings.groupsOpen });
+    if (id === "explorer") {
+      settings.set({ explorerOpen: layout.focusMode || !settings.explorerOpen });
       if (layout.focusMode) settings.setLayout(mode, { focusMode: false });
     } else if (id === "repositories") {
       settings.setLayout(mode, { repositoriesOpen: layout.focusMode || !layout.repositoriesOpen, focusMode: false });
@@ -60,8 +57,8 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
     const current = root ? repos.tabs[root] : null;
     const settings = useSettings.getState();
     const mode = workspaceMode(useUi.getState().repositoryOverview ? "overview" : current?.view, settings.historyMode);
-    if (id === "workspaces") {
-      settings.set({ workspacesOpen: true });
+    if (id === "explorer") {
+      settings.set({ explorerOpen: true });
       settings.setLayout(mode, { focusMode: false });
     } else if (id === "repositories") {
       settings.setLayout(mode, { repositoriesOpen: true, focusMode: false });
@@ -146,7 +143,7 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
       removeHints = installIconHints(doc);
       view.addEventListener("resize", onResize);
       setPanels(current => ({ ...current, [id]: view }));
-      if (id === "workspaces") useSettings.getState().set({ workspacesOpen: true });
+      if (id === "explorer") useSettings.getState().set({ explorerOpen: true });
     };
     sessions.current.set(id, { view, close, check });
     check();
@@ -169,7 +166,7 @@ export function usePanelWindowMenu(hasRepository: boolean, hasCommit: boolean) {
   return (Object.keys(panelNames) as PanelId[]).map(id => ({
       label: panels[id] ? `Return ${panelNames[id]} to main window` : `Open ${panelNames[id]} in separate window`,
       icon: panels[id] ? <PanelTop size={14}/> : <ExternalLink size={14}/>,
-      disabled: !panels[id] && (id === "commit" ? !hasCommit : id !== "workspaces" && id !== "repositories" && !hasRepository),
+      disabled: !panels[id] && (id === "commit" ? !hasCommit : id !== "explorer" && id !== "repositories" && !hasRepository),
       hint: prettyCombo(bindingFor(`window-${id}`, shortcuts)),
       onClick: () => panels[id] ? attach(id) : detach(id),
   }));

@@ -9,7 +9,6 @@ import { deletionProtection } from "./branchProtection";
 import * as A from "./actions";
 import { basename } from "./format";
 import { useRepos } from "./store";
-import { useLibrary } from "./repositoryLibrary";
 import { useSettings } from "./settings";
 import { closeOverlay, openOverlay, showDialog, useUi } from "./ui";
 import type { BranchInfo, McpApprovalMode, PrState, SearchMode, StageReview, StatusSummary } from "./types";
@@ -57,14 +56,12 @@ function cancelAction(status: ActionStatus, reason: string) {
 }
 
 function permittedRoots() {
-  const { activeWorkspaceId, workspaces } = useLibrary.getState();
-  const allowed = activeWorkspaceId ? new Set(workspaces.find(workspace => workspace.id === activeWorkspaceId)?.roots ?? []) : null;
   const { order, tabs } = useRepos.getState();
-  return order.filter(root => (!allowed || allowed.has(root)) && !!tabs[root]?.info);
+  return order.filter(root => !!tabs[root]?.info);
 }
 
 function requireRepo(root?: string) {
-  if (!root || !permittedRoots().includes(root)) throw new McpToolError("repository_not_open", "Choose a repository from list_repositories in the active workspace.");
+  if (!root || !permittedRoots().includes(root)) throw new McpToolError("repository_not_open", "Choose an open repository from list_repositories.");
   return root;
 }
 
