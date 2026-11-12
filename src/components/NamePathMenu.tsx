@@ -1,5 +1,6 @@
 import { Copy, Link2 } from "lucide-react";
 import { api } from "../lib/api";
+import { basename } from "../lib/format";
 import { safeWebUrl } from "../lib/prCenter";
 import { copyText, toast, type MenuItem } from "../lib/ui";
 
@@ -19,10 +20,25 @@ export function copyUrlMenu(resolve: () => string | null | Promise<string | null
   };
 }
 
+function copyNameItem(name: string, shortcut?: string): MenuItem {
+  return { label: "Copy name", shortcut, icon: <Copy size={14} />, onClick: () => { void copyText(name, "Name copied"); } };
+}
+
+export function copyFileNameItem(path: string, shortcut?: string): MenuItem {
+  return copyNameItem(basename(path), shortcut);
+}
+
+export function fileCopyMenu(path: string): MenuItem[] {
+  return [
+    copyFileNameItem(path),
+    { label: "Copy path", icon: <Copy size={14} />, onClick: () => { void copyText(path, "Path copied"); } },
+  ];
+}
+
 /** A branch has no separate filesystem folder; its path is the repository root. */
 export function namePathMenu(name: string, root: string, reference?: string | null): MenuItem[] {
   const items: MenuItem[] = [
-    { label: "Copy name", icon: <Copy size={14} />, onClick: () => { void copyText(name, "Name copied"); } },
+    copyNameItem(name),
     { label: "Copy path", icon: <Copy size={14} />, onClick: () => { void copyText(root, "Repository path copied"); } },
   ];
   if (reference !== undefined) {

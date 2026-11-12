@@ -7,7 +7,6 @@ import {
   ChevronsDown,
   ChevronsUp,
   Columns2,
-  Copy,
   FileDiff as FileDiffIcon,
   FileWarning,
   Maximize2,
@@ -27,6 +26,7 @@ import { highlightLines, languageFor, type Tok } from "../lib/languages";
 import { wordDiff, type Span } from "../lib/worddiff";
 import { basename, dirname } from "../lib/format";
 import { contextMenu, copyText } from "../lib/ui";
+import { copyFileNameItem } from "./NamePathMenu";
 import { DIFF_TAB_SIZE, measureDiffLine } from "../lib/diffMetrics";
 import type { LanguageSupport } from "@codemirror/language";
 import { ImageDiff, isImagePath, type ImageSides } from "./ImageDiff";
@@ -424,7 +424,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   const head = (
     <div className="diff-head">
       <div className="path" title={path} onContextMenu={e => contextMenu(e, [
-        { label: "Copy name", shortcut: "diffCopyName", icon: <Copy size={14} />, onClick: () => copyText(basename(path), "Name copied") },
+        copyFileNameItem(path, "diffCopyName"),
       ])}>
         {dirname(path) && <span className="dir">{dirname(path)}/</span>}
         {basename(path)}

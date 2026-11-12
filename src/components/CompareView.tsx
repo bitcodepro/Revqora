@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, GitCompareArrows, Loader2, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { getTab, useRepos } from "../lib/store";
-import { closeOverlay } from "../lib/ui";
+import { closeOverlay, contextMenu } from "../lib/ui";
+import { fileCopyMenu } from "./NamePathMenu";
 import type { Comparison, FileDiff } from "../lib/types";
 import { WORKTREE } from "../lib/types";
 import { plural, relativeTime, shortOid } from "../lib/format";
@@ -157,7 +158,7 @@ export function CompareView({ root, from: initialFrom, to: initialTo, direct = f
               {tab === "files" &&
                 (cmp.files.length ? (
                   cmp.files.map((f) => (
-                    <div key={f.path} className={`file-row ${file === f.path ? "selected" : ""}`} onClick={() => setFile(f.path)} title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
+                    <div key={f.path} className={`file-row ${file === f.path ? "selected" : ""}`} onClick={() => setFile(f.path)} onContextMenu={e => contextMenu(e, fileCopyMenu(f.path))} title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
                       <StatusIcon code={f.status} />
                       <PathLabel path={f.path} />
                       {!f.binary && (

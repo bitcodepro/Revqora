@@ -11,8 +11,8 @@ import { languageFor } from "../lib/languages";
 import { useSettings } from "../lib/settings";
 import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { useRepos } from "../lib/store";
-import { contextMenu, copyText, useUi } from "../lib/ui";
-import { basename } from "../lib/format";
+import { contextMenu, useUi } from "../lib/ui";
+import { copyFileNameItem } from "./NamePathMenu";
 import type { FileDiff } from "../lib/types";
 import { confirmDialog } from "./dialogs";
 import "../styles/fileEditor.css";
@@ -88,7 +88,7 @@ export function WorkingFileEditor({root,path,untracked,displayDiff,close}: {
     if (action) {e.preventDefault();e.stopPropagation();if(!e.repeat)void action();}
   }}>
     <header className="diff-head">
-      <div className="path" title={path} onContextMenu={e => contextMenu(e, [{label:"Copy name", onClick: () => copyText(basename(path), "Name copied")}])}>{path}</div>
+      <div className="path" title={path} onContextMenu={e => contextMenu(e, [copyFileNameItem(path)])}>{path}</div>
       <div className="diff-controls">
         <span className="muted" role="status">{loading?"Loading…":!file?"File not loaded":dirty?"Unsaved changes":"Saved"}</span>
         <button type="button" className="btn sm" disabled={saving||loading} onClick={()=>void reload()}>Reload from disk</button>

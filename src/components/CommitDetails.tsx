@@ -19,6 +19,7 @@ import { CommitMessageDialog } from "./CommitMessage";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { useFileListNavigation } from "../lib/useFileListNavigation";
 import { usePanelTitleMenu } from "./PanelWindows";
+import { fileCopyMenu } from "./NamePathMenu";
 
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
   const fileNavigation = useFileListNavigation();
@@ -284,7 +285,7 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
                     { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => api.openPath(joinPath(root, f.path)) },
                     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(joinPath(root, f.path)) },
                     { separator: true },
-                    { label: "Copy path", icon: <Copy size={14} />, onClick: () => copyText(f.path, "Path copied") },
+                    ...fileCopyMenu(f.path),
                   ])
                 }
                 title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}

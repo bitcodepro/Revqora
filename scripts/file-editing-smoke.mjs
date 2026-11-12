@@ -3,6 +3,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
 import {openRepository} from "./ui-readiness.mjs";
+import {interceptClipboard} from "./name-path-copy-smoke.mjs";
 
 export async function fileEditingSmoke({page,work,returnRoot,shot}) {
   const root=path.join(work,"keyboard-file-editor");fs.mkdirSync(root,{recursive:true});
@@ -20,6 +21,16 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
   const history=()=>page.locator(".view-tab").filter({hasText:/History/}).click();
   const selected=()=>page.locator(".changes [data-file-nav].selected .fname");
   const diff=text=>page.locator(".changes .diff-body").filter({hasText:text}).waitFor();
+  const checkFileCopy=async row=>{
+    await interceptClipboard(page);
+    try {
+      for (const [label,expected] of [["Copy name","c.txt"],["Copy path","z/c.txt"]]) {
+        await row.click({button:"right"});
+        await page.locator(".ctx-menu").getByText(label,{exact:true}).click();
+        await page.waitForFunction(text=>window.__namePathCopies.at(-1)===text,expected);
+      }
+    } finally { await page.evaluate(()=>window.__restoreNamePathClipboard?.()); }
+  };
   const selectWord=async(scope,word)=>{
     const line=scope.locator(".diff-body .code").filter({hasText:word}).first();
     await line.scrollIntoViewIfNeeded();
@@ -53,6 +64,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await search.fill("absent");await page.getByText("No matching files.",{exact:true}).waitFor();
     await page.getByRole("button",{name:"Clear file search",exact:true}).click();
     assert.equal(await names.count(),4);
+    await checkFileCopy(page.locator(".changes [data-file-nav]").filter({has:page.getByText("c.txt",{exact:true})}));
     await page.locator(".changes [data-file-nav]").filter({has:page.getByText("a.txt",{exact:true})}).first().click();
     await page.keyboard.press("ArrowDown");await diff("latest B");
     const changesDiff=page.locator(".changes .diff");
@@ -126,6 +138,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await selectWord(page.locator(".commit-preview .diff"),"base_token");
     await commitFiles.focus();
     await page.keyboard.press("Control+ArrowDown");await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="c.txt");
+    await checkFileCopy(commitFiles.locator("[data-file-nav].selected"));
     const settings=page.locator(".modal").last();
     const openShortcuts=async()=>{
       await page.getByTitle("Settings",{exact:true}).click();

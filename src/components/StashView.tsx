@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Archive, ArchiveRestore, RotateCcw, Trash2, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { useRepos } from "../lib/store";
-import { closeOverlay, toast } from "../lib/ui";
+import { closeOverlay, contextMenu, toast } from "../lib/ui";
+import { fileCopyMenu } from "./NamePathMenu";
 import { stashApply, stashDrop } from "../lib/actions";
 import type { ChangedFile, FileDiff, StashContents } from "../lib/types";
 import { relativeTime } from "../lib/format";
@@ -58,7 +59,7 @@ export function StashView({ root, index, oid }: { root: string; index: number; o
   };
 
   const row = (f: ChangedFile, untracked: boolean) => (
-    <div key={(untracked ? "u:" : "") + f.path} className={`file-row ${sel?.path === f.path && sel.untracked === untracked ? "selected" : ""}`} onClick={() => setSel({ path: f.path, untracked })}>
+    <div key={(untracked ? "u:" : "") + f.path} className={`file-row ${sel?.path === f.path && sel.untracked === untracked ? "selected" : ""}`} onClick={() => setSel({ path: f.path, untracked })} onContextMenu={e => contextMenu(e, fileCopyMenu(f.path))}>
       <StatusIcon code={untracked ? "?" : f.status} />
       <PathLabel path={f.path} />
       <div className="row-actions">

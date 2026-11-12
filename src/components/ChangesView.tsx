@@ -1,4 +1,5 @@
 import { repositoryFiles } from "./RepositoryFiles";
+import { fileCopyMenu } from "./NamePathMenu";
 import { WorkingFileEditor } from "./WorkingFileEditor";
 import { useFileListNavigation } from "../lib/useFileListNavigation";
 import {workingDiffSnapshot,rememberWorkingDiff} from "../lib/workingDiffSnapshot";
@@ -10,7 +11,6 @@ import {
   Check,
   ChevronDown,
   CloudUpload,
-  Copy,
   ExternalLink,
   FolderOpen,
   GitMerge,
@@ -40,7 +40,7 @@ import { useRepos, type ChangeSel, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
 import { bindingFor, matchesShortcut, prettyCombo, shortcutTitle } from "../lib/shortcuts";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { contextMenu, copyText, endBusy, openOverlay, showDialog, startBusy, toast, updateBusy, type MenuItem } from "../lib/ui";
+import { contextMenu, endBusy, openOverlay, showDialog, startBusy, toast, updateBusy, type MenuItem } from "../lib/ui";
 import * as A from "../lib/actions";
 import type { CommitHelpers, FileDiff, FileStatus, GitError, LargeFile, LayerConflict, LayerOp, LayerView } from "../lib/types";
 import { MergeEditor } from "./ConflictEditor";
@@ -380,7 +380,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const fileMenu = (f: FileStatus, kind: "unstaged" | "staged"): MenuItem[] => isNestedFile(f) ? [
     { label: "Open nested repository", icon: <FolderOpen size={14} />, onClick: () => openNestedFile(root, f) },
     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(joinPath(root, f.path)) },
-    { label: "Copy path", icon: <Copy size={14} />, onClick: () => copyText(f.path, "Path copied") },
+    ...fileCopyMenu(f.path),
   ] : [
     ...(kind === "unstaged"
       ? [
@@ -395,7 +395,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
     { label: "Blame", icon: <ScanSearch size={14} />, disabled: f.untracked || f.worktree === "D", onClick: () => openOverlay({ kind: "blame", root, path: f.path, rev: null }) },
     { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => api.openPath(joinPath(root, f.path)) },
     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(joinPath(root, f.path)) },
-    { label: "Copy path", icon: <Copy size={14} />, onClick: () => copyText(f.path, "Path copied") },
+    ...fileCopyMenu(f.path),
   ];
 
   // Files dragged onto the Staged header are staged, onto the Unstaged header unstaged.
@@ -549,6 +549,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                         { label: "Mark as resolved", icon: <Check size={14} />, onClick: () => A.act(root, () => api.conflictMarkResolved(root, [f.path]), { success: "Marked resolved" }) },
                         { separator: true },
                         { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => api.openPath(joinPath(root, f.path)) },
+                        ...fileCopyMenu(f.path),
                       ])
                     }
                   >
@@ -705,7 +706,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                         contextMenu(e, [
                           { label: "Remove from this layer", disabled: pending, icon: <Minus size={14} />, onClick: () => layerAct(root, () => api.layerUnstageFiles(root, l.index, [f.path]), "Removed from layer") },
                           { separator: true },
-                          { label: "Copy path", icon: <Copy size={14} />, onClick: () => copyText(f.path, "Path copied") },
+                          ...fileCopyMenu(f.path),
                         ])
                       }
                     >
@@ -749,6 +750,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                     data-file-nav=""
                     onClick={() => select({ kind: "staged", path: f.path })}
                     onDoubleClick={() => A.unstagePaths(root, [f.path])}
+                    onContextMenu={(e) => contextMenu(e, fileCopyMenu(f.path))}
                     draggable
                     onDragStart={(e) => dragFile(e, "staged", f.path)}
                   >

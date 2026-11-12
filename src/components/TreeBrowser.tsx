@@ -7,7 +7,8 @@ import { classHighlighter } from "@lezer/highlight";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { keymap } from "@codemirror/view";
 import { api, errorMessage } from "../lib/api";
-import { closeOverlay, copyText, toast } from "../lib/ui";
+import { closeOverlay, contextMenu, copyText, toast } from "../lib/ui";
+import { fileCopyMenu } from "./NamePathMenu";
 import type { GrepHit } from "../lib/types";
 import { languageFor } from "../lib/languages";
 import { shortOid } from "../lib/format";
@@ -131,7 +132,7 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
             setLine(null);
             setFile(p);
           }}
-          onContextMenu={(e) => (e.preventDefault(), copyText(p, "Path copied"))}
+          onContextMenu={(e) => contextMenu(e, fileCopyMenu(p))}
         >
           <File size={13} style={{ flex: "none" }} />
           <span className="label">{p.split("/").pop()}</span>
@@ -179,6 +180,7 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
                   {hits.map((h, i) => (
                     <div
                       key={i}
+                      onContextMenu={e => contextMenu(e, fileCopyMenu(h.path))}
                       className={`file-row ${file === h.path && line === h.line ? "selected" : ""}`}
                       style={{ height: "auto", padding: "5px 8px", flexDirection: "column", alignItems: "stretch", gap: 1 }}
                       onClick={() => {
