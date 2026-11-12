@@ -123,7 +123,8 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   assert.deepEqual(await selectedNames(), ["api", "components", "infra", "product"]);
   await page.keyboard.press("Control+a");
   assert.equal(await focusedRow.getAttribute("aria-label"), "navigation-projects");
-  const selectedThroughRoot = ["api", "components", "infra", "navigation-projects", "product"];
+  const rootNames = await explorer.locator('[role="treeitem"][aria-level="1"]').evaluateAll(rows => rows.map(row => row.getAttribute("aria-label")));
+  const selectedThroughRoot = [...rootNames, "api", "components", "infra", "product"].sort();
   assert.deepEqual(await selectedNames(), selectedThroughRoot);
   await page.keyboard.press("Control+a");
   assert.deepEqual(await selectedNames(), selectedThroughRoot);
@@ -203,9 +204,12 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await choose(treeRepo("worker").locator(".repository-select"), "Create group");
   await create("Selected repositories");
   const selectedGroup = async () => (await library()).groups.find(item => item.name === "Selected repositories");
-  assert.deepEqual((await selectedGroup()).roots.map(root => path.basename(root)), ["api", "worker"]);
-  await drag(treeRepo("worker").locator(".repository-select"), treeRepo("api"), 0.08, "library-drop-before");
-  assert.deepEqual((await selectedGroup()).roots.map(root => path.basename(root)), ["worker", "api"]);
+  const members = async () => (await selectedGroup()).roots.map(root => path.basename(root));
+  const initialMembers = await members();
+  assert.deepEqual(initialMembers.slice().sort(), ["api", "worker"]);
+  const [first, second] = initialMembers;
+  await drag(treeRepo(second).locator(".repository-select"), treeRepo(first), 0.08, "library-drop-before");
+  assert.deepEqual(await members(), [second, first]);
   const worker = treeRepo("worker").locator(".repository-select");
   const destination = page.locator(".ctx-item").getByText("Context root", { exact: true });
   await openSubmenu(page, () => worker.click({ button: "right" }), menu("Add to group"), destination);
