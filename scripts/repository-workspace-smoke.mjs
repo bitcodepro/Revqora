@@ -56,8 +56,8 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     await groupEditor.getByRole("textbox", { name: "Group name", exact: true }).fill("Stage 8 projects");
     await groupEditor.getByRole("button", { name: "Create group", exact: true }).click();
     await page.locator(".library-tabs").getByRole("button", { name: "Repositories", exact: true }).click();
-    const group = await page.getByLabel("Group for stage8-workspace", { exact: true }).locator("option", { hasText: "Stage 8 projects" }).getAttribute("value");
-    await page.getByLabel("Group for stage8-workspace", { exact: true }).selectOption(group); await done();
+    const groupId = await page.getByLabel("Group for stage8-workspace", { exact: true }).locator("option", { hasText: "Stage 8 projects" }).getAttribute("value");
+    await page.getByLabel("Group for stage8-workspace", { exact: true }).selectOption(groupId); await done();
     await page.getByRole("button", { name: "Close stage8-workspace", exact: true }).click();
     // The library remains available even with no open repositories.
     await library("Repositories"); await page.locator(".library-row", { hasText: "stage8-workspace" }).getByRole("button", { name: "Open", exact: true }).click(); await waitActive("stage8-workspace");
