@@ -29,7 +29,7 @@ import {
 import { Modal } from "./Modal";
 import { showDialog, toast } from "../lib/ui";
 import { api, errorMessage } from "../lib/api";
-import { CODE_FONTS, UI_FONTS, useSettings } from "../lib/settings";
+import { CODE_FONTS, DEFAULT_EXPLORER_FOLDER_HOVER, UI_FONTS, useSettings } from "../lib/settings";
 import { McpSettings } from "./McpSettings";
 import type { GitSelection, PushOptions, ReflogEntry, RemoteInfo, SigningConfig } from "../lib/types";
 import { useRepos } from "../lib/store";
@@ -711,6 +711,22 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
               {t[0].toUpperCase() + t.slice(1)}
             </button>
           ))}
+        </div>
+        <label>Explorer folder hover</label>
+        <div className="folder-hover-settings">
+          {(["light", "dark"] as const).map(theme => {
+            const { color, opacity } = s.explorerFolderHover[theme];
+            const themeLabel = theme === "light" ? "Light theme" : "Dark theme";
+            return <div className="folder-hover-theme" key={theme}>
+              <span>{themeLabel}</span>
+              <input type="color" value={color} aria-label={`${themeLabel} folder hover color`}
+                onChange={e => s.set({ explorerFolderHover: { ...s.explorerFolderHover, [theme]: { color: e.target.value, opacity } } })}/>
+              <input type="range" min={0} max={100} value={opacity} aria-label={`${themeLabel} folder hover opacity`} aria-valuetext={`${opacity}%`}
+                onChange={e => s.set({ explorerFolderHover: { ...s.explorerFolderHover, [theme]: { color, opacity: e.target.valueAsNumber } } })}/>
+              <span className="folder-hover-opacity">{opacity}%</span>
+            </div>;
+          })}
+          <button type="button" className="btn sm" onClick={() => s.set({ explorerFolderHover: DEFAULT_EXPLORER_FOLDER_HOVER })}>Reset folder hover</button>
         </div>
         <label>Interface font</label>
         <div className="hstack">

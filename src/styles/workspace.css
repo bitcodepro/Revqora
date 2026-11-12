@@ -471,7 +471,8 @@
 
 /* Docked and detached panels share the same controls and theme. */
 .topbar-empty { flex: 1 1 12px; min-width: 2px; align-self: stretch; }
-.explorer-sidebar { min-width: min(175px, 100%); max-width: min(420px, 32vw); }
+.explorer-sidebar { --explorer-folder-hover: var(--explorer-folder-hover-dark); min-width: min(175px, 100%); max-width: min(420px, 32vw); }
+:root[data-theme="light"] .explorer-sidebar { --explorer-folder-hover: var(--explorer-folder-hover-light); }
 .explorer-filters { display: flex; align-items: center; gap: 4px; }
 .explorer-tree { --explorer-indent: 12px; --explorer-toggle-size: 22px; }
 .explorer-tree > .repository-item {
@@ -485,6 +486,7 @@
 }
 .explorer-tree > .repository-item .repository-select { min-height: 30px; padding-block: 5px; }
 .explorer-tree .repository-select > svg { inline-size: 15px; block-size: 15px; }
+.explorer-tree > .library-tree-row:hover:not(.explorer-focused, .batch-selected, .workspace-drop-active) { background-color: var(--explorer-folder-hover); }
 .explorer-tree > .explorer-focused:not(.workspace-drop-active) { background-color: var(--bg-explorer-current); }
 .explorer-tree > .library-tree-row .repository-label { font-weight: 600; }
 .repository-item .repository-select { touch-action: none; user-select: none; }

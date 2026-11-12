@@ -37,6 +37,11 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const order = useRepos(s => s.order), tabs = useRepos(s => s.tabs), active = useRepos(s => s.active);
   const overview = useUi(s => s.repositoryOverview);
   const favoritesOnly = useSettings(s => s.explorerFavoritesOnly);
+  const folderHover = useSettings(s => s.explorerFolderHover);
+  const hoverColor = (theme: keyof typeof folderHover) => {
+    const { color, opacity } = folderHover[theme];
+    return `color-mix(in srgb, ${color} ${opacity}%, transparent)`;
+  };
   const { layout, setLayout } = useWorkspaceLayout();
   const [width, setWidth] = useState(layout.workspacesWidth);
   useEffect(() => setWidth(layout.workspacesWidth), [layout.workspacesWidth]);
@@ -144,7 +149,9 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   };
   const panelMenu = usePanelTitleMenu("explorer", rootMenu);
 
-  return <aside ref={navigation.panel} className="repository-sidebar explorer-sidebar" aria-label="Explorer" style={{ width }} onContextMenu={event => {
+  return <aside ref={navigation.panel} className="repository-sidebar explorer-sidebar" aria-label="Explorer" style={{
+    width, "--explorer-folder-hover-dark": hoverColor("dark"), "--explorer-folder-hover-light": hoverColor("light"),
+  } as CSSProperties} onContextMenu={event => {
     if (!(event.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) contextMenu(event, rootMenu);
   }}>
     <header onContextMenu={panelMenu}><FolderTree size={15}/><b>Explorer</b><div className="spacer"/>

@@ -1,6 +1,8 @@
 import { shortcutTitle } from "./shortcuts";
 
 const controls = "button, [role=button], [role=tab], select, [data-tooltip], [data-shortcut], svg[aria-label], span[aria-label]";
+const targets = `${controls}, [title]`;
+const hoverDelay = 3000;
 
 /** One tooltip per window. Delegate so dynamically mounted icons behave the same as the toolbar. */
 export function installIconHints(doc: Document): () => void {
@@ -11,77 +13,89 @@ export function installIconHints(doc: Document): () => void {
   let current: HTMLElement | null = null;
   let nativeTitle: string | null = null;
   let temporaryLabel: string | null = null;
-  let blocked: HTMLElement | null = null;
-  const hide = () => {
-    if (current && nativeTitle !== null && !current.hasAttribute("title")) current.setAttribute("title", nativeTitle);
+  let timer: number | undefined;
+  const dismiss = () => {
+    view.clearTimeout(timer);
+    timer = undefined;
+    tip.remove();
+  };
+  const leave = () => {
+    dismiss();
+    if (current?.getAttribute("title") === "") {
+      if (nativeTitle === null) current.removeAttribute("title");
+      else current.setAttribute("title", nativeTitle);
+    }
     if (temporaryLabel !== null && current?.getAttribute("aria-label") === temporaryLabel) current.removeAttribute("aria-label");
     nativeTitle = null;
     temporaryLabel = null;
     current = null;
-    tip.remove();
   };
-  const control = (target: EventTarget | null) => (target as HTMLElement | null)?.closest?.<HTMLElement>(controls) ?? null;
-  const show = (next: HTMLElement | null) => {
-    if (doc.body.classList.contains("explorer-dragging")) { hide(); return; }
-    if (next === current || next !== null && next === blocked) return;
-    hide();
+  const control = (target: EventTarget | null) => (target as HTMLElement | null)?.closest?.<HTMLElement>(targets) ?? null;
+  const enter = (next: HTMLElement | null) => {
+    if (next === current) return;
+    leave();
     if (!next?.isConnected) return;
-    const title = next.getAttribute("title");
     const labelledBy = next.getAttribute("aria-labelledby")?.split(/\s+/).map(id => doc.getElementById(id)?.textContent ?? "").join(" ").trim();
     const text = next.matches("button, [role=button], [role=tab]") ? next.textContent?.trim() : "";
-    const label = next.dataset.tooltip || title || next.getAttribute("aria-label") || labelledBy || text;
-    if (!label?.trim()) return;
     current = next;
-    nativeTitle = title;
-    if (title && !text && !labelledBy && !next.hasAttribute("aria-label")) {
-      temporaryLabel = title;
-      next.setAttribute("aria-label", title);
+    nativeTitle = next.getAttribute("title");
+    if (nativeTitle && !text && !labelledBy && !next.hasAttribute("aria-label") && next.matches(controls)) {
+      temporaryLabel = nativeTitle;
+      next.setAttribute("aria-label", nativeTitle);
     }
-    next.removeAttribute("title");
-    const description = label.trim();
-    tip.textContent = next.dataset.shortcut ? shortcutTitle(description, next.dataset.shortcut) : description;
-    doc.body.append(tip);
-    const rect = next.getBoundingClientRect();
-    const x = Math.max(8, Math.min(rect.left + (rect.width - tip.offsetWidth) / 2, view.innerWidth - tip.offsetWidth - 8));
-    const below = rect.bottom + 6;
-    tip.style.left = `${x}px`;
-    tip.style.top = `${below + tip.offsetHeight + 8 <= view.innerHeight ? below : Math.max(8, rect.top - tip.offsetHeight - 6)}px`;
+    // An empty title also suppresses titles inherited from ancestors during the delay.
+    next.setAttribute("title", "");
+    if (doc.body.classList.contains("explorer-dragging")) return;
+    timer = view.setTimeout(() => {
+      timer = undefined;
+      if (!next.isConnected || current !== next || doc.body.classList.contains("explorer-dragging")) return;
+      const description = (next.dataset.tooltip || nativeTitle || next.getAttribute("aria-label") || labelledBy || text || "").trim();
+      if (!description) return;
+      tip.textContent = next.dataset.shortcut ? shortcutTitle(description, next.dataset.shortcut) : description;
+      doc.body.append(tip);
+      const rect = next.getBoundingClientRect();
+      const x = Math.max(8, Math.min(rect.left + (rect.width - tip.offsetWidth) / 2, view.innerWidth - tip.offsetWidth - 8));
+      const below = rect.bottom + 6;
+      tip.style.left = `${x}px`;
+      tip.style.top = `${below + tip.offsetHeight + 8 <= view.innerHeight ? below : Math.max(8, rect.top - tip.offsetHeight - 6)}px`;
+    }, hoverDelay);
   };
   const over = (e: PointerEvent) => {
     if (e.pointerType === "touch") return;
-    const next = control(e.target);
-    if (next !== blocked) blocked = null;
-    show(next);
+    enter(control(e.target));
   };
   const out = (e: PointerEvent) => {
-    const next = control(e.relatedTarget);
-    if (control(e.target) !== next) {
-      blocked = null;
-      hide();
-    }
+    if (e.pointerType !== "touch" && control(e.target) !== control(e.relatedTarget)) leave();
   };
-  const dismiss = () => { blocked = current; hide(); };
   const key = (e: KeyboardEvent) => { if (e.key === "Escape") dismiss(); };
   doc.addEventListener("pointerover", over, true);
   doc.addEventListener("pointermove", over, true);
   doc.addEventListener("pointerout", out, true);
   doc.addEventListener("pointerdown", dismiss, true);
   doc.addEventListener("keydown", key, true);
-  doc.addEventListener("scroll", hide, true);
-  view.addEventListener("blur", hide);
-  view.addEventListener("resize", hide);
-  const changes = new MutationObserver(() => { if (current && !current.isConnected) hide(); });
-  changes.observe(doc.body, { childList: true, subtree: true });
+  doc.addEventListener("scroll", dismiss, true);
+  view.addEventListener("blur", dismiss);
+  view.addEventListener("resize", dismiss);
+  const changes = new MutationObserver(() => {
+    if (!current) return;
+    if (!current.isConnected) { leave(); return; }
+    const title = current.getAttribute("title");
+    if (title !== "") {
+      nativeTitle = title;
+      current.setAttribute("title", "");
+    }
+  });
+  changes.observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["title"] });
   return () => {
-    hide();
+    leave();
     changes.disconnect();
     doc.removeEventListener("pointerover", over, true);
     doc.removeEventListener("pointermove", over, true);
     doc.removeEventListener("pointerout", out, true);
     doc.removeEventListener("pointerdown", dismiss, true);
     doc.removeEventListener("keydown", key, true);
-    doc.removeEventListener("scroll", hide, true);
-    view.removeEventListener("blur", hide);
-    view.removeEventListener("resize", hide);
+    doc.removeEventListener("scroll", dismiss, true);
+    view.removeEventListener("blur", dismiss);
+    view.removeEventListener("resize", dismiss);
   };
 }

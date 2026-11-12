@@ -3,6 +3,26 @@ import { persist } from "zustand/middleware";
 import { restoreWorkspaceLayouts, type HistoryMode, type WorkspaceLayout, type WorkspaceMode } from "./workspaceLayouts";
 
 export type ThemePref = "system" | "dark" | "light";
+type ColorTheme = Exclude<ThemePref, "system">;
+interface FolderHoverStyle { color: string; opacity: number }
+type ExplorerFolderHover = Record<ColorTheme, FolderHoverStyle>;
+
+export const DEFAULT_EXPLORER_FOLDER_HOVER: ExplorerFolderHover = {
+  light: { color: "#182038", opacity: 12 },
+  dark: { color: "#cdd5eb", opacity: 14 },
+};
+
+function restoreExplorerFolderHover(saved?: ExplorerFolderHover): ExplorerFolderHover {
+  const restore = (theme: ColorTheme) => {
+    const value = saved?.[theme], defaults = DEFAULT_EXPLORER_FOLDER_HOVER[theme];
+    const opacity = value?.opacity;
+    return {
+      color: typeof value?.color === "string" && /^#[0-9a-f]{6}$/i.test(value.color) ? value.color : defaults.color,
+      opacity: typeof opacity === "number" && Number.isFinite(opacity) ? Math.max(0, Math.min(100, Math.round(opacity))) : defaults.opacity,
+    };
+  };
+  return { light: restore("light"), dark: restore("dark") };
+}
 export type DiffMode = "unified" | "split";
 export type DateStyle = "relative" | "absolute";
 export interface PullRequestWatch {
@@ -33,6 +53,7 @@ export interface Settings {
   explorerOpen: boolean;
   repositoryActionsCollapsed: boolean;
   explorerFavoritesOnly: boolean;
+  explorerFolderHover: ExplorerFolderHover;
   layouts: Record<WorkspaceMode, WorkspaceLayout>;
   setLayout: (mode: WorkspaceMode, patch: Partial<WorkspaceLayout>) => void;
   pullMode: "ff-only" | "merge" | "rebase";
@@ -93,6 +114,7 @@ export const useSettings = create<Settings>()(
       explorerOpen: true,
       repositoryActionsCollapsed: false,
       explorerFavoritesOnly: false,
+      explorerFolderHover: DEFAULT_EXPLORER_FOLDER_HOVER,
       layouts: restoreWorkspaceLayouts(),
       setLayout: (mode, patch) => set((state) => ({ layouts: { ...state.layouts, [mode]: { ...state.layouts[mode], ...patch } } })),
       pullMode: "ff-only",
@@ -139,6 +161,7 @@ export const useSettings = create<Settings>()(
         }));
         return {
           ...current, ...old, prWatches, shortcuts, explorerFavoritesOnly: old.explorerFavoritesOnly ?? workspaceFavoritesOnly ?? false, layouts: restoreWorkspaceLayouts(stored),
+          explorerFolderHover: restoreExplorerFolderHover(old.explorerFolderHover),
           prWatchMineSince: old?.prWatchMineSince !== undefined ? old.prWatchMineSince : legacyMine ? Date.now() : null,
         };
       },
