@@ -22,7 +22,6 @@
 .repository-list { flex: 1; min-height: 0; overflow: auto; padding: 0 6px 8px; }
 .repository-item { display: flex; align-items: center; min-width: 0; margin: 2px 0; border-radius: var(--radius-sm); }
 .repository-item:hover { background: var(--bg-hover); }
-.repository-item.active { background: var(--accent-soft); }
 .repository-select { display: flex; align-items: center; gap: 6px; padding: 8px 5px 8px 8px; border: none; background: transparent; text-align: left; flex: 1; min-width: 0; color: var(--text); }
 .repository-select > svg { flex: none; color: var(--text-faint); }
 .repository-item.active .repository-select > svg { color: var(--accent); }
@@ -174,8 +173,8 @@
 .repository-sync { flex-wrap: wrap; }
 .repository-group { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 10px; background: transparent; color: var(--text); border: 0; text-align: left; font-weight: 600; }
 .repository-group .faint { margin-left: auto; }
-.repository-star { flex: 0 0 auto; opacity: .5; }
-.repository-star.active, .repository-item:hover .repository-star { opacity: 1; }
+.repository-star { flex: 0 0 auto; color: var(--text-dim); }
+.repository-star.active { color: var(--accent); }
 .repository-select { min-width: 0; }
 .repository-group-filter { margin: 0 10px 8px; width: calc(100% - 20px); }
 .library-tabs { margin-bottom: 14px; }
@@ -519,9 +518,8 @@
 .explorer-dragging .explorer-root-drop > span { visibility: visible; }
 .explorer-root-drop.workspace-drop-active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
 .library-tree-spacer { width: 24px; flex: none; }
-.library-drag-handle { color: var(--text-faint); display: grid; place-items: center; flex: none; width: 20px; align-self: stretch; cursor: grab; opacity: .55; touch-action: none; user-select: none; }
-.library-drag-handle:hover, .library-tree-row:hover .library-drag-handle { opacity: 1; }
-.library-drag-handle:active { cursor: grabbing; }
+.explorer-tree .repository-select { cursor: grab; }
+.explorer-dragging .explorer-tree .repository-select { cursor: grabbing; }
 .library-tree-menu { min-height: 64px; }
 .repository-table tr.batch-selected { background: var(--accent-soft); }
 .revqora-tooltip { position: fixed; z-index: 2500; pointer-events: none; width: max-content; max-width: min(340px, calc(100vw - 16px)); padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-elev); color: var(--text); box-shadow: 0 3px 12px #0003; font-size: var(--fs-xs); line-height: 1.35; white-space: pre-line; overflow-wrap: anywhere; }
@@ -552,5 +550,5 @@
 .tool-details-stacked :is(.wm-detail,.bm-detail) { width: auto; max-width: none; height: var(--tool-detail-height, auto); max-height: min(var(--tool-detail-height,42%), 65%); border-left: 0; border-top: 1px solid var(--border); }
 .tool-details-stacked .bm-list { min-height: 130px; }
 .repository-table tbody tr { cursor: pointer; }
-.repository-table tbody tr.active { background: var(--bg-selected); }
+.repository-table tbody tr.active .repository-name > svg { color: var(--accent); }
 

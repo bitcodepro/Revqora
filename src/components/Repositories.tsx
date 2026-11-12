@@ -207,7 +207,7 @@ export function RepositorySidebar() {
       <button className={`repository-overview-link ${overview ? "active" : ""}`} aria-pressed={overview} onClick={() => { clearSelection(); toggleRepositoryOverview(); }}><LayoutGrid size={14} /> All repositories</button>
       {selected.length > 0 && <small className="repository-selection-note">{selected.length} selected</small>}
       <div className="repository-list" role="list" aria-label="Open repositories" onClick={event => {
-        if (!(event.target as HTMLElement).closest(".repository-item")) clearSelection();
+        if (!(event.target as HTMLElement).closest("button")) clearSelection();
       }}>
         {visible.map(root => {
           const roots = selected.includes(root) ? selected : [root];

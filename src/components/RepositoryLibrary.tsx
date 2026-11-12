@@ -15,9 +15,9 @@ import { Modal } from "./Modal";
 export async function openLibraryRepository(root: string) {
   try { await useRepos.getState().open(root); } catch (e) { toast.error("Could not open repository", errorMessage(e)); }
 }
-export function FavoriteButton({ root }: { root: string }) {
+export function FavoriteButton({ root, name = basename(root) }: { root: string; name?: string }) {
   const favorite = useLibrary((s) => s.favorites.some((r) => repositoryKey(r) === repositoryKey(root)));
-  return <button type="button" className={`icon-btn sm repository-star ${favorite ? "active" : ""}`} aria-label={`${favorite ? "Unfavorite" : "Favorite"} ${basename(root)}`} aria-pressed={favorite} onClick={() => useLibrary.getState().favorite(root)}><Star size={13} fill={favorite ? "currentColor" : "none"} /></button>;
+  return <button type="button" className={`icon-btn sm repository-star ${favorite ? "active" : ""}`} aria-label={`${favorite ? "Unfavorite" : "Favorite"} ${name}`} aria-pressed={favorite} onClick={() => useLibrary.getState().favorite(root)}><Star size={13} fill={favorite ? "currentColor" : "none"} /></button>;
 }
 async function named(title: string, initial: string, action: (name: string) => void) {
   const name = await promptDialog({ title, initial, label: "Name", validate: (v) => v.trim().length > 80 ? "Use at most 80 characters." : null });
@@ -165,7 +165,7 @@ function RepositoryLibrary({ close }: { close: () => void }) {
     {section === "repositories" && <><input className="input" aria-label="Find saved repository" placeholder="Find by name or path…" value={query} onChange={(e) => setQuery(e.target.value)} /><div className="library-list">{roots.map((root) => {
       const memberships = lib.groups.filter(g => g.roots.some(r => repositoryKey(r) === repositoryKey(root)));
       return <div className="library-row" key={root} tabIndex={0} onKeyDown={e => renameLibraryRow(e, () => renameRepositoryDialog(root))} onContextMenu={e => contextMenu(e, [...repositoryMembershipMenu([root], memberships.length === 1 ? memberships[0].id : undefined), ...namePathMenu(displayName(root), root, null)])}>
-      <FavoriteButton root={root} /><div className="grow-text"><b>{displayName(root)}</b><div className="batch-note library-path" title={root}>{root}</div></div>
+      <FavoriteButton root={root} name={displayName(root)} /><div className="grow-text"><b>{displayName(root)}</b><div className="batch-note library-path" title={root}>{root}</div></div>
       <select className="input sm library-group-select" aria-label={`Group for ${basename(root)}`} title="Move to a single group" value={memberships.length > 1 ? "__multiple" : memberships[0]?.id ?? ""} onChange={(e) => lib.move(root, e.target.value || null)}><option value="">Default group</option>{memberships.length > 1 && <option value="__multiple" disabled>Multiple groups</option>}{groupRows.map(({entry: g, depth}) => <option key={g.id} value={g.id}>{"　".repeat(depth)}{g.name}</option>)}</select>
       <button type="button" className="btn sm" disabled={busy} onClick={() => { void openLibraryRepository(root); close(); }}>{tabs[root] ? "Activate" : "Open"}</button>
     </div>;

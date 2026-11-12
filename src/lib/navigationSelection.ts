@@ -9,25 +9,33 @@ export function useNavigationSelection<T extends HTMLElement>() {
   const anchor = useRef<string | null>(null);
   const plainSelection = useRef<string | null>(null);
   const clear = useCallback(() => {
-    setSelection([]);
+    setSelection(current => current.length ? [] : current);
     anchor.current = null;
     plainSelection.current = null;
   }, []);
 
   useEffect(() => {
-    if (!selection.length) return;
     const view = panel.current?.ownerDocument.defaultView;
-    const onKey = (event: KeyboardEvent) => {
+    if (!view) return;
+    const blocked = () => {
       const { dialogs, menu, paletteOpen } = useUi.getState();
-      if (event.defaultPrevented || menu || paletteOpen || dialogs.some(dialog => dialog.surface === view)) return;
-      if (!matchesShortcut(event, "navigationClearSelection")) return;
-      const target = event.target;
-      if (event.key !== "Escape" && (!target || !("nodeType" in target) || !panel.current?.contains(target as Node))) return;
-      clear();
+      return menu || paletteOpen || dialogs.some(dialog => dialog.surface === view) || view.document.body.classList.contains("explorer-dragging");
     };
-    view?.addEventListener("keydown", onKey);
-    return () => view?.removeEventListener("keydown", onKey);
-  }, [selection.length, clear]);
+    const insidePanel = (target: EventTarget | null) => !!target && "nodeType" in target && panel.current?.contains(target as Node);
+    const onKey = (event: KeyboardEvent) => {
+      if (blocked() || !matchesShortcut(event, "navigationClearSelection")) return;
+      if (event.key === "Escape" || insidePanel(event.target)) clear();
+    };
+    const onClick = (event: MouseEvent) => {
+      if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && !insidePanel(event.target) && !blocked()) clear();
+    };
+    view.addEventListener("keydown", onKey, true);
+    view.addEventListener("click", onClick, true);
+    return () => {
+      view.removeEventListener("keydown", onKey, true);
+      view.removeEventListener("click", onClick, true);
+    };
+  }, [clear]);
 
   function select(ids: string[], id: string, active: string | null, range: boolean, toggle: boolean) {
     const previous = anchor.current && ids.includes(anchor.current) ? anchor.current : active;

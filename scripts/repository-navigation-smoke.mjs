@@ -80,10 +80,10 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
 
   await drag(folder("plugins"), explorer.locator("[data-explorer-root-drop]"));
   assert.equal((await library()).groups.find(item => item.id === id("plugins")).parentId, null);
-  await drag(group("plugins").locator(".library-drag-handle"), group("navigation-projects"), 0.08, "library-drop-before");
+  await drag(folder("plugins"), group("navigation-projects"), 0.08, "library-drop-before");
   const ordered = (await library()).groups.map(item => item.id);
   assert(ordered.indexOf(id("plugins")) < ordered.indexOf(id("navigation-projects")));
-  await drag(group("plugins").locator(".library-drag-handle"), group("worker"));
+  await drag(folder("plugins"), group("worker"));
   assert.equal((await library()).groups.find(item => item.id === id("plugins")).parentId, id("worker"));
 
   if (await repoToggle.getAttribute("aria-expanded") === "false") await repoToggle.click();
@@ -100,8 +100,14 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   assert.equal(await flat.locator(".repository-item.batch-selected").count(), 3);
   await page.keyboard.press("Escape");
   assert.equal(await flat.locator(".repository-item.batch-selected").count(), 0);
+  const activeRow = flat.locator(".repository-item.active");
+  assert.equal(await activeRow.evaluate(row => getComputedStyle(row).backgroundColor), "rgba(0, 0, 0, 0)");
   await flatRows.first().click({ modifiers: ["Control"] });
   await flat.locator(".repository-list").evaluate(list => list.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  assert.equal(await flat.locator(".repository-item.batch-selected").count(), 0);
+  await flatRows.last().click({ modifiers: ["Shift"] });
+  assert(await flat.locator(".repository-item.batch-selected").count() > 0);
+  await flatRows.first().click();
   assert.equal(await flat.locator(".repository-item.batch-selected").count(), 0);
 
   await folder("product").press("F2");

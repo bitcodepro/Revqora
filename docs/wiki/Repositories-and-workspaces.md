@@ -52,6 +52,8 @@ In **Explorer** and **Repositories**, **Shift+click** selects a range, **Ctrl+cl
 
 Use **F2** to rename a focused group or repository label. The context menu can also create, move or remove groups and repository memberships. Selecting a group filters **Repositories** to that group and its descendants. These actions organize the library.
 
+Star a group or repository to see it in **Favorites**. A starred group includes its contents and can be collapsed or expanded there. A starred repository appears with its parent path. Opening it in **Favorites** selects its containing group.
+
 ## Switch or add a saved set
 
 - **Switch** replaces the current open set and restores the saved layout.

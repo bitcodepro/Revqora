@@ -146,8 +146,25 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
   await group("import-backend").getByRole("button", { name: "Favorite group import-backend", exact: true }).click();
   await search.clear();
   const favorites = explorer.getByRole("button", { name: "Favorites", exact: true });
+  const treeRepository = name => explorer.getByRole("treeitem", { name, exact: true }).and(explorer.locator(".explorer-repository"));
   await favorites.click();
   assert.equal(await group("import-frontend").count(), 0);
+  await treeRepository("service-api").waitFor();
+  await treeRepository("service-worker").waitFor();
+  await group("import-backend").getByRole("button", { name: "Collapse import-backend", exact: true }).click();
+  await treeRepository("service-worker").waitFor({ state: "detached" });
+  await group("import-backend").getByRole("button", { name: "Expand import-backend", exact: true }).click();
+  await treeRepository("service-worker").waitFor();
+  await favorites.click();
+
+  await treeRepository("web-ui").getByRole("button", { name: "Favorite web-ui", exact: true }).click();
+  await favorites.click();
+  await group("import-frontend").getByRole("button", { name: "Favorite group import-frontend", exact: true }).waitFor();
+  await treeRepository("web-ui").locator(".repository-select").click();
+  const frontendId = await group("import-frontend").getAttribute("data-tree-group");
+  assert.equal(await picker.inputValue(), frontendId);
+  await treeRepository("web-ui").getByRole("button", { name: "Unfavorite web-ui", exact: true }).click();
+  await group("import-frontend").waitFor({ state: "detached" });
   await favorites.click();
   await pick("import-backend");
 

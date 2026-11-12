@@ -38,7 +38,7 @@ export function RepositoryNavigationRow({ root, name, tab, current, selected, se
   const status = repositorySidebarStatus(tab);
   const menu = () => repositoryMenu(root, name, selection, groupId, createGroup);
   return <div role={depth === undefined ? "listitem" : "treeitem"} aria-level={depth === undefined ? undefined : depth + 1}
-    aria-label={depth === undefined ? undefined : name} aria-selected={depth === undefined ? undefined : selected || current}
+    aria-label={depth === undefined ? undefined : name} aria-selected={depth === undefined ? undefined : selected}
     aria-busy={!!tab && (!!tab.opening || !tab.loaded)}
     data-explorer-repository={depth === undefined ? undefined : root} data-repository-parent={depth === undefined ? undefined : groupId ?? ""}
     data-repository-state={tab ? tab.info ? "open" : tab.error ? "unavailable" : "opening" : "closed"}
@@ -46,7 +46,7 @@ export function RepositoryNavigationRow({ root, name, tab, current, selected, se
     style={depth === undefined ? undefined : { "--tree-depth": Math.min(depth, 12) } as CSSProperties}
     onKeyDown={e => { renameRepositoryOnKey(e, root); if (matchesGroupShortcut(e)) runMenuShortcut(e, menu()); }}
     onContextMenu={e => contextMenu(e, menu())}>
-    <FavoriteButton root={root}/>
+    {depth !== undefined && <span className="library-tree-spacer" aria-hidden="true"/>}
     <button type="button" className="repository-select" aria-current={current} onPointerDown={onPointerDown} onClick={onClick} onKeyDown={onSelectionKeyDown}
       data-shortcut="renameItem" data-tooltip="Rename repository · Drag to move · Shift+click selects a range"
       title={`${root}\n${tab?.info ? tab.info.head.branch ?? "Detached HEAD" : tab ? tab.error ?? "Opening repository…" : "Closed · click to open"}${tab?.fetchError ? "\n" + tab.fetchError : ""}`}>
@@ -57,6 +57,7 @@ export function RepositoryNavigationRow({ root, name, tab, current, selected, se
       {!!status?.files.length && <span className="repository-dirty" aria-label="Local changes"/>}
       {!!tab?.fetchError && <CircleAlert size={12} className="amber"/>}
     </button>
+    <FavoriteButton root={root} name={name}/>
     {tab && <button type="button" className="repository-close icon-btn sm" title={`Close ${name}`} aria-label={`Close ${name}`} onClick={() => useRepos.getState().close(root)}><X size={12}/></button>}
   </div>;
 }

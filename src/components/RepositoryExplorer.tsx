@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, FolderSearch, FolderTree, GripVertical, LayoutGrid, Pencil, Search, Star, Trash2, Unlink, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Pencil, Search, Star, Trash2, Unlink, X } from "lucide-react";
 import { defaultGroupRoots, repositoryKey, uniqueRoots, useLibrary, type RepositoryGroup, type RepositoryPlacement } from "../lib/repositoryLibrary";
-import { visibleTree } from "../lib/libraryTree";
+import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
 import { findTreeDrop, useLibraryPointerDrag } from "../lib/libraryDrag";
 import { recordExplorerMove, useRepositoryDrag } from "../lib/explorerMoves";
 import { basename } from "../lib/format";
@@ -35,6 +35,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   useEffect(() => setWidth(layout.workspacesWidth), [layout.workspacesWidth]);
   const [query, setQuery] = useState("");
   const [incomingOnly, setIncomingOnly] = useState(false);
+  const [collapsedFavorites, setCollapsedFavorites] = useState<Set<string>>(() => new Set());
   const navigation = useNavigationSelection<HTMLElement>();
   const { selection, clear: clearSelection } = navigation;
   const folderDrag = useLibraryPointerDrag(), repositoryDrag = useRepositoryDrag();
@@ -54,10 +55,13 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     ...defaultGroupRoots(uniqueRoots([...known, ...order]), groups).map(root => repositoryEntry(root, null)),
   ];
   const search = query.trim().toLowerCase();
+  const favoriteGroups = favoritesOnly ? treeSubtreeIds(groups, groups.filter(group => group.favorite).map(group => group.id)) : null;
   const rows = visibleTree(entries, entry => {
-    if (entry.kind === "group") return !incomingOnly && (!favoritesOnly || !!entry.group.favorite) && entry.name.toLowerCase().includes(search);
-    return (!incomingOnly || incoming.has(entry.root)) && (!favoritesOnly || favoriteKeys.has(repositoryKey(entry.root))) && `${entry.name} ${entry.root}`.toLowerCase().includes(search);
-  }, entry => entry.kind === "group" && entry.group.collapsed, !!search || favoritesOnly || incomingOnly);
+    if (entry.kind === "group") return !incomingOnly && (!favoriteGroups || favoriteGroups.has(entry.id)) && entry.name.toLowerCase().includes(search);
+    const favorite = favoriteKeys.has(repositoryKey(entry.root)) || !!entry.parentId && !!favoriteGroups?.has(entry.parentId);
+    return (!incomingOnly || incoming.has(entry.root)) && (!favoritesOnly || favorite) && `${entry.name} ${entry.root}`.toLowerCase().includes(search);
+  }, entry => entry.kind === "group" && (favoritesOnly ? collapsedFavorites.has(entry.id) : entry.group.collapsed),
+    !!search || favoritesOnly || incomingOnly, !favoritesOnly && (!!search || incomingOnly));
   const selectedRows = rows.filter(({ entry }) => selection.includes(entry.id)).map(({ entry }) => entry);
   const selectionContext = (entry: ExplorerEntry) => {
     const peers = rows.map(row => row.entry).filter(row => row.kind === entry.kind);
@@ -119,7 +123,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
       <LayoutGrid size={14}/><span className="explorer-overview-text">All repositories</span><span className="explorer-overview-drop-text" aria-hidden="true">Move to top level</span>
     </button>
     <div className="repository-list explorer-tree" role="tree" aria-label="Groups and repositories" aria-multiselectable="true" onClick={event => {
-      if (!(event.target as HTMLElement).closest(".repository-item")) clearSelection();
+      if (!(event.target as HTMLElement).closest("button")) clearSelection();
     }}>
       {rows.map(({ entry, depth, expanded, hasChildren }) => {
         if (entry.kind === "repository") {
@@ -130,11 +134,25 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
             createGroup={() => void groupEditorDialog({ roots: uniqueRoots(items.map(item => item.root)), parentId: entry.parentId, onCreated: clearSelection })}
             onPointerDown={event => repositoryDrag.start(event, items)}
             onSelectionKeyDown={event => selectionKeys(event, entry)}
-            onClick={event => { if (!repositoryDrag.suppressClick.current) select(event, entry, () => activateRepository(entry.root)); }}/>;
+            onClick={event => {
+              if (repositoryDrag.suppressClick.current) return;
+              select(event, entry, () => {
+                if (favoritesOnly && favoriteKeys.has(repositoryKey(entry.root))) library().selectGroup(entry.parentId);
+                activateRepository(entry.root);
+              });
+            }}/>;
         }
         const { group } = entry;
         const chosen = group.id === activeGroup, selected = selection.includes(group.id);
-        const toggle = () => library().collapse(group.id);
+        const toggle = () => {
+          if (!favoritesOnly) { library().collapse(group.id); return; }
+          setCollapsedFavorites(current => {
+            const next = new Set(current);
+            if (next.has(group.id)) next.delete(group.id);
+            else next.add(group.id);
+            return next;
+          });
+        };
         const startDrag = (event: React.PointerEvent<HTMLElement>) => {
           const ids = groupIds(group.id);
           folderDrag.start(event, group.name, findTreeDrop(groups, ids), target => {
@@ -142,7 +160,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
             catch (error) { toast.error(error); }
           });
         };
-        return <div key={group.id} role="treeitem" aria-level={depth + 1} aria-label={group.name} aria-selected={chosen || selected}
+        return <div key={group.id} role="treeitem" aria-level={depth + 1} aria-label={group.name} aria-selected={selected}
           aria-expanded={hasChildren ? expanded : undefined} data-tree-group={group.id}
           className={`repository-item library-tree-row ${chosen ? "active" : ""} ${selected ? "batch-selected" : ""}`}
           style={{ "--tree-depth": Math.min(depth, 12) } as CSSProperties}
@@ -169,7 +187,6 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
             aria-label={`${group.favorite ? "Unfavorite" : "Favorite"} group ${group.name}`} aria-pressed={!!group.favorite} onClick={() => library().favoriteGroup(group.id)}>
             <Star size={13} fill={group.favorite ? "currentColor" : "none"}/>
           </button>
-          <span className="library-drag-handle" title={`Drag ${group.name} to reorder or nest it`} onPointerDown={startDrag}><GripVertical size={13}/></span>
         </div>;
       })}
       <div className="explorer-root-drop" data-explorer-root-drop aria-hidden="true"><span>Drop at top level</span></div>
