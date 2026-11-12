@@ -152,7 +152,7 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     onClose={close} onSubmit={submit}
     footer={<>
       <button type="button" className="btn" onClick={close}>Cancel</button>
-      {scanning ? <button type="button" className="btn" onClick={stopScan}>Stop scan</button>
+      {scanning ? <button type="button" className="btn" onClick={event => { event.preventDefault(); stopScan(); }}>Stop scan</button>
         : scan ? <button type="submit" className="btn primary" disabled={!selectedCount}>Import {selectedCount} {selectedCount === 1 ? "repository" : "repositories"}</button>
         : <button type="submit" className="btn primary" disabled={!path.trim()}>Scan folder</button>}
     </>}>

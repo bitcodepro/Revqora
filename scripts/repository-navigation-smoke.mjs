@@ -128,13 +128,71 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   assert.deepEqual(await selectedNames(), selectedThroughRoot);
   await page.keyboard.press("Control+a");
   assert.deepEqual(await selectedNames(), selectedThroughRoot);
+  const components = group("components");
+  const apiRow = treeRepo("api");
+  const extension = treeRepo("extension");
+  const platform = treeRepo("platform");
+  const rowId = row => row.getAttribute("data-explorer-entry");
+  const treeRows = explorer.locator("[data-explorer-entry]");
+  const selectedIds = () => treeRows.and(explorer.locator('[aria-selected="true"]')).evaluateAll(rows => rows.map(row => row.dataset.explorerEntry));
+  const expectRange = async (anchor, end, extras = []) => {
+    const ids = await treeRows.evaluateAll(rows => rows.map(row => row.dataset.explorerEntry));
+    const first = ids.indexOf(await rowId(anchor)), last = ids.indexOf(await rowId(end));
+    assert(first >= 0 && last >= 0);
+    const range = new Set(ids.slice(Math.min(first, last), Math.max(first, last) + 1));
+    for (const row of extras) range.add(await rowId(row));
+    assert.deepEqual(await selectedIds(), ids.filter(id => range.has(id)));
+  };
+
   await folder("components").click();
   assert.deepEqual(await selectedNames(), []);
   await api.click({ modifiers: ["Shift"] });
+  await expectRange(components, apiRow);
+  assert.equal(await extension.getAttribute("aria-selected"), "true", "Shift must include visible nested rows");
+  await api.click();
+  await folder("components").click({ modifiers: ["Shift"] });
+  await expectRange(apiRow, components);
+
+  await components.getByRole("button", { name: "Collapse components", exact: true }).click();
+  await folder("components").click();
+  await api.click({ modifiers: ["Shift"] });
   assert.deepEqual(await selectedNames(), ["api", "components"]);
-  await treeRepo("worker").locator(".repository-select").click({ modifiers: ["Shift"] });
-  assert.deepEqual(await selectedNames(), ["worker"]);
+  assert.equal(await extension.count(), 0);
+  await components.getByRole("button", { name: "Expand components", exact: true }).click();
+
+  await platform.locator(".repository-select").click();
+  await folder("components").click({ modifiers: ["Control"] });
+  await expectRange(components, components, [platform]);
+  await api.click({ modifiers: ["Control", "Shift"] });
+  await expectRange(components, apiRow, [platform]);
+  await platform.locator(".repository-select").click({ modifiers: ["Control"] });
+  await expectRange(components, apiRow);
   await page.keyboard.press("Escape");
+  assert.deepEqual(await selectedNames(), []);
+
+  await folder("components").click();
+  await page.keyboard.press("Shift+ArrowDown");
+  assert.equal(await focusedRow.getAttribute("aria-label"), "worker");
+  await expectRange(components, group("worker"));
+  await page.keyboard.press("Shift+ArrowUp");
+  await expectRange(components, components);
+  await page.keyboard.press("Control+Space");
+  assert.deepEqual(await selectedNames(), []);
+  await folder("components").click();
+  await api.press("Shift+Space");
+  await expectRange(components, apiRow);
+  await platform.locator(".repository-select").click();
+  await folder("components").click({ modifiers: ["Control"] });
+  await api.press("Control+Shift+Space");
+  await expectRange(components, apiRow, [platform]);
+
+  await search.fill("extension");
+  await folder("product").click();
+  await extension.locator(".repository-select").click({ modifiers: ["Shift"] });
+  await expectRange(group("product"), extension);
+  assert.equal(await apiRow.count(), 0);
+  await search.clear();
+  await explorer.getByRole("tree").evaluate(tree => tree.dispatchEvent(new MouseEvent("click", { bubbles: true })));
   assert.deepEqual(await selectedNames(), []);
   await folder("product").click();
 
@@ -194,7 +252,6 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await deleting.getByRole("button", { name: "Delete group", exact: true }).click();
   await group("Context child").waitFor({ state: "detached" });
   assert.equal((await library()).activeGroupId, null);
-  const extension = treeRepo("extension");
   assert.equal(await extension.getAttribute("aria-level"), "1");
   const root = (await library()).knownRoots.find(root => path.basename(root) === "extension");
   assert(fs.existsSync(path.join(root, ".git")));

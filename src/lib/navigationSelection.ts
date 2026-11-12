@@ -39,7 +39,7 @@ export function useNavigationSelection<T extends HTMLElement>() {
     };
   }, [clear]);
 
-  function select(ids: string[], id: string, active: string | null, range: boolean, toggle: boolean, rangeIds = ids) {
+  function select(ids: string[], id: string, active: string | null, range: boolean, toggle: boolean) {
     allSelection.current = null;
     const previous = anchor.current && ids.includes(anchor.current) ? anchor.current : active;
     if (range || toggle) {
@@ -48,9 +48,9 @@ export function useNavigationSelection<T extends HTMLElement>() {
       setSelection(current => {
         const selected = current.filter(item => ids.includes(item));
         if (plain && ids.includes(plain) && !selected.includes(plain)) selected.push(plain);
-        return treeSelection(range ? rangeIds : ids, selected, previous, id, range, toggle);
+        return treeSelection(ids, selected, previous, id, range, toggle);
       });
-      if (!range || !previous || !rangeIds.includes(previous)) anchor.current = id;
+      if (!range || !previous || !ids.includes(previous)) anchor.current = id;
       return true;
     }
     setSelection([]);
@@ -67,7 +67,7 @@ export function useNavigationSelection<T extends HTMLElement>() {
     setSelection(next);
   }
 
-  function keyDown(event: React.KeyboardEvent, ids: string[], id: string, active: string | null, rangeIds = ids) {
+  function keyDown(event: React.KeyboardEvent, ids: string[], id: string, active: string | null) {
     if (event.repeat) return;
     const extend = matchesShortcut(event, "navigationAddSelectionRange");
     const range = extend || matchesShortcut(event, "navigationSelectRange");
@@ -75,7 +75,7 @@ export function useNavigationSelection<T extends HTMLElement>() {
     if (!range && !toggle) return;
     event.preventDefault();
     event.stopPropagation();
-    select(ids, id, active, range, toggle, rangeIds);
+    select(ids, id, active, range, toggle);
   }
 
   const selectedAllAt = (id: string) => allSelection.current === selection && anchor.current === id;

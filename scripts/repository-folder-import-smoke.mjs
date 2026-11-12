@@ -4,23 +4,37 @@ import path from "node:path";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 
 async function checkFolderScanProgress(page, dialog) {
-  await page.evaluate(() => {
-    const scanUrl = window.__TAURI_INTERNALS__.convertFileSrc("repo_scan_folder", "ipc");
-    const cancelUrl = window.__TAURI_INTERNALS__.convertFileSrc("repo_cancel_folder_scan", "ipc");
+  await dialog.evaluate(form => {
+    const commands = new Map([
+      ["repo_prepare_folder_scan", "prepare"],
+      ["repo_scan_folder", "scan"],
+      ["repo_cancel_folder_scan", "cancel"],
+    ].map(([command, kind]) => [window.__TAURI_INTERNALS__.convertFileSrc(command, "ipc"), kind]));
     const original = window.fetch;
-    let release;
-    window.__folderScanCancelRequested = false;
+    const counts = { prepare: 0, scan: 0, cancel: 0, submit: 0 };
+    const held = [];
+    const onSubmit = () => { counts.submit++; };
+    form.addEventListener("submit", onSubmit, true);
     window.fetch = (input, init) => {
+      const kind = commands.get(input?.url ?? input);
+      if (kind) counts[kind]++;
       const response = original(input, init);
-      const url = input?.url ?? input;
-      if (url === cancelUrl) window.__folderScanCancelRequested = true;
-      if (url !== scanUrl) return response;
-      return new Promise(resolve => { release = () => resolve(response); });
+      if (kind !== "scan") return response;
+      return new Promise(resolve => held.push({ response, resolve }));
     };
-    window.__finishFolderScan = () => {
-      window.fetch = original;
-      release?.();
-      delete window.__finishFolderScan;
+    const release = () => {
+      const pending = held.splice(0);
+      for (const { response, resolve } of pending) resolve(response);
+      return Promise.allSettled(pending.map(({response}) => response));
+    };
+    window.__folderScanProbe = {
+      counts, release,
+      finish() {
+        window.fetch = original;
+        form.removeEventListener("submit", onSubmit, true);
+        delete window.__folderScanProbe;
+        return release();
+      },
     };
   });
   const progress = dialog.getByRole("status").filter({ hasText: "Looking for Git repositories" });
@@ -28,6 +42,7 @@ async function checkFolderScanProgress(page, dialog) {
   try {
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await dialog.getByRole("button", { name: "Scan folder", exact: true }).click();
+    await page.waitForFunction(() => window.__folderScanProbe.counts.scan === 1);
     const initial = await icon.evaluate(element => {
       const style = getComputedStyle(element);
       return { duration: style.animationDuration, iterations: style.animationIterationCount, transform: style.transform };
@@ -48,10 +63,16 @@ async function checkFolderScanProgress(page, dialog) {
       return value && value !== previous;
     }, elapsed);
     await dialog.getByRole("button", { name: "Stop scan", exact: true }).click();
-    await dialog.getByText("Scan stopped.", { exact: true }).waitFor();
-    await page.waitForFunction(() => window.__folderScanCancelRequested);
+    await page.waitForFunction(() => window.__folderScanProbe.counts.cancel > 0);
+    assert.deepEqual(await page.evaluate(() => window.__folderScanProbe.counts),
+      { prepare: 1, scan: 1, cancel: 1, submit: 1 }, "Stop must not submit the form or start a second scan");
+    const stopped = dialog.getByText("Scan stopped.", { exact: true });
+    await stopped.waitFor();
+    await page.evaluate(() => window.__folderScanProbe.release());
+    await stopped.waitFor();
+    assert.equal(await dialog.getByRole("button", { name: /^Import \d+ repositor/ }).count(), 0);
   } finally {
-    await page.evaluate(() => { window.__finishFolderScan?.(); delete window.__folderScanCancelRequested; });
+    await page.evaluate(() => window.__folderScanProbe?.finish());
     await page.emulateMedia({ reducedMotion: null });
   }
   await progress.waitFor({ state: "detached" });

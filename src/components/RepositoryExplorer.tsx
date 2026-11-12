@@ -81,7 +81,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     .filter(row => (row.parentId ?? null) === (entry.parentId ?? null)).map(row => row.id);
   const select = (event: React.MouseEvent, entry: ExplorerEntry, activate: () => void) => {
     setFocusedEntry(entry.id);
-    if (!navigation.select(visibleIds, entry.id, null, event.shiftKey, event.ctrlKey || event.metaKey, siblingIds(entry))) activate();
+    if (!navigation.select(visibleIds, entry.id, null, event.shiftKey, event.ctrlKey || event.metaKey)) activate();
   };
   const focusRow = (id: string) => {
     const row = tree.current?.querySelector<HTMLButtonElement>(`[data-explorer-entry="${CSS.escape(id)}"] > .repository-select`);
@@ -107,15 +107,14 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     const step = rowSteps.find(item => matchesShortcut(event, item.shortcut));
     if (step) {
       consume();
-      const ids = step.extend ? siblingIds(entry) : visibleIds;
-      const next = ids[ids.indexOf(entry.id) + step.step];
+      const next = visibleIds[visibleIds.indexOf(entry.id) + step.step];
       if (next) {
-        navigation.select(visibleIds, next, entry.id, step.extend, false, ids);
+        navigation.select(visibleIds, next, entry.id, step.extend, false);
         focusRow(next);
       }
       return;
     }
-    navigation.keyDown(event, visibleIds, entry.id, null, siblingIds(entry));
+    navigation.keyDown(event, visibleIds, entry.id, null);
   };
   const groupIds = (id: string) => selection.includes(id)
     ? selectedRows.filter(entry => entry.kind === "group").map(entry => entry.id) : [id];
