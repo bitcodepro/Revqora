@@ -484,6 +484,7 @@
   background-repeat: no-repeat;
 }
 .explorer-tree > .repository-item .repository-select { min-height: 30px; padding-block: 5px; }
+.explorer-tree > .library-tree-row.active:not(.batch-selected, .workspace-drop-active) { background-color: var(--bg-explorer-current); }
 .explorer-tree > .library-tree-row .repository-label { font-weight: 600; }
 .repository-item .repository-select { touch-action: none; user-select: none; }
 .repository-item.batch-selected { background: var(--bg-selected); box-shadow: inset 2px 0 var(--accent); }
@@ -500,7 +501,7 @@
   z-index: 2;
 }
 .explorer-tree > .library-drop-before::after { top: -1px; }
-.explorer-tree > .library-drop-after::after { bottom: -1px; }
+.explorer-tree > .library-drop-after::after { top: calc(100% + var(--drop-subtree-height, 0px) - 1px); }
 .explorer-root-drop {
   display: grid;
   place-items: center;

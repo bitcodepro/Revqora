@@ -1,10 +1,11 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
-import { treeSubtreeIds, type TreeEntry, type TreePlacement } from "./libraryTree";
+import { repositoryKey, type ExplorerPlacement, type RepositoryGroup } from "./repositoryLibrary";
 
 interface DropTarget<T> {
   element: HTMLElement;
   value: T;
   position?: "before" | "after";
+  subtreeHeight?: number;
   hint?: string;
 }
 
@@ -33,14 +34,21 @@ export function useLibraryPointerDrag() {
       marker.className = "repository-drag-label";
       marker.textContent = label;
       const targetClass = (item: DropTarget<T>) => item.position ? `library-drop-${item.position}` : "workspace-drop-active";
-      const clearTarget = () => { if (target) target.element.classList.remove(targetClass(target)); };
+      const clearTarget = () => {
+        if (!target) return;
+        target.element.classList.remove(targetClass(target));
+        target.element.style.removeProperty("--drop-subtree-height");
+      };
       const markTarget = () => {
         const next = findTarget(doc.elementFromPoint(x, y), y);
         marker.textContent = next?.hint ?? label;
-        if (target?.element === next?.element && target?.position === next?.position) return;
+        if (target?.element === next?.element && target?.position === next?.position && target?.subtreeHeight === next?.subtreeHeight) return;
         clearTarget();
         target = next;
-        if (target) target.element.classList.add(targetClass(target));
+        if (target) {
+          target.element.classList.add(targetClass(target));
+          if (target.subtreeHeight) target.element.style.setProperty("--drop-subtree-height", `${target.subtreeHeight}px`);
+        }
       };
       const scroll = () => {
         const list = doc.elementFromPoint(x, y)?.closest<HTMLElement>(".explorer-tree");
@@ -108,7 +116,7 @@ export function useLibraryPointerDrag() {
 
 const dropRows = "[data-tree-group], [data-explorer-repository]";
 
-export function findExplorerDropElement(hit: Element | null, y: number) {
+function findExplorerDropElement(hit: Element | null, y: number) {
   const row = hit?.closest<HTMLElement>(`${dropRows}, [data-explorer-root-drop]`);
   if (row) return row;
   const tree = hit?.closest(".explorer-tree");
@@ -121,34 +129,53 @@ export function findExplorerDropElement(hit: Element | null, y: number) {
   return adjacent ?? tree.querySelector<HTMLElement>("[data-explorer-root-drop]");
 }
 
-export function dropEdge(element: HTMLElement, y: number, edge = 0.28) {
+function dropEdge(element: HTMLElement, y: number, edge = 0.28) {
   const { top, height } = element.getBoundingClientRect();
   const fraction = (y - top) / height;
   return fraction < edge ? "before" : fraction >= 1 - edge ? "after" : undefined;
 }
 
-export interface TreeDestination { parentId: string | null; placement?: TreePlacement }
+// Show an after-folder insertion line below its visible children.
+function subtreeHeight(element: HTMLElement) {
+  if (element.getAttribute("aria-expanded") !== "true") return 0;
+  const depth = Number(element.getAttribute("aria-level"));
+  let last = element;
+  let next = element.nextElementSibling;
+  while (next?.hasAttribute("aria-level") && Number(next.getAttribute("aria-level")) > depth) {
+    last = next as HTMLElement;
+    next = next.nextElementSibling;
+  }
+  return last.offsetTop + last.offsetHeight - element.offsetTop - element.offsetHeight;
+}
 
-export function findTreeDrop(
-  entries: readonly TreeEntry[],
-  ids: readonly string[],
+interface ExplorerDestination { parentId: string | null; placement?: ExplorerPlacement }
+
+export function findExplorerDrop(
+  groups: readonly RepositoryGroup[],
+  movingGroups: ReadonlySet<string>,
+  movingRepositories: ReadonlySet<string>,
 ) {
-  const moving = treeSubtreeIds(entries, ids);
-  const byId = new Map(entries.map(entry => [entry.id, entry]));
-  const lastRoot = [...entries].reverse().find(entry => !entry.parentId && !moving.has(entry.id));
-  return (hit: Element | null, y: number): DropTarget<TreeDestination> | null => {
+  const byId = new Map(groups.map(group => [group.id, group]));
+  return (hit: Element | null, y: number): DropTarget<ExplorerDestination> | null => {
     const element = findExplorerDropElement(hit, y);
     if (!element) return null;
+    const siblingRoot = element.dataset.explorerRepository;
     const id = element.dataset.treeGroup;
-    if (!id) {
-      if (element.dataset.explorerRepository && element.dataset.repositoryParent) return null;
-      return { element, hint: "Move to top level", value: { parentId: null, placement: lastRoot && { siblingId: lastRoot.id, after: true } } };
+    const name = element.getAttribute("aria-label");
+    if (siblingRoot) {
+      const parentId = element.dataset.repositoryParent || null;
+      if (movingRepositories.has(repositoryKey(siblingRoot)) || (parentId && movingGroups.has(parentId))) return null;
+      const position = dropEdge(element, y, 0.5)!;
+      return { element, position, hint: `Insert ${position} ${name}`,
+        value: { parentId, placement: { siblingRoot, after: position === "after" } } };
     }
-    const entry = byId.get(id);
-    if (!entry || moving.has(id)) return null;
+    if (!id) return { element, hint: "Move to top level", value: { parentId: null } };
+    const group = byId.get(id);
+    if (!group || movingGroups.has(id)) return null;
     const position = dropEdge(element, y);
     return position
-      ? { element, position, hint: `Insert ${position} ${entry.name}`, value: { parentId: entry.parentId ?? null, placement: { siblingId: id, after: position === "after" } } }
-      : { element, hint: `Move into ${entry.name}`, value: { parentId: id } };
+      ? { element, position, subtreeHeight: position === "after" ? subtreeHeight(element) : undefined, hint: `Insert ${position} ${group.name}`,
+        value: { parentId: group.parentId ?? null, placement: { siblingId: id, after: position === "after" } } }
+      : { element, hint: `Move into ${group.name}`, value: { parentId: id } };
   };
 }

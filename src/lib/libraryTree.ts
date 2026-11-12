@@ -36,7 +36,14 @@ function ancestorIds(parents: Map<string, string | null | undefined>, id: string
   return result;
 }
 
-export function visibleTree<T extends TreeEntry>(entries: readonly T[], isMatch: (entry: T) => boolean, isCollapsed: (entry: T) => boolean, filtering: boolean, expandMatches = filtering) {
+export function visibleTree<T extends TreeEntry>(
+  entries: readonly T[],
+  isMatch: (entry: T) => boolean,
+  isCollapsed: (entry: T) => boolean,
+  filtering: boolean,
+  expandMatches = filtering,
+  orderSiblings?: (entries: T[], parentId: string | null) => T[],
+) {
   const keep = new Set<string>();
   const children = new Map<string | null, T[]>();
   const parents = new Map(entries.map(entry => [entry.id, entry.parentId]));
@@ -50,6 +57,7 @@ export function visibleTree<T extends TreeEntry>(entries: readonly T[], isMatch:
       if (filtering) ancestorIds(parents, entry.id).forEach(id => keep.add(id));
     }
   }
+  if (orderSiblings) for (const [parent, siblings] of children) children.set(parent, orderSiblings(siblings, parent));
   const result: { entry: T; depth: number; hasChildren: boolean; expanded: boolean }[] = [];
   const pending = (children.get(null) ?? []).slice().reverse().map(entry => ({ entry, depth: 0 }));
   while (pending.length) {

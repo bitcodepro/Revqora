@@ -1,8 +1,8 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Pencil, Search, Star, Trash2, Unlink, X } from "lucide-react";
-import { defaultGroupRoots, repositoryKey, uniqueRoots, useLibrary, type RepositoryGroup, type RepositoryPlacement } from "../lib/repositoryLibrary";
+import { ChevronDown, ChevronRight, Folder, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Pencil, Search, Star, Trash2, Unlink, X } from "lucide-react";
+import { defaultGroupRoots, explorerRepositoryKey, orderExplorerSiblings, repositoryKey, uniqueRoots, useLibrary, type RepositoryGroup, type RepositoryPlacement } from "../lib/repositoryLibrary";
 import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
-import { findTreeDrop, useLibraryPointerDrag } from "../lib/libraryDrag";
+import { findExplorerDrop, useLibraryPointerDrag } from "../lib/libraryDrag";
 import { recordExplorerMove, useRepositoryDrag } from "../lib/explorerMoves";
 import { basename } from "../lib/format";
 import { useSettings } from "../lib/settings";
@@ -26,7 +26,7 @@ type ExplorerEntry =
 export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const groups = useLibrary(s => s.groups), known = useLibrary(s => s.knownRoots);
   const activeGroup = useLibrary(s => s.activeGroupId), names = useLibrary(s => s.repositoryNames);
-  const favorites = useLibrary(s => s.favorites);
+  const favorites = useLibrary(s => s.favorites), explorerOrder = useLibrary(s => s.explorerOrder);
   const order = useRepos(s => s.order), tabs = useRepos(s => s.tabs), active = useRepos(s => s.active);
   const overview = useUi(s => s.repositoryOverview);
   const favoritesOnly = useSettings(s => s.explorerFavoritesOnly);
@@ -61,7 +61,9 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     const favorite = favoriteKeys.has(repositoryKey(entry.root)) || !!entry.parentId && !!favoriteGroups?.has(entry.parentId);
     return (!incomingOnly || incoming.has(entry.root)) && (!favoritesOnly || favorite) && `${entry.name} ${entry.root}`.toLowerCase().includes(search);
   }, entry => entry.kind === "group" && (favoritesOnly ? collapsedFavorites.has(entry.id) : entry.group.collapsed),
-    !!search || favoritesOnly || incomingOnly, !favoritesOnly && (!!search || incomingOnly));
+    !!search || favoritesOnly || incomingOnly, !favoritesOnly && (!!search || incomingOnly),
+    (siblings, parentId) => orderExplorerSiblings(siblings, explorerOrder[parentId ?? ""],
+      entry => entry.kind === "group" ? entry.id : explorerRepositoryKey(entry.root)));
   const selectedRows = rows.filter(({ entry }) => selection.includes(entry.id)).map(({ entry }) => entry);
   const selectionContext = (entry: ExplorerEntry) => {
     const peers = rows.map(row => row.entry).filter(row => row.kind === entry.kind);
@@ -155,7 +157,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
         };
         const startDrag = (event: React.PointerEvent<HTMLElement>) => {
           const ids = groupIds(group.id);
-          folderDrag.start(event, group.name, findTreeDrop(groups, ids), target => {
+          const findTarget = findExplorerDrop(groups, treeSubtreeIds(groups, ids), new Set());
+          folderDrag.start(event, group.name, findTarget, target => {
             try { recordExplorerMove(() => library().moveGroups(ids, target.parentId, target.placement)); }
             catch (error) { toast.error(error); }
           });
@@ -180,7 +183,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
             onPointerDown={startDrag} onKeyDown={event => selectionKeys(event, entry)}
             onDoubleClick={event => { if (hasChildren && !event.ctrlKey && !event.metaKey && !event.shiftKey) toggle(); }}
             onClick={event => { if (!folderDrag.suppressClick.current) select(event, entry, () => library().selectGroup(group.id)); }}>
-            {expanded && hasChildren ? <FolderOpen size={15}/> : <Folder size={15}/>}
+            <Folder size={15}/>
             <span className="repository-label">{group.name}</span>
           </button>
           <button type="button" className={`icon-btn sm repository-star ${group.favorite ? "active" : ""}`}

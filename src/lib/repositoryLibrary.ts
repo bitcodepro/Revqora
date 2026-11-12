@@ -12,13 +12,16 @@ export interface RepositoryGroup extends TreeEntry {
 }
 export interface FolderGroup { folder: string; roots: string[]; parentFolder?: string | null }
 export interface RepositoryPlacement { root: string; groupId: string | null }
-export interface RepositoryDropPlacement { siblingRoot: string; after: boolean }
+export type ExplorerPlacement = TreePlacement | { siblingRoot: string; after: boolean };
+type ExplorerOrder = Record<string, string[]>;
 export interface LibraryData {
   knownRoots: string[];
   repositoryNames: Record<string, string>;
   favorites: string[];
   groups: RepositoryGroup[];
   activeGroupId: string | null;
+  explorerOrder: ExplorerOrder;
+  manuallyPlacedRoots: string[];
 }
 
 /** Windows identities are case insensitive; Unix identities are not. */
@@ -78,7 +81,13 @@ export function restoreLibrary(value: unknown): LibraryData {
     return name ? [[key, name]] : [];
   }));
   const requested = raw.activeGroupId === undefined ? raw.activeWorkspaceId : raw.activeGroupId;
-  return { knownRoots, repositoryNames, favorites, groups, activeGroupId: groups.find(group => group.id === requested)?.id ?? null };
+  const savedOrder = record(raw.explorerOrder);
+  const explorerOrder = Object.fromEntries(["", ...groups.map(group => group.id)].flatMap(id => {
+    const order = savedOrder[id];
+    return Array.isArray(order) ? [[id, [...new Set(order.filter((key): key is string => typeof key === "string"))]]] : [];
+  }));
+  return { knownRoots, repositoryNames, favorites, groups, explorerOrder, manuallyPlacedRoots: uniqueRoots(raw.manuallyPlacedRoots),
+    activeGroupId: groups.find(group => group.id === requested)?.id ?? null };
 }
 
 function availableGroupName(base: string, names: string[]) {
@@ -130,6 +139,49 @@ export function defaultGroupRoots(roots: string[], groups: readonly RepositoryGr
   return roots.filter(root => !assigned.has(repositoryKey(root)));
 }
 
+// Group IDs are unquoted; repository IDs use the canonical path and cannot collide with them.
+export const explorerRepositoryKey = (root: string) => JSON.stringify(repositoryKey(root));
+
+function placementKey(placement?: ExplorerPlacement): TreePlacement | undefined {
+  return placement && ("siblingRoot" in placement
+    ? { siblingId: explorerRepositoryKey(placement.siblingRoot), after: placement.after }
+    : placement);
+}
+
+export function orderExplorerSiblings<T>(items: T[], order: readonly string[] | undefined, key: (item: T) => string): T[] {
+  if (!Array.isArray(order) || !order.length) return items;
+  const ranks = new Map(order.map((id, index) => [id, index]));
+  return items.slice().sort((a, b) => (ranks.get(key(a)) ?? order.length) - (ranks.get(key(b)) ?? order.length));
+}
+
+function explorerChildKeys(data: LibraryData, parentId: string | null): string[] {
+  const groups = data.groups.filter(group => (group.parentId ?? null) === parentId).map(group => group.id);
+  const roots = parentId
+    ? data.groups.find(group => group.id === parentId)?.roots ?? []
+    : defaultGroupRoots(data.knownRoots, data.groups);
+  return [...groups, ...roots.map(explorerRepositoryKey)];
+}
+
+function explorerPlacement(before: LibraryData, after: LibraryData, parentId: string | null, moving: string[], placement?: ExplorerPlacement): ExplorerOrder {
+  const anchorPlacement = placementKey(placement);
+  const parentKey = parentId ?? "";
+  const siblings = orderExplorerSiblings(explorerChildKeys(before, parentId), before.explorerOrder[parentKey], key => key);
+  const moved = new Set(moving);
+  const remaining = siblings.filter(key => !moved.has(key));
+  const anchor = anchorPlacement ? remaining.indexOf(anchorPlacement.siblingId) : remaining.length;
+  if (anchor < 0) throw Error("Choose an existing destination.");
+  remaining.splice(anchor + Number(anchorPlacement?.after ?? false), 0, ...moving);
+
+  const explorerOrder = { ...before.explorerOrder, [parentKey]: remaining };
+  // Forget positions in source folders whose children have moved away.
+  for (const [parent, order] of Object.entries(before.explorerOrder)) {
+    if (parent === parentKey || !order.some(key => moved.has(key))) continue;
+    const children = new Set(explorerChildKeys(after, parent || null));
+    explorerOrder[parent] = order.filter(key => children.has(key));
+  }
+  return explorerOrder;
+}
+
 interface LibraryStore extends LibraryData {
   remember: (root: string, alias?: string) => void;
   renameRepository: (root: string, name: string) => void;
@@ -138,10 +190,10 @@ interface LibraryStore extends LibraryData {
   group: (name: string, id?: string) => string;
   createGroup: (name: string, roots: string[], groupIds: string[], parentId?: string | null) => string;
   importGroups: (roots: string[], folders: FolderGroup[]) => void;
-  moveGroups: (ids: string[], parentId: string | null, placement?: TreePlacement) => void;
+  moveGroups: (ids: string[], parentId: string | null, placement?: ExplorerPlacement) => void;
   move: (root: string, id: string | null) => void;
   addToGroup: (roots: string[], id: string) => void;
-  moveRepositories: (repositories: RepositoryPlacement[], to: string | null, placement?: RepositoryDropPlacement) => void;
+  moveRepositories: (repositories: RepositoryPlacement[], to: string | null, placement?: ExplorerPlacement) => void;
   removeFromGroups: (roots: string[], id?: string) => void;
   collapse: (id: string) => void;
   selectGroup: (id: string | null) => void;
@@ -168,8 +220,13 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
       repositoryNames[to] ??= repositoryNames[from];
       delete repositoryNames[from];
     }
+    const fromExplorer = JSON.stringify(from), toExplorer = JSON.stringify(to);
+    const explorerOrder = from === to ? s.explorerOrder : Object.fromEntries(
+      Object.entries(s.explorerOrder).map(([parentId, order]) => [parentId, [...new Set(order.map(id =>
+        id === fromExplorer ? toExplorer : id))]]),
+    );
     set({ knownRoots: uniqueRoots([...list(s.knownRoots), root]), repositoryNames, favorites: list(s.favorites),
-      groups: s.groups.map(g => ({ ...g, roots: list(g.roots) })) });
+      groups: s.groups.map(g => ({ ...g, roots: list(g.roots) })), explorerOrder, manuallyPlacedRoots: list(s.manuallyPlacedRoots) });
   },
   renameRepository: (root, name) => set(s => {
     const repositoryNames = { ...s.repositoryNames }, key = repositoryKey(root), next = validName(name);
@@ -196,59 +253,66 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
     if (parentId && !s.groups.some(g => g.id === parentId)) throw Error("Choose an existing parent group.");
     const group = { id, name: checkedName(name, siblings(s.groups, parentId)), parentId, roots: members, collapsed: false };
     const groups = [...s.groups.map(g => ({ ...g, roots: g.roots.filter(root => !keys.has(repositoryKey(root))), collapsed: g.id === parentId ? false : g.collapsed })), group];
-    set({ groups: groupIds.length ? moveTreeEntries(groups, groupIds, id) : groups, knownRoots: uniqueRoots([...s.knownRoots, ...members]) });
+    set({ groups: groupIds.length ? moveTreeEntries(groups, groupIds, id) : groups, knownRoots: uniqueRoots([...s.knownRoots, ...members]),
+      manuallyPlacedRoots: uniqueRoots([...s.manuallyPlacedRoots, ...members]) });
     return id;
   },
   importGroups: (roots, folders) => set(s => {
     const groups = [...s.groups];
+    const manuallyPlaced = new Set(s.manuallyPlacedRoots.map(repositoryKey));
     for (const { folder, roots: members, existing, id, name, parentId } of planFolderGroups(s.groups, folders)) {
       const next = { ...existing, id, name, parentId, importedFrom: folder, collapsed: existing?.collapsed ?? false,
-        roots: uniqueRoots([...(existing?.roots ?? []), ...members]) };
+        roots: uniqueRoots([...(existing?.roots ?? []), ...members.filter(root => !manuallyPlaced.has(repositoryKey(root)))]) };
       if (existing) groups[groups.indexOf(existing)] = next;
       else groups.push(next);
     }
     return { groups: repairTree(groups), knownRoots: uniqueRoots([...s.knownRoots, ...roots]) };
   }),
-  moveGroups: (ids, parentId, placement) => set(s => ({
-    groups: moveTreeEntries(s.groups, ids, parentId, placement).map(group =>
-      group.id === parentId && !placement && group.collapsed ? { ...group, collapsed: false } : group),
-  })),
+  moveGroups: (ids, parentId, placement) => set(s => {
+    const groupPlacement = placement && "siblingId" in placement ? placement : undefined;
+    const moved = moveTreeEntries(s.groups, ids, parentId, groupPlacement);
+    const previousGroups = new Set(s.groups);
+    const moving = new Set(moved.filter(group => !previousGroups.has(group)).map(group => group.id));
+    const groups = moved.map(group => group.id === parentId && !placement && group.collapsed ? { ...group, collapsed: false } : group);
+    const movedIds = [...new Set(ids)].filter(id => moving.has(id));
+    return { groups, explorerOrder: explorerPlacement(s, { ...s, groups }, parentId, movedIds, placement) };
+  }),
   move: (root, id) => set(s => {
     if (id && !s.groups.some(group => group.id === id)) return s;
-    return { knownRoots: uniqueRoots([...s.knownRoots, root]), groups: s.groups.map(group => ({
+    return { knownRoots: uniqueRoots([...s.knownRoots, root]), manuallyPlacedRoots: uniqueRoots([...s.manuallyPlacedRoots, root]), groups: s.groups.map(group => ({
       ...group, roots: [...group.roots.filter(path => repositoryKey(path) !== repositoryKey(root)), ...(group.id === id ? [root] : [])],
     })) };
   }),
   addToGroup: (roots, id) => set(s => {
     if (!s.groups.some(g => g.id === id)) return s;
-    return { knownRoots: uniqueRoots([...s.knownRoots, ...roots]),
+    return { knownRoots: uniqueRoots([...s.knownRoots, ...roots]), manuallyPlacedRoots: uniqueRoots([...s.manuallyPlacedRoots, ...roots]),
       groups: s.groups.map(g => g.id === id ? { ...g, roots: uniqueRoots([...g.roots, ...roots]) } : g) };
   }),
   moveRepositories: (repositories, to, placement) => set(s => {
     if (to && !s.groups.some(group => group.id === to)) return s;
-    const moving = placement ? repositories : repositories.filter(item => item.groupId !== to);
-    const roots = uniqueRoots(moving.map(item => item.root));
+    const roots = uniqueRoots(repositories.map(item => item.root));
     if (!roots.length) return s;
     const movingKeys = new Set(roots.map(repositoryKey));
-    const sibling = placement && repositoryKey(placement.siblingRoot);
+    const repoPlacement = placement && "siblingRoot" in placement ? placement : undefined;
+    const sibling = repoPlacement && repositoryKey(repoPlacement.siblingRoot);
     if (sibling) {
       const destination = to ? s.groups.find(group => group.id === to)!.roots : defaultGroupRoots(s.knownRoots, s.groups);
       if (movingKeys.has(sibling) || !destination.some(root => repositoryKey(root) === sibling)) return s;
     }
     const insert = (existing: string[]) => {
-      if (!placement) return uniqueRoots([...existing, ...roots]);
+      if (!repoPlacement) return uniqueRoots([...existing, ...roots]);
       const result = existing.filter(root => !movingKeys.has(repositoryKey(root)));
       const index = result.findIndex(root => repositoryKey(root) === sibling);
-      result.splice(index + Number(placement.after), 0, ...roots);
+      result.splice(index + Number(repoPlacement.after), 0, ...roots);
       return result;
     };
     const sources = new Map<string | null, Set<string>>();
-    for (const { root, groupId } of moving) {
+    for (const { root, groupId } of repositories) {
       const keys = sources.get(groupId) ?? new Set();
       keys.add(repositoryKey(root));
       sources.set(groupId, keys);
     }
-    const knownRoots = !to && placement ? insert(s.knownRoots) : uniqueRoots([...s.knownRoots, ...roots]);
+    const knownRoots = !to && repoPlacement ? insert(s.knownRoots) : uniqueRoots([...s.knownRoots, ...roots]);
     const groups = s.groups.map(group => {
       const keys = to ? sources.get(group.id) : movingKeys;
       const members = group.id === to ? insert(group.roots) : keys ? group.roots.filter(root => !keys.has(repositoryKey(root))) : group.roots;
@@ -256,14 +320,17 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
       return collapsed === group.collapsed && members.length === group.roots.length && members.every((root, i) => root === group.roots[i])
         ? group : { ...group, roots: members, collapsed };
     });
-    const changes: Partial<LibraryData> = {};
-    if (knownRoots.length !== s.knownRoots.length || knownRoots.some((root, i) => root !== s.knownRoots[i])) changes.knownRoots = knownRoots;
-    if (groups.some((group, i) => group !== s.groups[i])) changes.groups = groups;
-    return changes.groups || changes.knownRoots ? changes : s;
+    const manual = repositories.filter(item => item.groupId !== to).map(item => item.root);
+    return {
+      knownRoots: knownRoots.length === s.knownRoots.length && knownRoots.every((root, i) => root === s.knownRoots[i]) ? s.knownRoots : knownRoots,
+      groups: groups.every((group, i) => group === s.groups[i]) ? s.groups : groups,
+      manuallyPlacedRoots: manual.length ? uniqueRoots([...s.manuallyPlacedRoots, ...manual]) : s.manuallyPlacedRoots,
+      explorerOrder: explorerPlacement(s, { ...s, groups, knownRoots }, to, roots.map(explorerRepositoryKey), placement),
+    };
   }),
   removeFromGroups: (roots, id) => set(s => {
     const keys = new Set(roots.map(repositoryKey));
-    return { groups: s.groups.map(g => id === undefined || g.id === id ? { ...g, roots: g.roots.filter(root => !keys.has(repositoryKey(root))) } : g) };
+    return { manuallyPlacedRoots: uniqueRoots([...s.manuallyPlacedRoots, ...roots]), groups: s.groups.map(g => id === undefined || g.id === id ? { ...g, roots: g.roots.filter(root => !keys.has(repositoryKey(root))) } : g) };
   }),
   collapse: id => set(s => ({ groups: s.groups.map(g => g.id === id ? { ...g, collapsed: !g.collapsed } : g) })),
   selectGroup: id => set(s => ({ activeGroupId: s.groups.some(group => group.id === id) ? id : null })),
@@ -274,8 +341,9 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
   }),
 }), {
   name: "revqora.repositories",
-  version: 2,
-  partialize: ({ knownRoots, repositoryNames, favorites, groups, activeGroupId }) => ({ knownRoots, repositoryNames, favorites, groups, activeGroupId }),
+  version: 3,
+  partialize: ({ knownRoots, repositoryNames, favorites, groups, activeGroupId, explorerOrder, manuallyPlacedRoots }) =>
+    ({ knownRoots, repositoryNames, favorites, groups, activeGroupId, explorerOrder, manuallyPlacedRoots }),
   migrate: restoreLibrary,
   merge: (stored, current) => ({ ...current, ...restoreLibrary(stored) }),
 }));

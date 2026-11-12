@@ -8,7 +8,7 @@ import { useNavigationSelection } from "../lib/navigationSelection";
 import { useRepositoryDrag } from "../lib/explorerMoves";
 import { activateRepository as activate, matchesGroupShortcut, renameRepositoryOnKey, repositoryMenu, RepositoryNavigationRow } from "./RepositoryNavigationRow";
 import { useSettings } from "../lib/settings";
-import { ArrowDownToLine, Check, CircleAlert, FolderGit2, FolderSearch, GitBranch, LayoutGrid, Plus, RefreshCw, Search, X } from "lucide-react";
+import { ArrowDownToLine, Check, CircleAlert, FolderGit2, FolderSearch, GitBranch, Plus, RefreshCw, Search, X } from "lucide-react";
 import { api, errorMessage, newOpId } from "../lib/api";
 import * as A from "../lib/actions";
 import { basename, relativeTime } from "../lib/format";
@@ -204,7 +204,6 @@ export function RepositorySidebar() {
       {groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupId ?? ""} onChange={event => library.selectGroup(event.target.value || null)}><option value="">All repositories</option>{groups.map(({ entry, depth }) => <option key={entry.id} value={entry.id}>{"　".repeat(depth)}{entry.name}</option>)}</select>}
       {!search && !filterUpdates && !favoritesOnly && !groupFilter && <SyncButtons roots={order} />}
       <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites{favoritesOnly ? " · Show all" : ""}</button>
-      <button className={`repository-overview-link ${overview ? "active" : ""}`} aria-pressed={overview} onClick={() => { clearSelection(); toggleRepositoryOverview(); }}><LayoutGrid size={14} /> All repositories</button>
       {selected.length > 0 && <small className="repository-selection-note">{selected.length} selected</small>}
       <div className="repository-list" role="list" aria-label="Open repositories" onClick={event => {
         if (!(event.target as HTMLElement).closest("button")) clearSelection();

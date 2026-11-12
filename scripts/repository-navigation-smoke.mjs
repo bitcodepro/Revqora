@@ -91,6 +91,11 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   for (const name of ["api", "worker", "extension"]) await repo(name).waitFor();
   assert.equal(await repo("platform").count(), 0);
   assert.equal(await flat.locator(".repository-group").count(), 0);
+  assert.equal(await flat.getByRole("button", { name: "All repositories", exact: true }).count(), 0);
+  await explorer.getByRole("textbox", { name: "Find in Explorer" }).hover();
+  const activeFolder = group("product");
+  assert.equal(await folder("product").getAttribute("aria-current"), "true");
+  assert.notEqual(await activeFolder.evaluate(row => getComputedStyle(row).backgroundColor), "rgba(0, 0, 0, 0)");
   assert.equal(await explorer.getByRole("treeitem", { name: "Default group", exact: true }).count(), 0);
   await shot?.("explorer-and-flat-repositories");
 

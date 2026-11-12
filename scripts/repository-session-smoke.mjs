@@ -64,13 +64,13 @@ export async function repositorySessionSmoke({ page, work, shot, template }) {
     if (await page.locator('[data-repository-state="unavailable"]').count()) throw Error("A real fixture repository could not be opened");
     console.log(`40-repository native restore and selection verified in ${Date.now() - started}ms (including held-response assertions and screenshot)`);
     await shot("session-40-loaded");
-    await page.locator(".repository-overview-link").click();
+    const overview = page.locator(".topbar").getByRole("button", { name: "All repositories", exact: true });
+    await overview.click();
     await page.waitForFunction(() => {
       const rows = [...document.querySelectorAll(".repository-table tbody tr")];
       return rows.length === 40 && rows.every(row => row.children[3]?.textContent.trim() === "Clean");
     });
     await shot("session-40-overview");
-    const overview = page.locator(".topbar").getByRole("button", { name: "All repositories", exact: true });
     await overview.click();
     await page.locator(".repository-overview").waitFor({ state: "detached" });
     await overview.click();
