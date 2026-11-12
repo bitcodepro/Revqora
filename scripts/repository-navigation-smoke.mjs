@@ -78,7 +78,7 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await treeRepo("extension").waitFor({ state: "detached" });
   await group("product").getByRole("button", { name: "Expand product", exact: true }).click();
 
-  await drag(group("plugins").locator(".library-drag-handle"), explorer.locator(".repository-overview-link"));
+  await drag(folder("plugins"), explorer.locator("[data-explorer-root-drop]"));
   assert.equal((await library()).groups.find(item => item.id === id("plugins")).parentId, null);
   await drag(group("plugins").locator(".library-drag-handle"), group("navigation-projects"), 0.08, "library-drop-before");
   const ordered = (await library()).groups.map(item => item.id);
@@ -93,6 +93,16 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   assert.equal(await flat.locator(".repository-group").count(), 0);
   assert.equal(await explorer.getByRole("treeitem", { name: "Default group", exact: true }).count(), 0);
   await shot?.("explorer-and-flat-repositories");
+
+  const flatRows = flat.locator(".repository-select");
+  await flatRows.first().click();
+  await flatRows.last().click({ modifiers: ["Shift"] });
+  assert.equal(await flat.locator(".repository-item.batch-selected").count(), 3);
+  await page.keyboard.press("Escape");
+  assert.equal(await flat.locator(".repository-item.batch-selected").count(), 0);
+  await flatRows.first().click({ modifiers: ["Control"] });
+  await flat.locator(".repository-list").evaluate(list => list.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  assert.equal(await flat.locator(".repository-item.batch-selected").count(), 0);
 
   await folder("product").press("F2");
   const renameGroup = page.getByRole("dialog", { name: "Rename group", exact: true });
@@ -143,7 +153,10 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await treeRepo("worker").locator(".repository-select").click({ modifiers: ["Control"] });
   await choose(treeRepo("worker").locator(".repository-select"), "Create group");
   await create("Selected repositories");
-  assert.deepEqual((await library()).groups.find(item => item.name === "Selected repositories").roots.map(root => path.basename(root)).sort(), ["api", "worker"]);
+  const selectedGroup = async () => (await library()).groups.find(item => item.name === "Selected repositories");
+  assert.deepEqual((await selectedGroup()).roots.map(root => path.basename(root)), ["api", "worker"]);
+  await drag(treeRepo("worker").locator(".repository-select"), treeRepo("api"), 0.08, "library-drop-before");
+  assert.deepEqual((await selectedGroup()).roots.map(root => path.basename(root)), ["worker", "api"]);
   const worker = treeRepo("worker").locator(".repository-select");
   const destination = page.locator(".ctx-item").getByText("Context root", { exact: true });
   await openSubmenu(page, () => worker.click({ button: "right" }), menu("Add to group"), destination);

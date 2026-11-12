@@ -67,6 +67,24 @@ describe("Explorer library", () => {
     expect(useLibrary.getState().groups.find(item => item.id === destination)?.name).toBe("Renamed");
   });
 
+  it("reorders repositories in a group and moves them to a visible top-level position", () => {
+    const library = useLibrary.getState();
+    library.remember("/loose");
+    const group = library.createGroup("Group", ["/one", "/two"], []);
+    const extra = library.createGroup("Other membership", [], []);
+    library.addToGroup(["/two"], extra);
+    const move = [{ root: "/two", groupId: group }];
+    recordExplorerMove(() => library.moveRepositories(move, group, { siblingRoot: "/one", after: false }));
+    expect(groupRepositoryRoots(useLibrary.getState().groups, group)).toEqual(["/two", "/one"]);
+    recordExplorerMove(() => library.moveRepositories(move, null, { siblingRoot: "/loose", after: false }));
+    const moved = useLibrary.getState();
+    expect(defaultGroupRoots(moved.knownRoots, moved.groups)).toEqual(["/two", "/loose"]);
+    expect(groupRepositoryRoots(moved.groups, extra)).toEqual([]);
+    expect(undoExplorerMove()).toBe(true);
+    expect(groupRepositoryRoots(useLibrary.getState().groups, group)).toEqual(["/two", "/one"]);
+    expect(groupRepositoryRoots(useLibrary.getState().groups, extra)).toEqual(["/two"]);
+  });
+
   it("deletes a subtree, clears its filter and returns its repositories to the default group", () => {
     const library = useLibrary.getState();
     const parent = library.createGroup("Parent", ["/one"], []);

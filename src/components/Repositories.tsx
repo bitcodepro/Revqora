@@ -1,9 +1,10 @@
 import { useLibrary, uniqueRoots, repositoryKey, groupRepositoryRoots } from "../lib/repositoryLibrary";
-import { treeSelection, treeSubtreeIds, visibleTree } from "../lib/libraryTree";
+import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
 import { groupEditorDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
 import { SyncButton } from "./SyncRepositories";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigationSelection } from "../lib/navigationSelection";
 import { useRepositoryDrag } from "../lib/explorerMoves";
 import { activateRepository as activate, matchesGroupShortcut, renameRepositoryOnKey, repositoryMenu, RepositoryNavigationRow } from "./RepositoryNavigationRow";
 import { useSettings } from "../lib/settings";
@@ -144,9 +145,9 @@ function SyncButtons({ roots }: { roots: string[] }) {
   const busy = useUi((s) => s.busy.length > 0);
   return (
     <div className="repository-sync">
-      <SyncButton roots={roots} label="Sync all" />
-      <button className="btn sm" disabled={busy || !roots.length} onClick={() => void fetchRepositories(roots)}><RefreshCw size={13} /> Fetch all</button>
-      <button className="btn sm" disabled={busy || !roots.length} onClick={() => void pullRepositories(roots)}><ArrowDownToLine size={13} /> Pull all</button>
+      <SyncButton roots={roots} label="Sync all" shortcut="sync-all" />
+      <button className="btn sm" data-shortcut="fetch-all" disabled={busy || !roots.length} onClick={() => void fetchRepositories(roots)}><RefreshCw size={13} /> Fetch all</button>
+      <button className="btn sm" data-shortcut="pull-all" disabled={busy || !roots.length} onClick={() => void pullRepositories(roots)}><ArrowDownToLine size={13} /> Pull all</button>
     </div>
   );
 }
@@ -163,8 +164,8 @@ export function RepositorySidebar() {
   const library = useLibrary();
   const groupId = library.activeGroupId;
   const actionsCollapsed = useSettings(s => s.repositoryActionsCollapsed);
-  const [selection, setSelection] = useState<string[]>([]);
-  const selectionAnchor = useRef<string | null>(null);
+  const navigation = useNavigationSelection<HTMLDivElement>();
+  const { selection, clear: clearSelection } = navigation;
   const drag = useRepositoryDrag();
   const { mode, layout: { repositoriesWidth: width }, setLayout: set } = useWorkspaceLayout();
   const [w, setW] = useState(width);
@@ -197,16 +198,16 @@ export function RepositorySidebar() {
     return ids.map(groupId => ({ root, groupId }));
   });
   return (
-    <div className="repository-sidebar" style={{ width: w }}>
+    <div ref={navigation.panel} className="repository-sidebar" style={{ width: w }}>
       <header onContextMenu={panelMenu}><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{candidates.length}</span><div className="spacer" /><button className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
       <div className="repository-filter input-wrap"><Search size={13} /><input className="input sm" placeholder="Find repository…" aria-label="Find repository" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupId ?? ""} onChange={event => library.selectGroup(event.target.value || null)}><option value="">All repositories</option>{groups.map(({ entry, depth }) => <option key={entry.id} value={entry.id}>{"　".repeat(depth)}{entry.name}</option>)}</select>}
       {!search && !filterUpdates && !favoritesOnly && !groupFilter && <SyncButtons roots={order} />}
       <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites{favoritesOnly ? " · Show all" : ""}</button>
-      <button className={`repository-overview-link ${overview ? "active" : ""}`} aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={14} /> All repositories</button>
+      <button className={`repository-overview-link ${overview ? "active" : ""}`} aria-pressed={overview} onClick={() => { clearSelection(); toggleRepositoryOverview(); }}><LayoutGrid size={14} /> All repositories</button>
       {selected.length > 0 && <small className="repository-selection-note">{selected.length} selected</small>}
-      <div className="repository-list" role="list" aria-label="Open repositories" onKeyDown={e => {
-        if (e.key === "Escape" && selection.length) { setSelection([]); selectionAnchor.current = null; }
+      <div className="repository-list" role="list" aria-label="Open repositories" onClick={event => {
+        if (!(event.target as HTMLElement).closest(".repository-item")) clearSelection();
       }}>
         {visible.map(root => {
           const roots = selected.includes(root) ? selected : [root];
@@ -214,19 +215,12 @@ export function RepositorySidebar() {
           return <RepositoryNavigationRow key={root} root={root} name={displayName(root)} tab={tabs[root]}
             current={root === active && !overview} selected={selected.includes(root)} selection={roots}
             groupId={source.length === 1 ? source[0].groupId ?? undefined : groupId ?? undefined}
-            createGroup={() => void groupEditorDialog({ roots, parentId: groupId, onCreated: () => setSelection([]) })}
+            createGroup={() => void groupEditorDialog({ roots, parentId: groupId, onCreated: clearSelection })}
             onPointerDown={event => drag.start(event, placements(roots))}
+            onSelectionKeyDown={event => navigation.keyDown(event, visible, root, active)}
             onClick={event => {
               if (drag.suppressClick.current) return;
-              const toggle = event.ctrlKey || event.metaKey;
-              if (toggle || event.shiftKey) {
-                setSelection(treeSelection(visible, selected, selectionAnchor.current, root, event.shiftKey, toggle));
-                if (!event.shiftKey || !selectionAnchor.current) selectionAnchor.current = root;
-              } else {
-                selectionAnchor.current = root;
-                setSelection([]);
-                activate(root);
-              }
+              if (!navigation.select(visible, root, active, event.shiftKey, event.ctrlKey || event.metaKey)) activate(root);
             }}/>;
         })}
         {!visible.length && <div className="cg-empty">No matching repositories</div>}
@@ -252,8 +246,8 @@ export function RepositoryOverview() {
   const active = useRepos((s) => s.active);
   const busy = useUi((s) => s.busy.length > 0);
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<string[]>([]);
-  const anchor = useRef<string | null>(null);
+  const navigation = useNavigationSelection<HTMLDivElement>();
+  const { selection: selected, clear: clearSelection } = navigation;
   const groupId = useLibrary(s => s.activeGroupId);
   const groups = useLibrary(s => s.groups);
   const group = groups.find(g => g.id === groupId);
@@ -262,32 +256,31 @@ export function RepositoryOverview() {
   const scoped = order.filter(root => !groupKeys || groupKeys.has(repositoryKey(root)));
   const visible = scoped.filter(root => `${root} ${displayName(root)}`.toLowerCase().includes(query.trim().toLowerCase()));
   const select = (e: React.MouseEvent, root: string) => {
-    const toggle = e.ctrlKey || e.metaKey;
-    if (e.shiftKey || toggle) {
-      setSelected(treeSelection(visible, selected.filter(r => visible.includes(r)), anchor.current, root, e.shiftKey, toggle));
-      if (!e.shiftKey || !anchor.current) anchor.current = root;
-    } else { anchor.current = root; setSelected([]); activate(root); }
+    if (!navigation.select(visible, root, active, e.shiftKey, e.ctrlKey || e.metaKey)) activate(root);
   };
   const incoming = scoped.filter(root => !!repositorySidebarStatus(tabs[root])?.behind).length;
   return (
-    <div className="repository-overview">
-      <header><div><h2>Repositories</h2><span className="faint">{group?.name ?? "All repositories"} · {scoped.length} open · {incoming} with incoming commits</span></div><div className="spacer" />{!query.trim() && !group && <SyncButtons roots={order} />}<button className="btn sm" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button><button type="button" className="icon-btn" title="Close repository overview" aria-label="Close repository overview" onClick={toggleRepositoryOverview}><X size={16}/></button></header>
+    <div ref={navigation.panel} className="repository-overview">
+      <header><div><h2>Repositories</h2><span className="faint">{group?.name ?? "All repositories"} · {scoped.length} open · {incoming} with incoming commits</span></div><div className="spacer" />{!query.trim() && !group && <SyncButtons roots={order} />}<button className="btn sm" data-shortcut="open" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button><button type="button" className="icon-btn" title="Close repository overview" aria-label="Close repository overview" onClick={toggleRepositoryOverview}><X size={16}/></button></header>
       <div className="repository-overview-search input-wrap"><Search size={14} /><input className="input" placeholder="Find repository…" aria-label="Find repository in overview" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {group && <button className="btn sm" type="button" onClick={() => useLibrary.getState().selectGroup(null)}>Clear group filter · {group.name}</button>}
-      <div className="repository-table-scroll">
+      <div className="repository-table-scroll" onClick={event => {
+        if (!(event.target as HTMLElement).closest("tr")) clearSelection();
+      }}>
         <table className="repository-table">
           <thead><tr><th>Repository</th><th>Current branch</th><th>Incoming / outgoing</th><th>Working copy</th><th>Last fetch</th><th /></tr></thead>
           <tbody>
             {visible.map((r) => { const t = tabs[r], status = repositorySidebarStatus(t); return (
               <tr key={r} className={`${r === active ? "active" : ""} ${selected.includes(r) ? "batch-selected" : ""}`} onKeyDown={e => {
-                if (e.key === "Escape") setSelected([]);
+                navigation.keyDown(e, visible, r, active);
+                if (e.defaultPrevented) return;
                 renameRepositoryOnKey(e, r);
                 if (!matchesGroupShortcut(e)) return;
                 const roots = selected.includes(r) ? visible.filter(root => selected.includes(root)) : [r];
-                runMenuShortcut(e, repositoryMenu(r, displayName(r), roots, group?.id, () => void groupEditorDialog({roots, parentId: group?.id, onCreated: () => setSelected([])})));
+                runMenuShortcut(e, repositoryMenu(r, displayName(r), roots, group?.id, () => void groupEditorDialog({roots, parentId: group?.id, onCreated: clearSelection})));
               }} onClick={e => { if (!(e.target as HTMLElement).closest("button")) select(e, r); }} onContextMenu={e => {
                 const roots = selected.includes(r) ? visible.filter(root => selected.includes(root)) : [r];
-                contextMenu(e, repositoryMenu(r, displayName(r), roots, group?.id, () => void groupEditorDialog({roots, parentId: group?.id, onCreated: () => setSelected([])})));
+                contextMenu(e, repositoryMenu(r, displayName(r), roots, group?.id, () => void groupEditorDialog({roots, parentId: group?.id, onCreated: clearSelection})));
               }}>
                 <td><button className="repository-name" title={r} onClick={e => select(e, r)}><FolderGit2 size={15} />{displayName(r)}</button></td>
                 <td title={t?.info?.head.branch ?? ""} onContextMenu={e => { if (t?.info?.head.branch) contextMenu(e, namePathMenu(t.info.head.branch, r, `refs/heads/${t.info.head.branch}`)); }}><GitBranch size={12} /> {t?.info?.head.branch ?? (t?.info?.head.detached ? "Detached HEAD" : "—")}</td>

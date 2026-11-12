@@ -66,6 +66,10 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "refresh", label: "Refresh", description: "Reload the current repository or overview.", default: "F5" },
   { id: "renameItem", label: "Rename focused item", description: "Rename a focused group, branch or repository label.", default: "F2", scope: "navigation" },
   { id: "deleteItem", label: "Delete focused item", description: "Review deletion of the selected groups or branches.", default: "Delete", scope: "navigation" },
+  { id: "navigationClearSelection", label: "Clear group or repository selection", description: "Clear the current selection in Explorer or Repositories.", default: "Escape", scope: "navigation" },
+  { id: "navigationToggleSelection", label: "Toggle focused group or repository selection", description: "Add or remove the focused row from the selection.", default: "Ctrl+Space", scope: "navigation" },
+  { id: "navigationSelectRange", label: "Select a range of groups or repositories", description: "Select from the last focused row to this row.", default: "Shift+Space", scope: "navigation" },
+  { id: "navigationAddSelectionRange", label: "Add a range of groups or repositories to the selection", description: "Keep the current selection and add the range to this row.", default: "Ctrl+Shift+Space", scope: "navigation" },
   ...[
     ["group-create", "Create group"],
     ["group-selected", "Group selected groups"],

@@ -1,4 +1,6 @@
-const controls = ".icon-btn, .library-drag-handle, button[data-tooltip], button[aria-label]:has(> svg)";
+import { shortcutTitle } from "./shortcuts";
+
+const controls = "button, [role=button], [role=tab], select, [data-tooltip], [data-shortcut], .library-drag-handle, svg[aria-label], span[aria-label]";
 
 /** One tooltip per window. Delegate so dynamically mounted icons behave the same as the toolbar. */
 export function installIconHints(doc: Document): () => void {
@@ -8,25 +10,36 @@ export function installIconHints(doc: Document): () => void {
   tip.setAttribute("role", "tooltip");
   let current: HTMLElement | null = null;
   let nativeTitle: string | null = null;
+  let temporaryLabel: string | null = null;
   let blocked: HTMLElement | null = null;
   const hide = () => {
     if (current && nativeTitle !== null && !current.hasAttribute("title")) current.setAttribute("title", nativeTitle);
+    if (temporaryLabel !== null && current?.getAttribute("aria-label") === temporaryLabel) current.removeAttribute("aria-label");
     nativeTitle = null;
+    temporaryLabel = null;
     current = null;
     tip.remove();
   };
   const control = (target: EventTarget | null) => (target as HTMLElement | null)?.closest?.<HTMLElement>(controls) ?? null;
   const show = (next: HTMLElement | null) => {
+    if (doc.body.classList.contains("explorer-dragging")) { hide(); return; }
     if (next === current || next !== null && next === blocked) return;
     hide();
     if (!next?.isConnected) return;
     const title = next.getAttribute("title");
-    const label = next.dataset.tooltip || title || next.getAttribute("aria-label");
+    const labelledBy = next.getAttribute("aria-labelledby")?.split(/\s+/).map(id => doc.getElementById(id)?.textContent ?? "").join(" ").trim();
+    const text = next.matches("button, [role=button], [role=tab]") ? next.textContent?.trim() : "";
+    const label = next.dataset.tooltip || title || next.getAttribute("aria-label") || labelledBy || text;
     if (!label?.trim()) return;
     current = next;
     nativeTitle = title;
+    if (title && !text && !labelledBy && !next.hasAttribute("aria-label")) {
+      temporaryLabel = title;
+      next.setAttribute("aria-label", title);
+    }
     next.removeAttribute("title");
-    tip.textContent = label;
+    const description = label.trim();
+    tip.textContent = next.dataset.shortcut ? shortcutTitle(description, next.dataset.shortcut) : description;
     doc.body.append(tip);
     const rect = next.getBoundingClientRect();
     const x = Math.max(8, Math.min(rect.left + (rect.width - tip.offsetWidth) / 2, view.innerWidth - tip.offsetWidth - 8));

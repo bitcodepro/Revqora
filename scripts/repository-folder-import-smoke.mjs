@@ -6,11 +6,15 @@ import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 async function checkFolderScanProgress(page, dialog) {
   await page.evaluate(() => {
     const scanUrl = window.__TAURI_INTERNALS__.convertFileSrc("repo_scan_folder", "ipc");
+    const cancelUrl = window.__TAURI_INTERNALS__.convertFileSrc("repo_cancel_folder_scan", "ipc");
     const original = window.fetch;
     let release;
+    window.__folderScanCancelRequested = false;
     window.fetch = (input, init) => {
       const response = original(input, init);
-      if ((input?.url ?? input) !== scanUrl) return response;
+      const url = input?.url ?? input;
+      if (url === cancelUrl) window.__folderScanCancelRequested = true;
+      if (url !== scanUrl) return response;
       return new Promise(resolve => { release = () => resolve(response); });
     };
     window.__finishFolderScan = () => {
@@ -43,11 +47,15 @@ async function checkFolderScanProgress(page, dialog) {
       const value = document.querySelector(".repository-import-progress .batch-note")?.textContent;
       return value && value !== previous;
     }, elapsed);
+    await dialog.getByRole("button", { name: "Stop scan", exact: true }).click();
+    await dialog.getByText("Scan stopped.", { exact: true }).waitFor();
+    await page.waitForFunction(() => window.__folderScanCancelRequested);
   } finally {
-    await page.evaluate(() => window.__finishFolderScan?.());
+    await page.evaluate(() => { window.__finishFolderScan?.(); delete window.__folderScanCancelRequested; });
     await page.emulateMedia({ reducedMotion: null });
   }
   await progress.waitFor({ state: "detached" });
+  await dialog.getByRole("button", { name: "Scan folder", exact: true }).click();
 }
 
 export async function repositoryFolderImportSmoke({ page, work, shot }) {

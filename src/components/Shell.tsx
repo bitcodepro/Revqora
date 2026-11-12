@@ -180,49 +180,49 @@ export function TopBar() {
       {root && tab?.info && !overview && (
         <div className="toolbar">
           <SyncButton roots={[root]} />
-          <button className="tb-btn" aria-label="Open worktree manager" title="Worktree manager" onClick={() => openWorktrees(root)}><FolderGit2 size={15} />Worktrees</button>
-          <button className="tb-btn" aria-label="Open branch manager" title="Branch manager" onClick={() => openOverlay({ kind: "branches", root })}><GitBranch size={15} />Branches</button>
-          <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes">
+          <button className="tb-btn" aria-label="Open worktree manager" title="Worktree manager" data-shortcut="worktree-manager" onClick={() => openWorktrees(root)}><FolderGit2 size={15} />Worktrees</button>
+          <button className="tb-btn" aria-label="Open branch manager" title="Branch manager" data-shortcut="branch-manager" onClick={() => openOverlay({ kind: "branches", root })}><GitBranch size={15} />Branches</button>
+          <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes" data-shortcut="fetch">
             <RefreshCw size={15} /> Fetch
           </button>
-          <button className="tb-btn" onClick={() => A.pull(root)} title="Pull">
+          <button className="tb-btn" onClick={() => A.pull(root)} title="Pull" data-shortcut="pull">
             <ArrowDownToLine size={15} /> Pull
             {!!status?.behind && <span className="count">{status.behind}</span>}
           </button>
-          <button className="tb-btn" onClick={() => A.push(root)} title="Push">
+          <button className="tb-btn" onClick={() => A.push(root)} title="Push" data-shortcut="push">
             <ArrowUpFromLine size={15} /> Push
             {!!status?.ahead && <span className="count">{status.ahead}</span>}
           </button>
           <div className="tb-sep" />
-          <button className="tb-btn" onClick={() => A.createBranch(root, null, tab?.info?.head.branch ?? "HEAD")} title="New branch">
+          <button className="tb-btn" onClick={() => A.createBranch(root, null, tab?.info?.head.branch ?? "HEAD")} title="New branch" data-shortcut="branch">
             <GitBranchPlus size={15} /> Branch
           </button>
-          <button className="tb-btn" onClick={() => A.stash(root)} title="Stash changes" disabled={!status?.files.length}>
+          <button className="tb-btn" onClick={() => A.stash(root)} title="Stash changes" data-shortcut="stash" disabled={!status?.files.length}>
             <Archive size={15} /> Stash
           </button>
-          <button className="tb-btn" onClick={() => A.stashApply(root, 0, true)} title="Pop latest stash" disabled={!stashCount}>
+          <button className="tb-btn" onClick={() => A.stashApply(root, 0, true)} title="Pop latest stash" data-shortcut="pop-stash" disabled={!stashCount}>
             <ArchiveRestore size={15} /> Pop
           </button>
           <div className="tb-sep" />
-          <button className="icon-btn" title="Repository tools" onClick={() => repoToolsDialog(root)}>
+          <button className="icon-btn" title="Repository tools" data-shortcut="tools" onClick={() => repoToolsDialog(root)}>
             <Wrench size={16} />
           </button>
-          <button className="icon-btn" title="Undo history (reflog)" onClick={() => reflogDialog(root, (oid) => A.resetTo(root, oid, "reflog entry"))}>
+          <button className="icon-btn" title="Undo history (reflog)" data-shortcut="reflog" onClick={() => reflogDialog(root, (oid) => A.resetTo(root, oid, "reflog entry"))}>
             <History size={16} />
           </button>
-          <button type="button" className="icon-btn" title="Undo Center" aria-label="Undo Center" onClick={() => void recoveryDialog(root)}><ShieldCheck size={16} /></button>
-        <button type="button" className="btn sm" aria-label="Branch Stacks" title="Branch Stacks" onClick={()=>openOverlay({kind:"stacks",root})}><GitBranch size={15}/>Stacks</button><button type="button" className="icon-btn" title="History Explorer" aria-label="History Explorer" onClick={()=>openOverlay({kind:"historyExplorer",root})}><Search size={16}/></button><button type="button" className="btn sm" title="Workflow Builder" aria-label="Workflow Builder" disabled={!root} onClick={()=>root&&openOverlay({kind:"workflows",root})}><Workflow size={14}/><span>Workflows</span></button>
-          <button type="button" className="icon-btn" title="Agent Workspace" aria-label="Agent Workspace" onClick={() => openOverlay({ kind: "agents", root })}><Bot size={16} /></button>
-          <button className="icon-btn" title="Open terminal here" onClick={() => api.openTerminal(root)}>
+          <button type="button" className="icon-btn" title="Undo Center" data-shortcut="recovery-center" aria-label="Undo Center" onClick={() => void recoveryDialog(root)}><ShieldCheck size={16} /></button>
+        <button type="button" className="btn sm" aria-label="Branch Stacks" title="Branch Stacks" data-shortcut="branch-stacks" onClick={()=>openOverlay({kind:"stacks",root})}><GitBranch size={15}/>Stacks</button><button type="button" className="icon-btn" title="History Explorer" data-shortcut="history-explorer" aria-label="History Explorer" onClick={()=>openOverlay({kind:"historyExplorer",root})}><Search size={16}/></button><button type="button" className="btn sm" title="Workflow Builder" data-shortcut="workflow-builder" aria-label="Workflow Builder" disabled={!root} onClick={()=>root&&openOverlay({kind:"workflows",root})}><Workflow size={14}/><span>Workflows</span></button>
+          <button type="button" className="icon-btn" title="Agent Workspace" data-shortcut="agent-workspace" aria-label="Agent Workspace" onClick={() => openOverlay({ kind: "agents", root })}><Bot size={16} /></button>
+          <button className="icon-btn" title="Open terminal here" data-shortcut="terminal" onClick={() => api.openTerminal(root)}>
             <SquareTerminal size={16} />
           </button>
         </div>
       )}
       <div className="topbar-empty" aria-hidden="true"/>
       <div className="topbar-repository-actions" role="group" aria-label="Repository actions">
-        <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" aria-label="All repositories" aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={16} /></button>
+        <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" data-shortcut="overview" aria-label="All repositories" aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={16} /></button>
         <RepositoryLibraryButton />
-        {root && tab?.info && !overview && <button type="button" className="icon-btn" title="Show in Explorer" onClick={() => api.revealPath(root)}>
+        {root && tab?.info && !overview && <button type="button" className="icon-btn" title="Show in Explorer" data-shortcut="show-folder" onClick={() => api.revealPath(root)}>
           <FolderOpen size={16} />
         </button>}
       </div>
@@ -232,11 +232,11 @@ export function TopBar() {
         <Command size={16} />
       </button>
       <OperationLogButton root={root} />
-      <button className="icon-btn" title={dark ? "Light theme" : "Dark theme"} onClick={() => setS({ theme: dark ? "light" : "dark" })}>
+      <button className="icon-btn" title={dark ? "Light theme" : "Dark theme"} data-shortcut="theme" onClick={() => setS({ theme: dark ? "light" : "dark" })}>
         {dark ? <Sun size={16} /> : <Moon size={16} />}
       </button>
-      <button className="icon-btn" title="Accounts and API connections" onClick={() => forgeAccountsDialog(root ?? null)}><UserRound size={16}/></button>
-      <button className="icon-btn" title="Settings" onClick={() => settingsDialog(root ?? null)}>
+      <button className="icon-btn" title="Accounts and API connections" data-shortcut="forge-accounts" onClick={() => forgeAccountsDialog(root ?? null)}><UserRound size={16}/></button>
+      <button className="icon-btn" title="Settings" data-shortcut="settings" onClick={() => settingsDialog(root ?? null)}>
         <Settings2 size={16} />
       </button>
     </div>

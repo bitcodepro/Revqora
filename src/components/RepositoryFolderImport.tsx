@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderGit2, FolderOpen, FolderSearch, Loader2 } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
@@ -29,10 +29,21 @@ function FolderScanProgress() {
   </div>;
 }
 
+function cancelFolderScan(request: Promise<number> | null) {
+  void request?.then(api.repoCancelFolderScan).catch(() => undefined);
+}
+
 function RepositoryFolderImport({ close }: { close: () => void }) {
   const groups = useLibrary(s => s.groups);
   const [path, setPath] = useState("");
   const [scanning, setScanning] = useState(false);
+  const [stopped, setStopped] = useState(false);
+  const [includeGenerated, setIncludeGenerated] = useState(false);
+  const pendingScan = useRef<Promise<number> | null>(null);
+  useEffect(() => () => {
+    cancelFolderScan(pendingScan.current);
+    pendingScan.current = null;
+  }, []);
   const [scan, setScan] = useState<RepositoryFolderScan | null>(null);
   const [selected, setSelected] = useState(new Set<string>());
   const [createGroups, setCreateGroups] = useState(true);
@@ -70,20 +81,37 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     });
   }
 
+  function stopScan() {
+    cancelFolderScan(pendingScan.current);
+    pendingScan.current = null;
+    setScanning(false);
+    setStopped(true);
+  }
+
   async function scanFolder(folder: string) {
-    if (!folder.trim() || scanning) return;
+    if (!folder.trim() || pendingScan.current) return;
+    const request = api.repoPrepareFolderScan();
+    pendingScan.current = request;
     setPath(folder);
     setScanning(true);
+    setStopped(false);
     setError("");
     setScan(null);
+    setSelected(new Set());
     try {
-      const result = await api.repoScanFolder(folder);
+      const id = await request;
+      if (pendingScan.current !== request) return;
+      const result = await api.repoScanFolder(id, folder, includeGenerated);
+      if (pendingScan.current !== request) return;
       setScan(result);
-      setSelected(new Set(result.repositories.map((repo) => repo.root)));
+      setSelected(new Set(result.repositories.map(repo => repo.root)));
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (pendingScan.current === request) setError(errorMessage(cause));
     } finally {
-      setScanning(false);
+      if (pendingScan.current === request) {
+        pendingScan.current = null;
+        setScanning(false);
+      }
     }
   }
 
@@ -124,20 +152,32 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     onClose={close} onSubmit={submit}
     footer={<>
       <button type="button" className="btn" onClick={close}>Cancel</button>
-      {scan ? <button type="submit" className="btn primary" disabled={!selectedCount}>Import {selectedCount} {selectedCount === 1 ? "repository" : "repositories"}</button>
-        : <button type="submit" className="btn primary" disabled={scanning || !path.trim()}>Scan folder</button>}
+      {scanning ? <button type="button" className="btn" onClick={stopScan}>Stop scan</button>
+        : scan ? <button type="submit" className="btn primary" disabled={!selectedCount}>Import {selectedCount} {selectedCount === 1 ? "repository" : "repositories"}</button>
+        : <button type="submit" className="btn primary" disabled={!path.trim()}>Scan folder</button>}
     </>}>
     <div className="field">
       <label htmlFor="repository-import-path">Parent folder</label>
       <div className="workspace-editor-filters">
         <input id="repository-import-path" className="input" placeholder="Enter a folder path" value={path} disabled={scanning}
-          onChange={(event) => { setPath(event.target.value); setScan(null); setSelected(new Set()); setError(""); }} />
+          onChange={(event) => { setPath(event.target.value); setScan(null); setSelected(new Set()); setError(""); setStopped(false); }} />
         <button type="button" className="btn" disabled={scanning} onClick={() => void browse()}><FolderOpen size={15} /> Browse…</button>
       </div>
     </div>
+    <label className="repository-import-option">
+      <input type="checkbox" checked={includeGenerated} disabled={scanning} onChange={(event) => {
+        setIncludeGenerated(event.target.checked);
+        setScan(null);
+        setSelected(new Set());
+        setStopped(false);
+        setError("");
+      }} /> Include dependency and cache folders
+    </label>
     {scanning && <FolderScanProgress />}
+    {stopped && <p className="batch-note" role="status">Scan stopped.</p>}
     {error && <p className="red workspace-editor-error" role="alert">{error}</p>}
     {scan && <>
+      {scan.excluded > 0 && <p className="batch-note" role="status">Skipped {scan.excluded} dependency or cache folders.</p>}
       {scan.skipped > 0 && <p className="batch-note" role="status">Skipped {scan.skipped} linked, inaccessible, or invalid entries.</p>}
       {!scan.repositories.length ? <div className="cg-empty">No Git working copies found in this folder.</div> : <>
         <label className="repository-import-option">

@@ -152,7 +152,7 @@ export async function renameRepositoryDialog(root: string) {
 }
 
 export function repositoryLibraryDialog() { return showDialog<void>((close) => <RepositoryLibrary close={close} />); }
-export function RepositoryLibraryButton() { return <button type="button" className="icon-btn" title="Repository library" aria-label="Repository library" onClick={() => void repositoryLibraryDialog()}><Library size={16} /></button>; }
+export function RepositoryLibraryButton() { return <button type="button" className="icon-btn" title="Repository library" data-shortcut="repository-library" aria-label="Repository library" onClick={() => void repositoryLibraryDialog()}><Library size={16} /></button>; }
 function RepositoryLibrary({ close }: { close: () => void }) {
   const lib = useLibrary(), tabs = useRepos((s) => s.tabs), order = useRepos((s) => s.order);
   const busy = useUi((s) => s.busy.length > 0);

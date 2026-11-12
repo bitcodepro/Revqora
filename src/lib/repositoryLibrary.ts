@@ -12,6 +12,7 @@ export interface RepositoryGroup extends TreeEntry {
 }
 export interface FolderGroup { folder: string; roots: string[]; parentFolder?: string | null }
 export interface RepositoryPlacement { root: string; groupId: string | null }
+export interface RepositoryDropPlacement { siblingRoot: string; after: boolean }
 export interface LibraryData {
   knownRoots: string[];
   repositoryNames: Record<string, string>;
@@ -140,7 +141,7 @@ interface LibraryStore extends LibraryData {
   moveGroups: (ids: string[], parentId: string | null, placement?: TreePlacement) => void;
   move: (root: string, id: string | null) => void;
   addToGroup: (roots: string[], id: string) => void;
-  moveRepositories: (repositories: RepositoryPlacement[], to: string | null) => void;
+  moveRepositories: (repositories: RepositoryPlacement[], to: string | null, placement?: RepositoryDropPlacement) => void;
   removeFromGroups: (roots: string[], id?: string) => void;
   collapse: (id: string) => void;
   selectGroup: (id: string | null) => void;
@@ -223,22 +224,42 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
     return { knownRoots: uniqueRoots([...s.knownRoots, ...roots]),
       groups: s.groups.map(g => g.id === id ? { ...g, roots: uniqueRoots([...g.roots, ...roots]) } : g) };
   }),
-  moveRepositories: (repositories, to) => set(s => {
+  moveRepositories: (repositories, to, placement) => set(s => {
     if (to && !s.groups.some(group => group.id === to)) return s;
-    const moving = repositories.filter(item => item.groupId !== to);
-    if (!moving.length) return s;
+    const moving = placement ? repositories : repositories.filter(item => item.groupId !== to);
+    const roots = uniqueRoots(moving.map(item => item.root));
+    if (!roots.length) return s;
+    const movingKeys = new Set(roots.map(repositoryKey));
+    const sibling = placement && repositoryKey(placement.siblingRoot);
+    if (sibling) {
+      const destination = to ? s.groups.find(group => group.id === to)!.roots : defaultGroupRoots(s.knownRoots, s.groups);
+      if (movingKeys.has(sibling) || !destination.some(root => repositoryKey(root) === sibling)) return s;
+    }
+    const insert = (existing: string[]) => {
+      if (!placement) return uniqueRoots([...existing, ...roots]);
+      const result = existing.filter(root => !movingKeys.has(repositoryKey(root)));
+      const index = result.findIndex(root => repositoryKey(root) === sibling);
+      result.splice(index + Number(placement.after), 0, ...roots);
+      return result;
+    };
     const sources = new Map<string | null, Set<string>>();
     for (const { root, groupId } of moving) {
       const keys = sources.get(groupId) ?? new Set();
       keys.add(repositoryKey(root));
       sources.set(groupId, keys);
     }
-    const roots = moving.map(item => item.root);
-    return { knownRoots: uniqueRoots([...s.knownRoots, ...roots]), groups: s.groups.map(group => {
-      if (group.id === to) return { ...group, roots: uniqueRoots([...group.roots, ...roots]), collapsed: false };
-      const keys = sources.get(group.id);
-      return keys ? { ...group, roots: group.roots.filter(root => !keys.has(repositoryKey(root))) } : group;
-    }) };
+    const knownRoots = !to && placement ? insert(s.knownRoots) : uniqueRoots([...s.knownRoots, ...roots]);
+    const groups = s.groups.map(group => {
+      const keys = to ? sources.get(group.id) : movingKeys;
+      const members = group.id === to ? insert(group.roots) : keys ? group.roots.filter(root => !keys.has(repositoryKey(root))) : group.roots;
+      const collapsed = group.id === to ? false : group.collapsed;
+      return collapsed === group.collapsed && members.length === group.roots.length && members.every((root, i) => root === group.roots[i])
+        ? group : { ...group, roots: members, collapsed };
+    });
+    const changes: Partial<LibraryData> = {};
+    if (knownRoots.length !== s.knownRoots.length || knownRoots.some((root, i) => root !== s.knownRoots[i])) changes.knownRoots = knownRoots;
+    if (groups.some((group, i) => group !== s.groups[i])) changes.groups = groups;
+    return changes.groups || changes.knownRoots ? changes : s;
   }),
   removeFromGroups: (roots, id) => set(s => {
     const keys = new Set(roots.map(repositoryKey));

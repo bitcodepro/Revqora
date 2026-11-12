@@ -476,6 +476,8 @@
 .explorer-filters { display: flex; align-items: center; gap: 4px; }
 .explorer-tree { --explorer-indent: 12px; }
 .explorer-tree > .repository-item {
+  position: relative;
+  user-select: none;
   --indent: min(calc(var(--tree-depth, 0) * var(--explorer-indent)), max(0px, calc(100% - 132px)));
   padding-inline-start: var(--indent);
   background-image: repeating-linear-gradient(to right, transparent 0 5px, var(--border) 5px 6px, transparent 6px var(--explorer-indent));
@@ -484,12 +486,38 @@
 }
 .explorer-tree > .repository-item .repository-select { min-height: 30px; padding-block: 5px; }
 .explorer-tree > .library-tree-row .repository-label { font-weight: 600; }
-.explorer-repository .repository-select { touch-action: none; }
+.repository-item .repository-select { touch-action: none; user-select: none; }
 .repository-item.batch-selected { background: var(--bg-selected); box-shadow: inset 2px 0 var(--accent); }
 .repository-item.workspace-drop-active { background: var(--accent-soft); outline: 1px solid var(--accent); }
 .repository-overview-link.workspace-drop-active { background: var(--accent-soft); outline: 1px solid var(--accent); }
-.library-drop-before { box-shadow: inset 0 2px var(--accent); }
-.library-drop-after { box-shadow: inset 0 -2px var(--accent); }
+.explorer-tree > :is(.library-drop-before, .library-drop-after)::after {
+  content: "";
+  position: absolute;
+  inset-inline: var(--indent, 0px) 3px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 2;
+}
+.explorer-tree > .library-drop-before::after { top: -1px; }
+.explorer-tree > .library-drop-after::after { bottom: -1px; }
+.explorer-root-drop {
+  display: grid;
+  place-items: center;
+  min-height: 32px;
+  margin: 4px 0;
+  border: 1px dashed transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+}
+.explorer-root-drop > span { visibility: hidden; }
+.explorer-overview-drop-text { display: none; }
+.explorer-dragging .explorer-overview-text { display: none; }
+.explorer-dragging .explorer-overview-drop-text { display: inline; }
+.explorer-dragging .explorer-root-drop { border-color: var(--border-strong); }
+.explorer-dragging .explorer-root-drop > span { visibility: visible; }
+.explorer-root-drop.workspace-drop-active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
 .library-tree-spacer { width: 24px; flex: none; }
 .library-drag-handle { color: var(--text-faint); display: grid; place-items: center; flex: none; width: 20px; align-self: stretch; cursor: grab; opacity: .55; touch-action: none; user-select: none; }
 .library-drag-handle:hover, .library-tree-row:hover .library-drag-handle { opacity: 1; }

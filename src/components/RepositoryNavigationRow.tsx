@@ -31,22 +31,24 @@ export function renameRepositoryOnKey(e: React.KeyboardEvent, root: string) {
 export const matchesGroupShortcut = (e: React.KeyboardEvent) => !e.repeat &&
   ["group-create", "repo-remove-group", "repo-remove-all-groups"].some(id => matchesShortcut(e, id));
 
-export function RepositoryNavigationRow({ root, name, tab, current, selected, selection, groupId, createGroup, onClick, onPointerDown, depth }:
+export function RepositoryNavigationRow({ root, name, tab, current, selected, selection, groupId, createGroup, onClick, onPointerDown, onSelectionKeyDown, depth }:
   { root: string; name: string; tab?: RepoTab; current: boolean; selected: boolean; selection: string[]; groupId?: string;
     createGroup: () => void; onClick: (event: MouseEvent<HTMLButtonElement>) => void;
-    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => void; depth?: number }) {
+    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => void; onSelectionKeyDown: (event: React.KeyboardEvent) => void; depth?: number }) {
   const status = repositorySidebarStatus(tab);
   const menu = () => repositoryMenu(root, name, selection, groupId, createGroup);
   return <div role={depth === undefined ? "listitem" : "treeitem"} aria-level={depth === undefined ? undefined : depth + 1}
     aria-label={depth === undefined ? undefined : name} aria-selected={depth === undefined ? undefined : selected || current}
     aria-busy={!!tab && (!!tab.opening || !tab.loaded)}
+    data-explorer-repository={depth === undefined ? undefined : root} data-repository-parent={depth === undefined ? undefined : groupId ?? ""}
     data-repository-state={tab ? tab.info ? "open" : tab.error ? "unavailable" : "opening" : "closed"}
     className={`repository-item ${depth === undefined ? "" : "explorer-repository"} ${current ? "active" : ""} ${selected ? "batch-selected" : ""}`}
     style={depth === undefined ? undefined : { "--tree-depth": Math.min(depth, 12) } as CSSProperties}
     onKeyDown={e => { renameRepositoryOnKey(e, root); if (matchesGroupShortcut(e)) runMenuShortcut(e, menu()); }}
     onContextMenu={e => contextMenu(e, menu())}>
     <FavoriteButton root={root}/>
-    <button type="button" className="repository-select" aria-current={current} onPointerDown={onPointerDown} onClick={onClick}
+    <button type="button" className="repository-select" aria-current={current} onPointerDown={onPointerDown} onClick={onClick} onKeyDown={onSelectionKeyDown}
+      data-shortcut="renameItem" data-tooltip="Rename repository · Drag to move · Shift+click selects a range"
       title={`${root}\n${tab?.info ? tab.info.head.branch ?? "Detached HEAD" : tab ? tab.error ?? "Opening repository…" : "Closed · click to open"}${tab?.fetchError ? "\n" + tab.fetchError : ""}`}>
       <FolderGit2 size={14}/><span className="repository-label">{name}</span>
       {!tab && <span className="faint">Closed</span>}
