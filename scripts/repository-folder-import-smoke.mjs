@@ -3,6 +3,53 @@ import fs from "node:fs";
 import path from "node:path";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 
+async function checkFolderScanProgress(page, dialog) {
+  await page.evaluate(() => {
+    const scanUrl = window.__TAURI_INTERNALS__.convertFileSrc("repo_scan_folder", "ipc");
+    const original = window.fetch;
+    let release;
+    window.fetch = (input, init) => {
+      const response = original(input, init);
+      if ((input?.url ?? input) !== scanUrl) return response;
+      return new Promise(resolve => { release = () => resolve(response); });
+    };
+    window.__finishFolderScan = () => {
+      window.fetch = original;
+      release?.();
+      delete window.__finishFolderScan;
+    };
+  });
+  const progress = dialog.getByRole("status").filter({ hasText: "Looking for Git repositories" });
+  const icon = progress.locator("svg");
+  try {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await dialog.getByRole("button", { name: "Scan folder", exact: true }).click();
+    const initial = await icon.evaluate(element => {
+      const style = getComputedStyle(element);
+      return { duration: style.animationDuration, iterations: style.animationIterationCount, transform: style.transform };
+    });
+    assert.equal(initial.duration, "1s");
+    assert.equal(initial.iterations, "infinite");
+    await page.waitForFunction(transform => {
+      const icon = document.querySelector(".repository-import-progress > svg");
+      return icon && getComputedStyle(icon).transform !== transform;
+    }, initial.transform);
+
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await icon.waitFor({ state: "hidden" });
+    await progress.getByText(/^[1-9]\d*s elapsed$/).waitFor();
+    const elapsed = await progress.locator(".batch-note").textContent();
+    await page.waitForFunction(previous => {
+      const value = document.querySelector(".repository-import-progress .batch-note")?.textContent;
+      return value && value !== previous;
+    }, elapsed);
+  } finally {
+    await page.evaluate(() => window.__finishFolderScan?.());
+    await page.emulateMedia({ reducedMotion: null });
+  }
+  await progress.waitFor({ state: "detached" });
+}
+
 export async function repositoryFolderImportSmoke({ page, work, shot }) {
   const parent = path.join(work, "folder-import");
   const init = (relative) => {
@@ -29,12 +76,13 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
   const explorer = page.getByRole("complementary", { name: "Explorer", exact: true });
   if (!await explorer.isVisible()) await explorerToggle.click();
   if (await reposToggle.getAttribute("aria-expanded") === "false") await reposToggle.click();
-  const preview = async (count, root = parent) => {
+  const preview = async (count, root = parent, checkProgress = false) => {
     await page.locator(".topbar").click({ button: "right", position: { x: 3, y: 3 } });
     await page.locator(".ctx-menu").getByText("Import folder…", { exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Import repositories from a folder", exact: true });
     await dialog.getByLabel("Parent folder", { exact: true }).fill(root);
-    await dialog.getByRole("button", { name: "Scan folder", exact: true }).click();
+    if (checkProgress) await checkFolderScanProgress(page, dialog);
+    else await dialog.getByRole("button", { name: "Scan folder", exact: true }).click();
     await dialog.getByText(`${count} of ${count} selected`, { exact: true }).waitFor();
     return dialog;
   };
@@ -50,7 +98,7 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
   const picker = sidebar.getByRole("combobox", { name: "Repository group", exact: true });
   const pick = name => group(name).locator(".repository-select").click();
 
-  let dialog = await preview(5);
+  let dialog = await preview(5, parent, true);
   for (const name of ["folder-import", "import-backend", "import-frontend", "children"]) {
     await dialog.getByText(`Group · ${name}`, { exact: true }).waitFor();
   }

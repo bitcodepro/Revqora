@@ -190,7 +190,11 @@
 .workspace-editor-list .library-row { flex-wrap: nowrap; cursor: pointer; }
 .workspace-editor-list .library-path { display: block; }
 .workspace-editor-error { white-space: pre-wrap; overflow-wrap: anywhere; }
-.repository-import-progress, .repository-import-option, .repository-import-heading { display: flex; align-items: center; gap: 8px; }
+.repository-import-option, .repository-import-heading { display: flex; align-items: center; gap: 8px; }
+.repository-import-progress > .spin { animation-duration: 1s; }
+@media (prefers-reduced-motion: reduce) {
+  .repository-import-progress > .spin { display: none; }
+}
 .repository-import-option { cursor: pointer; }
 .repository-import-heading { padding: 6px 8px; cursor: pointer; }
 .repository-import-heading b { overflow-wrap: anywhere; }

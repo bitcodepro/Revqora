@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderGit2, FolderOpen, FolderSearch, Loader2 } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
@@ -13,6 +13,20 @@ import { Modal } from "./Modal";
 
 export function repositoryFolderImportDialog() {
   return showDialog<void>((close) => <RepositoryFolderImport close={close} />);
+}
+
+function FolderScanProgress() {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    const started = performance.now();
+    const timer = window.setInterval(() => setElapsedSeconds(Math.floor((performance.now() - started) / 1_000)), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <div className="loading-status repository-import-progress" role="status">
+    <Loader2 className="spin" size={16} aria-hidden="true" />
+    Looking for Git repositories…
+    {elapsedSeconds > 0 && <span className="batch-note" aria-hidden="true">{elapsedSeconds}s elapsed</span>}
+  </div>;
 }
 
 function RepositoryFolderImport({ close }: { close: () => void }) {
@@ -121,7 +135,7 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
         <button type="button" className="btn" disabled={scanning} onClick={() => void browse()}><FolderOpen size={15} /> Browse…</button>
       </div>
     </div>
-    {scanning && <div className="repository-import-progress" role="status"><Loader2 className="spin" size={16} /> Looking for Git repositories…</div>}
+    {scanning && <FolderScanProgress />}
     {error && <p className="red workspace-editor-error" role="alert">{error}</p>}
     {scan && <>
       {scan.skipped > 0 && <p className="batch-note" role="status">Skipped {scan.skipped} linked, inaccessible, or invalid entries.</p>}
