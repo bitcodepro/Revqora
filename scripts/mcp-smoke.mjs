@@ -113,6 +113,7 @@ async function branchActions({ page, work, tool, rawTool, waitPhase, original })
   const gitRaw = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true });
   const git = (...args) => gitRaw(...args).trimEnd();
   git("init", "-qb", "main");
+  git("config", "--local", "core.autocrlf", "false");
   git("config", "user.name", "MCP Fixture");
   git("config", "user.email", "mcp@example.invalid");
   git("config", "commit.gpgsign", "false");
