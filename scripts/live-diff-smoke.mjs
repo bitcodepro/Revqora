@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import assert from "node:assert/strict";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 
 // Real watcher -> status -> renderer proof. All files belong to the smoke fixture;
@@ -72,18 +73,30 @@ async function layerAttributesSmoke({page,root,attributesName}) {
   const attrs=path.join(root,attributesName),noise=path.join(root,"layer-watcher.sqlite-wal");
   const previous=fs.existsSync(attrs)?fs.readFileSync(attrs):null;
   const index=fs.readFileSync(path.join(root,".git/index"));
-  const invoke=(command)=>page.evaluate(({command,root})=>window.__TAURI_INTERNALS__.invoke(command,{repo:root}),{command,root});
-  const before=(await invoke("layers_state")).layers.map(l=>[l.fromTree,l.toTree]);
+  const invoke=(command,args={})=>page.evaluate(({command,root,args})=>window.__TAURI_INTERNALS__.invoke(command,{repo:root,...args}),{command,root,args});
+  const {layers}=await invoke("layers_state");
+  const before=layers.map(l=>[l.fromTree,l.toTree]);
+  const [layer]=layers;
+  const file=layer.files[0].path;
+  const expectedText=execFileSync("git",["-C",root,"show",`${layer.toTree}:${file}`],{encoding:"utf8",windowsHide:true});
   const context=(await invoke("status")).diffContextToken;
   await page.locator(".layer:not(.open-layer) .file-row").first().click();
   await page.locator(".layer:not(.open-layer) .file-row.selected").first().waitFor();
   await page.waitForSelector(".changes .diff .dl");
-  await page.locator(`.changes[data-diff-context="${context}"] .diff[aria-busy="false"]`).waitFor();
+  const initialDiff=page.locator(`.changes[data-diff-context="${context}"] .diff[aria-busy="false"]`);
+  const initialHash=await initialDiff.getAttribute("data-diff-hash");
   let monitored=false,restored=false;
   try {
     fs.writeFileSync(attrs,Buffer.concat([previous??Buffer.alloc(0),Buffer.from("\n*.ts -diff\n")]));
-    await page.locator(".changes .diff").getByRole("heading",{name:"Binary file",exact:true}).waitFor();
-    await page.waitForFunction(context=>document.querySelector(".changes")?.dataset.diffContext!==context,context);
+    await page.waitForFunction(context=>{const token=document.querySelector(".changes")?.dataset.diffContext;return token&&token!==context;},context);
+    const binary=await invoke("rev_diff",{from:layer.fromTree,to:layer.toTree,path:file});
+    assert.equal(binary.binary,true,"Git attributes must switch the sealed layer diff to binary");
+    assert.notEqual(binary.hash,initialHash);
+    const decoded=page.locator(`.changes .diff[aria-busy="false"][data-diff-hash="${binary.hash}"]`)
+      .getByRole("region",{name:"File contents preview"})
+      .locator(".decoded-preview-side").filter({has:page.getByText("After",{exact:true})}).locator("pre");
+    assert.equal((await decoded.textContent()).replaceAll("\r\n","\n"),expectedText.replaceAll("\r\n","\n"),
+      "The binary-classified preview must show the sealed layer's actual text");
     if(previous)fs.writeFileSync(attrs,previous);else fs.rmSync(attrs);
     restored=true;
     await page.waitForSelector(".changes .diff .dl");

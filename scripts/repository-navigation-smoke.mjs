@@ -28,14 +28,26 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   const group = name => groups.locator(".library-tree-row").filter({ has: page.getByText(name, { exact: true }) });
   const repository = name => repos.locator(".repository-select").filter({ has: page.getByText(name, { exact: true }) });
   const library = () => page.evaluate(() => JSON.parse(localStorage.getItem("revqora.repositories")).state);
+  const dragPoint = async (locator, fraction) => {
+    const { x, y, reachable, hit } = await locator.evaluate((element, fraction) => {
+      const rect = element.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height * fraction;
+      const hit = element.ownerDocument.elementFromPoint(x, y);
+      return { x, y, reachable: element.contains(hit), hit: hit?.outerHTML.split(">")[0].slice(0, 160) ?? "outside viewport" };
+    }, fraction);
+    assert(reachable, `Cannot reach ${locator} at (${x}, ${y}); pointer hits ${hit}`);
+    return { x, y };
+  };
   const drag = async (source, destination, fraction = 0.5, marker = "workspace-drop-active") => {
     await destination.scrollIntoViewIfNeeded();
-    const start = await source.boundingBox(), end = await destination.boundingBox();
-    assert(start && end);
-    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+    await source.scrollIntoViewIfNeeded();
+    const start = await dragPoint(source, 0.5);
+    const end = await dragPoint(destination, fraction);
+    await page.mouse.move(start.x, start.y);
     await page.mouse.down();
     try {
-      await page.mouse.move(end.x + end.width / 2, end.y + end.height * fraction, {steps: 9});
+      await page.mouse.move(end.x, end.y, {steps: 9});
       await destination.and(page.locator(`.${marker}`)).waitFor();
     } finally { await page.mouse.up(); }
   };
