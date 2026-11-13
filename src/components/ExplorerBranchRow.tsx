@@ -10,7 +10,7 @@ import { contextMenu } from "../lib/ui";
 import { branchKind, branchRowMenu, showBranch } from "./BranchNavigation";
 import { runMenuShortcut } from "./menus";
 import { renameRemoteBranch } from "./RemoteRename";
-import { AheadBehind } from "./bits";
+import { BranchAheadBehind } from "./bits";
 
 interface Props {
   id: string;
@@ -63,7 +63,7 @@ export function ExplorerBranchRow({ id, root, branch, upstream, refs, depth, pri
       <span className="repository-label">{name}</span>
       {isHead && <span className="explorer-branch-current" aria-label="Checked out" title="Checked out"/>}
       {primary && <Flag size={12} className="branch-primary-mark" role="img" aria-label="Primary branch"/>}
-      <AheadBehind ahead={branch.ahead} behind={branch.behind}/>
+      <BranchAheadBehind branch={branch}/>
     </button>
     <button type="button" className={"icon-btn sm repository-star" + (favorite ? " active" : "")}
       aria-label={(favorite ? "Unfavorite branch " : "Favorite branch ") + name} aria-pressed={favorite}

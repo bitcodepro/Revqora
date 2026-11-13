@@ -13,7 +13,10 @@ Before opening or updating a PR:
 - [ ] Explorer shows folders, repositories and branches. Only folders and repositories can move in the tree. Moving a repository keeps its branches with it and changes only the app's organization.
 - [ ] Repositories remains available as a flat panel. Clicking a repository highlights its entire row in both themes, even after the pointer leaves. Ctrl/Shift selection has its own styling. Escape clears the multi-selection.
 - [ ] Branches remains available as a separate panel. Both surfaces share branch actions. A single click opens branch context while keeping the current checkout. Primary appears first and survives My branches. Favorites can show a branch with its repository and parent folders.
+- [ ] Branch rows show ↑/↓ against their upstream. With a configured remote and no upstream, ↑ counts commits absent from the fetched remote branches.
 - [ ] Test arrow navigation, F2 and Delete in the relevant panel. Shortcut bindings and hints are discoverable and existing overrides keep working.
+
+- [ ] While a transfer runs for the active repository, Fetch rotates, Pull moves down and Push moves up. The icons return to rest when the operation ends. Reduced-motion mode uses the busy color without movement.
 
 ## History and cross-repository search
 

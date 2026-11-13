@@ -23,7 +23,7 @@ Switching to an existing branch with conflicting file changes can be refused. Co
 - `feature/login` is a local branch.
 - `origin/feature/login` is your cached view of a branch on remote `origin`.
 - The upstream links the two for Pull and related operations.
-- Ahead/behind counts compare known histories; Fetch makes remote information current.
+- **↑** shows outgoing commits and **↓** shows incoming commits relative to the configured upstream. For a local branch with a configured remote but no upstream, **↑** counts commits absent from the fetched remote branches. Fetch refreshes these counts.
 
 Checking out a remote branch can create a local tracking branch. A checkout of an individual commit instead creates detached HEAD state; create a branch before keeping new work there.
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSettings } from "../lib/settings";
 import { Bug, Check, ChevronDown, ChevronRight, Cloud, Folder, GitBranch, Tag, CircleDot } from "lucide-react";
-import type { RefLabel } from "../lib/types";
+import type { BranchInfo, RefLabel } from "../lib/types";
 import { avatarHue, basename, dirname, initials } from "../lib/format";
 
 const avatarUrls = new Map<string, Promise<string | null>>();
@@ -106,14 +106,19 @@ export function PathLabel({ path, hideDir }: { path: string; hideDir?: boolean }
   );
 }
 
-export function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {
+export function AheadBehind({ ahead, behind, aheadHint }: { ahead: number; behind: number; aheadHint?: string }) {
   if (!ahead && !behind) return null;
   return (
     <span className="hstack" style={{ gap: 5 }}>
-      {ahead > 0 && <span className="ab up">↑{ahead}</span>}
+      {ahead > 0 && <span className="ab up" title={aheadHint}>↑{ahead}</span>}
       {behind > 0 && <span className="ab down">↓{behind}</span>}
     </span>
   );
+}
+
+export function BranchAheadBehind({ branch }: { branch: BranchInfo }) {
+  return <AheadBehind ahead={branch.unpublished ?? branch.ahead} behind={branch.behind}
+    aheadHint={branch.unpublished ? "Commits absent from fetched remote branches · publish this branch to push them" : undefined}/>;
 }
 
 /**

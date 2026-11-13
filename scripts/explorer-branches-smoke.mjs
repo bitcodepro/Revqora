@@ -19,9 +19,13 @@ export async function explorerBranchesSmoke({ page, work, shot }) {
     git("-c", "user.name=Platform Team", "-c", "user.email=team@example.invalid", "branch", "develop");
     git("-c", "user.name=Platform Team", "-c", "user.email=team@example.invalid", "branch", "release/next");
     if (root === roots[0]) {
+      git("remote", "add", "origin", path.join(work, "fixture-remote"));
+      git("update-ref", "refs/remotes/origin/main", "main");
+      git("branch", "--set-upstream-to=origin/main");
       git("checkout", "-qb", "feature/reservations");
       fs.appendFileSync(path.join(root, "README.md"), "Reservations API\n");
       git("commit", "-qam", "Document the reservations API");
+      for (let index = 2; index <= 5; index++) git("commit", "--allow-empty", "-qm", "Local reservation commit " + index);
       git("checkout", "-q", "main");
       git("branch", "feature/stock-alerts");
     } else {
@@ -46,6 +50,8 @@ export async function explorerBranchesSmoke({ page, work, shot }) {
   const gateway = repo("api-gateway");
   await inventory.getByRole("button", { name: "Expand branches in inventory-service" }).click();
   await branch("feature/reservations").waitFor();
+  assert.equal(await branch("feature/reservations").locator(".ab.up").textContent(), "↑5");
+  assert.equal(await branch("feature/stock-alerts").locator(".ab.up").count(), 0);
   const branchNames = async (row) => {
     const parent = await row.getAttribute("data-explorer-entry");
     return panel.locator("[data-explorer-branch]").evaluateAll((rows, parentId) =>
@@ -111,6 +117,9 @@ export async function explorerBranchesSmoke({ page, work, shot }) {
   const branchesToggle = navigation.getByRole("button", { name: "Toggle branches panel", exact: true });
   const branches = page.locator(".sidebar");
   if (!await branches.isVisible()) await branchesToggle.click();
+  const outgoing = branches.locator("[data-branch-ref='refs/heads/feature/reservations'] .ab.up");
+  await outgoing.waitFor();
+  assert.equal(await outgoing.textContent(), "↑5");
   const pinned = branches.locator(".sb-primary-branch [data-branch-ref='refs/heads/develop']");
   await pinned.waitFor();
   const mineSidebar = branches.getByRole("button", { name: "My branches", exact: true });
@@ -121,6 +130,7 @@ export async function explorerBranchesSmoke({ page, work, shot }) {
   assert.deepEqual(sidebarLabels.map(label => label.replace("Clear primary branch", "Set as primary branch")), explorerLabels);
   await page.keyboard.press("Escape");
 
+  await checkTransferIcons(page, roots[0], roots[1]);
   await branchesToggle.click();
   await gateway.getByRole("button", { name: "Expand branches in api-gateway" }).click();
   await branch("feature/request-routing").waitFor();
@@ -143,4 +153,42 @@ export async function explorerBranchesSmoke({ page, work, shot }) {
   await inventory.and(panel.locator('[aria-level="1"]')).waitFor();
   await branch("feature/reservations").and(panel.locator('[aria-level="2"]')).waitFor();
   assert.equal((await branchNames(inventory))[0], "develop");
+  const git = (...args) => execFileSync("git", ["-C", roots[0], ...args], { windowsHide: true, stdio: "ignore" });
+  git("update-ref", "refs/remotes/origin/feature/reservations", "feature/reservations");
+  git("branch", "--set-upstream-to=origin/feature/reservations", "feature/reservations");
+  await branch("feature/reservations").locator(".ab.up").waitFor({ state: "detached" });
+}
+
+async function checkTransferIcons(page, active, inactive) {
+  const emit = (command, phase, repo = active) => page.evaluate(({ command, phase, repo }) =>
+    window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {
+      event: "repository-operation",
+      payload: { id: "toolbar-" + command, repo, repositoryKey: repo, command, phase, ahead: 0 },
+    }), { command, phase, repo });
+  const toolbar = page.locator(".toolbar");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  try {
+    for (const [command, animation, direction] of [["fetch", "spin", ""], ["pull", "toolbar-transfer", "2px"], ["push", "toolbar-transfer", "-2px"]]) {
+      const button = toolbar.locator('[data-shortcut="' + command + '"]');
+      const busy = button.and(toolbar.locator('[aria-busy="true"]'));
+      const icon = button.locator("svg");
+      await emit(command, "running", inactive);
+      assert.equal(await button.getAttribute("aria-busy"), "false");
+      await emit(command, "queued");
+      assert.equal(await button.getAttribute("aria-busy"), "false");
+      await emit(command, "running");
+      await busy.waitFor();
+      assert.equal(await icon.evaluate(node => getComputedStyle(node).animationName), animation);
+      if (direction) assert.equal(await icon.evaluate(node => getComputedStyle(node).getPropertyValue("--transfer-offset").trim()), direction);
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      assert.equal(await button.getAttribute("aria-busy"), "true");
+      assert.equal(await icon.evaluate(node => getComputedStyle(node).animationName), "none");
+      await emit(command, command === "push" ? "failed" : "finished");
+      await busy.waitFor({ state: "detached" });
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      assert.equal(await icon.evaluate(node => getComputedStyle(node).animationName), "none");
+    }
+  } finally {
+    await page.emulateMedia({ reducedMotion: null });
+  }
 }

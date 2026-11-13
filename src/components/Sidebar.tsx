@@ -35,7 +35,7 @@ import { contextMenu, copyText, openOverlay, useUi } from "../lib/ui";
 import * as A from "../lib/actions";
 import { api } from "../lib/api";
 import { basename, joinPath, relativeTime } from "../lib/format";
-import { AheadBehind } from "./bits";
+import { BranchAheadBehind } from "./bits";
 import { runMenuShortcut, tagMenu } from "./menus";
 import { branchRowMenu, showBranch } from "./BranchNavigation";
 import { reviewBranchCleanup } from "./BranchCleanup";
@@ -320,7 +320,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                   integrated
                 </span>
               )}
-              <AheadBehind ahead={b.ahead} behind={b.behind} />
+              <BranchAheadBehind branch={b}/>
               <button type="button" className={"icon-btn sm repository-star" + (favorite ? " active" : "")}
                 aria-label={(favorite ? "Unfavorite branch " : "Favorite branch ") + b.name} aria-pressed={favorite} data-shortcut="branch-favorite"
                 onDoubleClick={event => event.stopPropagation()}
