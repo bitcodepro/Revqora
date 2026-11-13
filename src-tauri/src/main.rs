@@ -2,6 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    #[cfg(windows)]
+    if let Some(code) = revqora_lib::update::run_worker() {
+        std::process::exit(code);
+    }
     if std::env::args_os().len() == 2 && std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--mcp")) {
         if let Err(error) = revqora_lib::mcp::stdio() {
             eprintln!("Revqora MCP: {error}");

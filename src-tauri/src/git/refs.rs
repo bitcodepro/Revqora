@@ -1,6 +1,6 @@
 //! Branches, remotes, tags and stashes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::Serialize;
@@ -27,6 +27,9 @@ pub struct BranchInfo {
     pub upstream_full_name: Option<String>,
     pub ahead: u32,
     pub behind: u32,
+    /// Display count for a local branch with no configured upstream.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unpublished: Option<usize>,
     pub gone: bool,
     pub is_head: bool,
     pub remote: Option<String>,
@@ -95,6 +98,17 @@ fn parse_track(t: &str) -> (u32, u32, bool) {
     (ahead, behind, gone)
 }
 
+pub fn branch_names(repo: &Path) -> GitResult<Vec<String>> {
+    let raw = runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(symref)", "refs/heads", "refs/remotes"])?;
+    Ok(raw
+        .lines()
+        .filter_map(|line| {
+            let (name, target) = line.split_once('\0')?;
+            target.is_empty().then(|| name.to_owned())
+        })
+        .collect())
+}
+
 pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
     let remotes = remotes(repo)?;
     let raw = runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"])?;
@@ -120,6 +134,7 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
                 upstream_full_name: Some(f[11].to_string()).filter(|s| !s.is_empty()),
                 ahead,
                 behind,
+                unpublished: None,
                 gone,
                 is_head: f[5] == "*",
                 remote: None,
@@ -142,6 +157,7 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
                 upstream_full_name: None,
                 ahead: 0,
                 behind: 0,
+                unpublished: None,
                 gone: false,
                 is_head: false,
                 remote: Some(remote_name),
@@ -163,8 +179,58 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
             });
         }
     }
+    if !remotes.is_empty() {
+        // A missing object must not prevent the sidebar from listing refs.
+        let _ = count_unpublished(repo, &mut local, &remote);
+    }
     tags.sort_by_key(|t| std::cmp::Reverse(t.time));
     Ok(RefsSnapshot { identity_email: super::repo::config_get(repo, "user.email"), local, remote, tags, stashes: stashes(repo)?, remotes })
+}
+
+fn count_unpublished(repo: &Path, local: &mut [BranchInfo], remote: &[BranchInfo]) -> GitResult<()> {
+    let candidates: Vec<_> = local.iter_mut().filter(|branch| branch.upstream.is_none() && !branch.gone).collect();
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    // Walk all unpublished histories in one Git process using the snapshot tips.
+    // Read OIDs on stdin to avoid Windows command-line limits.
+    let tips: HashSet<_> = candidates.iter().map(|branch| branch.oid.as_str()).collect();
+    let fetched: HashSet<_> = remote.iter().map(|branch| branch.oid.as_str()).collect();
+    let mut revisions = String::new();
+    for oid in tips {
+        revisions.push_str(oid);
+        revisions.push('\n');
+    }
+    for oid in fetched {
+        revisions.push('^');
+        revisions.push_str(oid);
+        revisions.push('\n');
+    }
+    let output = super::history::run_with_input(repo, ["rev-list", "--parents", "--stdin", "--"], revisions.as_bytes())?;
+    let parents: HashMap<_, _> = output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((fields.next()?, fields))
+        })
+        .collect();
+    let mut counts = HashMap::new();
+    for branch in candidates {
+        let count = *counts.entry(branch.oid.clone()).or_insert_with(|| {
+            let mut seen = HashSet::new();
+            let mut pending = vec![branch.oid.as_str()];
+            while let Some(oid) = pending.pop() {
+                if let Some(ancestors) = parents.get(oid) {
+                    if seen.insert(oid) {
+                        pending.extend(ancestors.clone());
+                    }
+                }
+            }
+            seen.len()
+        });
+        branch.unpublished = Some(count);
+    }
+    Ok(())
 }
 
 pub fn stashes(repo: &Path) -> GitResult<Vec<StashInfo>> {

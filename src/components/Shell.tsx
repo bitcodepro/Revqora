@@ -5,7 +5,8 @@ import { SyncButton, syncRepositories } from "./SyncRepositories";
 import { RepositoryLibraryButton, groupEditorDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
 import { fetchRepositories, pullRepositories } from "./Repositories";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
-import { repositoryKey, useLibrary } from "../lib/repositoryLibrary";
+import { repositoryKey, uniqueRoots, useLibrary } from "../lib/repositoryLibrary";
+import { treeAncestors } from "../lib/libraryTree";
 import { PanelWindowsButton, usePanelWindowMenu, usePanelWindows } from "./PanelWindows";
 import { WORKTREE } from "../lib/types";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
@@ -22,6 +23,7 @@ import {
   CircleDot,
   Command,
   Download,
+  Folder,
   FolderGit2,
   FolderOpen,
   FolderSearch,
@@ -104,6 +106,9 @@ export function TopBar() {
   const status = tab?.status;
   const stashCount = tab?.refs?.stashes.length ?? 0;
   const root = tab?.root;
+  const fetching = useUi(s => s.repositoryOperations.some(op => op.repo === root && op.phase === "running" && (op.command === "fetch" || op.command === "fetch_background")));
+  const pulling = useUi(s => s.repositoryOperations.some(op => op.repo === root && op.phase === "running" && op.command === "pull"));
+  const pushing = useUi(s => s.repositoryOperations.some(op => op.repo === root && op.phase === "running" && (op.command === "push" || op.command === "push_ref")));
   const repositoryName = useLibrary(s => root ? s.repositoryNames[repositoryKey(root)] : undefined) ?? tab?.info?.name ?? (root ? basename(root) : "Repositories");
   const dark = resolvedTheme(theme) === "dark";
   const overview = useUi((s) => s.repositoryOverview);
@@ -182,15 +187,15 @@ export function TopBar() {
           <SyncButton roots={[root]} />
           <button className="tb-btn" aria-label="Open worktree manager" title="Worktree manager" data-shortcut="worktree-manager" onClick={() => openWorktrees(root)}><FolderGit2 size={15} />Worktrees</button>
           <button className="tb-btn" aria-label="Open branch manager" title="Branch manager" data-shortcut="branch-manager" onClick={() => openOverlay({ kind: "branches", root })}><GitBranch size={15} />Branches</button>
-          <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes" data-shortcut="fetch">
-            <RefreshCw size={15} /> Fetch
+          <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes" data-shortcut="fetch" aria-busy={fetching}>
+            <RefreshCw size={15} className="transfer-icon" /> Fetch
           </button>
-          <button className="tb-btn" onClick={() => A.pull(root)} title="Pull" data-shortcut="pull">
-            <ArrowDownToLine size={15} /> Pull
+          <button className="tb-btn" onClick={() => A.pull(root)} title="Pull" data-shortcut="pull" aria-busy={pulling}>
+            <ArrowDownToLine size={15} className="transfer-icon" /> Pull
             {!!status?.behind && <span className="count">{status.behind}</span>}
           </button>
-          <button className="tb-btn" onClick={() => A.push(root)} title="Push" data-shortcut="push">
-            <ArrowUpFromLine size={15} /> Push
+          <button className="tb-btn" onClick={() => A.push(root)} title="Push" data-shortcut="push" aria-busy={pushing}>
+            <ArrowUpFromLine size={15} className="transfer-icon" /> Push
             {!!status?.ahead && <span className="count">{status.ahead}</span>}
           </button>
           <div className="tb-sep" />
@@ -588,6 +593,8 @@ interface Cmd {
   id: string;
   label: string;
   group: string;
+  context?: string;
+  search?: string;
   icon?: React.ReactNode;
   run: () => void;
 }
@@ -596,7 +603,8 @@ function score(q: string, s: string): number {
   if (!q) return 1;
   const l = s.toLowerCase();
   const i = l.indexOf(q);
-  if (i >= 0) return 100 - i;
+  if (l === q || l.replace(/…$/, "") === q) return 200;
+  if (i >= 0) return 100 - Math.min(i, 80);
   let qi = 0;
   for (let k = 0; k < l.length && qi < q.length; k++) if (l[k] === q[qi]) qi++;
   return qi === q.length ? 10 : 0;
@@ -692,87 +700,217 @@ export function paletteShortcut(id: string, tab: RepoTab | null | undefined) {
 }
 
 export function CommandPalette() {
-  const open = useUi((s) => s.paletteOpen);
-  const setOpen = useUi((s) => s.setPalette);
-  const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
-  const recent = useSettings((s) => s.recent);
+  const open = useUi(s => s.paletteOpen);
+  const setOpen = useUi(s => s.setPalette);
+  const { toggleSidebar } = usePanelWindows();
+  const active = useRepos(s => s.active);
+  const order = useRepos(s => s.order);
+  const tabs = useRepos(s => s.tabs);
+  const groups = useLibrary(s => s.groups);
+  const known = useLibrary(s => s.knownRoots);
+  const names = useLibrary(s => s.repositoryNames);
+  const recent = useSettings(s => s.recent);
   const [q, setQ] = useState("");
-  const [idx, setIdx] = useState(0);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const [branches, setBranches] = useState<Record<string, string[]>>({});
+  const [loadingBranches, setLoadingBranches] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const roots = useMemo(() => uniqueRoots([...order, ...known, ...recent]), [order, known, recent]);
+  const ql = q.trim().toLowerCase();
+  const shouldLoad = open && !!ql;
 
   useEffect(() => {
-    if (open) {
+    if (!open) {
       setQ("");
-      setIdx(0);
-      setTimeout(() => inputRef.current?.focus(), 10);
+      setHighlight(null);
+      setBranches({});
+      return;
     }
+    inputRef.current?.focus();
   }, [open]);
 
-  const cmds = useMemo<Cmd[]>(() => {
-    const list = paletteActions(tab);
-    if (tab) {
-      const root = tab.root;
-      for (const b of tab.refs?.local ?? []) {
-        if (b.isHead) continue;
-        list.push({ id: "co:" + b.name, label: `Check out ${b.name}`, group: "Branch", icon: <GitBranch size={15} />, run: () => A.checkout(root, b.name, "local") });
-        list.push({ id: "mg:" + b.name, label: `Merge ${b.name} into current…`, group: "Merge", icon: <GitMerge size={15} />, run: () => A.mergeInto(root, b.name) });
-      }
-      for (const b of tab.refs?.remote ?? []) list.push({ id: "cor:" + b.name, label: `Check out ${b.name}`, group: "Remote branch", icon: <GitBranch size={15} />, run: () => A.checkout(root, b.name, "remote") });
-    }
-    for (const r of recent) list.push({ id: "recent:" + r, label: `Open ${basename(r)}`, group: r, icon: <FolderGit2 size={15} />, run: () => A.openRepoPath(r) });
-    return list;
-  }, [tab, recent]);
+  useEffect(() => {
+    if (!shouldLoad) { setLoadingBranches(false); return; }
+    let cancelled = false;
+    let next = 0;
+    const candidates = roots.filter(root => !useRepos.getState().tabs[root]?.refs);
+    setLoadingBranches(!!candidates.length);
+    const timer = window.setTimeout(async () => {
+      await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, async () => {
+        while (!cancelled && next < candidates.length) {
+          const root = candidates[next++];
+          if (useRepos.getState().tabs[root]?.refs) continue;
+          try {
+            const refs = await api.repositoryBranchNames(root);
+            if (!cancelled) setBranches(current => ({ ...current, [root]: refs }));
+          } catch { /* A saved repository can be unavailable. Keep the other results. */ }
+        }
+      }));
+      if (!cancelled) setLoadingBranches(false);
+    }, 150);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [shouldLoad, roots]);
 
-  const ql = q.trim().toLowerCase();
-  const filtered = cmds
-    .map((c) => ({ c, s: score(ql, c.label) }))
-    .filter((x) => x.s > 0)
-    .sort((a, b) => b.s - a.s)
-    .slice(0, 60)
-    .map((x) => x.c);
+  const openRepository = async (path: string) => {
+    const repos = useRepos.getState();
+    const existing = repos.order.find(root => repositoryKey(root) === repositoryKey(path));
+    if (existing && repos.tabs[existing]?.info) {
+      repos.activate(existing);
+      return existing;
+    }
+    return repos.open(existing ?? path);
+  };
+
+  const revealExplorer = (group: string | null, root?: string) => {
+    const library = useLibrary.getState();
+    const ancestors = new Set(group ? [...treeAncestors(library.groups, group), ...(root ? [group] : [])] : []);
+    if (library.groups.some(item => item.collapsed && ancestors.has(item.id))) {
+      useLibrary.setState({ groups: library.groups.map(item => item.collapsed && ancestors.has(item.id) ? { ...item, collapsed: false } : item) });
+    }
+    library.selectGroup(group);
+    useSettings.getState().set({ explorerFavoritesOnly: false });
+    useUi.setState({ explorerReveal: root ? JSON.stringify([group, repositoryKey(root)]) : group });
+    toggleSidebar("explorer", true);
+  };
+
+  const revealRepository = async (path: string) => {
+    try {
+      const opening = openRepository(path);
+      const version = useRepos.getState().selectionVersion;
+      const root = await opening;
+      if (!root || useRepos.getState().selectionVersion !== version) return;
+      const { groups, activeGroupId } = useLibrary.getState();
+      const memberships = groups.filter(group => group.roots.some(item => repositoryKey(item) === repositoryKey(root)));
+      revealExplorer((memberships.find(group => group.id === activeGroupId) ?? memberships[0])?.id ?? null, root);
+    } catch (error) { toast.error(error, "Could not open repository"); }
+  };
+
+  const revealBranch = async (path: string, reference: string) => {
+    try {
+      const opening = openRepository(path);
+      const version = useRepos.getState().selectionVersion;
+      const root = await opening;
+      if (!root || useRepos.getState().selectionVersion !== version) return;
+      const cached = useRepos.getState().tabs[root]?.refs;
+      const hasBranch = (refs: NonNullable<RepoTab["refs"]>) => refs.local.some(branch => branch.fullName === reference) || refs.remote.some(branch => branch.fullName === reference);
+      const refs = cached && hasBranch(cached) ? cached : await api.refs(root);
+      const repos = useRepos.getState();
+      if (repos.active !== root || repos.selectionVersion !== version) return;
+      if (!hasBranch(refs)) {
+        toast.warning("Branch is no longer available");
+        return;
+      }
+      repos.patch(root, { refs, view: "history" });
+      useUi.setState({ branchReveal: { root, reference } });
+      toggleSidebar("branches", true);
+    } catch (error) { toast.error(error, "Could not open branch"); }
+  };
+
+  const tab = active ? tabs[active] : null;
+  const filtered: Cmd[] = [];
+  if (open) {
+    const list = paletteActions(tab);
+    if (ql) {
+      if (tab && /^(?:check\s+out|checkout|merge)\s/.test(ql)) {
+        for (const [kind, refs] of [["local", tab.refs?.local], ["remote", tab.refs?.remote]] as const) {
+          for (const branch of refs ?? []) {
+            if (branch.isHead) continue;
+            list.push({ id: "checkout:" + branch.fullName, label: "Check out " + branch.name, group: "Branch action", icon: <GitBranch size={15} />,
+              run: () => void A.checkout(tab.root, branch.name, kind) });
+            if (kind === "local") list.push({ id: "merge:" + branch.fullName, label: "Merge " + branch.name + " into current…", group: "Branch action",
+              icon: <GitMerge size={15} />, run: () => void A.mergeInto(tab.root, branch.name) });
+          }
+        }
+      }
+      const byGroup = new Map(groups.map(group => [group.id, group]));
+      for (const group of groups) {
+        const parents = treeAncestors(groups, group.id).reverse().map(id => byGroup.get(id)!.name).join(" / ");
+        list.push({
+          id: "group:" + group.id, label: group.name, group: "Folder", context: parents,
+          icon: <Folder size={15} />, run: () => revealExplorer(group.id),
+        });
+      }
+      for (const root of roots) {
+        const name = names[repositoryKey(root)] ?? tabs[root]?.info?.name ?? basename(root);
+        list.push({
+          id: "repository:" + root, label: name, group: "Repository", context: root,
+          icon: <FolderGit2 size={15} />, run: () => void revealRepository(root),
+        });
+        const refs = tabs[root]?.refs;
+        const references = refs ? [...refs.local, ...refs.remote].map(branch => branch.fullName) : branches[root] ?? [];
+        for (const reference of references) {
+          const local = reference.startsWith("refs/heads/");
+          const branch = reference.slice(local ? "refs/heads/".length : "refs/remotes/".length);
+          list.push({
+            id: JSON.stringify([root, reference]), label: branch, group: local ? "Branch" : "Remote branch",
+            context: name, search: root, icon: <GitBranch size={15} />, run: () => void revealBranch(root, reference),
+          });
+        }
+      }
+    }
+    const tokens = ql.split(/\s+/);
+    const matches = list.map(item => {
+      const context = [item.label, item.context, item.search].filter(Boolean).join(" ").toLowerCase();
+      const rank = score(ql, item.label) || (tokens.every(token => context.includes(token)) ? 12 : 0);
+      return { item, rank };
+    }).filter(result => result.rank > 0).sort((a, b) => b.rank - a.rank);
+    filtered.push(...matches.slice(0, 60).map(({ item }) => item));
+  }
+
+  const idx = Math.max(0, filtered.findIndex(item => item.id === highlight));
+  const selected = filtered[idx];
+  useEffect(() => {
+    if (open && highlight) listRef.current?.querySelector(".palette-item.on")?.scrollIntoView({ block: "nearest" });
+  }, [open, highlight, idx]);
 
   if (!open) return null;
-  const run = (c: Cmd | undefined) => {
-    if (!c) return;
+  const run = (command: Cmd | undefined) => {
+    if (!command) return;
     setOpen(false);
-    c.run();
+    command.run();
   };
   return (
-    <div className="modal-backdrop" style={{ background: "transparent", backdropFilter: "none" }} onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}>
-      <div className="palette">
+    <div className="modal-backdrop" style={{ background: "transparent", backdropFilter: "none" }} onMouseDown={e => e.target === e.currentTarget && setOpen(false)}>
+      <div className="palette" role="dialog" aria-label="Command palette">
         <Search size={18} className="pi" />
         <input
           ref={inputRef}
           value={q}
-          placeholder="Type a command, branch or repository…"
-          onChange={(e) => {
-            setQ(e.target.value);
-            setIdx(0);
-          }}
-          onKeyDown={(e) => {
+          role="combobox"
+          aria-label="Search commands, repositories, branches and folders"
+          aria-expanded="true"
+          aria-autocomplete="list"
+          aria-controls="palette-results"
+          aria-activedescendant={selected ? "palette-result-" + idx : undefined}
+          placeholder="Search commands, repositories, branches, folders…"
+          onChange={e => { setQ(e.target.value); setHighlight(null); }}
+          onKeyDown={e => {
+            if (e.nativeEvent.isComposing) return;
             if (e.key === "Escape") setOpen(false);
-            else if (e.key === "ArrowDown") {
+            else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
               e.preventDefault();
-              setIdx((i) => Math.min(filtered.length - 1, i + 1));
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setIdx((i) => Math.max(0, i - 1));
-            } else if (e.key === "Enter") run(filtered[idx]);
+              const next = Math.max(0, Math.min(filtered.length - 1, idx + (e.key === "ArrowDown" ? 1 : -1)));
+              setHighlight(filtered[next]?.id ?? null);
+            } else if (e.key === "Enter") { e.preventDefault(); run(selected); }
           }}
         />
-        <div className="palette-list">
-          {filtered.length === 0 && <div className="faint" style={{ padding: 14 }}>Nothing found</div>}
-          {filtered.map((c, i) => (
-            <div key={c.id} className={`palette-item ${i === idx ? "on" : ""}`} onMouseEnter={() => setIdx(i)} onClick={() => run(c)}>
-              {c.icon}
-              <span className="ellipsis">{c.label}</span>
-              {bindingFor(c.id) && <span className="kbd">{prettyCombo(bindingFor(c.id))}</span>}
-              <span className="group ellipsis" style={{ maxWidth: 220 }}>
-                {c.group}
-              </span>
+        <div className="palette-list" ref={listRef} id="palette-results" role="listbox" aria-label="Search results" aria-busy={loadingBranches}>
+          {filtered.map((command, i) => (
+            <div key={command.id} id={"palette-result-" + i} role="option" aria-selected={i === idx}
+              className={i === idx ? "palette-item on" : "palette-item"}
+              onMouseEnter={() => setHighlight(command.id)} onClick={() => run(command)}>
+              {command.icon}
+              <div className="palette-result-label">
+                <span className="ellipsis">{command.label}</span>
+                {command.context && <small className="ellipsis" title={command.context}>{command.context}</small>}
+              </div>
+              {bindingFor(command.id) && <span className="kbd">{prettyCombo(bindingFor(command.id))}</span>}
+              <span className="group">{command.group}</span>
             </div>
           ))}
         </div>
+        {(loadingBranches || !filtered.length) && <div className="palette-status faint" role="status">{loadingBranches ? "Searching branches…" : "Nothing found"}</div>}
       </div>
     </div>
   );

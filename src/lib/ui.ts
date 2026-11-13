@@ -75,6 +75,8 @@ interface UiState {
   busy: BusyOp[];
   repositoryOperations: RepositoryOperation[];
   paletteOpen: boolean;
+  explorerReveal: string | null;
+  branchReveal: { root: string; reference: string } | null;
   overlay: Overlay | null;
   overlayRevision: number;
   repositoryOverview: boolean;
@@ -95,6 +97,8 @@ export const useUi = create<UiState>()((set, get) => ({
   busy: [],
   repositoryOperations: [],
   paletteOpen: false,
+  explorerReveal: null,
+  branchReveal: null,
   overlay: null,
   overlayRevision: 0,
   repositoryOverview: false,

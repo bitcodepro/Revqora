@@ -24,7 +24,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    await branch("other/person").waitFor();
    assert.equal(await page.getByLabel("Branch list order",{exact:true}).inputValue(),"recent");
    assert.equal(await page.locator('.sidebar [data-branch-kind="local"]').first().getAttribute("data-branch-name"),"other/person");
-   await page.getByRole("button",{name:"My branches",exact:true}).click();await branch("other/person").waitFor({state:"detached"});await branch("feature/mine").waitFor();
+   await page.locator(".sidebar").getByRole("button",{name:"My branches",exact:true}).click();await branch("other/person").waitFor({state:"detached"});await branch("feature/mine").waitFor();
    assert.equal(await page.locator('.sidebar [data-branch-kind="local"]').first().getAttribute("data-branch-name"),"feature/mine");
    if(out){await page.screenshot({path:path.join(out,"my-branches.png")});await page.locator(".sidebar").screenshot({path:path.join(out,"my-branches-sidebar.png")});}
    const commitRow=title=>page.locator(".graph-rows").getByText(title,{exact:true});
@@ -74,7 +74,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    await page.waitForFunction(()=>window.__fastSwitchGate.held.length>0);
    await page.locator(".graph-rows").getByText("Switch first feature",{exact:true}).waitFor();await preview("feature-body");
    console.log(`Cached repository and diff rendered with native reads held in ${Math.round(performance.now()-repositorySwitch)} ms`);
-   assert.equal(await page.getByRole("button",{name:"My branches",exact:true}).getAttribute("aria-pressed"),"true");
+   assert.equal(await page.locator(".sidebar").getByRole("button",{name:"My branches",exact:true}).getAttribute("aria-pressed"),"true");
    const branchSwitch=performance.now();
    await commitRow("Switch first base").click();await preview("base-body");await commitRow("Switch first feature").click();await preview("feature-body");
    console.log(`Two cached commit previews rendered with native reads held in ${Math.round(performance.now()-branchSwitch)} ms`);

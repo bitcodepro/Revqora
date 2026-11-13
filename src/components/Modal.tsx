@@ -13,12 +13,21 @@ interface ModalProps {
   onClose: () => void;
   onSubmit?: () => void;
   sizeKey?: string;
+  expandForResults?: boolean;
 }
 
-export function Modal({ title, subtitle, icon, tone = "accent", wide, children, footer, onClose, onSubmit, sizeKey }: ModalProps) {
+export function Modal({ title, subtitle, icon, tone = "accent", wide, children, footer, onClose, onSubmit, sizeKey, expandForResults }: ModalProps) {
   const ref = useRef<HTMLFormElement>(null);
   const titleId = useId();
   const size = useWindowSize(sizeKey ?? (typeof title === "string" ? title : wide ? "Wide dialog" : "Dialog"));
+  const expandedForResults = useRef(false);
+  useLayoutEffect(() => {
+    if (!expandForResults || expandedForResults.current || !ref.current || !size.value) return;
+    expandedForResults.current = true;
+    const dialog = ref.current;
+    const minHeight = Math.min(360, dialog.ownerDocument.defaultView!.innerHeight - 48);
+    if (dialog.offsetHeight < minHeight) size.resize({ ...size.value, height: minHeight });
+  }, [expandForResults, size.value, size.resize]);
   // Callers pass a new onClose on every render; keep the latest without re-running the effect,
   // which would re-focus and select the input after each keystroke (typing replaced the text).
   const closeRef = useRef(onClose);

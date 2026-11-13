@@ -134,7 +134,7 @@ export function UpdateChip() {
             </button>
             {phase === "ready" ? (
               <button type="button" className="btn primary sm" onClick={() => restart()}>
-                <RotateCw size={13} /> Restart now
+                <RotateCw size={13} /> Restart to update
               </button>
             ) : update.canInstall ? (
               <button type="button" className="btn primary sm" disabled={working} onClick={() => install()}>

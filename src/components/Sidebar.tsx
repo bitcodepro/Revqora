@@ -7,7 +7,6 @@ import {
   CloudOff,
   Copy,
   Eraser,
-  Eye,
   Flag,
   Folder,
   FolderGit2,
@@ -23,6 +22,7 @@ import {
   RefreshCw,
   Search,
   Server,
+  Star,
   Tag,
   Trash2,
   X as ClearIcon,
@@ -30,13 +30,14 @@ import {
 import * as X from "../lib/extraActions";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import type { BranchInfo } from "../lib/types";
-import { CURRENT_HISTORY_BRANCH, loadGraph, useRepos, type RepoTab } from "../lib/store";
+import { loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { contextMenu, copyText, openOverlay, useUi } from "../lib/ui";
 import * as A from "../lib/actions";
 import { api } from "../lib/api";
 import { basename, joinPath, relativeTime } from "../lib/format";
-import { AheadBehind } from "./bits";
-import { branchMenu, runMenuShortcut, tagMenu } from "./menus";
+import { BranchAheadBehind } from "./bits";
+import { runMenuShortcut, tagMenu } from "./menus";
+import { branchRowMenu, showBranch } from "./BranchNavigation";
 import { reviewBranchCleanup } from "./BranchCleanup";
 import { usePanelTitleMenu, usePanelWindows } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
@@ -87,6 +88,7 @@ function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
 export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) {
   const panelMenu = usePanelTitleMenu("branches", [{ label: "Branch manager", icon: <GitBranch size={14}/>, onClick: () => openOverlay({ kind: "branches", root: tab.root }) }]);
   const { panels } = usePanelWindows();
+  const reveal = useUi(s => s.branchReveal);
   const { setLayout } = useWorkspaceLayout();
   const root = tab.root;
   const [branchPrefs,setBranchPrefs]=useState(()=>{try{return sidebarBranchPreferences(JSON.parse(localStorage.getItem(sidebarBranchesKey(root))??"null"));}catch{return sidebarBranchPreferences(null);}});
@@ -98,9 +100,11 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ tags: true });
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({});
   const [selection, setSelection] = useState<BranchInfo[]>([]);
+  const [revealed, setRevealed] = useState<{ reference: string } | null>(null);
   const selectionAnchor = useRef<string | null>(null);
   const beforeDoubleClick = useRef<Pick<RepoTab, "branchFilter" | "branchContext" | "viewedBranch"> & { reference: string } | null>(null);
   const cleanupPending = useRef(false);
+  const pinnedRow = useRef<HTMLDivElement>(null);
   const refs = tab.refs;
   const extras = tab.extras;
   const f = filter.trim().toLowerCase();
@@ -108,53 +112,60 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   const current = tab.info?.head.branch;
   const key = repositoryKey(root);
   const primaryBranch = useSettings(settings => settings.primaryBranchByRepo[key]);
-  const filterGraph = (reference: string) => {
-    useRepos.getState().patch(root, { view: "history", branchFilter: reference, branchContext: null, viewedBranch: reference, selected: null, multi: [], historyJump: null });
-    if(!panels.history&&useUi.getState().repositoryOverview)useUi.setState({repositoryOverview:false});
-    void useRepos.getState().refresh(root, { graph: true });
-  };
-  const viewBranch = (branch: BranchInfo, showTip = false) => {
-    const repos = useRepos.getState();
-    const revealHistory = useUi.getState().repositoryOverview && !panels.history;
-    const shown = tab.branchFilter === CURRENT_HISTORY_BRANCH ? `refs/heads/${current ?? ""}` : tab.branchFilter;
-    const scope = showTip && (tab.branchContext || (tab.branchFilter && shown !== branch.fullName)) ? branch.fullName : showTip ? tab.branchFilter : null;
-    const branchContext = showTip ? null : branch.fullName;
-    const scopeChanged = scope !== tab.branchFilter || branchContext !== (tab.branchContext ?? null);
-    if (showTip && tab.view === "history" && !revealHistory && !scopeChanged && tab.graph) {
-      repos.patch(root, { viewedBranch: branch.fullName });
-      jumpToCommit(root, branch.oid);
-      return;
-    }
-    repos.patch(root, { viewedBranch: branch.fullName, view: "history", selected: showTip ? branch.oid : null, multi: [], branchFilter: scope, branchContext, historyJump: branch.oid });
-    if (revealHistory) {
-      useUi.setState({ repositoryOverview: false });
-      window.focus();
-    }
-    if (scopeChanged || !tab.graph) void loadGraph(root);
-  };
+  const favorites = useSettings(settings => settings.branchFavoritesByRepo[key]);
+  const viewBranch = (branch: BranchInfo) => showBranch(root, branch, false, !!panels.history);
+
+  useEffect(() => {
+    if (reveal?.root !== root || !refs) return;
+    const branch = [...refs.local, ...refs.remote].find(item => item.fullName === reveal.reference);
+    if (!branch) return;
+    const kind = branch.fullName.startsWith("refs/heads/") ? "local" : "remote";
+    const parts = branch.name.split("/");
+    setOpenDirs(current => {
+      const opened = { ...current };
+      if (kind === "remote") opened[`remote-root:${branch.remote ?? "origin"}`] = true;
+      for (let depth = kind === "remote" ? 2 : 1; depth < parts.length; depth++) {
+        opened[`${kind}:${parts.slice(0, depth).join("/")}`] = true;
+      }
+      return opened;
+    });
+    setCollapsed(current => ({ ...current, [kind === "local" ? "local" : "remotes"]: false }));
+    setFilter("");
+    setSelection([branch]);
+    selectionAnchor.current = branch.fullName;
+    setRevealed(reveal);
+    viewBranch(branch);
+    useUi.setState({ branchReveal: null });
+  });
 
   const pairs = useMemo(() => branchPairs(refs?.local ?? [], refs?.remote ?? []), [refs]);
   const pinned = [...(refs?.local ?? []), ...(refs?.remote ?? [])].find(branch => branch.fullName === primaryBranch);
+  const revealedBranch = useMemo(() => revealed && [...(refs?.local ?? []), ...(refs?.remote ?? [])]
+    .find(branch => branch.fullName === revealed.reference), [refs, revealed]);
   const local = useMemo(() => selectSidebarBranches(refs?.local??[],branchPrefs,authorQuery,refs?.identityEmail??null,filter)
     .filter(branch => branch.fullName !== primaryBranch), [refs,branchPrefs,authorQuery,filter,primaryBranch]);
+  const visibleLocal = revealedBranch?.fullName.startsWith("refs/heads/") && revealedBranch.fullName !== primaryBranch && !local.includes(revealedBranch)
+    ? [...local, revealedBranch] : local;
   const remoteByName = useMemo(() => {
     const m = new Map<string, BranchInfo[]>();
     for (const r of refs?.remotes ?? []) m.set(r.name, []);
     const pairing = pinned?.fullName.startsWith("refs/heads/") ? [...local, pinned] : local;
-    for (const b of selectSidebarBranches(branchPairs(pairing,refs?.remote??[]).remoteOnly,branchPrefs,authorQuery,refs?.identityEmail??null,filter)) {
+    const matching = selectSidebarBranches(branchPairs(pairing,refs?.remote??[]).remoteOnly,branchPrefs,authorQuery,refs?.identityEmail??null,filter);
+    if (revealedBranch?.fullName.startsWith("refs/remotes/") && !matching.includes(revealedBranch)) matching.push(revealedBranch);
+    for (const b of matching) {
       if (b.fullName === primaryBranch) continue;
       const k = b.remote ?? "origin";
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(b);
     }
     return m;
-  }, [refs,local,branchPrefs,authorQuery,filter,pinned,primaryBranch]);
+  }, [refs,local,branchPrefs,authorQuery,filter,pinned,primaryBranch,revealedBranch]);
   const tags = (refs?.tags ?? []).filter((t) => match(t.name));
   const stashes = (refs?.stashes ?? []).filter((s) => match(s.message));
 
   const toggle = (k: string) => setCollapsed((c) => ({ ...c, [k]: !c[k] }));
   const isOpen = (k: string) => (f ? true : openDirs[k] ?? true);
-  const clearSelection = () => { setSelection([]); selectionAnchor.current = null; };
+  const clearSelection = () => { setSelection([]); setRevealed(null); selectionAnchor.current = null; };
 
   const chooseBranch = (branch: BranchInfo, toggle: boolean, range: boolean) => {
     const reference = branch.fullName;
@@ -168,6 +179,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
       }
     }
     selectionAnchor.current = reference;
+    if (!toggle && revealed?.reference !== reference) setRevealed(null);
     if (toggle) setSelection(selectedSet.has(reference) ? selected.filter((row) => row.fullName !== reference) : [...selected, branch]);
     else {
       setSelection([branch]);
@@ -209,6 +221,8 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
         const isCur = kind === "local" && b.name === current;
         const connection = branchConnection(b);
         const upstream = pairs.upstreams.get(b.fullName);
+        const favorite = favorites?.includes(b.fullName) ?? false;
+        const menu = () => branchRowMenu(root, b, upstream, !!panels.history);
         const viewed = tab.viewedBranch ?? tab.branchFilter;
         return [
           <div
@@ -236,6 +250,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               chooseBranch(b, modifier, e.shiftKey && !modifier);
             }}
             onKeyDown={(e) => {
+              if (e.target !== e.currentTarget) return;
               if (matchesShortcut(e, "renameItem")) {
                 e.preventDefault();
                 if (!e.repeat) void (kind === "local" ? A.renameBranch(root, b.name) : renameRemoteBranch(root, b.name));
@@ -247,7 +262,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                 if (!e.repeat) void deleteSelected(selected.some(branch => branch.fullName === b.fullName) ? selected : [b]);
                 return;
               }
-              if (runMenuShortcut(e, branchMenu(root, b.name, kind), "branch-")) return;
+              if (runMenuShortcut(e, menu(), "branch-")) return;
               if (e.key !== "Enter" && e.key !== " ") return;
               e.preventDefault();
               chooseBranch(b, e.ctrlKey || e.metaKey, e.shiftKey);
@@ -292,21 +307,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                 { label: `Delete ${selected.length} branches…`, icon: <Trash2 size={14} />, danger: true, disabled: selected.length > 50,
                   hint: selected.length > 50 ? "Select up to 50" : undefined, onClick: () => void deleteSelected() },
                 { label: "Clear selection", onClick: clearSelection },
-              ] : [
-                ...branchMenu(root, b.name, kind),
-                ...(upstream ? [{ label: `Upstream: ${upstream.name}`, icon: <Cloud size={14} />, children: [
-                  { label: "Show tip in history", icon: <GitBranch size={14} />, onClick: () => viewBranch(upstream, true) },
-                  { label: "Show only this branch in graph", icon: <Eye size={14} />, onClick: () => filterGraph(upstream.fullName) },
-                  { separator: true },
-                  ...branchMenu(root, upstream.name, "remote"),
-                ] }] : []),
-                { separator: true },
-                {
-                  label: "Show only this branch in graph",
-                  icon: <Eye size={14} />,
-                  onClick: () => filterGraph(b.fullName),
-                },
-              ])
+              ] : menu())
             }
           >
             {kind === "local" ? <GitBranch size={13} style={{ flex: "none", color: isCur ? "var(--accent)" : undefined }} /> : <Cloud size={13} style={{ flex: "none" }} />}
@@ -319,7 +320,13 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                   integrated
                 </span>
               )}
-              <AheadBehind ahead={b.ahead} behind={b.behind} />
+              <BranchAheadBehind branch={b}/>
+              <button type="button" className={"icon-btn sm repository-star" + (favorite ? " active" : "")}
+                aria-label={(favorite ? "Unfavorite branch " : "Favorite branch ") + b.name} aria-pressed={favorite} data-shortcut="branch-favorite"
+                onDoubleClick={event => event.stopPropagation()}
+                onClick={event => { event.stopPropagation(); useSettings.getState().toggleBranchFavorite(key, b.fullName); }}>
+                <Star size={12} fill={favorite ? "currentColor" : "none"}/>
+              </button>
             </span>
           </div>,
         ];
@@ -357,19 +364,19 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
     </div>,
   ];
 
-  const branchesByRef = useMemo(() => new Map([...(pinned ? [pinned] : []), ...local, ...[...remoteByName.values()].flat()].map((branch) => [branch.fullName, branch])), [local, remoteByName, pinned]);
+  const branchesByRef = useMemo(() => new Map([...(pinned ? [pinned] : []), ...visibleLocal, ...[...remoteByName.values()].flat()].map((branch) => [branch.fullName, branch])), [visibleLocal, remoteByName, pinned]);
   const selected = selection.filter((branch) => branchesByRef.has(branch.fullName));
   const selectedSet = new Set(selected.map((branch) => branch.fullName));
   const branchRows = [
         ...section(
           "local",
           "Branches",
-          local.length,
+          visibleLocal.length,
           <GitBranch size={12} />,
           <button className="icon-btn sm" title="New branch" onClick={() => A.createBranch(root, null, current ?? "HEAD")}>
             <Plus size={13} />
           </button>,
-          collapsed.local ? [] : local.length ? renderTree(buildTree(local,0,branchPrefs.sort==="recent"), "local", 0, "") :
+          collapsed.local ? [] : visibleLocal.length ? renderTree(buildTree(visibleLocal,0,branchPrefs.sort==="recent"), "local", 0, "") :
             pinned?.fullName.startsWith("refs/heads/") ? [] : empty("empty-local", f||branchPrefs.onlyMine ? "No matches" : "No branches yet"),
         ),
         ...section(
@@ -445,10 +452,12 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           <button type="button" className="icon-btn sm" title="Clear branch selection" aria-label="Clear branch selection" onClick={clearSelection}><ClearIcon size={14} /></button>
         </div>}
       </div>
-      {pinned && <div className="sb-primary-branch" role="group" aria-label="Primary branch">
+      {pinned && <div ref={pinnedRow} className="sb-primary-branch" role="group" aria-label="Primary branch">
         {renderTree(buildTree([pinned], 0, true), pinned.fullName.startsWith("refs/heads/") ? "local" : "remote", 0, "")}
       </div>}
       <VirtualRows
+        reveal={revealed}
+        pinned={pinnedRow}
         rows={[
         ...branchRows,
         ...section(
@@ -655,10 +664,13 @@ const ROW_H = 27;
 const HEAD_H = 32;
 
 /** Renders only the visible sidebar rows (thousands of branches stay smooth). */
-function VirtualRows({ rows }: { rows: ReactNode[] }) {
+function VirtualRows({ rows, reveal, pinned }: {
+  rows: ReactNode[]; reveal: { reference: string } | null; pinned: React.RefObject<HTMLDivElement | null>;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const [scroll, setScroll] = useState(0);
   const [viewH, setViewH] = useState(800);
+  const focused = useRef<typeof reveal>(null);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -672,6 +684,26 @@ function VirtualRows({ rows }: { rows: ReactNode[] }) {
     tops.push(y);
     y += String((r as ReactElement).key ?? "").startsWith("sec:") ? HEAD_H : ROW_H;
   }
+  useEffect(() => {
+    if (!reveal || focused.current === reveal || !ref.current?.clientHeight) return;
+    const selector = `[data-branch-ref="${CSS.escape(reveal.reference)}"]`;
+    const pinnedBranch = pinned.current?.querySelector<HTMLElement>(selector);
+    const viewport = ref.current;
+    if (!pinnedBranch) {
+      const index = rows.findIndex(row => (row as ReactElement).key === reveal.reference);
+      if (index < 0) return;
+      const top = tops[index];
+      if (top < viewport.scrollTop || top + ROW_H > viewport.scrollTop + viewport.clientHeight) {
+        viewport.scrollTop = Math.max(0, top - viewport.clientHeight / 2);
+        setScroll(viewport.scrollTop);
+      }
+    }
+    const row = pinnedBranch ?? viewport.querySelector<HTMLElement>(selector);
+    if (row) {
+      row.focus({ preventScroll: true });
+      focused.current = reveal;
+    }
+  });
   const from = scroll - 200;
   const to = scroll + viewH + 200;
   return (

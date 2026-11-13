@@ -45,6 +45,8 @@ export interface Settings {
   showRemoteBranchesInGraph: boolean;
   hideIncomingByRepo: Record<string, true>;
   primaryBranchByRepo: Record<string, string>;
+  branchFavoritesByRepo: Record<string, string[]>;
+  toggleBranchFavorite: (repositoryKey: string, reference: string) => void;
   wrapDiff: boolean;
   recent: string[];
   openTabs: string[];
@@ -53,6 +55,7 @@ export interface Settings {
   explorerOpen: boolean;
   repositoryActionsCollapsed: boolean;
   explorerFavoritesOnly: boolean;
+  explorerMyBranchesOnly: boolean;
   explorerFolderHover: ExplorerFolderHover;
   layouts: Record<WorkspaceMode, WorkspaceLayout>;
   setLayout: (mode: WorkspaceMode, patch: Partial<WorkspaceLayout>) => void;
@@ -106,6 +109,15 @@ export const useSettings = create<Settings>()(
       showRemoteBranchesInGraph: true,
       hideIncomingByRepo: {},
       primaryBranchByRepo: {},
+      branchFavoritesByRepo: {},
+      toggleBranchFavorite: (key, reference) => set(state => {
+        const branchFavoritesByRepo = { ...state.branchFavoritesByRepo };
+        const refs = branchFavoritesByRepo[key] ?? [];
+        const next = refs.includes(reference) ? refs.filter(ref => ref !== reference) : [...refs, reference];
+        if (next.length) branchFavoritesByRepo[key] = next;
+        else delete branchFavoritesByRepo[key];
+        return { branchFavoritesByRepo };
+      }),
       wrapDiff: false,
       recent: [],
       openTabs: [],
@@ -114,6 +126,7 @@ export const useSettings = create<Settings>()(
       explorerOpen: true,
       repositoryActionsCollapsed: false,
       explorerFavoritesOnly: false,
+      explorerMyBranchesOnly: false,
       explorerFolderHover: DEFAULT_EXPLORER_FOLDER_HOVER,
       layouts: restoreWorkspaceLayouts(),
       setLayout: (mode, patch) => set((state) => ({ layouts: { ...state.layouts, [mode]: { ...state.layouts[mode], ...patch } } })),

@@ -30,8 +30,6 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
   const [plan, setPlan] = useState<DeletionPlan | null>(null);
   const [loading, setLoading] = useState(true);
   const [stale, setStale] = useState(false);
-  const [forceRequired, setForceRequired] = useState(false);
-  const [force, setForce] = useState(false);
   const [localDone, setLocalDone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,11 +47,12 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
   const remoteProtection = deletionProtection(protectionRules, null, target);
   const ready = !!plan && targetVersion(plan.proof.target) === targetVersion(target)
     && (base === undefined || (base || null) === plan.proof.baseRef);
-  const resetForce = () => { setForceRequired(false); setForce(false); setError(null); };
+  const localSelected = !remoteOnly && !localDone;
+  const outsideTarget = ready && !!plan && (!plan.proof.baseOid || localSelected && plan.localUnmerged > 0 || includeRemote && (plan.remoteUnmerged ?? 0) > 0);
 
   const loadPlan = useCallback(async (explicit = false) => {
     const v = ++version.current;
-    setLoading(true); setPlan(null); setError(null); setForceRequired(false); setForce(false); setReviewConfirmed(false);
+    setLoading(true); setPlan(null); setError(null); setReviewConfirmed(false);
     try {
       const next = await api.branchDeletePlan(root, name, base, target ?? null, localDoneRef.current ? deletedLocalOid.current : undefined, remoteOnly);
       if (v !== version.current) return;
@@ -67,7 +66,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
   }, [root, name, base, target, expectedState, remoteOnly]);
   useEffect(() => { void loadPlan(!first.current); return () => { version.current++; }; }, [loadPlan]);
   const blocked = busy || loading || !ready || stale || (!remoteOnly && !localDone && !!plan?.worktrees.length)
-    || (includeRemote && remoteChanged) || (forceRequired && !force)
+    || (includeRemote && remoteChanged)
     || (includeRemote && !!review && !reviewConfirmed) || (includeRemote && !target)
     || !!localProtection || (includeRemote && !!remoteProtection);
   const close = () => {
@@ -90,7 +89,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
     try {
       if (authorize && !await authorize()) { onClose({status:"cancelled"}); return; }
       if (!remoteOnly && !deletedLocal) {
-        const result = await api.branchDeleteReviewed(root, plan.proof, includeRemote, force, plan.stateToken, protectionRules, createCheckpoint);
+        const result = await api.branchDeleteReviewed(root, plan.proof, includeRemote, outsideTarget, plan.stateToken, protectionRules, createCheckpoint);
         saved = result.checkpoint; setCheckpoint(saved);
         if (result.warning) warnings.push(result.warning);
         // Pin the tip actually deleted by this successful mutation. A refreshed
@@ -99,7 +98,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
         deletedLocal = true; localDoneRef.current = true; setLocalDone(true);
       }
       if (includeRemote && target) {
-        const result = await api.branchDeleteRemoteReviewed(root, plan.proof, force || (!!review && reviewConfirmed), id, remoteOnly ? plan.stateToken : undefined, protectionRules, createCheckpoint);
+        const result = await api.branchDeleteRemoteReviewed(root, plan.proof, outsideTarget, id, remoteOnly ? plan.stateToken : undefined, protectionRules, createCheckpoint);
         saved = result.checkpoint; setCheckpoint(saved);
         if (result.warning) warnings.push(result.warning);
       }
@@ -112,8 +111,10 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
       onClose({status:"succeeded",branch:name,oid:deletedLocalOid.current ?? target?.oid ?? null});
     } catch (e) {
       failure.current = e;
-      if (isGitError(e) && e.kind === "not-merged") setForceRequired(true);
-      else {
+      if (isGitError(e) && e.kind === "not-merged") {
+        setStale(true);
+        setError("The comparison changed. Refresh the review before deleting the selected branches.");
+      } else {
         if (isGitError(e) && e.kind === "remote-changed") { setRemoteChanged(true); setReviewConfirmed(false); }
         if (isGitError(e) && ["stale-selection", "stale-operation"].includes(e.kind)) setStale(true);
         setError((deletedLocal ? "Local branch deleted. Remote deletion failed: " : "") + errorMessage(e));
@@ -128,26 +129,30 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
     const id = newOpId(); startBusy(id, `Refreshing ${target.label}`);
     try {
       const next = await api.branchDeleteRefresh(root, target, id);
-      setReview(next); setRemoteChanged(false); setForceRequired(false); setForce(false); setError(null);
+      setReview(next); setRemoteChanged(false); setError(null);
     } catch (e) { setError(errorMessage(e)); }
     finally { endBusy(id); setBusy(false); await useRepos.getState().refresh(root, ALL); }
   };
   const baseLabel = plan?.bases.find((b) => b.reference === plan.proof.baseRef)?.label ?? "no comparison target";
+  const deleteLabel = outsideTarget
+    ? localSelected ? includeRemote ? "Delete local & remote anyway" : "Delete local branch anyway" : "Delete remote branch anyway"
+    : remoteOnly ? "Delete remote branch" : localDone ? review ? "Delete reviewed remote branch" : "Retry remote deletion"
+      : includeRemote ? "Delete local & remote" : "Delete local branch";
   return (
     <Modal title={remoteOnly ? `Delete ${target?.label} on the server?` : `Delete branch ${name}?`} subtitle={basename(root)} icon={<Trash2 size={18} />} tone="danger" wide onClose={close} onSubmit={() => void submit()}
       footer={<>
         <button type="button" className="btn" disabled={busy} onClick={close}>{localDone ? "Close" : "Cancel"}</button>
         <button type="submit" className="btn danger primary delete-branch-confirm" disabled={blocked}>
           {(busy || loading) && <Loader2 size={14} className="spin" />}
-          {remoteOnly ? `${force ? "Force delete" : "Delete"} remote branch` : localDone ? review ? "Delete reviewed remote branch" : "Retry remote deletion" : `${force ? "Force delete" : "Delete"} ${includeRemote ? "local & remote" : "local branch"}`}
+          {deleteLabel}
         </button>
       </>}>
       <div className="branch-review" aria-busy={loading} data-remote-changed={remoteChanged} data-review-local-oid={ready ? plan?.proof.localOid : undefined}>
         <div className="branch-review-heading">
           <label className="field">Compare against
             <select className="input branch-review-base" aria-label="Comparison branch" value={base ?? plan?.proof.baseRef ?? ""} disabled={busy || loading}
-              onChange={(e) => { setBase(e.target.value); resetForce(); setStale(false); }}>
-              <option value="">No comparison target (force required)</option>
+              onChange={(e) => { setBase(e.target.value); setError(null); setStale(false); }}>
+              <option value="">No comparison target</option>
               {plan?.bases.map((b) => <option key={b.reference} value={b.reference}>{b.label}</option>)}
             </select>
           </label>
@@ -165,7 +170,7 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
             <b>Compared with {baseLabel}{plan.proof.baseOid && <code title={plan.proof.baseOid}> · {shortOid(plan.proof.baseOid)}</code>}</b>
             {(plan.proof.localPresent || !remoteOnly) && <div>{plan.localUnmerged} local commits outside target · {integrationText(plan.localIntegration)}</div>}
             {target && <div>{plan.remoteUnmerged} remote commits outside target · {integrationText(plan.remoteIntegration ?? "unknown")}</div>}
-            {(plan.localIntegration === "content-integrated" || plan.remoteIntegration === "content-integrated") && <small className="branch-review-estimate">Content integration is an estimate. Original commit SHAs are still outside the target and require explicit force consent.</small>}
+            {(plan.localIntegration === "content-integrated" || plan.remoteIntegration === "content-integrated") && <small className="branch-review-estimate">Content integration is an estimate. The original commit SHAs can still be outside the comparison branch.</small>}
           </div>
           {plan.worktrees.length > 0 && !localDone && <div className="callout warn branch-review-worktrees">
             <b>{remoteOnly ? "Local worktrees stay checked out. Only the server branch will be removed." : "This branch is checked out. Switch its worktree to another branch first."}</b>
@@ -182,20 +187,21 @@ export function DeleteBranchDialog({ root, name, targets, expectedState, remoteO
       {remoteOnly && <div className="callout">The local branch and its worktrees are kept. Only the reviewed server branch will be deleted.</div>}
       {!remoteOnly && <label className="delete-branch-option">
         <input className="delete-remote-branch" type="checkbox" disabled={busy || localDone || !targets.length || (!!remoteProtection && !includeRemote)} checked={includeRemote}
-          onChange={(e) => { if (e.target.checked && remoteProtection) return; setIncludeRemote(e.target.checked); resetForce(); }} />
+          onChange={(e) => { if (e.target.checked && remoteProtection) return; setIncludeRemote(e.target.checked); setError(null); }} />
         <span>Also delete remote branch{targets.length === 1 ? <b> {targets[0].label}</b> : ""}</span>
       </label>}
       {(localProtection || remoteProtection) && <div className="callout warn branch-deletion-protection" role="alert">{localProtection ?? remoteProtection}{!remoteOnly && !localProtection && " Local-only deletion remains available."}</div>}
       {targets.length > 1 && <label className="field">Remote branch
         <select className="input" aria-label="Remote branch" value={selected} disabled={busy || localDone || loading}
-          onChange={(e) => { setSelected(e.target.value); setReview(null); setRemoteChanged(false); setReviewConfirmed(false); resetForce(); }}>{targets.map((t) => <option key={deletionTargetKey(t)} value={deletionTargetKey(t)}>{t.label}</option>)}</select>
+          onChange={(e) => { setSelected(e.target.value); setReview(null); setRemoteChanged(false); setReviewConfirmed(false); setError(null); }}>{targets.map((t) => <option key={deletionTargetKey(t)} value={deletionTargetKey(t)}>{t.label}</option>)}</select>
       </label>}
       {!targets.length && <div className="faint">No single matching remote branch is available. Only the local branch will be deleted.</div>}
       {includeRemote && <div className="callout warn" style={{ display: "block" }}>{remoteOnly ? "This deletes" : "This also deletes"} <b>{target?.label}</b> from the server for everyone. Reviewed tip: <code>{target?.oid.slice(0, 12)}</code>. Deletion requires this exact server SHA.</div>}
       {target && !remoteChanged && <button type="button" className="btn refresh-remote-deletion" disabled={busy || loading} onClick={() => void refreshRemote()}>Refresh remote state for review</button>}
-      {forceRequired && <div className="callout warn" style={{ display: "block" }}>
-        {remoteOnly || localDone ? "The reviewed remote history is not fully reachable from the selected target." : "The reviewed history is not fully reachable from the selected target. Neither selected branch has been deleted."}
-        <label className="delete-branch-option"><input className="force-delete-branch" type="checkbox" checked={force} disabled={busy || loading} onChange={(e) => setForce(e.target.checked)} /> {remoteOnly || localDone ? "Delete the reviewed remote tip despite unmerged commits" : includeRemote ? "Force delete both branches despite unmerged commits" : "Force delete the unmerged local branch"}</label>
+      {outsideTarget && <div className="callout warn branch-deletion-history-warning" role="status">
+        {plan?.proof.baseOid
+          ? "The selected history contains commits outside the comparison branch. Confirm below to delete the reviewed tips anyway."
+          : "There is no comparison branch for the selected history. Confirm below to delete the reviewed tips anyway."}
       </div>}
       {error && <div className="callout warn delete-branch-error">{error}</div>}
       {remoteChanged && <button type="button" className="btn refresh-remote-deletion" disabled={busy || loading} onClick={() => void refreshRemote()}>Refresh remote state for review</button>}

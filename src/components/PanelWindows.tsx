@@ -17,7 +17,7 @@ interface PanelWindows {
   panels: Panels;
   detach: (id: PanelId) => void;
   attach: (id: PanelId) => void;
-  toggleSidebar: (id: SidebarId) => void;
+  toggleSidebar: (id: SidebarId, show?: boolean) => void;
 }
 const Context = createContext<PanelWindows>({ panels: {}, detach: () => {}, attach: () => {}, toggleSidebar: () => {} });
 export const usePanelWindows = () => useContext(Context);
@@ -26,7 +26,7 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
   useEffect(() => installIconHints(document), []);
   const [panels, setPanels] = useState<Panels>({});
   const sessions = useRef(new Map<PanelId, { view: Window; close: () => void; check: () => void }>());
-  const toggleSidebar = useCallback((id: SidebarId) => {
+  const toggleSidebar = useCallback((id: SidebarId, show = false) => {
     const view = sessions.current.get(id)?.view;
     if (view && !view.closed) { view.focus(); return; }
 
@@ -39,12 +39,12 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
     const mode = workspaceMode(overview && id !== "branches" ? "overview" : tab?.view, settings.historyMode);
     const layout = settings.layouts[mode];
     if (id === "explorer") {
-      settings.set({ explorerOpen: layout.focusMode || !settings.explorerOpen });
+      settings.set({ explorerOpen: show || layout.focusMode || !settings.explorerOpen });
       if (layout.focusMode) settings.setLayout(mode, { focusMode: false });
     } else if (id === "repositories") {
-      settings.setLayout(mode, { repositoriesOpen: layout.focusMode || !layout.repositoriesOpen, focusMode: false });
+      settings.setLayout(mode, { repositoriesOpen: show || layout.focusMode || !layout.repositoriesOpen, focusMode: false });
     } else {
-      settings.setLayout(mode, { branchesOpen: overview || layout.focusMode || !layout.branchesOpen, focusMode: false });
+      settings.setLayout(mode, { branchesOpen: show || overview || layout.focusMode || !layout.branchesOpen, focusMode: false });
       if (overview) useUi.setState({ repositoryOverview: false });
     }
   }, []);

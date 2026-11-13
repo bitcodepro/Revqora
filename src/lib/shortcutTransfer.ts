@@ -49,8 +49,8 @@ export function normalizeShortcutKey(input: string, rider = false): string | nul
 
 function nativeShortcutKey(id: string, input: string): string | null {
   if (!input) return "";
-  // Revqora exports the original KeyboardEvent key, which can be Unicode or a
-  // browser key name. Only validate the native structure and preserve the key.
+  // Older exports can contain Unicode keys. Keep them and the physical key names
+  // saved by newer versions.
   const modifiers = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?/.exec(input)![0];
   const key = input.slice(modifiers.length);
   if (!key || /\p{Cc}/u.test(key)) return null;

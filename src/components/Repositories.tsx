@@ -205,7 +205,7 @@ export function RepositorySidebar() {
       {!search && !filterUpdates && !favoritesOnly && !groupFilter && <SyncButtons roots={order} />}
       <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites{favoritesOnly ? " · Show all" : ""}</button>
       {selected.length > 0 && <small className="repository-selection-note">{selected.length} selected</small>}
-      <div className="repository-list" role="list" aria-label="Open repositories" onClick={event => {
+      <div className="repository-list repository-flat-list" role="list" aria-label="Open repositories" onClick={event => {
         if (!(event.target as HTMLElement).closest("button")) clearSelection();
       }}>
         {visible.map(root => {

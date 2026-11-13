@@ -22,7 +22,7 @@ import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
 import type { GraphLaneAnchor, GraphRow, GraphSummary, RefLabel, SearchMode, Seg } from "../lib/types";
 import { WORKTREE } from "../lib/types";
 import { absoluteTime, fullTime, relativeTime, shortOid } from "../lib/format";
-import { AheadBehind, Avatar, RefBadge } from "./bits";
+import { BranchAheadBehind, Avatar, RefBadge } from "./bits";
 import { branchMenu, commitMenu, runMenuShortcut, tagMenu } from "./menus";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { usePanelTitleMenu } from "./PanelWindows";
@@ -1122,7 +1122,7 @@ export function GraphView({
           {branchContext.recorded ? "From" : "Compared with"} {branchName(branchContext.base)}
         </span>}
         {primaryBranch && <span className="pill branch-primary-mark" title={primaryInfo ? `Primary branch · ${primaryInfo.name}` : `Primary branch · ${branchName(primaryBranch)} (ref unavailable)`}>
-          Primary · {branchName(primaryBranch)}{primaryInfo && <AheadBehind ahead={primaryInfo.ahead ?? 0} behind={primaryInfo.behind ?? 0}/>}
+          Primary · {branchName(primaryBranch)}{primaryInfo && <BranchAheadBehind branch={primaryInfo}/>}
         </span>}
         {localScope && <button type="button" className={`icon-btn sm ${showIncoming ? "active" : ""}`} aria-label="Show incoming commits"
           aria-pressed={showIncoming} title={showIncoming ? "Hide incoming commits" : "Show incoming commits"} onClick={toggleIncoming}>

@@ -28,6 +28,40 @@ fn current_branch_history_follows_head_without_reusing_commits_from_other_refs()
 }
 
 #[test]
+fn local_branches_count_only_commits_absent_from_fetched_remotes_until_published() {
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = fixture.path();
+    let git = |args: &[&str]| runner::run(repo, args.iter().copied()).unwrap();
+    git(&["init", "-qb", "main"]);
+    git(&["config", "user.name", "Tester"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    git(&["commit", "--allow-empty", "-qm", "Published base"]);
+    git(&["branch", "untouched"]);
+    git(&["switch", "-qc", "topic"]);
+    git(&["commit", "--allow-empty", "-qm", "Outgoing one"]);
+    git(&["branch", "topic-sibling"]);
+    git(&["commit", "--allow-empty", "-qm", "Outgoing two"]);
+    let snapshot = |name: &str| refs::snapshot(repo).unwrap().local.into_iter().find(|branch| branch.name == name).unwrap();
+    assert_eq!(snapshot("topic").unpublished, None);
+    git(&["remote", "add", "origin", "https://example.invalid/unused"]);
+    git(&["update-ref", "refs/remotes/origin/main", "main"]);
+    assert_eq!(snapshot("topic").unpublished, Some(2));
+    assert_eq!(snapshot("topic-sibling").unpublished, Some(1));
+    assert_eq!(snapshot("untouched").unpublished, Some(0));
+    git(&["update-ref", "refs/remotes/origin/other-name", "topic-sibling"]);
+    assert_eq!(snapshot("topic").unpublished, Some(1));
+    assert_eq!(snapshot("topic-sibling").unpublished, Some(0));
+    git(&["update-ref", "refs/remotes/origin/topic", "topic"]);
+    assert_eq!(snapshot("topic").unpublished, Some(0));
+    git(&["branch", "--set-upstream-to=origin/topic"]);
+    git(&["commit", "--allow-empty", "-qm", "Tracked outgoing"]);
+    let tracked = snapshot("topic");
+    assert_eq!(tracked.unpublished, None);
+    assert_eq!((tracked.ahead, tracked.behind), (1, 0));
+}
+
+#[test]
 fn incoming_preview_follows_only_the_upstream_and_refreshes_after_integration() {
     use revqora_lib::git::graph;
     let t = tempfile::tempdir().unwrap();

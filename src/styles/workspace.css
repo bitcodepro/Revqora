@@ -22,6 +22,7 @@
 .repository-list { flex: 1; min-height: 0; overflow: auto; padding: 0 6px 8px; }
 .repository-item { display: flex; align-items: center; min-width: 0; margin: 2px 0; border-radius: var(--radius-sm); }
 .repository-item:hover { background: var(--bg-hover); }
+.repository-flat-list > .repository-item.active:where(:not(.batch-selected, .workspace-drop-active)) { background-color: var(--bg-explorer-current); }
 .repository-select { display: flex; align-items: center; gap: 6px; padding: 8px 5px 8px 8px; border: none; background: transparent; text-align: left; flex: 1; min-width: 0; color: var(--text); }
 .repository-select > svg { flex: none; color: var(--text-faint); }
 .repository-item.active .repository-select > svg { color: var(--accent); }
@@ -473,7 +474,10 @@
 .topbar-empty { flex: 1 1 12px; min-width: 2px; align-self: stretch; }
 .explorer-sidebar { --explorer-folder-hover: var(--explorer-folder-hover-dark); min-width: min(175px, 100%); max-width: min(420px, 32vw); }
 :root[data-theme="light"] .explorer-sidebar { --explorer-folder-hover: var(--explorer-folder-hover-light); }
-.explorer-filters { display: flex; align-items: center; gap: 4px; }
+.explorer-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.explorer-filters .repository-updates { display: inline-flex; align-items: center; gap: 4px; }
+.explorer-branch-status { display: flex; align-items: center; gap: 6px; padding: 4px 8px 7px; margin-inline-start: calc(var(--tree-depth) * var(--explorer-indent) + var(--explorer-toggle-size)); color: var(--text-faint); }
+.explorer-branch-current { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .explorer-tree { --explorer-indent: 12px; --explorer-toggle-size: 22px; }
 .explorer-tree > .repository-item {
   position: relative;
@@ -527,6 +531,9 @@
 }
 .explorer-tree .repository-select { cursor: grab; }
 .explorer-dragging .explorer-tree .repository-select { cursor: grabbing; }
+.explorer-tree .explorer-branch .repository-select { cursor: pointer; touch-action: auto; }
+.explorer-tree .explorer-branch .repository-label { font-weight: 400; }
+.explorer-tree .explorer-branch .repository-select > .branch-primary-mark { color: var(--accent); inline-size: 12px; block-size: 12px; }
 .library-tree-menu { min-height: 64px; }
 .repository-table tr.batch-selected { background: var(--accent-soft); }
 .revqora-tooltip { position: fixed; z-index: 2500; pointer-events: none; width: max-content; max-width: min(340px, calc(100vw - 16px)); padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-elev); color: var(--text); box-shadow: 0 3px 12px #0003; font-size: var(--fs-xs); line-height: 1.35; white-space: pre-line; overflow-wrap: anywhere; }

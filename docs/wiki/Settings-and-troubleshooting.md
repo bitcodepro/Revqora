@@ -37,7 +37,7 @@ proposed matches and choose what to assign.
 | Ctrl+N / Ctrl+Shift+P | Command palette |
 | Ctrl+1 / Ctrl+2 / Ctrl+3 | History / Changes / Pull Requests |
 | Ctrl+Shift+R | Cycle Graph, Review, Columns |
-| Ctrl+Alt+W / Ctrl+Alt+R / Ctrl+Alt+B | Show or hide Workspaces, Repositories or Branches |
+| Ctrl+Alt+W / Ctrl+Alt+R / Ctrl+Alt+B | Show or hide Explorer, Repositories or Branches |
 | Ctrl+Shift+Enter | Focus on code |
 | Ctrl+Shift+O | All repositories |
 | Ctrl+B | New branch |
@@ -48,8 +48,8 @@ proposed matches and choose what to assign.
 | Ctrl+Shift+E | Browse files |
 | Ctrl+Enter | Commit from the commit form |
 | F5 | Refresh local view |
-| F2 | Rename the focused workspace, group, repository label or branch |
-| Delete | Review deletion of the focused workspace, groups or branches |
+| F2 | Rename the focused group, repository label or branch |
+| Delete | Review deletion of the focused groups or branches |
 | ↑ / ↓ | Navigate commits in History or changed files in Changes |
 | Ctrl+↑ / Ctrl+↓ | Change the selected file in a commit preview |
 | F7 / Shift+F7 | Next / previous diff change |
@@ -63,7 +63,7 @@ proposed matches and choose what to assign.
 
 ### I cannot find Fetch all
 
-Show **Repositories** with **Ctrl+Alt+R**. Look below its search field, or open **All repositories**. Clear active filters to show the bulk actions. See [Remote operations](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync).
+Show **Repositories** with **Ctrl+Alt+R**. Look below its search field, or open **All repositories**. Choose **All repositories** in Explorer and clear search, Favorites or Incoming filters to show the bulk actions. See [Remote operations](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync).
 
 ### Git Push works, but Pull Requests says no credential is available
 

@@ -117,6 +117,7 @@ export function useLibraryPointerDrag() {
 const dropRows = "[data-tree-group], [data-explorer-repository]";
 
 function findExplorerDropElement(hit: Element | null, y: number) {
+  if (hit?.closest("[data-explorer-branch], .explorer-branch-status")) return null;
   const row = hit?.closest<HTMLElement>(`${dropRows}, [data-explorer-root-drop]`);
   if (row) return row;
   const tree = hit?.closest(".explorer-tree");
@@ -135,17 +136,19 @@ function dropEdge(element: HTMLElement, y: number, edge = 0.28) {
   return fraction < edge ? "before" : fraction >= 1 - edge ? "after" : undefined;
 }
 
-// Show an after-folder insertion line below its visible children.
+// Place the insertion line after the complete visible subtree.
 function subtreeHeight(element: HTMLElement) {
   if (element.getAttribute("aria-expanded") !== "true") return 0;
   const depth = Number(element.getAttribute("aria-level"));
   let last = element;
   let next = element.nextElementSibling;
-  while (next?.hasAttribute("aria-level") && Number(next.getAttribute("aria-level")) > depth) {
-    last = next as HTMLElement;
+  while (next instanceof element.ownerDocument.defaultView!.HTMLElement) {
+    const nextDepth = next.getAttribute("aria-level");
+    if (nextDepth === null ? !next.classList.contains("explorer-branch-status") : Number(nextDepth) <= depth) break;
+    last = next;
     next = next.nextElementSibling;
   }
-  return last.offsetTop + last.offsetHeight - element.offsetTop - element.offsetHeight;
+  return last.getBoundingClientRect().bottom - element.getBoundingClientRect().bottom;
 }
 
 interface ExplorerDestination { parentId: string | null; placement?: ExplorerPlacement }
@@ -166,7 +169,7 @@ export function findExplorerDrop(
       const parentId = element.dataset.repositoryParent || null;
       if (movingRepositories.has(repositoryKey(siblingRoot)) || (parentId && movingGroups.has(parentId))) return null;
       const position = dropEdge(element, y, 0.5)!;
-      return { element, position, hint: `Insert ${position} ${name}`,
+      return { element, position, subtreeHeight: position === "after" ? subtreeHeight(element) : undefined, hint: `Insert ${position} ${name}`,
         value: { parentId, placement: { siblingRoot, after: position === "after" } } };
     }
     if (!id) return { element, hint: "Move to top level", value: { parentId: null } };

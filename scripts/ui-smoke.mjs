@@ -1051,30 +1051,21 @@ try {
       git("update-ref", "refs/heads/ui-unmerged", tip);
       if (pushed) git("push", "-q", "origin", "ui-unmerged");
       await openDelete("ui-unmerged");
+      const warning = page.locator(".branch-deletion-history-warning");
+      const confirm = page.locator(".delete-branch-confirm");
+      await warning.waitFor();
+      if (await confirm.innerText() !== "Delete local branch anyway") throw new Error("local history warning is missing from the initial confirmation");
       await page.check(".delete-remote-branch");
-      await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".force-delete-branch");
-      if (!(await page.locator(".delete-branch-confirm").isDisabled()) || !localExists("ui-unmerged") || !remoteExists("ui-unmerged")) throw new Error("unmerged guard deleted a ref before force confirmation");
-      if (pushed) {
-        await shot("29-pushed-unmerged-guard");
-        await page.check(".force-delete-branch");
-        await page.uncheck(".delete-remote-branch");
-        await page.waitForSelector(".force-delete-branch", { state: "detached" });
-        if ((await page.locator(".delete-branch-confirm").innerText()).includes("Force")) throw new Error("force acknowledgement leaked into another deletion mode");
-        await page.check(".delete-remote-branch");
-        await page.click(".delete-branch-confirm");
-        await page.waitForSelector(".force-delete-branch");
-        if (!(await page.locator(".delete-branch-confirm").isDisabled())) throw new Error("combined deletion reused an old force acknowledgement");
-      }
-      await page.click(".modal button:has-text('Cancel')");
+      if (await confirm.innerText() !== "Delete local & remote anyway" || await confirm.isDisabled()) throw new Error("combined history warning requires an extra step");
+      if (!localExists("ui-unmerged") || !remoteExists("ui-unmerged")) throw new Error("review changed a branch before confirmation");
+      if (pushed) await shot("29-pushed-unmerged-guard");
+      await page.locator(".modal button:has-text('Cancel')").click();
+      if (!localExists("ui-unmerged") || !remoteExists("ui-unmerged")) throw new Error("cancelling the warning deleted a branch");
       await openDelete("ui-unmerged");
       await page.check(".delete-remote-branch");
-      await page.click(".delete-branch-confirm");
-      await page.waitForSelector(".force-delete-branch");
-      await page.check(".force-delete-branch");
-      await page.click(".delete-branch-confirm");
+      await page.getByRole("button", { name: "Delete local & remote anyway", exact: true }).click();
       await page.waitForSelector(".modal", { state: "detached", timeout: deletionTimeout });
-      if (localExists("ui-unmerged") || remoteExists("ui-unmerged")) throw new Error("explicit force confirmation did not complete deletion");
+      if (localExists("ui-unmerged") || remoteExists("ui-unmerged")) throw new Error("the reviewed deletion did not remove both branches");
     }
     // The tracking alias deliberately matches an unrelated, real server branch.
     create("ui-mapped");
@@ -1181,13 +1172,12 @@ try {
     git("branch", "ui-review-target", tip);
     await openDelete("ui-review-source");
     if (!(await page.locator(".branch-review-integration").innerText()).includes("Changes appear integrated")) throw new Error("squash estimate missing");
-    await page.click(".delete-branch-confirm");
-    await page.waitForSelector(".force-delete-branch");
-    if (!git("branch", "--list", "ui-review-source")) throw new Error("squash estimate bypassed force consent");
+    await page.getByRole("button", { name: "Delete local branch anyway", exact: true }).waitFor();
+    if (!git("branch", "--list", "ui-review-source")) throw new Error("opening the review deleted the source branch");
     await shot("44-squash-review");
     await page.selectOption("select[aria-label='Comparison branch']", "refs/heads/ui-review-target");
     await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
-    if (await page.locator(".force-delete-branch").count()) throw new Error("target change retained force consent");
+    if (await page.locator(".branch-deletion-history-warning").count()) throw new Error("the warning remained after choosing a target that retains the tip");
     if (!(await page.locator(".branch-review-integration").innerText()).includes("0 local commits outside target")) throw new Error("selected comparison target was ignored");
     await shot("45-selected-deletion-target");
     await page.click(".delete-branch-confirm");
