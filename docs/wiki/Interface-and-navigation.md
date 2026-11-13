@@ -4,9 +4,9 @@
 
 | Area | What to look for |
 | --- | --- |
-| Top bar | Workspaces, Groups, Repositories and Branches toggles, then the active repository and Git actions. The library and repository overview are on the right. |
-| **Workspaces** and **Groups** panels | Expand a tree, choose a workspace or filter repositories by group. |
-| **Repositories** panel | Open repositories, search, incoming/outgoing counts, favorites, groups and bulk remote actions. |
+| Top bar | Explorer, Repositories and Branches toggles, then the active repository and Git actions. The library and repository overview are on the right. |
+| **Explorer** | Expand a tree of groups and repositories. Select a group to filter the flat repository list. |
+| **Repositories** panel | Optional flat list of open and saved repositories, with search, favorites and bulk remote actions. |
 | **Branches** panel | Local branches, remotes, tags, stashes, submodules and worktrees. |
 | **History** | Commit list/graph, selected commit, changed files and diff. |
 | **Changes** | Your uncommitted working and staged changes, stage layers and commit form. |
@@ -23,11 +23,11 @@ Open **History** with **Ctrl+1**, then choose a layout:
 - **Review** gives commit rows and the selected commit's changes more space.
 - **Columns** arranges **commits → changed files → diff** from left to right.
 
-Cycle layouts with **Ctrl+Shift+R**. Each layout keeps its own panel visibility and widths.
+Cycle layouts with **Ctrl+Shift+R**. Each layout remembers its Repositories and Branches visibility and panel widths. The Explorer toggle is shared across layouts.
 
 ## Give the diff more space
 
-Toggle **Workspaces**, **Repositories** or **Branches** with **Ctrl+Alt+W**, **Ctrl+Alt+R** or **Ctrl+Alt+B**. Use the Groups icon for its panel. Drag pane dividers to resize and use **Ctrl+Shift+Enter** for focus mode. Resize dialogs from the bottom-right corner. Revqora remembers panel and dialog sizes.
+Toggle **Explorer**, **Repositories** or **Branches** with **Ctrl+Alt+W**, **Ctrl+Alt+R** or **Ctrl+Alt+B**. Explorer opens by default, and the optional Repositories panel starts hidden. Drag pane dividers to resize and use **Ctrl+Shift+Enter** for focus mode. Resize dialogs from the bottom-right corner. Revqora remembers panel and dialog sizes.
 
 Right-click a supported panel heading and choose **Detach**, or open it from **Panels in separate windows**. Drag the window to another monitor. Right-click its heading and choose **Attach**, or select **Return to main window** to restore the panel.
 
@@ -70,4 +70,4 @@ Right-click empty space in the top bar for named toolbar actions such as **Setti
 
 Use the refresh control for the data you want to update. Fetching commits does not load new PR discussion comments.
 
-**Related:** [Repositories and workspaces](https://github.com/bitcodepro/Revqora/wiki/Repositories-and-workspaces) · [History and search](https://github.com/bitcodepro/Revqora/wiki/History-diff-and-search) · [Keyboard shortcuts](https://github.com/bitcodepro/Revqora/wiki/Settings-and-troubleshooting)
+**Related:** [Explorer and repository library](https://github.com/bitcodepro/Revqora/wiki/Repositories-and-workspaces) · [History and search](https://github.com/bitcodepro/Revqora/wiki/History-diff-and-search) · [Keyboard shortcuts](https://github.com/bitcodepro/Revqora/wiki/Settings-and-troubleshooting)
