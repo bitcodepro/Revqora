@@ -7,7 +7,6 @@ import {
   CloudOff,
   Copy,
   Eraser,
-  Eye,
   Flag,
   Folder,
   FolderGit2,
@@ -23,6 +22,7 @@ import {
   RefreshCw,
   Search,
   Server,
+  Star,
   Tag,
   Trash2,
   X as ClearIcon,
@@ -30,13 +30,14 @@ import {
 import * as X from "../lib/extraActions";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import type { BranchInfo } from "../lib/types";
-import { CURRENT_HISTORY_BRANCH, loadGraph, useRepos, type RepoTab } from "../lib/store";
+import { loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { contextMenu, copyText, openOverlay, useUi } from "../lib/ui";
 import * as A from "../lib/actions";
 import { api } from "../lib/api";
 import { basename, joinPath, relativeTime } from "../lib/format";
 import { AheadBehind } from "./bits";
-import { branchMenu, runMenuShortcut, tagMenu } from "./menus";
+import { runMenuShortcut, tagMenu } from "./menus";
+import { branchRowMenu, showBranch } from "./BranchNavigation";
 import { reviewBranchCleanup } from "./BranchCleanup";
 import { usePanelTitleMenu, usePanelWindows } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
@@ -111,30 +112,8 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   const current = tab.info?.head.branch;
   const key = repositoryKey(root);
   const primaryBranch = useSettings(settings => settings.primaryBranchByRepo[key]);
-  const filterGraph = (reference: string) => {
-    useRepos.getState().patch(root, { view: "history", branchFilter: reference, branchContext: null, viewedBranch: reference, selected: null, multi: [], historyJump: null });
-    if(!panels.history&&useUi.getState().repositoryOverview)useUi.setState({repositoryOverview:false});
-    void useRepos.getState().refresh(root, { graph: true });
-  };
-  const viewBranch = (branch: BranchInfo, showTip = false) => {
-    const repos = useRepos.getState();
-    const revealHistory = useUi.getState().repositoryOverview && !panels.history;
-    const shown = tab.branchFilter === CURRENT_HISTORY_BRANCH ? `refs/heads/${current ?? ""}` : tab.branchFilter;
-    const scope = showTip && (tab.branchContext || (tab.branchFilter && shown !== branch.fullName)) ? branch.fullName : showTip ? tab.branchFilter : null;
-    const branchContext = showTip ? null : branch.fullName;
-    const scopeChanged = scope !== tab.branchFilter || branchContext !== (tab.branchContext ?? null);
-    if (showTip && tab.view === "history" && !revealHistory && !scopeChanged && tab.graph) {
-      repos.patch(root, { viewedBranch: branch.fullName });
-      jumpToCommit(root, branch.oid);
-      return;
-    }
-    repos.patch(root, { viewedBranch: branch.fullName, view: "history", selected: showTip ? branch.oid : null, multi: [], branchFilter: scope, branchContext, historyJump: branch.oid });
-    if (revealHistory) {
-      useUi.setState({ repositoryOverview: false });
-      window.focus();
-    }
-    if (scopeChanged || !tab.graph) void loadGraph(root);
-  };
+  const favorites = useSettings(settings => settings.branchFavoritesByRepo[key]);
+  const viewBranch = (branch: BranchInfo) => showBranch(root, branch, false, !!panels.history);
 
   useEffect(() => {
     if (reveal?.root !== root || !refs) return;
@@ -242,6 +221,8 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
         const isCur = kind === "local" && b.name === current;
         const connection = branchConnection(b);
         const upstream = pairs.upstreams.get(b.fullName);
+        const favorite = favorites?.includes(b.fullName) ?? false;
+        const menu = () => branchRowMenu(root, b, upstream, !!panels.history);
         const viewed = tab.viewedBranch ?? tab.branchFilter;
         return [
           <div
@@ -269,6 +250,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               chooseBranch(b, modifier, e.shiftKey && !modifier);
             }}
             onKeyDown={(e) => {
+              if (e.target !== e.currentTarget) return;
               if (matchesShortcut(e, "renameItem")) {
                 e.preventDefault();
                 if (!e.repeat) void (kind === "local" ? A.renameBranch(root, b.name) : renameRemoteBranch(root, b.name));
@@ -280,7 +262,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                 if (!e.repeat) void deleteSelected(selected.some(branch => branch.fullName === b.fullName) ? selected : [b]);
                 return;
               }
-              if (runMenuShortcut(e, branchMenu(root, b.name, kind), "branch-")) return;
+              if (runMenuShortcut(e, menu(), "branch-")) return;
               if (e.key !== "Enter" && e.key !== " ") return;
               e.preventDefault();
               chooseBranch(b, e.ctrlKey || e.metaKey, e.shiftKey);
@@ -325,21 +307,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                 { label: `Delete ${selected.length} branches…`, icon: <Trash2 size={14} />, danger: true, disabled: selected.length > 50,
                   hint: selected.length > 50 ? "Select up to 50" : undefined, onClick: () => void deleteSelected() },
                 { label: "Clear selection", onClick: clearSelection },
-              ] : [
-                ...branchMenu(root, b.name, kind),
-                ...(upstream ? [{ label: `Upstream: ${upstream.name}`, icon: <Cloud size={14} />, children: [
-                  { label: "Show tip in history", icon: <GitBranch size={14} />, onClick: () => viewBranch(upstream, true) },
-                  { label: "Show only this branch in graph", icon: <Eye size={14} />, onClick: () => filterGraph(upstream.fullName) },
-                  { separator: true },
-                  ...branchMenu(root, upstream.name, "remote"),
-                ] }] : []),
-                { separator: true },
-                {
-                  label: "Show only this branch in graph",
-                  icon: <Eye size={14} />,
-                  onClick: () => filterGraph(b.fullName),
-                },
-              ])
+              ] : menu())
             }
           >
             {kind === "local" ? <GitBranch size={13} style={{ flex: "none", color: isCur ? "var(--accent)" : undefined }} /> : <Cloud size={13} style={{ flex: "none" }} />}
@@ -353,6 +321,12 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                 </span>
               )}
               <AheadBehind ahead={b.ahead} behind={b.behind} />
+              <button type="button" className={"icon-btn sm repository-star" + (favorite ? " active" : "")}
+                aria-label={(favorite ? "Unfavorite branch " : "Favorite branch ") + b.name} aria-pressed={favorite} data-shortcut="branch-favorite"
+                onDoubleClick={event => event.stopPropagation()}
+                onClick={event => { event.stopPropagation(); useSettings.getState().toggleBranchFavorite(key, b.fullName); }}>
+                <Star size={12} fill={favorite ? "currentColor" : "none"}/>
+              </button>
             </span>
           </div>,
         ];

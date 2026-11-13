@@ -31,6 +31,7 @@ export interface RepoTab {
   /** Display-only observation; never supplies mutation or diff preconditions. */
   sidebarStatus?: StatusSummary | null;
   refs: RefsSnapshot | null;
+  refsError?: string;
   /** Branches whose changes are already in HEAD without a merge link (squash / rebase merged). */
   squashMerged: string[];
   extras: RepoExtras | null;
@@ -88,6 +89,7 @@ interface RepoStore {
   arrange: (roots: string[], active: string | null) => void;
   patch: (root: string, p: Partial<RepoTab>) => void;
   refresh: (root: string, parts?: Parts) => Promise<void>;
+  trackBranchRefs: (root: string) => () => void;
 }
 
 function emptyTab(root: string): RepoTab {
@@ -198,7 +200,7 @@ function hydrate(root: string): Promise<string | null> {
         if (!useRepos.getState().tabs[actual]) return api.unwatchRepo(actual);
       }).catch(() => {});
       if (useRepos.getState().active === actual) void useRepos.getState().refresh(actual, ALL);
-      else await useRepos.getState().refresh(actual, { background: true, summary: true, status: true });
+      else await useRepos.getState().refresh(actual, { background: true, summary: true, status: true, refs: trackedBranchRefs.has(repositoryKey(actual)) });
       return lifetimes.get(actual) === actualLifetime ? actual : null;
     } catch (error) {
       if (current()) useRepos.getState().patch(root, { opening: false, loaded: true, error: errorMessage(error) });
@@ -259,6 +261,8 @@ function includeWorkingChanges(tab: RepoTab, dirty: boolean) {
   if (tab.branchContext) return dirty && !!branch && tab.branchContext === `refs/heads/${branch}`;
   return dirty && (!tab.branchFilter || tab.branchFilter === CURRENT_HISTORY_BRANCH || !!branch && tab.branchFilter === `refs/heads/${branch}`);
 }
+
+const trackedBranchRefs = new Map<string, number>();
 
 export const useRepos = create<RepoStore>()((set, get) => ({
   tabs: {},
@@ -348,9 +352,25 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     set({ tabs: { ...get().tabs, [root]: { ...t, ...p } } });
   },
 
+  trackBranchRefs: root => {
+    const key = repositoryKey(root);
+    const count = trackedBranchRefs.get(key) ?? 0;
+    trackedBranchRefs.set(key, count + 1);
+    // Inactive tabs do not refresh refs while their branches are hidden.
+    // Reopening a row revalidates the cached refs without loading its graph.
+    if (!count && (get().active !== root || !get().tabs[root]?.refs)) {
+      void get().refresh(root, { refs: true, background: true, revalidate: true });
+    }
+    return () => {
+      const remaining = (trackedBranchRefs.get(key) ?? 1) - 1;
+      if (remaining) trackedBranchRefs.set(key, remaining);
+      else trackedBranchRefs.delete(key);
+    };
+  },
+
   refresh: async (root, parts = ALL) => {
     if (!get().tabs[root] || get().tabs[root].opening) return;
-    if (get().active !== root) parts = { ...parts, summary: true, graph: false, layers: false, refs: false };
+    if (get().active !== root) parts = { ...parts, summary: true, graph: false, layers: false, refs: parts.refs && trackedBranchRefs.has(repositoryKey(root)) };
     // Ordinary working-file activity does not change immutable commit previews.
     // Metadata/attribute events and explicit refreshes still invalidate them.
     if (!parts.revalidate && (!parts.background || parts.info || parts.refs || parts.graph)) invalidatePreview(root);
@@ -414,10 +434,15 @@ async function refreshOnce(root: string, parts: Parts) {
   const infoP = parts.info || (parts.status && !parts.summary) ? api.repoInfo(root) : Promise.resolve(null);
   const sidebarOnly = parts.summary && !parts.guard;
   const statusP = parts.status ? (sidebarOnly ? api.repositorySidebarStatus(root) : api.status(root)) : Promise.resolve(null);
-  const refsP = parts.refs ? api.refs(root).then(refs => {
+  const refsP = parts.refs && (!parts.summary || trackedBranchRefs.has(repositoryKey(root))) ? api.refs(root).then(refs => {
+    if (before.refsError && current()) useRepos.getState().patch(root, { refsError: undefined });
     // Keep the existing rows during a quiet check if their data is identical.
     if (parts.revalidate && JSON.stringify(refs) === JSON.stringify(before.refs)) return null;
     return refs;
+  }).catch(error => {
+    if (current()) useRepos.getState().patch(root, { refsError: errorMessage(error) });
+    if (!parts.summary) throw error;
+    return null;
   }) : Promise.resolve(null);
   const extrasP = !parts.summary && (parts.refs || parts.info) ? api.repoExtras(root).catch(() => null) : Promise.resolve(null);
   const layersP = !parts.summary && (parts.layers || parts.status) ? api.layersState(root).catch(() => null) : Promise.resolve(null);
@@ -428,8 +453,8 @@ async function refreshOnce(root: string, parts: Parts) {
     if(!refs||!current())return;
     const state=useRepos.getState(), scope=state.tabs[root]?.branchContext ?? state.tabs[root]?.branchFilter;
     const missing=scope?.startsWith("refs/") && !refs.local.some(branch=>branch.fullName===scope) && !refs.remote.some(branch=>branch.fullName===scope);
-    state.patch(root,missing?{refs,branchFilter:CURRENT_HISTORY_BRANCH,branchContext:null,viewedBranch:null,selected:null,multi:[],historyJump:null}:{refs});
-    if(missing)void loadGraph(root);
+    state.patch(root, missing ? { refs, branchFilter: CURRENT_HISTORY_BRANCH, branchContext: null, viewedBranch: null, selected: null, multi: [], historyJump: null, graph: null } : { refs });
+    if (missing && state.active === root) void loadGraph(root);
   }).catch(()=>{});
   for (const p of [infoP, refsP]) p.catch(() => {}); // rejections are handled below
   const initialDirty=!!(before.status??before.sidebarStatus)?.files.length;
@@ -456,7 +481,7 @@ async function refreshOnce(root: string, parts: Parts) {
   }
   if (!current()) return;
   useRepos.getState().patch(root, { ...patch, loaded: true });
-  if (updatedRefs) updateSquashMerged(root);
+  if (updatedRefs && !parts.summary) updateSquashMerged(root);
   // Wait for history only when it was explicitly requested; a dirty/clean toggle reloads it in the background.
   if (graphP && parts.graph) await graphP;
 }

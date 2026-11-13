@@ -18,6 +18,7 @@ import { bitbucketTokenSmoke } from "./bitbucket-token-smoke.mjs";
 import {gitConnectionsSmoke} from "./git-connections-smoke.mjs";
 import {fastSwitchSmoke} from "./fast-switch-smoke.mjs";
 import { repositoryFolderImportSmoke } from "./repository-folder-import-smoke.mjs";
+import { explorerBranchesSmoke } from "./explorer-branches-smoke.mjs";
 import { repositoryNavigationSmoke } from "./repository-navigation-smoke.mjs";
 
 const arg=name=>process.argv[process.argv.indexOf(name)+1];
@@ -55,6 +56,7 @@ try{
     await check("folder import, Explorer drag and drop, flat filtering and shortcut transfer", async () => {
       await repositoryFolderImportSmoke({ page, work, shot });
       await repositoryNavigationSmoke({ page, work, shot });
+      await explorerBranchesSmoke({ page, work, shot });
     });
   }else if(suite==="cleanup") await branchCleanupSmoke({page,check,shot,work});
   else {await worktreeManagerSmoke({page,check,shot,work});await forgeAccountsSmoke({page,check,shot,work,profile:path.join(work,"profile"),restart});await prCenterSmoke({page:app.page,check,shot,work});await agentWorkspaceSmoke({page:app.page,check,shot,work,restart,deferCleanup});await workflowSmoke({page:app.page,check,shot,work,restart});await futureStagesSmoke({page:app.page,check,shot,work,restart});}

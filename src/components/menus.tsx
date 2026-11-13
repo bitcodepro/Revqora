@@ -21,6 +21,7 @@ import {
   RotateCcw,
   RefreshCw,
   Shuffle,
+  Star,
   Info,
   Tag,
   Trash2,
@@ -78,41 +79,53 @@ export function primaryBranchMenuItem(root: string, reference: string): MenuItem
   } };
 }
 
-export function branchMenu(root: string, name: string, kind: "local" | "remote"): MenuItem[] {
+function branchFavoriteMenuItem(root: string, reference: string): MenuItem {
+  const favorite = useSettings.getState().branchFavoritesByRepo[repositoryKey(root)]?.includes(reference);
+  return {
+    label: favorite ? "Unfavorite branch" : "Favorite branch",
+    shortcut: "branch-favorite",
+    icon: <Star size={I} fill={favorite ? "currentColor" : "none"}/>,
+    onClick: () => useSettings.getState().toggleBranchFavorite(repositoryKey(root), reference),
+  };
+}
+
+export function branchMenu(root: string, name: string, kind: "local" | "remote", refs = getTab(root)?.refs,
+  open?: (run: (root: string) => void) => void): MenuItem[] {
+  const run = (action: (repo: string) => void) => () => open ? open(action) : action(root);
   const tab = getTab(root);
-  const current = tab?.info?.head.branch;
+  const current = refs === tab?.refs && tab?.info ? tab.info.head.branch : refs?.local.find(branch => branch.isHead)?.name;
   const isCurrent = kind === "local" && name === current;
   const reference = `refs/${kind === "local" ? "heads" : "remotes"}/${name}`;
   const items: MenuItem[] = [...namePathMenu(name, root, reference), { separator: true }];
-  if (!isCurrent) items.push({ label: kind === "remote" ? `Check out as local branch` : `Check out ${name}`, shortcut: "branch-checkout", icon: <Check size={I} />, onClick: () => A.checkout(root, name, kind) });
-  items.push({ label: "Create branch from here…", icon: <GitBranchPlus size={I} />, onClick: () => A.createBranch(root, name, name) });
-  items.push({ label: "Branch details…", shortcut: "branch-details", icon: <GitBranch size={I} />, onClick: () => branchCard(root, name, reference) });
-  items.push({ label: "Branch history (reflog)…", icon: <History size={I} />, onClick: () => branchReflogDialog(root, name) });
-  items.push({ label: "Browse files", icon: <FolderTree size={I} />, onClick: () => openOverlay({ kind: "tree", root, rev: name }) });
-  items.push({ label: "Compare branch commits…", shortcut: "branch-compare", icon: <GitCompareArrows size={I} />, onClick: () => branchCommitCompare(root, reference) });
-  items.push(primaryBranchMenuItem(root, reference));
-  items.push({ label: "Compare with working tree", icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: reference, to: WORKTREE }) });
-  if (!isCurrent) items.push({ label: `Compare with ${current ?? "HEAD"}`, icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: current ? `refs/heads/${current}` : "HEAD", to: reference }) });
+  if (!isCurrent) items.push({ label: kind === "remote" ? `Check out as local branch` : `Check out ${name}`, shortcut: "branch-checkout", icon: <Check size={I} />, onClick: run(repo => A.checkout(repo, name, kind)) });
+  items.push({ label: "Create branch from here…", icon: <GitBranchPlus size={I} />, onClick: run(repo => A.createBranch(repo, name, name)) });
+  items.push({ label: "Branch details…", shortcut: "branch-details", icon: <GitBranch size={I} />, onClick: run(repo => branchCard(repo, name, reference)) });
+  items.push({ label: "Branch history (reflog)…", icon: <History size={I} />, onClick: run(repo => branchReflogDialog(repo, name)) });
+  items.push({ label: "Browse files", icon: <FolderTree size={I} />, onClick: run(repo => openOverlay({ kind: "tree", root: repo, rev: name })) });
+  items.push({ label: "Compare branch commits…", shortcut: "branch-compare", icon: <GitCompareArrows size={I} />, onClick: run(repo => branchCommitCompare(repo, reference)) });
+  items.push(primaryBranchMenuItem(root, reference), branchFavoriteMenuItem(root, reference));
+  items.push({ label: "Compare with working tree", icon: <GitCompareArrows size={I} />, onClick: run(repo => openOverlay({ kind: "compare", root: repo, from: reference, to: WORKTREE })) });
+  if (!isCurrent) items.push({ label: `Compare with ${current ?? "HEAD"}`, icon: <GitCompareArrows size={I} />, onClick: run(repo => openOverlay({ kind: "compare", root: repo, from: current ? `refs/heads/${current}` : "HEAD", to: reference })) });
   if (!isCurrent && current) {
     items.push({ separator: true });
-    items.push({ label: `Merge ${name} into ${current}…`, shortcut: "branch-merge", icon: <GitMerge size={I} />, onClick: () => A.mergeInto(root, name) });
-    items.push({ label: `Rebase ${current} onto ${name}`, shortcut: "branch-rebase", icon: <GitPullRequestArrow size={I} />, onClick: () => A.rebaseOnto(root, name) });
+    items.push({ label: `Merge ${name} into ${current}…`, shortcut: "branch-merge", icon: <GitMerge size={I} />, onClick: run(repo => A.mergeInto(repo, name)) });
+    items.push({ label: `Rebase ${current} onto ${name}`, shortcut: "branch-rebase", icon: <GitPullRequestArrow size={I} />, onClick: run(repo => A.rebaseOnto(repo, name)) });
   }
   items.push({ separator: true });
-  if (isCurrent) items.push({ label: "Push…", icon: <CloudUpload size={I} />, onClick: () => A.push(root) });
-  items.push(...branchRemoteItems(root, reference, kind, current, tab?.refs));
+  if (isCurrent) items.push({ label: "Push…", icon: <CloudUpload size={I} />, onClick: run(repo => A.push(repo)) });
+  items.push(...branchRemoteItems(reference, kind, current, refs, run));
   if (kind === "local") {
-    items.push({ label: "Set upstream…", shortcut: "branch-upstream", icon: <Link2 size={I} />, onClick: () => A.setUpstream(root, name) });
-    items.push({ label: "Rename…", icon: <Pencil size={I} />, onClick: () => A.renameBranch(root, name) });
-    items.push({ label: "Delete…", shortcut: "branch-delete", icon: <Trash2 size={I} />, danger: true, disabled: isCurrent, onClick: () => A.deleteBranch(root, name) });
+    items.push({ label: "Set upstream…", shortcut: "branch-upstream", icon: <Link2 size={I} />, onClick: run(repo => A.setUpstream(repo, name)) });
+    items.push({ label: "Rename…", icon: <Pencil size={I} />, onClick: run(repo => A.renameBranch(repo, name)) });
+    items.push({ label: "Delete…", shortcut: "branch-delete", icon: <Trash2 size={I} />, danger: true, disabled: isCurrent, onClick: run(repo => A.deleteBranch(repo, name)) });
   } else {
-    items.push({ label: "Rename on remote…", icon: <Pencil size={I} />, onClick: () => renameRemoteBranch(root, name) });
-    items.push({ label: "Delete on remote…", shortcut: "branch-delete", icon: <Trash2 size={I} />, danger: true, onClick: () => A.deleteRemoteBranch(root, name) });
+    items.push({ label: "Rename on remote…", icon: <Pencil size={I} />, onClick: run(repo => renameRemoteBranch(repo, name)) });
+    items.push({ label: "Delete on remote…", shortcut: "branch-delete", icon: <Trash2 size={I} />, danger: true, onClick: run(repo => A.deleteRemoteBranch(repo, name)) });
   }
   return items;
 }
 
-function branchRemoteItems(root: string, reference: string, kind: "local" | "remote", current: string | null | undefined, refs: RefsSnapshot | null | undefined): MenuItem[] {
+function branchRemoteItems(reference: string, kind: "local" | "remote", current: string | null | undefined, refs: RefsSnapshot | null | undefined, run: (action: (repo: string) => void) => () => void): MenuItem[] {
   const local = refs?.local ?? [];
   const branch = local.find(candidate => candidate.fullName === reference);
   const remoteRef = kind === "remote" ? reference : branch?.upstreamFullName;
@@ -123,9 +136,9 @@ function branchRemoteItems(root: string, reference: string, kind: "local" | "rem
   let fetchItem: MenuItem = { label: "Fetch", icon: <RefreshCw size={I} /> };
   if (fetchRemotes.length === 1) {
     const remote = fetchRemotes[0]!;
-    fetchItem = { ...fetchItem, shortcut: "branch-fetch", onClick: () => A.fetchRemote(root, remote) };
+    fetchItem = { ...fetchItem, shortcut: "branch-fetch", onClick: run(repo => A.fetchRemote(repo, remote)) };
   } else if (fetchRemotes.length > 1) {
-    fetchItem.children = fetchRemotes.map(remote => ({ label: remote, onClick: () => A.fetchRemote(root, remote) }));
+    fetchItem.children = fetchRemotes.map(remote => ({ label: remote, onClick: run(repo => A.fetchRemote(repo, remote)) }));
   } else {
     fetchItem = { ...fetchItem, disabled: true, hint: "No remote configured" };
   }
@@ -133,9 +146,9 @@ function branchRemoteItems(root: string, reference: string, kind: "local" | "rem
   const targets = kind === "local"
     ? branch?.upstream ? [branch] : []
     : local.filter(candidate => candidate.upstreamFullName === reference && candidate.upstream);
-  const pull = (target: BranchInfo) => () => {
-    if (target.upstream) return A.pullBranch(root, { branch: target.name, upstream: target.upstream });
-  };
+  const pull = (target: BranchInfo) => run(repo => {
+    if (target.upstream) return A.pullBranch(repo, { branch: target.name, upstream: target.upstream });
+  });
   const preferred = targets.find(target => target.name === current) ?? (targets.length === 1 ? targets[0] : undefined);
   let pullItem: MenuItem = { label: "Pull", icon: <ArrowDown size={I} /> };
   if (preferred) {
