@@ -128,7 +128,7 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await page.locator(".ctx-menu").getByText("Set as primary branch", {exact:true}).click();
   const pinnedBranch = page.getByRole("group", {name:"Primary branch",exact:true}).locator('[data-branch-name="main"]');
   const branchSearch = page.getByPlaceholder("Filter branches, tags, stashes");
-  const myBranches = page.getByRole("button", {name:"My branches",exact:true});
+  const myBranches = page.locator(".sidebar").getByRole("button", {name:"My branches",exact:true});
   if (await myBranches.getAttribute("aria-pressed") !== "true") await myBranches.click();
   assert.equal(await myBranches.getAttribute("aria-pressed"), "true");
   await viewedBranch.waitFor({state:"detached"});
