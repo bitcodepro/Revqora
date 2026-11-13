@@ -1768,6 +1768,21 @@ select[size="1"]:not([multiple]) {
 .commit-box .summary-wrap {
   position: relative;
 }
+.commit-description {
+  position: relative;
+}
+.commit-description .textarea {
+  display: block;
+}
+.commit-description-hint {
+  position: absolute;
+  inset-block-start: 9px;
+  inset-inline-start: 11px;
+  color: var(--text-faint);
+  line-height: 1.5;
+  pointer-events: none;
+  user-select: none;
+}
 .commit-box .counter {
   position: absolute;
   right: 8px;

@@ -1101,14 +1101,20 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
         />
         <span className={`counter ${summary.length > 72 ? "over" : ""}`}>{summary.length || ""}</span>
       </div>
-      <textarea
-        className="textarea"
-        rows={3}
-        placeholder="Description"
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        onKeyDown={submitShortcut}
-      />
+      <div className="commit-description">
+        <textarea
+          className="textarea"
+          rows={3}
+          aria-label="Description"
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          onKeyDown={submitShortcut}
+          onBlur={({ currentTarget: field }) => {
+            if (field.selectionStart !== field.selectionEnd) field.setSelectionRange(field.selectionEnd, field.selectionEnd);
+          }}
+        />
+        {!body && <span className="commit-description-hint" aria-hidden="true">Description</span>}
+      </div>
       {!merging && !picking && (
         <div className="commit-opts">
           <label className="check">
