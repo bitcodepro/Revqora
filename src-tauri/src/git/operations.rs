@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Read;
+use std::mem::DropGuard;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -32,21 +33,13 @@ thread_local! {
     static SCOPES: RefCell<Vec<(PathBuf, bool)>> = const { RefCell::new(Vec::new()) };
 }
 
-struct Scope;
-impl Drop for Scope {
-    fn drop(&mut self) {
+fn enter_scope(key: PathBuf, write: bool) -> impl Drop {
+    SCOPES.with(|s| s.borrow_mut().push((key, write)));
+    DropGuard::new((), |()| {
         SCOPES.with(|s| {
             s.borrow_mut().pop();
         });
-    }
-}
-
-struct Turn<'a>(&'a Gate);
-impl Drop for Turn<'_> {
-    fn drop(&mut self) {
-        self.0.tickets.lock().serving += 1;
-        self.0.changed.notify_all();
-    }
+    })
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -119,16 +112,18 @@ pub fn access<T>(repo: &Path, write: bool, mut phase: impl FnMut(&str, usize), f
             gate.changed.wait(&mut q);
         }
         drop(q);
-        let _turn = Turn(&gate);
+        // Advance the FIFO only after the thread scope and the write lock are released.
+        let _turn = DropGuard::new(gate.as_ref(), |gate| {
+            gate.tickets.lock().serving += 1;
+            gate.changed.notify_all();
+        });
         let _access = gate.access.write();
-        SCOPES.with(|s| s.borrow_mut().push((key, true)));
-        let _scope = Scope;
+        let _scope = enter_scope(key, true);
         phase("running", 0);
         f()
     } else {
         let _access = gate.access.read();
-        SCOPES.with(|s| s.borrow_mut().push((key, false)));
-        let _scope = Scope;
+        let _scope = enter_scope(key, false);
         f()
     }
 }

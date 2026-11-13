@@ -39,7 +39,7 @@ jobs:
           package-manager-cache: false
       - name: Install Rust toolchain
         shell: bash
-        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
+        run: rustc --version && cargo clippy --version && cargo fmt --version
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'
         timeout-minutes: 15

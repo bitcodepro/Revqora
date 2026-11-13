@@ -661,7 +661,7 @@ from this list. Revqora uses single key combinations and its own shortcut scopes
 
 Development needs Node.js with npm, Rust with rustfmt/clippy, and the
 [Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/).
-CI uses Node.js 24 and the stable Rust toolchain. Git remains a runtime requirement.
+CI uses Node.js 24 and the Rust version pinned in `rust-toolchain.toml`. Git remains a runtime requirement.
 
 ```bash
 git clone https://github.com/bitcodepro/Revqora.git

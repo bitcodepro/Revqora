@@ -751,7 +751,7 @@ fn header_paths(line: &str) -> Option<(String, String)> {
             if b[i] == b'"' {
                 let a = decode_path(&s[..=i]).ok()?;
                 let z = decode_path(s[i + 1..].trim_start()).ok()?;
-                return Some((a.strip_prefix("a/").unwrap_or(&a).into(), z.strip_prefix("b/").unwrap_or(&z).into()));
+                return Some((a.trim_prefix("a/").into(), z.trim_prefix("b/").into()));
             }
             i += 1;
         }
@@ -778,9 +778,9 @@ fn normalize_raw(raw: &mut diff::RawFileDiff) -> GitResult<()> {
             break;
         }
         if let Some(p) = s.strip_prefix("--- ") {
-            raw.old_path = if p == "/dev/null" { None } else { Some(decode_path(p)?.strip_prefix("a/").unwrap_or(&decode_path(p)?).into()) };
+            raw.old_path = if p == "/dev/null" { None } else { Some(decode_path(p)?.trim_prefix("a/").into()) };
         } else if let Some(p) = s.strip_prefix("+++ ") {
-            raw.new_path = if p == "/dev/null" { None } else { Some(decode_path(p)?.strip_prefix("b/").unwrap_or(&decode_path(p)?).into()) };
+            raw.new_path = if p == "/dev/null" { None } else { Some(decode_path(p)?.trim_prefix("b/").into()) };
         } else if let Some(p) = s.strip_prefix("rename from ") {
             raw.old_path = Some(decode_path(p)?);
         } else if let Some(p) = s.strip_prefix("rename to ") {

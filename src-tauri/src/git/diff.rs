@@ -236,11 +236,11 @@ pub fn parse(data: &[u8]) -> Vec<RawFileDiff> {
         f.header.push(line.to_vec());
         if let Some(p) = t.strip_prefix("--- ") {
             if p != "/dev/null" {
-                f.old_path = Some(unquote_path(p.strip_prefix("a/").unwrap_or(p)));
+                f.old_path = Some(unquote_path(p.trim_prefix("a/")));
             }
         } else if let Some(p) = t.strip_prefix("+++ ") {
             if p != "/dev/null" {
-                f.new_path = Some(unquote_path(p.strip_prefix("b/").unwrap_or(p)));
+                f.new_path = Some(unquote_path(p.trim_prefix("b/")));
             }
         } else if let Some(m) = t.strip_prefix("new file mode ") {
             f.is_new = true;

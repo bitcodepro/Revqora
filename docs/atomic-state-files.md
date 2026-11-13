@@ -22,7 +22,7 @@ normal attributes and private Unix permissions. Callers retain their bounded JSO
 encoding, complete writes and `sync_all` before replacement. `std::fs::rename`
 uses the atomic POSIX replacement path on supported Windows filesystems, allowing
 existing readers to retain the old snapshot while new opens see the new file.
-The implementation already exists in the project's minimum Rust 1.90:
+This implementation was already present in Rust 1.90.
 [Rust Windows rename source](https://github.com/rust-lang/rust/blob/1.90.0/library/std/src/sys/fs/windows.rs#L1174).
 
 The destination is never deleted or truncated first. Source and destination must
