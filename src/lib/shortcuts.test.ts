@@ -19,6 +19,15 @@ describe("layout-independent shortcuts", () => {
     expect(actionFor(key("F5", "F5", { ctrlKey: false }))).toBe("refresh");
   });
 
+  it("treats keypad Delete as navigation and preserves the decimal key with Num Lock on", () => {
+    const del = key("NumpadDecimal", "Delete", { ctrlKey: false });
+    const decimal = key("NumpadDecimal", ".", { ctrlKey: false });
+    expect(comboFromEvent(del)).toBe("Delete");
+    expect(matchesShortcut(del, "deleteItem")).toBe(true);
+    expect(comboFromEvent(decimal)).toBe("NumpadDecimal");
+    expect(matchesShortcut(decimal, "deleteItem")).toBe(false);
+  });
+
   it("leaves IME composition and AltGr text input alone", () => {
     expect(actionFor(key("KeyN", "т", { isComposing: true }))).toBeNull();
     expect(comboFromEvent(key("KeyN", "т", { altKey: true, getModifierState: state => state === "AltGraph" }))).toBeNull();

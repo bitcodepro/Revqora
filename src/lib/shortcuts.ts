@@ -222,8 +222,8 @@ function logicalKey(key: string) {
 export function comboFromEvent(event: ShortcutEvent): string | null {
   if (!usableKey(event)) return null;
   const logical = logicalKey(event.key);
-  const key = /^Numpad\d$/.test(event.code) && logical && /^(?:Arrow|Home|End|Page|Insert|Delete)/.test(logical)
-    ? logical : physicalKey(event.code) ?? logical;
+  const keypadNavigation = /^Numpad(?:\d|Decimal)$/.test(event.code) && logical && /^(?:Arrow|Home|End|Page|Insert|Delete)/.test(logical);
+  const key = keypadNavigation ? logical : physicalKey(event.code) ?? logical;
   return key && [...eventModifiers(event), key].join("+");
 }
 
