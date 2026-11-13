@@ -21,7 +21,7 @@ Revqora is a desktop Git client for working with repositories, reviewing changes
 | I want to… | Guide |
 | --- | --- |
 | Understand the screen, panels and review layouts | [Interface and navigation](https://github.com/bitcodepro/Revqora/wiki/Interface-and-navigation) |
-| Add another repository without closing the app | [Repositories and workspaces](https://github.com/bitcodepro/Revqora/wiki/Repositories-and-workspaces) |
+| Add another repository without closing the app | [Explorer and repository library](https://github.com/bitcodepro/Revqora/wiki/Repositories-and-workspaces) |
 | Understand staging, commit, amend and signing | [Changes and commits](https://github.com/bitcodepro/Revqora/wiki/Changes-and-commits) |
 | Choose between Fetch, Pull, Push and Sync | [Remote operations](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync) |
 | Create, switch, rename or safely delete branches | [Branches and cleanup](https://github.com/bitcodepro/Revqora/wiki/Branches-and-cleanup) |

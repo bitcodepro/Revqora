@@ -100,7 +100,7 @@ or check out anything.
 
 | Area | What you can do |
 | --- | --- |
-| Repository workspace | Open, initialize and clone repositories; browse groups and repositories in Explorer or use a flat repository list; Fetch/Pull/Sync across matching open repositories. |
+| Repository workspace | Open, initialize and clone repositories; browse groups and repositories in Explorer or use a flat repository list; Fetch/Pull/Sync across open repositories. |
 | Review layouts | Switch between Graph, Review and Columns; hide repository and branch panels, resize file/diff panes, and keep visibility and widths separately for each layout. |
 | History | Virtualized graph, ref labels, commit and branch details, search by message/author/SHA/code/path, branch comparison, file history, blame and revision browsing. |
 | Diff | Unified and side-by-side views, word highlighting, line wrapping or horizontal scrolling, image comparison, hunk navigation, file-tree and flat file lists. |
@@ -130,10 +130,10 @@ the top level. Use **Import folder…** to recreate the folder hierarchy in Expl
 Open the optional **Repositories** panel for a flat list. Select a group in Explorer
 to show all of its repositories, including those in subgroups. Select **All
 repositories** in Explorer to clear the filter. Search, favorites and incoming
-commit filters help narrow either view. **Fetch**, **Pull** and **Sync** in the
-flat panel apply to matching open repositories.
+commit filters help narrow either view. **Fetch all**, **Pull all** and **Sync all**
+appear in the unfiltered flat panel and apply to open repositories.
 
-Drag a group by its handle to nest or reorder it. Drag a repository onto a group
+Drag a group by its row to nest or reorder it. Drag a repository onto a group
 to move it there. Use **Ctrl** or **Shift** to select several items and right-click
 to create a group with them. **F2** renames the focused group, repository label or
 branch. **Delete** opens the deletion review for focused groups or branches.
@@ -637,7 +637,7 @@ from this list. Revqora uses single key combinations and its own shortcut scopes
 | Ctrl+N / Ctrl+Shift+P | Command palette |
 | Ctrl+1 / Ctrl+2 / Ctrl+3 | History / Changes / Pull Requests |
 | Ctrl+Shift+R | Cycle Graph / Review / Columns |
-| Ctrl+Alt+W / Ctrl+Alt+R / Ctrl+Alt+B | Toggle workspace / repository / branch panel |
+| Ctrl+Alt+W / Ctrl+Alt+R / Ctrl+Alt+B | Toggle Explorer / Repositories / Branches |
 | Ctrl+Shift+Enter | Focus on code |
 | Ctrl+B | Create branch |
 | Ctrl+Shift+F | Fetch |
@@ -645,8 +645,8 @@ from this list. Revqora uses single key combinations and its own shortcut scopes
 | Ctrl+Shift+S | Stash |
 | Ctrl+Enter | Commit from the commit form |
 | F5 | Refresh |
-| F2 | Rename the focused workspace, group, branch, or repository display name |
-| Delete | Review deletion of the focused workspace, group or branch |
+| F2 | Rename the focused group, branch, or repository display name |
+| Delete | Review deletion of the focused group or branch |
 | ↑ / ↓ | Navigate commits in History or files in Changes |
 | Ctrl+↑ / Ctrl+↓ | Previous / next changed file in the current commit |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous repository tab |
