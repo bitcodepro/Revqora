@@ -87,6 +87,7 @@ function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
 export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) {
   const panelMenu = usePanelTitleMenu("branches", [{ label: "Branch manager", icon: <GitBranch size={14}/>, onClick: () => openOverlay({ kind: "branches", root: tab.root }) }]);
   const { panels } = usePanelWindows();
+  const reveal = useUi(s => s.branchReveal);
   const { setLayout } = useWorkspaceLayout();
   const root = tab.root;
   const [branchPrefs,setBranchPrefs]=useState(()=>{try{return sidebarBranchPreferences(JSON.parse(localStorage.getItem(sidebarBranchesKey(root))??"null"));}catch{return sidebarBranchPreferences(null);}});
@@ -98,9 +99,11 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ tags: true });
   const [openDirs, setOpenDirs] = useState<Record<string, boolean>>({});
   const [selection, setSelection] = useState<BranchInfo[]>([]);
+  const [revealed, setRevealed] = useState<{ reference: string } | null>(null);
   const selectionAnchor = useRef<string | null>(null);
   const beforeDoubleClick = useRef<Pick<RepoTab, "branchFilter" | "branchContext" | "viewedBranch"> & { reference: string } | null>(null);
   const cleanupPending = useRef(false);
+  const pinnedRow = useRef<HTMLDivElement>(null);
   const refs = tab.refs;
   const extras = tab.extras;
   const f = filter.trim().toLowerCase();
@@ -133,28 +136,57 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
     if (scopeChanged || !tab.graph) void loadGraph(root);
   };
 
+  useEffect(() => {
+    if (reveal?.root !== root || !refs) return;
+    const branch = [...refs.local, ...refs.remote].find(item => item.fullName === reveal.reference);
+    if (!branch) return;
+    const kind = branch.fullName.startsWith("refs/heads/") ? "local" : "remote";
+    const parts = branch.name.split("/");
+    setOpenDirs(current => {
+      const opened = { ...current };
+      if (kind === "remote") opened[`remote-root:${branch.remote ?? "origin"}`] = true;
+      for (let depth = kind === "remote" ? 2 : 1; depth < parts.length; depth++) {
+        opened[`${kind}:${parts.slice(0, depth).join("/")}`] = true;
+      }
+      return opened;
+    });
+    setCollapsed(current => ({ ...current, [kind === "local" ? "local" : "remotes"]: false }));
+    setFilter("");
+    setSelection([branch]);
+    selectionAnchor.current = branch.fullName;
+    setRevealed(reveal);
+    viewBranch(branch);
+    useUi.setState({ branchReveal: null });
+  });
+
   const pairs = useMemo(() => branchPairs(refs?.local ?? [], refs?.remote ?? []), [refs]);
   const pinned = [...(refs?.local ?? []), ...(refs?.remote ?? [])].find(branch => branch.fullName === primaryBranch);
+  const revealedBranch = useMemo(() => revealed && [...(refs?.local ?? []), ...(refs?.remote ?? [])]
+    .find(branch => branch.fullName === revealed.reference), [refs, revealed]);
   const local = useMemo(() => selectSidebarBranches(refs?.local??[],branchPrefs,authorQuery,refs?.identityEmail??null,filter)
     .filter(branch => branch.fullName !== primaryBranch), [refs,branchPrefs,authorQuery,filter,primaryBranch]);
+  const visibleLocal = revealedBranch?.fullName.startsWith("refs/heads/") && revealedBranch.fullName !== primaryBranch && !local.includes(revealedBranch)
+    ? [...local, revealedBranch] : local;
   const remoteByName = useMemo(() => {
     const m = new Map<string, BranchInfo[]>();
     for (const r of refs?.remotes ?? []) m.set(r.name, []);
     const pairing = pinned?.fullName.startsWith("refs/heads/") ? [...local, pinned] : local;
-    for (const b of selectSidebarBranches(branchPairs(pairing,refs?.remote??[]).remoteOnly,branchPrefs,authorQuery,refs?.identityEmail??null,filter)) {
+    const matching = selectSidebarBranches(branchPairs(pairing,refs?.remote??[]).remoteOnly,branchPrefs,authorQuery,refs?.identityEmail??null,filter);
+    if (revealedBranch?.fullName.startsWith("refs/remotes/") && !matching.includes(revealedBranch)) matching.push(revealedBranch);
+    for (const b of matching) {
       if (b.fullName === primaryBranch) continue;
       const k = b.remote ?? "origin";
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(b);
     }
     return m;
-  }, [refs,local,branchPrefs,authorQuery,filter,pinned,primaryBranch]);
+  }, [refs,local,branchPrefs,authorQuery,filter,pinned,primaryBranch,revealedBranch]);
   const tags = (refs?.tags ?? []).filter((t) => match(t.name));
   const stashes = (refs?.stashes ?? []).filter((s) => match(s.message));
 
   const toggle = (k: string) => setCollapsed((c) => ({ ...c, [k]: !c[k] }));
   const isOpen = (k: string) => (f ? true : openDirs[k] ?? true);
-  const clearSelection = () => { setSelection([]); selectionAnchor.current = null; };
+  const clearSelection = () => { setSelection([]); setRevealed(null); selectionAnchor.current = null; };
 
   const chooseBranch = (branch: BranchInfo, toggle: boolean, range: boolean) => {
     const reference = branch.fullName;
@@ -168,6 +200,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
       }
     }
     selectionAnchor.current = reference;
+    if (!toggle && revealed?.reference !== reference) setRevealed(null);
     if (toggle) setSelection(selectedSet.has(reference) ? selected.filter((row) => row.fullName !== reference) : [...selected, branch]);
     else {
       setSelection([branch]);
@@ -357,19 +390,19 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
     </div>,
   ];
 
-  const branchesByRef = useMemo(() => new Map([...(pinned ? [pinned] : []), ...local, ...[...remoteByName.values()].flat()].map((branch) => [branch.fullName, branch])), [local, remoteByName, pinned]);
+  const branchesByRef = useMemo(() => new Map([...(pinned ? [pinned] : []), ...visibleLocal, ...[...remoteByName.values()].flat()].map((branch) => [branch.fullName, branch])), [visibleLocal, remoteByName, pinned]);
   const selected = selection.filter((branch) => branchesByRef.has(branch.fullName));
   const selectedSet = new Set(selected.map((branch) => branch.fullName));
   const branchRows = [
         ...section(
           "local",
           "Branches",
-          local.length,
+          visibleLocal.length,
           <GitBranch size={12} />,
           <button className="icon-btn sm" title="New branch" onClick={() => A.createBranch(root, null, current ?? "HEAD")}>
             <Plus size={13} />
           </button>,
-          collapsed.local ? [] : local.length ? renderTree(buildTree(local,0,branchPrefs.sort==="recent"), "local", 0, "") :
+          collapsed.local ? [] : visibleLocal.length ? renderTree(buildTree(visibleLocal,0,branchPrefs.sort==="recent"), "local", 0, "") :
             pinned?.fullName.startsWith("refs/heads/") ? [] : empty("empty-local", f||branchPrefs.onlyMine ? "No matches" : "No branches yet"),
         ),
         ...section(
@@ -445,10 +478,12 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           <button type="button" className="icon-btn sm" title="Clear branch selection" aria-label="Clear branch selection" onClick={clearSelection}><ClearIcon size={14} /></button>
         </div>}
       </div>
-      {pinned && <div className="sb-primary-branch" role="group" aria-label="Primary branch">
+      {pinned && <div ref={pinnedRow} className="sb-primary-branch" role="group" aria-label="Primary branch">
         {renderTree(buildTree([pinned], 0, true), pinned.fullName.startsWith("refs/heads/") ? "local" : "remote", 0, "")}
       </div>}
       <VirtualRows
+        reveal={revealed}
+        pinned={pinnedRow}
         rows={[
         ...branchRows,
         ...section(
@@ -655,10 +690,13 @@ const ROW_H = 27;
 const HEAD_H = 32;
 
 /** Renders only the visible sidebar rows (thousands of branches stay smooth). */
-function VirtualRows({ rows }: { rows: ReactNode[] }) {
+function VirtualRows({ rows, reveal, pinned }: {
+  rows: ReactNode[]; reveal: { reference: string } | null; pinned: React.RefObject<HTMLDivElement | null>;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const [scroll, setScroll] = useState(0);
   const [viewH, setViewH] = useState(800);
+  const focused = useRef<typeof reveal>(null);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -672,6 +710,26 @@ function VirtualRows({ rows }: { rows: ReactNode[] }) {
     tops.push(y);
     y += String((r as ReactElement).key ?? "").startsWith("sec:") ? HEAD_H : ROW_H;
   }
+  useEffect(() => {
+    if (!reveal || focused.current === reveal || !ref.current?.clientHeight) return;
+    const selector = `[data-branch-ref="${CSS.escape(reveal.reference)}"]`;
+    const pinnedBranch = pinned.current?.querySelector<HTMLElement>(selector);
+    const viewport = ref.current;
+    if (!pinnedBranch) {
+      const index = rows.findIndex(row => (row as ReactElement).key === reveal.reference);
+      if (index < 0) return;
+      const top = tops[index];
+      if (top < viewport.scrollTop || top + ROW_H > viewport.scrollTop + viewport.clientHeight) {
+        viewport.scrollTop = Math.max(0, top - viewport.clientHeight / 2);
+        setScroll(viewport.scrollTop);
+      }
+    }
+    const row = pinnedBranch ?? viewport.querySelector<HTMLElement>(selector);
+    if (row) {
+      row.focus({ preventScroll: true });
+      focused.current = reveal;
+    }
+  });
   const from = scroll - 200;
   const to = scroll + viewH + 200;
   return (

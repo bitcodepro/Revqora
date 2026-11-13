@@ -214,6 +214,7 @@ export const api = {
   blob: (repo: string, spec: BlobSpec) => call<BlobData | null>("blob", { repo, spec }),
   textBlob: (repo: string, spec: BlobSpec, encoding: string | null = null) => call<import("./types").DecodedText | null>("text_blob", { repo, spec, encoding }),
 
+  repositoryBranchNames: (repo: string) => call<string[]>("repository_branch_names", { repo }),
   refs: (repo: string) => call<RefsSnapshot>("refs_snapshot", { repo }),
   fetchBackground: (repo: string) => call<string>("fetch_background", { repo }),
   squashMerged: (repo: string) => call<string[]>("squash_merged", { repo }),

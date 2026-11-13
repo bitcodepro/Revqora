@@ -43,7 +43,11 @@ Reading a commit does not check it out. Checking out a commit is a separate acti
 
 ## Find commands without remembering icons
 
-Press **Ctrl+N** and type part of an action's name. Examples:
+Press **Ctrl+N** and type part of an action, repository, branch, or folder name. Use the arrow keys to choose a result and **Enter** to open it. Repository and folder results reveal their location in Explorer. A branch result opens the Branches panel and shows its history without checking it out. Include the repository name to distinguish branches with the same name.
+
+Shortcuts use physical key positions across keyboard layouts. To update a legacy shortcut saved as a layout-specific character, record it again under **Settings → Shortcuts**.
+
+Examples:
 
 - `Open repository`
 - `Branch manager`

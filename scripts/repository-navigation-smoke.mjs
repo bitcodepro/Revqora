@@ -10,6 +10,11 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
     const root = path.join(parent, relative);
     fs.mkdirSync(root, { recursive: true });
     execFileSync("git", ["-C", root, "init", "-qb", "main"], { windowsHide: true });
+    if (relative.endsWith("/extension")) {
+      const git = (...args) => execFileSync("git", ["-C", root, "-c", "user.name=Palette Fixture", "-c", "user.email=palette@example.invalid", "-c", "commit.gpgsign=false", ...args], { windowsHide: true });
+      git("commit", "--allow-empty", "-qm", "Palette baseline");
+      git("branch", "feature/palette-hidden-branch");
+    }
   }
   const nav = page.getByRole("group", { name: "Repository navigation", exact: true });
   const explorer = page.getByRole("complementary", { name: "Explorer", exact: true });
@@ -330,4 +335,39 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await settings.getByRole("button", { name: "Shortcuts", exact: true }).click();
   await settings.getByTitle("Reset shortcut for Settings", { exact: true }).click();
   await settings.getByRole("button", { name: "Done", exact: true }).click();
+
+  const inputPalette = page.getByRole("combobox", { name: "Search commands, repositories, branches and folders", exact: true });
+  const searchPalette = async (query, kind) => {
+    const keyboard = await page.context().newCDPSession(page);
+    try {
+      const event = { code: "KeyN", key: "т", windowsVirtualKeyCode: 78, modifiers: 2 };
+      await keyboard.send("Input.dispatchKeyEvent", { type: "keyDown", ...event });
+      await keyboard.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+    } finally { await keyboard.detach(); }
+    await inputPalette.fill(query);
+    await page.getByRole("option", { selected: true }).getByText(kind, { exact: true }).waitFor();
+    await inputPalette.press("Enter");
+    await inputPalette.waitFor({ state: "detached" });
+  };
+  await searchPalette("navigation-projects", "Folder");
+  await folder("navigation-projects").and(page.locator("[aria-current=true]")).waitFor();
+  await searchPalette("extension", "Repository");
+  const located = treeRepo("extension").locator(".repository-select");
+  await located.and(page.locator("[aria-current=true]")).waitFor();
+  await page.waitForFunction(() => document.activeElement?.matches(".explorer-focused .repository-select"));
+  const infraToggle = group("infra").getByRole("button", { name: "Collapse infra", exact: true });
+  if (await infraToggle.isVisible()) await infraToggle.click();
+  await searchPalette("platform", "Repository");
+  await treeRepo("platform").locator("[aria-current=true]").waitFor();
+  const closeExtension = treeRepo("extension").getByRole("button", { name: "Close extension", exact: true });
+  await closeExtension.click();
+  await closeExtension.waitFor({ state: "detached" });
+  const hideBranches = page.getByRole("button", { name: "Hide branches", exact: true });
+  if (await hideBranches.isVisible()) await hideBranches.click();
+  await hideBranches.waitFor({ state: "hidden" });
+  await searchPalette("feature/palette-hidden-branch", "Branch");
+  const branch = page.locator(".sidebar [data-branch-ref='refs/heads/feature/palette-hidden-branch']");
+  await branch.and(page.locator(".branch-selected.viewed-branch")).waitFor();
+  await page.waitForFunction(() => document.activeElement?.getAttribute("data-branch-ref") === "refs/heads/feature/palette-hidden-branch");
+  assert.equal(execFileSync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8", windowsHide: true }).trim(), "main");
 }
