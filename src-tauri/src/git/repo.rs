@@ -121,6 +121,36 @@ fn merge_label(msg: &str) -> Option<String> {
     None
 }
 
+/// Remove Git's generated conflict footer while preserving literal comment lines
+/// in the commit message. The original message can itself contain such a block.
+pub fn cherry_pick_message(repo: &Path, gd: &Path, incoming: &str) -> GitResult<String> {
+    let message = std::fs::read_to_string(gd.join("MERGE_MSG"))?;
+    let original = runner::run(repo, ["log", "-1", "--format=format:%B", incoming, "--"])?;
+    let original_body = original.trim_end_matches(['\r', '\n']);
+    let text = message.trim_end_matches(['\r', '\n']);
+    if text == original_body {
+        return Ok(message);
+    }
+    let Some((body, footer)) = text.rsplit_once("\n\n").or_else(|| text.rsplit_once("\r\n\r\n")) else {
+        return Ok(message);
+    };
+    let mut lines = footer.lines();
+    let Some(marker) = lines.next().and_then(|line| line.strip_suffix(" Conflicts:")) else {
+        return Ok(message);
+    };
+    let path_prefix = format!("{marker}\t");
+    if marker.is_empty() || marker.contains(char::is_whitespace) || lines.clone().next().is_none() || !lines.all(|line| line.starts_with(&path_prefix)) {
+        return Ok(message);
+    }
+    if original_body.ends_with(footer) && !body.starts_with(original_body) {
+        return Ok(message);
+    }
+    if body.trim_end_matches(['\r', '\n']) == original_body {
+        return Ok(original);
+    }
+    Ok(format!("{}\n", body.trim_end_matches(['\r', '\n'])))
+}
+
 pub fn op_state(repo: &Path, gd: &Path) -> OpState {
     let mut st = OpState {
         kind: "none".into(),
@@ -170,8 +200,8 @@ pub fn op_state(repo: &Path, gd: &Path) -> OpState {
     if let Some(ch) = read_trim(&gd.join("CHERRY_PICK_HEAD")) {
         st.kind = "cherry-pick".into();
         st.incoming_label = subject_of(repo, &ch);
+        st.message = cherry_pick_message(repo, gd, &ch).ok();
         st.incoming = Some(ch);
-        st.message = std::fs::read_to_string(gd.join("MERGE_MSG")).ok();
         return st;
     }
     if let Some(rv) = read_trim(&gd.join("REVERT_HEAD")) {

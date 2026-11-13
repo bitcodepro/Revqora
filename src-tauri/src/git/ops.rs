@@ -1035,12 +1035,30 @@ pub fn continue_op(repo: &Path, kind: &str, message: Option<&str>) -> GitResult<
             Ok(OpOutcome::done(oid))
         }
         "cherry-pick" | "revert" | "rebase" | "am" => {
-            if let Some(m) = message.filter(|m| !m.trim().is_empty()) {
-                if kind != "rebase" && kind != "am" {
-                    std::fs::write(gd.join("MERGE_MSG"), m)?;
+            let out = if kind == "cherry-pick" {
+                let state = repo::op_state(repo, &gd);
+                if state.kind == "cherry-pick" {
+                    let text = match message.filter(|m| !m.trim().is_empty()) {
+                        Some(edited) => edited.to_owned(),
+                        None => state.message.ok_or_else(|| GitError::new("Could not read the pending cherry-pick message."))?,
+                    };
+                    // Complete the resolved step through Git so author information and
+                    // hooks are preserved. Then let Git resume any remaining picks.
+                    let commit = runner::exec_full(repo, ["commit", "--cleanup=verbatim", "-F", "-"], &[], Some(text.as_bytes()))?;
+                    if commit.ok() && gd.join("sequencer/todo").is_file() {
+                        runner::exec(repo, [kind, "--continue"])?
+                    } else {
+                        commit
+                    }
+                } else {
+                    runner::exec(repo, [kind, "--continue"])?
                 }
-            }
-            let out = runner::exec(repo, [kind, "--continue"])?;
+            } else {
+                if let Some(edited) = message.filter(|m| kind == "revert" && !m.trim().is_empty()) {
+                    std::fs::write(gd.join("MERGE_MSG"), edited)?;
+                }
+                runner::exec(repo, [kind, "--continue"])?
+            };
             if out.ok() {
                 return Ok(OpOutcome::done(out.text()));
             }

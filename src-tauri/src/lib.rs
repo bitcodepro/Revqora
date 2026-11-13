@@ -639,6 +639,11 @@ async fn status(repo: String, require_unsealed: Option<bool>) -> GitResult<Statu
     .await
 }
 #[tauri::command]
+async fn repository_status_with_operation(repo: String) -> GitResult<status::StatusWithOperation> {
+    blocking(move || status::status_with_operation(&p(&repo))).await
+}
+
+#[tauri::command]
 async fn repository_sidebar_status(repo: String) -> GitResult<StatusSummary> {
     blocking(move || status::sidebar_status(&p(&repo))).await
 }
@@ -2466,6 +2471,7 @@ pub fn run() {
             git_configure,
             askpass_respond,
             repository_sidebar_status,
+            repository_status_with_operation,
             repo_open,
             repo_prepare_folder_scan,
             repo_scan_folder,

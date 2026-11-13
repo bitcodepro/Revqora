@@ -74,10 +74,10 @@ fn tools() -> Vec<Tool> {
     vec![
         Tool { name:"list_repositories", description:"List repositories open in Revqora and identify the active one. Use the returned repository ID for other tools.", properties:json!({}), required:&[], read_only:true, uses_provider:false },
         Tool { name:"workspace_overview", description:"Get the active repository and the desktop's last observed branch, change counts, conflicts and upstream divergence for every open repository in the active workspace.", properties:json!({}), required:&[], read_only:true, uses_provider:false },
-        Tool { name:"repository_status", description:"Read the branch, upstream, ahead/behind, Git operation and staged/unstaged file status. Pages contain up to 200 paths.", properties:json!({"repository":repo(),"offset":count(0,1_000_000)}), required:&["repository"], read_only:true, uses_provider:false },
+        Tool { name:"repository_status", description:"Read the branch, upstream, ahead/behind, Git operation and staged/unstaged file status. Pages contain up to 200 paths. Pass statusVersion from the first page with files.nextOffset. Restart at offset 0 on stale_state.", properties:json!({"repository":repo(),"offset":count(0,1_000_000),"statusVersion":text(64)}), required:&["repository"], read_only:true, uses_provider:false },
         Tool { name:"list_branches", description:"List local or remote-tracking branches, their tip IDs and upstream status. Pages contain up to 100 branches.", properties:json!({"repository":repo(),"scope":choices(&["local","remote","all"]),"query":text(256),"offset":count(0,1_000_000)}), required:&["repository"], read_only:true, uses_provider:false },
         Tool { name:"compare_branches", description:"Compare two branch histories using their full refs from list_branches. Returns commits unique to each branch.", properties:json!({"repository":repo(),"from":text(4096),"to":text(4096)}), required:&["repository","from","to"], read_only:true, uses_provider:false },
-        Tool { name:"search_commits", description:"Search local branches, remote-tracking branches, tags and HEAD. Stash is excluded. Author searches Git author name and email, and message searches the entire commit message. Matching is case insensitive. If hasMore is true, pass nextCursor as cursor with the same repository, query and mode, even if this page was empty.", properties:json!({"repository":repo(),"query":text(512),"mode":choices(&["all","message","hash","author"]),"cursor":text(64),"limit":{"type":"integer","minimum":1,"maximum":100,"default":30}}), required:&["repository","query"], read_only:true, uses_provider:false },
+        Tool { name:"search_commits", description:"Search local branches, remote-tracking branches, tags and HEAD. Stash is excluded. Author searches Git author name and email, and message searches the entire commit message. All (the default) matches the full message, author name and email, SHA prefix, and ref labels. Matching is case insensitive. If hasMore is true, pass nextCursor as cursor with the same repository, query and mode, even if this page was empty.", properties:json!({"repository":repo(),"query":text(512),"mode":choices(&["all","message","hash","author"]),"cursor":text(64),"limit":{"type":"integer","minimum":1,"maximum":100,"default":30}}), required:&["repository","query"], read_only:true, uses_provider:false },
         Tool { name:"commit_details", description:"Read an exact commit and its changed file list.", properties:json!({"repository":repo(),"oid":text(64),"offset":count(0,1_000_000)}), required:&["repository","oid"], read_only:true, uses_provider:false },
         Tool { name:"file_diff", description:"Read a changed path from status or commit_details. Pass diffVersion with nextOffset to continue. Use limit (up to 1200 lines) to request larger pages. For a long line, pass its lineIndex as offset and nextTextOffset as lineOffset, plus diffVersion. A conflict returns index stages; also supply conflictSide when continuing a line of a conflict.", properties:json!({"repository":repo(),"path":text(4096),"side":choices(&["unstaged","staged","commit"]),"oid":text(64),"offset":count(0,1_000_000),"limit":count(1,1200),"diffVersion":text(256),"lineOffset":count(0,100_000_000),"conflictSide":choices(&["base","ours","theirs"])}), required:&["repository","path","side"], read_only:true, uses_provider:false },
         Tool { name:"list_stashes", description:"List saved stashes. Supply their index and full SHA to stash_apply, stash_pop or stash_drop.", properties:json!({"repository":repo(),"offset":count(0,1_000_000)}), required:&["repository"], read_only:true, uses_provider:false },
@@ -88,7 +88,7 @@ fn tools() -> Vec<Tool> {
         Tool { name:"connection_identity", description:"Identify the current user for a repository's selected PR connection. Returns the provider user ID, name and login without returning credentials.", properties:json!({"repository":repo()}), required:&["repository"], read_only:true, uses_provider:true },
         Tool { name:"pull_request", description:"Inspect PR overview, files, diff, discussions or checks. For diff, pass fileId and revision from the files section. Diff pagination and line continuation use diffVersion, offset, limit and lineOffset as in file_diff.", properties:json!({"repository":repo(),"number":pr(),"section":choices(&["overview","files","diff","discussions","checks"]),"feed":choices(&["threads","comments","reviews"]),"cursor":text(4096),"offset":count(0,1_000_000),"fileId":text(4096),"revision":text(4096),"limit":count(1,1200),"diffVersion":text(256),"lineOffset":count(0,100_000_000)}), required:&["repository","number"], read_only:true, uses_provider:true },
         Tool { name:"open_view", description:"Select an already open repository and navigate to a Revqora view.", properties:json!({"repository":repo(),"view":choices(&["history","changes","pull_requests","branches","worktrees","workflows","agents"])}), required:&["repository","view"], read_only:false, uses_provider:false },
-        Tool { name:"request_action", description:"Request an action under Revqora's approval mode and poll action_status. Stage and unstage use paths from repository_status. Stage marks selected conflicted files as resolved using their working versions. Create_branch uses target for the new name and base for a local branch or full commit SHA (default current HEAD). Checkout uses target for a local branch and optional dirtyAction; the result describes any stash and the next step. Cherry_pick uses target for the full commit SHA. Stash_apply, stash_pop and stash_drop require stashIndex and target SHA from list_stashes. Apply and Pop accept restoreIndex (default true); Drop creates a recovery checkpoint without applying the stash. Unused parameters are rejected. PR actions use number, and automatic PR creation requires title, branch and base. Fetch and Pull prune only when prune=true. Push uses a configured upstream or remote; Sync only sends when send=true.", properties:json!({"repository":repo(),"action":choices(&actions),"paths":paths(),"target":text(512),"message":text(8192),"number":pr(),"branch":text(1024),"base":text(1024),"title":text(1024),"revision":text(4096),"reviewKind":choices(&["comment","approve","request_changes"]),"method":text(128),"dirtyAction":choices(&["stash","move"]),"remote":text(1024),"remoteBranch":text(1024),"draft":{"type":"boolean"},"includeUntracked":{"type":"boolean"},"keepIndex":{"type":"boolean"},"prune":{"type":"boolean"},"force":{"type":"boolean"},"setUpstream":{"type":"boolean"},"stashIndex":count(0,1_000_000),"restoreIndex":{"type":"boolean"},"receive":{"type":"boolean"},"send":{"type":"boolean"}}), required:&["repository","action"], read_only:false, uses_provider:true },
+        Tool { name:"request_action", description:"Request an action under Revqora's approval mode and poll action_status. Stage and unstage use paths from repository_status. Stage marks selected conflicted files as resolved using their working versions. Create_branch uses target for the new name and base for a local branch or full commit SHA (default current HEAD). Checkout uses target for a local branch and optional dirtyAction; succeeded confirms the branch switched. Inspect changesRestored, conflicts, stash and nextStep for the outcome of restoring changes. Cherry_pick uses target for the full commit SHA. Stash_apply, stash_pop and stash_drop require stashIndex and target SHA from list_stashes. Apply and Pop accept restoreIndex (default true); Drop creates a recovery checkpoint without applying the stash. Unused parameters are rejected. PR actions use number, and automatic PR creation requires title, branch and base. Fetch and Pull prune only when prune=true. Push uses a configured upstream or remote; Sync only sends when send=true.", properties:json!({"repository":repo(),"action":choices(&actions),"paths":paths(),"target":text(512),"message":text(8192),"number":pr(),"branch":text(1024),"base":text(1024),"title":text(1024),"revision":text(4096),"reviewKind":choices(&["comment","approve","request_changes"]),"method":text(128),"dirtyAction":choices(&["stash","move"]),"remote":text(1024),"remoteBranch":text(1024),"draft":{"type":"boolean"},"includeUntracked":{"type":"boolean"},"keepIndex":{"type":"boolean"},"prune":{"type":"boolean"},"force":{"type":"boolean"},"setUpstream":{"type":"boolean"},"stashIndex":count(0,1_000_000),"restoreIndex":{"type":"boolean"},"receive":{"type":"boolean"},"send":{"type":"boolean"}}), required:&["repository","action"], read_only:false, uses_provider:true },
         Tool { name:"action_status", description:"Read the status of a previous request_action. A paused cherry-pick reports waiting_for_resolution until it is continued, skipped or aborted in Revqora. Cancellation includes a reason. IDs from a previous session return session_expired.", properties:json!({"id":text(64)}), required:&["id"], read_only:true, uses_provider:false },
     ]
 }
@@ -122,6 +122,12 @@ pub(super) fn validate(value: Value) -> Result<ToolCall, ToolError> {
         if !valid(value, &tool.properties[name]) {
             return Err(ToolError::new("invalid_arguments", format!("Invalid argument: {name}.")));
         }
+    }
+    if call.name == "repository_status"
+        && call.arguments.get("offset").and_then(Value::as_u64).unwrap_or_default() > 0
+        && !call.arguments.contains_key("statusVersion")
+    {
+        return Err(ToolError::new("status_version_required", "Pass statusVersion from the first page with files.nextOffset."));
     }
     if call.name == "request_action" {
         let action = call.arguments["action"].as_str().unwrap_or_default();
@@ -233,7 +239,13 @@ fn error_reason(code: &str) -> (&'static str, bool) {
         "mcp_authentication_failed" | "provider_authentication_failed" | "identity_unavailable" => ("authentication", false),
         "provider_unavailable" | "provider_rate_limited" => ("provider", true),
         "provider_error" | "pr_connection_required" | "result_unverified" => ("provider", false),
-        "invalid_arguments" | "action_details_required" | "invalid_cursor" | "invalid_commit" | "diff_version_required" | "unknown_tool" => ("input", false),
+        "invalid_arguments"
+        | "action_details_required"
+        | "invalid_cursor"
+        | "invalid_commit"
+        | "diff_version_required"
+        | "status_version_required"
+        | "unknown_tool" => ("input", false),
         "repository_not_open"
         | "commit_not_found"
         | "file_not_found"
@@ -322,6 +334,15 @@ mod tests {
         assert_eq!(responses[6]["result"]["isError"], false);
         assert_eq!(responses[7]["result"]["isError"], false);
         assert_eq!(responses[8]["result"]["isError"], true);
+    }
+
+    #[test]
+    fn status_requires_a_version_only_for_continuation() {
+        let call = |arguments| validate(json!({"name":"repository_status","arguments":arguments}));
+        assert!(call(json!({"repository":"fixture"})).is_ok());
+        assert!(call(json!({"repository":"fixture","offset":0})).is_ok());
+        assert!(call(json!({"repository":"fixture","offset":200,"statusVersion":"fixture-version"})).is_ok());
+        assert_eq!(call(json!({"repository":"fixture","offset":200})).err().unwrap().code, "status_version_required");
     }
 
     #[test]

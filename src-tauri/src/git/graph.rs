@@ -830,7 +830,15 @@ fn repository_search_head(repo: &Path) -> GitResult<Option<String>> {
     Ok(head.ok().then(|| head.text().trim().to_owned()))
 }
 
-fn repository_search_rows(repo: &Path, query: &str, mode: SearchMode, offset: usize, limit: usize, head: Option<&str>) -> GitResult<String> {
+fn repository_search_rows(
+    repo: &Path,
+    query: &str,
+    mode: SearchMode,
+    offset: usize,
+    limit: usize,
+    head: Option<&str>,
+    include_body: bool,
+) -> GitResult<String> {
     if query.is_empty() {
         return Ok(String::new());
     }
@@ -838,7 +846,9 @@ fn repository_search_rows(repo: &Path, query: &str, mode: SearchMode, offset: us
         "log".into(),
         "--no-show-signature".into(),
         "--no-color".into(),
-        "--format=%H%x00%an%x00%ae%x00%at%x00%s%x00%D".into(),
+        "-z".into(),
+        "--no-notes".into(),
+        if include_body { "--format=tformat:%H%x00%an%x00%ae%x00%at%x00%s%x00%D%x00%B" } else { "--format=tformat:%H%x00%an%x00%ae%x00%at%x00%s%x00%D" }.into(),
         "--decorate=short".into(),
         "--branches".into(),
         "--remotes".into(),
@@ -853,21 +863,26 @@ fn repository_search_rows(repo: &Path, query: &str, mode: SearchMode, offset: us
     runner::run(repo, &args)
 }
 
-fn repository_search_hit(line: &str, q: &str, mode: SearchMode) -> Option<CommitSearchHit> {
-    let mut fields = line.splitn(6, '\0');
-    let (oid, author, email, time, subject, refs) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?);
+fn repository_search_hit(fields: &[&str], q: &str, mode: SearchMode) -> Option<CommitSearchHit> {
+    let [oid, author, email, time, subject, refs, rest @ ..] = fields else { return None };
     let by_author = || author.to_lowercase().contains(q) || email.to_lowercase().contains(q);
     let matched = match mode {
-        SearchMode::Quick => oid.starts_with(q) || by_author() || subject.to_lowercase().contains(q) || refs.to_lowercase().contains(q),
+        SearchMode::Quick => {
+            oid.starts_with(q)
+                || by_author()
+                || subject.to_lowercase().contains(q)
+                || rest.first().is_some_and(|body| body.to_lowercase().contains(q))
+                || refs.to_lowercase().contains(q)
+        }
         SearchMode::Hash => oid.starts_with(q),
         _ => true,
     };
     matched.then(|| CommitSearchHit {
-        oid: oid.into(),
-        subject: subject.into(),
-        author: author.into(),
+        oid: (*oid).into(),
+        subject: (*subject).into(),
+        author: (*author).into(),
         author_time: time.parse().unwrap_or_default(),
-        refs: refs.into(),
+        refs: (*refs).into(),
     })
 }
 
@@ -879,9 +894,10 @@ pub fn search_repository(repo: &Path, query: &str, mode: SearchMode) -> GitResul
         return Ok(Vec::new());
     }
     let head = repository_search_head(repo)?;
-    let raw = repository_search_rows(repo, query, mode, 0, if filter_search_rows(mode) { REPOSITORY_SEARCH_SCAN } else { limit }, head.as_deref())?;
+    let raw = repository_search_rows(repo, query, mode, 0, if filter_search_rows(mode) { REPOSITORY_SEARCH_SCAN } else { limit }, head.as_deref(), false)?;
     let q = query.to_lowercase();
-    Ok(raw.lines().filter_map(|line| repository_search_hit(line, &q, mode)).take(limit).collect())
+    let fields: Vec<_> = raw.split_terminator('\0').collect();
+    Ok(fields.chunks_exact(6).filter_map(|row| repository_search_hit(row, &q, mode)).take(limit).collect())
 }
 
 #[derive(Serialize)]
@@ -921,7 +937,7 @@ struct SearchBatch {
 
 impl SearchBatch {
     fn contains(&self, scope: u64, offset: usize) -> bool {
-        self.scope == scope && (self.start..self.end).contains(&offset)
+        self.scope == scope && (offset == self.start || (self.start..self.end).contains(&offset))
     }
 
     fn page(&self, offset: usize, limit: usize, diagnostics: CommitSearchTimings) -> CommitSearchPage {
@@ -947,12 +963,22 @@ fn search_scope(repo: &Path, query: &str, mode: SearchMode) -> GitResult<(u64, O
     }
     let mut hasher = DefaultHasher::new();
     (repo, query, mode).hash(&mut hasher);
+    // Unshallowing and grafts can change traversal without moving a ref.
+    let common = super::operations::repository_key(repo);
+    for path in [common.join("shallow"), common.join("info/grafts"), common.join("config")] {
+        match std::fs::read(path) {
+            Ok(bytes) => Some(bytes).hash(&mut hasher),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None::<Vec<u8>>.hash(&mut hasher),
+            Err(error) => return Err(error.into()),
+        }
+    }
     let mut head = None;
     for (oid, name) in output.text().lines().filter_map(|line| line.split_once(' ')) {
         if name == "HEAD" {
             head = Some(oid.to_owned());
         }
-        if matches!(name, "HEAD" | "refs/stash")
+        if name == "HEAD"
+            || mode == SearchMode::Quick
             || ["refs/heads/", "refs/remotes/", "refs/tags/", "refs/replace/"].iter().any(|prefix| name.starts_with(prefix))
         {
             (name, oid).hash(&mut hasher);
@@ -980,25 +1006,27 @@ fn search_repository_page_locked(
         if u64::from_str_radix(cursor_scope, 16).map_err(|_| invalid())? != scope {
             return Err(GitError::new("The search or repository history changed. Start the search again.").kind("stale-operation"));
         }
-        let offset = offset.parse::<usize>().ok().filter(|offset| *offset <= i32::MAX as usize).ok_or_else(invalid)?;
-        let cached = search_batches().lock().iter().rev().find(|batch| batch.contains(scope, offset)).cloned();
-        if let Some(batch) = cached {
-            diagnostics.cache_hit = true;
-            return Ok(batch.page(offset, limit, diagnostics));
-        }
-        offset
+        offset.parse::<usize>().ok().filter(|offset| *offset <= i32::MAX as usize).ok_or_else(invalid)?
     } else {
         0
     };
+    let cached = search_batches().lock().iter().rev().find(|batch| batch.contains(scope, offset)).cloned();
+    if let Some(batch) = cached {
+        diagnostics.cache_hit = true;
+        return Ok(batch.page(offset, limit, diagnostics));
+    }
 
     let scan = if filter_search_rows(mode) { MCP_SEARCH_SCAN } else { MCP_SEARCH_MATCH_BATCH };
     let log_started = Instant::now();
-    let raw = repository_search_rows(repo, query, mode, offset, scan + 1, head.as_deref())?;
+    let include_body = mode == SearchMode::Quick;
+    let raw = repository_search_rows(repo, query, mode, offset, scan + 1, head.as_deref(), include_body)?;
     let log_time = log_started.elapsed();
     diagnostics.git_ms = (refs_time + log_time).as_millis();
     diagnostics.log_ms = log_time.as_millis();
     let q = query.to_lowercase();
-    let mut lines = raw.lines();
+    // NUL terminators keep newlines in message bodies inside their records.
+    let fields: Vec<_> = raw.split_terminator('\0').collect();
+    let mut lines = fields.chunks_exact(if include_body { 7 } else { 6 });
     let mut hits = Vec::new();
     let mut end = offset;
     for line in lines.by_ref().take(scan) {
@@ -1010,9 +1038,9 @@ fn search_repository_page_locked(
     let batch = SearchBatch { scope, start: offset, end, has_more: lines.next().is_some(), hits };
     let page = batch.page(offset, limit, diagnostics);
     // The raw length bounds the cached string payload. Cursors can be resumed after eviction.
-    if page.has_more && raw.len() <= MCP_SEARCH_BATCH_BYTES {
+    if raw.len() <= MCP_SEARCH_BATCH_BYTES {
         let mut batches = search_batches().lock();
-        batches.retain(|item| item.scope != scope);
+        batches.retain(|item| item.scope != scope || item.start != batch.start);
         if batches.len() == MCP_SEARCH_CACHED_BATCHES {
             batches.pop_front();
         }
@@ -1288,7 +1316,9 @@ mod tests {
             let mut received = Vec::new();
             loop {
                 let page = search_repository_page(repo, query, mode, cursor.as_deref(), 7).unwrap();
-                assert_eq!(page.diagnostics.cache_hit, cursor.is_some());
+                if cursor.is_some() {
+                    assert!(page.diagnostics.cache_hit);
+                }
                 assert!(page.commits.len() <= 7);
                 assert_eq!(page.has_more, page.next_cursor.is_some());
                 assert!(page.next_cursor.is_none() || page.next_cursor != cursor);

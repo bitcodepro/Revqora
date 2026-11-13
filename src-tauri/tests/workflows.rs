@@ -1380,6 +1380,36 @@ fn cherry_pick_conflict_then_continue() {
 }
 
 #[test]
+fn cherry_pick_continue_preserves_hash_message_and_resumes_sequence() {
+    let r = Repo::new();
+    r.write("base.txt", "base\n");
+    r.commit_all("base");
+    r.git(&["switch", "-qc", "source"]);
+    let message = "#TASK-123: Add example\n\nKeep the literal body.\n\n# Conflicts:\n#\tfrom-original.txt";
+    r.write("example.txt", "source\n");
+    r.git(&["add", "example.txt"]);
+    r.git(&["commit", "--cleanup=verbatim", "-qm", message]);
+    let pick = r.git(&["rev-parse", "HEAD"]).trim().to_owned();
+    r.write("next.txt", "next\n");
+    let next = r.commit_all("Next pick");
+    r.git(&["switch", "-q", "main"]);
+    r.write("example.txt", "target\n");
+    r.commit_all("Target");
+    r.git(&["config", "core.commentChar", ";"]);
+    let out = ops::cherry_pick(r.p(), &[pick, next], false).unwrap();
+    assert_eq!(out.status, "conflicts");
+    assert!(fs::read_to_string(r.p().join(".git/MERGE_MSG")).unwrap().contains("; Conflicts:"));
+    r.write("example.txt", "resolved\n");
+    ops::stage_paths(r.p(), &["example.txt".into()]).unwrap();
+    let done = ops::continue_op(r.p(), "cherry-pick", None).unwrap();
+    assert_eq!(done.status, "done", "{}", done.message);
+    assert_eq!(r.git(&["log", "-1", "--format=%B", "HEAD^"]).trim_end(), message);
+    assert_eq!(r.git(&["log", "-1", "--format=%s"]).trim_end(), "Next pick");
+    assert_eq!(r.read("example.txt"), "resolved\n");
+    assert_eq!(repo::info(r.p()).unwrap().state.kind, "none");
+}
+
+#[test]
 fn rewrite_reword_drop_squash_move_and_undo() {
     let r = Repo::new();
     r.write("a.txt", "1\n");

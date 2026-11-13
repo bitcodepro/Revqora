@@ -43,7 +43,8 @@ async function renameAndCherryPick({ page, root, repository, git, request, rejec
   git("switch", "-qc", "fixture/source");
   put("incoming version\n");
   git("add", file);
-  git("commit", "-qm", "Add incoming version");
+  const incomingMessage = "#TASK-123: Add example";
+  git("commit", "-q", "--cleanup=verbatim", "-m", incomingMessage);
   const incoming = git("rev-parse", "HEAD");
   git("switch", "-q", "main");
   put("our version\n");
@@ -115,6 +116,7 @@ async function renameAndCherryPick({ page, root, repository, git, request, rejec
   const result = await waitPhase(third.id, "succeeded");
   assert.equal(result.result.sha, git("rev-parse", "HEAD"));
   assert.equal(git("show", `HEAD:${file}`), resolved);
+  assert.equal(git("log", "-1", "--format=%B"), incomingMessage);
   assert.equal((await tool("repository_status", { repository })).operation, "none");
   await rejected("cherry_pick_abort", undefined, "no_cherry_pick");
 }
@@ -317,6 +319,66 @@ async function approvalModes({ page, root, work, tool, waitPhase, selectApproval
     git("remote", "remove", "mcp-approval-origin");
   }
   return approved.id;
+}
+
+async function searchAndStatusPagination({ page, original, work, tool, rawTool }) {
+  const root = path.join(work, "mcp-search-status");
+  fs.mkdirSync(root);
+  const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true }).trim();
+  git("init", "-qb", "main");
+  git("config", "user.name", "Search Fixture");
+  git("config", "user.email", "search@example.invalid");
+  git("config", "commit.gpgsign", "false");
+  git("commit", "--allow-empty", "-qm", "Base");
+  git("switch", "-qc", "other");
+  git("commit", "--allow-empty", "-q", "--cleanup=verbatim", "-m", "#TASK-123: Update parser", "-m", "UniqueBodyToken\nПроверка кириллицы");
+  const branchCommit = git("rev-parse", "HEAD");
+  git("commit", "--allow-empty", "-qm", "Tagged", "-m", "UniqueBodyToken");
+  const taggedCommit = git("rev-parse", "HEAD");
+  git("tag", "search-fixture");
+  git("switch", "-q", "main");
+  git("branch", "-f", "other", branchCommit);
+  await openRepository(page, root);
+  await page.locator(".topbar .repo-current > span").waitFor();
+  const { active: repository } = await tool("list_repositories");
+  assert(repository && path.relative(root, repository) === "");
+  const search = (query, mode) => tool("search_commits", { repository, query, mode });
+  for (const mode of ["message", "all", undefined]) {
+    const result = await search("uniquebodytoken", mode);
+    assert.deepEqual(result.commits.map(commit => commit.oid).sort(), [branchCommit, taggedCommit].sort());
+  }
+  const repeated = await search("uniquebodytoken", "all");
+  assert.equal(repeated.diagnostics.cacheHit, true);
+  assert.equal(repeated.diagnostics.logMs, 0);
+  assert.equal((await search("ПРОВЕРКА КИРИЛЛИЦЫ")).commits[0].oid, branchCommit);
+  assert((await search("SEARCH@EXAMPLE.INVALID", "author")).commits.some(commit => commit.oid === branchCommit));
+  assert.equal((await search(branchCommit.slice(0, 12), "hash")).commits[0].oid, branchCommit);
+  git("commit", "--allow-empty", "-qm", "New commit", "-m", "UniqueBodyToken");
+  const fresh = await search("uniquebodytoken", "all");
+  assert.equal(fresh.diagnostics.cacheHit, false);
+  assert.equal(fresh.commits.length, 3);
+
+  for (let index = 0; index < 207; index++) {
+    fs.writeFileSync(path.join(root, "file-" + String(index).padStart(3, "0") + ".txt"), "fixture\n");
+  }
+  const first = await tool("repository_status", { repository });
+  const offset = first.files.nextOffset;
+  assert.equal(offset, 200);
+  assert.equal(first.files.total, 207);
+  assert.match(first.statusVersion, /^[a-f0-9]{64}$/);
+  const missing = await rawTool("repository_status", { repository, offset });
+  assert.equal(missing.structuredContent.code, "status_version_required");
+  const next = await tool("repository_status", { repository, offset, statusVersion: first.statusVersion });
+  assert.equal(next.statusVersion, first.statusVersion);
+  assert.equal(new Set([...first.files.items, ...next.files.items].map(file => file.path)).size, 207);
+  fs.renameSync(path.join(root, "file-206.txt"), path.join(root, "file--inserted.txt"));
+  const stale = await rawTool("repository_status", { repository, offset, statusVersion: first.statusVersion });
+  assert.equal(stale.structuredContent.code, "stale_state");
+  const restarted = await tool("repository_status", { repository });
+  assert.equal(restarted.files.total, 207);
+  assert.equal(restarted.files.items[0].path, "file--inserted.txt");
+  assert.notEqual(restarted.statusVersion, first.statusVersion);
+  await openRepository(page, original);
 }
 
 async function diffStageAndStash({ page, original, work, tool, rawTool, waitPhase }) {
@@ -593,6 +655,7 @@ export async function mcpSmoke({ page, exe, profile, work, restart }) {
     assert.equal(fs.readFileSync(path.join(root, file), "utf8"), "MCP stage fixture\n");
     await branchActions({page,work,tool,rawTool,waitPhase,original:root});
     await diffStageAndStash({ page, original: root, work, tool, rawTool, waitPhase });
+    await searchAndStatusPagination({ page, original: root, work, tool, rawTool });
     const oldAction = await approvalModes({ page, root, work, tool, waitPhase, selectApproval });
     page = await restart(root, async () => {
       const offline = await rawTool("action_status", { id: oldAction });

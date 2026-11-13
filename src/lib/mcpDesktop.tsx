@@ -25,7 +25,7 @@ type Arguments = McpActionOptions & DiffPageOptions & {
   scope?: string; query?: string; mode?: SearchMode | "all"; state?: PrState;
   section?: string; cursor?: string; revision?: string; fileId?: string;
   view?: string; id?: string; action?: string; paths?: string[];
-  from?: string; to?: string; feed?: string;
+  from?: string; to?: string; feed?: string; statusVersion?: string;
 };
 interface DesktopRequest {
   id: string;
@@ -645,9 +645,12 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
   const root = requireRepo(a.repository);
   switch (name) {
     case "repository_status": {
-      const [status, info] = await Promise.all([api.status(root), api.repoInfo(root)]);
-      const { stateToken: _stateToken, diffContextToken: _diffContextToken, files, ...summary } = status;
-      return { ...summary, operation: info.state.kind, files: page(files.map(({ diffToken: _diffToken, ...file }) => file), a.offset, 200) };
+      const { stateToken: statusVersion, diffContextToken: _diffContextToken, files, ...summary } = await api.statusWithOperation(root);
+      if (!statusVersion || a.statusVersion !== undefined && a.statusVersion !== statusVersion) {
+        throw new McpToolError("stale_state", "The repository status changed. Restart at offset 0.");
+      }
+      const { items, ...paging } = page(files, a.offset, 200);
+      return { ...summary, statusVersion, files: { ...paging, items: items.map(({ diffToken: _diffToken, ...file }) => file) } };
     }
     case "list_branches": {
       const refs = await api.refs(root);
