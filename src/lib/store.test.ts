@@ -130,6 +130,16 @@ describe("background repository observation", () => {
     expect(api.repoInfo).not.toHaveBeenCalled();
     expect(useRepos.getState().tabs[root].status).toMatchObject({ stateToken: null, stateVersion: 2 });
   });
+  it("keeps the full status for active conflict validation and clean-worktree actions", async () => {
+    const store = useRepos.getState();
+    const initial = useRepos.getState().tabs[root].status!;
+    for (const status of [{ ...initial, stateVersion: 3, conflictCount: 1 }, { ...initial, stateVersion: 4, files: [] }]) {
+      store.patch(root, { view: "changes", status });
+      await store.refresh(root, { background: true, status: true, changesDisplay: true });
+    }
+    expect(api.repositoryChangesStatus).not.toHaveBeenCalled();
+    expect(api.status).toHaveBeenCalledTimes(2);
+  });
   it("keeps an explicit refresh effective even if the file token did not change", async () => {
     const generation = previewGeneration(root);
     await useRepos.getState().refresh(root, { status: true, layers: true });

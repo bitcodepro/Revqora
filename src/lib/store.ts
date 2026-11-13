@@ -468,7 +468,9 @@ async function refreshOnce(root: string, parts: Parts) {
   // Everything starts at once; the history only waits for the (fast) status, which decides
   // whether the "Uncommitted changes" row is part of the graph.
   const sidebarOnly = parts.summary && !parts.guard;
-  const changesDisplay = parts.changesDisplay && !sidebarOnly && !parts.guard && before.view === "changes" && !!before.status;
+  const changesDisplay = parts.changesDisplay && !sidebarOnly && !parts.guard && before.view === "changes"
+    && !!before.status?.files.length && !before.status.conflictCount && !before.conflictPath
+    && (!before.info?.state || before.info.state.kind === "none");
   const infoP = parts.info || (parts.status && !parts.summary && !changesDisplay) ? api.repoInfo(root) : Promise.resolve(null);
   const statusP = parts.status
     ? sidebarOnly ? api.repositorySidebarStatus(root) : changesDisplay ? api.repositoryChangesStatus(root, before.changeSel?.path ?? null) : api.status(root)
@@ -504,7 +506,7 @@ async function refreshOnce(root: string, parts: Parts) {
     const status = await statusP;
     const tab = useRepos.getState().tabs[root];
     if (!tab || !current()) return;
-    if (changesDisplay && status && (status.branch !== before.status?.branch || status.oid !== before.status?.oid)) {
+    if (changesDisplay && status && (!status.files.length || status.conflictCount || status.branch !== before.status?.branch || status.oid !== before.status?.oid)) {
       void useRepos.getState().refresh(root, { ...ALL, background: true });
       return;
     }
