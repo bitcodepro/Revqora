@@ -22,6 +22,7 @@
 .repository-list { flex: 1; min-height: 0; overflow: auto; padding: 0 6px 8px; }
 .repository-item { display: flex; align-items: center; min-width: 0; margin: 2px 0; border-radius: var(--radius-sm); }
 .repository-item:hover { background: var(--bg-hover); }
+.repository-flat-list > .repository-item.active:where(:not(.batch-selected, .workspace-drop-active)) { background-color: var(--bg-explorer-current); }
 .repository-select { display: flex; align-items: center; gap: 6px; padding: 8px 5px 8px 8px; border: none; background: transparent; text-align: left; flex: 1; min-width: 0; color: var(--text); }
 .repository-select > svg { flex: none; color: var(--text-faint); }
 .repository-item.active .repository-select > svg { color: var(--accent); }

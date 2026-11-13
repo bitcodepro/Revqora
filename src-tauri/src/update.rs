@@ -4,7 +4,7 @@
 //! platform. Installing downloads it next to the app, verifies the published SHA-256 and the
 //! embedded `build-info.json`, then swaps the top-level entries (exe or `Revqora.app`, README,
 //! licenses, …) in place. The replaced files are kept in `.revqora-update/old` until the next
-//! start, so a failed swap rolls back and a running exe can be renamed on every platform.
+//! start. Windows applies the package from a separate process after the desktop exits.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -19,6 +19,7 @@ use crate::git::runner::{GitError, GitResult};
 
 pub const REPO: &str = "bitcodepro/Revqora";
 const STAGING: &str = ".revqora-update";
+const PENDING: &str = "pending.json";
 const MAX_ARCHIVE: u64 = 512 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 1024 * 1024 * 1024;
 const MAX_ENTRIES: usize = 10_000;
@@ -261,7 +262,7 @@ pub fn check(current: &str) -> GitResult<UpdateInfo> {
     Ok(info)
 }
 
-/// Downloads, verifies and installs `info`'s package over the running copy.
+/// Downloads and verifies a package. On Windows, replacement happens on restart.
 pub fn install(info: &UpdateInfo, mut progress: impl FnMut(Progress)) -> GitResult<()> {
     let asset = info.asset.as_ref().ok_or_else(|| GitError::new("No package for this platform."))?;
     let checksum_url = asset.checksum_url.as_deref().ok_or_else(|| GitError::new("The release has no checksum."))?;
@@ -278,19 +279,23 @@ pub fn install(info: &UpdateInfo, mut progress: impl FnMut(Progress)) -> GitResu
         return Err(GitError::new("A previous update needs recovery. Preserve .revqora-update/old and restore its original files before retrying.")
             .kind("update-install"));
     }
-    let _ = fs::remove_dir_all(&staging);
-    fs::create_dir_all(&staging)?;
+    fs::create_dir_all(&staging).map_err(|error| update_io("Create update folder", &staging, error))?;
     let expected = agent().get(checksum_url).call().map_err(net_err)?.into_string().map_err(|e| GitError::new(e.to_string()))?;
     let expected = parse_checksum(&expected).ok_or_else(|| GitError::new("Malformed checksum file."))?;
 
     let archive = staging.join(&asset.name);
+    if archive.is_file() && archive_digest(&archive).ok().as_deref() == Some(&expected) {
+        let downloaded = fs::metadata(&archive).map_err(|error| update_io("Read archive size", &archive, error))?.len();
+        progress(Progress { downloaded, total: downloaded.max(1) });
+        return prepare_install(&root, &archive, &info.latest, rid, &expected);
+    }
     let resp = agent().get(&asset.url).call().map_err(net_err)?;
     let total = resp.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(asset.size);
     if total > MAX_ARCHIVE {
         return Err(GitError::new("The package is unexpectedly large."));
     }
     let mut reader = resp.into_reader().take(MAX_ARCHIVE + 1);
-    let mut file = fs::File::create(&archive)?;
+    let mut file = fs::File::create(&archive).map_err(|error| update_io("Open update archive for writing", &archive, error))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     let (mut downloaded, mut reported) = (0u64, 0u64);
@@ -301,7 +306,7 @@ pub fn install(info: &UpdateInfo, mut progress: impl FnMut(Progress)) -> GitResu
             break;
         }
         hasher.update(&buf[..n]);
-        file.write_all(&buf[..n])?;
+        file.write_all(&buf[..n]).map_err(|error| update_io("Write update archive", &archive, error))?;
         downloaded += n as u64;
         if downloaded > MAX_ARCHIVE {
             return Err(GitError::new("The package is unexpectedly large."));
@@ -311,15 +316,48 @@ pub fn install(info: &UpdateInfo, mut progress: impl FnMut(Progress)) -> GitResu
             progress(Progress { downloaded, total });
         }
     }
-    file.sync_all()?;
+    file.sync_all().map_err(|error| update_io("Save update archive", &archive, error))?;
     drop(file);
     progress(Progress { downloaded, total: total.max(downloaded) });
     let actual = hex(&hasher.finalize());
     if actual != expected {
-        let _ = fs::remove_dir_all(&staging);
+        let _ = fs::remove_file(&archive);
         return Err(GitError::new("The download is corrupted (checksum mismatch).").kind("update-checksum"));
     }
-    apply_archive_locked(&root, &archive, &info.latest, rid)
+    prepare_install(&root, &archive, &info.latest, rid, &expected)
+}
+
+fn update_io(step: &str, path: &Path, error: std::io::Error) -> GitError {
+    GitError::new(format!("{step}: {} ({error})", path.display())).kind("update-install")
+}
+
+fn archive_digest(path: &Path) -> GitResult<String> {
+    let mut input = fs::File::open(path).map_err(|error| update_io("Read update archive", path, error))?.take(MAX_ARCHIVE + 1);
+    let mut hash = Sha256::new();
+    if std::io::copy(&mut input, &mut hash)? > MAX_ARCHIVE {
+        return Err(GitError::new("The package is unexpectedly large."));
+    }
+    Ok(hex(&hash.finalize()))
+}
+
+fn prepare_install(root: &Path, archive: &Path, version: &str, rid: &str, checksum: &str) -> GitResult<()> {
+    #[cfg(windows)]
+    {
+        let staging = root.join(STAGING);
+        extract_checked(root, archive, version, rid)?;
+        let pending = staging.join(PENDING);
+        let mut marker = tempfile::NamedTempFile::new_in(&staging).map_err(|error| update_io("Prepare update", &pending, error))?;
+        serde_json::to_writer(marker.as_file_mut(), &windows_install::Pending { version: version.into(), checksum: checksum.into() })
+            .map_err(|error| GitError::new(format!("Could not record the prepared update: {error}")))?;
+        marker.as_file().sync_all().map_err(|error| update_io("Save prepared update", &pending, error))?;
+        marker.persist(&pending).map_err(|error| update_io("Record prepared update", &pending, error.error))?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = checksum;
+        apply_archive_locked(root, archive, version, rid)
+    }
 }
 
 pub fn parse_checksum(text: &str) -> Option<String> {
@@ -420,19 +458,20 @@ pub fn apply_archive(root: &Path, archive: &Path, version: &str, rid: &str) -> G
     apply_archive_locked(root, archive, version, rid)
 }
 
-fn apply_archive_locked(root: &Path, archive: &Path, version: &str, rid: &str) -> GitResult<()> {
+fn extract_checked(root: &Path, archive: &Path, version: &str, rid: &str) -> GitResult<PathBuf> {
     let staging = root.join(STAGING);
     if staging.join("rollback-incomplete").exists() {
         return Err(GitError::new("A previous update needs recovery. Preserve .revqora-update/old before retrying.").kind("update-install"));
     }
     let new = staging.join("new");
-    let old = staging.join("old");
-    let _ = fs::remove_dir_all(&new);
-    extract(archive, &new)?;
-    let manifest: serde_json::Value = fs::read(new.join("build-info.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .ok_or_else(|| GitError::new("The package has no build information."))?;
+    if new.exists() {
+        fs::remove_dir_all(&new).map_err(|error| update_io("Clear previous extraction", &new, error))?;
+    }
+    extract(archive, &new).map_err(|error| GitError::new(format!("Extract update to {} ({})", new.display(), error.message)).kind("update-install"))?;
+    let manifest_path = new.join("build-info.json");
+    let manifest: serde_json::Value = fs::read(&manifest_path)
+        .map_err(|error| update_io("Read extracted build information", &manifest_path, error))
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| GitError::new(format!("Invalid build information: {error}"))))?;
     if manifest["version"].as_str() != Some(version) || manifest["rid"].as_str() != Some(rid) {
         return Err(GitError::new(format!("The package is for {} {}, expected {version} {rid}.", manifest["version"], manifest["rid"])));
     }
@@ -446,23 +485,39 @@ fn apply_archive_locked(root: &Path, archive: &Path, version: &str, rid: &str) -
     if !new.join(exe).is_file() {
         return Err(GitError::new("The package has no executable."));
     }
+    Ok(new)
+}
+
+fn apply_archive_locked(root: &Path, archive: &Path, version: &str, rid: &str) -> GitResult<()> {
+    let new = extract_checked(root, archive, version, rid)?;
+    apply_extracted(root, &new, || Ok(()))?;
+    let _ = fs::remove_file(archive);
+    Ok(())
+}
+
+fn apply_extracted(root: &Path, new: &Path, finish: impl FnOnce() -> std::io::Result<()>) -> GitResult<()> {
+    let staging = root.join(STAGING);
+    let old = staging.join("old");
     // Retain the previous backup while validating a new archive. An invalid
     // package must not discard the user's last available recovery copy.
     if old.exists() {
-        fs::remove_dir_all(&old)?;
+        fs::remove_dir_all(&old).map_err(|error| update_io("Clear previous backup", &old, error))?;
     }
-    fs::create_dir_all(&old)?;
-    let entries: Vec<_> = fs::read_dir(&new)?.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+    fs::create_dir_all(&old).map_err(|error| update_io("Create update backup", &old, error))?;
+    let mut entries = fs::read_dir(new)
+        .and_then(|entries| entries.map(|entry| entry.map(|entry| entry.file_name())).collect::<std::io::Result<Vec<_>>>())
+        .map_err(|error| update_io("Read extracted files", new, error))?;
+    // Install the executable last, after its accompanying files.
+    entries.sort_by_key(|name| matches!(name.to_str(), Some("revqora.exe" | "revqora" | "Revqora.app")));
     // A crash or failed rollback must not let next-start cleanup erase originals.
     let recovery_marker = staging.join("rollback-incomplete");
-    fs::write(&recovery_marker, b"Preserve old/ until the original files have been restored.\n")?;
-    let swapped = swap_entries(root, &new, &old, &entries, |from, to| fs::rename(from, to));
+    fs::write(&recovery_marker, b"Preserve old/ until the original files have been restored.\n")
+        .map_err(|error| update_io("Record rollback state", &recovery_marker, error))?;
+    let swapped = swap_entries(root, new, &old, &entries, rename_for_update, finish);
     if swapped.as_ref().err().is_none_or(|error| error.details.is_empty()) {
         let _ = fs::remove_file(&recovery_marker);
     }
-    swapped?;
-    let _ = fs::remove_file(archive);
-    Ok(())
+    swapped
 }
 
 fn swap_entries(
@@ -471,6 +526,7 @@ fn swap_entries(
     old: &Path,
     entries: &[std::ffi::OsString],
     mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+    finish: impl FnOnce() -> std::io::Result<()>,
 ) -> GitResult<()> {
     let mut moved_old = Vec::new();
     let mut placed = Vec::new();
@@ -478,13 +534,13 @@ fn swap_entries(
         for name in entries {
             let target = root.join(name);
             if target.exists() {
-                rename(&target, &old.join(name))?;
+                rename(&target, &old.join(name)).map_err(|error| std::io::Error::other(format!("Back up {}: {error}", target.display())))?;
                 moved_old.push(name.clone());
             }
-            rename(&new.join(name), &target)?;
+            rename(&new.join(name), &target).map_err(|error| std::io::Error::other(format!("Install {}: {error}", target.display())))?;
             placed.push(name.clone());
         }
-        Ok(())
+        finish().map_err(|error| std::io::Error::other(format!("Start the updated app: {error}")))
     })();
     if let Err(e) = result {
         let mut recovery_errors = Vec::new();
@@ -519,7 +575,7 @@ pub fn cleanup(root: &Path) {
         return;
     };
     let staging = root.join(STAGING);
-    if staging.join("rollback-incomplete").exists() {
+    if staging.join("rollback-incomplete").exists() || staging.join(PENDING).exists() {
         return;
     }
     for _ in 0..20 {
@@ -567,7 +623,12 @@ fn process_alive(pid: u32) -> bool {
 
 /// Starts the freshly installed executable; the caller exits right after.
 pub fn relaunch() -> GitResult<()> {
-    let exe = launch().map(Launch::installed_exe).ok_or_else(|| GitError::new("Could not find the app folder."))?;
+    let current = launch().ok_or_else(|| GitError::new("Could not find the app folder."))?;
+    #[cfg(windows)]
+    if current.root.join(STAGING).join(PENDING).is_file() {
+        return windows_install::launch_worker(current);
+    }
+    let exe = current.installed_exe();
     if !exe.is_file() {
         return Err(GitError::new(format!("The updated app is missing: {}", exe.display())));
     }
@@ -576,6 +637,22 @@ pub fn relaunch() -> GitResult<()> {
     c.spawn()?;
     Ok(())
 }
+
+fn rename_for_update(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    for _ in 0..12 {
+        match fs::rename(from, to) {
+            Err(error) if matches!(error.raw_os_error(), Some(5 | 32 | 33)) => std::thread::sleep(Duration::from_millis(250)),
+            result => return result,
+        }
+    }
+    fs::rename(from, to)
+}
+
+#[cfg(windows)]
+mod windows_install;
+#[cfg(windows)]
+pub use windows_install::run_worker;
 
 #[cfg(test)]
 mod tests {
@@ -624,13 +701,20 @@ mod tests {
             fs::write(root.join("revqora.exe"), b"original").unwrap();
             fs::write(new.join("revqora.exe"), b"replacement").unwrap();
             let mut calls = 0;
-            let error = swap_entries(root, &new, &old, &["revqora.exe".into()], |from, to| {
-                calls += 1;
-                if calls == 2 || rollback_fails && calls == 3 {
-                    return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
-                }
-                fs::rename(from, to)
-            })
+            let error = swap_entries(
+                root,
+                &new,
+                &old,
+                &["revqora.exe".into()],
+                |from, to| {
+                    calls += 1;
+                    if calls == 2 || rollback_fails && calls == 3 {
+                        return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+                    }
+                    fs::rename(from, to)
+                },
+                || Ok(()),
+            )
             .unwrap_err();
             assert_eq!(fs::read(new.join("revqora.exe")).unwrap(), b"replacement");
             if rollback_fails {
@@ -698,6 +782,45 @@ mod tests {
             w.write_all(body.as_bytes()).unwrap();
         }
         w.finish().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preparing_a_windows_update_keeps_running_files_and_survives_cleanup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("revqora.exe"), "old exe").unwrap();
+        fs::create_dir(root.join("data")).unwrap();
+        fs::write(root.join("data/settings.json"), "settings").unwrap();
+        let staging = root.join(STAGING);
+        fs::create_dir(&staging).unwrap();
+        let archive = staging.join(archive_name("0.2.0", "win-x64"));
+        zip_package(&archive, &[("revqora.exe", "new exe"), ("build-info.json", r#"{"version":"0.2.0","rid":"win-x64"}"#)]);
+        let checksum = archive_digest(&archive).unwrap();
+        prepare_install(root, &archive, "0.2.0", "win-x64", &checksum).unwrap();
+        cleanup(root);
+        assert!(staging.join(PENDING).is_file() && archive.is_file());
+        assert_eq!(fs::read_to_string(root.join("revqora.exe")).unwrap(), "old exe");
+        assert_eq!(fs::read_to_string(root.join("data/settings.json")).unwrap(), "settings");
+        assert_eq!(fs::read_to_string(staging.join("new/revqora.exe")).unwrap(), "new exe");
+    }
+
+    #[test]
+    fn failed_launch_rolls_back_installed_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("revqora.exe"), "old exe").unwrap();
+        fs::write(root.join("build-info.json"), "old manifest").unwrap();
+        let new = root.join(STAGING).join("new");
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join("revqora.exe"), "new exe").unwrap();
+        fs::write(new.join("build-info.json"), "new manifest").unwrap();
+        let error = apply_extracted(root, &new, || Err(std::io::Error::other("fixture launch failure"))).unwrap_err();
+        assert!(error.message.contains("Start the updated app"));
+        assert!(error.message.contains("original files were restored"));
+        assert_eq!(fs::read_to_string(root.join("revqora.exe")).unwrap(), "old exe");
+        assert_eq!(fs::read_to_string(root.join("build-info.json")).unwrap(), "old manifest");
+        assert!(!root.join(STAGING).join("rollback-incomplete").exists());
     }
 
     #[test]

@@ -70,7 +70,7 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
     if (tab.branchFilter || tab.branchContext) void loadGraph(root);
   };
 
-  return <Modal title="Search all repositories" subtitle="Search commits across the open repositories in this workspace." icon={<FolderSearch size={18} />} wide
+  return <Modal title="Search all repositories" subtitle="Search commits across the open repositories in this workspace." icon={<FolderSearch size={18} />} wide expandForResults={matches || errors}
     onClose={close} footer={<button type="button" className="btn" onClick={close}>Close</button>}>
     <div className="workspace-search-controls hstack">
       <label className="input-wrap"><Search size={14} /><input className="input" aria-label="Search commits across repositories" placeholder="Message, author, hash or branch…" value={query} onChange={(event) => setQuery(event.target.value)} /></label>

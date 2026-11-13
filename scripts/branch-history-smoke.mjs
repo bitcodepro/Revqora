@@ -241,12 +241,21 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   assert(!await page.getByTitle("Show only matching commits", { exact: true }).evaluate((button) => button.classList.contains("active")));
 
   await page.getByRole("button", { name: "Search all repositories", exact: true }).click();
+  await searchQuery.clear();
+  const resize = search.getByRole("button", { name: "Resize window", exact: true });
+  for (let step = 0; step < 10; step++) await resize.press("ArrowUp");
+  const compactHeight = await search.evaluate(dialog => dialog.offsetHeight);
   await searchMode.selectOption("message");
   await searchQuery.fill("pick review-");
   const orderedHits = search.locator(".workspace-search-group")
     .filter({ has: page.getByRole("heading", { name: "branch-history-other", exact: true }) })
     .locator(".workspace-search-hit > b");
   await orderedHits.nth(1).waitFor();
+  assert((await search.evaluate(dialog => dialog.offsetHeight)) > compactHeight, "A compact search dialog must grow when results arrive");
+  const expandedHeight = await search.evaluate(dialog => dialog.offsetHeight);
+  await resize.press("ArrowUp");
+  assert((await search.evaluate(dialog => dialog.offsetHeight)) < expandedHeight, "Manual resizing must remain available");
+  await resize.press("Home");
   assert.deepEqual(await orderedHits.allTextContents(), ["Pick review-a", "Pick review-b"]);
   await search.getByRole("textbox", { name: "Search commits across repositories" }).fill("shared searchable");
   await search.getByRole("button", { name: /Shared searchable branch-history-other/ }).click();

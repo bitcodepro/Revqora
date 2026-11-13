@@ -1,5 +1,7 @@
 # Revqora development rules
 
+- Before changing a feature, read the relevant [behavior checklist](docs/FEATURE_BEHAVIOR.md) and its linked Wiki pages. Verify adjacent behavior after editing. Document new features and update existing behavior rules only when the user requests a behavior change.
+
 - Stack: Tauri 2 + Rust backend in `src-tauri/` (calls the system `git`), React + TypeScript UI in `src/`.
 - Backend modules live in `src-tauri/src/git/`; every Tauri command is registered in `src-tauri/src/lib.rs` and wrapped in `src/lib/api.ts` (types in `src/lib/types.ts`).
 - Stage layers are hidden commits under `refs/worktree/revqora/layers`; read paths must never rewrite the index (no `write-tree` outside mutating operations).
