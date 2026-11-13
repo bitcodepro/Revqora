@@ -105,9 +105,10 @@ fn owned_paths(root: &Path, git_dir: &Path) -> Vec<PathBuf> {
     ignored
 }
 
-pub fn watch<F>(root: PathBuf, git_dir: PathBuf, on_change: F) -> notify::Result<RepoWatcher>
+pub fn watch<F, E>(root: PathBuf, git_dir: PathBuf, on_change: F, on_error: E) -> notify::Result<RepoWatcher>
 where
     F: Fn(bool, bool) + Send + 'static,
+    E: FnOnce() + Send + 'static,
 {
     let ignored = owned_paths(&root, &git_dir);
     let common = super::operations::repository_key(&root);
@@ -132,7 +133,7 @@ where
     register(&root, "working directory")?;
     if !git_dir.starts_with(&root) {
         // Linked worktrees keep their git dir elsewhere.
-        let _ = register(&git_dir, "linked Git directory");
+        register(&git_dir, "linked Git directory")?;
     }
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     if comparable(&common) != comparable(&git_dir) && !common.starts_with(&root) {
@@ -150,6 +151,11 @@ where
             match rx.recv_timeout(Duration::from_millis(120)) {
                 // File reads must not cause feedback refreshes. Still reach the
                 // debounce flush below when access events arrive continuously.
+                Ok(Ok(ev)) if ev.need_rescan() => {
+                    pending_git = true;
+                    pending_wt = true;
+                    first.get_or_insert_with(Instant::now);
+                }
                 Ok(Ok(ev)) if !matches!(ev.kind, notify::EventKind::Access(_)) => {
                     for p in &ev.paths {
                         // Shared refs/config/stash live outside a linked worktree's git dir.
@@ -164,9 +170,14 @@ where
                         first = Some(Instant::now());
                     }
                 }
-                Ok(_) => {}
+                Ok(Ok(_)) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    if stop_rx.try_recv().is_err() {
+                        on_error();
+                    }
+                    break;
+                }
             }
             if let Some(t) = first {
                 if t.elapsed() >= debounce {
@@ -222,11 +233,16 @@ mod tests {
         phase("resolving linked git directory");
         let git_dir = repo::git_dir(&linked).unwrap();
         phase("registering filesystem watches");
-        let watcher = watch(linked.clone(), git_dir, move |git, _| {
-            if git {
-                let _ = tx.send(());
-            }
-        })
+        let watcher = watch(
+            linked.clone(),
+            git_dir,
+            move |git, _| {
+                if git {
+                    let _ = tx.send(());
+                }
+            },
+            || {},
+        )
         .unwrap();
         phase("creating external branch");
         runner::run(&root, ["branch", "external-branch"]).unwrap();

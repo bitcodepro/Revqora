@@ -442,12 +442,64 @@ pub fn background_env(ssh_configured: bool) -> Vec<(&'static str, &'static str)>
 
 /// Quiet periodic fetch of all remotes; never shows a credential prompt.
 pub fn fetch_background(repo: &Path) -> GitResult<String> {
+    fetch_background_with_deadline(repo, std::time::Duration::from_secs(30))
+}
+
+fn fetch_background_with_deadline(repo: &Path, timeout: std::time::Duration) -> GitResult<String> {
     super::recovery::protect_transport(repo, false, None, None, true)?;
     let ssh_configured = std::env::var_os("GIT_SSH_COMMAND").is_some()
         || std::env::var_os("GIT_SSH").is_some()
         || super::connection::managed_ssh(repo)?
         || runner::run(repo, ["config", "--get", "core.sshCommand"]).map(|s| !s.trim().is_empty()).unwrap_or(false);
-    runner::run_env(repo, ["fetch", "--all", "--prune", "--tags", "--quiet", "--no-write-fetch-head"], &background_env(ssh_configured), None)
+    runner::run_with_deadline(
+        repo,
+        &["fetch", "--all", "--prune", "--tags", "--quiet", "--no-write-fetch-head", "--no-auto-maintenance"],
+        &background_env(ssh_configured),
+        timeout,
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn stalled_background_fetch_times_out_and_releases_the_repository() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}/repository.git", listener.local_addr().unwrap());
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = fixture.path();
+    runner::run(repo, ["init", "-qb", "main"]).unwrap();
+    runner::run(repo, ["remote", "add", "origin", &url]).unwrap();
+    let (request, accepted) = std::sync::mpsc::channel();
+    let (release, done) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(8) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    assert!(stream.read(&mut [0; 1024]).unwrap() > 0);
+                    request.send(()).unwrap();
+                    let _ = done.recv_timeout(Duration::from_secs(8));
+                    return;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(20)),
+                Err(error) => panic!("{error}"),
+            }
+        }
+        panic!("Git never connected to the fixture remote");
+    });
+    let result = fetch_background_with_deadline(repo, Duration::from_secs(3));
+    let _ = release.send(());
+    server.join().unwrap();
+    accepted.try_recv().unwrap();
+    assert_eq!(result.unwrap_err().kind, "git-timeout");
+    runner::run(repo, ["config", "--local", "user.name", "After fetch"]).unwrap();
+    assert_eq!(runner::run(repo, ["config", "--get", "user.name"]).unwrap().trim(), "After fetch");
+    assert!(!repo.join(".git/FETCH_HEAD").exists());
 }
 
 #[derive(Debug, Serialize)]

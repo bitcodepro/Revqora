@@ -371,6 +371,7 @@ impl GraphCache {
             return Some(loaded);
         }
         let mut args = vec!["rev-list".to_string(), "--count".into()];
+        let mut input = None;
         if let Some(context) = &self.branch_context {
             args.push("--end-of-options".into());
             args.extend(context.tips(&self.refs));
@@ -381,10 +382,17 @@ impl GraphCache {
                 args.push(incoming.tip.clone());
             }
         } else {
-            args.extend(["--branches", "--remotes", "--tags", "HEAD"].map(str::to_string));
+            let mut tips: Vec<_> = self.refs.iter().map(|(_, oid)| oid.clone()).collect();
+            tips.sort_unstable();
+            tips.dedup();
+            if tips.is_empty() {
+                return None;
+            }
+            args.push("--stdin".into());
+            input = Some(tips.join("\n"));
         }
         args.push("--".into());
-        runner::run(repo, &args).ok()?.trim().parse::<usize>().ok().filter(|&count| count >= loaded)
+        runner::run_env(repo, &args, &[], input.as_deref().map(str::as_bytes)).ok()?.trim().parse::<usize>().ok().filter(|&count| count >= loaded)
     }
 }
 
@@ -549,7 +557,7 @@ pub fn write_commit_graph(repo: &Path, on_line: impl FnMut(&str)) -> GitResult<S
 /// Commits reachable from local branches/HEAD but not from any remote-tracking branch.
 fn local_only(repo: &Path) -> HashMap<String, ()> {
     let mut m = HashMap::new();
-    if let Ok(s) = runner::run(repo, ["rev-list", "--branches", "HEAD", "--not", "--remotes", "--max-count=5000"]) {
+    if let Ok(s) = runner::run(repo, ["rev-list", "--branches", "HEAD", "--not", "--remotes"]) {
         for l in s.lines() {
             m.insert(l.trim().to_string(), ());
         }
@@ -651,8 +659,10 @@ pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool,
     let (commits, incoming, labels, head_oid, local, has_remotes) = std::thread::scope(|sc| {
         let labels = sc.spawn(|| refs::labels_by_oid(repo));
         let head = sc.spawn(|| runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD"]).map(|o| o.text().trim().to_string()));
-        let local = sc.spawn(|| local_only(repo));
-        let remotes = sc.spawn(|| !runner::run(repo, ["remote"]).unwrap_or_default().trim().is_empty());
+        let local = sc.spawn(|| {
+            let has_remotes = !runner::run(repo, ["remote"]).unwrap_or_default().trim().is_empty();
+            (if has_remotes { local_only(repo) } else { HashMap::new() }, has_remotes)
+        });
         let incoming = sc.spawn(|| match filter.as_deref().filter(|_| scope.show_incoming && branch_context.is_none()) {
             Some(scope) => incoming_history(repo, scope, &refs, limit, fast, reusable.and_then(|p| p.incoming.as_ref())),
             None => Ok(None),
@@ -671,13 +681,14 @@ pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool,
             (None, None) => load_commits(repo, scoped_tip.map(|(_, oid)| oid.as_str()).or(scope.branch), limit, fast),
         };
         let join_err = || GitError::new("Background history task failed.");
+        let (local, has_remotes) = local.join().map_err(|_| join_err())?;
         GitResult::Ok((
             commits?,
             incoming.join().map_err(|_| join_err())??,
             labels.join().map_err(|_| join_err())??,
             head.join().map_err(|_| join_err())??,
-            local.join().map_err(|_| join_err())?,
-            remotes.join().map_err(|_| join_err())?,
+            local,
+            has_remotes,
         ))
     })?;
 
@@ -894,10 +905,16 @@ pub fn search_repository(repo: &Path, query: &str, mode: SearchMode) -> GitResul
         return Ok(Vec::new());
     }
     let head = repository_search_head(repo)?;
-    let raw = repository_search_rows(repo, query, mode, 0, if filter_search_rows(mode) { REPOSITORY_SEARCH_SCAN } else { limit }, head.as_deref(), false)?;
+    let include_body = mode == SearchMode::Quick;
+    let raw =
+        repository_search_rows(repo, query, mode, 0, if filter_search_rows(mode) { REPOSITORY_SEARCH_SCAN } else { limit }, head.as_deref(), include_body)?;
     let q = query.to_lowercase();
     let fields: Vec<_> = raw.split_terminator('\0').collect();
-    Ok(fields.as_chunks::<6>().0.iter().filter_map(|row| repository_search_hit(row, &q, mode)).take(limit).collect())
+    Ok(repository_search_records(&fields, include_body).filter_map(|row| repository_search_hit(row, &q, mode)).take(limit).collect())
+}
+
+fn repository_search_records<'a>(fields: &'a [&'a str], include_body: bool) -> impl Iterator<Item = &'a [&'a str]> {
+    fields.chunks_exact(if include_body { 7 } else { 6 })
 }
 
 #[derive(Serialize)]
@@ -1026,7 +1043,7 @@ fn search_repository_page_locked(
     let q = query.to_lowercase();
     // NUL terminators keep newlines in message bodies inside their records.
     let fields: Vec<_> = raw.split_terminator('\0').collect();
-    let mut lines = fields.chunks_exact(if include_body { 7 } else { 6 });
+    let mut lines = repository_search_records(&fields, include_body);
     let mut hits = Vec::new();
     let mut end = offset;
     for line in lines.by_ref().take(scan) {
@@ -1238,6 +1255,27 @@ mod tests {
     }
 
     #[test]
+    fn local_only_labels_reach_past_five_thousand_commits() {
+        use std::fmt::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        runner::run(repo, ["init", "-qb", "main"]).unwrap();
+        let mut import = String::new();
+        for index in 0..=5_101 {
+            writeln!(import, "commit refs/heads/main\ncommitter Test <test@example.test> {} +0000\ndata 6\nCommit\n", 1_700_000_000 + index).unwrap();
+        }
+        runner::run_env(repo, ["fast-import", "--quiet"], &[], Some(import.as_bytes())).unwrap();
+        runner::run(repo, ["remote", "add", "origin", "https://example.invalid/repo"]).unwrap();
+        let shared = runner::run(repo, ["rev-parse", "HEAD~5101"]).unwrap();
+        runner::run(repo, ["update-ref", "refs/remotes/origin/main", shared.trim()]).unwrap();
+        let graph = build(repo, Some("HEAD"), false, 5_102, false).unwrap();
+        assert_eq!(graph.rows.iter().filter(|row| row.local_only).count(), 5_101);
+        assert_eq!(graph.rows.last().unwrap().oid, shared.trim());
+        assert!(!graph.rows.last().unwrap().local_only);
+    }
+
+    #[test]
     fn repository_search_uses_refs_without_loading_a_graph() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path();
@@ -1264,6 +1302,7 @@ mod tests {
         for (mode, query) in [
             (SearchMode::Quick, "search-this-branch"),
             (SearchMode::Quick, "SEARCHABLE SUBJECT"),
+            (SearchMode::Quick, "EXTENDED BODY"),
             (SearchMode::Message, "extended body"),
             (SearchMode::Author, "history@example.test"),
             (SearchMode::Hash, &commit[..9]),

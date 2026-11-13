@@ -559,13 +559,13 @@ export function GraphView({
   // Reset the row cache whenever the backend rebuilt the graph.
   useEffect(() => {
     force((n) => n + 1);
-    if (summary && firstDrawKey.current !== root) {
+    if (graphKey && firstDrawKey.current !== root) {
       firstDrawKey.current = root;
       setDrawing(true);
       const t = setTimeout(() => setDrawing(false), 1100);
       return () => clearTimeout(t);
     }
-  }, [tab.graphVersion, summary, root]);
+  }, [tab.graphVersion, graphKey, root]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -638,15 +638,15 @@ export function GraphView({
       setFilterOnly(false);
       return;
     }
-    if (!summary || tab.graphLoading) return;
+    if (!graphKey || tab.graphLoading) return;
     let current = true;
-    void api.graphFind(root, oid, summary.key).then((index) => {
+    void api.graphFind(root, oid, graphKey).then((index) => {
       const latest = useRepos.getState().tabs[root];
-      if (!current || latest?.graph?.key !== summary.key || latest.historyJump !== oid) return;
+      if (!current || latest?.graph?.key !== graphKey || latest.historyJump !== oid) return;
       if (index == null && hasMoreHistory(latest)) {
         void loadEntireHistory(root).then(() => {
           const state = useRepos.getState().tabs[root];
-          if (state?.graph?.key === summary.key && state.historyJump === oid && !state.graphLoading) patch(root, { historyJump: null });
+          if (state?.graph?.key === graphKey && state.historyJump === oid && !state.graphLoading) patch(root, { historyJump: null });
         });
         return;
       }
@@ -657,7 +657,7 @@ export function GraphView({
       patch(root, { historyJump: null });
     }).catch(() => {});
     return () => { current = false; };
-  }, [root, summary, tab.historyJump, tab.graphLoading, tab.branchFilter, query, filterOnly, patch, scrollToIndex]);
+  }, [root, graphKey, tab.historyJump, tab.graphLoading, tab.branchFilter, query, filterOnly, patch, scrollToIndex]);
 
   const selectIndex = useCallback(
     async (idx: number) => {

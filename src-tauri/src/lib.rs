@@ -818,6 +818,13 @@ async fn last_message(repo: String) -> GitResult<String> {
 
 // ───────────────────────────── history ─────────────────────────────
 
+#[derive(Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct GraphLoadOptions {
+    show_incoming: bool,
+    defer_count: bool,
+}
+
 #[tauri::command]
 async fn graph_load(
     state: State<'_, AppState>,
@@ -826,10 +833,11 @@ async fn graph_load(
     include_worktree: bool,
     limit: Option<usize>,
     fast: Option<bool>,
-    show_incoming: Option<bool>,
+    options: Option<GraphLoadOptions>,
 ) -> GitResult<GraphSummary> {
     let key = repo.clone();
     let fast = fast.unwrap_or(false);
+    let options = options.unwrap_or_default();
     let prev = state.graphs.lock().get(&repo).cloned();
     let (cache, commit_count) = blocking(move || {
         let (branch, context) = match &branch {
@@ -840,13 +848,13 @@ async fn graph_load(
         let path = p(&repo);
         let cache = graph::build_for_view(
             &path,
-            graph::ViewScope { branch, show_incoming: show_incoming.unwrap_or(false), context },
+            graph::ViewScope { branch, show_incoming: options.show_incoming, context },
             include_worktree,
             limit.unwrap_or(150_000),
             fast,
             prev.as_deref(),
         )?;
-        let count = cache.commit_count(&path, include_worktree);
+        let count = if options.defer_count { None } else { cache.commit_count(&path, include_worktree) };
         Ok((cache, count))
     })
     .await?;
@@ -862,6 +870,13 @@ async fn graph_load(
     };
     state.graphs.lock().insert(key, Arc::new(cache));
     Ok(summary)
+}
+
+#[tauri::command]
+async fn graph_commit_count(state: State<'_, AppState>, repo: String, key: String, include_worktree: bool) -> GitResult<Option<usize>> {
+    let cache = state.graphs.lock().get(&repo).filter(|cache| cache.key == key).cloned();
+    let Some(cache) = cache else { return Ok(None) };
+    blocking(move || Ok(cache.commit_count(&p(&repo), include_worktree))).await
 }
 
 #[tauri::command]
@@ -2169,18 +2184,30 @@ struct RepoChanged {
 }
 
 #[tauri::command]
-async fn watch_repo(app: AppHandle, state: State<'_, AppState>, repo: String) -> GitResult<()> {
-    if state.watchers.lock().contains_key(&repo) {
-        return Ok(());
-    }
+async fn watch_repo(app: AppHandle, state: State<'_, AppState>, repo: String, restart: Option<bool>) -> GitResult<()> {
     let r = repo.clone();
     let gd = blocking(move || repo::git_dir(&p(&r))).await?;
+    let mut watchers = state.watchers.lock();
+    if restart == Some(true) {
+        watchers.remove(&repo);
+    } else if watchers.contains_key(&repo) {
+        return Ok(());
+    }
     let key = repo.clone();
-    let w = watcher::watch(p(&repo), gd, move |git, worktree| {
-        let _ = app.emit("repo-changed", RepoChanged { repo: key.clone(), git, worktree });
-    })
+    let error_app = app.clone();
+    let error_repo = repo.clone();
+    let w = watcher::watch(
+        p(&repo),
+        gd,
+        move |git, worktree| {
+            let _ = app.emit("repo-changed", RepoChanged { repo: key.clone(), git, worktree });
+        },
+        move || {
+            let _ = error_app.emit("repo-watch-failed", error_repo);
+        },
+    )
     .map_err(|e| GitError::new(format!("Cannot watch the repository: {e}")))?;
-    state.watchers.lock().insert(repo, w);
+    watchers.insert(repo, w);
     Ok(())
 }
 
@@ -2495,6 +2522,7 @@ pub fn run() {
             commit,
             last_message,
             graph_load,
+            graph_commit_count,
             graph_rows,
             graph_find,
             graph_branch_members,

@@ -7,7 +7,7 @@ import {forgetWorkingDiff} from "./workingDiffSnapshot";
 import { create } from "zustand";
 import { api, errorMessage } from "./api";
 import { useSettings } from "./settings";
-import { useUi } from "./ui";
+import { toast, useUi } from "./ui";
 import type { GraphSummary, LayersState, RefsSnapshot, RepoExtras, RepoInfo, StatusSummary } from "./types";
 import { WORKTREE } from "./types";
 import { setOperationHooks } from "./operationClient";
@@ -126,6 +126,38 @@ const openingQueue = repositoryQueue();
 const summaryQueue = repositoryQueue();
 const openingJobs = new Map<string, Promise<string | null>>();
 const lifetimes = new Map<string, symbol>();
+const watchRetries = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function retryRepositoryWatch(root: string) {
+  const tab = useRepos.getState().tabs[root];
+  if (!tab?.info || watchRetries.has(root)) return;
+  toast.warning("Automatic updates paused", `${tab.info.name}: Revqora will retry watching for changes.`);
+  scheduleWatchRetry(root, 1_000);
+}
+
+function scheduleWatchRetry(root: string, delay: number) {
+  watchRetries.set(root, setTimeout(() => {
+    watchRetries.delete(root);
+    void registerWatch(root, true, delay);
+  }, delay));
+}
+
+async function registerWatch(root: string, restart = false, delay = 0) {
+  const lifetime = lifetimes.get(root);
+  if (!lifetime) return;
+  try {
+    await api.watchRepo(root, restart);
+  } catch {
+    if (lifetimes.get(root) !== lifetime || watchRetries.has(root)) return;
+    if (restart) scheduleWatchRetry(root, Math.min(delay * 2, 30_000));
+    else retryRepositoryWatch(root);
+    return;
+  }
+  if (!useRepos.getState().tabs[root]) await api.unwatchRepo(root).catch(() => {});
+  if (restart && lifetimes.get(root) === lifetime) {
+    void useRepos.getState().refresh(root, { ...ALL, background: true });
+  }
+}
 
 function existingRoot(path: string) {
   return useRepos.getState().order.find(root => repositoryKey(root) === repositoryKey(path));
@@ -194,9 +226,7 @@ function hydrate(root: string): Promise<string | null> {
       useLibrary.getState().remember(actual, root);
       if (actual !== root) persistTabs();
       const actualLifetime = lifetimes.get(actual);
-      void api.watchRepo(actual).then(() => {
-        if (!useRepos.getState().tabs[actual]) return api.unwatchRepo(actual);
-      }).catch(() => {});
+      void registerWatch(actual);
       if (useRepos.getState().active === actual) void useRepos.getState().refresh(actual, ALL);
       else await useRepos.getState().refresh(actual, { background: true, summary: true, status: true });
       return lifetimes.get(actual) === actualLifetime ? actual : null;
@@ -294,6 +324,8 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     graphRequests.set(root, (graphRequests.get(root) ?? 0) + 1);
     invalidatePreview(root);
     squashJobs.delete(root);
+    clearTimeout(watchRetries.get(root));
+    watchRetries.delete(root);
     const s = get();
     const order = s.order.filter((r) => r !== root);
     const tabs = { ...s.tabs };
@@ -503,13 +535,23 @@ async function loadGraphOnce(root: string, includeWorktree: boolean | undefined,
   const limit = Math.max(tab.graphScope === scopeKey ? tab.graphLimit : INITIAL_GRAPH_COMMITS, minimumCommits);
   store.patch(root, { graphLoading: true });
   try {
-    const summary = await api.graphLoad(root, scope, dirty, limit, false, showIncoming);
+    const summary = await api.graphLoad(root, scope, dirty, limit, false, showIncoming, true);
     if (!current()) return;
     const t = useRepos.getState().tabs[root];
     if (!t) return;
     let selected = t.selected;
     if (selected === WORKTREE && !dirty) selected = null;
+    const loaded = summary.total - Number(dirty);
+    if (summary.commitCount == null && loaded < limit) summary.commitCount = loaded;
     useRepos.getState().patch(root, { graph: summary, graphScope: scopeKey, graphLimit: limit, graphVersion: t.graphVersion + 1, graphLoading: false, graphHasWorktree: dirty, selected });
+    if (summary.commitCount == null && loaded >= limit) {
+      void api.graphCommitCount(root, summary.key, dirty).then(count => {
+        const graph = useRepos.getState().tabs[root]?.graph;
+        if (count != null && current() && graph?.key === summary.key) {
+          useRepos.getState().patch(root, { graph: { ...graph, commitCount: count } });
+        }
+      }).catch(() => {});
+    }
   } catch (e) {
     if (!current()) return;
     useRepos.getState().patch(root, { graphLoading: false, error: errorMessage(e) });
