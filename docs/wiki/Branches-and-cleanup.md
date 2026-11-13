@@ -45,7 +45,7 @@ Rename is available through branch actions. A remote rename needs its own review
 
 A local branch can track a differently named remote branch. Review the actual target rather than assuming both names match. A remote-only deletion is available from a remote branch action.
 
-After squash merge, original feature commits may not be reachable by SHA from `main` even though their changes were integrated. Inspect the PR/result and the deletion comparison before approving an unmerged-history override.
+After squash merge, original feature commits may not be reachable by SHA from `main` even though their changes were integrated. When the selected tips have commits outside the comparison branch, Revqora shows the warning before deletion. Choose **Delete local branch anyway**, **Delete remote branch anyway** or **Delete local & remote anyway** to confirm. If the server tip changes during review, refresh and confirm the new SHA.
 
 ## Bulk cleanup
 
