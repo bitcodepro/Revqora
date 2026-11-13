@@ -426,6 +426,7 @@ async function refreshOnce(root: string, parts: Parts) {
   if (!store.tabs[root]) return;
   const lifetime = lifetimes.get(root);
   const current = () => !!useRepos.getState().tabs[root] && lifetimes.get(root) === lifetime;
+  const canLoadGraph = () => !parts.summary && current() && useRepos.getState().active === root;
   const patch: Partial<RepoTab> = {};
   const before = store.tabs[root];
   let updatedRefs = false;
@@ -437,7 +438,7 @@ async function refreshOnce(root: string, parts: Parts) {
   const refsP = parts.refs && (!parts.summary || trackedBranchRefs.has(repositoryKey(root))) ? api.refs(root).then(refs => {
     if (before.refsError && current()) useRepos.getState().patch(root, { refsError: undefined });
     // Keep the existing rows during a quiet check if their data is identical.
-    if (parts.revalidate && JSON.stringify(refs) === JSON.stringify(before.refs)) return null;
+    if ((parts.revalidate || !canLoadGraph()) && JSON.stringify(refs) === JSON.stringify(before.refs)) return null;
     return refs;
   }).catch(error => {
     if (current()) useRepos.getState().patch(root, { refsError: errorMessage(error) });
@@ -449,16 +450,18 @@ async function refreshOnce(root: string, parts: Parts) {
   // Publish independently: slow layers/extras must not hide local branch info
   // or refs that are already ready. The full status still owns action guards.
   void infoP.then(info=>{if(info&&current())useRepos.getState().patch(root,{info});}).catch(()=>{});
-  void refsP.then(refs=>{
-    if(!refs||!current())return;
-    const state=useRepos.getState(), scope=state.tabs[root]?.branchContext ?? state.tabs[root]?.branchFilter;
-    const missing=scope?.startsWith("refs/") && !refs.local.some(branch=>branch.fullName===scope) && !refs.remote.some(branch=>branch.fullName===scope);
-    state.patch(root, missing ? { refs, branchFilter: CURRENT_HISTORY_BRANCH, branchContext: null, viewedBranch: null, selected: null, multi: [], historyJump: null, graph: null } : { refs });
-    if (missing && state.active === root) void loadGraph(root);
-  }).catch(()=>{});
+  const initialDirty = !!(before.status ?? before.sidebarStatus)?.files.length;
+  let graphP = canLoadGraph() && parts.graph && !before.graph ? loadGraph(root, initialDirty) : null;
+  void refsP.then(refs => {
+    if (!refs || !current()) return;
+    const state = useRepos.getState(), tab = state.tabs[root];
+    const scope = tab.branchContext ?? tab.branchFilter;
+    const missing = scope?.startsWith("refs/") && !refs.local.some(branch => branch.fullName === scope) && !refs.remote.some(branch => branch.fullName === scope);
+    const rebuild = missing && canLoadGraph();
+    state.patch(root, missing ? { refs, branchFilter: CURRENT_HISTORY_BRANCH, branchContext: null, viewedBranch: null, selected: null, multi: [], historyJump: null, ...(rebuild ? { graph: null } : {}) } : { refs });
+    if (rebuild) graphP = loadGraph(root);
+  }).catch(() => {});
   for (const p of [infoP, refsP]) p.catch(() => {}); // rejections are handled below
-  const initialDirty=!!(before.status??before.sidebarStatus)?.files.length;
-  let graphP: Promise<void> | null = !parts.summary&&parts.graph&&!before.graph?loadGraph(root,initialDirty):null;
   try {
     const status = await statusP;
     const tab = useRepos.getState().tabs[root];
@@ -466,11 +469,27 @@ async function refreshOnce(root: string, parts: Parts) {
     const st = status ?? tab.status;
     const dirty = !!st && st.files.length > 0;
     if (status) useRepos.getState().patch(root, sidebarOnly ? { sidebarStatus: status } : { status });
-    if (!parts.summary && ((parts.graph&&!graphP) || includeWorkingChanges(tab, dirty) !== (graphP?includeWorkingChanges(before, initialDirty):tab.graphHasWorktree) || !tab.graph&&!graphP)) graphP = loadGraph(root, dirty);
+    const graphWorktree = graphP ? includeWorkingChanges(before, initialDirty) : tab.graphHasWorktree;
+    if (canLoadGraph() && ((!graphP && (parts.graph || !tab.graph)) || includeWorkingChanges(tab, dirty) !== graphWorktree)) {
+      graphP = loadGraph(root, dirty);
+    }
     const [info, refs] = await Promise.all([infoP, refsP]);
-    const graphHeadChanged=info&&before.graph?.headOid!==undefined&&before.graph.headOid!==(info.head.oid??"");
-    const graphChanged=graphHeadChanged||(info&&JSON.stringify(info.head)!==JSON.stringify(before.info?.head))||!!refs;
-    if(parts.revalidate&&current()&&graphChanged){invalidatePreview(root);if(!graphP)graphP=loadGraph(root,dirty);}
+    const graphHeadChanged = info && before.graph?.headOid !== undefined && before.graph.headOid !== (info.head.oid ?? "");
+    const graphChanged = graphHeadChanged || (info && JSON.stringify(info.head) !== JSON.stringify(before.info?.head)) || !!refs;
+    if (current() && graphChanged) {
+      if (!canLoadGraph()) {
+        const latest = useRepos.getState().tabs[root];
+        if (latest.graph || latest.graphLoading) {
+          invalidatePreview(root);
+          forgetGraphRows(root);
+          graphRequests.set(root, (graphRequests.get(root) ?? 0) + 1);
+          useRepos.getState().patch(root, { graph: null, graphLoading: false });
+        }
+      } else if (parts.revalidate) {
+        invalidatePreview(root);
+        if (!graphP) graphP = loadGraph(root, dirty);
+      }
+    }
     const [layers, extras] = await Promise.all([layersP, extrasP]);
     updatedRefs = !!refs;
     if (extras) patch.extras = extras;
@@ -481,7 +500,7 @@ async function refreshOnce(root: string, parts: Parts) {
   }
   if (!current()) return;
   useRepos.getState().patch(root, { ...patch, loaded: true });
-  if (updatedRefs && !parts.summary) updateSquashMerged(root);
+  if ((updatedRefs || (parts.refs && !before.graph)) && canLoadGraph()) updateSquashMerged(root);
   // Wait for history only when it was explicitly requested; a dirty/clean toggle reloads it in the background.
   if (graphP && parts.graph) await graphP;
 }

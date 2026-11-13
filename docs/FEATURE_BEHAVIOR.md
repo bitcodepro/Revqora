@@ -20,6 +20,7 @@ Before opening or updating a PR:
 
 ## History and cross-repository search
 
+- [ ] Opening or filtering branch rows in Explorer may read refs for inactive repositories. It must leave their history graphs unloaded. Keep unchanged cached graphs and rebuild invalidated history on activation.
 - [ ] Search all repositories scans the open repositories, including ones whose History view has never loaded. Results appear as each repository completes and are sorted newest first within each repository.
 - [ ] A saved compact search dialog grows once when the first results or a repository error arrive. Users can resize it afterward. Its automatic size does not overwrite their saved size.
 - [ ] Opening a match selects its repository and commit. Branch context, current-branch history and All branches are distinct scopes. Verify Graph, Review and Columns when changing shared history behavior.

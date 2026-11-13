@@ -7,7 +7,7 @@ vi.mock("./ui", () => ({ useUi: { setState: vi.fn() } }));
 import { api } from "./api";
 import { INITIAL_GRAPH_COMMITS, useRepos } from "./store";
 import { repositoryKey } from "./repositoryLibrary";
-import type { RepoInfo, StatusSummary } from "./types";
+import type { BranchInfo, RefsSnapshot, RepoInfo, StatusSummary } from "./types";
 
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (error: Error) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 const info = (root: string) => ({ root, name: root.split("/").at(-1), head: { branch: "main", oid: "a".repeat(40) }, state: { kind: "none" } }) as RepoInfo;
@@ -115,6 +115,68 @@ describe("repository session restoration", () => {
     useRepos.getState().activate("/background");
     await vi.waitFor(() => expect(api.graphLoad).toHaveBeenCalledWith("/background", "HEAD", false, INITIAL_GRAPH_COMMITS, false, true));
     expect(api.graphLoad).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads Explorer branch refs for an unopened history without building its graph", async () => {
+    const root = "/explorer-refs-only";
+    await useRepos.getState().openMany(["/selected", root], "/selected");
+    await useRepos.getState().refresh("/selected", { summary: true });
+    expect(useRepos.getState().tabs[root].refs).toBeNull();
+    const read = deferred<RefsSnapshot>();
+    vi.mocked(api.refs).mockReturnValueOnce(read.promise);
+    vi.mocked(api.graphLoad).mockClear();
+    const release = useRepos.getState().trackBranchRefs(root);
+    try {
+      expect(api.refs).toHaveBeenCalledWith(root);
+      const refs = { local: [], remote: [], remotes: [], tags: [], stashes: [] };
+      read.resolve(refs);
+      await useRepos.getState().refresh(root, { background: true, summary: true });
+      expect(useRepos.getState().tabs[root].refs).toBe(refs);
+      expect(api.graphLoad).not.toHaveBeenCalled();
+      expect(useRepos.getState().tabs[root].graph).toBeNull();
+    } finally { release(); }
+  });
+
+  it("defers rebuilding an inactive cached graph when Explorer observes changed refs", async () => {
+    const root = "/explorer-cached-history";
+    await useRepos.getState().openMany([root, "/selected"], root);
+    await useRepos.getState().refresh(root, { summary: true });
+    useRepos.getState().activate("/selected");
+    await useRepos.getState().refresh("/selected", { summary: true });
+    const cached = useRepos.getState().tabs[root].graph;
+    expect(cached).not.toBeNull();
+    const changed = { local: [{ fullName: "refs/heads/topic", oid: "b".repeat(40) } as BranchInfo], remote: [], remotes: [], tags: [], stashes: [] };
+    const flush = () => useRepos.getState().refresh(root, { background: true, summary: true });
+    const stopTracking = useRepos.getState().trackBranchRefs(root);
+    try {
+      vi.mocked(api.graphLoad).mockClear();
+      await flush();
+      expect(useRepos.getState().tabs[root].graph).toBe(cached);
+      vi.mocked(api.refs).mockResolvedValue(changed);
+      await useRepos.getState().refresh(root, { background: true, revalidate: true, refs: true });
+      expect(useRepos.getState().tabs[root].refs).toBe(changed);
+      expect(api.graphLoad).not.toHaveBeenCalled();
+      expect(useRepos.getState().tabs[root].graph).toBeNull();
+      useRepos.getState().activate(root);
+      await flush();
+      expect(api.graphLoad).toHaveBeenCalledTimes(1);
+      expect(useRepos.getState().tabs[root].graph).not.toBeNull();
+    } finally { stopTracking(); }
+  });
+
+  it("does not rebuild history when a repository loses focus during revalidation", async () => {
+    const root = "/switch-during-refs";
+    await useRepos.getState().openMany([root, "/selected"], root);
+    await useRepos.getState().refresh(root, { summary: true });
+    const read = deferred<RefsSnapshot>();
+    vi.mocked(api.refs).mockReturnValueOnce(read.promise);
+    vi.mocked(api.graphLoad).mockClear();
+    const refresh = useRepos.getState().refresh(root, { background: true, revalidate: true, refs: true });
+    useRepos.getState().activate("/selected");
+    read.resolve({ local: [], remote: [], remotes: [], tags: [{ name: "new-tag" } as RefsSnapshot["tags"][number]], stashes: [] });
+    await refresh;
+    expect(vi.mocked(api.graphLoad).mock.calls.some(([repo]) => repo === root)).toBe(false);
+    expect(useRepos.getState().tabs[root].graph).toBeNull();
   });
 
   it("keeps lightweight observations out of mutation guards and reads full proofs for an explicit bulk preview", async () => {
