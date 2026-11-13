@@ -3,9 +3,9 @@ const saved = vi.hoisted(() => ({ set: vi.fn(), addRecent: vi.fn(), remember: vi
 vi.mock("./api", () => ({ api: Object.fromEntries(["repoOpen", "repoInfo", "status", "repositorySidebarStatus", "refs", "repoExtras", "layersState", "squashMerged", "graphLoad", "watchRepo", "unwatchRepo"].map(name => [name, vi.fn()])), errorMessage: String }));
 vi.mock("./settings", () => ({ useSettings: { getState: () => saved } }));
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => saved } }));
-vi.mock("./ui", () => ({ useUi: { setState: vi.fn() } }));
+vi.mock("./ui", () => ({ useUi: { setState: vi.fn() }, toast: { warning: vi.fn() } }));
 import { api } from "./api";
-import { INITIAL_GRAPH_COMMITS, useRepos } from "./store";
+import { INITIAL_GRAPH_COMMITS, retryRepositoryWatch, useRepos } from "./store";
 import { repositoryKey } from "./repositoryLibrary";
 import type { BranchInfo, RefsSnapshot, RepoInfo, StatusSummary } from "./types";
 
@@ -113,8 +113,35 @@ describe("repository session restoration", () => {
     expect(api.graphLoad).not.toHaveBeenCalled();
     expect(api.layersState).not.toHaveBeenCalled();
     useRepos.getState().activate("/background");
-    await vi.waitFor(() => expect(api.graphLoad).toHaveBeenCalledWith("/background", "HEAD", false, INITIAL_GRAPH_COMMITS, false, true));
+    await vi.waitFor(() => expect(api.graphLoad).toHaveBeenCalledWith("/background", "HEAD", false, INITIAL_GRAPH_COMMITS, false, true, true));
     expect(api.graphLoad).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a failed repository watch and refreshes status and refs after recovery", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = "/watch-recovery";
+      vi.mocked(api.watchRepo).mockRejectedValueOnce(new Error("watch not available"))
+        .mockRejectedValueOnce(new Error("still unavailable"));
+      await useRepos.getState().open(root);
+      await useRepos.getState().refresh(root, { summary: true });
+      vi.mocked(api.refs).mockClear();
+      vi.mocked(api.status).mockClear();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(api.watchRepo).toHaveBeenNthCalledWith(2, root, true);
+      expect(api.refs).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(api.watchRepo).toHaveBeenNthCalledWith(3, root, true);
+      expect(api.refs).toHaveBeenCalledWith(root);
+      expect(api.status).toHaveBeenCalledWith(root);
+
+      retryRepositoryWatch(root);
+      useRepos.getState().close(root);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(api.watchRepo).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("loads Explorer branch refs for an unopened history without building its graph", async () => {

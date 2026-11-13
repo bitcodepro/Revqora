@@ -14,7 +14,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Columns3, FilePlus2, GitCommitHorizontal, GitGraph, GitPullRequest, Maximize2, Minimize2, RefreshCw, Rows3 } from "lucide-react";
 import { PullRequestsView } from "./components/PullRequests";
-import { useRepos, type RepoTab } from "./lib/store";
+import { retryRepositoryWatch, useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, useSettings } from "./lib/settings";
 import { openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
 import { actionFor, matchesShortcut, PANEL_NAMES, shortcutTitle } from "./lib/shortcuts";
@@ -338,6 +338,7 @@ function MainApp() {
       if (!disposed) toast.error(error, "Could not restore MCP access");
     });
     unsubs.push(
+      listen<string>("repo-watch-failed", (e) => retryRepositoryWatch(e.payload)),
       listen<{ repo: string; git: boolean; worktree: boolean }>("repo-changed", (e) => {
         const { repo, git } = e.payload;
         if (!useRepos.getState().tabs[repo]) return;

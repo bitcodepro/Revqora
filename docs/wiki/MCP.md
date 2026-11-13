@@ -12,6 +12,12 @@ A staged rename retains both paths in its diff and approval. For a conflicted fi
 
 Pass `diffVersion` with the next page's `offset`. For a long line, use its `lineIndex` as `offset` and `nextTextOffset` as `lineOffset`. `review_pending` returns the active action ID when another MCP request is in progress. Use `list_stashes` to find a stash and `stash_apply` or `stash_pop` to restore it, with optional `restoreIndex`.
 
+## Search and repository status
+
+`search_commits` searches local branches, remote-tracking branches, tags and HEAD. The default `all` mode matches the full message, author name or email, SHA prefix and ref labels. Matching is case-insensitive. Follow `nextCursor` whenever `hasMore` is true.
+
+`repository_status` returns up to 200 paths. For the next page, pass `files.nextOffset` as `offset` and reuse `statusVersion` from the first page. If the status changed, the request returns `stale_state`. Start again at offset zero. `stateVersion` is a monotonic observation counter and can advance between unchanged reads.
+
 ## Request action parameters
 
 Every `request_action` requires `repository` and `action`. Extra parameters that the selected action does not use return `invalid_arguments`.
@@ -47,6 +53,8 @@ The MCP confirmation dialog expires after 120 seconds. The action reports `cance
 ## Checkout and stash recovery
 
 `checkout` reports the previous and current branch, conflicts and the dirty action it used. If it created a stash, `stash` contains its full `oid`, `index`, `switchSource` and whether it was `kept`. A successful `move` restores the changes and removes its temporary stash. `changesRestored` indicates a completed restoration, including the index. Check the reported index against `list_stashes` if other stash operations have run since checkout.
+
+A checkout phase of `succeeded` confirms the branch switch. When applying moved changes produces conflicts, the result still reports `changesRestored: false`, the conflicted paths, the retained stash and `nextStep: "resolve_conflicts"`.
 
 | Checkout `nextStep` | What to do |
 | --- | --- |

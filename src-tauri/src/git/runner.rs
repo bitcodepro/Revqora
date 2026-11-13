@@ -6,7 +6,8 @@
 use std::ffi::OsStr;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -185,7 +186,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    exec_capture(repo, args, env, input, None)
+    exec_capture(repo, args, env, input, None, None)
 }
 
 /// Bound captured output while draining both pipes and reaping the Git process.
@@ -194,7 +195,29 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    exec_capture(repo, args, &[], None, Some(limit))
+    exec_capture(repo, args, &[], None, Some(limit), None)
+}
+
+pub(super) fn run_with_deadline(repo: &Path, args: &[&str], env: &[(&str, &str)], timeout: Duration) -> GitResult<String> {
+    let out = exec_capture(repo, args, env, None, None, Some(timeout))?;
+    if out.ok() {
+        Ok(out.text())
+    } else {
+        Err(fail(describe(&args.iter().map(OsStr::new).collect::<Vec<_>>()), &out))
+    }
+}
+
+fn wait_for_deadline(child: &mut std::process::Child, timeout: Duration) -> GitResult<()> {
+    use super::validation::{poll_process, ProcessState};
+
+    let start = Instant::now();
+    loop {
+        match poll_process(child, false, start.elapsed() >= timeout)? {
+            ProcessState::Exited => return Ok(()),
+            ProcessState::TimedOut => return Err(GitError::new(format!("Git exceeded its {} second time limit.", timeout.as_secs())).kind("git-timeout")),
+            _ => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
 }
 
 fn capture_bytes(mut pipe: impl Read, limit: Option<usize>) -> std::io::Result<Vec<u8>> {
@@ -211,7 +234,7 @@ fn capture_bytes(mut pipe: impl Read, limit: Option<usize>) -> std::io::Result<V
     Ok(bytes)
 }
 
-fn exec_capture<I, S>(repo: &Path, args: I, env: &[(&str, &str)], input: Option<&[u8]>, limit: Option<usize>) -> GitResult<Output>
+fn exec_capture<I, S>(repo: &Path, args: I, env: &[(&str, &str)], input: Option<&[u8]>, limit: Option<usize>, timeout: Option<Duration>) -> GitResult<Output>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -236,13 +259,20 @@ where
                 if input.is_some() {
                     c.stdin(Stdio::piped());
                 }
-                let mut child = c.spawn().map_err(|e| {
+                let spawn_error = |e: std::io::Error| {
                     if e.kind() == std::io::ErrorKind::NotFound {
                         GitError::new("Git executable was not found. Install Git and make sure it is on PATH.").kind("git-missing")
                     } else {
                         GitError::from(e)
                     }
-                })?;
+                };
+                let (mut child, tree) = if timeout.is_some() {
+                    c.stdin(Stdio::null());
+                    let (child, tree) = super::validation::process_tree::spawn(&mut c)?;
+                    (child, Some(tree))
+                } else {
+                    (c.spawn().map_err(spawn_error)?, None)
+                };
                 // Feed stdin on a separate thread so large inputs cannot deadlock with stdout.
                 let writer = input.map(|data| {
                     let data = data.to_vec();
@@ -253,14 +283,25 @@ where
                 });
                 let stderr_pipe = child.stderr.take().expect("stderr piped");
                 let err_thread = std::thread::spawn(move || capture_bytes(stderr_pipe, limit.map(|_| 128 * 1024)));
-                let stdout = capture_bytes(child.stdout.take().expect("stdout piped"), limit);
-                let status = child.wait();
+                let stdout_pipe = child.stdout.take().expect("stdout piped");
+                let (stdout, status): (_, GitResult<ExitStatus>) = if let Some((timeout, tree)) = timeout.zip(tree) {
+                    let out_thread = std::thread::spawn(move || capture_bytes(stdout_pipe, limit));
+                    let outcome = wait_for_deadline(&mut child, timeout);
+                    // Descendants can still hold the output pipes when the Git leader exits.
+                    tree.terminate();
+                    let status = child.wait();
+                    let stdout = out_thread.join().unwrap_or_else(|_| Err(std::io::Error::other("Git stdout reader failed")));
+                    (stdout, outcome.and(status.map_err(GitError::from)))
+                } else {
+                    let stdout = capture_bytes(stdout_pipe, limit);
+                    (stdout, child.wait().map_err(GitError::from))
+                };
                 if let Some(w) = writer {
                     let _ = w.join();
                 }
                 let stderr = err_thread.join().unwrap_or_else(|_| Err(std::io::Error::other("Git stderr reader failed")))?;
-                let stdout = stdout?;
                 let status = status?;
+                let stdout = stdout?;
                 if limit.is_some_and(|limit| stdout.len() > limit) {
                     return Err(GitError::new("Git output exceeds the preview size limit.").kind("output-limit"));
                 }

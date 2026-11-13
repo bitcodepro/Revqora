@@ -911,7 +911,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   useEffect(() => {
     const pre = prefilledMessages.get(root);
     if ((kind === "merge" || kind === "squash" || kind === "cherry-pick" || kind === "revert") && state?.message && !summary) {
-      const clean = state.message.replace(/^#.*$/gm, "").trim();
+      const clean = (kind === "cherry-pick" ? state.message : state.message.replace(/^#.*$/gm, "")).trim();
       const [s, ...rest] = clean.split("\n");
       const next = { summary: s ?? "", body: rest.join("\n").trim() };
       prefilledMessages.set(root, next);

@@ -613,11 +613,6 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
               ))}
           </div>
         ))}
-        {diff.truncated && (
-          <div className="callout warn" style={{ margin: 12 }}>
-            <FileWarning size={15} /> The diff is very large; only the first lines are shown.
-          </div>
-        )}
       </>
     );
   }
@@ -630,6 +625,11 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     }}>
       {path && head}
       {findBar}
+      {diff?.truncated && (
+        <div className="callout warn" role="status" style={{ margin: 12 }}>
+          <FileWarning size={15} /> The diff is very large; only the first lines are shown.
+        </div>
+      )}
       <div ref={bodyRef} className={`diff-body ${!diff && loading && !error ? "diff-loading" : ""} ${s.wrapDiff ? "wrap" : ""}`} onScroll={(e) => {
         const el = e.currentTarget;
         setScroll(el.scrollTop);

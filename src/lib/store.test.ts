@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-vi.mock("./api", () => ({ api: { status: vi.fn(), repoInfo: vi.fn(), layersState: vi.fn(), refs: vi.fn(), repoExtras: vi.fn(), squashMerged: vi.fn(), graphLoad: vi.fn() }, errorMessage: String }));
+vi.mock("./api", () => ({ api: { status: vi.fn(), repoInfo: vi.fn(), layersState: vi.fn(), refs: vi.fn(), repoExtras: vi.fn(), squashMerged: vi.fn(), graphLoad: vi.fn(), graphCommitCount: vi.fn(), watchRepo: vi.fn() }, errorMessage: String }));
 vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), hideIncomingByRepo: {} }) } }));
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
-vi.mock("./ui", () => ({ useUi: { setState: vi.fn() } }));
+vi.mock("./ui", () => ({ useUi: { setState: vi.fn() }, toast: { warning: vi.fn() } }));
 import { api } from "./api";
 import { hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, useRepos, type RepoTab } from "./store";
 import { previewGeneration } from "./commitPreview";
@@ -88,6 +88,28 @@ describe("background repository observation", () => {
     store.patch(root, { branchFilter: "refs/heads/topic" });
     await loadGraph(root, false);
     expect(vi.mocked(api.graphLoad).mock.calls.map(args => args[3])).toEqual([200, 400, 5275, 200]);
+  });
+  it("publishes history before the exact count and ignores a count from the previous branch", async () => {
+    let countMain!: (count: number) => void;
+    let countTopic!: (count: number) => void;
+    vi.mocked(api.graphCommitCount)
+      .mockImplementationOnce(() => new Promise(resolve => { countMain = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { countTopic = resolve; }));
+    vi.mocked(api.graphLoad).mockImplementation(async (_root, scope, _worktree, limit) => ({
+      key: String(scope), total: limit!, maxLanes: 1, headIndex: 0,
+    }));
+    const store = useRepos.getState();
+    store.patch(root, { branchFilter: "main", graphVersion: 0 });
+    await loadGraph(root, false);
+    expect(useRepos.getState().tabs[root].graph).toMatchObject({ key: "main", total: 200 });
+    expect(hasMoreHistory(useRepos.getState().tabs[root])).toBe(true);
+    store.patch(root, { branchFilter: "topic" });
+    await loadGraph(root, false);
+    countMain(5275);
+    await Promise.resolve();
+    expect(useRepos.getState().tabs[root].graph?.commitCount).toBeUndefined();
+    countTopic(1200);
+    await vi.waitFor(() => expect(useRepos.getState().tabs[root].graph?.commitCount).toBe(1200));
   });
   it("updates the full mutation guard without invalidating previews for ordinary worktree activity", async () => {
     const generation = previewGeneration(root);

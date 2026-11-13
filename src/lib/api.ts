@@ -166,6 +166,7 @@ export const api = {
   stashSelection: (repo: string, path: string, selection: [number, number][], hash: string, opts: DiffOptions, message: string, expectedState: string | null) => call<PartialStashResult>("stash_selection", { repo, path, selection, hash, opts, message, expectedState }),
   remoteRenamePlan: (repo: string, trackingRef: string, newName: string) => call<RemoteRenamePlan>("remote_rename_plan", { repo, trackingRef, newName }),
   remoteBranchRename: (repo: string, plan: RemoteRenamePlan) => call<RemoteRenameResult>("remote_branch_rename", { repo, plan, expectedState: plan.stateToken }),
+  statusWithOperation: (repo: string) => call<StatusSummary & { operation: string }>("repository_status_with_operation", { repo }),
   status: (repo: string, requireUnsealed?: boolean) => call<StatusSummary>("status", { repo, requireUnsealed }),
   identityGet: (repo: string) => call<Identity>("identity_get", { repo }),
   identitySet: (repo: string, name: string, email: string, global: boolean) => call<void>("identity_set", { repo, name, email, global }),
@@ -190,8 +191,10 @@ export const api = {
     call<string>("commit", { repo, message, opts, expectedState, requireUnsealed }),
   lastMessage: (repo: string) => call<string>("last_message", { repo }),
 
-  graphLoad: (repo: string, branch: string | { reference: string; primary: string | null } | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean) =>
-    call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast, showIncoming }),
+  graphLoad: (repo: string, branch: string | { reference: string; primary: string | null } | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean, deferCount?: boolean) =>
+    call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast, options: { showIncoming, deferCount } }),
+  graphCommitCount: (repo: string, key: string, includeWorktree: boolean) =>
+    call<number | null>("graph_commit_count", { repo, key, includeWorktree }),
   graphRows: (repo: string, start: number, count: number,expectedKey?:string) => call<GraphRow[]>("graph_rows", { repo, start, count,expectedKey }),
   graphFind: (repo: string, oid: string, expectedKey?: string) => call<number | null>("graph_find", { repo, oid, expectedKey }),
   graphBranchMembers: (repo: string, key: string, reference: string) => call<number[]>("graph_branch_members", { repo, key, reference }),
@@ -360,7 +363,7 @@ export const api = {
     call<PullRequest>("pull_request_create", { repo, title, body, head, base, draft, expectedConnection }),
   pullRequestCheckout: (repo: string, number: number, expectedConnection: string,expectedHead:string) => call<string>("pull_request_checkout", { repo, number, expectedConnection,expectedHead }),
   commitChecks: (repo: string, sha: string) => call<Check[]>("commit_checks", { repo, sha }),
-  watchRepo: (repo: string) => call<void>("watch_repo", { repo }),
+  watchRepo: (repo: string, restart = false) => call<void>("watch_repo", { repo, restart }),
   unwatchRepo: (repo: string) => call<void>("unwatch_repo", { repo }),
   revealPath: (path: string) => call<void>("reveal_path", { path }),
   openPath: (path: string) => call<void>("open_path", { path }),

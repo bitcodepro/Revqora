@@ -178,6 +178,21 @@ pub fn parse(raw: &str) -> StatusSummary {
     s
 }
 
+#[derive(Serialize)]
+pub struct StatusWithOperation {
+    #[serde(flatten)]
+    pub status: StatusSummary,
+    pub operation: String,
+}
+
+pub fn status_with_operation(repo: &Path) -> GitResult<StatusWithOperation> {
+    super::operations::read(repo, || {
+        let status = status(repo)?;
+        let operation = super::repo::op_state(repo, &super::repo::git_dir(repo)?).kind;
+        Ok(StatusWithOperation { status, operation })
+    })
+}
+
 pub fn status(repo: &Path) -> GitResult<StatusSummary> {
     super::operations::read(repo, || {
         let version = super::operations::next_version(repo);
