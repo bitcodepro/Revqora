@@ -36,6 +36,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const favorites = useLibrary(s => s.favorites), explorerOrder = useLibrary(s => s.explorerOrder);
   const order = useRepos(s => s.order), tabs = useRepos(s => s.tabs), active = useRepos(s => s.active);
   const overview = useUi(s => s.repositoryOverview);
+  const reveal = useUi(s => s.explorerReveal);
   const favoritesOnly = useSettings(s => s.explorerFavoritesOnly);
   const folderHover = useSettings(s => s.explorerFolderHover);
   const hoverColor = (theme: keyof typeof folderHover) => {
@@ -92,7 +93,18 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     const row = tree.current?.querySelector<HTMLButtonElement>(`[data-explorer-entry="${CSS.escape(id)}"] > .repository-select`);
     row?.focus({ preventScroll: true });
     row?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    return !!row;
   };
+  useEffect(() => {
+    if (!reveal) return;
+    setQuery("");
+    setIncomingOnly(false);
+    clearSelection();
+    setFocusedEntry(reveal);
+  }, [reveal, clearSelection]);
+  useEffect(() => {
+    if (reveal && focusedEntry === reveal && focusRow(reveal)) useUi.setState({ explorerReveal: null });
+  });
   const rowIdFrom = (target: EventTarget) => (target as HTMLElement).closest<HTMLElement>("[data-explorer-entry]")?.dataset.explorerEntry;
   const selectionKeys = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const id = rowIdFrom(event.target);

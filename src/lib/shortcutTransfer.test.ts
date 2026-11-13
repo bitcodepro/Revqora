@@ -57,6 +57,8 @@ it("resolves imported Shift combinations when the event reports a different char
     expect(matchesShortcut(shiftedKey("Equal", "+"), "renameItem")).toBe(true);
     expect(actionFor(shiftedKey("Numpad1", "!"))).toBeNull();
     useSettings.getState().set({ shortcuts: { ...useSettings.getState().shortcuts, open: "Ctrl+Shift+Х" } });
+    expect(actionFor(shiftedKey("BracketLeft", "Х"))).toBe("fetch");
+    useSettings.getState().set({ shortcuts: { open: "Ctrl+Shift+Х" } });
     expect(actionFor(shiftedKey("BracketLeft", "Х"))).toBe("open");
   } finally { useSettings.getState().set({ shortcuts: before }); }
 });
@@ -66,7 +68,7 @@ it("detects conflicts between imported base keys and captured shifted symbols", 
   expect(reviewShortcutAssignments({ push: capture }, [{ id: "fetch", key: "Ctrl+Shift+1" }]).errors.get(0)).toMatch(/Push/);
   expect(reviewShortcutAssignments({ push: "Ctrl+Shift+[" }, [{ id: "fetch", key: "Ctrl+Shift+{" }]).errors.get(0)).toMatch(/Push/);
   const cyrillic = shiftedKey("BracketLeft", "Х");
-  expect(shortcutConflict("fetch", comboFromEvent(cyrillic)!, { push: "Ctrl+Shift+[" }, cyrillic)?.id).toBe("push");
+  expect(shortcutConflict("fetch", comboFromEvent(cyrillic)!, { push: "Ctrl+Shift+[" })?.id).toBe("push");
 });
 
 it("preserves non-ASCII and browser key names in native backups", () => {

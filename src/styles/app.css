@@ -2470,7 +2470,7 @@ select[size="1"]:not([multiple]) {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 36px;
+  min-height: 36px;
   padding: 0 10px;
   border-radius: 7px;
   cursor: pointer;
@@ -2480,7 +2480,22 @@ select[size="1"]:not([multiple]) {
   background: var(--bg-selected-strong);
   color: var(--text);
 }
+.palette-result-label {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+  padding-block: 4px;
+}
+.palette-result-label small,
+.palette-status {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+.palette-status {
+  padding: 7px 16px 10px;
+}
 .palette-item .group {
+  flex: none;
   margin-left: auto;
   font-size: var(--fs-xs);
   color: var(--text-faint);

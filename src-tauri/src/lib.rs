@@ -1008,6 +1008,11 @@ async fn refs_snapshot(repo: String) -> GitResult<RefsSnapshot> {
     blocking(move || refs::snapshot(&p(&repo))).await
 }
 
+#[tauri::command]
+async fn repository_branch_names(repo: String) -> GitResult<Vec<String>> {
+    blocking(move || refs::branch_names(&p(&repo))).await
+}
+
 /// Branches already squash- or rebase-merged into HEAD.
 #[tauri::command]
 async fn squash_merged(repo: String) -> GitResult<Vec<String>> {
@@ -2511,6 +2516,7 @@ pub fn run() {
             blob,
             text_blob,
             refs_snapshot,
+            repository_branch_names,
             fetch_background,
             squash_merged,
             branch_details,

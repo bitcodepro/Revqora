@@ -61,7 +61,7 @@ const unassignedCommands: [id: string, label: string, description: string][] = [
 ];
 
 export const SHORTCUTS: ShortcutDef[] = [
-  { id: "palette", label: "Command palette", description: "Search actions, branches and repositories.", default: "Ctrl+N" },
+  { id: "palette", label: "Command palette", description: "Search actions, repositories, branches and Explorer folders.", default: "Ctrl+N" },
   { id: "open", label: "Open repository", description: "Open a local Git repository.", default: "Ctrl+O" },
   { id: "refresh", label: "Refresh", description: "Reload the current repository or overview.", default: "F5" },
   { id: "renameItem", label: "Rename focused item", description: "Rename a focused group, branch or repository label.", default: "F2", scope: "navigation" },
@@ -183,7 +183,7 @@ const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta"]);
 type ShortcutEvent = KeyboardEvent | React.KeyboardEvent;
 
 // Key positions used by IDE bindings that spell out the unshifted key.
-const SHIFTED_POSITIONS = new Map<string, [base: string, shifted: string]>([
+const SYMBOL_POSITIONS = new Map<string, [base: string, shifted: string]>([
   ["Digit0", ["0", ")"]], ["Digit1", ["1", "!"]], ["Digit2", ["2", "@"]],
   ["Digit3", ["3", "#"]], ["Digit4", ["4", "$"]], ["Digit5", ["5", "%"]],
   ["Digit6", ["6", "^"]], ["Digit7", ["7", "&"]], ["Digit8", ["8", "*"]], ["Digit9", ["9", "("]],
@@ -192,7 +192,7 @@ const SHIFTED_POSITIONS = new Map<string, [base: string, shifted: string]>([
   ["Semicolon", [";", ":"]], ["Quote", ["'", "\""]], ["Comma", [",", "<"]],
   ["Period", [".", ">"]], ["Slash", ["/", "?"]],
 ]);
-const US_SHIFT_ALIASES = new Map([...SHIFTED_POSITIONS.values()].map(([base, shifted]) => [shifted, base]));
+const US_SHIFT_ALIASES = new Map([...SYMBOL_POSITIONS.values()].map(([base, shifted]) => [shifted, base]));
 
 function eventModifiers(e: ShortcutEvent): string[] {
   const parts: string[] = [];
@@ -202,28 +202,40 @@ function eventModifiers(e: ShortcutEvent): string[] {
   return parts;
 }
 
-/** "Ctrl+Shift+K" style description of a key event, or null for lone modifiers. */
-export function comboFromEvent(e: ShortcutEvent): string | null {
-  if (MODIFIER_KEYS.has(e.key)) return null;
-  let k = e.key;
-  if (k === " ") k = "Space";
-  else if (k.length === 1) k = k.toUpperCase();
-  return [...eventModifiers(e), k].join("+");
+function physicalKey(code: string) {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^(?:Intl(?:Backslash|Ro|Yen)|Numpad(?:\d|Add|Subtract|Multiply|Divide|Decimal|Equal))$/.test(code)) return code;
+  return SYMBOL_POSITIONS.get(code)?.[0];
+}
+
+function usableKey(event: ShortcutEvent) {
+  const native = "nativeEvent" in event ? event.nativeEvent : event;
+  return !native.isComposing && !event.getModifierState?.("AltGraph") && !MODIFIER_KEYS.has(event.key);
+}
+
+function logicalKey(key: string) {
+  if (!key || ["Unidentified", "Dead", "Process", "AltGraph"].includes(key)) return null;
+  return key === " " ? "Space" : [...key].length === 1 ? key.toUpperCase() : key;
+}
+
+/** Capture the same key position in every layout. */
+export function comboFromEvent(event: ShortcutEvent): string | null {
+  if (!usableKey(event)) return null;
+  const logical = logicalKey(event.key);
+  const keypadNavigation = /^Numpad(?:\d|Decimal)$/.test(event.code) && logical && /^(?:Arrow|Home|End|Page|Insert|Delete)/.test(logical);
+  const key = keypadNavigation ? logical : physicalKey(event.code) ?? logical;
+  return key && [...eventModifiers(event), key].join("+");
 }
 
 function eventBindings(event: ShortcutEvent): string[] {
-  if (event.defaultPrevented || ("nativeEvent" in event ? event.nativeEvent.isComposing : event.isComposing)) return [];
+  if (event.defaultPrevented) return [];
   const captured = comboFromEvent(event);
   if (!captured) return [];
-  const exact = captured.toLowerCase();
-  const positional = shiftedPositionBinding(event);
-  // A shortcut captured in the user's layout takes precedence over a positional match.
-  return positional && positional !== exact ? [exact, positional] : [exact];
-}
-
-function shiftedPositionBinding(event: ShortcutEvent): string | undefined {
-  const position = event.shiftKey ? SHIFTED_POSITIONS.get(event.code) : undefined;
-  return position && [...eventModifiers(event), position[0]].join("+").toLowerCase();
+  const physical = conflictKey(captured);
+  // Keep layout-specific bindings saved by older versions usable.
+  const logical = logicalKey(event.key);
+  const legacy = logical && /[^\x00-\x7f]/.test(logical) && conflictKey([...eventModifiers(event), logical].join("+"));
+  return legacy && legacy !== physical ? [physical, legacy] : [physical];
 }
 
 function conflictKey(combo: string): string {
@@ -243,39 +255,38 @@ export function acceptsPlainShortcut(id: string, key: string) {
     /^(ArrowUp|ArrowDown|PageUp|PageDown|Home|End|Enter)$/.test(key);
 }
 
-/** Resolve a global action, trying the produced key before its unshifted position. */
+/** Resolve a global action, preferring the physical key position. */
 export function actionFor(event: ShortcutEvent): string | null {
   const o = useSettings.getState().shortcuts;
   for (const combo of eventBindings(event)) {
-    const action = SHORTCUTS.find(s => !s.scope && bindingFor(s.id, o).toLowerCase() === combo);
+    const action = SHORTCUTS.find(s => !s.scope && conflictKey(bindingFor(s.id, o)) === combo);
     if (action) return action.id;
   }
   return null;
 }
 
 export function matchesShortcut(event: ShortcutEvent, id: string): boolean {
-  const [exact, positional] = eventBindings(event);
+  const [physical, legacy] = eventBindings(event);
   const overrides = useSettings.getState().shortcuts;
-  const binding = bindingFor(id, overrides).toLowerCase();
-  if (!binding || !exact) return false;
-  if (binding === exact) return true;
-  if (binding !== positional) return false;
+  const binding = conflictKey(bindingFor(id, overrides));
+  if (!binding || !physical) return false;
+  if (binding === physical) return true;
+  if (binding !== legacy) return false;
   const scope = SHORTCUTS.find(shortcut => shortcut.id === id)?.scope;
   return !SHORTCUTS.some(shortcut => shortcut.id !== id && (!shortcut.scope || shortcut.scope === scope)
-    && bindingFor(shortcut.id, overrides).toLowerCase() === exact);
+    && conflictKey(bindingFor(shortcut.id, overrides)) === physical);
 }
 
 // History can show a file list and a focused diff at the same time.
 const previewScopes = new Set(["history", "files", "diff"]);
 
-export function shortcutConflict(id: string, combo: string, overrides: Record<string, string>, capturedEvent?: ShortcutEvent) {
+export function shortcutConflict(id: string, combo: string, overrides: Record<string, string>) {
   const key = conflictKey(combo);
   if (!key) return undefined;
-  const positional = capturedEvent && shiftedPositionBinding(capturedEvent);
   const scope = SHORTCUTS.find((shortcut) => shortcut.id === id)?.scope;
   return SHORTCUTS.find((shortcut) => {
     const assigned = conflictKey(bindingFor(shortcut.id, overrides));
-    if (shortcut.id === id || (assigned !== key && assigned !== positional)) return false;
+    if (shortcut.id === id || assigned !== key) return false;
     // Ctrl+F is shared by design: the focused diff handles it before History does.
     if (key === "ctrl+f" && ((id === "diffFind" && shortcut.id === "historyFind")
       || (id === "historyFind" && shortcut.id === "diffFind"))) return false;
