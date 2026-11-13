@@ -128,7 +128,6 @@ export function UpdateChip() {
             >
               Skip this version
             </button>
-            <div className="spacer" />
             <button type="button" className="btn sm" onClick={() => api.openPath(update.htmlUrl)}>
               <ExternalLink size={13} /> What's new
             </button>

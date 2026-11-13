@@ -182,6 +182,53 @@ try {
     const about = page.locator(".modal").filter({ hasText: "About Revqora" });
     if (await about.locator(".about-details dd").first().innerText() !== runningVersion) throw new Error("About did not show the version of the running executable");
     await about.getByRole("button", { name: "Close", exact: true }).click();
+
+    // Exercise the ready layout without installing a package or restarting the fixture.
+    const updateFixture = {
+      current: runningVersion, latest: "99.0.0", available: true, canInstall: true,
+      notes: `Full changelog\nhttps://example.invalid/${"long-link".repeat(30)}`,
+      publishedAt: null, htmlUrl: "https://example.invalid/release", asset: null, reason: null,
+    };
+    await page.evaluate(info => {
+      const fetch = window.fetch;
+      const bridge = window.__TAURI_INTERNALS__;
+      const check = bridge.convertFileSrc("update_check", "ipc");
+      const install = bridge.convertFileSrc("update_install", "ipc");
+      const success = value => new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json", "Tauri-Response": "ok" } });
+      window.fetch = (input, init) => {
+        const url = typeof input === "string" ? input : input.url;
+        if (url === check) return Promise.resolve(success(info));
+        if (url === install) return Promise.resolve(success(null));
+        return fetch(input, init);
+      };
+      window.__restoreUpdateFetch = () => { window.fetch = fetch; delete window.__restoreUpdateFetch; };
+    }, updateFixture);
+    try {
+      await page.locator(".topbar").click({ button: "right", position: { x: 3, y: 3 } });
+      await page.locator(".ctx-menu").getByText("Check Updates", { exact: true }).click();
+      await chip.filter({ hasText: "Update 99.0.0" }).waitFor();
+      await chip.click();
+      await card.getByRole("button", { name: "Update now", exact: true }).click();
+      await card.getByRole("button", { name: "Restart to update", exact: true }).waitFor();
+      await withViewport(page, { width: 980, height: 680 }, async () => {
+        // Increasing the text size reliably exercises wrapping in the compact card.
+        await card.evaluate(el => el.style.setProperty("--fs-sm", "18px"));
+        await page.waitForFunction(() => {
+          const card = document.querySelector(".update-card");
+          const bounds = card.getBoundingClientRect();
+          const notes = card.querySelector(".update-notes");
+          const buttons = [...card.querySelectorAll(".update-foot .btn")].map(button => button.getBoundingClientRect());
+          return buttons.length === 3
+            && buttons.every(button => button.left >= bounds.left && button.right <= bounds.right && button.bottom <= bounds.bottom)
+            && buttons[2].top > buttons[0].top
+            && notes.scrollWidth <= notes.clientWidth;
+        });
+      });
+      await card.getByRole("button", { name: "Skip this version", exact: true }).click();
+      await chip.waitFor({ state: "detached" });
+    } finally {
+      await page.evaluate(() => window.__restoreUpdateFetch?.());
+    }
   });
 
   await check("portable profile writes are ignored and unrelated WAL activity keeps the selected diff", async () => {
