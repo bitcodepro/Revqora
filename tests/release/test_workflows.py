@@ -143,7 +143,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(job["env"][key], job["env"]["REVQORA_TEST_TMP"])
             for step in job["steps"]:
                 self.assertNotIn("continue-on-error", step)
-        commands = [s for s in automation["steps"] if "cargo " in s.get("run", "")]
+        commands = [s for s in automation["steps"] if s.get("run", "").lstrip().startswith("cargo ")]
         self.assertEqual(len(commands), 2)
         self.assertEqual(commands[0]["run"].strip(), "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features ui-automation -- -D warnings\nexit $LASTEXITCODE")
         self.assertEqual(commands[1]["run"].strip(), "cargo test --manifest-path src-tauri/Cargo.toml --features ui-automation\nexit $LASTEXITCODE")
