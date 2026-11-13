@@ -686,6 +686,7 @@ CI checks Windows, Ubuntu and macOS and builds five architecture-specific packag
 PRs produce preview artifacts; publication is restricted to verified main builds.
 See [CI and releases](https://github.com/bitcodepro/Revqora/blob/main/docs/ci-release.md)
 and [CI performance](https://github.com/bitcodepro/Revqora/blob/main/docs/CI_PERFORMANCE.md).
+The [desktop performance baseline](docs/APP_PERFORMANCE.md) covers history, branch switching, commit previews, and search.
 Demo helpers: `scripts/make-demo-repo.sh` and `scripts/make-big-repo.py`.
 
 ## Documentation and feedback
