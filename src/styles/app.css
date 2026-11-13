@@ -225,6 +225,27 @@ button {
   transform-box: border-box;
   transform-origin: center;
 }
+.tb-btn[aria-busy="true"] .transfer-icon {
+  color: var(--accent);
+  transform-box: border-box;
+  transform-origin: center;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tb-btn[data-shortcut="fetch"][aria-busy="true"] .transfer-icon {
+    animation: spin 1.1s linear infinite;
+  }
+  .tb-btn[data-shortcut="pull"][aria-busy="true"] .transfer-icon {
+    --transfer-offset: 2px;
+    animation: toolbar-transfer 0.85s ease-in-out infinite;
+  }
+  .tb-btn[data-shortcut="push"][aria-busy="true"] .transfer-icon {
+    --transfer-offset: -2px;
+    animation: toolbar-transfer 0.85s ease-in-out infinite;
+  }
+}
+@keyframes toolbar-transfer {
+  50% { transform: translateY(var(--transfer-offset)); }
+}
 .loading-status {
   display: inline-flex;
   align-items: center;
@@ -1767,6 +1788,21 @@ select[size="1"]:not([multiple]) {
 }
 .commit-box .summary-wrap {
   position: relative;
+}
+.commit-description {
+  position: relative;
+}
+.commit-description .textarea {
+  display: block;
+}
+.commit-description-hint {
+  position: absolute;
+  inset-block-start: 9px;
+  inset-inline-start: 11px;
+  color: var(--text-faint);
+  line-height: 1.5;
+  pointer-events: none;
+  user-select: none;
 }
 .commit-box .counter {
   position: absolute;

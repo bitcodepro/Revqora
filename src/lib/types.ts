@@ -265,6 +265,7 @@ export interface BranchInfo {
   upstreamFullName: string | null;
   ahead: number;
   behind: number;
+  unpublished?: number;
   gone: boolean;
   isHead: boolean;
   remote: string | null;

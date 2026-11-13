@@ -106,6 +106,9 @@ export function TopBar() {
   const status = tab?.status;
   const stashCount = tab?.refs?.stashes.length ?? 0;
   const root = tab?.root;
+  const fetching = useUi(s => s.repositoryOperations.some(op => op.repo === root && op.phase === "running" && (op.command === "fetch" || op.command === "fetch_background")));
+  const pulling = useUi(s => s.repositoryOperations.some(op => op.repo === root && op.phase === "running" && op.command === "pull"));
+  const pushing = useUi(s => s.repositoryOperations.some(op => op.repo === root && op.phase === "running" && (op.command === "push" || op.command === "push_ref")));
   const repositoryName = useLibrary(s => root ? s.repositoryNames[repositoryKey(root)] : undefined) ?? tab?.info?.name ?? (root ? basename(root) : "Repositories");
   const dark = resolvedTheme(theme) === "dark";
   const overview = useUi((s) => s.repositoryOverview);
@@ -184,15 +187,15 @@ export function TopBar() {
           <SyncButton roots={[root]} />
           <button className="tb-btn" aria-label="Open worktree manager" title="Worktree manager" data-shortcut="worktree-manager" onClick={() => openWorktrees(root)}><FolderGit2 size={15} />Worktrees</button>
           <button className="tb-btn" aria-label="Open branch manager" title="Branch manager" data-shortcut="branch-manager" onClick={() => openOverlay({ kind: "branches", root })}><GitBranch size={15} />Branches</button>
-          <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes" data-shortcut="fetch">
-            <RefreshCw size={15} /> Fetch
+          <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes" data-shortcut="fetch" aria-busy={fetching}>
+            <RefreshCw size={15} className="transfer-icon" /> Fetch
           </button>
-          <button className="tb-btn" onClick={() => A.pull(root)} title="Pull" data-shortcut="pull">
-            <ArrowDownToLine size={15} /> Pull
+          <button className="tb-btn" onClick={() => A.pull(root)} title="Pull" data-shortcut="pull" aria-busy={pulling}>
+            <ArrowDownToLine size={15} className="transfer-icon" /> Pull
             {!!status?.behind && <span className="count">{status.behind}</span>}
           </button>
-          <button className="tb-btn" onClick={() => A.push(root)} title="Push" data-shortcut="push">
-            <ArrowUpFromLine size={15} /> Push
+          <button className="tb-btn" onClick={() => A.push(root)} title="Push" data-shortcut="push" aria-busy={pushing}>
+            <ArrowUpFromLine size={15} className="transfer-icon" /> Push
             {!!status?.ahead && <span className="count">{status.ahead}</span>}
           </button>
           <div className="tb-sep" />

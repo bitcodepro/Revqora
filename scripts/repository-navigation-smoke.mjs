@@ -210,7 +210,15 @@ export async function repositoryNavigationSmoke({ page, work, shot }) {
   await page.keyboard.press("Escape");
   assert.equal(await flat.locator(".repository-item.batch-selected").count(), 0);
   const activeRow = flat.locator(".repository-item.active");
-  assert.equal(await activeRow.evaluate(row => getComputedStyle(row).backgroundColor), "rgba(0, 0, 0, 0)");
+  const activeButton = activeRow.locator(".repository-select[aria-current=true]");
+  await search.hover();
+  assert.equal(await activeRow.count(), 1);
+  assert.equal(await activeButton.innerText(), await flatRows.first().innerText());
+  assert.notEqual(await activeRow.evaluate(row => getComputedStyle(row).backgroundColor), "rgba(0, 0, 0, 0)");
+  await flatRows.last().click();
+  await search.hover();
+  assert.equal(await activeButton.innerText(), await flatRows.last().innerText());
+  assert.equal(await flatRows.first().getAttribute("aria-current"), "false");
   await flatRows.first().click({ modifiers: ["Control"] });
   await flat.locator(".repository-list").evaluate(list => list.dispatchEvent(new MouseEvent("click", { bubbles: true })));
   assert.equal(await flat.locator(".repository-item.batch-selected").count(), 0);

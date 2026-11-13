@@ -10,6 +10,14 @@ where
 {
     runner::run_env(root, args, &ENV, None)
 }
+pub(super) fn run_with_input<I, S>(root: &Path, args: I, input: &[u8]) -> GitResult<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    runner::run_env(root, args, &ENV, Some(input))
+}
+
 pub fn exec<I, S>(root: &Path, args: I) -> GitResult<runner::Output>
 where
     I: IntoIterator<Item = S>,

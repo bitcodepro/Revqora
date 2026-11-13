@@ -69,6 +69,24 @@ export async function commitDraftSmoke({ page, work, returnRoot, shot }) {
     await openRepository(page, root);
     await page.locator(".view-tab").filter({ hasText: "Changes" }).click();
     await summary().waitFor();
+    const hint = page.locator(".commit-description-hint");
+    await body().dblclick({ position: { x: 25, y: 15 } });
+    await summary().click();
+    if (await body().inputValue() || await hint.evaluate(node => getComputedStyle(node).userSelect) !== "none") {
+      throw Error("The empty description hint must be separate from the draft and non-selectable");
+    }
+    await body().fill("Sample draft description");
+    await hint.waitFor({ state: "detached" });
+    await body().press("Control+a");
+    if (await body().evaluate(field => field.selectionEnd - field.selectionStart) !== "Sample draft description".length) {
+      throw Error("The real draft text must remain selectable");
+    }
+    await summary().click();
+    if (await body().evaluate(field => field.selectionEnd !== field.selectionStart) || await body().inputValue() !== "Sample draft description") {
+      throw Error("Leaving Description must clear the selection and preserve the draft");
+    }
+    await body().clear();
+    await hint.waitFor();
     for (const toggleOff of [true, false]) {
       await summary().fill(""); await body().fill("");
       await page.evaluate(installCommitDraftGate, "last_message");
