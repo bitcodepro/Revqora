@@ -95,6 +95,17 @@ fn parse_track(t: &str) -> (u32, u32, bool) {
     (ahead, behind, gone)
 }
 
+pub fn branch_names(repo: &Path) -> GitResult<Vec<String>> {
+    let raw = runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(symref)", "refs/heads", "refs/remotes"])?;
+    Ok(raw
+        .lines()
+        .filter_map(|line| {
+            let (name, target) = line.split_once('\0')?;
+            target.is_empty().then(|| name.to_owned())
+        })
+        .collect())
+}
+
 pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
     let remotes = remotes(repo)?;
     let raw = runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"])?;

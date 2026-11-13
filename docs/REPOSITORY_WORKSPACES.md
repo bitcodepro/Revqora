@@ -3,9 +3,9 @@
 Open **Repository library** from the toolbar, or **Manage library**
 from the Repositories panel. A star keeps a repository accessible after its tab is
 closed. Groups can contain other groups and repositories can belong to several.
-Search, favorites and the group selector scope the panel's bulk actions
-to matching **open** repositories. Closed bookmarks do not perform background Git
-or network work until opened. The library keeps previously opened paths available.
+Bulk actions appear in the unfiltered Repositories panel and apply to open
+repositories. Closed bookmarks do not perform background Git or network work
+until opened. The library keeps previously opened paths available.
 
 On startup, the complete saved repository list and all group memberships appear
 together. The last active repository is selected immediately and discovered first.
@@ -60,7 +60,7 @@ overview to all repositories in that group and its descendants. Each repository
 appears once in the flat list. Selection leaves the open tabs, branch and history
 layout as they are. Select **All repositories** in Explorer to clear the filter.
 
-Drag groups by their handles to reorder siblings or move them to another level.
+Drag groups by their rows to reorder siblings or move them to another level.
 Drag repository rows onto a group, or to the top-level target to remove that
 placement. **Ctrl+Z** in navigation undoes the last move. Use **Ctrl** or **Shift**
 for multiple selection. Right-click the tree to create a top-level group or a row

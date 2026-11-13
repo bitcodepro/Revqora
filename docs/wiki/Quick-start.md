@@ -22,7 +22,7 @@ Revqora needs Git 2.30 or newer. Advanced history, stage-layer and restack opera
 
 The current repository and branch appear at the top. Check them before making changes.
 
-To add a second repository, press **Ctrl+O** again. The existing one stays open. See [Repositories and workspaces](https://github.com/bitcodepro/Revqora/wiki/Repositories-and-workspaces).
+To add a second repository, press **Ctrl+O** again. The existing one stays open. See [Explorer and repository library](https://github.com/bitcodepro/Revqora/wiki/Repositories-and-workspaces).
 
 ## 3. Get the latest shared code
 
