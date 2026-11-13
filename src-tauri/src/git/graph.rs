@@ -897,7 +897,7 @@ pub fn search_repository(repo: &Path, query: &str, mode: SearchMode) -> GitResul
     let raw = repository_search_rows(repo, query, mode, 0, if filter_search_rows(mode) { REPOSITORY_SEARCH_SCAN } else { limit }, head.as_deref(), false)?;
     let q = query.to_lowercase();
     let fields: Vec<_> = raw.split_terminator('\0').collect();
-    Ok(fields.chunks_exact(6).filter_map(|row| repository_search_hit(row, &q, mode)).take(limit).collect())
+    Ok(fields.as_chunks::<6>().0.iter().filter_map(|row| repository_search_hit(row, &q, mode)).take(limit).collect())
 }
 
 #[derive(Serialize)]
