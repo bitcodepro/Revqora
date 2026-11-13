@@ -16,7 +16,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProfile, launch, withViewport, openCommitAction } from "./ui-driver.mjs";
+import { createProfile, launch, withViewport, openCommitAction, preferRepositoryList } from "./ui-driver.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
 import { mcpSmoke } from "./mcp-smoke.mjs";
 
@@ -132,6 +132,8 @@ try {
     await page.waitForSelector(".modal:has-text('Welcome to Revqora')", { timeout: 20000 });
     await page.click(".modal button:has-text('Skip')");
     await page.waitForSelector(".modal", { state: "detached" });
+    await page.getByRole("complementary", { name: "Explorer", exact: true }).waitFor();
+    await page.locator(".repository-slot").waitFor({ state: "hidden" });
     // Fixtures deliberately change server refs with the CLI between reviews.
     // An unrelated timer fetch must not invalidate a prepared deletion mid-test.
     // Auto-fetch scheduling itself is covered by the frontend unit tests.
@@ -142,6 +144,7 @@ try {
     // workspace fixture separately verifies the default all-library startup.
     await page.getByRole("checkbox", { name: "Open all saved repositories", exact: true }).uncheck();
     await page.locator(".modal").getByRole("button", { name:"Done", exact:true }).click();
+    await preferRepositoryList(page);
   });
 
   await check("a newer release shows the update chip and Check Updates can show it again", async () => {
@@ -315,7 +318,7 @@ try {
       await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       const background = await page.evaluate(() => ({ reads: window.__refreshPreviewReads, retained: window.__refreshPreviewLine === document.querySelector(".details .diff .dl") && window.__refreshPreviewLine.isConnected }));
       if (background.reads.length || !background.retained) throw new Error(`background observation reloaded the immutable preview: ${JSON.stringify(background)}`);
-      await page.click("button[title='Refresh (F5)']");
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
       await page.waitForFunction(() => window.__refreshPreviewReads.includes("commit_details") && window.__refreshPreviewReads.includes("rev_diff"), null, { timeout: 12000 });
       await page.waitForSelector(".commit-subject:has-text('Add average helper')");
       await page.waitForSelector(".details .file-row.selected:has-text('app.ts')");
@@ -331,6 +334,8 @@ try {
   });
 
   await check("preview invalidation fences delayed metadata and diff responses", async () => {
+    const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+    await refresh.hover();
     for (const command of ["commit_details", "rev_diff"]) {
       await page.evaluate((command) => {
         const original = window.fetch;
@@ -350,9 +355,9 @@ try {
         };
       }, command);
       try {
-        await page.click("button[title='Refresh (F5)']");
+        await refresh.click();
         await page.waitForFunction(() => typeof window.__generationRelease === "function");
-        await page.click("button[title='Refresh (F5)']");
+        await refresh.click();
         await page.waitForFunction(() => window.__generationReads >= 2);
         const marker = command === "commit_details" ? ".commit-subject" : ".details .diff";
         await until(async () => (await page.locator(marker).innerText()).includes("refreshed preview response"), `new ${command} response did not render`);
@@ -367,7 +372,7 @@ try {
         await page.evaluate(() => { window.__generationRelease?.(); window.fetch = window.__generationFetch; });
       }
     }
-    await page.click("button[title='Refresh (F5)']");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForSelector(".commit-subject:has-text('Add average helper')");
     await page.waitForSelector(".details .diff .dl");
     await shot("51-preview-invalidation");
@@ -391,7 +396,7 @@ try {
       };
     });
     try {
-      await page.click("button[title='Refresh (F5)']");
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
       await page.waitForFunction(() => typeof window.__searchRefreshRelease === "function");
       if (await page.locator(".diff-find input").inputValue() !== "usage") throw new Error("refresh lost the active search query");
       if (await page.locator(".details .file-row, .details .diff .dl, .details .apply-hunk").count()) throw new Error("stale preview data remained during reload");
@@ -521,7 +526,7 @@ try {
         return response;
       };
     });
-    await page.click("button[title='Refresh (F5)']");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() => window.__layerRace.statusHeld);
     await page.locator(".file-row", { hasText: "config.json" }).first().hover();
     await page.locator(".file-row", { hasText: "config.json" }).first().locator("button[title='Stage']").click();
@@ -630,7 +635,7 @@ try {
     git("switch", "-q", "main");
     const before = git("rev-parse", "HEAD");
     await page.locator(".view-tab:has-text('History')").click();
-    await page.click("button[title='Refresh (F5)']");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await until(async () => {
       const currentMain = await page.locator(".sidebar .sb-item.current", { has: page.locator(".label", { hasText: /^main$/ }) }).count();
       const hash = page.locator(".grow:has(.head-ring) .g-hash span");
@@ -813,12 +818,12 @@ try {
     await page.click(".view-tab:has-text('Changes')");
     fs.writeFileSync(path.join(repo, "src/config.json"), '{\n  "port": 7000,\n  "debug": true\n}\n');
     git("add", "src/config.json");
-    await page.click("button[title='Refresh (F5)']");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.getByRole("button", {name:"Seal staged changes into a layer",exact:true}).click();
     await page.waitForSelector(".layer:not(.open-layer)");
     fs.writeFileSync(path.join(repo, "src/config.json"), '{\n  "port": 7001,\n  "debug": true\n}\n');
     git("add", "src/config.json");
-    await page.click("button[title='Refresh (F5)']");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForSelector(".open-layer .file-row:has-text('config.json')");
     await page.click(".open-layer button[title='Seal into a layer']");
     await until(async () => (await page.locator(".layer:not(.open-layer)").count()) === 2, "second layer not sealed");
@@ -831,7 +836,7 @@ try {
     await until(() => git("show", ":src/config.json").includes("7001"), "resolution not staged");
     git("reset", "-q", "--hard");
     git("update-ref", "-d", "refs/worktree/revqora/layers");
-    await page.click("button[title='Refresh (F5)']");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
   });
 
   await check("repository panels collapse independently and review files can be resized", async () => {
@@ -846,10 +851,10 @@ try {
     await page.waitForSelector(".branches-slot", { state: "visible" });
     const navigation = page.getByRole("group", { name: "Repository navigation", exact: true });
     const navigationButtons = await navigation.getByRole("button").evaluateAll(buttons => buttons.map(button => button.getAttribute("aria-label")));
-    if (navigationButtons.join("|") !== "Toggle Workspaces panel|Toggle Groups panel|Toggle repositories panel|Toggle branches panel") throw new Error("Sidebar toggles are out of order");
+    if (navigationButtons.join("|") !== "Toggle Explorer panel|Toggle repositories panel|Toggle branches panel") throw new Error("Sidebar toggles are out of order");
     const repositoryActions = page.getByRole("group", { name: "Repository actions", exact: true });
     await repositoryActions.getByRole("button", { name: "All repositories", exact: true }).waitFor();
-    await repositoryActions.getByRole("button", { name: "Repository library and workspaces", exact: true }).waitFor();
+    await repositoryActions.getByRole("button", { name: "Repository library", exact: true }).waitFor();
     await repositoryActions.getByTitle("Show in Explorer", { exact: true }).waitFor();
     const branchesToggle = navigation.getByRole("button", { name: "Toggle branches panel", exact: true });
     await page.keyboard.press("Control+Alt+b");
@@ -870,23 +875,15 @@ try {
     await page.waitForSelector(".repository-slot", { state: "hidden" });
     await page.click(".topbar button[aria-label='Toggle repositories panel']");
     await page.waitForSelector(".repository-slot", { state: "visible" });
-    const workspaces = page.getByRole("complementary", { name: "Workspaces", exact: true });
-    const workspacesOpen = await workspaces.isVisible();
+    const explorer = page.getByRole("complementary", { name: "Explorer", exact: true });
+    const workspacesOpen = await explorer.isVisible();
     await page.keyboard.press("Control+Alt+w");
-    await workspaces.waitFor({ state: workspacesOpen ? "hidden" : "visible" });
+    await explorer.waitFor({ state: workspacesOpen ? "hidden" : "visible" });
     await page.keyboard.press("Control+Alt+w");
-    await workspaces.waitFor({ state: workspacesOpen ? "visible" : "hidden" });
-    const groups = page.getByRole("complementary", { name: "Groups", exact: true });
-    const groupsToggle = navigation.getByRole("button", { name: "Toggle Groups panel", exact: true });
-    const groupsOpen = await groups.isVisible();
-    await groupsToggle.click();
-    await groups.waitFor({ state: groupsOpen ? "hidden" : "visible" });
-    if (await workspaces.isVisible() !== workspacesOpen || await branchesToggle.getAttribute("aria-expanded") !== "true" ||
-        !await page.locator(".repository-slot").isVisible()) {
-      throw new Error("Toggling Groups changed another navigation panel");
+    await explorer.waitFor({ state: workspacesOpen ? "visible" : "hidden" });
+    if (await branchesToggle.getAttribute("aria-expanded") !== "true" || !await page.locator(".repository-slot").isVisible()) {
+      throw new Error("Toggling Explorer changed another navigation panel");
     }
-    await groupsToggle.click();
-    await groups.waitFor({ state: groupsOpen ? "visible" : "hidden" });
     // Give a growing pane actual headroom instead of depending on the runner's display.
     await page.setViewportSize({ width: 1600, height: 900 });
     const before = await page.locator(".commit-details .details-left").evaluate((el) => el.clientWidth);
@@ -991,16 +988,16 @@ try {
     await page.click(".history-mode button:has-text('Columns')");
     await page.locator(".columns-commits .graph-scroll").press("End");
     await page.waitForSelector(".columns-details .commit-subject:has-text('Initial project structure')");
-    const otherFile = page.locator(".columns-details .file-row:not(.selected)").first();
-    const path = await otherFile.getAttribute("title");
+    const otherFile = page.locator(".columns-details .file-row[data-file-path]:not(.selected)").first();
+    const path = await otherFile.getAttribute("data-file-path");
     await otherFile.click();
     await page.waitForSelector(".columns-details .diff .dl");
     await shot("26-three-columns");
     await page.click(".history-mode button:has-text('Review')");
-    const reviewFile = await page.locator(".review-details .file-row.selected").getAttribute("title");
+    const reviewFile = await page.locator(".review-details .file-row.selected").getAttribute("data-file-path");
     if (!path || reviewFile !== path) throw new Error("switching from Columns to Review lost the selected file");
     await page.click(".history-mode button:has-text('Columns')");
-    if (await page.locator(".columns-details .file-row.selected").getAttribute("title") !== path) throw new Error("switching from Review to Columns lost the selected file");
+    if (await page.locator(".columns-details .file-row.selected").getAttribute("data-file-path") !== path) throw new Error("switching from Review to Columns lost the selected file");
     await page.keyboard.press("Control+Shift+r");
     await page.waitForSelector(".history-mode button.on:has-text('Graph')");
     await page.keyboard.press("Control+Shift+r");
@@ -1024,7 +1021,7 @@ try {
     };
     const openDelete = async (name) => {
       await page.fill(".sidebar input[placeholder^='Filter branches']", name);
-      await page.click("button[title='Refresh (F5)']");
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
       await page.locator(`.sidebar [data-branch-kind='local'][data-branch-name='${name}']`).click({ button: "right" });
       await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
       await page.waitForSelector(".modal .delete-remote-branch");
@@ -1173,7 +1170,7 @@ try {
   await check("deletion review selects its target and opens the exact recovery checkpoint", async () => {
     const openDelete = async (name) => {
       await page.fill(".sidebar input[placeholder^='Filter branches']", name);
-      await page.click("button[title='Refresh (F5)']");
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
       await page.locator(`.sidebar [data-branch-kind='local'][data-branch-name='${name}']`).click({ button: "right" });
       await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
       await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
@@ -1214,7 +1211,7 @@ try {
     // The remote-list menu must use the same reviewed, leased deletion flow.
     git("push", "-q", "origin", "HEAD:refs/heads/ui-review-server-only");
     await page.fill(".sidebar input[placeholder^='Filter branches']", "ui-review-server-only");
-    await page.click("button[title='Refresh (F5)']");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.locator(".sidebar [data-branch-kind='remote'][data-branch-name='origin/ui-review-server-only']").click({ button: "right" });
     await page.locator(".ctx-item").filter({ hasText: /^Delete on remote…$/ }).click();
     await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
@@ -1246,7 +1243,7 @@ try {
       await page.click(".modal button:has-text('Cancel')");
     } finally { git("worktree", "remove", "--force", worktree); git("branch", "-D", "ui-review-worktree"); }
     await page.fill(".sidebar input[placeholder^='Filter branches']", "");
-    await page.click("button[title='Refresh (F5)']");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
   });
 
   await check("twenty repositories support bulk fetch and clean fast-forward pull", async () => {
@@ -1353,14 +1350,16 @@ try {
     })), "tabbed split lines cannot be scrolled to their ends");
     await shot("25-tabbed-lines");
     await page.click("button[title='Unified']");
-    await page.locator(".details .file-row", { hasText: "large.txt" }).click();
+    await page.locator(".details .file-row[data-file-path='large.txt']").click();
     await page.waitForSelector(".virtual-diff");
     await until(async () => await overflow() > 100, "virtual diff lost off-screen long lines");
     // Opening and dismissing a long message must leave the mounted diff untouched.
     await page.locator(".details .diff-body").evaluate((el) => { el.scrollTop = 800; el.scrollLeft = 160; });
     await page.waitForTimeout(100);
     const scrollBefore = await page.locator(".details .diff-body").evaluate((el) => ({ x: el.scrollLeft, y: el.scrollTop }));
-    const fileBefore = await page.locator(".details .file-row.selected").getAttribute("title");
+    const selectedFile = page.locator(".details .file-row.selected");
+    const fileBefore = await selectedFile.getAttribute("data-file-path");
+    if (fileBefore !== "large.txt") throw new Error(`expected large.txt selected before opening the message, got ${JSON.stringify(fileBefore)}`);
     await page.click(".commit-message-open");
     await page.waitForSelector(".modal:has-text('Commit message')");
     await page.waitForSelector(".commit-message-body li:has-text('Keep the selected file')");
@@ -1378,7 +1377,8 @@ try {
     await page.waitForSelector(".modal", { state: "detached" });
     const scrollAfter = await page.locator(".details .diff-body").evaluate((el) => ({ x: el.scrollLeft, y: el.scrollTop }));
     if (Math.abs(scrollBefore.x - scrollAfter.x) > 1 || Math.abs(scrollBefore.y - scrollAfter.y) > 1) throw new Error("closing the message moved the diff scroll");
-    if (await page.locator(".details .file-row.selected").getAttribute("title") !== fileBefore) throw new Error("closing the message changed the selected path");
+    const fileAfter = await selectedFile.getAttribute("data-file-path");
+    if (fileAfter !== fileBefore) throw new Error(`closing the message changed the selected path from ${JSON.stringify(fileBefore)} to ${JSON.stringify(fileAfter)}`);
     await page.click(".history-mode button:has-text('Review')");
     await page.click(".focus-toggle");
     await page.click(".review-details .details-hide");
@@ -1432,14 +1432,14 @@ try {
       if (savedHook) fs.writeFileSync(hook, savedHook); else fs.rmSync(hook, { force: true });
       git("reset", "--mixed", original);
       for (const file of [started, release, path.join(repo, "queue-commit.txt"), path.join(repo, "queue-external.txt")]) fs.rmSync(file, { force: true });
-      await page.click("button[title='Refresh (F5)']");
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
     }
   });
 
   await check("a deletion confirmation keeps its precondition across external Git changes", async () => {
     git("branch", "ui-stale-confirm");
     await page.fill(".sidebar input[placeholder^='Filter branches']", "ui-stale");
-    await page.click("button[title='Refresh (F5)']");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.locator(".sidebar [data-branch-kind='local'][data-branch-name='ui-stale-confirm']").click({ button: "right" });
     await page.locator(".ctx-item").filter({ hasText: /^Delete…$/ }).click();
     await page.waitForSelector(".branch-review[aria-busy='false'][data-review-local-oid]");
@@ -1452,7 +1452,7 @@ try {
     await page.click(".modal button:has-text('Cancel')");
     git("branch", "-D", "ui-stale-confirm", "ui-stale-external");
     await page.fill(".sidebar input[placeholder^='Filter branches']", "");
-    await page.click("button[title='Refresh (F5)']");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
   });
 
   await check("dark theme renders", async () => {
@@ -1753,7 +1753,7 @@ try {
   await check("partial stash saves selected lines without changing staged or unselected data", async () => {
     fs.writeFileSync(path.join(stage5, "staged.txt"), "STAGED\n"); git5("add", "staged.txt"); index5 = fs.readFileSync(path.join(stage5, ".git", "index"));
     const original = fs.readFileSync(path.join(stage5, "f.txt"), "utf8"); fs.writeFileSync(path.join(stage5, "f.txt"), original.replace("line 4\n", "line 4\nFIRST\n").replace("line 20\n", "line 20\nSECOND\n"));
-    await page.click(".view-tab:has-text('Changes')"); await page.click("button[title='Refresh (F5)']");
+    await page.click(".view-tab:has-text('Changes')"); await page.getByRole("button", { name: "Refresh", exact: true }).click();
     // Reproduce an older staged-file response arriving after a new file's diff.
     // Hold the real backend response, without changing either file or Git state.
     await page.waitForSelector(".changes .file-row:has-text('staged.txt')");
@@ -1826,7 +1826,7 @@ try {
     await page.click(".view-tab:has-text('History')");
     await page.click(".history-mode button:has-text('Graph')");
     await page.waitForSelector(".history-mode button.on:has-text('Graph')");
-    await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".grow:has-text('fixup! Autosquash target')");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click(); await page.waitForSelector(".grow:has-text('fixup! Autosquash target')");
     // Semantic text matching normalizes rendered whitespace; the exact Git
     // identity is checked in the plan before any history rewrite is started.
     const commit = page.locator(".graph-scroll .grow").filter({ has: page.getByText("Autosquash target", { exact: true }) });
@@ -1850,8 +1850,8 @@ try {
   await check("Stage all refuses implicit nested gitlinks and opens the child from Changes", async () => {
     fs.writeFileSync(path.join(stage5, ".gitignore"), "ignored.log\n"); fs.writeFileSync(path.join(stage5, "regular.txt"), "must remain unstaged\n");
     const before = fs.readFileSync(path.join(stage5, ".git", "index"));
-    await page.click(".view-tab:has-text('Changes')"); await page.click("button[title='Refresh (F5)']");
-    const child = page.locator(".changes .file-row[title='nested/child/']");
+    await page.click(".view-tab:has-text('Changes')"); await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    const child = page.locator(".changes .file-row[data-file-path='nested/child/']");
     await child.waitFor();
     await page.click(".changes button[title='Stage all']"); await page.waitForSelector(".toast:has-text('Nested repository')");
     await page.waitForSelector(".changes[data-pending='false']");
@@ -1872,7 +1872,7 @@ try {
   const studioReport = () => page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("rebase_studio_report", { repo: root }), studioRoot);
   let studioFirst, studioBefore, studioTag, studioId, studioAfter, studioLater;
   const studioOpenPlan = async (subject, expectedOid) => {
-    await page.click(".view-tab:has-text('History')"); await page.click(".history-mode button:has-text('Graph')"); await page.click("button[title='Refresh (F5)']");
+    await page.click(".view-tab:has-text('History')"); await page.click(".history-mode button:has-text('Graph')"); await page.getByRole("button", { name: "Refresh", exact: true }).click();
     // Ref badges can consume the subject's entire width in a narrow layout.
     // Match its text for identity, then use the row's visible graph cell to
     // open the commit menu without bypassing Playwright's actionability checks.
@@ -1976,7 +1976,7 @@ try {
 
   await check("Studio external completion needs explicit association with the reviewed current HEAD", async () => {
     await studioOpenPlan("Later workspace change", studioLater); await page.locator(".rebase-row").getByRole("button", { name: "Edit", exact: true }).click(); await reviewStudio(); await studioStart(); await page.waitForSelector(".op-banner");
-    studioGit("rebase", "--continue"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".op-banner", { state: "detached" }); await studioOpenResult();
+    studioGit("rebase", "--continue"); await page.getByRole("button", { name: "Refresh", exact: true }).click(); await page.waitForSelector(".op-banner", { state: "detached" }); await studioOpenResult();
     await page.waitForSelector(".studio-result[data-phase='unconfirmed']"); const button = page.getByRole("button", { name: "Save reviewed current result", exact: true });
     if (!await button.isDisabled()) throw new Error("external completion was associated without consent");
     await page.locator(".studio-result input[type='checkbox']").check(); await button.click(); await page.waitForSelector(".studio-result[data-phase='captured']"); await page.waitForSelector(".studio-same-tree");
@@ -2007,7 +2007,7 @@ try {
     await studioOpenPlan("Studio conflict second", before); await page.locator(".rebase-row").getByRole("button", { name: "Edit", exact: true }).click();
     await reviewStudio(); await studioStart(); await page.waitForSelector(".op-banner .op-sub:has-text('Editing')");
     fs.appendFileSync(path.join(studioRoot, "f.txt"), "edit amendment\n");
-    await page.click(".view-tab:has-text('Changes')"); await page.click("button[title='Refresh (F5)']"); await page.waitForSelector(".changes .file-row:has-text('f.txt')");
+    await page.click(".view-tab:has-text('Changes')"); await page.getByRole("button", { name: "Refresh", exact: true }).click(); await page.waitForSelector(".changes .file-row:has-text('f.txt')");
     await page.click(".changes button[title='Stage all']");
     await page.locator(".op-banner").getByRole("button", { name: "Amend & continue", exact: true }).click(); await page.waitForSelector(".op-banner", { state: "detached", timeout: 60000 });
     await dismissStudioResultNotice("Rebase complete");

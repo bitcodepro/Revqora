@@ -19,7 +19,7 @@ export interface McpActionOptions {
 export function mcpNeedsApproval(mode: McpApprovalMode, action: string, options: McpActionOptions, step?: WorkflowStep["kind"], mergeMayDelete = false, pullRebases = false) {
   if (mode === "full") return false;
   if (mode !== "delete_only") return true;
-  return action === "delete_branch" || action === "cherry_pick_abort" || action === "stash_pop"
+  return action === "delete_branch" || action === "cherry_pick_abort" || action === "stash_pop" || action === "stash_drop"
     || (action === "fetch" || action === "pull") && options.prune === true
     || action === "pull" && pullRebases
     || action === "push" && options.force === true
@@ -50,7 +50,6 @@ interface AutomaticContext {
 
 export async function runAutomaticMcpAction({ root, action, options: a, baseline, expectedState, mode, pullMode, pr, mergePlan, workflowCursor, authorize }: AutomaticContext):
 Promise<{ message?: string; result?: Record<string, unknown>; runId?: string }> {
-  const prune = a.prune ?? mode === "full";
   switch (action) {
     case "stash":
       await authorize();
@@ -58,7 +57,7 @@ Promise<{ message?: string; result?: Record<string, unknown>; runId?: string }> 
       return {};
     case "pull": {
       await authorize();
-      const { status, message, conflicts } = await api.pull(root, pullMode, newOpId(), expectedState, prune);
+      const { status, message, conflicts } = await api.pull(root, pullMode, newOpId(), expectedState, a.prune ?? false);
       if (["conflicts", "stopped", "pending"].includes(status)) throw new McpToolError("operation_in_progress", message || "Review the pending pull in Revqora.");
       return { message, result: { status, conflicts } };
     }

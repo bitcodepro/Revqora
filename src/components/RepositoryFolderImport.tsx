@@ -1,37 +1,62 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderGit2, FolderOpen, FolderSearch, Loader2 } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { basename } from "../lib/format";
-import { planFolderWorkspaces, repositoryKey, useLibrary } from "../lib/repositoryLibrary";
-import { folderWorkspaceTree } from "../lib/folderWorkspaceTree";
+import { planFolderGroups, repositoryKey, useLibrary } from "../lib/repositoryLibrary";
+import { folderGroupTree } from "../lib/folderGroupTree";
 import { visibleTree } from "../lib/libraryTree";
-import { importFolderRepositories } from "../lib/repositoryWorkspaces";
+import { useRepos } from "../lib/store";
 import type { RepositoryFolderScan } from "../lib/types";
-import { showDialog } from "../lib/ui";
+import { showDialog, useUi, toast } from "../lib/ui";
 import { Modal } from "./Modal";
 
 export function repositoryFolderImportDialog() {
   return showDialog<void>((close) => <RepositoryFolderImport close={close} />);
 }
 
+function FolderScanProgress() {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    const started = performance.now();
+    const timer = window.setInterval(() => setElapsedSeconds(Math.floor((performance.now() - started) / 1_000)), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <div className="loading-status repository-import-progress" role="status">
+    <Loader2 className="spin" size={16} aria-hidden="true" />
+    Looking for Git repositories…
+    {elapsedSeconds > 0 && <span className="batch-note" aria-hidden="true">{elapsedSeconds}s elapsed</span>}
+  </div>;
+}
+
+function cancelFolderScan(request: Promise<number> | null) {
+  void request?.then(api.repoCancelFolderScan).catch(() => undefined);
+}
+
 function RepositoryFolderImport({ close }: { close: () => void }) {
-  const workspaces = useLibrary((s) => s.workspaces);
+  const groups = useLibrary(s => s.groups);
   const [path, setPath] = useState("");
   const [scanning, setScanning] = useState(false);
+  const [stopped, setStopped] = useState(false);
+  const [includeGenerated, setIncludeGenerated] = useState(false);
+  const pendingScan = useRef<Promise<number> | null>(null);
+  useEffect(() => () => {
+    cancelFolderScan(pendingScan.current);
+    pendingScan.current = null;
+  }, []);
   const [scan, setScan] = useState<RepositoryFolderScan | null>(null);
   const [selected, setSelected] = useState(new Set<string>());
-  const [createWorkspaces, setCreateWorkspaces] = useState(true);
+  const [createGroups, setCreateGroups] = useState(true);
   const [error, setError] = useState("");
   const repositories = scan?.repositories ?? [];
   const allRoots = repositories.map(repo => repo.root);
   const relativePaths = new Map(repositories.map(repo => [repo.root, repo.relativePath]));
-  const workspaceGroups = createWorkspaces ? folderWorkspaceTree(repositories, selected) : [];
-  const plans = planFolderWorkspaces(workspaces, workspaceGroups);
-  const preview = createWorkspaces
-    ? folderWorkspaceTree(repositories, new Set(allRoots)).map(({folder, parentFolder, roots}) => ({
+  const folders = createGroups ? folderGroupTree(repositories, selected) : [];
+  const plans = planFolderGroups(groups, folders);
+  const preview = createGroups
+    ? folderGroupTree(repositories, new Set(allRoots)).map(({folder, parentFolder, roots}) => ({
       id: repositoryKey(folder), parentId: parentFolder ? repositoryKey(parentFolder) : null,
-      name: basename(folder) || "Imported workspace", roots,
+      name: basename(folder) || "Imported group", roots,
     }))
     : [{ id: "", parentId: null, name: "Open directly", roots: allRoots }];
   const subtreeRoots = new Map(preview.map(entry => [entry.id, [...entry.roots]]));
@@ -56,20 +81,37 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     });
   }
 
+  function stopScan() {
+    cancelFolderScan(pendingScan.current);
+    pendingScan.current = null;
+    setScanning(false);
+    setStopped(true);
+  }
+
   async function scanFolder(folder: string) {
-    if (!folder.trim() || scanning) return;
+    if (!folder.trim() || pendingScan.current) return;
+    const request = api.repoPrepareFolderScan();
+    pendingScan.current = request;
     setPath(folder);
     setScanning(true);
+    setStopped(false);
     setError("");
     setScan(null);
+    setSelected(new Set());
     try {
-      const result = await api.repoScanFolder(folder);
+      const id = await request;
+      if (pendingScan.current !== request) return;
+      const result = await api.repoScanFolder(id, folder, includeGenerated);
+      if (pendingScan.current !== request) return;
       setScan(result);
-      setSelected(new Set(result.repositories.map((repo) => repo.root)));
+      setSelected(new Set(result.repositories.map(repo => repo.root)));
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (pendingScan.current === request) setError(errorMessage(cause));
     } finally {
-      setScanning(false);
+      if (pendingScan.current === request) {
+        pendingScan.current = null;
+        setScanning(false);
+      }
     }
   }
 
@@ -90,7 +132,15 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     }
     if (!selectedCount) return;
     try {
-      importFolderRepositories(scan.repositories.filter((repo) => selected.has(repo.root)).map((repo) => repo.root), workspaceGroups);
+      const roots = allRoots.filter(root => selected.has(root));
+      useLibrary.getState().importGroups(roots, folders);
+      useLibrary.getState().selectGroup(null);
+      const repos = useRepos.getState();
+      const opening = repos.openMany(roots, repos.active ?? roots[0]);
+      useUi.setState({ repositoryOverview: true });
+      void opening.then(results => {
+        for (const result of results) if (result.status === "rejected") toast.error(result.reason, "Could not open repository");
+      });
       close();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -102,24 +152,36 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     onClose={close} onSubmit={submit}
     footer={<>
       <button type="button" className="btn" onClick={close}>Cancel</button>
-      {scan ? <button type="submit" className="btn primary" disabled={!selectedCount}>Import {selectedCount} {selectedCount === 1 ? "repository" : "repositories"}</button>
-        : <button type="submit" className="btn primary" disabled={scanning || !path.trim()}>Scan folder</button>}
+      {scanning ? <button type="button" className="btn" onClick={event => { event.preventDefault(); stopScan(); }}>Stop scan</button>
+        : scan ? <button type="submit" className="btn primary" disabled={!selectedCount}>Import {selectedCount} {selectedCount === 1 ? "repository" : "repositories"}</button>
+        : <button type="submit" className="btn primary" disabled={!path.trim()}>Scan folder</button>}
     </>}>
     <div className="field">
       <label htmlFor="repository-import-path">Parent folder</label>
       <div className="workspace-editor-filters">
         <input id="repository-import-path" className="input" placeholder="Enter a folder path" value={path} disabled={scanning}
-          onChange={(event) => { setPath(event.target.value); setScan(null); setSelected(new Set()); setError(""); }} />
+          onChange={(event) => { setPath(event.target.value); setScan(null); setSelected(new Set()); setError(""); setStopped(false); }} />
         <button type="button" className="btn" disabled={scanning} onClick={() => void browse()}><FolderOpen size={15} /> Browse…</button>
       </div>
     </div>
-    {scanning && <div className="repository-import-progress" role="status"><Loader2 className="spin" size={16} /> Looking for Git repositories…</div>}
+    <label className="repository-import-option">
+      <input type="checkbox" checked={includeGenerated} disabled={scanning} onChange={(event) => {
+        setIncludeGenerated(event.target.checked);
+        setScan(null);
+        setSelected(new Set());
+        setStopped(false);
+        setError("");
+      }} /> Include dependency and cache folders
+    </label>
+    {scanning && <FolderScanProgress />}
+    {stopped && <p className="batch-note" role="status">Scan stopped.</p>}
     {error && <p className="red workspace-editor-error" role="alert">{error}</p>}
     {scan && <>
+      {scan.excluded > 0 && <p className="batch-note" role="status">Skipped {scan.excluded} dependency or cache folders.</p>}
       {scan.skipped > 0 && <p className="batch-note" role="status">Skipped {scan.skipped} linked, inaccessible, or invalid entries.</p>}
       {!scan.repositories.length ? <div className="cg-empty">No Git working copies found in this folder.</div> : <>
         <label className="repository-import-option">
-          <input type="checkbox" checked={createWorkspaces} onChange={(event) => setCreateWorkspaces(event.target.checked)} /> Recreate the folder tree as Workspaces
+          <input type="checkbox" checked={createGroups} onChange={(event) => setCreateGroups(event.target.checked)} /> Recreate the folder tree in Explorer
         </label>
         <div className="workspace-editor-selection">
           <span className="batch-note">{selectedCount} of {scan.repositories.length} selected</span>
@@ -130,7 +192,7 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
         <div className="library-list workspace-editor-list">
           {visibleTree(preview, () => true, () => false, false).map(({entry, depth}) => {
             const plan = plans.find(item => repositoryKey(item.folder) === entry.id);
-            const title = entry.id ? `Workspace · ${plan?.name ?? entry.name}` : entry.name;
+            const title = entry.id ? `Group · ${plan?.name ?? entry.name}` : entry.name;
             const subtree = subtreeRoots.get(entry.id)!;
             const included = subtree.filter(root => selected.has(root)).length;
             return <section key={entry.id} className="repository-import-group" style={{ marginInlineStart: Math.min(depth, 8) * 12 }}>
@@ -150,9 +212,9 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
             </section>;
           })}
         </div>
-        <p className="batch-note">Opens the repository overview in All Workspaces.
-          {newCount > 0 && ` Creates ${newCount} ${newCount === 1 ? "Workspace" : "Workspaces"}.`}
-          {updatedCount > 0 && ` Adds selected repositories to ${updatedCount} existing ${updatedCount === 1 ? "Workspace" : "Workspaces"}.`}
+        <p className="batch-note">Opens the selected repositories.
+          {newCount > 0 && ` Creates ${newCount} ${newCount === 1 ? "group" : "groups"}.`}
+          {updatedCount > 0 && ` Adds selected repositories to ${updatedCount} existing ${updatedCount === 1 ? "group" : "groups"}.`}
         </p>
       </>}
     </>}

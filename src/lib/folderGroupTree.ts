@@ -1,4 +1,4 @@
-import { repositoryKey, type FolderWorkspace } from "./repositoryLibrary";
+import { repositoryKey, type FolderGroup } from "./repositoryLibrary";
 import type { FoundRepository } from "./types";
 
 function separator(path: string) {
@@ -13,8 +13,8 @@ function parentFolder(path: string): string {
 }
 
 /** Keep each directory on the selected path to a repository, including empty intermediate nodes. */
-export function folderWorkspaceTree(repositories: FoundRepository[], selected: ReadonlySet<string>): FolderWorkspace[] {
-  const folders = new Map<string, FolderWorkspace>();
+export function folderGroupTree(repositories: FoundRepository[], selected: ReadonlySet<string>): FolderGroup[] {
+  const folders = new Map<string, FolderGroup>();
   for (const repo of repositories) {
     if (!selected.has(repo.root)) continue;
     const parts = repo.relativePath.split(separator(repo.root)).filter(part => part && part !== ".");

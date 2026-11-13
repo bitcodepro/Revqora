@@ -91,7 +91,19 @@ async function renameAndCherryPick({ page, root, repository, git, request, rejec
 
   const third = await pick();
   put("resolved version\n");
-  git("add", file);
+  const outdatedResolution = await request("stage", { paths: [file] });
+  const stageReview = approval("Stage files");
+  await stageReview.waitFor();
+  const resolved = "updated resolution";
+  put(`${resolved}\n`);
+  await approve(stageReview);
+  assert.equal((await waitPhase(outdatedResolution.id, "failed")).errorCode, "stale_state");
+  assert.equal((await tool("repository_status", { repository })).conflictCount, 1);
+  const resolution = await request("stage", { paths: [file] });
+  await approve(stageReview);
+  await waitPhase(resolution.id, "succeeded");
+  assert.equal((await tool("repository_status", { repository })).conflictCount, 0);
+  assert.equal(git("show", `:${file}`), resolved);
   const dismissed = await request("cherry_pick_continue");
   await approval("Continue cherry-pick").waitFor();
   await page.keyboard.press("Escape");
@@ -102,7 +114,7 @@ async function renameAndCherryPick({ page, root, repository, git, request, rejec
   await waitPhase(proceed.id, "succeeded");
   const result = await waitPhase(third.id, "succeeded");
   assert.equal(result.result.sha, git("rev-parse", "HEAD"));
-  assert.equal(git("show", `HEAD:${file}`), "resolved version");
+  assert.equal(git("show", `HEAD:${file}`), resolved);
   assert.equal((await tool("repository_status", { repository })).operation, "none");
   await rejected("cherry_pick_abort", undefined, "no_cherry_pick");
 }
@@ -113,6 +125,7 @@ async function branchActions({ page, work, tool, rawTool, waitPhase, original })
   const gitRaw = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true });
   const git = (...args) => gitRaw(...args).trimEnd();
   git("init", "-qb", "main");
+  git("config", "--local", "core.autocrlf", "false");
   git("config", "user.name", "MCP Fixture");
   git("config", "user.email", "mcp@example.invalid");
   git("config", "commit.gpgsign", "false");
@@ -124,8 +137,8 @@ async function branchActions({ page, work, tool, rawTool, waitPhase, original })
   const {active: repository} = await tool("list_repositories");
   assert(repository && path.relative(root, repository) === "");
   const request = (action, args = {}) => tool("request_action", { repository, action, ...args });
-  const rejected = async (action, target, code) => {
-    const response = await rawTool("request_action", { repository, action, target });
+  const rejected = async (action, target, code, options = {}) => {
+    const response = await rawTool("request_action", { repository, action, target, ...options });
     assert.equal(response.isError, true);
     assert.equal(response.structuredContent.code, code);
     assert.equal(await page.getByRole("heading", {name:/^MCP request/}).count(), 0);
@@ -155,6 +168,19 @@ async function branchActions({ page, work, tool, rawTool, waitPhase, original })
   }
 
   await rejected("create_branch", "main", "branch_exists");
+  await rejected("checkout", "missing-branch", "branch_not_found");
+  await rejected("checkout", "main", "invalid_arguments", { base: "main" });
+  await rejected("cherry_pick", "0".repeat(git("rev-parse", "HEAD").length), "commit_not_found");
+  git("branch", "branch-B", "HEAD^");
+  const base = git("rev-parse", "branch-B");
+  for (const [target, start] of [["feature/from-base", "branch-B"], ["feature/from-sha", base]]) {
+    const requestWithBase = await request("create_branch", { target, base: start });
+    const review = approval("Create branch");
+    assert.match(await review.locator(".code-list").textContent(), new RegExp(base));
+    await approve(review);
+    assert.deepEqual((await waitPhase(requestWithBase.id, "succeeded")).result, { branch: target, sha: base });
+    assert.equal(git("rev-parse", target), base);
+  }
   const proposed = await request("create_branch", {target:"feature/proposed"});
   const create = approval("Create branch");
   const name = create.getByRole("textbox", {name:"Branch name",exact:true});
@@ -186,12 +212,38 @@ async function branchActions({ page, work, tool, rawTool, waitPhase, original })
     const action = await request("checkout", {target:to});
     await approve(approval("Switch branch"));
     const result = await waitPhase(action.id, "succeeded");
-    assert.deepEqual(result.result, {previousBranch:from,currentBranch:to,conflicts:[]});
+    assert.deepEqual(result.result, { previousBranch: from, currentBranch: to, conflicts: [], dirtyAction: null,
+      stash: null, switchSource: null, changesRestored: false, restoreStash: null, nextStep: "none" });
     assert.equal(git("branch", "--show-current"), to);
   };
   await switchTo("main", "feature/approved");
   await rejected("delete_branch", "feature/approved", "branch_checked_out");
   await switchTo("feature/approved", "main");
+
+  fs.writeFileSync(file, "Retain the source branch edit\n");
+  const dirty = await request("checkout", { target: "feature/approved", dirtyAction: "stash" });
+  await approve(approval("Switch branch"));
+  const switched = (await waitPhase(dirty.id, "succeeded")).result;
+  const [saved] = (await tool("list_stashes", { repository })).items;
+  const source = { oid: saved.oid, index: saved.index, switchSource: "refs/heads/main" };
+  assert.deepEqual(switched.stash, { ...source, kept: true });
+  assert.equal(switched.switchSource, source.switchSource);
+  assert.equal(switched.dirtyAction, "stash");
+  assert.equal(switched.changesRestored, false);
+  assert.equal(switched.nextStep, "return_to_source");
+  assert.equal(git("status", "--porcelain"), "");
+  const back = await request("checkout", { target: "main" });
+  await approve(approval("Switch branch"));
+  const returned = (await waitPhase(back.id, "succeeded")).result;
+  assert.equal(returned.nextStep, "restore_stash");
+  assert.deepEqual(returned.restoreStash, source);
+  assert.equal(returned.changesRestored, false);
+  assert.equal(git("status", "--porcelain"), "");
+  const restore = await request("stash_pop", { stashIndex: source.index, target: source.oid });
+  await approve(approval("Pop stash"));
+  await waitPhase(restore.id, "succeeded");
+  assert.equal(fs.readFileSync(file, "utf8"), "Retain the source branch edit\n");
+  git("restore", "fixture.txt");
 
   const deleteReview = page.getByRole("dialog", {name:"Delete branch feature/approved?",exact:true});
   const reviewDeletion = async () => {
@@ -252,6 +304,10 @@ async function approvalModes({ page, root, work, tool, waitPhase, selectApproval
     git("update-ref", "refs/remotes/mcp-approval-origin/stale", "HEAD");
     await automatic("fetch");
     assert(git("for-each-ref", "refs/remotes/mcp-approval-origin/stale"));
+    await selectApproval("full", "delete_only");
+    await automatic("fetch");
+    assert(git("for-each-ref", "refs/remotes/mcp-approval-origin/stale"));
+    await selectApproval("delete_only", "full");
     const prune = await request("fetch", { prune: true });
     const dialog = page.getByRole("dialog", { name: "MCP request · Fetch from all remotes", exact: true });
     await dialog.getByRole("button", { name: "Approve in Revqora", exact: true }).click();
@@ -282,6 +338,10 @@ async function diffStageAndStash({ page, original, work, tool, rawTool, waitPhas
   assert(repository && path.relative(root, repository) === "");
   const request = (action, args = {}) => tool("request_action", { repository, action, ...args });
   const approve = title => page.getByRole("dialog", { name: `MCP request · ${title}`, exact: true }).getByRole("button", { name: "Approve in Revqora", exact: true }).click();
+
+  const missing = await rawTool("request_action", { repository, action: "stage", paths: ["missing.txt"] });
+  assert.equal(missing.structuredContent.code, "file_not_found");
+  assert.equal(await page.getByRole("heading", { name: /^MCP request/ }).count(), 0);
 
   const lines = Array.from({ length: 720 }, (_, i) => `line ${i}`);
   lines[212] = "x".repeat(599) + "🙂" + "rest".repeat(5000);
@@ -352,6 +412,33 @@ async function diffStageAndStash({ page, original, work, tool, rawTool, waitPhas
   assert.equal(fs.readFileSync(path.join(root, "b.txt"), "utf8"), "working b\n");
   assert.equal((await tool("list_stashes", { repository })).items[0].oid, args.target);
   git("reset", "--hard", base); fs.unlinkSync(path.join(root, "new.txt"));
+
+  const popDialog = page.getByRole("dialog", { name: "MCP request · Pop stash", exact: true });
+  await page.clock.install();
+  const timedOut = await request("stash_pop", args);
+  await popDialog.waitFor();
+  await page.clock.fastForward(120_001);
+  assert.equal((await waitPhase(timedOut.id, "cancelled")).reason, "approval_timed_out");
+  await popDialog.waitFor({ state: "detached" });
+  assert.equal(git("rev-parse", "stash@{0}"), args.target);
+  assert.equal(git("status", "--porcelain"), "");
+
+  const mismatch = await rawTool("request_action", { repository, action: "stash_drop", ...args, target: base });
+  assert.equal(mismatch.structuredContent.code, "stale_state");
+  const drop = await request("stash_drop", args);
+  await approve("Delete stash");
+  const dropped = (await waitPhase(drop.id, "succeeded")).result;
+  assert.equal(dropped.oid, args.target);
+  assert.equal(dropped.index, args.stashIndex);
+  assert.equal((await tool("list_stashes", { repository })).items.length, 0);
+  assert.equal(git("status", "--porcelain"), "");
+  const invoke = (command, options) => page.evaluate(({ command, options }) => window.__TAURI_INTERNALS__.invoke(command, options),
+    { command, options: { repo: root, id: dropped.checkpoint, ...options } });
+  const checkpoint = await invoke("recovery_detail");
+  const reference = checkpoint.refs.findIndex(entry => entry.oid === args.target && entry.name === `stash@{${args.stashIndex}}`);
+  assert(reference >= 0);
+  await invoke("recovery_restore_stash", { reference });
+  assert.equal(git("rev-parse", "stash@{0}"), args.target);
 
   const worktreeOnly = await request("stash_pop", { ...args, restoreIndex: false });
   await approve("Pop stash");

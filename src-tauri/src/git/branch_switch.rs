@@ -15,11 +15,20 @@ pub(super) fn stash_source(subject: &str) -> Option<String> {
     Some(source.to_string())
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DirtyAction {
     Stash,
     Move,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchStash {
+    oid: String,
+    index: u32,
+    switch_source: String,
+    kept: bool,
 }
 
 #[derive(Deserialize)]
@@ -32,8 +41,21 @@ pub struct SwitchChoice {
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum SwitchOutcome {
-    Review { source: String, target_oid: String, state_token: String, files: usize },
-    Switched { branch: String, saved: bool, moved: bool, conflicts: Vec<String>, warning: Option<String> },
+    Review {
+        source: String,
+        target_oid: String,
+        state_token: String,
+        files: usize,
+    },
+    Switched {
+        branch: String,
+        saved: bool,
+        moved: bool,
+        conflicts: Vec<String>,
+        warning: Option<String>,
+        dirty_action: Option<DirtyAction>,
+        stash: Option<SwitchStash>,
+    },
 }
 
 fn stale() -> GitError {
@@ -95,7 +117,7 @@ pub fn switch(
     let same_branch = branch.is_some() && current.branch == branch;
     if choice.is_none() && (current.files.is_empty() || same_branch) {
         let branch = ops::checkout(repo, target, kind)?;
-        return Ok(SwitchOutcome::Switched { branch, saved: false, moved: false, conflicts: Vec::new(), warning: None });
+        return Ok(SwitchOutcome::Switched { branch, saved: false, moved: false, conflicts: Vec::new(), warning: None, dirty_action: None, stash: None });
     }
     if same_branch || current.files.is_empty() {
         return Err(stale());
@@ -135,6 +157,7 @@ pub fn switch(
     let message = stash_message(&source);
     ops::stash_save(repo, &message, true, false, &[])?;
     let stash = find_stash(repo, &message)?;
+    let mut saved_stash = SwitchStash { oid: stash.oid, index: stash.index, switch_source: source, kept: true };
     let stashed = working_state(repo)?;
     if !stashed.files.is_empty() {
         return Err(GitError::new("Some changes could not be stashed. The branch was kept and the saved changes are in Stashes.").kind("partial-operation"));
@@ -148,7 +171,7 @@ pub fn switch(
     let mut moved = false;
     let mut conflicts = Vec::new();
     let mut warning = None;
-    if matches!(choice.action, DirtyAction::Move) {
+    if choice.action == DirtyAction::Move {
         let applied = (|| {
             let destination = working_state(repo)?;
             if destination.branch.as_deref() != (kind != "commit").then_some(branch.as_str())
@@ -157,12 +180,14 @@ pub fn switch(
             {
                 return Err(stale());
             }
-            let result = ops::stash_apply_ref(repo, &stash.oid, false, true)?;
+            let result = ops::stash_apply_ref(repo, &saved_stash.oid, false, true)?;
             conflicts = result.operation.conflicts;
             if result.operation.status == "done" {
                 moved = true;
                 let latest = find_stash(repo, &message)?;
-                ops::stash_drop_reviewed(repo, latest.index, &stash.oid)?;
+                saved_stash.index = latest.index;
+                ops::stash_drop_reviewed(repo, latest.index, &saved_stash.oid)?;
+                saved_stash.kept = false;
             } else if result.operation.status == "index_not_restored" {
                 warning = Some(result.operation.message);
             }
@@ -172,7 +197,7 @@ pub fn switch(
             warning = Some(format!("{}. Check the working tree and Stashes before trying again.", error.message));
         }
     }
-    Ok(SwitchOutcome::Switched { branch, saved: true, moved, conflicts, warning })
+    Ok(SwitchOutcome::Switched { branch, saved: true, moved, conflicts, warning, dirty_action: Some(choice.action), stash: Some(saved_stash) })
 }
 
 #[cfg(test)]
@@ -250,12 +275,20 @@ mod tests {
         fs::write(repo.join("new.txt"), "new\n").unwrap();
         let (state, target) = review(repo);
         assert!(refs::stashes(repo).unwrap().is_empty());
-        assert!(matches!(confirm(repo, DirtyAction::Stash, &state, target).unwrap(), SwitchOutcome::Switched { saved: true, moved: false, .. }));
+        let result = confirm(repo, DirtyAction::Stash, &state, target).unwrap();
+        let SwitchOutcome::Switched { dirty_action: Some(DirtyAction::Stash), stash: Some(saved), saved: true, moved: false, .. } = result else {
+            panic!("expected a saved checkout stash");
+        };
         assert_eq!(git(repo, &["branch", "--show-current"]), "target");
         assert!(working_state(repo).unwrap().files.is_empty());
         let stash = refs::stashes(repo).unwrap().remove(0);
         assert_eq!(stash.switch_source.as_deref(), Some("refs/heads/main"));
-        switch(repo, "main", "local", None, None, None).unwrap();
+        assert_eq!(saved.oid, stash.oid);
+        assert_eq!(saved.index, stash.index);
+        assert_eq!(saved.switch_source, "refs/heads/main");
+        assert!(saved.kept);
+        assert!(matches!(switch(repo, "main", "local", None, None, None).unwrap(), SwitchOutcome::Switched { dirty_action: None, stash: None, .. }));
+        assert!(working_state(repo).unwrap().files.is_empty());
         assert_eq!(ops::stash_apply_reviewed(repo, stash.index, &stash.oid, true).unwrap().operation.status, "done");
         assert_eq!(git(repo, &["show", ":file.txt"]), "staged");
         assert_eq!(fs::read_to_string(repo.join("file.txt")).unwrap(), "working\n");
@@ -273,7 +306,10 @@ mod tests {
         fs::write(repo.join("file.txt"), "moved\n").unwrap();
         git(repo, &["add", "file.txt"]);
         let (state, target) = review(repo);
-        assert!(matches!(confirm(repo, DirtyAction::Move, &state, target).unwrap(), SwitchOutcome::Switched { moved: true, warning: None, .. }));
+        assert!(matches!(
+            confirm(repo, DirtyAction::Move, &state, target).unwrap(),
+            SwitchOutcome::Switched { dirty_action: Some(DirtyAction::Move), stash: Some(SwitchStash { kept: false, .. }), moved: true, warning: None, .. }
+        ));
         assert_eq!(git(repo, &["branch", "--show-current"]), "target");
         assert_eq!(git(repo, &["show", ":file.txt"]), "moved");
         let remaining = refs::stashes(repo).unwrap();
@@ -292,7 +328,7 @@ mod tests {
         fs::write(repo.join("file.txt"), "source\n").unwrap();
         let (state, target) = review(repo);
         assert!(
-            matches!(confirm(repo, DirtyAction::Move, &state, target).unwrap(), SwitchOutcome::Switched { moved: false, conflicts, .. } if conflicts == ["file.txt"])
+            matches!(confirm(repo, DirtyAction::Move, &state, target).unwrap(), SwitchOutcome::Switched { stash: Some(SwitchStash { kept: true, .. }), moved: false, conflicts, .. } if conflicts == ["file.txt"])
         );
         assert_eq!(git(repo, &["branch", "--show-current"]), "target");
         assert_eq!(working_state(repo).unwrap().conflict_count, 1);

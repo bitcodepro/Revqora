@@ -29,7 +29,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    if(out){await page.screenshot({path:path.join(out,"my-branches.png")});await page.locator(".sidebar").screenshot({path:path.join(out,"my-branches-sidebar.png")});}
    const commitRow=title=>page.locator(".graph-rows").getByText(title,{exact:true});
    await commitRow("Switch first base").click();await preview("base-body");await commitRow("Switch first feature").click();await preview("feature-body");
-   await open(two);await page.locator(".repository-select").filter({hasText:"switch-one"}).click();await graphReady();await preview("feature-body");await page.locator(".repository-select").filter({hasText:"switch-two"}).click();await graphReady();
+   await open(two);await page.locator(".explorer-sidebar .repository-select").filter({hasText:"switch-one"}).click();await graphReady();await preview("feature-body");await page.locator(".explorer-sidebar .repository-select").filter({hasText:"switch-two"}).click();await graphReady();
    const installGate=(commands=["repo_info","status","refs_snapshot","layers_state","repo_extras","graph_rows","graph_find","commit_details","rev_diff","working_diff"], omitSnapshotFor=null)=>page.evaluate(async ({commands,omitSnapshotFor})=>{
     const bridge=window.__TAURI_INTERNALS__,original=window.fetch,held=[],counts={},stageResponses=[];let active=true,omittedSnapshots=0;
     const urls=new Map(commands.map(command=>[bridge.convertFileSrc(command,"ipc"),command]));
@@ -70,7 +70,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
     await bridge.invoke("plugin:app|version");if(probes!==1){window.__fastSwitchGate.restore();throw Error("Native IPC did not pass through fetch gate");}return true;
    },{commands,omitSnapshotFor});assert(await installGate());
    const repositorySwitch=performance.now();
-   await page.locator(".repository-select").filter({hasText:"switch-one"}).click();await page.locator(".topbar .repo-current > b").filter({hasText:"switch-one"}).waitFor();
+   await page.locator(".explorer-sidebar .repository-select").filter({hasText:"switch-one"}).click();await page.locator(".topbar .repo-current > b").filter({hasText:"switch-one"}).waitFor();
    await page.waitForFunction(()=>window.__fastSwitchGate.held.length>0);
    await page.locator(".graph-rows").getByText("Switch first feature",{exact:true}).waitFor();await preview("feature-body");
    console.log(`Cached repository and diff rendered with native reads held in ${Math.round(performance.now()-repositorySwitch)} ms`);
@@ -86,7 +86,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    const cachedDiff=page.locator(".changes .diff[aria-busy='true']");
    const cachedAdded=body=>cachedDiff.locator(".dl.add",{hasText:body});
    const switchToCachedDiff=async(root,body)=>{
-    await page.locator(".repository-select").filter({hasText:path.basename(root)}).click();
+    await page.locator(".explorer-sidebar .repository-select").filter({hasText:path.basename(root)}).click();
     await page.waitForFunction(({root,windows})=>{
       const key=value=>windows?value.replaceAll("\\","/").toLowerCase():value;
       return window.__fastSwitchGate.held.some(entry=>entry.command==="working_diff"&&key(entry.repo)===key(root));
@@ -100,8 +100,8 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    for(const [root,body] of [[one,"first-working-change"],[two,"second-working-change"]]){
     if(root===two)assert(await installGate([],two));
     fs.appendFileSync(workingFile(root),`${body}\n`);
-    await page.locator(".repository-select").filter({hasText:path.basename(root)}).click();
-    await page.click(".view-tab:has-text('Changes')");await page.click("button[title='Refresh (F5)']");
+    await page.locator(".explorer-sidebar .repository-select").filter({hasText:path.basename(root)}).click();
+    await page.click(".view-tab:has-text('Changes')");await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.locator(".changes .diff[aria-busy='false'] .dl.add",{hasText:body}).waitFor();
     await stageHunk.waitFor();
     if(root===two){

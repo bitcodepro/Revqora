@@ -1,108 +1,151 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { groupRepositoryRoots, groupsInWorkspace, planFolderWorkspaces, repositoryKey, restoreLibrary, uniqueRoots, useLibrary } from "./repositoryLibrary";
-import { restoreWorkspaceLayouts } from "./workspaceLayouts";
+import { defaultGroupRoots, explorerRepositoryKey, groupRepositoryRoots, orderExplorerSiblings, repositoryKey, restoreLibrary, uniqueRoots, useLibrary } from "./repositoryLibrary";
+import { recordExplorerMove, undoExplorerMove } from "./explorerMoves";
 
 beforeEach(() => useLibrary.setState(restoreLibrary({})));
-describe("portable repository library", () => {
-  it("deduplicates Windows paths without collapsing distinct Unix repositories", () => {
-    expect(repositoryKey("E:\\Code\\Repo\\")).toBe(repositoryKey("e:/code/repo"));
-    expect(uniqueRoots(["E:\\Code\\Repo", "e:/code/repo/", "/Code", "/code", "relative", "x\0y", null])).toEqual(["E:\\Code\\Repo", "/Code", "/code"]);
-  });
-  it("sanitizes corrupted profiles and keeps memberships in distinct groups", () => {
-    const lib = restoreLibrary({ groups: [{ id: "g1", name: "One", roots: ["/one"] }, { id: "g2", name: "Two", roots: ["/one", "/two"] }], favorites: ["/one", "relative"], workspaces: [{ id: "w", name: "Work", roots: ["/two"], activeRoot: "/missing", layouts: { graph: { sidebarWidth: -2 } }, views: { "/two": "garbage" } }], activeWorkspaceId: "missing", remember: "bad" });
-    expect(lib.groups[1].roots).toEqual(["/one", "/two"]); expect(lib.activeWorkspaceId).toBeNull();
-    expect(lib.workspaces[0].activeRoot).toBe("/two"); expect(lib.workspaces[0].views).toEqual({});
-    expect(lib.workspaces[0].layouts.graph.sidebarWidth).toBeGreaterThan(0);
-    expect(lib.knownRoots).toEqual(["/one", "/two"]);
-  });
-  it("moves repositories between groups and retains closed bookmarks after group deletion", () => {
-    const s = useLibrary.getState(), a = s.group("Product"), b = s.group("Tools");
-    s.move("/repo", a); s.move("/repo", b); s.favorite("/repo"); s.collapse(b); s.removeGroups([b]);
-    expect(useLibrary.getState().groups[0].roots).toEqual([]);
-    expect(useLibrary.getState().knownRoots).toContain("/repo"); expect(useLibrary.getState().favorites).toContain("/repo");
-    expect(() => s.group(" product ")).toThrow("already in use");
-  });
-  it("removes a repository from one or all groups without touching workspace roots", () => {
-    const s = useLibrary.getState();
-    const parent = s.createGroup("Project", ["D:/repo"], []);
-    const child = s.createGroup("Build", ["/tools"], [], parent);
-    s.addToGroup(["D:/repo", "d:\\repo"], child);
-    s.favorite("D:/repo");
-    s.save("Work", { roots: ["D:/repo"], activeRoot: "D:/repo", views: {}, layouts: restoreWorkspaceLayouts(), historyMode: "graph" });
-    const before = restoreLibrary(useLibrary.getState());
-    expect(groupRepositoryRoots(before.groups, parent)).toEqual(["D:/repo", "/tools"]);
-    expect(before.groups.find(g => g.id === child)?.roots).toEqual(["/tools", "D:/repo"]);
-    s.removeFromGroups(["d:\\repo"], child);
-    expect(useLibrary.getState().groups.map(g => g.roots)).toEqual([["D:/repo"], ["/tools"]]);
-    s.addToGroup(["D:/repo"], child);
-    s.removeFromGroups(["D:/repo"]);
-    const after = useLibrary.getState();
-    expect(after.groups.map(g => g.roots)).toEqual([[], ["/tools"]]);
-    expect(after.workspaces[0].roots).toEqual(["D:/repo"]);
-    expect(after.knownRoots).toContain("D:/repo");
-    expect(after.favorites).toEqual(["D:/repo"]);
-  });
-  it("excludes group subtrees from one workspace and deletes entire selected trees", () => {
-    const s = useLibrary.getState();
-    const parent = s.createGroup("Project", ["/product"], []);
-    const child = s.createGroup("Build", ["/tools"], [], parent);
-    const leaf = s.createGroup("Leaf", [], [], child);
-    const other = s.group("Other");
-    const snapshot = { roots: ["/product", "/tools"], activeRoot: "/product", views: {}, layouts: restoreWorkspaceLayouts(), historyMode: "graph" as const };
-    const work = s.save("Work", snapshot);
-    const backup = s.save("Backup", snapshot, false, work);
-    const nested = s.save("Nested", snapshot, true, backup);
-    const unrelated = s.save("Unrelated", snapshot, false);
-    s.favoriteWorkspace(nested);
-    s.setWorkspaceGroupsExcluded(work, [parent], true);
-    const restored = restoreLibrary(useLibrary.getState());
-    expect(groupsInWorkspace(restored.groups, restored.workspaces[0]).map(g => g.id)).toEqual([other]);
-    expect(groupsInWorkspace(restored.groups, restored.workspaces[1]).map(g => g.id)).toEqual([parent, child, leaf, other]);
-    expect(restored.workspaces[0].roots).toEqual(snapshot.roots);
-    s.setWorkspaceGroupsExcluded(work, [parent], false);
-    expect(groupsInWorkspace(useLibrary.getState().groups, useLibrary.getState().workspaces[0])).toHaveLength(4);
-    s.setWorkspaceGroupsExcluded(unrelated, [leaf], true);
-    s.removeGroups([parent, other]);
-    expect(useLibrary.getState().groups).toEqual([]);
-    s.remove(work);
-    expect(useLibrary.getState().workspaces).toMatchObject([{ id: unrelated, parentId: null, roots: snapshot.roots, excludedGroupIds: [] }]);
-    expect(useLibrary.getState().activeWorkspaceId).toBeNull();
-    expect(useLibrary.getState().favoriteWorkspaceIds).toEqual([]);
-    expect(useLibrary.getState().knownRoots).toEqual(snapshot.roots);
-  });
-  it("moves a repository out of its source group and keeps its other memberships", () => {
-    const s = useLibrary.getState();
-    const origin = s.createGroup("Origin", ["/nested/repo"], []);
-    const other = s.createGroup("Other", [], []);
-    const target = s.createGroup("Target", [], []);
-    s.addToGroup(["/nested/repo"], other);
-    s.moveGroupRepositories(["/nested/repo"], origin, target);
-    expect(useLibrary.getState().groups.map(group => group.roots)).toEqual([[], ["/nested/repo"], ["/nested/repo"]]);
-  });
-  it("relinks a moved or aliased folder across groups, favorites and workspace views", () => {
-    const s = useLibrary.getState(), g = s.group("Project");
-    s.move("E:/OLD", g); s.favorite("E:/OLD");
-    s.renameRepository("e:/old", "Backend API");
-    s.save("Work", { roots: ["E:/OLD"], activeRoot: "E:/OLD", views: { "E:/OLD": "changes" }, layouts: restoreWorkspaceLayouts(), historyMode: "columns" });
-    s.remember("E:\\actual", "e:/old");
-    const lib = useLibrary.getState(); expect(lib.favorites).toEqual(["E:\\actual"]); expect(lib.groups[0].roots).toEqual(["E:\\actual"]);
-    expect(lib.workspaces[0]).toMatchObject({ roots: ["E:\\actual"], activeRoot: "E:\\actual", views: { "E:\\actual": "changes" } });
-    expect(restoreLibrary(lib).repositoryNames).toEqual({ "e:/actual": "Backend API" });
-    s.renameRepository("E:/actual", "");
-    expect(useLibrary.getState().repositoryNames).toEqual({});
-  });
-  it("preserves folder provenance and keeps unrelated workspaces with the same name separate", () => {
-    const library = restoreLibrary({ workspaces: [
-      { id: "manual", name: "Backend", roots: ["/other/project"] },
-      { id: "imported", name: "My services", importedFrom: "E:\\Projects\\backend", roots: ["E:\\Projects\\backend\\one"] },
-    ] });
-    const plans = planFolderWorkspaces(library.workspaces, [
-      { folder: "e:/projects/backend", roots: ["E:/Projects/backend/two"] },
-      { folder: "/first/backend", roots: ["/first/backend/repo"] },
-      { folder: "/second/Backend", roots: ["/second/Backend/repo"] },
+
+describe("Explorer library", () => {
+  it("migrates groups, workspace ancestry, favorites, membership and selection", () => {
+    const library = restoreLibrary({
+      knownRoots: ["/standalone"],
+      repositoryNames: { "/api": "API alias" },
+      groups: [{ id: "existing", name: "Project", roots: ["/api"] }],
+      workspaces: [
+        { id: "project", name: "Project", roots: ["/api"], importedFrom: "/source", collapsed: true },
+        { id: "services", name: "Services", parentId: "project", roots: ["/worker", "relative"] },
+      ],
+      activeWorkspaceId: "services",
+      favoriteWorkspaceIds: ["project"],
+      favorites: ["/worker"],
+    });
+    expect(library.groups).toEqual([
+      { id: "existing", name: "Project", roots: ["/api"], collapsed: false },
+      { id: "project", name: "Project (2)", roots: ["/api"], importedFrom: "/source", collapsed: true, favorite: true },
+      { id: "services", name: "Services", parentId: "project", roots: ["/worker"], collapsed: false },
     ]);
-    expect(plans.map(({ name, existing }) => [name, existing?.id])).toEqual([
-      ["My services", "imported"], ["backend (2)", undefined], ["Backend (3)", undefined],
+    expect(library.activeGroupId).toBe("services");
+    expect(library.favorites).toEqual(["/worker"]);
+    expect(library.repositoryNames["/api"]).toBe("API alias");
+    expect(groupRepositoryRoots(library.groups, "project")).toEqual(["/api", "/worker"]);
+    expect(defaultGroupRoots(library.knownRoots, library.groups)).toEqual(["/standalone"]);
+    expect(restoreLibrary(library)).toEqual(library);
+  });
+
+  it("matches Windows aliases without folding Unix identities", () => {
+    expect(uniqueRoots(["C:\\Repos\\One", "c:/repos/one/", "/One", "/one", "relative"])).toEqual(["C:\\Repos\\One", "/One", "/one"]);
+    expect(repositoryKey("C:/")).toBe("c:/");
+    const library = useLibrary.getState();
+    const group = library.createGroup("One", ["D:/alias"], []);
+    library.renameRepository("D:/alias", "Friendly");
+    library.favorite("D:/alias");
+    library.remember("D:/actual", "D:/alias");
+    expect(useLibrary.getState().groups.find(item => item.id === group)?.roots).toEqual(["D:/actual"]);
+    expect(useLibrary.getState().repositoryNames).toEqual({ "d:/actual": "Friendly" });
+    expect(useLibrary.getState().favorites).toEqual(["D:/actual"]);
+  });
+
+  it("moves selected placements to another group and safely undoes successive moves", () => {
+    const library = useLibrary.getState();
+    library.remember("/loose");
+    const source = library.createGroup("Source", ["/repo"], []);
+    const extra = library.createGroup("Other membership", [], []);
+    library.addToGroup(["/repo"], extra);
+    const destination = library.createGroup("Destination", [], []);
+    const before = useLibrary.getState().groups;
+    recordExplorerMove(() => library.moveRepositories([{ root: "/repo", groupId: source }, { root: "/loose", groupId: null }], destination));
+    expect(groupRepositoryRoots(useLibrary.getState().groups, source)).toEqual([]);
+    expect(groupRepositoryRoots(useLibrary.getState().groups, extra)).toEqual(["/repo"]);
+    expect(groupRepositoryRoots(useLibrary.getState().groups, destination)).toEqual(["/repo", "/loose"]);
+    recordExplorerMove(() => library.moveGroups([destination], source));
+    expect(groupRepositoryRoots(useLibrary.getState().groups, source)).toEqual(["/repo", "/loose"]);
+    expect(undoExplorerMove()).toBe(true);
+    expect(undoExplorerMove()).toBe(true);
+    expect(useLibrary.getState().groups).toBe(before);
+    recordExplorerMove(() => library.moveGroups([destination], source));
+    library.group("Renamed", destination);
+    expect(undoExplorerMove()).toBe(false);
+    expect(useLibrary.getState().groups.find(item => item.id === destination)?.name).toBe("Renamed");
+  });
+
+  it("reorders repositories in a group and moves them to a visible top-level position", () => {
+    const library = useLibrary.getState();
+    library.remember("/loose");
+    const group = library.createGroup("Group", ["/one", "/two"], []);
+    const extra = library.createGroup("Other membership", [], []);
+    library.addToGroup(["/two"], extra);
+    const move = [{ root: "/two", groupId: group }];
+    recordExplorerMove(() => library.moveRepositories(move, group, { siblingRoot: "/one", after: false }));
+    expect(groupRepositoryRoots(useLibrary.getState().groups, group)).toEqual(["/two", "/one"]);
+    recordExplorerMove(() => library.moveRepositories(move, null, { siblingRoot: "/loose", after: false }));
+    const moved = useLibrary.getState();
+    expect(defaultGroupRoots(moved.knownRoots, moved.groups)).toEqual(["/two", "/loose"]);
+    expect(groupRepositoryRoots(moved.groups, extra)).toEqual([]);
+    expect(undoExplorerMove()).toBe(true);
+    expect(groupRepositoryRoots(useLibrary.getState().groups, group)).toEqual(["/two", "/one"]);
+    expect(groupRepositoryRoots(useLibrary.getState().groups, extra)).toEqual(["/two"]);
+  });
+
+  it("keeps mixed folder and repository positions through restart and re-import", () => {
+    const library = useLibrary.getState();
+    const folders = [
+      { folder: "/project", parentFolder: null, roots: ["/project/api"] },
+      { folder: "/project/services", parentFolder: "/project", roots: ["/project/services/worker"] },
+    ];
+    const roots = folders.flatMap(folder => folder.roots);
+    library.importGroups(roots, folders);
+    const [project, services] = useLibrary.getState().groups;
+    const inbox = library.createGroup("Inbox", [], []);
+    library.moveGroups([services.id], null);
+    const api = explorerRepositoryKey("/project/api");
+    recordExplorerMove(() =>
+      library.moveRepositories([{ root: "/project/api", groupId: project.id }], null, { siblingId: project.id, after: true }));
+    expect(useLibrary.getState().explorerOrder[""]).toEqual([project.id, api, inbox, services.id]);
+    expect(undoExplorerMove()).toBe(true);
+    expect(useLibrary.getState().manuallyPlacedRoots).toEqual([]);
+    expect(groupRepositoryRoots(useLibrary.getState().groups, project.id)).toEqual(["/project/api"]);
+
+    library.moveRepositories([{ root: "/project/api", groupId: project.id }], null, { siblingId: project.id, after: true });
+    library.moveGroups([services.id], null, { siblingRoot: "/project/api", after: false });
+    library.moveRepositories([{ root: "/project/services/worker", groupId: services.id }], inbox);
+    useLibrary.setState(restoreLibrary(JSON.parse(JSON.stringify(useLibrary.getState()))));
+    library.importGroups(roots, folders);
+    const saved = useLibrary.getState();
+    expect(orderExplorerSiblings([project.id, inbox, services.id, api], saved.explorerOrder[""], id => id))
+      .toEqual([project.id, services.id, api, inbox]);
+    expect(saved.groups.find(group => group.id === services.id)?.parentId).toBeNull();
+    expect(groupRepositoryRoots(saved.groups, project.id)).toEqual([]);
+    expect(groupRepositoryRoots(saved.groups, services.id)).toEqual([]);
+    expect(groupRepositoryRoots(saved.groups, inbox)).toEqual(["/project/services/worker"]);
+    expect(defaultGroupRoots(saved.knownRoots, saved.groups)).toEqual(["/project/api"]);
+  });
+
+  it("deletes a subtree, clears its filter and returns its repositories to the default group", () => {
+    const library = useLibrary.getState();
+    const parent = library.createGroup("Parent", ["/one"], []);
+    const child = library.createGroup("Child", ["/two"], [], parent);
+    const other = library.createGroup("Other", ["/three"], []);
+    library.selectGroup(child);
+    library.removeGroups([parent]);
+    const after = useLibrary.getState();
+    expect(after.activeGroupId).toBeNull();
+    expect(after.groups.map(group => group.id)).toEqual([other]);
+    expect(defaultGroupRoots(after.knownRoots, after.groups)).toEqual(["/one", "/two"]);
+  });
+
+  it("imports the nested hierarchy once and preserves a moved imported group's identity", () => {
+    const library = useLibrary.getState();
+    const folders = [
+      { folder: "/root", parentFolder: null, roots: ["/root/api"] },
+      { folder: "/root/sub", parentFolder: "/root", roots: ["/root/sub/worker"] },
+    ];
+    const roots = ["/root/api", "/root/sub/worker"];
+    library.importGroups(roots, folders);
+    const [root, child] = useLibrary.getState().groups;
+    expect(child.parentId).toBe(root.id);
+    library.moveGroups([child.id], null);
+    library.importGroups(roots, folders);
+    expect(useLibrary.getState().groups.map(group => [group.id, group.parentId, group.roots])).toEqual([
+      [root.id, null, ["/root/api"]], [child.id, null, ["/root/sub/worker"]],
     ]);
   });
 });

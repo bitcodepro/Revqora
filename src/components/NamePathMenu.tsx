@@ -1,7 +1,9 @@
+import { useRef, type MouseEvent } from "react";
 import { Copy, Link2 } from "lucide-react";
 import { api } from "../lib/api";
+import { basename } from "../lib/format";
 import { safeWebUrl } from "../lib/prCenter";
-import { copyText, toast, type MenuItem } from "../lib/ui";
+import { contextMenu, copyText, toast, type MenuItem } from "../lib/ui";
 
 export function copyUrlMenu(resolve: () => string | null | Promise<string | null>, unavailable: string): MenuItem {
   return {
@@ -19,10 +21,41 @@ export function copyUrlMenu(resolve: () => string | null | Promise<string | null
   };
 }
 
+function copyNameItem(name: string, shortcut?: string): MenuItem {
+  return { label: "Copy name", shortcut, icon: <Copy size={14} />, onClick: () => { void copyText(name, "Name copied"); } };
+}
+
+export function useCopySelectionMenu(readSelection: () => string) {
+  const pending = useRef<string | null>(null);
+  return {
+    onMouseDownCapture(event: MouseEvent) {
+      // WebView may update the selection between pressing the right button and opening the menu.
+      pending.current = event.button === 2 ? readSelection() : null;
+    },
+    onContextMenu(event: MouseEvent) {
+      const text = pending.current ?? readSelection();
+      pending.current = null;
+      contextMenu(event, [{ label: "Copy", shortcut: "codeCopySelection", icon: <Copy size={14}/>, disabled: !text,
+        onClick: () => { if (text) void copyText(text); } }]);
+    },
+  };
+}
+
+export function copyFileNameItem(path: string, shortcut?: string): MenuItem {
+  return copyNameItem(basename(path), shortcut);
+}
+
+export function fileCopyMenu(path: string): MenuItem[] {
+  return [
+    copyFileNameItem(path),
+    { label: "Copy path", icon: <Copy size={14} />, onClick: () => { void copyText(path, "Path copied"); } },
+  ];
+}
+
 /** A branch has no separate filesystem folder; its path is the repository root. */
 export function namePathMenu(name: string, root: string, reference?: string | null): MenuItem[] {
   const items: MenuItem[] = [
-    { label: "Copy name", icon: <Copy size={14} />, onClick: () => { void copyText(name, "Name copied"); } },
+    copyNameItem(name),
     { label: "Copy path", icon: <Copy size={14} />, onClick: () => { void copyText(root, "Repository path copied"); } },
   ];
   if (reference !== undefined) {

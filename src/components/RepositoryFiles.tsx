@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { ExternalLink, FileText, FolderOpen, RefreshCw, Search } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { useRepos } from "../lib/store";
-import { showDialog, toast } from "../lib/ui";
+import { contextMenu, showDialog, toast } from "../lib/ui";
+import { fileCopyMenu } from "./NamePathMenu";
 import { joinPath } from "../lib/format";
 import type { IgnoredFiles, NestedRepositories } from "../lib/types";
 import { Modal } from "./Modal";
@@ -34,7 +35,7 @@ function RepositoryFiles({ root, kind, close }: { root: string; kind: "ignored" 
     {!data && !error && <div className="loading-center"><span className="loader" /></div>}
     {data?.truncated && <div className="callout warn">The scan reached its limit. Open a deeper folder to inspect more paths.</div>}
     {data && <div className="repository-file-results" style={{ maxHeight: "55vh", overflow: "auto" }}>
-      {"paths" in data ? data.paths.filter((p) => p.toLocaleLowerCase().includes(filter)).map((p) => <div className="file-row" key={p}>
+      {"paths" in data ? data.paths.filter((p) => p.toLocaleLowerCase().includes(filter)).map((p) => <div className="file-row" key={p} onContextMenu={e => contextMenu(e, fileCopyMenu(p))}>
         {p.endsWith("/") ? <FolderOpen size={14} /> : <FileText size={14} />}<span className="ellipsis selectable" title={p} style={{ flex: 1 }}>{p}</span>
         <button className="btn sm" onClick={() => void api.openPath(joinPath(root, p)).catch((e) => toast.error(e))}><ExternalLink size={12} /> Open</button>
       </div>) : data.repositories.filter((r) => r.relativePath.toLocaleLowerCase().includes(filter)).map((r) => <div className="file-row nested-repository" key={r.path} style={{ height: "auto", minHeight: 48 }}>

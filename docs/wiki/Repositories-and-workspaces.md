@@ -30,7 +30,7 @@ These buttons are below the repository search field. They also appear in **All r
 - **Pull all** runs Pull for their current branches; individual failures are reported.
 - **Sync all** prepares a review of receiving and sending commits for each repository.
 
-When a search, favorites/group filter or another scope is active, the buttons may read **Fetch filtered**, **Pull filtered** or **Sync filtered**. Check the visible scope before starting. Closed library bookmarks are not included.
+The buttons are available in the unfiltered repository list and apply to open repositories.
 
 Incoming/outgoing counts reflect known Git data. Fetch before relying on a count if the server may have changed.
 
@@ -44,13 +44,15 @@ A workspace remembers repository order, the active repository, the History/Chang
 
 ## Import and organize nested folders
 
-Use **Import folder…** to scan the folder and its descendants, including folders inside Git repositories. The import makes the chosen folder the root of a workspace tree. The folder directly above each repository becomes its workspace. Selecting a workspace shows its direct repositories. Expand its row to see child workspaces.
+Use **Import folder…** to find repositories in a folder and its descendants, including working copies inside other repositories. Review the repositories and folder tree before importing. Common dependency and cache folders are skipped by default. Select **Include dependency and cache folders** to search them. **Stop scan** stops the search and keeps the folder in the dialog.
 
-Drag a workspace by its handle onto another workspace, or drop it on **Move to top level**. In the Repositories panel, **Ctrl** toggles selected rows and **Shift** selects a range. Drag the selection onto a workspace. **Ctrl+Z** undoes the latest repository move.
+In **Explorer**, drag a group or repository by its row. A line shows insertion before or after another item. A highlighted folder receives the items inside it. Drop on **Drop at top level** to move a group out of its parent or a repository out of its groups. **Ctrl+Z** undoes the latest move.
 
-Right-click selected repositories and choose **Create group**, then name it in the sidebar. In the **Groups** panel, select groups the same way and use **Create group** to put them inside another group. Selecting a group filters Repositories to that group and its descendants.
+In **Explorer** and **Repositories**, **Shift+click** selects a range, **Ctrl+click** toggles a row and **Ctrl+Shift+click** adds a range to the selection. Click empty space or press **Escape** to clear the selection. You can configure the corresponding keyboard actions in **Settings → Shortcuts**.
 
-Use **F2** to rename a focused workspace, group or repository label. Right-click a group to remove it from its parent, remove it from the current workspace or delete it. You can restore a group to the current workspace from the library's Groups tab. A repository's menu removes it from one group or all groups. **Delete** opens the workspace or group deletion review. Working folders stay on disk.
+Use **F2** to rename a focused group or repository label. The context menu can also create, move or remove groups and repository memberships. Selecting a group filters **Repositories** to that group and its descendants. These actions organize the library.
+
+Star a group or repository to see it in **Favorites**. A starred group includes its contents and can be collapsed or expanded there. A starred repository appears with its parent path. Opening it in **Favorites** selects its containing group.
 
 ## Switch or add a saved set
 

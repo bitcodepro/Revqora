@@ -198,3 +198,15 @@ async function launchApp({ exe, args = [], port = 9333, profile, transportOnly =
     }),
   };
 }
+
+// Keep flat-panel scenarios independent of the production first-run layout.
+export async function preferRepositoryList(page) {
+  await page.evaluate(() => {
+    const stored = JSON.parse(localStorage.getItem("revqora.settings"));
+    stored.state.explorerOpen = false;
+    for (const layout of Object.values(stored.state.layouts)) layout.repositoriesOpen = true;
+    localStorage.setItem("revqora.settings", JSON.stringify(stored));
+  });
+  await page.reload();
+  await page.locator(".app[data-app-startup='ready']").waitFor();
+}

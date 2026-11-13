@@ -50,7 +50,7 @@ export async function gitConnectionsSmoke({exe,work,check,out}){
       // Refresh after the fixture's CLI commit has completed. The history and
       // outgoing count can already reflect the new tip while a read started
       // during the external commit still carries an older push precondition.
-      const refresh=page.getByTitle("Refresh (F5)",{exact:true});
+      const refresh=page.getByRole("button", { name: "Refresh", exact: true });
       await refresh.click();
       await refresh.and(page.locator('[aria-busy="false"]')).waitFor();
       await page.getByText("Outgoing over SSH",{exact:true}).first().waitFor();

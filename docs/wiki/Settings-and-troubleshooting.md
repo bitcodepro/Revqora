@@ -63,7 +63,7 @@ proposed matches and choose what to assign.
 
 ### I cannot find Fetch all
 
-Show **Repositories** with **Ctrl+Alt+R**. Look below its search field, or open **All repositories**. Active filters change the name to **Fetch filtered**. See [Remote operations](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync).
+Show **Repositories** with **Ctrl+Alt+R**. Look below its search field, or open **All repositories**. Clear active filters to show the bulk actions. See [Remote operations](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync).
 
 ### Git Push works, but Pull Requests says no credential is available
 

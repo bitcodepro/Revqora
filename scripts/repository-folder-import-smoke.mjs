@@ -3,6 +3,82 @@ import fs from "node:fs";
 import path from "node:path";
 import { timedExecFileSync as execFileSync } from "./ci-timing.mjs";
 
+async function checkFolderScanProgress(page, dialog) {
+  await dialog.evaluate(form => {
+    const commands = new Map([
+      ["repo_prepare_folder_scan", "prepare"],
+      ["repo_scan_folder", "scan"],
+      ["repo_cancel_folder_scan", "cancel"],
+    ].map(([command, kind]) => [window.__TAURI_INTERNALS__.convertFileSrc(command, "ipc"), kind]));
+    const original = window.fetch;
+    const counts = { prepare: 0, scan: 0, cancel: 0, submit: 0 };
+    const held = [];
+    const onSubmit = () => { counts.submit++; };
+    form.addEventListener("submit", onSubmit, true);
+    window.fetch = (input, init) => {
+      const kind = commands.get(input?.url ?? input);
+      if (kind) counts[kind]++;
+      const response = original(input, init);
+      if (kind !== "scan") return response;
+      return new Promise(resolve => held.push({ response, resolve }));
+    };
+    const release = () => {
+      const pending = held.splice(0);
+      for (const { response, resolve } of pending) resolve(response);
+      return Promise.allSettled(pending.map(({response}) => response));
+    };
+    window.__folderScanProbe = {
+      counts, release,
+      finish() {
+        window.fetch = original;
+        form.removeEventListener("submit", onSubmit, true);
+        delete window.__folderScanProbe;
+        return release();
+      },
+    };
+  });
+  const progress = dialog.getByRole("status").filter({ hasText: "Looking for Git repositories" });
+  const icon = progress.locator("svg");
+  try {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await dialog.getByRole("button", { name: "Scan folder", exact: true }).click();
+    await page.waitForFunction(() => window.__folderScanProbe.counts.scan === 1);
+    const initial = await icon.evaluate(element => {
+      const style = getComputedStyle(element);
+      return { duration: style.animationDuration, iterations: style.animationIterationCount, transform: style.transform };
+    });
+    assert.equal(initial.duration, "1s");
+    assert.equal(initial.iterations, "infinite");
+    await page.waitForFunction(transform => {
+      const icon = document.querySelector(".repository-import-progress > svg");
+      return icon && getComputedStyle(icon).transform !== transform;
+    }, initial.transform);
+
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await icon.waitFor({ state: "hidden" });
+    await progress.getByText(/^[1-9]\d*s elapsed$/).waitFor();
+    const elapsed = await progress.locator(".batch-note").textContent();
+    await page.waitForFunction(previous => {
+      const value = document.querySelector(".repository-import-progress .batch-note")?.textContent;
+      return value && value !== previous;
+    }, elapsed);
+    await dialog.getByRole("button", { name: "Stop scan", exact: true }).click();
+    await page.waitForFunction(() => window.__folderScanProbe.counts.cancel > 0);
+    assert.deepEqual(await page.evaluate(() => window.__folderScanProbe.counts),
+      { prepare: 1, scan: 1, cancel: 1, submit: 1 }, "Stop must not submit the form or start a second scan");
+    const stopped = dialog.getByText("Scan stopped.", { exact: true });
+    await stopped.waitFor();
+    await page.evaluate(() => window.__folderScanProbe.release());
+    await stopped.waitFor();
+    assert.equal(await dialog.getByRole("button", { name: /^Import \d+ repositor/ }).count(), 0);
+  } finally {
+    await page.evaluate(() => window.__folderScanProbe?.finish());
+    await page.emulateMedia({ reducedMotion: null });
+  }
+  await progress.waitFor({ state: "detached" });
+  await dialog.getByRole("button", { name: "Scan folder", exact: true }).click();
+}
+
 export async function repositoryFolderImportSmoke({ page, work, shot }) {
   const parent = path.join(work, "folder-import");
   const init = (relative) => {
@@ -23,121 +99,95 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
   gitService("switch", "-q", "main");
   const workingFile = path.join(serviceApi, "local.txt");
   fs.writeFileSync(workingFile, "uncommitted work\n");
-  const sidebar = page.locator(".repository-sidebar:not(.workspace-sidebar)");
-  const repositoriesToggle = page.getByRole("button", { name: "Toggle repositories panel", exact: true });
-  if (await repositoriesToggle.getAttribute("aria-expanded") === "false") await repositoriesToggle.click();
-  const preview = async (count, root = parent) => {
-    await page.getByRole("button", { name: /^Import folder…/ }).click();
-    const dialog = page.locator(".modal").last();
+  const sidebar = page.locator(".repository-slot > .repository-sidebar");
+  const reposToggle = page.getByRole("button", { name: "Toggle repositories panel", exact: true });
+  const explorerToggle = page.getByRole("button", { name: "Toggle Explorer panel", exact: true });
+  const explorer = page.getByRole("complementary", { name: "Explorer", exact: true });
+  if (!await explorer.isVisible()) await explorerToggle.click();
+  if (await reposToggle.getAttribute("aria-expanded") === "false") await reposToggle.click();
+  const preview = async (count, root = parent, checkProgress = false) => {
+    await page.locator(".topbar").click({ button: "right", position: { x: 3, y: 3 } });
+    await page.locator(".ctx-menu").getByText("Import folder…", { exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Import repositories from a folder", exact: true });
     await dialog.getByLabel("Parent folder", { exact: true }).fill(root);
-    await dialog.getByRole("button", { name: "Scan folder", exact: true }).click();
+    if (checkProgress) await checkFolderScanProgress(page, dialog);
+    else await dialog.getByRole("button", { name: "Scan folder", exact: true }).click();
     await dialog.getByText(`${count} of ${count} selected`, { exact: true }).waitFor();
     return dialog;
   };
   const confirm = async (dialog, count) => {
     await dialog.getByRole("button", { name: `Import ${count} ${count === 1 ? "repository" : "repositories"}`, exact: true }).click();
     await dialog.waitFor({ state: "detached" });
+    if (await reposToggle.getAttribute("aria-expanded") === "false") await reposToggle.click();
   };
   const overview = page.locator(".repository-overview");
-  const repoInOverview = (name) => overview.getByRole("button", { name, exact: true });
-  const picker = page.getByLabel("Workspace", { exact: true });
-  const workspaceId = (name) => picker.locator("option").getByText(name, { exact: true }).getAttribute("value");
+  const repoInOverview = name => overview.getByRole("button", { name, exact: true });
+  const group = name => explorer.getByRole("treeitem", { name, exact: true }).and(explorer.locator("[data-tree-group]"));
+  const repoButton = name => sidebar.locator(".repository-select").filter({ has: page.getByText(name, { exact: true }) });
+  const picker = sidebar.getByRole("combobox", { name: "Repository group", exact: true });
+  const pick = name => group(name).locator(".repository-select").click();
 
-  let dialog = await preview(5);
-  await dialog.getByText("Workspace · folder-import", { exact: true }).waitFor();
-  await dialog.getByText("Workspace · import-backend", { exact: true }).waitFor();
-  await dialog.getByText("Workspace · import-frontend", { exact: true }).waitFor();
-  const nested = dialog.locator(".repository-import-group").filter({ hasText: "Workspace · children" });
-  await nested.getByText("nested-repo", { exact: true }).waitFor();
+  let dialog = await preview(5, parent, true);
+  for (const name of ["folder-import", "import-backend", "import-frontend", "children"]) {
+    await dialog.getByText(`Group · ${name}`, { exact: true }).waitFor();
+  }
   await dialog.getByRole("checkbox", { name: /^service-worker\b/ }).uncheck();
   await shot?.("repository-folder-import-preview");
   await confirm(dialog, 4);
   for (const name of ["import-direct", "nested-repo", "service-api", "web-ui"]) await repoInOverview(name).waitFor();
   assert.equal(await repoInOverview("service-worker").count(), 0);
-  const backendId = await workspaceId("import-backend");
+  const backendId = await group("import-backend").getAttribute("data-tree-group");
   assert(backendId);
-  await picker.selectOption(backendId);
-  await overview.waitFor({ state: "detached" });
-  await sidebar.getByText("service-api", { exact: true }).waitFor();
-  assert.equal(await sidebar.getByText("web-ui", { exact: true }).count(), 0);
+  await pick("import-backend");
+  assert.equal(await picker.inputValue(), backendId);
+  await repoButton("service-api").waitFor();
+  assert.equal(await repoButton("web-ui").count(), 0);
 
   dialog = await preview(5);
   await confirm(dialog, 5);
   await repoInOverview("service-worker").waitFor();
-  assert.equal(await picker.locator("option").getByText("import-backend", { exact: true }).count(), 1);
-  assert.equal(await workspaceId("import-backend"), backendId);
-  await picker.selectOption(backendId);
-  await overview.waitFor({ state: "detached" });
-  await sidebar.getByText("service-worker", { exact: true }).waitFor();
-  await sidebar.getByText("service-api", { exact: true }).waitFor();
+  assert.equal(await group("import-backend").count(), 1);
+  assert.equal(await group("import-backend").getAttribute("data-tree-group"), backendId);
+  await pick("import-backend");
+  await repoButton("service-worker").waitFor();
 
   init("flat-import/flat-group/flat-repo");
   dialog = await preview(1, path.join(parent, "flat-import"));
-  await dialog.getByRole("checkbox", { name: "Recreate the folder tree as Workspaces", exact: true }).uncheck();
+  await dialog.getByRole("checkbox", { name: "Recreate the folder tree in Explorer", exact: true }).uncheck();
   await confirm(dialog, 1);
   await repoInOverview("flat-repo").waitFor();
-  assert.equal(await picker.locator("option").getByText("flat-group", { exact: true }).count(), 0);
-
-  await picker.selectOption(backendId);
-  await overview.waitFor({ state: "detached" });
-  await page.getByRole("button", { name: "Repository library and workspaces", exact: true }).click();
-  await page.locator(".library-tabs").getByRole("button", { name: "Workspaces", exact: true }).click();
-  const source = page.locator(".library-row", { has: page.getByText("import-backend · Active", { exact: true }) });
-  const openMove = async () => {
-    await source.getByRole("button", { name: "Move repositories…", exact: true }).click();
-    const move = page.locator(".modal").filter({ has: page.getByRole("heading", { name: /^Move repositories/ }) });
-    await move.getByLabel("Destination workspace", { exact: true }).selectOption({ label: "import-frontend" });
-    await move.getByRole("button", { name: "Select all", exact: true }).click();
-    return move;
-  };
-  let move = await openMove();
-  await move.getByRole("checkbox", { name: /^service-worker\b/ }).uncheck();
-  await shot?.("workspace-move-preview");
-  await move.getByRole("button", { name: "Move 1 repository", exact: true }).click();
-  await move.waitFor({ state: "detached" });
-  await source.getByText(/^1 repository · /).waitFor();
-  move = await openMove();
-  await move.getByRole("button", { name: "Move 1 repository", exact: true }).click();
-  await move.waitFor({ state: "detached" });
-  await source.getByText(/^0 repositories · /).waitFor();
-  await page.locator(".modal").last().getByRole("button", { name: "Done", exact: true }).click();
-  await picker.selectOption({ label: "import-frontend" });
-  for (const name of ["service-api", "service-worker", "web-ui"]) await sidebar.getByText(name, { exact: true }).waitFor();
-  for (const relative of ["import-backend/service-api", "import-backend/service-worker", "import-frontend/web-ui"]) {
-    assert(fs.existsSync(path.join(parent, relative, ".git")), "Moving workspace membership changed the Git folder");
-  }
+  assert.equal(await group("flat-group").count(), 0);
+  assert.equal(await explorer.getByRole("treeitem", { name: "flat-repo", exact: true }).getAttribute("aria-level"), "1");
   assert.equal(fs.readFileSync(workingFile, "utf8"), "uncommitted work\n");
 
-  await page.getByRole("button", { name: "Toggle Workspaces panel", exact: true }).click();
-  const workspaces = page.getByRole("complementary", { name: "Workspaces", exact: true });
-  const destination = workspaces.getByRole("button", { name: /^import-backend\b/ });
-  const search = workspaces.getByRole("textbox", { name: "Find workspace" });
-  await search.fill("back");
-  await destination.waitFor();
-  assert.equal(await workspaces.getByRole("button", { name: /^import-frontend\b/ }).count(), 0);
-  await workspaces.getByRole("button", { name: "Favorite workspace import-backend", exact: true }).click();
+  const search = explorer.getByRole("textbox", { name: "Find in Explorer", exact: true });
+  await search.fill("import-backend");
+  await group("import-backend").waitFor();
+  assert.equal(await group("import-frontend").count(), 0);
+  await group("import-backend").getByRole("button", { name: "Favorite group import-backend", exact: true }).click();
   await search.clear();
-  await workspaces.getByRole("button", { name: "Favorites", exact: true }).click();
-  assert.equal(await workspaces.getByRole("button", { name: /^import-frontend\b/ }).count(), 0);
-  await workspaces.getByRole("button", { name: "Favorites", exact: true }).click();
-  const repoButton = name => sidebar.locator(".repository-select").filter({ has: page.getByText(name, { exact: true }) });
-  await repoButton("service-api").click({ modifiers: ["Control"] });
-  await repoButton("service-worker").click({ modifiers: ["Control"] });
-  await sidebar.getByText("2 selected · Drag to a workspace", { exact: true }).waitFor();
-  const start = await repoButton("service-api").boundingBox(), end = await destination.boundingBox();
-  assert(start && end);
-  await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
-  await page.mouse.down();
-  try {
-    await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 8 });
-    await workspaces.locator(".workspace-drop-active").filter({ hasText: "import-backend" }).waitFor();
-  } finally { await page.mouse.up(); }
-  await page.getByText("2 repositories moved", { exact: true }).waitFor();
-  await repoButton("service-api").waitFor({ state: "detached" });
-  await page.keyboard.press("Control+z");
-  await repoButton("service-api").waitFor();
-  await repoButton("service-worker").waitFor();
-  await page.getByText("Workspace move undone", { exact: true }).waitFor();
+  const favorites = explorer.getByRole("button", { name: "Favorites", exact: true });
+  const treeRepository = name => explorer.getByRole("treeitem", { name, exact: true }).and(explorer.locator(".explorer-repository"));
+  await favorites.click();
+  assert.equal(await group("import-frontend").count(), 0);
+  await treeRepository("service-api").waitFor();
+  await treeRepository("service-worker").waitFor();
+  await group("import-backend").getByRole("button", { name: "Collapse import-backend", exact: true }).click();
+  await treeRepository("service-worker").waitFor({ state: "detached" });
+  await group("import-backend").getByRole("button", { name: "Expand import-backend", exact: true }).click();
+  await treeRepository("service-worker").waitFor();
+  await favorites.click();
+
+  await treeRepository("web-ui").getByRole("button", { name: "Favorite web-ui", exact: true }).click();
+  await favorites.click();
+  await group("import-frontend").getByRole("button", { name: "Favorite group import-frontend", exact: true }).waitFor();
+  await treeRepository("web-ui").locator(".repository-select").click();
+  const frontendId = await group("import-frontend").getAttribute("data-tree-group");
+  assert.equal(await picker.inputValue(), frontendId);
+  await treeRepository("web-ui").getByRole("button", { name: "Unfavorite web-ui", exact: true }).click();
+  await group("import-frontend").waitFor({ state: "detached" });
+  await favorites.click();
+  await pick("import-backend");
 
   await page.locator(".topbar").click({ button: "right", position: { x: 3, y: 3 } });
   await page.locator(".ctx-menu").getByText("Pull requests / Merge requests", { exact: true }).waitFor();
@@ -181,11 +231,11 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
       await page.evaluate(() => window.__workspacePanelWindow.document.querySelector(".ctx-menu .ctx-item").click());
       await page.waitForFunction(() => window.__workspacePanelWindow?.closed);
     };
-    await detach(workspaces.locator("header > b"));
-    await page.waitForFunction(() => !!window.__workspacePanelWindow?.document.querySelector(".detached-workspaces .workspace-sidebar"));
-    await workspaces.waitFor({ state: "detached" });
+    await detach(explorer.locator("header > b"));
+    await page.waitForFunction(() => !!window.__workspacePanelWindow?.document.querySelector(".detached-explorer .explorer-sidebar"));
+    await explorer.waitFor({ state: "detached" });
     await attach();
-    await workspaces.waitFor();
+    await explorer.waitFor();
 
     await repoButton("service-api").click();
     await page.locator(".view-tabs .view-tab").filter({ hasText: "History" }).click();
@@ -247,5 +297,5 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
   } finally {
     await page.evaluate(() => { window.__workspacePanelWindow?.close(); window.__restoreWorkspacePanelOpen(); });
   }
-  await workspaces.getByRole("button", { name: "Hide Workspaces", exact: true }).click();
+  await explorer.getByRole("button", { name: "Hide Explorer", exact: true }).click();
 }

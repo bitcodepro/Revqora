@@ -63,11 +63,11 @@ function RecoveryCenter({ root, close, initialId }: { root: string; close: () =>
     (kind === "all" || (kind === "workspace" ? cp.workspace : !cp.workspace)) &&
     `${cp.label} ${cp.command.replaceAll("_", " ")} ${cp.branch ?? ""} ${cp.sourceRoot}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())), [catalog, kind, query]);
   useEffect(() => { if (catalog) setSelected((id) => entries.some((cp) => cp.id === id) ? id : entries[0]?.id ?? null); }, [entries, catalog]);
-  const run = async <T,>(action: () => Promise<T>, success: string): Promise<T | undefined> => {
+  const run = async <T,>(action: () => Promise<T>, success: string, refreshRepository = true): Promise<T | undefined> => {
     setBusy(true); setError(null);
     try {
       const result = await action();
-      await useRepos.getState().refresh(root);
+      if (refreshRepository) await useRepos.getState().refresh(root);
       await reload(); toast.success(success); return result;
     } catch (e) { if (alive.current) setError(errorMessage(e)); return undefined; }
     finally { if (alive.current) setBusy(false); }
@@ -75,8 +75,12 @@ function RecoveryCenter({ root, close, initialId }: { root: string; close: () =>
   const create = async () => {
     const label = await promptDialog({ title: "Create recovery checkpoint", label: "Label", initial: "Manual checkpoint", confirm: "Create checkpoint" });
     if (label === null) return;
-    const cp = await run(() => api.recoveryCreate(root, label), "Recovery checkpoint saved");
-    if (cp) { setQuery(""); setKind("all"); setSelected(cp.id); }
+    const cp = await run(() => api.recoveryCreate(root, label), "Recovery checkpoint saved", false);
+    if (cp) {
+      setCatalog(current => current && !current.checkpoints.some(entry => entry.id === cp.id)
+        ? { ...current, checkpoints: [cp, ...current.checkpoints] } : current);
+      setQuery(""); setKind("all"); setSelected(cp.id);
+    }
   };
   const remove = async () => {
     if (!detail || !await confirmDialog({ title: "Delete checkpoint?", message: `Permanently remove “${detail.label}” and its saved files? Existing branches and worktrees stay available.`, confirm: "Delete checkpoint", danger: true })) return;

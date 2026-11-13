@@ -25,6 +25,7 @@ const gitErrorCodes = new Map([
   ["auth", "provider_authentication_failed"],
   ["forge-network", "provider_unavailable"],
   ["forge-server", "provider_unavailable"],
+  ["forge-write-uncertain", "result_unverified"],
   ["forge-rate-limit", "provider_rate_limited"],
   ["forge-http", "provider_error"],
   ["forge-graphql", "provider_error"],
@@ -32,6 +33,7 @@ const gitErrorCodes = new Map([
   ["identity-unavailable", "identity_unavailable"],
   ["pr-connection-required", "pr_connection_required"],
   ["file-not-found", "file_not_found"],
+  ["checkpoint-failed", "checkpoint_failed"],
   ["output-limit", "result_too_large"],
 ]);
 

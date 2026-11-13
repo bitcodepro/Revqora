@@ -3,6 +3,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
 import {openRepository} from "./ui-readiness.mjs";
+import {interceptClipboard} from "./name-path-copy-smoke.mjs";
 
 export async function fileEditingSmoke({page,work,returnRoot,shot}) {
   const root=path.join(work,"keyboard-file-editor");fs.mkdirSync(root,{recursive:true});
@@ -20,30 +21,92 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
   const history=()=>page.locator(".view-tab").filter({hasText:/History/}).click();
   const selected=()=>page.locator(".changes [data-file-nav].selected .fname");
   const diff=text=>page.locator(".changes .diff-body").filter({hasText:text}).waitFor();
-  const selectWord=async(scope,word)=>{
-    const line=scope.locator(".diff-body .code").filter({hasText:word}).first();
+  const settings=page.locator(".modal").last();
+  const shortcutSearch=settings.getByRole("textbox",{name:"Find shortcut",exact:true});
+  const openShortcuts=async(query="Show history")=>{
+    await page.getByTitle("Settings",{exact:true}).click();
+    await settings.getByRole("button",{name:"Shortcuts",exact:true}).click();
+    await shortcutSearch.fill(query);
+  };
+  const done=()=>settings.getByRole("button",{name:"Done",exact:true}).click();
+  const changeShortcut=async(label, key)=>{
+    await shortcutSearch.fill(label);
+    const button=settings.getByRole("button",{name:`Change shortcut for ${label}`,exact:true});
+    await button.click();
+    await button.press(key);
+    const binding=key==="Backspace"?"Unassigned":key.replaceAll("Control","Ctrl").replace(/\+[a-z]$/i, suffix=>suffix.toUpperCase());
+    assert.equal(await button.getAttribute("aria-description"),binding);
+  };
+  const restoreShortcut=async(id,label)=>{
+    const binding=prefs.shortcuts?.[id];
+    if(binding!==undefined) await changeShortcut(label,binding.replaceAll("Ctrl","Control")||"Backspace");
+    else {
+      await shortcutSearch.fill(label);
+      await settings.getByRole("button",{name:`Reset shortcut for ${label}`,exact:true}).click();
+    }
+  };
+  const checkFileCopy=async row=>{
+    await interceptClipboard(page);
+    try {
+      for (const [label,expected] of [["Copy name","c.txt"],["Copy path","z/c.txt"]]) {
+        await row.click({button:"right"});
+        await page.locator(".ctx-menu").getByText(label,{exact:true}).click();
+        await page.waitForFunction(text=>window.__namePathCopies.at(-1)===text,expected);
+      }
+    } finally { await page.evaluate(()=>window.__restoreNamePathClipboard?.()); }
+  };
+  const wordPoint=async(line,word,occurrence=0)=>{
     await line.scrollIntoViewIfNeeded();
-    const point=await line.evaluate((code,word)=>{
+    return line.evaluate((code,{word,occurrence})=>{
       const walker=document.createTreeWalker(code,NodeFilter.SHOW_TEXT);
       for(let node=walker.nextNode();node;node=walker.nextNode()){
-        const start=node.textContent.indexOf(word);
-        if(start<0)continue;
-        const range=document.createRange();range.setStart(node,start);range.setEnd(node,start+word.length);
-        const rect=range.getBoundingClientRect();
-        return {x:rect.x+rect.width/2,y:rect.y+rect.height/2};
+        for(let start=node.textContent.indexOf(word);start>=0;start=node.textContent.indexOf(word,start+word.length)){
+          if(occurrence--!==0)continue;
+          const range=document.createRange();range.setStart(node,start);range.setEnd(node,start+word.length);
+          const rect=range.getBoundingClientRect();
+          const line=code.getBoundingClientRect();
+          const x=rect.x+rect.width/2,y=rect.y+rect.height/2;
+          return {x,y,position:{x:x-line.x,y:y-line.y}};
+        }
       }
       throw Error("The test word was not rendered");
-    },word);
+    },{word,occurrence});
+  };
+  const checkSelectionCopy=async(point,word,editorLine)=>{
+    await interceptClipboard(page);
+    try {
+      if(editorLine) await editorLine.click({button:"right",position:point.position});
+      else await page.mouse.click(point.x,point.y,{button:"right"});
+      const copy=page.locator(".ctx-item").filter({has:page.getByText("Copy",{exact:true})});
+      await copy.waitFor().catch(async error=>{
+        const state=await page.evaluate(()=>({
+          selection:getSelection()?.toString(),
+          focus:document.activeElement?.getAttribute("aria-label"),
+          menu:[...document.querySelectorAll(".ctx-item")].map(item=>item.textContent),
+        }));
+        throw new Error(`Copy menu did not open for ${JSON.stringify(word)}: ${JSON.stringify(state)}`,{cause:error});
+      });
+      const beforeCopy=await page.evaluate(()=>getSelection()?.toString());
+      assert(!(await copy.evaluate(el=>el.classList.contains("disabled"))),`Copy is disabled with selection ${JSON.stringify(beforeCopy)}`);
+      await copy.click();
+      const copies=await page.evaluate(()=>window.__namePathCopies);
+      assert.deepEqual(copies,[word],`Copy with DOM selection ${JSON.stringify(beforeCopy)}`);
+    } finally { await page.evaluate(()=>window.__restoreNamePathClipboard?.()); }
+  };
+  const selectWord=async(scope,word)=>{
+    const point=await wordPoint(scope.locator(".diff-body .code").filter({hasText:word}).first(),word);
     await page.mouse.dblclick(point.x,point.y);
-    await page.waitForFunction(word=>{
-      const ranges=[...(CSS.highlights.get("revqora-diff-word")??[])];
-      return ranges.length===2&&ranges.every(range=>range.toString()===word)&&getSelection()?.toString().trim()===word;
-    },word).catch(async error=>{
+    await page.waitForFunction(word=>getSelection()?.toString()===word&&!CSS.highlights.has("revqora-diff-word"),word).catch(async error=>{
       const actual=await page.evaluate(()=>({selection:getSelection()?.toString(),matches:[...(CSS.highlights.get("revqora-diff-word")??[])].map(range=>range.toString())}));
       throw new Error(`Double-click selection for ${word}: ${JSON.stringify(actual)}`,{cause:error});
     });
+    return point;
   };
   try {
+    await openShortcuts("Copy selected commit hash");
+    await changeShortcut("Copy selected commit hash","Backspace");
+    await changeShortcut("Copy selected code","Control+c");
+    await done();
     await changes();await page.getByTitle("Flat list",{exact:true}).click();
     const search=page.getByRole("textbox",{name:"Find changed files",exact:true});
     const names=page.locator(".changes [data-file-nav] .fname");
@@ -53,14 +116,52 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await search.fill("absent");await page.getByText("No matching files.",{exact:true}).waitFor();
     await page.getByRole("button",{name:"Clear file search",exact:true}).click();
     assert.equal(await names.count(),4);
+    await checkFileCopy(page.locator(".changes [data-file-nav]").filter({has:page.getByText("c.txt",{exact:true})}));
     await page.locator(".changes [data-file-nav]").filter({has:page.getByText("a.txt",{exact:true})}).first().click();
     await page.keyboard.press("ArrowDown");await diff("latest B");
     const changesDiff=page.locator(".changes .diff");
     await changesDiff.getByTitle("Unified",{exact:true}).click();
+    const firstItem=await selectWord(changesDiff,"item_id");
+    await checkSelectionCopy(firstItem,"item_id");
+    await page.mouse.click(firstItem.x,firstItem.y);
     await selectWord(changesDiff,"item_id");
+    await page.mouse.dblclick(firstItem.x,firstItem.y);
+    await page.waitForFunction(()=>{
+      const ranges=[...(CSS.highlights.get("revqora-diff-word")??[])];
+      return ranges.length===2&&ranges.every(range=>range.toString()==="item_id");
+    });
+    const codeLine=changesDiff.locator(".diff-body .code").filter({hasText:"item_id"}).first();
+    const secondItem=await wordPoint(codeLine,"item_id",1);
+    await checkSelectionCopy(secondItem,"item_id\nitem_id");
+    await interceptClipboard(page);
+    try {
+      await changesDiff.press("Control+c");
+      assert.deepEqual(await page.evaluate(()=>window.__namePathCopies),["item_id\nitem_id"]);
+      await changesDiff.press("Control+f");
+      const find=changesDiff.getByPlaceholder("Find in this diff");
+      await find.fill("latest");
+      await find.evaluate(input=>{
+        input.select();
+        input.addEventListener("copy",event=>{
+          input.dataset.copiedQuery=input.value.slice(input.selectionStart,input.selectionEnd);
+          event.preventDefault(); // Inspect native selection without changing the system clipboard.
+        },{once:true});
+      });
+      await find.press("Control+c");
+      assert.deepEqual(await page.evaluate(()=>window.__namePathCopies),["item_id\nitem_id"],"Find must not copy the earlier diff selection");
+      assert.equal(await find.getAttribute("data-copied-query"),"latest","Find must receive the native copy event");
+      await find.press("Escape");
+    } finally { await page.evaluate(()=>window.__restoreNamePathClipboard?.()); }
     await changesDiff.getByTitle("Side by side",{exact:true}).click();
     await page.waitForFunction(()=>[...(CSS.highlights.get("revqora-diff-word")??[])].filter(range=>range.toString()==="item_id").length===2);
-    await changesDiff.getByTitle(prefs.diffMode==="split"?"Side by side":"Unified",{exact:true}).click();
+    await changesDiff.getByTitle("Unified",{exact:true}).click();
+    await page.mouse.click(firstItem.x,firstItem.y);
+    await codeLine.evaluate(code=>{
+      const range=document.createRange();range.selectNodeContents(code);
+      getSelection().removeAllRanges();getSelection().addRange(range);
+    });
+    await checkSelectionCopy(await wordPoint(codeLine,"item_id",1),"item_id item_id item_identifier");
+    if(prefs.diffMode==="split")await changesDiff.getByTitle("Side by side",{exact:true}).click();
     await page.getByLabel("Changed files",{exact:true}).focus();
     await page.keyboard.press("ArrowDown");await diff("latest C");
     await page.waitForFunction(()=>!CSS.highlights.has("revqora-diff-word"));
@@ -81,7 +182,12 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.getByRole("button",{name:"Edit working file",exact:true}).click();
     const content=page.getByRole("textbox",{name:"Working file content",exact:true});await content.waitFor();
     assert.equal(await page.locator(".modal").count(),0,"The editor should use the Changes diff pane");
-    await page.locator(".changes .cm-working-change").filter({hasText:"alpha value"}).waitFor();
+    const changedLine=page.locator(".changes .cm-working-change").filter({hasText:"alpha value"});
+    await changedLine.waitFor();
+    const alpha=await wordPoint(changedLine,"alpha");
+    await changedLine.dblclick({position:alpha.position});
+    await page.waitForFunction(()=>getSelection()?.toString()==="alpha");
+    await checkSelectionCopy(await wordPoint(changedLine,"alpha"),"alpha",changedLine);
     await page.getByLabel("Spaces per tab",{exact:true}).selectOption("2");await page.getByRole("button",{name:"Tabs → spaces",exact:true}).click();
     await page.waitForFunction(()=>!document.querySelector(".working-code .cm-highlightTab"));
     assert.equal(fs.readFileSync(file,"utf8"),initial,"Conversion must remain a draft until Save");
@@ -126,14 +232,8 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await selectWord(page.locator(".commit-preview .diff"),"base_token");
     await commitFiles.focus();
     await page.keyboard.press("Control+ArrowDown");await page.waitForFunction(()=>document.querySelector(".commit-preview [data-file-nav].selected .fname")?.textContent==="c.txt");
-    const settings=page.locator(".modal").last();
-    const openShortcuts=async()=>{
-      await page.getByTitle("Settings",{exact:true}).click();
-      await settings.getByRole("button",{name:"Shortcuts",exact:true}).click();
-      await settings.getByRole("textbox",{name:"Find shortcut",exact:true}).fill("Show history");
-    };
+    await checkFileCopy(commitFiles.locator("[data-file-nav].selected"));
     const historyBinding=settings.getByRole("button",{name:"Change shortcut for Show history",exact:true});
-    const done=()=>settings.getByRole("button",{name:"Done",exact:true}).click();
     await openShortcuts();
     const originalBinding=await historyBinding.textContent();
     for(const key of ["Home","End","ArrowUp","ArrowDown"]) {
@@ -154,9 +254,11 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
       await page.locator(".changes").waitFor({state:"detached"});
     }
     await openShortcuts();
-    if(prefs.shortcuts?.history===undefined) await settings.getByTitle("Reset shortcut for Show history",{exact:true}).click();
+    if(prefs.shortcuts?.history===undefined) await settings.getByRole("button",{name:"Reset shortcut for Show history",exact:true}).click();
     else {await historyBinding.click();await historyBinding.press(prefs.shortcuts.history.replaceAll("Ctrl","Control")||"Backspace");}
     await historyBinding.getByText(originalBinding,{exact:true}).waitFor();
+    await restoreShortcut("codeCopySelection","Copy selected code");
+    await restoreShortcut("historyCopyHash","Copy selected commit hash");
     await done();
     assert.equal(git("rev-parse","HEAD"),head);assert(index.equals(fs.readFileSync(path.join(root,".git/index"))));
     fs.writeFileSync(path.join(root,"encoded.txt"),Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from("UTF-16 fixture\r\nПривет","utf16le")]));

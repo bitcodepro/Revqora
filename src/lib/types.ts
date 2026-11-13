@@ -219,7 +219,7 @@ export interface CommitSearchPage {
   commits: CommitSearchHit[];
   nextCursor: string | null;
   hasMore: boolean;
-  diagnostics: {queueMs: number; gitMs: number};
+  diagnostics: {queueMs: number; gitMs: number; refsMs: number; logMs: number; cacheHit: boolean};
 }
 
 export interface ChangedFile {
@@ -309,9 +309,11 @@ export interface StashInfo {
 }
 
 export type SwitchChoice = { action: "stash" | "move"; targetOid: string };
+export interface SwitchStash { oid: string; index: number; switchSource: string; kept: boolean }
 export type SwitchOutcome =
   | { status: "review"; source: string; targetOid: string; stateToken: string; files: number }
-  | { status: "switched"; branch: string; saved: boolean; moved: boolean; conflicts: string[]; warning: string | null };
+  | { status: "switched"; branch: string; saved: boolean; moved: boolean; conflicts: string[]; warning: string | null;
+      dirtyAction: SwitchChoice["action"] | null; stash: SwitchStash | null };
 
 export interface RemoteInfo {
   name: string;
@@ -927,4 +929,5 @@ export interface FoundRepository {
 export interface RepositoryFolderScan {
   repositories: FoundRepository[];
   skipped: number;
+  excluded: number;
 }

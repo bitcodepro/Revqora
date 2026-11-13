@@ -54,7 +54,7 @@ function SyncReview({ rows, close }: { rows: ReviewRow[]; close: (choices: Choic
     </div>)}</div>
   </Modal>;
 }
-export function SyncButton({ roots, label = "Sync" }: { roots: string[]; label?: string }) {
+export function SyncButton({ roots, label = "Sync", shortcut = "sync" }: { roots: string[]; label?: string; shortcut?: string }) {
   const busy = useUi((s) => s.busy.length > 0);
-  return <button type="button" className="btn sm" disabled={busy || !roots.length} onClick={() => void syncRepositories(roots)}><ArrowDownUp size={13} /> {label}</button>;
+  return <button type="button" className="btn sm" data-shortcut={shortcut} disabled={busy || !roots.length} onClick={() => void syncRepositories(roots)}><ArrowDownUp size={13} /> {label}</button>;
 }

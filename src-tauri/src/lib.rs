@@ -290,6 +290,7 @@ use git::watcher::{self, RepoWatcher};
 struct AppState {
     graphs: Mutex<HashMap<String, Arc<GraphCache>>>,
     watchers: Mutex<HashMap<String, RepoWatcher>>,
+    folder_scans: git::repository_import::FolderScans,
 }
 
 async fn blocking<T, F>(f: F) -> GitResult<T>
@@ -520,8 +521,21 @@ async fn repo_open(path: String) -> GitResult<RepoInfo> {
 }
 
 #[tauri::command]
-async fn repo_scan_folder(path: String) -> GitResult<git::repository_import::FolderScan> {
-    blocking(move || git::repository_import::scan(&p(&path))).await
+fn repo_prepare_folder_scan(state: State<'_, AppState>) -> u32 {
+    state.folder_scans.prepare()
+}
+
+#[tauri::command]
+async fn repo_scan_folder(state: State<'_, AppState>, scan_id: u32, path: String, include_generated: bool) -> GitResult<git::repository_import::FolderScan> {
+    let cancelled = state.folder_scans.start(scan_id)?;
+    let result = blocking(move || git::repository_import::scan(&p(&path), include_generated, &cancelled)).await;
+    state.folder_scans.finish(scan_id);
+    result
+}
+
+#[tauri::command]
+fn repo_cancel_folder_scan(state: State<'_, AppState>, scan_id: u32) {
+    state.folder_scans.cancel(scan_id);
 }
 
 #[tauri::command]
@@ -938,6 +952,11 @@ async fn commit_details(repo: String, oid: String, exact: Option<bool>) -> GitRe
 }
 
 #[tauri::command]
+async fn verify_commit(repo: String, oid: String) -> GitResult<()> {
+    blocking(move || gcommit::verify_commit_oid(&p(&repo), &oid)).await
+}
+
+#[tauri::command]
 async fn file_history(repo: String, path: String) -> GitResult<Vec<FileHistoryEntry>> {
     blocking(move || gcommit::file_history(&p(&repo), &path, 500)).await
 }
@@ -1289,6 +1308,11 @@ async fn cherry_pick(
 ) -> GitResult<OpOutcome> {
     mutating(repo.clone(), expected_state, app.clone(), "cherry_pick", None, move || {
         let root = p(&repo);
+        if mcp_id.is_some() {
+            for oid in &oids {
+                gcommit::verify_commit_oid(&root, oid)?;
+            }
+        }
         let result = ops::cherry_pick(&root, &oids, no_commit)?;
         if let Some(id) = mcp_id.filter(|_| matches!(result.status.as_str(), "conflicts" | "stopped")) {
             mcp::cherry_pick::track(&app, &id, &root);
@@ -1498,8 +1522,11 @@ async fn stash_list(repo: String) -> GitResult<Vec<refs::StashInfo>> {
 }
 
 #[tauri::command]
-async fn stash_drop(app: AppHandle, expected_state: Option<String>, repo: String, index: u32, oid: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "stash_drop", None, move || ops::stash_drop_reviewed(&p(&repo), index, &oid)).await
+async fn stash_drop(app: AppHandle, expected_state: Option<String>, repo: String, index: u32, oid: String) -> GitResult<recovery::Summary> {
+    mutating(repo.clone(), expected_state.clone(), app, "stash_drop", None, move || {
+        ops::stash_drop_with_checkpoint(&p(&repo), index, &oid, expected_state.as_deref())
+    })
+    .await
 }
 
 // ───────────────────────────── stage layers ─────────────────────────────
@@ -2440,7 +2467,9 @@ pub fn run() {
             askpass_respond,
             repository_sidebar_status,
             repo_open,
+            repo_prepare_folder_scan,
             repo_scan_folder,
+            repo_cancel_folder_scan,
             repo_init,
             repo_clone,
             git_connection_snapshot,
@@ -2469,6 +2498,7 @@ pub fn run() {
             repository_commit_search,
             repository_commit_search_page,
             commit_details,
+            verify_commit,
             commit_graph_status,
             commit_graph_write,
             file_history,

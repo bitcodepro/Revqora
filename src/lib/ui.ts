@@ -78,7 +78,6 @@ interface UiState {
   overlay: Overlay | null;
   overlayRevision: number;
   repositoryOverview: boolean;
-  repositoryGroup: string | null;
   toast: (t: Omit<Toast, "id">, ttl?: number) => void;
   dismissToast: (id: number) => void;
   openMenu: (x: number, y: number, items: MenuItem[], surface?: Window) => void;
@@ -99,7 +98,6 @@ export const useUi = create<UiState>()((set, get) => ({
   overlay: null,
   overlayRevision: 0,
   repositoryOverview: false,
-  repositoryGroup: null,
   toast: (t, ttl) => {
     const id = ++toastId;
     set({ toasts: [...get().toasts.slice(-4), { ...t, id }] });
@@ -124,18 +122,24 @@ export const toast = {
 };
 
 /** Opens a modal and resolves with whatever the dialog passes to `close`. */
-export function showDialog<T>(render: (close: (v: T) => void) => ReactNode): Promise<T> {
+export function showDialog<T>(render: (close: (v: T) => void) => ReactNode, timeout?: { ms: number; value: T }): Promise<T> {
   return new Promise<T>((resolve) => {
     const id = ++dialogId;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let closed = false;
     const dialog: Dialog = {
       id,
       surface: focusedUiSurface(),
       render: render as (close: (v: unknown) => void) => ReactNode,
       resolve: (v) => {
+        if (closed) return;
+        closed = true;
+        clearTimeout(timer);
         useUi.setState({ dialogs: useUi.getState().dialogs.filter((d) => d.id !== id) });
         resolve(v as T);
       },
     };
+    if (timeout) timer = setTimeout(() => dialog.resolve(timeout.value), timeout.ms);
     useUi.setState({ dialogs: [...useUi.getState().dialogs, dialog] });
   });
 }

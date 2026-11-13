@@ -36,7 +36,14 @@ function ancestorIds(parents: Map<string, string | null | undefined>, id: string
   return result;
 }
 
-export function visibleTree<T extends TreeEntry>(entries: readonly T[], isMatch: (entry: T) => boolean, isCollapsed: (entry: T) => boolean, filtering: boolean) {
+export function visibleTree<T extends TreeEntry>(
+  entries: readonly T[],
+  isMatch: (entry: T) => boolean,
+  isCollapsed: (entry: T) => boolean,
+  filtering: boolean,
+  expandMatches = filtering,
+  orderSiblings?: (entries: T[], parentId: string | null) => T[],
+) {
   const keep = new Set<string>();
   const children = new Map<string | null, T[]>();
   const parents = new Map(entries.map(entry => [entry.id, entry.parentId]));
@@ -50,13 +57,14 @@ export function visibleTree<T extends TreeEntry>(entries: readonly T[], isMatch:
       if (filtering) ancestorIds(parents, entry.id).forEach(id => keep.add(id));
     }
   }
+  if (orderSiblings) for (const [parent, siblings] of children) children.set(parent, orderSiblings(siblings, parent));
   const result: { entry: T; depth: number; hasChildren: boolean; expanded: boolean }[] = [];
   const pending = (children.get(null) ?? []).slice().reverse().map(entry => ({ entry, depth: 0 }));
   while (pending.length) {
     const { entry, depth } = pending.pop()!;
     if (!keep.has(entry.id)) continue;
     const visibleChildren = (children.get(entry.id) ?? []).filter(child => keep.has(child.id));
-    const expanded = filtering || !isCollapsed(entry);
+    const expanded = expandMatches || !isCollapsed(entry);
     result.push({ entry, depth, hasChildren: visibleChildren.length > 0, expanded });
     if (expanded) pending.push(...visibleChildren.reverse().map(child => ({ entry: child, depth: depth + 1 })));
   }
@@ -65,8 +73,8 @@ export function visibleTree<T extends TreeEntry>(entries: readonly T[], isMatch:
 
 export function treeSelection(ids: string[], selected: string[], anchor: string | null, id: string, range: boolean, toggle: boolean): string[] {
   const start = anchor ? ids.indexOf(anchor) : -1, end = ids.indexOf(id);
-  if (range && start >= 0 && end >= 0) {
-    const between = ids.slice(Math.min(start, end), Math.max(start, end) + 1);
+  if (range && end >= 0) {
+    const between = start < 0 ? [id] : ids.slice(Math.min(start, end), Math.max(start, end) + 1);
     return toggle ? [...new Set([...selected, ...between])] : between;
   }
   return toggle && selected.includes(id) ? selected.filter(item => item !== id) : toggle ? [...selected, id] : [id];

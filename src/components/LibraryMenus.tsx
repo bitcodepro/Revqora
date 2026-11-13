@@ -1,17 +1,15 @@
 import { FolderMinus, FolderPlus, Unlink } from "lucide-react";
-import { groupsInWorkspace, repositoryKey, useLibrary } from "../lib/repositoryLibrary";
+import { repositoryKey, useLibrary } from "../lib/repositoryLibrary";
 import { visibleTree } from "../lib/libraryTree";
 import type { MenuItem } from "../lib/ui";
 import { matchesShortcut } from "../lib/shortcuts";
 
 export function repositoryMembershipMenu(roots: string[], groupId?: string): MenuItem[] {
   const library = useLibrary.getState();
-  const workspace = library.workspaces.find(w => w.id === library.activeWorkspaceId);
-  const available = groupsInWorkspace(library.groups, workspace);
   const keys = roots.map(repositoryKey);
   const groupMembers = new Map(library.groups.map(group => [group.id, new Set(group.roots.map(repositoryKey))]));
   const hasMembers = (id: string) => keys.some(key => groupMembers.get(id)?.has(key));
-  const add = visibleTree(available, () => true, () => false, false)
+  const add = visibleTree(library.groups, () => true, () => false, false)
     .filter(({entry}) => keys.some(key => !groupMembers.get(entry.id)?.has(key)))
     .map(({entry, depth}) => ({
       label: "　".repeat(depth) + entry.name,

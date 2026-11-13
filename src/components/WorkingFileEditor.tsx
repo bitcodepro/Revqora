@@ -12,7 +12,7 @@ import { useSettings } from "../lib/settings";
 import { matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { useRepos } from "../lib/store";
 import { contextMenu, copyText, useUi } from "../lib/ui";
-import { basename } from "../lib/format";
+import { copyFileNameItem, useCopySelectionMenu } from "./NamePathMenu";
 import type { FileDiff } from "../lib/types";
 import { confirmDialog } from "./dialogs";
 import "../styles/fileEditor.css";
@@ -88,7 +88,7 @@ export function WorkingFileEditor({root,path,untracked,displayDiff,close}: {
     if (action) {e.preventDefault();e.stopPropagation();if(!e.repeat)void action();}
   }}>
     <header className="diff-head">
-      <div className="path" title={path} onContextMenu={e => contextMenu(e, [{label:"Copy name", onClick: () => copyText(basename(path), "Name copied")}])}>{path}</div>
+      <div className="path" title={path} onContextMenu={e => contextMenu(e, [copyFileNameItem(path)])}>{path}</div>
       <div className="diff-controls">
         <span className="muted" role="status">{loading?"Loading…":!file?"File not loaded":dirty?"Unsaved changes":"Saved"}</span>
         <button type="button" className="btn sm" disabled={saving||loading} onClick={()=>void reload()}>Reload from disk</button>
@@ -153,6 +153,12 @@ function WorkingCode({path,initial,diff,displayDiff,disabled,changed}: {
   }, [diff, displayDiff]);
   useEffect(()=>{view.current?.dispatch({effects:compartments.current.options.reconfigure([EditorState.tabSize.of(size),indentUnit.of(" ".repeat(size)),...(whitespace?[highlightWhitespace()]:[])])});},[size,whitespace]);
   useEffect(()=>{view.current?.dispatch({effects:compartments.current.editable.reconfigure([EditorState.readOnly.of(disabled),...(disabled?[EditorState.transactionFilter.of(tr=>tr.docChanged?[]:tr)]:[])])});},[disabled]);
+  const selectedText = () => {
+    const state = view.current?.state;
+    return state ? state.selection.ranges.filter(range => !range.empty)
+      .map(range => state.sliceDoc(range.from, range.to)).join(state.lineBreak) : "";
+  };
+  const selectionMenu = useCopySelectionMenu(selectedText);
   const convert=()=>{
     const editor=view.current;if(!editor||disabled)return;
     const before=editor.state.sliceDoc(), after=tabsToSpaces(before,size,all);
@@ -166,5 +172,10 @@ function WorkingCode({path,initial,diff,displayDiff,disabled,changed}: {
     <label>Spaces per tab <select className="select" aria-label="Spaces per tab" value={size} disabled={disabled} onChange={e=>setSize(Number(e.target.value))}>{[2,4,8].map(n=><option key={n} value={n}>{n}</option>)}</select></label>
     <label>Convert <select className="select" aria-label="Tab conversion scope" value={all?"all":"indent"} disabled={disabled} onChange={e=>setAll(e.target.value==="all")}><option value="indent">Leading indentation only</option><option value="all">All tabs in the file</option></select></label>
     <button type="button" className="btn sm" disabled={disabled} onClick={convert}>Tabs → spaces</button><span className="muted">{shortcutTitle("Save", "workingFileSave")} · Ctrl+Z undoes</span>
-  </div><div className="working-code" ref={host}/></>;
+  </div><div className="working-code" ref={host} {...selectionMenu}
+    onKeyDownCapture={e => {
+      if (e.repeat || !matchesShortcut(e, "codeCopySelection")) return;
+      const text = selectedText();
+      if (text) { e.preventDefault(); e.stopPropagation(); void copyText(text); }
+    }}/></>;
 }

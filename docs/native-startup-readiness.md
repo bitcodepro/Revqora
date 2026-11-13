@@ -8,7 +8,7 @@ running restoration could subsequently activate an older tab.
 The app now publishes `data-app-startup=ready` only after both independent gates:
 
 - The saved-tab loop and startup paths have completed, the chosen tab is active
-  and `finishWorkspaceStartup` has returned.
+  in the restored repository session.
 - The current `open-paths` registration promise has resolved. A disposed
   StrictMode registration cannot declare a newer pending setup ready.
 

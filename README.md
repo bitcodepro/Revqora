@@ -11,7 +11,7 @@ React and TypeScript. Distributed under the [MIT license](LICENSE).
 [Quick start](#quick-start) · [Features](#features) · [How to use](#how-to-use) ·
 [Keyboard shortcuts](#keyboard-shortcuts) · [Report an issue](https://github.com/bitcodepro/Revqora/issues)
 
-![Revqora Graph with branch context and nested workspaces and groups](docs/screenshots/history-dark.png)
+![Revqora Graph with branch context](docs/screenshots/history-dark.png)
 
 | Columns in the light theme | Conflict editor | Stage layers |
 | --- | --- | --- |
@@ -100,7 +100,7 @@ or check out anything.
 
 | Area | What you can do |
 | --- | --- |
-| Repository workspace | Open, initialize and clone repositories; use a searchable repository column, favorites, project groups and saved workspaces; Fetch/Pull/Sync across matching open repositories. |
+| Repository workspace | Open, initialize and clone repositories; browse groups and repositories in Explorer or use a flat repository list; Fetch/Pull/Sync across matching open repositories. |
 | Review layouts | Switch between Graph, Review and Columns; hide repository and branch panels, resize file/diff panes, and keep visibility and widths separately for each layout. |
 | History | Virtualized graph, ref labels, commit and branch details, search by message/author/SHA/code/path, branch comparison, file history, blame and revision browsing. |
 | Diff | Unified and side-by-side views, word highlighting, line wrapping or horizontal scrolling, image comparison, hunk navigation, file-tree and flat file lists. |
@@ -122,48 +122,34 @@ or check out anything.
 
 ### Work with many repositories
 
-The four icons at the top left toggle **Workspaces**, **Groups**, **Repositories**
-and **Branches**. Search and favorites help you find workspaces and repositories.
-Open **Repository library and workspaces** from the right side of the toolbar to
-organize saved items. Repository incoming and outgoing counts reflect the last Fetch.
+The three navigation icons at the top left toggle **Explorer**, **Repositories**
+and **Branches**. Explorer opens by default and shows groups, subgroups and
+repositories in one expandable tree. Repositories outside a named group appear at
+the top level. Use **Import folder…** to recreate the folder hierarchy in Explorer.
 
-At startup, Revqora opens all saved repositories and restores the last selection.
-Named workspaces keep their own repository set. To restore only previously open
-tabs, disable **Settings → Behaviour → Open all saved repositories**.
+Open the optional **Repositories** panel for a flat list. Select a group in Explorer
+to show all of its repositories, including those in subgroups. Select **All
+repositories** in Explorer to clear the filter. Search, favorites and incoming
+commit filters help narrow either view. **Fetch**, **Pull** and **Sync** in the
+flat panel apply to matching open repositories.
 
-Use **Fetch all** to refresh matching open repositories, **Pull all** to receive
-updates, or **Sync all** to review receiving and publishing together. Closed library
-bookmarks do not run background Git operations. Configure auto-fetch in Settings.
+Drag a group by its handle to nest or reorder it. Drag a repository onto a group
+to move it there. Use **Ctrl** or **Shift** to select several items and right-click
+to create a group with them. **F2** renames the focused group, repository label or
+branch. **Delete** opens the deletion review for focused groups or branches.
 
-In **Manage library → Workspaces**, choose **New workspace** and select repositories
-from the library. Use **Edit repositories** to update a saved set. **Switch** opens
-that set with its saved layout. **Add to session** opens the whole set alongside
-your current repositories. Removing a repository from a workspace keeps it in the library.
+Open **Repository library** from the right side of the toolbar to manage saved
+items. At startup Revqora restores the last selection and opens saved repositories.
+To restore only the previous tabs, disable **Settings → Behaviour → Open all saved
+repositories**.
 
-**Import folder…** recreates the on-disk folder hierarchy in **Workspaces**, including
-Git repositories inside other repositories. Select a workspace to open its direct
-repositories. Expand it to reach its children. Drag a workspace by its handle onto
-another workspace or onto **Move to top level**. Drag selected repository rows onto
-a workspace to move them. **Ctrl+Z** undoes the most recent repository move.
-
-Use **Ctrl** or **Shift** to select repositories, then right-click and choose
-**Create group**. Enter the name in the sidebar. Open the **Groups** panel to
-filter repositories by a group and its subgroups. Select groups in the same way
-to wrap them in a parent group. A repository can belong to multiple groups. Use the
-row's context menu to remove it from one group or from all groups. Workspace and group
-menus also let you move a child to the top level, delete an entry, or hide a group
-from the active workspace. These actions update library metadata and keep working
-copies on disk. Press **F2** to rename the focused workspace, group, repository
-label or branch. **Delete** opens the deletion review for focused workspaces,
-groups or branches.
-
-See [repository workspaces](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md).
+See the [Explorer and repository library guide](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md).
 
 ### Give the code more room
 
 - **Graph** shows topology; **Review** emphasizes readable commit rows;
   **Columns** arranges commits → changed files → diff.
-- Toggle Workspaces, Repositories or Branches with **Ctrl+Alt+W**, **Ctrl+Alt+R**
+- Toggle Explorer, Repositories or Branches with **Ctrl+Alt+W**, **Ctrl+Alt+R**
   or **Ctrl+Alt+B**.
 - Use **Ctrl+Shift+Enter** for focus mode and drag pane dividers to adjust widths.
 - Use **Wrap lines** for long code lines, or keep wrapping off and scroll horizontally.
@@ -554,7 +540,7 @@ Use your actual path, or copy the ready-to-use entry from Settings. Add the VS C
 
 In a manual review, inspect the exact paths and targets in the **MCP request** dialog. An action status of `handed_off` means Revqora opened another review. Poll `action_status` for tracked actions, which report whether approval was manual or automatic. An automatic request that needs additional choices returns `action_details_required` with the required fields. Provider permissions and repository state checks apply in all modes.
 
-You can edit a proposed commit message or new branch name in the approval dialog. Revqora passes the approved commit message to Git verbatim, including lines starting with `#`. Commit, branch creation, checkout and local branch deletion report a terminal outcome through `action_status`. Successful results contain the commit SHA, the created or deleted branch and its SHA, or the previous and current branch after checkout. Creating a Git branch through MCP requires a starting commit. Revqora reports `initial_commit_required` or `branch_exists` before showing approval when those conditions apply.
+You can edit a proposed commit message or new branch name in the approval dialog. Revqora passes the approved commit message to Git verbatim, including lines starting with `#`. Commit, branch creation, checkout and local branch deletion report a terminal outcome through `action_status`. Successful results contain the commit SHA, the created or deleted branch and its SHA, or the previous and current branch after checkout. `create_branch` uses the current `HEAD` by default. Set `base` to a local branch or a full commit SHA to start elsewhere. Missing branches, commits and Stage paths return specific errors before the approval dialog opens. Read the supported parameters for each action in the [MCP guide](docs/wiki/MCP.md#request-action-parameters).
 
 The MCP staged diff includes all staged changes, including sealed stage layers. While sealed layers exist, use **Changes** in Revqora to unstage or commit them. For a staged rename, `file_diff` keeps `oldPath`, and `unstage` reviews and resets both index paths. Conflicted files return `kind: "conflict"`, a conflict code, and index stages `base`, `ours` and `theirs`. A missing stage is `null`. Text is paged by line, with a `nextOffset` per side. Binary, oversized or gitlink stages include an object ID, mode and omission reason.
 
@@ -562,15 +548,17 @@ For `file_diff` and PR diffs, send the first page's `diffVersion` with each `nex
 
 Selective `stage` checks the selected files and their index entries, plus the current branch, HEAD and Git operation. Edits to other files can remain in the working tree during approval. Revqora processes one MCP action at a time. `review_pending` includes `activeActionId` when another MCP request is active in the same session.
 
-Use `list_stashes`, then request `stash_apply` or `stash_pop` with the returned `stashIndex` and stash SHA as `target`. `restoreIndex` defaults to `true`. If Git applies the working changes without restoring the saved index, the action reports `partial` with a staging comparison and keeps the stash. **Ask before deleting** requires confirmation for `stash_pop`.
+Use `list_stashes`, then request `stash_apply` or `stash_pop` with the returned `stashIndex` and stash SHA as `target`. `restoreIndex` defaults to `true`. If Git applies the working changes without restoring the saved index, the action reports `partial` with a staging comparison and keeps the stash. Use `stash_drop` with the same exact index and SHA to delete a stash without applying it. Revqora returns a recovery checkpoint that you can use in **Undo Center**. **Ask before deleting** requires confirmation for both `stash_pop` and `stash_drop`.
+
+A `checkout` that handles dirty files returns the `dirtyAction` used, the stash SHA and index, `switchSource`, `changesRestored` and `nextStep`. When you return to a branch with saved changes, `restoreStash` identifies the stash to restore explicitly.
 
 A cherry-pick paused on a conflict reports `waiting_for_resolution`. Resolve and stage the files in Revqora, then use **Continue** or request `cherry_pick_continue` for desktop approval. **Abort** in Revqora and approved `cherry_pick_abort` both cancel the original action. Poll its original ID for the final result. If Git changes the operation outside Revqora and the outcome cannot be verified, the original action reports `operation_changed`.
 
-Cancelled actions include a reason such as `user_declined`, `dialog_dismissed` or `approval_timed_out`. If the desktop closes while MCP is enabled, calls report `desktop_closed`. After the desktop reconnects, action IDs from the previous session return `session_expired`.
+Cancelled actions include a reason such as `user_declined`, `dialog_dismissed` or `approval_timed_out`. If the MCP confirmation expires after 120 seconds, Revqora closes it and releases the next request. If the desktop closes while MCP is enabled, calls report `desktop_closed`. After the desktop reconnects, action IDs from the previous session return `session_expired`.
 
 `search_commits` searches commits reachable from local branches, remote-tracking branches, tags and the current HEAD, including a detached HEAD. It does not add the stash ref to the search. Matching is case-insensitive. `author` matches the Git author name or email, and `message` searches the full commit message. `all` matches the subject, author name or email, ref labels and SHA prefixes. Set `limit` from 1 to 100, with a default of 30. When `hasMore` is true, pass `nextCursor` as `cursor` with the same repository, mode and query. Continue even if the page is empty. Start a fresh search if the repository history changes.
 
-Search responses report worker and repository queue time in `queueMs`, time spent running Git in `gitMs`, and MCP execution time in `durationMs`. Tool errors include a readable message and a stable code such as `commit_not_found`, `provider_authentication_failed` or `request_timeout`. Clients using MCP 2025-06-18 or later also receive `operation`, `reason`, `retryable`, `requestId` and `durationMs` in `structuredContent`. The request ID is the client's JSON-RPC ID for that session.
+Search responses report worker and repository queue time in `queueMs`, time spent running Git in `gitMs` (`refsMs` for reading refs and `logMs` for history), and MCP execution time in `durationMs`. On a `cacheHit`, Revqora checks the refs and serves the page from an already loaded batch. Tool errors include a readable message and a stable code such as `commit_not_found`, `provider_authentication_failed` or `request_timeout`. Clients using MCP 2025-06-18 or later also receive `operation`, `reason`, `retryable`, `requestId` and `durationMs` in `structuredContent`. The request ID is the client's JSON-RPC ID for that session.
 
 `workspace_overview` reports the desktop's last observed repository status. `connection_identity` returns the selected PR account's provider, user ID, display name and login when that identity can be verified.
 
@@ -704,7 +692,7 @@ The [Revqora Wiki](https://github.com/bitcodepro/Revqora/wiki) has step-by-step
 guides. See also:
 
 - [Implementation roadmap and provider capabilities](https://github.com/bitcodepro/Revqora/blob/main/docs/ROADMAP.md)
-- [Repository library, workspaces and Sync](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md)
+- [Explorer, repository library and Sync](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md)
 - [Conflict Studio and validation](https://github.com/bitcodepro/Revqora/blob/main/docs/CONFLICT_STUDIO.md)
 - [Agent Workspace](https://github.com/bitcodepro/Revqora/blob/main/docs/AGENT_WORKSPACE.md)
 

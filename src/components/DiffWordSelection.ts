@@ -1,31 +1,16 @@
-import { useLayoutEffect, useState, type MouseEvent, type RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type MouseEvent, type RefObject } from "react";
 
 const words = /[\p{ID_Continue}$]+/gu;
+const singleWord = /^[\p{ID_Continue}$]+$/u;
 const highlightName = "revqora-diff-word";
 
-function selectedWord(code: HTMLElement) {
-  const doc = code.ownerDocument;
-  const selection = doc.getSelection();
-  if (!selection?.rangeCount || selection.isCollapsed) return null;
-  const selected = selection.getRangeAt(0);
-  if (!code.contains(selected.startContainer) || !code.contains(selected.endContainer)) return null;
-  const before = doc.createRange();
-  before.selectNodeContents(code);
-  before.setEnd(selected.startContainer, selected.startOffset);
-  const selectionText = selected.toString();
-  const trimmed = selectionText.trim();
-  if (!trimmed) return null;
-  const start = before.toString().length + selectionText.length - selectionText.trimStart().length;
-  const end = start + trimmed.length;
-  for (const match of (code.textContent ?? "").matchAll(words)) {
-    if (match.index <= start && match.index + match[0].length >= end) return match[0];
-  }
-  return null;
+function textSelection(content: HTMLElement | null) {
+  const selection = content?.ownerDocument.getSelection();
+  return selection?.anchorNode && selection.focusNode && !selection.isCollapsed
+    && content?.contains(selection.anchorNode) && content.contains(selection.focusNode) ? selection : null;
 }
 
-function wordRanges(code: HTMLElement, word: string) {
-  const text = code.textContent ?? "";
-  if (!text.includes(word)) return [];
+function codeRanges(code: HTMLElement, matches: Iterable<RegExpExecArray>) {
   const doc = code.ownerDocument;
   const walker = doc.createTreeWalker(code, 4); // SHOW_TEXT
   let node = walker.nextNode() as Text | null;
@@ -38,13 +23,12 @@ function wordRanges(code: HTMLElement, word: string) {
     return node;
   };
   const ranges: Range[] = [];
-  for (const match of text.matchAll(words)) {
-    if (match[0] !== word) continue;
+  for (const match of matches) {
     const start = advanceTo(match.index);
     if (!start) break;
     const range = doc.createRange();
     range.setStart(start, match.index - offset);
-    const end = match.index + word.length;
+    const end = match.index + match[0].length;
     const last = advanceTo(end);
     if (!last) break;
     range.setEnd(last, end - offset);
@@ -53,8 +37,31 @@ function wordRanges(code: HTMLElement, word: string) {
   return ranges;
 }
 
-export function useDiffWordSelection(content: RefObject<HTMLDivElement | null>, identity: string) {
+function wordAtClick(event: MouseEvent<HTMLDivElement>) {
+  const code = (event.target as Element).closest<HTMLElement>(".code");
+  if (!code) return null;
+  const doc = code.ownerDocument;
+  const caret = doc.caretPositionFromPoint?.(event.clientX, event.clientY);
+  const fallback = !caret ? doc.caretRangeFromPoint?.(event.clientX, event.clientY) : null;
+  const node = caret?.offsetNode ?? fallback?.startContainer;
+  if (!node || !code.contains(node)) return null;
+  const prefix = doc.createRange();
+  prefix.selectNodeContents(code);
+  prefix.setEnd(node, caret?.offset ?? fallback!.startOffset);
+  const position = prefix.toString().length;
+  const text = code.textContent ?? "";
+  for (const match of text.matchAll(words)) {
+    if (match.index > position) break;
+    if (position > match.index + match[0].length) continue;
+    const [range] = codeRanges(code, [match]);
+    if (range) return { word: match[0], range };
+  }
+  return null;
+}
+
+export function useDiffWordSelection(content: RefObject<HTMLDivElement | null>, identity: string, lines: () => Iterable<string>) {
   const [picked, setPicked] = useState<{ identity: string; word: string } | null>(null);
+  const previousWord = useRef<{ identity: string; word: string } | null>(null);
   const word = picked?.identity === identity ? picked.word : null;
 
   useLayoutEffect(() => {
@@ -68,7 +75,10 @@ export function useDiffWordSelection(content: RefObject<HTMLDivElement | null>, 
     const clear = () => { for (const range of ranges) highlight.delete(range); };
     const refresh = () => {
       clear();
-      ranges = Array.from(root.querySelectorAll<HTMLElement>(".code")).flatMap(code => wordRanges(code, word));
+      ranges = Array.from(root.querySelectorAll<HTMLElement>(".code")).flatMap(code => {
+        const text = code.textContent ?? "";
+        return text.includes(word) ? codeRanges(code, [...text.matchAll(words)].filter(match => match[0] === word)) : [];
+      });
       for (const range of ranges) highlight.add(range);
     };
     refresh();
@@ -82,11 +92,32 @@ export function useDiffWordSelection(content: RefObject<HTMLDivElement | null>, 
   }, [content, word, identity]);
 
   return {
-    clear: () => setPicked(null),
-    onDoubleClick: (e: MouseEvent<HTMLDivElement>) => {
-      const code = (e.target as Element).closest<HTMLElement>(".code");
-      const word = code && selectedWord(code);
-      if (word) setPicked({ identity, word });
+    all: !!word,
+    selectedText: () => {
+      if (!word) return textSelection(content.current)?.toString() ?? "";
+      const matches: string[] = [];
+      // Use diff lines so scrolling a virtualized row out of view cannot change what gets copied.
+      for (const line of lines()) {
+        if (!line.includes(word)) continue;
+        for (const match of line.matchAll(words)) if (match[0] === word) matches.push(word);
+      }
+      return matches.join("\n");
+    },
+    onMouseDown: (event: MouseEvent<HTMLDivElement>) => {
+      if (event.button !== 0 || event.detail % 2 === 0) return;
+      const selected = word ?? textSelection(content.current)?.toString().trim() ?? "";
+      previousWord.current = singleWord.test(selected) ? { identity, word: selected } : null;
+      setPicked(null);
+    },
+    onClick: (event: MouseEvent<HTMLDivElement>) => {
+      if (event.button !== 0 || event.detail < 2 || event.detail % 2 !== 0 || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+      const match = wordAtClick(event);
+      const selection = content.current?.ownerDocument.getSelection();
+      if (!match || !selection) return;
+      selection.removeAllRanges();
+      selection.addRange(match.range);
+      const previous = previousWord.current;
+      if (previous?.identity === identity && previous.word === match.word) setPicked({ identity, word: match.word });
     },
   };
 }

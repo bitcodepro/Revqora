@@ -53,7 +53,8 @@ function nativeShortcutKey(id: string, input: string): string | null {
   // browser key name. Only validate the native structure and preserve the key.
   const modifiers = /^(?:Ctrl\+)?(?:Alt\+)?(?:Shift\+)?/.exec(input)![0];
   const key = input.slice(modifiers.length);
-  if (!key || /\p{Cc}/u.test(key) || (!/^(?:Ctrl|Alt)\+/.test(modifiers) && !/^F\d+$/.test(key) && (modifiers || !acceptsPlainShortcut(id, key)))) return null;
+  if (!key || /\p{Cc}/u.test(key)) return null;
+  if (!/^(?:Ctrl|Alt)\+/.test(modifiers) && !/^F\d+$/.test(key) && !acceptsPlainShortcut(id, input)) return null;
   return input;
 }
 

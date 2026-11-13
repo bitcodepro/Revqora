@@ -27,6 +27,7 @@
   --bg-input: #0f1219;
   --bg-hover: rgba(255, 255, 255, 0.045);
   --bg-hover-strong: rgba(255, 255, 255, 0.08);
+  --bg-explorer-current: #414551;
   --bg-selected: rgba(124, 108, 255, 0.17);
   --bg-selected-strong: rgba(124, 108, 255, 0.28);
   --border: #222734;
@@ -103,6 +104,7 @@
   --bg-input: #ffffff;
   --bg-hover: rgba(20, 24, 40, 0.045);
   --bg-hover-strong: rgba(20, 24, 40, 0.08);
+  --bg-explorer-current: #d9dbe1;
   --bg-selected: rgba(101, 80, 240, 0.11);
   --bg-selected-strong: rgba(101, 80, 240, 0.2);
   --border: #e1e4ec;

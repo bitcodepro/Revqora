@@ -10,18 +10,16 @@ export interface ShortcutDef {
 }
 
 export const PANEL_NAMES = {
-  workspaces: "Workspaces", repositories: "Repositories", branches: "Branches",
+  explorer: "Explorer", repositories: "Repositories", branches: "Branches",
   history: "Commit history", commit: "Commit preview", changes: "Changes",
   pulls: "Pull requests", worktrees: "Worktree manager",
 };
 
 const unassignedCommands: [id: string, label: string, description: string][] = [
   ["operation-log", "Operation log", "Inspect the repository or application-wide operation history."],
-  ["repository-library", "Repository library and workspaces", "Manage saved repositories, groups and workspaces."],
-  ["workspace-create", "Create workspace", "Create a workspace and choose its repositories."],
-  ["all-workspaces", "All Workspaces", "Switch to the workspace containing all available repositories."],
+  ["repository-library", "Repository library", "Manage saved repositories and groups."],
   ["repository-actions", "Toggle repository actions", "Show or collapse the action block below the repository list."],
-  ["import-folder", "Import repositories from a folder", "Scan a folder for Git repositories and workspaces."],
+  ["import-folder", "Import repositories from a folder", "Scan a folder for Git repositories and recreate its structure as groups."],
   ["clone", "Clone repository", "Clone a repository into a local folder."],
   ["init", "New repository", "Initialize a Git repository in a folder."],
   ["forge-accounts", "Accounts and API connections", "Manage provider accounts, tokens and API access."],
@@ -66,16 +64,24 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "palette", label: "Command palette", description: "Search actions, branches and repositories.", default: "Ctrl+N" },
   { id: "open", label: "Open repository", description: "Open a local Git repository.", default: "Ctrl+O" },
   { id: "refresh", label: "Refresh", description: "Reload the current repository or overview.", default: "F5" },
-  { id: "renameItem", label: "Rename focused item", description: "Rename a focused workspace, group, branch or repository label.", default: "F2", scope: "navigation" },
-  { id: "deleteItem", label: "Delete focused item", description: "Review deletion of the selected workspace, groups or branches.", default: "Delete", scope: "navigation" },
+  { id: "renameItem", label: "Rename focused item", description: "Rename a focused group, branch or repository label.", default: "F2", scope: "navigation" },
+  { id: "deleteItem", label: "Delete focused item", description: "Review deletion of the selected groups or branches.", default: "Delete", scope: "navigation" },
   ...[
-    ["workspace-sub", "Create sub-workspace"],
-    ["workspace-unlink", "Remove workspace from its parent"],
+    ["explorerNextRow", "Focus next Explorer row", "ArrowDown", "Move down through visible folders and repositories."],
+    ["explorerPreviousRow", "Focus previous Explorer row", "ArrowUp", "Move up through visible folders and repositories."],
+    ["explorerExtendNext", "Extend Explorer selection down", "Shift+ArrowDown", "Extend the selection to the next visible row in Explorer."],
+    ["explorerExtendPrevious", "Extend Explorer selection up", "Shift+ArrowUp", "Extend the selection to the previous visible row in Explorer."],
+    ["explorerSelectAll", "Select all at the current Explorer level", "Ctrl+A", "Select visible folders and repositories in the same parent. Press again to add the level above."],
+  ].map(([id, label, key, description]) => ({ id, label, description, default: key, scope: "navigation" as const })),
+  { id: "navigationClearSelection", label: "Clear group or repository selection", description: "Clear the current selection in Explorer or Repositories.", default: "Escape", scope: "navigation" },
+  { id: "navigationToggleSelection", label: "Toggle focused group or repository selection", description: "Add or remove the focused row from the selection.", default: "Ctrl+Space", scope: "navigation" },
+  { id: "navigationSelectRange", label: "Select a range of groups or repositories", description: "Select from the last focused row to this row.", default: "Shift+Space", scope: "navigation" },
+  { id: "navigationAddSelectionRange", label: "Add a range of groups or repositories to the selection", description: "Keep the current selection and add the range to this row.", default: "Ctrl+Shift+Space", scope: "navigation" },
+  ...[
     ["group-create", "Create group"],
     ["group-selected", "Group selected groups"],
     ["group-sub", "Create subgroup"],
     ["group-unlink", "Remove group from its parent"],
-    ["group-remove-workspace", "Remove groups from current workspace"],
     ["repo-remove-group", "Remove repositories from the current group"],
     ["repo-remove-all-groups", "Remove repositories from all groups"],
   ].map(([id, label]) => ({ id, label, description: "Runs from the focused row in Workspaces, Groups or Repositories.", default: "", scope: "navigation" as const })),
@@ -84,8 +90,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "pulls", label: "Show pull requests", description: "Open the repository’s pull or merge requests.", default: "Ctrl+3" },
   { id: "reviewMode", label: "Cycle history layouts: Graph, Review, Columns", description: "Cycle through Graph, Review and Columns.", default: "Ctrl+Shift+R" },
   { id: "overview", label: "All repositories", description: "Open the overview of repositories in the current session.", default: "Ctrl+Shift+O" },
-  { id: "workspacesPanel", label: "Toggle Workspaces panel", description: "Show or hide the Workspaces sidebar.", default: "Ctrl+Alt+W" },
-  { id: "groupsPanel", label: "Toggle Groups panel", description: "Show or hide the Groups sidebar.", default: "" },
+  { id: "workspacesPanel", label: "Toggle Explorer panel", description: "Show or hide groups and repositories in Explorer.", default: "Ctrl+Alt+W" },
   { id: "repositoriesPanel", label: "Toggle repositories panel", description: "Show or hide the repository sidebar.", default: "Ctrl+Alt+R" },
   { id: "branchesPanel", label: "Toggle branches panel", description: "Show or hide the branches sidebar.", default: "Ctrl+Alt+B" },
   { id: "focusMode", label: "Focus on code", description: "Toggle the layout that gives code more space.", default: "Ctrl+Shift+Enter" },
@@ -107,6 +112,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "diffNext", label: "Next change", description: "Jump to the next changed block in the diff.", default: "F7", scope: "diff" },
   { id: "diffPrevious", label: "Previous change", description: "Jump to the previous changed block in the diff.", default: "Shift+F7", scope: "diff" },
   { id: "diffFind", label: "Find in diff", description: "Open text search for the focused diff.", default: "Ctrl+F", scope: "diff" },
+  { id: "codeCopySelection", label: "Copy selected code", description: "Copy the selected text from a diff or the working-file editor.", default: "", scope: "diff" },
   { id: "diffCopyName", label: "Copy diff file name", description: "Copy the full name of the file displayed in the focused diff.", default: "", scope: "diff" },
   ...["Stage", "Unstage", "Stash", "Discard", "Apply"].flatMap(action => [
     { id: `diff-${action.toLowerCase()}-hunk`, label: `${action} hunk`, description: `${action} the focused block of changes in the diff.`, default: "", scope: "diff" as const },
@@ -143,7 +149,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "workingFileEdit", label: "Edit working file", description: "Edit the working copy of the selected file from Changes.", default: "", scope: "files" },
   { id: "workingFileClose", label: "Close working file editor", description: "Return to the diff for the selected file.", default: "Escape", scope: "editor" },
   { id: "workingFileReload", label: "Reload working file from disk", description: "Read the current file from disk in the working-file editor.", default: "", scope: "editor" },
-  { id: "workspaceUndo", label: "Undo workspace move", description: "Return moved repositories to their previous workspaces.", default: "Ctrl+Z", scope: "navigation" },
+  { id: "workspaceUndo", label: "Undo Explorer move", description: "Restore the previous group structure after a move.", default: "Ctrl+Z", scope: "navigation" },
   ...[
     ["checkout", "Check out focused branch"],
     ["details", "Show focused branch details"],
@@ -152,6 +158,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     ["merge", "Merge focused branch into current"],
     ["rebase", "Rebase current branch onto focused branch"],
     ["upstream", "Set upstream for focused branch"],
+    ["fetch", "Fetch remote for focused branch"],
+    ["pull", "Pull focused branch"],
     ["delete", "Review deletion of focused branch"],
   ].map(([id, label]) => ({ id: `branch-${id}`, label, description: "Runs from the focused row in Branches.", default: "", scope: "navigation" as const })),
   ...[

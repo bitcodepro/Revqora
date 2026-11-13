@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, newOpId } from "./api";
 import { McpToolError, mcpError } from "./mcpErrors";
@@ -9,10 +9,9 @@ import { deletionProtection } from "./branchProtection";
 import * as A from "./actions";
 import { basename } from "./format";
 import { useRepos } from "./store";
-import { useLibrary } from "./repositoryLibrary";
 import { useSettings } from "./settings";
 import { closeOverlay, openOverlay, showDialog, useUi } from "./ui";
-import type { BranchInfo, McpApprovalMode, PrState, SearchMode, StageReview, StatusSummary } from "./types";
+import type { BranchInfo, McpApprovalMode, PrState, SearchMode, StageReview, StashInfo, StatusSummary } from "./types";
 import { Modal } from "../components/Modal";
 import { validBranchName } from "../components/dialogs";
 import { createPullRequest } from "../components/PullRequests";
@@ -57,21 +56,19 @@ function cancelAction(status: ActionStatus, reason: string) {
 }
 
 function permittedRoots() {
-  const { activeWorkspaceId, workspaces } = useLibrary.getState();
-  const allowed = activeWorkspaceId ? new Set(workspaces.find(workspace => workspace.id === activeWorkspaceId)?.roots ?? []) : null;
   const { order, tabs } = useRepos.getState();
-  return order.filter(root => (!allowed || allowed.has(root)) && !!tabs[root]?.info);
+  return order.filter(root => !!tabs[root]?.info);
 }
 
 function requireRepo(root?: string) {
-  if (!root || !permittedRoots().includes(root)) throw new McpToolError("repository_not_open", "Choose a repository from list_repositories in the active workspace.");
+  if (!root || !permittedRoots().includes(root)) throw new McpToolError("repository_not_open", "Choose an open repository from list_repositories.");
   return root;
 }
 
 const oidPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 function exactCommit(oid?: string) {
   if (!oid || !oidPattern.test(oid)) throw new McpToolError("invalid_commit", "Supply the full commit hash.");
-  return oid;
+  return oid.toLowerCase();
 }
 
 function page<T>(items: T[], offset = 0, size = 100) {
@@ -122,7 +119,7 @@ function navigate(root: string, view: string) {
 const actionNames: Record<string, string> = {
   stage: "Stage files", unstage: "Unstage files", commit: "Commit staged changes", create_branch: "Create branch",
   checkout: "Switch branch", delete_branch: "Review branch deletion", cherry_pick: "Cherry-pick commit", stash: "Open stash dialog",
-  stash_apply: "Apply stash", stash_pop: "Pop stash",
+  stash_apply: "Apply stash", stash_pop: "Pop stash", stash_drop: "Delete stash",
   cherry_pick_continue: "Continue cherry-pick", cherry_pick_abort: "Abort cherry-pick",
   fetch: "Fetch from all remotes", pull: "Pull current branch", push: "Open push review", sync: "Open Sync review",
   create_pr: "Open PR creation", review_pr: "Open PR review", merge_pr: "Open PR merge review", pr_workflow: "Open PR workflow",
@@ -137,10 +134,6 @@ function Approval({ action, description, details, field, close }: {
 }) {
   const [value, setValue] = useState(field?.initial ?? "");
   const error = field?.validate(value);
-  useEffect(() => {
-    const timer = window.setTimeout(() => close({reason:"approval_timed_out"}), 120_000);
-    return () => window.clearTimeout(timer);
-  }, [close]);
   return <Modal title={`MCP request · ${action}`} subtitle={description} wide onClose={() => close({reason:"dialog_dismissed"})} onSubmit={() => { if (!error) close({value}); }}
     footer={<><button className="btn" type="button" onClick={() => close({reason:"user_declined"})}>Decline</button>
       <button className="btn primary" type="submit" disabled={!!error}>Approve in Revqora</button></>}>
@@ -157,7 +150,12 @@ function Approval({ action, description, details, field, close }: {
 }
 
 const branchActions = new Set(["create_branch", "checkout", "delete_branch"]);
-interface BranchReview { baseline: StatusSummary; branches: BranchInfo[]; tip?: string }
+interface BranchReview {
+  baseline: StatusSummary;
+  branches: BranchInfo[];
+  tip?: string;
+  start?: { oid: string; branch?: string };
+}
 
 function branchNameError(value: string) {
   if (!value || value.trim() !== value || new TextEncoder().encode(value).length > 512) return "Supply a valid local branch name.";
@@ -177,16 +175,28 @@ function duplicateBranch(root: string, name: string, branches: BranchInfo[]) {
   });
 }
 
-async function reviewBranchAction(root: string, action: string, target?: string): Promise<BranchReview> {
+async function reviewBranchAction(root: string, action: string, target?: string, base?: string): Promise<BranchReview> {
   const invalid = branchNameError(target ?? "");
   if (!target || invalid) throw new McpToolError("invalid_arguments", invalid ?? "Supply a local branch name.");
   const baseline = await api.status(root);
-  if (!baseline.oid) throw new McpToolError("initial_commit_required", `Create the first commit on ${baseline.branch ?? "the current branch"} before using this Git branch action.`);
+  if (!baseline.oid && (action !== "create_branch" || !base)) {
+    throw new McpToolError("initial_commit_required", `Create the first commit on ${baseline.branch ?? "the current branch"} before using this Git branch action.`);
+  }
   const { local: branches } = await api.refs(root);
   if (action === "create_branch") {
     const existing = duplicateBranch(root, target, branches);
     if (existing) throw new McpToolError("branch_exists", `The name conflicts with local branch ${existing.name}.`);
-    return {baseline,branches};
+    if (!base) return { baseline, branches, start: { oid: baseline.oid! } };
+    if (oidPattern.test(base)) {
+      const oid = exactCommit(base);
+      await api.verifyCommit(root, oid);
+      return { baseline, branches, start: { oid } };
+    }
+    const name = base.startsWith("refs/heads/") ? base.slice("refs/heads/".length) : base;
+    if (branchNameError(name)) throw new McpToolError("invalid_arguments", "Base must be a local branch name or a full commit SHA.");
+    const oid = branches.find(branch => branch.name === name)?.oid;
+    if (!oid) throw new McpToolError("branch_not_found", `Base branch ${name} does not exist.`);
+    return { baseline, branches, start: { oid, branch: name } };
   }
   const tip = branches.find(branch => branch.name === target)?.oid;
   if (!tip) throw new McpToolError("branch_not_found", "The local branch does not exist.");
@@ -209,23 +219,63 @@ async function reviewPendingPick(root: string, action: string): Promise<PickRevi
   return { baseline, incoming: info.state.incoming };
 }
 
-async function runAction(event: DesktopRequest, root: string, a: Arguments, status: ActionStatus, mode: McpApprovalMode, branchReview?: BranchReview, pickReview?: PickReview) {
+interface PathReview { baseline: StatusSummary; paths: string[]; stageReview?: StageReview }
+interface PreparedAction {
+  branch?: BranchReview;
+  pendingPick?: PickReview;
+  paths?: PathReview;
+  stash?: StashInfo;
+  pickOid?: string;
+}
+
+async function reviewPaths(root: string, action: "stage" | "unstage", paths: string[]): Promise<PathReview> {
+  const baseline = await api.status(root, action === "unstage");
+  const files = new Map(baseline.files.map(file => [file.path, file]));
+  const renamed = new Map(baseline.files.filter(file => file.index === "R" && file.origPath).map(file => [file.origPath!, file]));
+  const selected = new Set<string>();
+  const proofs: [string, string][] = [];
+  for (const path of new Set(paths)) {
+    const file = (action === "unstage" ? renamed.get(path) : undefined) ?? files.get(path);
+    if (!file) throw new McpToolError("file_not_found", `Path is not listed in repository_status: ${path}`);
+    const eligible = action === "stage" ? file.untracked || file.worktree !== "." : !file.conflict && !file.untracked && file.index !== ".";
+    if (!eligible) {
+      throw new McpToolError("file_not_eligible", `Path is not eligible for ${action}: ${path}`);
+    }
+    selected.add(file.path);
+    if (action === "stage") {
+      if (!file.diffToken || file.path.endsWith("/")) throw new McpToolError("invalid_arguments", "Choose exact file paths from repository_status.");
+      proofs.push([file.path, file.diffToken]);
+    } else if (file.index === "R" && file.origPath) {
+      selected.add(file.origPath);
+    }
+  }
+  if (action === "unstage") return { baseline, paths: [...selected] };
+  const { kind, incoming, step, stoppedAt } = (await api.repoInfo(root)).state;
+  return { baseline, paths: [...selected], stageReview: { branch: baseline.branch, oid: baseline.oid,
+    operation: { kind, incoming, step, stoppedAt }, files: Object.fromEntries(proofs) } };
+}
+
+async function reviewStash(root: string, index: number, oid: string): Promise<StashInfo> {
+  const stash = (await api.stashList(root)).find(item => item.index === index && item.oid === oid);
+  if (!stash) throw new McpToolError("stale_state", "The stash changed. Read list_stashes again.");
+  return stash;
+}
+
+async function runAction(event: DesktopRequest, root: string, a: Arguments, status: ActionStatus, mode: McpApprovalMode, prepared: PreparedAction) {
   const action = status.action;
+  const { branch: branchReview, pendingPick: pickReview, stash, pickOid } = prepared;
   try {
-    let target = a.target;
+    const pathReview = action === "unstage" ? await reviewPaths(root, action, a.paths!) : prepared.paths;
+    let target = stash?.oid ?? pickOid ?? a.target;
     const number = a.number;
     const title = actionNames[action];
     const detail: string[] = [];
-    if ((action === "stage" || action === "unstage") && !a.paths?.length) throw new Error("Supply exact paths from repository_status.");
-    if (action === "cherry_pick") exactCommit(target);
-    if (["review_pr", "merge_pr", "pr_workflow"].includes(action) && !number) throw new Error("Supply a PR number.");
     if (action === "commit" && !a.message?.trim()) throw new Error("Supply a commit message.");
-    if (action === "start_workflow" && (!a.branch || !a.base)) throw new Error("Supply the workflow branch and base.");
     if (target && action !== "create_branch") detail.push(`Target: ${target}`);
     if (number) detail.push(`Pull request #${number}`);
-    let paths = [...new Set(a.paths ?? [])];
-    let stageReview: StageReview | undefined;
-    const baseline = branchReview?.baseline ?? pickReview?.baseline ?? await api.status(root, action === "unstage" || action === "commit");
+    const paths = pathReview?.paths ?? [];
+    const stageReview = pathReview?.stageReview;
+    const baseline = branchReview?.baseline ?? pickReview?.baseline ?? pathReview?.baseline ?? await api.status(root, action === "commit");
     const expectedState = baseline.stateToken;
     if (!expectedState) throw new Error("Repository status is not ready. Refresh and inspect it first.");
     const pullMode = useSettings.getState().pullMode;
@@ -239,38 +289,20 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       detail.push(`Incoming commit: ${pickReview.incoming}`);
       if (action === "cherry_pick_abort") detail.push("Git will return to the state before this cherry-pick.");
     }
-    if (action === "stage" || action === "unstage") {
-      const inputPaths = new Map(baseline.files.map(file => [file.path, file]));
-      const renamed = new Map(baseline.files.filter(file => file.index === "R" && file.origPath).map(file => [file.origPath!, file]));
-      const reviewed = new Set<string>();
-      const proofs: [string, string][] = [];
-      for (const path of paths) {
-        const file = (action === "unstage" ? renamed.get(path) : undefined) ?? inputPaths.get(path);
-        if (!file || file.conflict || (action === "stage" ? !file.untracked && file.worktree === "." : file.untracked || file.index === ".")) {
-          throw new Error(`The file is not eligible for this action: ${path}`);
-        }
-        reviewed.add(file.path);
-        if (action === "stage") {
-          if (!file.diffToken || file.path.endsWith("/")) throw new McpToolError("invalid_arguments", "Choose exact file paths from repository_status.");
-          proofs.push([file.path, file.diffToken]);
-        }
-        if (action === "unstage" && file.index === "R" && file.origPath) reviewed.add(file.origPath);
-      }
-      paths = [...reviewed];
-      detail.push(...paths);
-      if (action === "stage") {
-        const { kind, incoming, step, stoppedAt } = (await api.repoInfo(root)).state;
-        stageReview = { branch: baseline.branch, oid: baseline.oid, operation: { kind, incoming, step, stoppedAt }, files: Object.fromEntries(proofs) };
+    detail.push(...paths);
+    if (action === "stage" && baseline.files.some(file => file.conflict && paths.includes(file.path))) {
+      detail.push("Staging conflicted paths marks their working versions as resolved.");
+    }
+    if (stash) {
+      detail.push(`stash@{${stash.index}} · ${stash.message}`);
+      if (action === "stash_drop") detail.push("Delete the stash without applying it. Revqora saves a recovery checkpoint.");
+      else {
+        detail.push(a.restoreIndex === false ? "Restore working changes only." : "Restore working changes and the saved index.");
+        if (action === "stash_pop") detail.push("Remove the stash after successful application.");
       }
     }
-    const stashRestore = action === "stash_apply" || action === "stash_pop";
-    if (stashRestore) {
-      const oid = exactCommit(target);
-      if (a.stashIndex === undefined) throw new McpToolError("invalid_arguments", "Supply stashIndex and target (the stash SHA) from list_stashes.");
-      const stash = (await api.stashList(root)).find(item => item.index === a.stashIndex && item.oid === oid);
-      if (!stash) throw new McpToolError("stale_state", "The stash changed. Read list_stashes again.");
-      detail.push(`stash@{${stash.index}} · ${stash.message}`, a.restoreIndex === false ? "Restore working changes only." : "Restore working changes and the saved index.");
-      if (action === "stash_pop") detail.push("Remove the stash after successful application.");
+    if (action === "checkout" && a.dirtyAction) {
+      detail.push(a.dirtyAction === "move" ? "If there are uncommitted changes, move them to the destination." : "If there are uncommitted changes, stash them for the source branch.");
     }
     const targetOid = branchReview?.tip;
     if (targetOid) detail.push(`Branch tip: ${targetOid}`);
@@ -281,8 +313,9 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       if (a.force) detail.push("Force deletion is requested for this local branch.");
     }
     let field: ApprovalField | undefined;
-    if (action === "create_branch") {
-      detail.push(`Starting commit: ${baseline.oid}`);
+    const start = branchReview?.start;
+    if (start) {
+      detail.push(`Starting commit: ${start.branch ? start.branch + " · " : ""}${start.oid}`);
       field = {label:"Branch name",initial:target!,validate:value=>{
         const error = branchNameError(value);
         if (error) return error;
@@ -322,14 +355,15 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     if (mergeMayDelete) detail.push("The provider may delete the source branch after merging.");
     const manual = mcpNeedsApproval(mode, action, a, run?.definition.steps[run.cursor]?.kind, mergeMayDelete, pullMode === "rebase");
     status.approval = manual ? "manual" : "automatic";
-    if (manual && useUi.getState().dialogs.length) throw new Error("Finish the open Revqora dialog before requesting another action.");
+    if (manual && useUi.getState().dialogs.length) throw new McpToolError("review_pending", "Finish the open Revqora dialog before requesting another action.");
     requireRepo(root);
     if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
     let value = field?.initial ?? "";
     if (manual) {
       status.phase = "awaiting_confirmation";
       const approved = await showDialog<ApprovalResult | null>(close => <Approval action={title}
-        description={`${root} · ${baseline.branch ?? "detached HEAD"}`} details={detail} field={field} close={close} />);
+        description={`${root} · ${baseline.branch ?? "detached HEAD"}`} details={detail} field={field} close={close} />,
+        { ms: 120_000, value: { reason: "approval_timed_out" } });
       if (!approved || "reason" in approved) { cancelAction(status, approved?.reason ?? "dialog_dismissed"); return; }
       value = approved.value;
     } else {
@@ -340,11 +374,21 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     if (action === "create_branch") target = value;
     requireRepo(root);
     if (!stageReview && (await api.status(root)).stateToken !== expectedState) throw new McpToolError("stale_state", "The repository changed during approval. Review the current state and submit a new request.");
-    if (targetOid && (await api.refs(root)).local.find(branch => branch.name === target)?.oid !== targetOid) throw new McpToolError("stale_state", "The target branch changed during approval.");
-    if (action === "create_branch") {
-      const existing = duplicateBranch(root, target!, (await api.refs(root)).local);
-      if (existing) throw new McpToolError("branch_exists", `The name conflicts with local branch ${existing.name}.`);
+    if (branchReview) {
+      const { local } = await api.refs(root);
+      if (targetOid && local.find(branch => branch.name === target)?.oid !== targetOid) {
+        throw new McpToolError("stale_state", "The target branch changed during approval.");
+      }
+      if (start) {
+        const existing = duplicateBranch(root, target!, local);
+        if (existing) throw new McpToolError("branch_exists", `The name conflicts with local branch ${existing.name}.`);
+        if (start.branch && local.find(branch => branch.name === start.branch)?.oid !== start.oid) {
+          throw new McpToolError("stale_state", "The starting branch changed during approval.");
+        }
+        await api.verifyCommit(root, start.oid);
+      }
     }
+    if (stash) await reviewStash(root, stash.index, stash.oid);
     if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
     status.phase = "running";
     const authorize = async () => {
@@ -367,15 +411,35 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
         break;
       }
       case "create_branch":
-        await api.branchCreate(root, target!, baseline.oid, false, expectedState);
-        status.result = {branch:target!,sha:baseline.oid};
+        await api.branchCreate(root, target!, start!.oid, false, expectedState);
+        status.result = { branch: target!, sha: start!.oid };
         break;
       case "checkout": {
-        const result = await A.checkoutWithOutcome(root, target!, "local", expectedState, authorize, manual ? undefined : a.dirtyAction ?? "stash");
+        const dirtyChoice = a.dirtyAction ?? (manual ? undefined : "stash");
+        const result = await A.checkoutWithOutcome(root, target!, "local", expectedState, authorize, dirtyChoice);
         if (result.status === "cancelled") { cancelAction(status, status.reason ?? "dialog_dismissed"); return; }
         if (result.status === "failed") throw result.error;
-        status.result = {previousBranch:baseline.branch,currentBranch:result.switch.branch,conflicts:result.switch.conflicts};
-        status.message = result.switch.warning ?? undefined;
+        const switched = result.switch;
+        const source = `refs/heads/${switched.branch}`;
+        let restoreStash: StashInfo | undefined;
+        let warning = switched.warning ?? undefined;
+        if (!switched.stash) {
+          try { restoreStash = (await api.stashList(root)).find(item => item.switchSource === source); }
+          catch { warning = "The branch was switched. Read list_stashes to check for saved changes."; }
+        }
+        const hasLocalChanges = switched.branch === baseline.branch && baseline.files.length > 0;
+        let nextStep = "none";
+        if (switched.conflicts.length) nextStep = "resolve_conflicts";
+        else if (warning) nextStep = "inspect_worktree_and_stash";
+        else if (switched.dirtyAction === "stash") nextStep = "return_to_source";
+        else if (restoreStash) nextStep = hasLocalChanges ? "save_changes_before_restore" : "restore_stash";
+        status.result = {
+          previousBranch: baseline.branch, currentBranch: switched.branch, conflicts: switched.conflicts,
+          dirtyAction: switched.dirtyAction, stash: switched.stash, switchSource: switched.stash?.switchSource ?? restoreStash?.switchSource ?? null,
+          changesRestored: switched.moved, nextStep,
+          restoreStash: restoreStash ? { oid: restoreStash.oid, index: restoreStash.index, switchSource: restoreStash.switchSource } : null,
+        };
+        status.message = warning;
         break;
       }
       case "delete_branch": {
@@ -432,9 +496,14 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       }
       case "fetch":
         if (manual && a.prune === undefined) {
-          if (await A.fetchAll(root) === undefined) throw new Error("Fetch failed. See Revqora's operation log.");
-        } else status.message = await api.fetch(root, null, a.prune ?? mode === "full", newOpId());
+          if (await A.fetchAll(root, false) === undefined) throw new Error("Fetch failed. See Revqora's operation log.");
+        } else status.message = await api.fetch(root, null, a.prune ?? false, newOpId());
         break;
+      case "stash_drop": {
+        const checkpoint = await api.stashDrop(root, stash!.index, stash!.oid, expectedState);
+        status.result = { oid: stash!.oid, index: stash!.index, switchSource: stash!.switchSource ?? null, checkpoint: checkpoint.id };
+        break;
+      }
       case "stash_apply": case "stash_pop": {
         const { status: outcome, indexRestored, stashKept, staging, conflicts, message } = await api.stashApply(root, a.stashIndex!, action === "stash_pop", target!, a.restoreIndex, expectedState);
         status.result = { status: outcome, indexRestored, stashKept, staging: staging?.slice(0, 100) ?? null, stagingTotal: staging?.length ?? null, conflicts };
@@ -461,7 +530,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
         status.message = "Continue in Revqora and verify the result with the read tools.";
         switch (action) {
           case "stash": await A.stash(root, expectedState); break;
-          case "pull": await A.pull(root, pullMode, expectedState, a.prune); break;
+          case "pull": await A.pull(root, pullMode, expectedState, a.prune ?? false); break;
           case "push": await A.push(root); break;
           case "sync": await syncRepositories([root]); break;
           case "create_pr": await createPullRequest(root, null); break;
@@ -502,13 +571,23 @@ async function requestAction(event: DesktopRequest, root: string, a: Arguments) 
   try {
     const { approvalMode } = await api.mcpInfo();
     if (approvalMode === "ask" && useUi.getState().dialogs.length) throw new McpToolError("review_pending", "Finish the existing Revqora review before requesting another action.");
-    const branchReview = branchActions.has(a.action!) ? await reviewBranchAction(root, a.action!, a.target) : undefined;
-    const pickReview = a.action === "cherry_pick_continue" || a.action === "cherry_pick_abort" ? await reviewPendingPick(root, a.action) : undefined;
+    const action = a.action!;
+    const prepared: PreparedAction = {};
+    if (branchActions.has(action)) prepared.branch = await reviewBranchAction(root, action, a.target, a.base);
+    if (action === "cherry_pick_continue" || action === "cherry_pick_abort") prepared.pendingPick = await reviewPendingPick(root, action);
+    if (action === "cherry_pick") {
+      prepared.pickOid = exactCommit(a.target);
+      await api.verifyCommit(root, prepared.pickOid);
+    }
+    if (action === "stage") prepared.paths = await reviewPaths(root, action, a.paths!);
+    if (action === "stash_apply" || action === "stash_pop" || action === "stash_drop") {
+      prepared.stash = await reviewStash(root, a.stashIndex!, exactCommit(a.target));
+    }
     if (!await api.mcpLease(event.session, event.id)) throw new McpToolError("session_expired", "The MCP request expired before the review could open.");
-    const status: ActionStatus = { id, session: event.session, root, action: a.action!, phase: "preparing" };
+    const status: ActionStatus = { id, session: event.session, root, action, phase: "preparing" };
     actions.set(id, status);
     if (actions.size > 50) actions.delete(actions.keys().next().value!);
-    void runAction(event, root, a, status, approvalMode, branchReview, pickReview);
+    void runAction(event, root, a, status, approvalMode, prepared);
     return { id, phase: status.phase, approvalMode, message: "Poll action_status for the outcome. Revqora opens a confirmation when the selected approval mode requires one." };
   } catch (error) {
     activeAction = null;

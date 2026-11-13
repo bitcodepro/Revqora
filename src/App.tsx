@@ -6,8 +6,7 @@ import { HistoryExplorer } from "./components/HistoryExplorer";
 import { WorkflowBuilder } from "./components/WorkflowBuilder";
 import { AgentWorkspace } from "./components/AgentWorkspace";
 import { WorktreeManager } from "./components/WorktreeManager";
-import { finishWorkspaceStartup, hasWorkspaceDropToUndo, startWorkspaceTracking, undoWorkspaceDrop } from "./lib/repositoryWorkspaces";
-import { useLibrary } from "./lib/repositoryLibrary";
+import { undoExplorerMove } from "./lib/explorerMoves";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { listenMcpDesktop } from "./lib/mcpDesktop";
 import { listen } from "@tauri-apps/api/event";
@@ -50,8 +49,7 @@ import { refreshRepositoryView } from "./lib/prRefresh";
 import { RepositoryOverview, RepositorySidebar } from "./components/Repositories";
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
-import { WorkspacesSidebar } from "./components/WorkspacesSidebar";
-import { GroupsSidebar } from "./components/GroupsSidebar";
+import { RepositoryExplorer } from "./components/RepositoryExplorer";
 import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows, type PanelId } from "./components/PanelWindows";
 import "./styles/workspace.css";
 
@@ -86,7 +84,7 @@ function RepositoryRefresh({ root }: { root: string }) {
     try { await refreshRepositoryView(root); }
     finally { setBusy(false); }
   };
-  return <button className="icon-btn" title={shortcutTitle("Refresh", "refresh")} disabled={busy} aria-busy={busy} onClick={() => void refresh()}>
+  return <button type="button" className="icon-btn" aria-label="Refresh" data-shortcut="refresh" disabled={busy} aria-busy={busy} onClick={() => void refresh()}>
     <RefreshCw size={15} className={busy ? "spin" : ""} />
   </button>;
 }
@@ -308,18 +306,13 @@ function MainApp() {
   const layoutMode = workspaceMode(overview ? "overview" : tab?.view, historyMode);
   const { layout } = useWorkspaceLayout(layoutMode);
   const { focusMode, repositoriesOpen } = layout;
-  const workspacesOpen = useSettings(s => s.workspacesOpen);
-  const groupsOpen = useSettings(s => s.groupsOpen);
-  const repositoryCount = useRepos((s) => s.order.length);
-  const hasBookmarks = useLibrary((s) => s.knownRoots.length > 0);
-  const repositoryScope = useLibrary((s) => s.activeWorkspaceId) ?? "all";
+  const explorerOpen = useSettings(s => s.explorerOpen);
   const showMainChanges = (root: string, path?: string) => {
     useUi.setState({ repositoryOverview: false });
     useRepos.getState().patch(root, path ? { conflictPath: path, view: "changes", changeSel: { kind: "conflict", path } } : { view: "changes" });
     window.focus();
   };
 
-  useEffect(startWorkspaceTracking, []);
   // Restore the tabs from the previous session.
   useLayoutEffect(() => {
     if (restored.current) return;
@@ -327,7 +320,6 @@ function MainApp() {
     (async () => {
       // Publish the entire roster before asynchronous Git discovery begins.
       void restoreRepositorySession();
-      finishWorkspaceStartup();
       const initial = useRepos.getState().selectionVersion;
       const paths = await api.startupPaths().catch(() => [] as string[]);
       if (paths.length) void useRepos.getState().openMany(paths, useRepos.getState().selectionVersion === initial ? paths.at(-1) : undefined);
@@ -406,14 +398,11 @@ function MainApp() {
       if (e.defaultPrevented || e.isComposing) return;
       const target = e.target as HTMLElement;
       const owner = target?.ownerDocument ?? document;
-      if (matchesShortcut(e, "workspaceUndo") &&
-          useSettings.getState().workspacesOpen && hasWorkspaceDropToUndo() &&
-          !target?.closest?.("input, textarea, select, [contenteditable], .cm-editor") && !owner.querySelector(".modal")) {
+      const inNavigation = target?.closest?.(".repository-sidebar") || (target === owner.body && useSettings.getState().explorerOpen);
+      if (matchesShortcut(e, "workspaceUndo") && inNavigation &&
+          !target.closest("input, textarea, select, [contenteditable], .cm-editor") && !owner.querySelector(".modal") && undoExplorerMove()) {
         e.preventDefault();
-        void undoWorkspaceDrop().then(errors => {
-          if (errors.length) toast.warning("Workspace move could not be undone", errors.join("\n"));
-          else toast.success("Workspace move undone");
-        }, error => toast.error(error));
+        toast.success("Explorer move undone");
         return;
       }
       const typing = (e.target as HTMLElement)?.closest?.("input, textarea, .cm-editor");
@@ -431,8 +420,7 @@ function MainApp() {
         open: () => A.openRepoDialog(),
         refresh: () => useUi.getState().repositoryOverview ? void Promise.allSettled(st.order.map((r) => st.refresh(r))) : a && refreshRepositoryView(a),
         overview: toggleRepositoryOverview,
-        workspacesPanel: () => toggleSidebar("workspaces"),
-        groupsPanel: () => toggleSidebar("groups"),
+        workspacesPanel: () => toggleSidebar("explorer"),
         repositoriesPanel: () => toggleSidebar("repositories"),
         branchesPanel: () => toggleSidebar("branches"),
         focusMode: () => useSettings.getState().setLayout(mode, { focusMode: !layout.focusMode }),
@@ -479,7 +467,7 @@ function MainApp() {
       const panel = id.startsWith("window-") ? id.slice(7) as PanelId : null;
       if (panel && Object.hasOwn(PANEL_NAMES, panel)) {
         if (panels[panel]) { e.preventDefault(); attach(panel); return; }
-        if (panel !== "workspaces" && panel !== "repositories" && !t?.info) return;
+        if (panel !== "explorer" && panel !== "repositories" && !t?.info) return;
         if (panel === "commit" && (!t?.selected || t.selected === WORKTREE)) return;
         e.preventDefault();
         detach(panel);
@@ -536,10 +524,9 @@ function MainApp() {
       <TopBar />
       <ActivityIndicator active={busy} />
       <div className="app-body">
-        {workspacesOpen && !focusMode && !panels.workspaces && <WorkspacesSidebar onClose={() => useSettings.getState().set({ workspacesOpen: false })}/>}
-        {groupsOpen && !focusMode && <GroupsSidebar />}
-        <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode || (!repositoryCount && !hasBookmarks)}>{!panels.repositories && <RepositorySidebar key={repositoryScope} />}</div>
-        <div className="workspace-host">{overview ? <RepositoryOverview key={repositoryScope} /> : tab ? <RepositoryContent key={combinedPulls ? "all-pull-requests" : tab.root} tab={tab} combinedPulls={combinedPulls} /> : <Welcome />}</div>
+        {explorerOpen && !focusMode && !panels.explorer && <RepositoryExplorer onClose={() => useSettings.getState().set({ explorerOpen: false })}/>}
+        <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode}>{!panels.repositories && <RepositorySidebar />}</div>
+        <div className="workspace-host">{overview ? <RepositoryOverview /> : tab ? <RepositoryContent key={combinedPulls ? "all-pull-requests" : tab.root} tab={tab} combinedPulls={combinedPulls} /> : <Welcome />}</div>
       </div>
       <StatusBar />
       <ContextMenuHost />
@@ -550,8 +537,8 @@ function MainApp() {
       <GitMissing />
       <Onboarding />
       {dropping && <div className="drop-hint">Drop a folder to open it</div>}
-      <DetachedPanel id="workspaces"><WorkspacesSidebar onClose={() => attach("workspaces")}/></DetachedPanel>
-      <DetachedPanel id="repositories"><RepositorySidebar key={repositoryScope}/></DetachedPanel>
+      <DetachedPanel id="explorer"><RepositoryExplorer onClose={() => attach("explorer")}/></DetachedPanel>
+      <DetachedPanel id="repositories"><RepositorySidebar/></DetachedPanel>
       <DetachedPanel id="branches">{tab?.info && <Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/>}</DetachedPanel>
       <DetachedPanel id="history">{tab?.info && <GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/>}</DetachedPanel>
       <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <CommitDetails root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/> : null}</DetachedPanel>
