@@ -24,12 +24,14 @@ Before opening or updating a PR:
 - [ ] Search all repositories scans the open repositories, including ones whose History view has never loaded. Results appear as each repository completes and are sorted newest first within each repository.
 - [ ] A saved compact search dialog grows once when the first results or a repository error arrive. Users can resize it afterward. Its automatic size does not overwrite their saved size.
 - [ ] Opening a match selects its repository and commit. Branch context, current-branch history and All branches are distinct scopes. Verify Graph, Review and Columns when changing shared history behavior.
+- [ ] History search covers the whole selected scope while the graph stays paged. A match outside the loaded graph is available in the match list and opens its commit by SHA.
 
 ## Working changes, staging and stash
 
 - [ ] Commit Description shows a non-selectable hint while empty. Real draft text can be selected and copied while editing. Leaving the field clears the selection and preserves the draft.
 
 - [ ] Whole-file stage uses the version available at staging time. Staging again updates the index to the latest version. Staging a hunk uses the selected diff and checks that it can still be applied to the index.
+- [ ] Routine Changes observations fingerprint the selected file. Git mutations still use their full preconditions. A diff truncated by the byte budget is marked partial and offers whole-file actions.
 - [ ] Apply restores a stash and keeps its entry. Pop drops it after a complete restoration. When conflicts or partial index restoration occur, report them and preserve the stash. Drop preserves a recovery checkpoint and leaves the working files alone.
 - [ ] Destructive actions show consequences before confirmation. Branch deletion outside the comparison history offers an explicit confirmation. Remote deletion checks the exact reviewed SHA.
 

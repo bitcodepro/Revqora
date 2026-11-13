@@ -154,6 +154,7 @@ export const api = {
   repoScanFolder: (scanId: number, path: string, includeGenerated: boolean) => call<RepositoryFolderScan>("repo_scan_folder", { scanId, path, includeGenerated }),
   repoCancelFolderScan: (scanId: number) => call<void>("repo_cancel_folder_scan", { scanId }),
   repositorySidebarStatus: (repo: string) => call<StatusSummary>("repository_sidebar_status", { repo }),
+  repositoryChangesStatus: (repo: string, path: string | null) => call<StatusSummary>("repository_changes_status", { repo, path }),
   repoInit: (path: string, branch?: string) => call<RepoInfo>("repo_init", { path, branch }),
   repoClone: (parent: string, url: string, name: string, opId: string,connection?:import("./types").GitConnectionOptions) => call<RepoInfo&{connectionWarning:string|null}>("repo_clone", { parent, url, name, opId,connection:connection??null }),
   gitConnectionSnapshot:(repo:string)=>call<import("./types").GitConnectionSnapshot>("git_connection_snapshot",{repo}),
@@ -171,9 +172,9 @@ export const api = {
   identityGet: (repo: string) => call<Identity>("identity_get", { repo }),
   identitySet: (repo: string, name: string, email: string, global: boolean) => call<void>("identity_set", { repo, name, email, global }),
 
-  workingDiff: (repo: string, path: string, side: "unstaged" | "staged", untracked: boolean, opts?: DiffOptions, fullIndex?: boolean) =>
-    call<FileDiff>("working_diff", { repo, path, side, untracked, opts, fullIndex }),
-  revDiff: (repo: string, from: string | null, to: string, path: string, opts?: DiffOptions) => call<FileDiff>("rev_diff", { repo, from, to, path, opts }),
+  workingDiff: (repo: string, path: string, side: "unstaged" | "staged", untracked: boolean, opts?: DiffOptions, fullIndex?: boolean, preview?: boolean) =>
+    call<FileDiff>("working_diff", { repo, path, side, untracked, opts, fullIndex, preview }),
+  revDiff: (repo: string, from: string | null, to: string, path: string, opts?: DiffOptions, preview?: boolean) => call<FileDiff>("rev_diff", { repo, from, to, path, opts, preview }),
   applySelection: (
     repo: string,
     path: string,
@@ -200,7 +201,7 @@ export const api = {
   graphBranchMembers: (repo: string, key: string, reference: string) => call<number[]>("graph_branch_members", { repo, key, reference }),
   graphLaneAnchor: (repo: string, key: string, id: number) => call<import("./types").GraphLaneAnchor | null>("graph_lane_anchor", { repo, key, id }),
   graphResolveLane: (repo: string, key: string, anchor: import("./types").GraphLaneAnchor) => call<number | null>("graph_resolve_lane", { repo, key, anchor }),
-  graphSearch: (repo: string, query: string, mode: SearchMode) => call<number[]>("graph_search", { repo, query, mode }),
+  historySearch: (repo: string, key: string, query: string, mode: SearchMode) => call<{ row: GraphRow; graphIndex: number | null }[]>("history_search", { repo, key, query, mode }),
   repositoryCommitSearch: (repo: string, query: string, mode: SearchMode) => call<import("./types").CommitSearchHit[]>("repository_commit_search", { repo, query, mode }),
   repositoryCommitSearchPage: (repo: string, query: string, mode: SearchMode, cursor: string | null, limit: number) => call<import("./types").CommitSearchPage>("repository_commit_search_page", { repo, query, mode, cursor, limit }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),

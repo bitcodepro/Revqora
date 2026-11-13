@@ -19,21 +19,21 @@ export async function liveDiffSmoke({page,root,file,noise}) {
     state.observer.observe(document.querySelector(".changes .diff"),{childList:true,subtree:true});
     window.fetch=async function(input,init){
       const response=await original.call(this,input,init);
-      if(String(input)===`${base}status`){const s=await response.clone().json();if(s.files&&s.stateVersion>=(state.statuses.at(-1)?.stateVersion??0))state.statuses.push(s);}
+      if(String(input)===`${base}status`||String(input)===`${base}repository_changes_status`){const s=await response.clone().json();if(s.files&&s.stateVersion>=(state.statuses.at(-1)?.stateVersion??0))state.statuses.push(s);}
       if(String(input)===`${base}working_diff`){state.reads++;if(state.hold&&!state.held){state.held=true;await gate;}}
       return response;
     };
   });
   const frame=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   try {
-    let previous=initial.state;
+    let previous=0;
     for(const text of ["1111","2222","3333"]){
       fs.writeFileSync(noise,text);
-      await page.waitForFunction(({previous})=>{const s=window.__liveDiff.statuses.at(-1);return s&&s.stateToken!==previous&&s.files.some(f=>f.path==="watcher.sqlite-wal");},{previous});
+      await page.waitForFunction(previous=>window.__liveDiff.statuses.some(s=>s.stateVersion>previous&&s.stateToken===null&&s.files.some(f=>f.path==="watcher.sqlite-wal")),previous);
       await frame();
-      const observed=await page.evaluate(()=>{const s=window.__liveDiff;const latest=s.statuses.at(-1);return{state:latest.stateToken,file:latest.files.find(f=>f.path==="watcher-user-probe.txt").diffToken,reads:s.reads,loaders:s.loaders,lineKept:s.line===document.querySelector(".changes .diff .dl")&&s.line.isConnected};});
+      const observed=await page.evaluate(()=>{const s=window.__liveDiff;const latest=s.statuses.filter(status=>status.stateToken===null).at(-1);return{version:latest.stateVersion,file:latest.files.find(f=>f.path==="watcher-user-probe.txt").diffToken,reads:s.reads,loaders:s.loaders,lineKept:s.line===document.querySelector(".changes .diff .dl")&&s.line.isConnected};});
       if(observed.file!==initial.file||observed.reads||observed.loaders||!observed.lineKept)throw Error("Unrelated WAL write reloaded or hid the selected diff: "+JSON.stringify(observed));
-      previous=observed.state;
+      previous=observed.version;
     }
     await page.evaluate(()=>{window.__liveDiff.hold=true;});
     fs.appendFileSync(file,"Selected file changed for real\n");
@@ -107,7 +107,7 @@ async function layerAttributesSmoke({page,root,attributesName}) {
       window.fetch=async function(input,init){
         const response=await original.call(this,input,init);
         if(String(input)===`${base}rev_diff`)state.reads++;
-        if(String(input)===`${base}status`){const s=await response.clone().json();if(s.files&&s.stateVersion>=state.version){state.version=s.stateVersion;state.present=s.files.some(f=>f.path==="layer-watcher.sqlite-wal");if(state.present)state.observed=true;}}
+        if(String(input)===`${base}status`||String(input)===`${base}repository_changes_status`){const s=await response.clone().json();if(s.files&&s.stateVersion>=state.version){state.version=s.stateVersion;state.present=s.files.some(f=>f.path==="layer-watcher.sqlite-wal");if(state.present)state.observed=true;}}
         return response;
       };
     });monitored=true;

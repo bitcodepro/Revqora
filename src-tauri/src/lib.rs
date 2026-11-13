@@ -648,6 +648,11 @@ async fn repository_sidebar_status(repo: String) -> GitResult<StatusSummary> {
     blocking(move || status::sidebar_status(&p(&repo))).await
 }
 
+#[tauri::command]
+async fn repository_changes_status(repo: String, path: Option<String>) -> GitResult<StatusSummary> {
+    blocking(move || status::changes_status(&p(&repo), path.as_deref().unwrap_or(""))).await
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Identity {
@@ -677,18 +682,26 @@ async fn identity_set(app: AppHandle, expected_state: Option<String>, repo: Stri
 // ───────────────────────────── diffs & staging ─────────────────────────────
 
 #[tauri::command]
-async fn working_diff(repo: String, path: String, side: WorkSide, untracked: bool, opts: Option<DiffOptions>, full_index: Option<bool>) -> GitResult<FileDiff> {
+async fn working_diff(
+    repo: String,
+    path: String,
+    side: WorkSide,
+    untracked: bool,
+    opts: Option<DiffOptions>,
+    full_index: Option<bool>,
+    preview: Option<bool>,
+) -> GitResult<FileDiff> {
     blocking(move || {
         let r = p(&repo);
         let base = if side == WorkSide::Staged && full_index != Some(true) { layers::staged_base(&r) } else { None };
-        diff::working_diff(&r, &path, side, base.as_deref(), untracked, &opts.unwrap_or_default())
+        diff::working_diff_view(&r, &path, side, base.as_deref(), untracked, &opts.unwrap_or_default(), preview.unwrap_or(false))
     })
     .await
 }
 
 #[tauri::command]
-async fn rev_diff(repo: String, from: Option<String>, to: String, path: String, opts: Option<DiffOptions>) -> GitResult<FileDiff> {
-    blocking(move || diff::rev_diff(&p(&repo), from.as_deref(), &to, &path, &opts.unwrap_or_default())).await
+async fn rev_diff(repo: String, from: Option<String>, to: String, path: String, opts: Option<DiffOptions>, preview: Option<bool>) -> GitResult<FileDiff> {
+    blocking(move || diff::rev_diff_view(&p(&repo), from.as_deref(), &to, &path, &opts.unwrap_or_default(), preview.unwrap_or(false))).await
 }
 
 #[tauri::command]
@@ -921,6 +934,13 @@ fn graph_resolve_lane(state: State<'_, AppState>, repo: String, key: String, anc
 async fn graph_search(state: State<'_, AppState>, repo: String, query: String, mode: SearchMode) -> GitResult<Vec<usize>> {
     let cache = state.graphs.lock().get(&repo).cloned().ok_or_else(|| GitError::new("History is not loaded."))?;
     blocking(move || graph::search(&p(&repo), &cache, &query, mode)).await
+}
+
+#[tauri::command]
+async fn history_search(state: State<'_, AppState>, repo: String, key: String, query: String, mode: SearchMode) -> GitResult<Vec<graph::HistoryMatch>> {
+    let cache = state.graphs.lock().get(&repo).cloned().ok_or_else(|| GitError::new("History is not loaded."))?;
+    cache.check_key(Some(&key))?;
+    blocking(move || graph::search_history(&p(&repo), &cache, &query, mode)).await
 }
 
 #[tauri::command]
@@ -2503,6 +2523,7 @@ pub fn run() {
             git_configure,
             askpass_respond,
             repository_sidebar_status,
+            repository_changes_status,
             repository_status_with_operation,
             repo_open,
             repo_prepare_folder_scan,
@@ -2534,6 +2555,7 @@ pub fn run() {
             graph_lane_anchor,
             graph_resolve_lane,
             graph_search,
+            history_search,
             repository_commit_search,
             repository_commit_search_page,
             commit_details,

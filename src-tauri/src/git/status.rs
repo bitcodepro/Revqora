@@ -194,12 +194,21 @@ pub fn status_with_operation(repo: &Path) -> GitResult<StatusWithOperation> {
 }
 
 pub fn status(repo: &Path) -> GitResult<StatusSummary> {
+    read_status(repo, None)
+}
+
+/// Display refresh for Changes. Only the open diff needs a content fingerprint.
+pub fn changes_status(repo: &Path, path: &str) -> GitResult<StatusSummary> {
+    read_status(repo, Some(path))
+}
+
+fn read_status(repo: &Path, display_path: Option<&str>) -> GitResult<StatusSummary> {
     super::operations::read(repo, || {
         let version = super::operations::next_version(repo);
         let raw = runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames"])?;
         let mut status = parse(&raw);
-        let tokens = super::operations::state_tokens(repo, &raw, &mut status.files)?;
-        status.state_token = Some(tokens.state);
+        let tokens = super::operations::state_tokens(repo, &raw, &mut status.files, display_path)?;
+        status.state_token = display_path.is_none().then_some(tokens.state);
         status.diff_context_token = Some(tokens.diff_context);
         status.state_version = version;
         Ok(status)

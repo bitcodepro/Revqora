@@ -355,7 +355,7 @@ fn submodule_fingerprint(module: &Path) -> GitResult<[u8; 32]> {
 
 /// No write-tree, index refresh or snapshots. Hash changed files and Git attributes,
 /// not the entire worktree. The display context never substitutes for the full guard.
-pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus]) -> GitResult<StateTokens> {
+pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus], display_path: Option<&str>) -> GitResult<StateTokens> {
     let mut hash = Sha256::new();
     hash.update(raw_status.as_bytes());
     let gd = super::repo::git_dir(repo)?;
@@ -366,8 +366,14 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
     let external_attributes = hash_external_attributes(&mut hash, repo)?;
     // Cache-tree/stat extensions and packed-ref layout can change without changing
     // what the user staged. Compare semantic index entries and resolved refs instead.
-    let index = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
-    hash.update(&index);
+    let mut index_args = vec!["ls-files", "--stage", "-v", "-z"];
+    if display_path.is_some() {
+        index_args.extend(["--", ":(glob)**/.gitattributes"]);
+    }
+    let index = runner::run_bytes(repo, index_args)?;
+    if display_path.is_none() {
+        hash.update(&index);
+    }
     // Git falls back to indexed .gitattributes when the worktree copy is absent.
     let mut indexed_attributes: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
     for entry in String::from_utf8_lossy(&index).split('\0') {
@@ -380,30 +386,31 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
     // Recovery pins are app metadata, not changes to the user's prepared Git
     // state. A rejected action may save a checkpoint before offering force
     // consent. Recovery itself verifies each pin independently with exact OIDs.
-    for reference in runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"])?.lines() {
-        if !reference.starts_with(super::recovery::PREFIX) {
-            hash.update(reference.as_bytes());
-            hash.update(b"\n");
+    if display_path.is_none() {
+        for reference in runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"])?.lines() {
+            if !reference.starts_with(super::recovery::PREFIX) {
+                hash.update(reference.as_bytes());
+                hash.update(b"\n");
+            }
         }
+        for name in [
+            "MERGE_HEAD",
+            "MERGE_MSG",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "SQUASH_MSG",
+            "BISECT_LOG",
+            "rebase-merge/git-rebase-todo",
+            "rebase-merge/done",
+            "rebase-apply/next",
+            "sequencer/todo",
+        ] {
+            hash_file(&mut hash, &gd.join(name))?;
+        }
+        // Stash reflog entries below the tip are part of the mutation proof.
+        hash_file(&mut hash, &common.join("logs/refs/stash"))?;
+        hash_file(&mut hash, &super::storage::dir(repo)?.join("squash-target"))?;
     }
-    for name in [
-        "MERGE_HEAD",
-        "MERGE_MSG",
-        "CHERRY_PICK_HEAD",
-        "REVERT_HEAD",
-        "SQUASH_MSG",
-        "BISECT_LOG",
-        "rebase-merge/git-rebase-todo",
-        "rebase-merge/done",
-        "rebase-apply/next",
-        "sequencer/todo",
-    ] {
-        hash_file(&mut hash, &gd.join(name))?;
-    }
-    // Stashes and their reflog are shared, including entries below refs/stash.
-    // Removing a middle entry changes stash@{n} without changing the top OID.
-    hash_file(&mut hash, &common.join("logs/refs/stash"))?;
-    hash_file(&mut hash, &super::storage::dir(repo)?.join("squash-target"))?;
     let mut attributes = BTreeMap::new();
     // Indexed attributes may affect a sealed layer even if later layers cancel
     // that file's net index change and it is absent from the ordinary status list.
@@ -419,17 +426,24 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
         }
     }
     for file in files {
-        hash.update(file.path.as_bytes());
-        let content = hash_file(&mut hash, &repo.join(&file.path))?;
+        let track_content = display_path.is_none_or(|path| path == file.path);
+        let content = if track_content {
+            hash.update(file.path.as_bytes());
+            Some(hash_file(&mut hash, &repo.join(&file.path))?)
+        } else {
+            None
+        };
         let mut display = Sha256::new();
         // The porcelain seed includes index/base OIDs, modes and submodule state:
         // editing an already-MM file or staging different bytes must still refresh it.
         display.update(file.diff_token.as_bytes());
-        display.update(content);
+        if let Some(content) = content {
+            display.update(content);
+        }
         display.update(config);
         display.update(info_attributes);
         display.update(external_attributes);
-        if file.submodule {
+        if track_content && file.submodule {
             let module = submodule_fingerprint(&repo.join(&file.path))?;
             hash.update(module);
             display.update(module);
@@ -449,7 +463,9 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
                 display.update(digest);
             }
         }
-        file.diff_token = format!("{:x}", display.finalize());
+        if track_content {
+            file.diff_token = format!("{:x}", display.finalize());
+        }
     }
     let mut context = Sha256::new();
     context.update(config);

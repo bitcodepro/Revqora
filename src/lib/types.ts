@@ -143,6 +143,7 @@ export interface FileDiff {
   additions: number;
   deletions: number;
   truncated: boolean;
+  previewLimited?: boolean;
   hash: string;
   stageSnapshot?: number;
   empty: boolean;

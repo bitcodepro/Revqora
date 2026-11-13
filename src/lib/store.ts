@@ -68,6 +68,8 @@ export interface Parts {
   guard?: boolean;
   /** Filesystem observation, rather than an explicit refresh/action. */
   background?: boolean;
+  /** A watcher refresh can fingerprint the open diff and defer the mutation proof. */
+  changesDisplay?: boolean;
   info?: boolean;
   status?: boolean;
   refs?: boolean;
@@ -273,6 +275,7 @@ function merge(a: Parts | undefined, b: Parts): Parts {
     summary: a ? !!a.summary && !!b.summary : b.summary,
     guard: a?.guard || b.guard,
     background: a ? !!a.background && !!b.background : b.background,
+    changesDisplay: a ? !!a.changesDisplay && !!b.changesDisplay : b.changesDisplay,
     info: a?.info || b.info,
     status: a?.status || b.status,
     refs: a?.refs || b.refs,
@@ -464,9 +467,12 @@ async function refreshOnce(root: string, parts: Parts) {
   let updatedRefs = false;
   // Everything starts at once; the history only waits for the (fast) status, which decides
   // whether the "Uncommitted changes" row is part of the graph.
-  const infoP = parts.info || (parts.status && !parts.summary) ? api.repoInfo(root) : Promise.resolve(null);
   const sidebarOnly = parts.summary && !parts.guard;
-  const statusP = parts.status ? (sidebarOnly ? api.repositorySidebarStatus(root) : api.status(root)) : Promise.resolve(null);
+  const changesDisplay = parts.changesDisplay && !sidebarOnly && !parts.guard && before.view === "changes" && !!before.status;
+  const infoP = parts.info || (parts.status && !parts.summary && !changesDisplay) ? api.repoInfo(root) : Promise.resolve(null);
+  const statusP = parts.status
+    ? sidebarOnly ? api.repositorySidebarStatus(root) : changesDisplay ? api.repositoryChangesStatus(root, before.changeSel?.path ?? null) : api.status(root)
+    : Promise.resolve(null);
   const refsP = parts.refs && (!parts.summary || trackedBranchRefs.has(repositoryKey(root))) ? api.refs(root).then(refs => {
     if (before.refsError && current()) useRepos.getState().patch(root, { refsError: undefined });
     // Keep the existing rows during a quiet check if their data is identical.
@@ -498,6 +504,10 @@ async function refreshOnce(root: string, parts: Parts) {
     const status = await statusP;
     const tab = useRepos.getState().tabs[root];
     if (!tab || !current()) return;
+    if (changesDisplay && status && (status.branch !== before.status?.branch || status.oid !== before.status?.oid)) {
+      void useRepos.getState().refresh(root, { ...ALL, background: true });
+      return;
+    }
     const st = status ?? tab.status;
     const dirty = !!st && st.files.length > 0;
     if (status) useRepos.getState().patch(root, sidebarOnly ? { sidebarStatus: status } : { status });

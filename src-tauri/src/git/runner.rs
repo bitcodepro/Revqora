@@ -198,6 +198,17 @@ where
     exec_capture(repo, args, &[], None, Some(limit), None)
 }
 
+pub(super) fn exec_preview(repo: &Path, args: &[String], env: &[(&str, &str)], limit: usize) -> GitResult<(Output, bool)> {
+    let mut out = exec_capture_mode(repo, args, env, None, Some(limit), None, true)?;
+    let truncated = out.stdout.len() > limit;
+    if truncated {
+        // A cut line must never be parsed as a real changed line.
+        let end = out.stdout[..limit].iter().rposition(|&byte| byte == b'\n').map_or(0, |index| index + 1);
+        out.stdout.truncate(end);
+    }
+    Ok((out, truncated))
+}
+
 pub(super) fn run_with_deadline(repo: &Path, args: &[&str], env: &[(&str, &str)], timeout: Duration) -> GitResult<String> {
     let out = exec_capture(repo, args, env, None, None, Some(timeout))?;
     if out.ok() {
@@ -235,6 +246,22 @@ fn capture_bytes(mut pipe: impl Read, limit: Option<usize>) -> std::io::Result<V
 }
 
 fn exec_capture<I, S>(repo: &Path, args: I, env: &[(&str, &str)], input: Option<&[u8]>, limit: Option<usize>, timeout: Option<Duration>) -> GitResult<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    exec_capture_mode(repo, args, env, input, limit, timeout, false)
+}
+
+fn exec_capture_mode<I, S>(
+    repo: &Path,
+    args: I,
+    env: &[(&str, &str)],
+    input: Option<&[u8]>,
+    limit: Option<usize>,
+    timeout: Option<Duration>,
+    allow_truncated: bool,
+) -> GitResult<Output>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -302,7 +329,7 @@ where
                 let stderr = err_thread.join().unwrap_or_else(|_| Err(std::io::Error::other("Git stderr reader failed")))?;
                 let status = status?;
                 let stdout = stdout?;
-                if limit.is_some_and(|limit| stdout.len() > limit) {
+                if !allow_truncated && limit.is_some_and(|limit| stdout.len() > limit) {
                     return Err(GitError::new("Git output exceeds the preview size limit.").kind("output-limit"));
                 }
                 let stderr = String::from_utf8_lossy(&stderr).into_owned();

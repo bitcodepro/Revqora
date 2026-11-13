@@ -327,9 +327,9 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
     setDiffResult((previous) => ({ key: diffKey, view: viewKey, loading: true, value: previous?.view === viewKey ? previous.value : undefined }));
     try {
       let d: FileDiff;
-      if (kind === "unstaged") d = await api.workingDiff(root, path, "unstaged", untracked, opts);
-      else if (kind === "staged") d = await api.workingDiff(root, path, "staged", false, opts);
-      else d = await api.revDiff(root, fromTree!, toTree!, path, opts);
+      if (kind === "unstaged") d = await api.workingDiff(root, path, "unstaged", untracked, opts, false, true);
+      else if (kind === "staged") d = await api.workingDiff(root, path, "staged", false, opts, false, true);
+      else d = await api.revDiff(root, fromTree!, toTree!, path, opts, true);
       if (accepts()) {rememberWorkingDiff(root,viewKey,d);setDiffResult({ key: diffKey, view: viewKey, loading: false, value: d });}
     } catch (e) {
       if (accepts()) setDiffResult({ key: diffKey, view: viewKey, loading: false, error: errorMessage(e) });
@@ -349,11 +349,12 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   };
 
   const onApply = async (selection: [number, number][], action: LineAction) => {
-    if (!diff || !sel || (sel.kind !== "unstaged" && sel.kind !== "staged") || action === "apply") return;
+    if (!diff || diff.previewLimited || !sel || (sel.kind !== "unstaged" && sel.kind !== "staged") || action === "apply") return;
     if (diffLoading && (action !== "stage" || !diff.stageSnapshot)) return;
     if (action === "stash") {
       if (sel.kind !== "unstaged") return;
-      const expected = tab.status?.stateToken ?? null;
+      const expected = tab.status?.stateToken ?? await A.prepareOperation(root);
+      if (!expected) return;
       const message = await promptDialog({ title: "Stash selected changes", label: "Message", initial: `Selected changes in ${sel.path}`, confirm: "Stash selection", help: "Only the selected unstaged text changes will be saved and removed. Staged changes remain in place." });
       if (message === null) return;
       try {
@@ -795,7 +796,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
           mode={diffMode}
           path={sel?.path ?? ""}
           actions={diffActions}
-          onApply={diffLoading && (sel?.kind !== "unstaged" || !diff?.stageSnapshot) ? undefined : onApply}
+          onApply={diff?.previewLimited || (diffLoading && (sel?.kind !== "unstaged" || !diff?.stageSnapshot)) ? undefined : onApply}
           canStash={!diffLoading && sel?.kind === "unstaged" && !sel.untracked && !files.find((f) => f.path === sel.path)?.submodule && !opts.ignoreWhitespace && !!diff && !diff.binary && !diff.isNew && !diff.isDeleted && !diff.truncated && diff.oldPath === null && diff.oldMode === diff.newMode}
           root={root}
           images={
@@ -993,7 +994,12 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
     const finalMessage = conventional && ccType ? `${ccType}${ccScope.trim() ? `(${ccScope.trim()})` : ""}${ccBreaking ? "!" : ""}: ${message}` : message;
     const current = useRepos.getState().tabs[root];
     const head = current?.info?.head, status = current?.status;
-    const expectedState = status && (!head || (head.branch === status.branch && head.oid === status.oid)) ? status.stateToken : undefined;
+    const expectedState = status && (!head || (head.branch === status.branch && head.oid === status.oid))
+      ? status.stateToken ?? await A.prepareOperation(root) : null;
+    if (!expectedState) {
+      toast.warning("Refresh before committing", "Review the staged files after the repository status has loaded.");
+      return false;
+    }
     if (!amend || stagedCount > 0) {
       updateBusy(id, "Checking staged files", true);
       const limitMb = useSettings.getState().largeFileMb;
@@ -1005,10 +1011,6 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
         return false;
       }
       if (big.length) {
-        if (!expectedState) {
-          toast.warning("Refresh before committing", "Review the staged files after the repository status has loaded.");
-          return false;
-        }
         updateBusy(id, "Waiting for large-file review", true);
         const choice = await largeFilesDialog(big, limitMb);
         if (choice === "cancel") return false;

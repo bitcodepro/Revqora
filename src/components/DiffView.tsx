@@ -164,10 +164,10 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
 
   const totalLines = diff?.hunks.reduce((a, h) => a + h.lines.length, 0) ?? 0;
   const virtual = totalLines > VIRTUAL_THRESHOLD && !s.wrapDiff && s.diffMode === "unified";
-  // Highlighting tens of thousands of lines costs more than it helps.
-  const hl = useHighlight(path, diff?.hunks, totalLines < 20000);
+  const expensive = totalLines > VIRTUAL_THRESHOLD || !!diff?.previewLimited;
+  const hl = useHighlight(path, diff?.hunks, !expensive);
   const words = useMemo(() => {
-    if (!diff || totalLines > 20000) return null;
+    if (!diff || expensive) return null;
     return diff.hunks.map((h) => {
       const pairs = pairLines(h.lines);
       const map = new Map<number, Span[]>();
@@ -179,7 +179,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       });
       return map;
     });
-  }, [diff, totalLines]);
+  }, [diff, expensive]);
 
   useEffect(() => {
     setSel(new Set());
@@ -583,7 +583,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     body = root && images ? <TextDiffPreview key={JSON.stringify([root, path])} root={root}
       revision={diff.hash} before={diff.isNew ? null : images.old} after={diff.isDeleted ? null : images.new} fallback={fallback} /> : fallback;
   } else if (diff.hunks.length === 0) {
-    body = <div className="empty">{diff.oldMode !== diff.newMode ? "Only the file mode changed." : sourceOptions && s.ignoreWhitespace ? "Only whitespace changed." : "No textual changes."}</div>;
+    body = <div className="empty">{diff.previewLimited ? "No complete changed line fits in the preview." : diff.oldMode !== diff.newMode ? "Only the file mode changed." : sourceOptions && s.ignoreWhitespace ? "Only whitespace changed." : "No textual changes."}</div>;
   } else if (virtual) {
     // Very long diffs: fixed-height rows, only the visible window is rendered.
     const first = Math.max(0, Math.floor(scroll / rowH) - 30);
@@ -627,7 +627,9 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       {findBar}
       {diff?.truncated && (
         <div className="callout warn" role="status" style={{ margin: 12 }}>
-          <FileWarning size={15} /> The diff is very large; only the first lines are shown.
+          <FileWarning size={15} /> {diff.previewLimited
+            ? "The diff exceeds the preview size limit. Line and hunk actions are unavailable in this preview."
+            : "The diff is very large; only the first lines are shown."}
         </div>
       )}
       <div ref={bodyRef} className={`diff-body ${!diff && loading && !error ? "diff-loading" : ""} ${s.wrapDiff ? "wrap" : ""}`} onScroll={(e) => {
