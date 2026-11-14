@@ -145,7 +145,9 @@ export async function openRepoPath(path: string) {
   try {
     await useRepos.getState().open(path);
   } catch (e) {
-    if (isGitError(e) && e.kind === "not-a-repo") {
+    if (isGitError(e) && e.kind === "repository-folder-unavailable") {
+      toast.warning("Repository folder unavailable", e.message);
+    } else if (isGitError(e) && e.kind === "not-a-repo") {
       const ok = await confirmDialog({ title: "Not a Git repository", message: `${path} is not a Git repository. Create a new repository here?`, confirm: "Initialize" });
       if (ok) {
         try {

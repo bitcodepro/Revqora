@@ -2,7 +2,7 @@ import { useLayoutEffect, useState } from "react";
 import { namePathMenu } from "./NamePathMenu";
 import { ChevronDown, ChevronRight, FolderPlus, Library, Star } from "lucide-react";
 import { basename } from "../lib/format";
-import { errorMessage } from "../lib/api";
+import { errorMessage, isGitError } from "../lib/api";
 import { defaultGroupRoots, groupRepositoryRoots, useLibrary, repositoryKey, uniqueRoots, type RepositoryGroup } from "../lib/repositoryLibrary";
 import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
 import { matchesShortcut } from "../lib/shortcuts";
@@ -13,7 +13,12 @@ import { repositoryMembershipMenu } from "./LibraryMenus";
 import { Modal } from "./Modal";
 
 export async function openLibraryRepository(root: string) {
-  try { await useRepos.getState().open(root); } catch (e) { toast.error("Could not open repository", errorMessage(e)); }
+  try {
+    await useRepos.getState().open(root);
+  } catch (e) {
+    if (isGitError(e) && e.kind === "repository-folder-unavailable") toast.warning("Repository folder unavailable", e.message);
+    else toast.error(e, "Could not open repository");
+  }
 }
 export function FavoriteButton({ root, name = basename(root) }: { root: string; name?: string }) {
   const favorite = useLibrary((s) => s.favorites.some((r) => repositoryKey(r) === repositoryKey(root)));

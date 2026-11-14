@@ -475,17 +475,20 @@ fn stalled_background_fetch_times_out_and_releases_the_repository() {
     runner::run(repo, ["remote", "add", "origin", &url]).unwrap();
     runner::run(repo, ["config", "--local", "remote.origin.proxy", ""]).unwrap();
     let deadline = Duration::from_secs(15);
+    let server_watchdog = 2 * deadline;
     let (release, done) = std::sync::mpsc::channel();
     let server = std::thread::spawn(move || -> std::io::Result<usize> {
         let start = std::time::Instant::now();
-        while start.elapsed() < deadline + Duration::from_secs(5) {
+        while start.elapsed() < server_watchdog {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     // Winsock inherits the listener's nonblocking mode on accept.
                     stream.set_nonblocking(false)?;
                     stream.set_read_timeout(Some(deadline))?;
                     let bytes = stream.read(&mut [0; 1024])?;
-                    let _ = done.recv_timeout(deadline);
+                    // Only the Git runner should end the stalled request. A
+                    // socket close at the same deadline can make Git exit first.
+                    done.recv_timeout(server_watchdog).map_err(|error| std::io::Error::other(format!("Fetch did not release the fixture: {error}")))?;
                     return Ok(bytes);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -505,7 +508,7 @@ fn stalled_background_fetch_times_out_and_releases_the_repository() {
     let _ = release.send(());
     let observed = server.join().unwrap();
     assert!(matches!(observed, Ok(bytes) if bytes > 0), "Fixture {url}: {observed:?}; fetch elapsed {elapsed:?}, result {result:?}");
-    assert_eq!(result.unwrap_err().kind, "git-timeout");
+    assert!(matches!(&result, Err(error) if error.kind == "git-timeout"), "Fixture {url}: fetch elapsed {elapsed:?}, result {result:?}");
     runner::run(repo, ["config", "--local", "user.name", "After fetch"]).unwrap();
     assert_eq!(runner::run(repo, ["config", "--get", "user.name"]).unwrap().trim(), "After fetch");
     assert!(!repo.join(".git/FETCH_HEAD").exists());

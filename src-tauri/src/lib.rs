@@ -639,13 +639,17 @@ async fn repo_info(repo: String) -> GitResult<RepoInfo> {
 }
 
 #[tauri::command]
-async fn status(repo: String, require_unsealed: Option<bool>) -> GitResult<StatusSummary> {
+async fn status(repo: String, require_unsealed: Option<bool>, display: Option<bool>) -> GitResult<StatusSummary> {
     blocking(move || {
         let r = p(&repo);
         if require_unsealed == Some(true) {
             layers::require_unsealed_index(&r)?;
         }
-        status::status(&r)
+        if display == Some(true) && require_unsealed != Some(true) {
+            status::display_status(&r)
+        } else {
+            status::status(&r)
+        }
     })
     .await
 }

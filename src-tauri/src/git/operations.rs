@@ -189,15 +189,15 @@ fn fingerprint_io(action: &str, path: &Path, error: std::io::Error) -> GitError 
     result
 }
 
-fn open_fingerprint_file(path: &Path) -> std::io::Result<fs::File> {
+fn retry_fingerprint_io<T>(mut read: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
     #[cfg(windows)]
     for _ in 0..3 {
-        match fs::File::open(path) {
+        match read() {
             Err(error) if matches!(error.raw_os_error(), Some(5 | 32 | 33)) => std::thread::sleep(std::time::Duration::from_millis(40)),
             result => return result,
         }
     }
-    fs::File::open(path)
+    read()
 }
 
 #[cfg(all(test, windows))]
@@ -243,10 +243,10 @@ fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<[u8; 32]> {
                 use std::os::unix::fs::PermissionsExt;
                 content.update((meta.permissions().mode() & 0o111).to_le_bytes());
             }
-            let mut file = open_fingerprint_file(path).map_err(|error| fingerprint_io("Open file for status", path, error))?;
+            let mut file = retry_fingerprint_io(|| fs::File::open(path)).map_err(|error| fingerprint_io("Open file for status", path, error))?;
             let mut buf = [0; 64 * 1024];
             loop {
-                let len = file.read(&mut buf).map_err(|error| fingerprint_io("Read file for status", path, error))?;
+                let len = retry_fingerprint_io(|| file.read(&mut buf)).map_err(|error| fingerprint_io("Read file for status", path, error))?;
                 if len == 0 {
                     break;
                 }

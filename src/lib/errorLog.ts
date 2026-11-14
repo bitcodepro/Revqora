@@ -15,6 +15,7 @@ const writes = new Set<Promise<unknown>>();
 export function recordError(source: string, error: unknown, repository?: string) {
   if (typeof window === "undefined") return;
   const value = typeof error === "object" && error !== null ? error as Record<string, unknown> : null;
+  if (value?.kind === "repository-folder-unavailable") return;
   if (value && reported.has(value)) return;
   if (value) reported.add(value);
   const code = typeof value?.kind === "string" ? value.kind : error instanceof Error ? error.name : "error";

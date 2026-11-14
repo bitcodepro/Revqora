@@ -5,6 +5,26 @@ import { recordExplorerMove, undoExplorerMove } from "./explorerMoves";
 beforeEach(() => useLibrary.setState(restoreLibrary({})));
 
 describe("Explorer library", () => {
+  it("removes a repository from every saved placement and permits reopening it", () => {
+    const library = useLibrary.getState();
+    library.remember("/remove");
+    library.remember("/keep");
+    library.renameRepository("/remove", "Alias");
+    library.favorite("/remove");
+    const folder = library.createGroup("Folder", ["/remove", "/keep"], []);
+    useLibrary.setState({ explorerOrder: { [folder]: [explorerRepositoryKey("/remove"), explorerRepositoryKey("/keep")] } });
+    library.removeRepositories(["/remove"]);
+    const state = useLibrary.getState();
+    expect(restoreLibrary(state).knownRoots).toEqual(["/keep"]);
+    expect(state.groups[0].roots).toEqual(["/keep"]);
+    expect(state.favorites).toEqual([]);
+    expect(state.repositoryNames).toEqual({});
+    expect(state.manuallyPlacedRoots).toEqual(["/keep"]);
+    expect(state.explorerOrder[folder]).toEqual([explorerRepositoryKey("/keep")]);
+    library.remember("/remove");
+    expect(useLibrary.getState().knownRoots).toEqual(["/keep", "/remove"]);
+  });
+
   it("migrates groups, workspace ancestry, favorites, membership and selection", () => {
     const library = restoreLibrary({
       knownRoots: ["/standalone"],

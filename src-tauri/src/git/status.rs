@@ -194,20 +194,37 @@ pub fn status_with_operation(repo: &Path) -> GitResult<StatusWithOperation> {
 }
 
 pub fn status(repo: &Path) -> GitResult<StatusSummary> {
-    read_status(repo, None)
+    read_status(repo, None, false)
+}
+
+pub fn display_status(repo: &Path) -> GitResult<StatusSummary> {
+    read_status(repo, None, true)
 }
 
 /// Display refresh for Changes. Only the open diff needs a content fingerprint.
 pub fn changes_status(repo: &Path, path: &str) -> GitResult<StatusSummary> {
-    read_status(repo, Some(path))
+    read_status(repo, Some(path), true)
 }
 
-fn read_status(repo: &Path, display_path: Option<&str>) -> GitResult<StatusSummary> {
+fn read_status(repo: &Path, display_path: Option<&str>, allow_locked_file: bool) -> GitResult<StatusSummary> {
     super::operations::read(repo, || {
         let version = super::operations::next_version(repo);
         let raw = runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames"])?;
         let mut status = parse(&raw);
-        let tokens = super::operations::state_tokens(repo, &raw, &mut status.files, display_path)?;
+        let tokens = match super::operations::state_tokens(repo, &raw, &mut status.files, display_path) {
+            Ok(tokens) => tokens,
+            Err(error)
+                if allow_locked_file
+                    && error.kind == "status-file-io"
+                    && cfg!(windows)
+                    && error.details.iter().any(|detail| matches!(detail.as_str(), "os_error=32" | "os_error=33")) =>
+            {
+                // Porcelain already captured the file list. Keep it visible but
+                // supply neither a content proof nor a mutation precondition.
+                return Ok(StatusSummary { state_version: version, ..parse(&raw) });
+            }
+            Err(error) => return Err(error),
+        };
         status.state_token = display_path.is_none().then_some(tokens.state);
         status.diff_context_token = Some(tokens.diff_context);
         status.state_version = version;
@@ -228,6 +245,30 @@ pub fn sidebar_status(repo: &Path) -> GitResult<StatusSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn display_status_keeps_files_when_an_open_handle_locks_their_contents() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::LockFile;
+
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture.path();
+        runner::run(repo, ["init", "-qb", "main"]).unwrap();
+        let path = repo.join("openings.sqlite-shm");
+        std::fs::write(&path, "fixture contents").unwrap();
+        let file = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        assert_ne!(unsafe { LockFile(file.as_raw_handle(), 0, 0, 1, 0) }, 0);
+        let error = status(repo).unwrap_err();
+        assert_eq!(error.kind, "status-file-io");
+        assert!(error.details.iter().any(|detail| detail == "os_error=33"));
+        for result in [display_status(repo).unwrap(), changes_status(repo, "openings.sqlite-shm").unwrap()] {
+            assert_eq!(result.files[0].path, "openings.sqlite-shm");
+            assert!(result.state_token.is_none() && result.diff_context_token.is_none());
+        }
+        drop(file);
+        assert!(display_status(repo).unwrap().state_token.is_some());
+    }
 
     #[test]
     fn parses_porcelain_v2() {

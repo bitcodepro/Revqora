@@ -1,10 +1,9 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Loader2, Pencil, Search, Star, Trash2, Unlink, UserRound, X } from "lucide-react";
+import { ArrowDown, ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Loader2, Pencil, Search, Star, Trash2, Unlink, UserRound, X } from "lucide-react";
 import { defaultGroupRoots, explorerRepositoryKey, orderExplorerSiblings, repositoryKey, uniqueRoots, useLibrary, type RepositoryGroup, type RepositoryPlacement } from "../lib/repositoryLibrary";
 import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
 import { findExplorerDrop, useLibraryPointerDrag } from "../lib/libraryDrag";
 import { recordExplorerMove, useRepositoryDrag } from "../lib/explorerMoves";
-import { errorMessage } from "../lib/api";
 import { loadBranchPreferences } from "../lib/branchManager";
 import { useExplorerBranchReads } from "../lib/explorerBranchReads";
 import { selectExplorerBranches } from "../lib/explorerBranches";
@@ -68,6 +67,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   useEffect(() => setWidth(layout.workspacesWidth), [layout.workspacesWidth]);
   const [query, setQuery] = useState("");
   const [incomingOnly, setIncomingOnly] = useState(false);
+  const [changesOnly, setChangesOnly] = useState(false);
   const [collapsedFavorites, setCollapsedFavorites] = useState<Set<string>>(() => new Set());
   const [expandedRepositories, setExpandedRepositories] = useState<Set<string>>(() => new Set());
   const [collapsedFilteredRepos, setCollapsedFilteredRepos] = useState<Set<string>>(() => new Set());
@@ -82,6 +82,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const canonical = new Map(paths.map(root => [repositoryKey(root), root]));
   const favoriteKeys = new Set(favorites.map(repositoryKey));
   const incoming = new Set(paths.filter(root => !!repositorySidebarStatus(tabs[root])?.behind));
+  const hasChanges = (root: string) => !!repositorySidebarStatus(tabs[root])?.files.length;
   const label = (root: string) => names[repositoryKey(root)] ?? tabs[root]?.info?.name ?? basename(root);
   const repositoryEntry = (path: string, parentId: string | null): Extract<ExplorerEntry, { kind: "repository" }> => {
     const key = repositoryKey(path), root = canonical.get(key) ?? path;
@@ -93,8 +94,9 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   ];
   const search = query.trim().toLocaleLowerCase();
   const branchFilter = !!search || favoritesOnly || myBranchesOnly;
-  const incomingMatch = (root: string) => !incomingOnly || incoming.has(root);
-  const needsBranches = (entry: typeof repositories[number]) => incomingMatch(entry.root) &&
+  const statusFiltered = incomingOnly || changesOnly;
+  const matchesStatus = (root: string) => (!incomingOnly || incoming.has(root)) && (!changesOnly || hasChanges(root));
+  const needsBranches = (entry: typeof repositories[number]) => matchesStatus(entry.root) &&
     (expandedRepositories.has(repositoryKey(entry.root)) || myBranchesOnly || !!search ||
       favoritesOnly && !!branchFavorites[repositoryKey(entry.root)]?.length);
   const requested = repositories.filter(needsBranches);
@@ -125,8 +127,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   ];
   const favoriteGroups = favoritesOnly ? treeSubtreeIds(groups, groups.filter(group => group.favorite).map(group => group.id)) : null;
   const matchesTree = (entry: ExplorerEntry) => {
-    if (entry.kind === "group") return !myBranchesOnly && !incomingOnly && (!favoriteGroups || favoriteGroups.has(entry.id)) && entry.name.toLocaleLowerCase().includes(search);
-    if (!incomingMatch(entry.root)) return false;
+    if (entry.kind === "group") return !myBranchesOnly && !statusFiltered && (!favoriteGroups || favoriteGroups.has(entry.id)) && entry.name.toLocaleLowerCase().includes(search);
+    if (!matchesStatus(entry.root)) return false;
     if (entry.kind === "branch") return entry.name.toLocaleLowerCase().includes(search);
     const favorite = favoriteKeys.has(repositoryKey(entry.root)) || !!entry.parentId && !!favoriteGroups?.has(entry.parentId);
     const pending = !branchLists.has(entry.root) && !tabs[entry.root]?.refsError && !tabs[entry.root]?.error && !branchReads[entry.root];
@@ -138,8 +140,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const rows = visibleTree(entries, matchesTree, entry => {
     if (entry.kind === "branch") return false;
     if (entry.kind === "repository") return !isRepositoryExpanded(entry, !!branchLists.get(entry.root)?.rows.length);
-    return favoritesOnly ? collapsedFavorites.has(entry.id) : !search && !incomingOnly && !myBranchesOnly && !!entry.group.collapsed;
-  }, branchFilter || incomingOnly, false, (siblings, parentId) => {
+    return favoritesOnly ? collapsedFavorites.has(entry.id) : !search && !statusFiltered && !myBranchesOnly && !!entry.group.collapsed;
+  }, branchFilter || statusFiltered, false, (siblings, parentId) => {
     // Branch order is determined per repository. Only folders and repository
     // placements participate in the persisted drag order.
     if (siblings[0]?.kind === "branch") return siblings;
@@ -168,7 +170,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     const intent = useRepos.getState().selectionVersion;
     void opening.then(actual => {
       if (actual && useRepos.getState().selectionVersion === intent) run(actual);
-    }, error => toast.error("Could not open repository", errorMessage(error)));
+    }, error => toast.error(error, "Could not open repository"));
   };
 
   const visibleEntries = rows.map(row => row.entry);
@@ -190,6 +192,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     if (!reveal) return;
     setQuery("");
     setIncomingOnly(false);
+    setChangesOnly(false);
     useSettings.getState().set({ explorerMyBranchesOnly: false });
     clearSelection();
     setFocusedEntry(reveal);
@@ -269,6 +272,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     runMenuShortcut(event, [
       { shortcut: "explorer-favorites", onClick: toggleFavorites },
       { shortcut: "explorer-my-branches", onClick: toggleMyBranches },
+      { shortcut: "explorer-incoming", onClick: () => setIncomingOnly(on => !on) },
+      { shortcut: "explorer-changes", onClick: () => setChangesOnly(on => !on) },
     ]);
   }} onContextMenu={event => {
     if (!(event.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) contextMenu(event, rootMenu);
@@ -278,14 +283,18 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     </header>
     <div className="repository-filter input-wrap"><Search size={13}/><input className="input sm" aria-label="Find in Explorer" placeholder="Find folder, repository or branch…" value={query} onChange={event => { setCollapsedFilteredRepos(new Set()); setQuery(event.target.value); }}/></div>
     <div className="explorer-filters">
-      <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-pressed={favoritesOnly}
+      <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-label="Favorites" aria-pressed={favoritesOnly}
         data-shortcut="explorer-favorites" title="Show favorite folders, repositories and branches"
-        onClick={toggleFavorites}><Star size={13}/> Favorites</button>
+        onClick={toggleFavorites}><Star size={13}/><span>Favorites</span></button>
       <button type="button" className={`repository-updates explorer-my-branches ${myBranchesOnly ? "active" : ""}`} aria-label="My branches" aria-pressed={myBranchesOnly}
         data-shortcut="explorer-my-branches" title="Show branches you created and each repository’s primary branch"
-        onClick={toggleMyBranches}><UserRound size={13}/> My branches</button>
-      <button type="button" className={`repository-updates ${incomingOnly ? "active" : ""}`} aria-pressed={incomingOnly}
-        title="Show repositories with incoming commits" onClick={() => setIncomingOnly(!incomingOnly)}>Incoming{incoming.size ? ` · ${incoming.size}` : ""}</button>
+        onClick={toggleMyBranches}><UserRound size={13}/><span>Mine</span></button>
+      <button type="button" className={`repository-updates ${incomingOnly ? "active" : ""}`} aria-label="Incoming" aria-pressed={incomingOnly}
+        data-shortcut="explorer-incoming" title={`${incoming.size} repositories with incoming commits`}
+        onClick={() => setIncomingOnly(on => !on)}><ArrowDown size={13}/><span>Incoming</span></button>
+      <button type="button" className={`repository-updates ${changesOnly ? "active" : ""}`} aria-label="Changes" aria-pressed={changesOnly}
+        data-shortcut="explorer-changes" title="Show repositories with uncommitted changes"
+        onClick={() => setChangesOnly(on => !on)}><Pencil size={13}/><span>Changes</span></button>
     </div>
     <button type="button" className={`repository-overview-link ${activeGroup === null && focusedId === null ? "active" : ""}`} aria-current={activeGroup === null} aria-label="All repositories"
       data-tree-group="" data-tooltip="Show all repositories or drop items here to move them to the top level" onClick={() => { clearSelection(); setFocusedEntry(null); library().selectGroup(null); }}>
@@ -313,7 +322,17 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
           const branchError = tabs[entry.root]?.refsError ?? (!tabs[entry.root]?.info ? tabs[entry.root]?.error : null) ?? (read && "error" in read ? read.error : undefined);
           const hasRefs = branchLists.has(entry.root);
           return <Fragment key={entry.id}><RepositoryNavigationRow root={entry.root} name={entry.name} tab={tabs[entry.root]}
-            depth={depth} explorer={{ id: entry.id, focused: focusedId === entry.id, expanded, toggle }} current={entry.root === active && !overview} selected={selection.includes(entry.id)} groupId={entry.parentId ?? undefined}
+            depth={depth} explorer={{ id: entry.id, focused: focusedId === entry.id, expanded, toggle, remove: () => {
+              const roots = uniqueRoots(items.map(item => item.root));
+              const keys = new Set(roots.map(repositoryKey));
+              const repos = useRepos.getState();
+              repos.order.filter(root => keys.has(repositoryKey(root))).forEach(repos.close);
+              library().removeRepositories(roots);
+              const settings = useSettings.getState();
+              settings.set({ recent: settings.recent.filter(root => !keys.has(repositoryKey(root))) });
+              clearSelection();
+              setFocusedEntry(null);
+            } }} current={entry.root === active && !overview} selected={selection.includes(entry.id)} groupId={entry.parentId ?? undefined}
             selection={uniqueRoots(items.map(item => item.root))}
             createGroup={() => void groupEditorDialog({ roots: uniqueRoots(items.map(item => item.root)), parentId: entry.parentId, onCreated: clearSelection })}
             onPointerDown={event => repositoryDrag.start(event, items)}
@@ -380,7 +399,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
         </div>;
       })}
       <div className="explorer-root-drop" data-explorer-root-drop aria-hidden="true"><span>Drop at top level</span></div>
-      {!rows.length && <div className="cg-empty">{branchFilter || incomingOnly ? "No matching folders, repositories or branches" : "Open a repository or import a folder"}</div>}
+      {!rows.length && <div className="cg-empty">{branchFilter || statusFiltered ? "No matching folders, repositories or branches" : "Open a repository or import a folder"}</div>}
     </div>
     <Splitter dir="v" style={{ right: -3, left: "auto" }} onDrag={delta => setWidth(w => Math.max(175, Math.min(420, w + delta)))} onEnd={() => setLayout({ workspacesWidth: width })}/>
   </aside>;

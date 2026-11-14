@@ -63,10 +63,19 @@ pub struct RepoInfo {
     pub is_bare: bool,
 }
 
-pub fn discover(path: &Path) -> GitResult<PathBuf> {
-    if !path.exists() {
-        return Err(GitError::new(format!("Folder does not exist: {}", path.display())).kind("not-a-repo"));
+pub(super) fn require_directory(path: &Path) -> GitResult<()> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(GitError::new(format!("Repository path is not a folder: {}", path.display())).kind("repository-folder-unavailable")),
+        Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {
+            Err(GitError::new(format!("Repository folder is unavailable: {}", path.display())).kind("repository-folder-unavailable"))
+        }
+        Err(error) => Err(error.into()),
     }
+}
+
+pub fn discover(path: &Path) -> GitResult<PathBuf> {
+    require_directory(path)?;
     let out = runner::exec(path, ["rev-parse", "--show-toplevel"])?;
     if !out.ok() {
         return Err(GitError::new(format!("{} is not inside a Git repository.", path.display())).kind("not-a-repo"));
