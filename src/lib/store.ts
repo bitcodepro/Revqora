@@ -208,6 +208,13 @@ function hydrate(root: string): Promise<string | null> {
     try {
       const info = await api.repoOpen(root);
       if (!current()) return null;
+      const rootKey = repositoryKey(root);
+      // A folder picker may start inside a repository. A saved Explorer
+      // entry represents a working copy in its own right.
+      if (repositoryKey(info.root) !== rootKey &&
+          useLibrary.getState().knownRoots.some(path => repositoryKey(path) === rootKey)) {
+        throw new Error("This saved folder is no longer a Git repository. Verify the working copy at this path.");
+      }
       const actual = existingRoot(info.root) ?? info.root;
       const state = useRepos.getState();
       if (actual !== root) {

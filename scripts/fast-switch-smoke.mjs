@@ -49,7 +49,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    await selectRepository("switch-two");
    await commitRow("Switch second base").waitFor();
    if (!wasOpen) await repositories.click();
-   const installGate=(commands=["repo_info","status","refs_snapshot","layers_state","repo_extras","graph_rows","graph_find","commit_details","rev_diff","working_diff"], omitSnapshotFor=null)=>page.evaluate(async ({commands,omitSnapshotFor})=>{
+   const installGate=(commands=["repo_info","status","refs_snapshot","layers_state","repo_extras","graph_rows","graph_find","commit_details","rev_diff","working_diff"], omitSnapshotFor=null, prFixtures=null)=>page.evaluate(async ({commands,omitSnapshotFor,prFixtures})=>{
     const bridge=window.__TAURI_INTERNALS__,original=window.fetch,held=[],counts={},stageResponses=[];let active=true,omittedSnapshots=0;
     const urls=new Map(commands.map(command=>[bridge.convertFileSrc(command,"ipc"),command]));
     const probe=bridge.convertFileSrc("plugin:app|version","ipc");
@@ -64,7 +64,10 @@ export async function fastSwitchSmoke({exe,work,check,out}){
       if(command)counts[command]=(counts[command]??0)+1;
       if(url===bridge.convertFileSrc("graph_load","ipc"))counts.graph_load=(counts.graph_load??0)+1;
       const omitSnapshot=active&&url===diffUrl&&omitSnapshotFor&&repoKey(JSON.parse(init.body).repo)===repoKey(omitSnapshotFor);
-      const response=await Reflect.apply(original,window,[input,init]);
+      const payload=command ? JSON.parse(init.body) : null;
+      const prPage=command==="pr_page" && prFixtures?.find(entry=>repoKey(entry.root)===repoKey(payload.repo));
+      const response=prPage ? new Response(JSON.stringify(prPage.page),{headers:{"content-type":"application/json","Tauri-Response":"ok"}})
+        : await Reflect.apply(original,window,[input,init]);
       if(omitSnapshot&&response.ok){
         const diff=await response.json();
         if(Object.hasOwn(diff,"stageSnapshot"))omittedSnapshots++;
@@ -79,7 +82,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
         stageResponses.push({repo,path,mode,stageSnapshot,ok:response.ok});
       }
       if(command&&response.ok){
-        const {repo}=JSON.parse(init.body);
+        const repo=payload.repo ?? payload.path;
         return new Promise(resolve=>held.push({command,repo,release:()=>resolve(response)}));
       }
       return response;
@@ -87,7 +90,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
     if(!Reflect.set(window,"fetch",replacement)||window.fetch!==replacement)throw Error("Could not install native read-response gate");
     window.__fastSwitchGate={held,counts,stageResponses,get omittedSnapshots(){return omittedSnapshots;},restore:()=>{active=false;for(const entry of held)entry.release();window.fetch=original;delete window.__fastSwitchGate;}};
     await bridge.invoke("plugin:app|version");if(probes!==1){window.__fastSwitchGate.restore();throw Error("Native IPC did not pass through fetch gate");}return true;
-   },{commands,omitSnapshotFor});assert(await installGate());
+   },{commands,omitSnapshotFor,prFixtures});assert(await installGate());
    const repositorySwitch=performance.now();
    await page.locator(".explorer-sidebar .repository-select").filter({hasText:"switch-one"}).click();await page.locator(".topbar .repo-current > b").filter({hasText:"switch-one"}).waitFor();
    await page.waitForFunction(()=>window.__fastSwitchGate.held.length>0);
@@ -222,6 +225,46 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    assert.equal(await commitRow("Switch second base").count(), 0);
    assert.match(await page.getByLabel("History scope").locator("option:checked").textContent(), /Branch context.*feature\/mine/);
    assert.equal(git(one, "branch", "--show-current"), "main");
+
+   // Both repositories advertise the same PR number and branches. Distinguish
+   // their responses by content, then release the previous response last.
+   git(two, "remote", "add", "origin", "https://example.invalid/team/second.git");
+   await secondButton.click();
+   await page.getByRole("button", { name: "Refresh", exact: true }).click();
+   const fixtures = [one, two].map((root, index) => {
+    const project = "team/" + path.basename(root);
+    const webUrl = "https://example.invalid/" + project;
+    return {root, page: {forge: {kind: "github", host: "example.invalid", project, remote: "origin", webUrl, api: webUrl, accountLogin: "test", connectionRevision: "connection-" + index},
+      items: [{number: 7, title: "PR from " + path.basename(root), author: "My author", head: "feature/mine", base: "main", state: "open", draft: false, url: webUrl + "/pull/7", created: "2026-01-01T00:00:00Z", headSha: "a".repeat(40)}], nextCursor: null}};
+   });
+   assert(await installGate(["pr_page"], null, fixtures));
+   const pulls = page.locator(".main-head").getByRole("button", { name: "Pull requests", exact: true });
+   await pulls.click();
+   await page.waitForFunction(() => window.__fastSwitchGate.held.some(entry => entry.repo.endsWith("switch-two")));
+   await firstButton.click();
+   await page.waitForFunction(() => window.__fastSwitchGate.held.some(entry => entry.repo.endsWith("switch-one")));
+   await page.evaluate(() => {
+    for (const entry of window.__fastSwitchGate.held) if (entry.repo.endsWith("switch-one")) entry.release();
+   });
+   await prCenter.getByText("PR from switch-one", { exact: true }).waitFor();
+   await page.evaluate(() => window.__fastSwitchGate.restore());
+   assert.equal(await firstButton.getAttribute("aria-current"), "true");
+   assert.equal(await prCenter.getByText("PR from switch-two", { exact: true }).count(), 0);
+
+   const nested = path.join(one, "stale-nested");
+   fs.mkdirSync(nested);
+   git(nested, "init", "-qb", "main");
+   await invoke("plugin:event|emit", {event: "open-paths", payload: [nested]});
+   const nestedRow = repoRow("stale-nested");
+   await nestedRow.and(page.locator("[data-repository-state='open']")).waitFor();
+   await nestedRow.getByRole("button", { name: "Close stale-nested" }).click();
+   fs.renameSync(path.join(nested, ".git"), path.join(nested, "saved-git-metadata"));
+   assert.equal(fs.realpathSync(git(nested, "rev-parse", "--show-toplevel")), fs.realpathSync(one));
+   await nestedRow.locator(".repository-select").click();
+   await page.getByRole("alert").filter({hasText: "This saved folder is no longer a Git repository"}).waitFor();
+   assert.equal(await nestedRow.locator(".repository-select").getAttribute("aria-current"), "true");
+   assert.equal(await firstButton.getAttribute("aria-current"), "false");
+   assert.equal(await prCenter.count(), 0);
   }catch(error){if(out)await page?.screenshot({path:path.join(out,"fast-switch-failure.png")}).catch(()=>{});throw error;}
   finally{await page?.evaluate(()=>window.__fastSwitchGate?.restore()).catch(()=>{});if(app){for(const repo of [one,two])await invoke("unwatch_repo",{repo}).catch(()=>{});await app.close();}}
  });
