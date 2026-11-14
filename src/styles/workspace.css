@@ -472,10 +472,16 @@
 
 /* Docked and detached panels share the same controls and theme. */
 .topbar-empty { flex: 1 1 12px; min-width: 2px; align-self: stretch; }
-.explorer-sidebar { --explorer-folder-hover: var(--explorer-folder-hover-dark); min-width: min(175px, 100%); max-width: min(420px, 32vw); }
+.explorer-sidebar { --explorer-folder-hover: var(--explorer-folder-hover-dark); min-width: min(175px, 100%); max-width: min(420px, 32vw); container: explorer / inline-size; }
 :root[data-theme="light"] .explorer-sidebar { --explorer-folder-hover: var(--explorer-folder-hover-light); }
-.explorer-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.explorer-filters .repository-updates { display: inline-flex; align-items: center; gap: 4px; }
+.explorer-filters { display: flex; align-items: center; gap: 2px; padding-inline: 3px; }
+.explorer-filters .repository-updates { display: inline-flex; align-items: center; justify-content: center; min-width: 0; gap: 3px; padding-inline: 5px; white-space: nowrap; border: 0; border-radius: 5px; }
+.explorer-filters .repository-updates > svg { flex: none; }
+.explorer-filters .repository-updates > span { overflow: hidden; text-overflow: ellipsis; }
+@container explorer (max-width: 235px) {
+  .explorer-filters .repository-updates { flex: 1; }
+  .explorer-filters .repository-updates > span { display: none; }
+}
 .explorer-branch-status { display: flex; align-items: center; gap: 6px; padding: 4px 8px 7px; margin-inline-start: calc(var(--tree-depth) * var(--explorer-indent) + var(--explorer-toggle-size)); color: var(--text-faint); }
 .explorer-branch-current { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .explorer-tree { --explorer-indent: 12px; --explorer-toggle-size: 22px; }

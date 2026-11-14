@@ -195,6 +195,7 @@ interface LibraryStore extends LibraryData {
   addToGroup: (roots: string[], id: string) => void;
   moveRepositories: (repositories: RepositoryPlacement[], to: string | null, placement?: ExplorerPlacement) => void;
   removeFromGroups: (roots: string[], id?: string) => void;
+  removeRepositories: (roots: string[]) => void;
   collapse: (id: string) => void;
   selectGroup: (id: string | null) => void;
   removeGroups: (ids: string[]) => void;
@@ -331,6 +332,19 @@ export const useLibrary = create<LibraryStore>()(persist((set, get) => ({
   removeFromGroups: (roots, id) => set(s => {
     const keys = new Set(roots.map(repositoryKey));
     return { manuallyPlacedRoots: uniqueRoots([...s.manuallyPlacedRoots, ...roots]), groups: s.groups.map(g => id === undefined || g.id === id ? { ...g, roots: g.roots.filter(root => !keys.has(repositoryKey(root))) } : g) };
+  }),
+  removeRepositories: roots => set(s => {
+    const keys = new Set(roots.map(repositoryKey));
+    const positions = new Set(roots.map(explorerRepositoryKey));
+    const keepRoot = (root: string) => !keys.has(repositoryKey(root));
+    return {
+      knownRoots: s.knownRoots.filter(keepRoot),
+      favorites: s.favorites.filter(keepRoot),
+      manuallyPlacedRoots: s.manuallyPlacedRoots.filter(keepRoot),
+      groups: s.groups.map(group => ({ ...group, roots: group.roots.filter(keepRoot) })),
+      repositoryNames: Object.fromEntries(Object.entries(s.repositoryNames).filter(([key]) => !keys.has(key))),
+      explorerOrder: Object.fromEntries(Object.entries(s.explorerOrder).map(([id, order]) => [id, order.filter(key => !positions.has(key))])),
+    };
   }),
   collapse: id => set(s => ({ groups: s.groups.map(g => g.id === id ? { ...g, collapsed: !g.collapsed } : g) })),
   selectGroup: id => set(s => ({ activeGroupId: s.groups.some(group => group.id === id) ? id : null })),

@@ -6,6 +6,8 @@ Press **Ctrl+O** to open a local repository alongside those already open. You ca
 
 Revqora remembers repository paths in **Repository library**, available from the right side of the toolbar. Closing a repository leaves its library entry and working copy on disk. Click the saved entry in Explorer to reopen it.
 
+To remove the entry, right-click the repository and choose **Remove from Explorer**. This closes the repository and removes it from the library, groups and Favorites. The working copy stays on disk and can be opened again.
+
 By default, Revqora opens all saved repositories at startup. To restore only the previously open tabs, turn off **Open all saved repositories** in Settings.
 
 ## Browse and filter repositories
@@ -17,6 +19,8 @@ Use **Find in Explorer** to search by folder, repository or branch. **My branche
 Press **Ctrl+Alt+R** to show the optional **Repositories** panel as a flat list. Selecting a group in Explorer limits this list and the repository overview to that group and its descendants. A repository appears once in the flat list even if it belongs to several groups. Select **All repositories** in Explorer to clear the group filter.
 
 Star a group, repository or branch to find it under **Favorites**. A starred group shows its folders and repositories. A starred branch appears with its repository and parent folders, even if those items have no stars.
+
+Use **Incoming** to show repositories with commits to pull, or **Changes** to show repositories with staged, unstaged or untracked files. Both filters use the last known Git status and keep matching repositories in their folder tree.
 
 ## Import and organize groups
 

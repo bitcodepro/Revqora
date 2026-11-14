@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, CircleAlert, FolderGit2, FolderPlus, Pencil, X } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleAlert, FolderGit2, FolderPlus, Pencil, Unlink, X } from "lucide-react";
 import type { CSSProperties, MouseEvent, PointerEvent } from "react";
 import { repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
 import { contextMenu } from "../lib/ui";
@@ -35,9 +35,14 @@ export function RepositoryNavigationRow({ root, name, tab, current, selected, se
   { root: string; name: string; tab?: RepoTab; current: boolean; selected: boolean; selection: string[]; groupId?: string;
     createGroup: () => void; onClick: (event: MouseEvent<HTMLButtonElement>) => void;
     onPointerDown: (event: PointerEvent<HTMLButtonElement>) => void; onSelectionKeyDown?: (event: React.KeyboardEvent) => void; depth?: number;
-    explorer?: { id: string; focused: boolean; expanded: boolean; toggle: () => void } }) {
+    explorer?: { id: string; focused: boolean; expanded: boolean; toggle: () => void; remove: () => void } }) {
   const status = repositorySidebarStatus(tab);
-  const menu = () => repositoryMenu(root, name, selection, groupId, createGroup);
+  const menu = () => [
+    ...repositoryMenu(root, name, selection, groupId, createGroup),
+    ...(explorer ? [{ separator: true as const }, {
+      label: "Remove from Explorer", icon: <Unlink size={14}/>, shortcut: "repo-remove-explorer", onClick: explorer.remove,
+    }] : []),
+  ];
   return <div role={depth === undefined ? "listitem" : "treeitem"} aria-level={depth === undefined ? undefined : depth + 1}
     aria-label={depth === undefined ? undefined : name} aria-selected={depth === undefined ? undefined : selected}
     aria-expanded={explorer?.expanded} aria-busy={!!tab && (!!tab.opening || !tab.loaded)}
@@ -45,7 +50,10 @@ export function RepositoryNavigationRow({ root, name, tab, current, selected, se
     data-repository-state={tab ? tab.info ? "open" : tab.error ? "unavailable" : "opening" : "closed"}
     className={`repository-item ${depth === undefined ? "" : "explorer-repository"} ${current ? "active" : ""} ${explorer?.focused ? "explorer-focused" : ""} ${selected ? "batch-selected" : ""}`}
     style={depth === undefined ? undefined : { "--tree-depth": Math.min(depth, 12) } as CSSProperties}
-    onKeyDown={e => { renameRepositoryOnKey(e, root); if (matchesGroupShortcut(e)) runMenuShortcut(e, menu()); }}
+    onKeyDown={e => {
+      renameRepositoryOnKey(e, root);
+      if (matchesGroupShortcut(e) || (explorer && matchesShortcut(e, "repo-remove-explorer"))) runMenuShortcut(e, menu());
+    }}
     onContextMenu={e => contextMenu(e, menu())}>
     {explorer ? <button type="button" className="icon-btn sm library-tree-toggle"
       aria-label={(explorer.expanded ? "Collapse" : "Expand") + " branches in " + name}
