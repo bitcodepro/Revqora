@@ -14,7 +14,7 @@ import {
 import { api, newOpId } from "../lib/api";
 import {cachedGraphRows,rememberGraphRows,rememberGraphPosition} from "../lib/graphRowsCache";
 import * as A from "../lib/actions";
-import { CURRENT_HISTORY_BRANCH, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, useRepos, type RepoTab } from "../lib/store";
+import { CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
 import { repositoryKey } from "../lib/repositoryLibrary";
 import { actionFor, matchesShortcut, shortcutTitle } from "../lib/shortcuts";
@@ -382,7 +382,8 @@ export function GraphView({
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
     void loadGraph(root);
   };
-  const summary = tab.graph;
+  const { key: expectedScope } = graphHistoryScope(tab, primaryBranch, showIncoming);
+  const summary = tab.graphScope === expectedScope ? tab.graph : null;
   const branchContext = tab.branchContext && summary?.branchContext?.reference === tab.branchContext ? summary.branchContext : null;
   const graphKey = summary?.key;
   const viewedBranch = tab.branchContext ? branchContext?.reference : tab.viewedBranch;
@@ -414,9 +415,10 @@ export function GraphView({
   const hoveredCommit = useRef<{ index: number; version: number; x: number; y: number } | null>(null);
   const [keyboardCommit, setKeyboardCommit] = useState<{ index: number; version: number } | null>(null);
   const keyboardIndex = !compact && keyboardCommit?.version === tab.graphVersion ? keyboardCommit.index : null;
-  const [restoredRows]=useState(()=>cachedGraphRows(root,tab.graphVersion));
+  const [restoredRows]=useState(()=>summary ? cachedGraphRows(root,tab.graphVersion) : null);
   const cache = useRef(restoredRows?.rows??new Map<number, GraphRow>());
   const cacheKey = useRef(restoredRows ? summary?.key : undefined);
+  const cacheScope = useRef(restoredRows ? expectedScope : undefined);
   const loadingPages = useRef(new Set<number>());
   const [, force] = useState(0);
   const [scrollTop, setScrollTop] = useState(restoredRows?.top??0);
@@ -539,19 +541,20 @@ export function GraphView({
 
   const cacheVersion = useRef(restoredRows?.rows.size?tab.graphVersion:-1);
   const loadPage = useCallback(
-    async (page: number, version: number) => {
+    async (page: number, version: number, graphKey: string, scope: string) => {
       const key = version * 1_000_000 + page;
       if (loadingPages.current.has(key)) return;
       loadingPages.current.add(key);
       try {
-        const key=useRepos.getState().tabs[root]?.graph?.key;
-        const rows = await api.graphRows(root, page * PAGE, PAGE,key);
-        if (useRepos.getState().tabs[root]?.graphVersion !== version) return;
+        const rows = await api.graphRows(root, page * PAGE, PAGE, graphKey);
+        const latest = useRepos.getState().tabs[root];
+        if (latest?.graphVersion !== version || latest.graph?.key !== graphKey) return;
         // Keep showing the previous rows until the rebuilt graph delivers its first page.
         if (cacheVersion.current !== version) {
           cache.current = new Map();
           cacheVersion.current = version;
-          cacheKey.current = key;
+          cacheKey.current = graphKey;
+          cacheScope.current = scope;
           setHl(null);
         }
         for (const r of rows) cache.current.set(r.index, r);
@@ -592,18 +595,21 @@ export function GraphView({
   const last = Math.min(count - 1, Math.ceil((scrollTop + viewH) / rowH) + 8);
 
   useEffect(() => {
-    if (!summary || filtered) return;
+    if (!graphKey || filtered) return;
     const need = new Set<number>();
     const fresh = cacheVersion.current === tab.graphVersion;
     for (let i = first; i <= last; i++) {
       if (!fresh || !cache.current.has(i)) need.add(Math.floor(i / PAGE));
     }
-    need.forEach((p) => loadPage(p, tab.graphVersion));
+    need.forEach((p) => loadPage(p, tab.graphVersion, graphKey, expectedScope));
   });
 
-  const rowAt = useCallback((i: number) => filtered ? results[i]?.row : cache.current.get(i), [filtered, results]);
+  const rowAt = useCallback((i: number) => {
+    if (!graphKey) return undefined;
+    return filtered ? results[i]?.row : cacheScope.current === expectedScope ? cache.current.get(i) : undefined;
+  }, [graphKey, expectedScope, filtered, results]);
 
-  const moreHistory = hasMoreHistory(tab);
+  const moreHistory = !!summary && hasMoreHistory(tab);
   const expandedFrom = useRef<string | undefined>(undefined);
   // Extend the ordered prefix as the user approaches the end of the loaded rows.
   useEffect(() => {
@@ -678,7 +684,7 @@ export function GraphView({
         }
         return;
       }
-      if (!current?.graph || idx < 0 || idx >= current.graph.total) return;
+      if (!graphKey || current?.graph?.key !== graphKey || idx < 0 || idx >= current.graph.total) return;
       const key = current.graph.key;
       let r = cacheVersion.current === current.graphVersion ? cache.current.get(idx) : undefined;
       if (!r) {
