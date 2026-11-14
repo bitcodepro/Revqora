@@ -5,7 +5,7 @@ import { forgeRepositoryIdentity, prWriteAttemptKey, prWriteAttemptPending, setP
 import { canMerge, mergeDraftKey } from "./prMerge";
 import { reviewAttemptPending, reviewDraftKey, setReviewAttemptPending } from "./prReviews";
 import { cleanupCoversRules, workflowAgentPreview } from "./prWorkflow";
-import type { ForgeInfo, McpApprovalMode, PrDetail, PrMergePlan, PrReviewKind, StatusSummary, SwitchChoice, WorkflowStep } from "./types";
+import type { ForgeInfo, McpApprovalMode, PrDetail, PrMergePlan, PrReviewKind, StatusSummary, SwitchChoice, SyncResult, WorkflowStep } from "./types";
 
 export interface McpActionOptions {
   number?: number; target?: string; message?: string; branch?: string; base?: string;
@@ -48,8 +48,26 @@ interface AutomaticContext {
   mergePlan?: PrMergePlan; workflowCursor?: number; authorize: () => Promise<void>;
 }
 
+export function mcpSyncOutcome(result: Pick<SyncResult, "received" | "sent" | "warnings"> & { checkpoint: Pick<SyncResult["checkpoint"], "id"> },
+  receive: boolean, send: boolean): AutomaticOutcome {
+  const complete = (!receive || result.received) && (!send || result.sent) && result.warnings.length === 0;
+  return {
+    ...(complete ? {} : { phase: "partial" as const, errorCode: "sync_incomplete" }),
+    message: result.warnings.join(" · ") || (complete ? undefined : "Sync did not complete all requested directions. Inspect the repository and checkpoint."),
+    result: { received: result.received, sent: result.sent, checkpoint: result.checkpoint.id },
+  };
+}
+
+interface AutomaticOutcome {
+  message?: string;
+  result?: Record<string, unknown>;
+  runId?: string;
+  phase?: "partial";
+  errorCode?: string;
+}
+
 export async function runAutomaticMcpAction({ root, action, options: a, baseline, expectedState, mode, pullMode, pr, mergePlan, workflowCursor, authorize }: AutomaticContext):
-Promise<{ message?: string; result?: Record<string, unknown>; runId?: string }> {
+Promise<AutomaticOutcome> {
   switch (action) {
     case "stash":
       await authorize();
@@ -86,8 +104,7 @@ Promise<{ message?: string; result?: Record<string, unknown>; runId?: string }> 
       }
       await authorize();
       const result = await api.syncExecute(root, plan, receive, send);
-      return { message: result.warnings.join(" · ") || undefined,
-        result: { received: result.received, sent: result.sent, checkpoint: result.checkpoint.id } };
+      return mcpSyncOutcome(result, receive, send);
     }
     case "create_pr": {
       if (!a.title?.trim() || !a.branch?.trim() || !a.base?.trim()) throw missing("Supply title, branch (published source), and base (target) to create a pull request.");

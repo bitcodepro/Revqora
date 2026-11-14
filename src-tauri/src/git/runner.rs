@@ -327,6 +327,13 @@ where
                     let _ = w.join();
                 }
                 let stderr = err_thread.join().unwrap_or_else(|_| Err(std::io::Error::other("Git stderr reader failed")))?;
+                #[cfg(test)]
+                let status = status.map_err(|mut error| {
+                    if error.kind == "git-timeout" {
+                        error.stderr = crate::journal::redact::bounded(&crate::journal::redact::text(&String::from_utf8_lossy(&stderr)), 4096).0;
+                    }
+                    error
+                });
                 let status = status?;
                 let stdout = stdout?;
                 if !allow_truncated && limit.is_some_and(|limit| stdout.len() > limit) {

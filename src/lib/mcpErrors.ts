@@ -22,6 +22,7 @@ const gitErrorCodes = new Map([
   ["operation-in-progress", "operation_in_progress"],
   ["conflict", "unresolved_conflicts"],
   ["git-missing", "git_unavailable"],
+  ["git-timeout", "git_timeout"],
   ["auth", "provider_authentication_failed"],
   ["forge-network", "provider_unavailable"],
   ["forge-server", "provider_unavailable"],
