@@ -14,6 +14,7 @@
 | Bottom status bar | Current Git state, version information and available application updates. |
 
 Most top-bar Git actions apply to the current repository's checked-out branch. The History, Changes or Pull Requests tab follows you when you switch repositories.
+Explorer's filled repository row marks the active repository. The keyboard focus outline shows where arrow-key navigation is positioned.
 
 ## Three history layouts
 

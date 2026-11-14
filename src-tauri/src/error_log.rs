@@ -79,6 +79,16 @@ pub fn list() -> Result<Vec<Entry>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+pub fn clear() -> Result<()> {
+    clear_at(&crate::portable::runtime_dir()?)?;
+    Ok(())
+}
+
+fn clear_at(directory: &Path) -> rusqlite::Result<()> {
+    open(directory)?.execute("DELETE FROM errors", [])?;
+    Ok(())
+}
+
 pub fn maintain() {
     if let Ok(directory) = crate::portable::runtime_dir() {
         if directory.join("errors.sqlite3").is_file() {
@@ -90,6 +100,24 @@ pub fn maintain() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_errors_persists_and_keeps_recording_available() {
+        let dir = tempfile::tempdir().unwrap();
+        record_at(dir.path(), "before", "io", "old error").unwrap();
+        clear_at(dir.path()).unwrap();
+        let db = open(dir.path()).unwrap();
+        assert_eq!(db.query_row("SELECT count(*) FROM errors", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        record_at(dir.path(), "after", "io", "new error").unwrap();
+        let entries = db
+            .prepare("SELECT source FROM errors")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(entries, ["after"]);
+    }
 
     #[test]
     fn errors_persist_expire_and_hide_credentials() {

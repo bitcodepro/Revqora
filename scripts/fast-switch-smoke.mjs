@@ -30,7 +30,26 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    const commitRow=title=>page.locator(".graph-rows").getByText(title,{exact:true});
    await commitRow("Switch first base").click();await preview("base-body");await commitRow("Switch first feature").click();await preview("feature-body");
    await open(two);await page.locator(".explorer-sidebar .repository-select").filter({hasText:"switch-one"}).click();await graphReady();await preview("feature-body");await page.locator(".explorer-sidebar .repository-select").filter({hasText:"switch-two"}).click();await graphReady();
-   const installGate=(commands=["repo_info","status","refs_snapshot","layers_state","repo_extras","graph_rows","graph_find","commit_details","rev_diff","working_diff"], omitSnapshotFor=null)=>page.evaluate(async ({commands,omitSnapshotFor})=>{
+   // A repository switch through a different surface leaves the Explorer's
+   // navigation anchor in place. Only the active repository gets the fill.
+   const explorer = page.getByRole("complementary", { name: "Explorer", exact: true });
+   const repoRow = name => explorer.getByRole("treeitem", { name, exact: true });
+   const repositories = page.getByRole("button", { name: "Toggle repositories panel", exact: true });
+   const wasOpen = await repositories.getAttribute("aria-expanded") === "true";
+   if (!wasOpen) await repositories.click();
+   const selectRepository = name => page.locator(".repository-flat-list .repository-select").filter({ hasText: name }).click();
+   await selectRepository("switch-one");
+   await commitRow("Switch first feature").waitFor();
+   await repoRow("switch-one").locator(".repository-select[aria-current=true]").waitFor();
+   await explorer.getByRole("textbox", { name: "Find in Explorer" }).hover();
+   const fill = name => repoRow(name).evaluate(row => getComputedStyle(row).backgroundColor);
+   assert.notEqual(await fill("switch-one"), "rgba(0, 0, 0, 0)");
+   assert.equal(await fill("switch-two"), "rgba(0, 0, 0, 0)");
+   assert.equal(await commitRow("Switch second base").count(), 0);
+   await selectRepository("switch-two");
+   await commitRow("Switch second base").waitFor();
+   if (!wasOpen) await repositories.click();
+   const installGate=(commands=["repo_info","status","refs_snapshot","layers_state","repo_extras","graph_rows","graph_find","commit_details","rev_diff","working_diff"], omitSnapshotFor=null, prFixtures=null)=>page.evaluate(async ({commands,omitSnapshotFor,prFixtures})=>{
     const bridge=window.__TAURI_INTERNALS__,original=window.fetch,held=[],counts={},stageResponses=[];let active=true,omittedSnapshots=0;
     const urls=new Map(commands.map(command=>[bridge.convertFileSrc(command,"ipc"),command]));
     const probe=bridge.convertFileSrc("plugin:app|version","ipc");
@@ -45,7 +64,10 @@ export async function fastSwitchSmoke({exe,work,check,out}){
       if(command)counts[command]=(counts[command]??0)+1;
       if(url===bridge.convertFileSrc("graph_load","ipc"))counts.graph_load=(counts.graph_load??0)+1;
       const omitSnapshot=active&&url===diffUrl&&omitSnapshotFor&&repoKey(JSON.parse(init.body).repo)===repoKey(omitSnapshotFor);
-      const response=await Reflect.apply(original,window,[input,init]);
+      const payload=command ? JSON.parse(init.body) : null;
+      const prPage=command==="pr_page" && prFixtures?.find(entry=>repoKey(entry.root)===repoKey(payload.repo));
+      const response=prPage ? new Response(JSON.stringify(prPage.page),{headers:{"content-type":"application/json","Tauri-Response":"ok"}})
+        : await Reflect.apply(original,window,[input,init]);
       if(omitSnapshot&&response.ok){
         const diff=await response.json();
         if(Object.hasOwn(diff,"stageSnapshot"))omittedSnapshots++;
@@ -60,7 +82,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
         stageResponses.push({repo,path,mode,stageSnapshot,ok:response.ok});
       }
       if(command&&response.ok){
-        const {repo}=JSON.parse(init.body);
+        const repo=payload.repo ?? payload.path;
         return new Promise(resolve=>held.push({command,repo,release:()=>resolve(response)}));
       }
       return response;
@@ -68,7 +90,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
     if(!Reflect.set(window,"fetch",replacement)||window.fetch!==replacement)throw Error("Could not install native read-response gate");
     window.__fastSwitchGate={held,counts,stageResponses,get omittedSnapshots(){return omittedSnapshots;},restore:()=>{active=false;for(const entry of held)entry.release();window.fetch=original;delete window.__fastSwitchGate;}};
     await bridge.invoke("plugin:app|version");if(probes!==1){window.__fastSwitchGate.restore();throw Error("Native IPC did not pass through fetch gate");}return true;
-   },{commands,omitSnapshotFor});assert(await installGate());
+   },{commands,omitSnapshotFor,prFixtures});assert(await installGate());
    const repositorySwitch=performance.now();
    await page.locator(".explorer-sidebar .repository-select").filter({hasText:"switch-one"}).click();await page.locator(".topbar .repo-current > b").filter({hasText:"switch-one"}).waitFor();
    await page.waitForFunction(()=>window.__fastSwitchGate.held.length>0);
@@ -80,6 +102,20 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    console.log(`Two cached commit previews rendered with native reads held in ${Math.round(performance.now()-branchSwitch)} ms`);
    const counts=await page.evaluate(()=>({...window.__fastSwitchGate.counts}));assert.equal(counts.graph_load??0,0,"Activation rebuilt an unchanged graph");assert.equal(git(one,"branch","--show-current"),"main","Single branch clicks must not check out a branch");
    await page.evaluate(()=>window.__fastSwitchGate.restore());
+   // Hold the branch graph itself while the top bar and Explorer switch scope.
+   // A cached All branches graph must not appear under the new scope.
+   assert(await installGate(["graph_load", "graph_rows"]));
+   await branch("feature/mine").click();
+   await page.waitForFunction(() => window.__fastSwitchGate.held.some(entry => entry.command === "graph_load"));
+   assert.equal(await commitRow("Switch other feature").count(), 0, "Previous scope stayed visible during a branch switch");
+   await page.evaluate(() => {
+    const held = window.__fastSwitchGate.held.find(entry => entry.command === "graph_load");
+    held.release();
+   });
+   await page.waitForFunction(() => window.__fastSwitchGate.held.some(entry => entry.command === "graph_rows"));
+   assert.equal(await commitRow("Switch other feature").count(), 0, "Previous scope reappeared before the new graph rows arrived");
+   await page.evaluate(()=>window.__fastSwitchGate.restore());
+   await commitRow("Switch first feature").waitFor();
    const indexBytes=root=>fs.readFileSync(path.join(root,".git/index"));
    const workingFile=root=>path.join(root,"file.txt");
    const stageHunk=page.getByRole("button",{name:"Stage hunk",exact:true});
@@ -134,6 +170,101 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    assert(indexBytes(two).equals(secondIndex),"Opening the cached diff changed the other repository’s index");
    await page.evaluate(()=>window.__fastSwitchGate.restore());
    await stageHunk.waitFor();
+
+   // Repository-scoped PR Center must follow Explorer even if the source
+   // repository's remote and branch list have already been read.
+   git(one, "remote", "add", "origin", "https://example.invalid/team/first.git");
+   await repoRow("switch-one").locator(".repository-select").click();
+   await page.locator(".sidebar [data-branch-name='feature/mine']").waitFor();
+   await page.getByRole("button", { name: "Refresh", exact: true }).click();
+   await page.locator(".view-tab").getByText("Pull requests", { exact: true }).click();
+   const prCenter = page.getByRole("region", { name: "Pull Request Center", exact: true });
+   await prCenter.getByText("Configure an API connection first.", { exact: false }).waitFor();
+   await repoRow("switch-two").locator(".repository-select").click();
+   await prCenter.getByText("No remote configured", { exact: true }).waitFor();
+   assert.equal(await page.locator(".sidebar [data-branch-name='feature/mine']").count(), 0);
+   assert.equal(await page.getByLabel("Pull request scope").inputValue(), "repository");
+
+   // Navigate using only Explorer and History, including a late open from a branch.
+   if (await repositories.getAttribute("aria-expanded") === "true") await repositories.click();
+   await page.locator(".main-head").getByRole("button", { name: "History", exact: true }).click();
+   await commitRow("Switch second base").waitFor();
+   const first = repoRow("switch-one"), second = repoRow("switch-two");
+   const firstButton = first.locator(".repository-select"), secondButton = second.locator(".repository-select");
+   await first.getByRole("button", { name: "Expand branches in switch-one" }).click();
+   const feature = explorer.getByRole("treeitem", { name: "feature/mine", exact: true }).locator(".repository-select");
+   await feature.waitFor();
+   assert.equal(await secondButton.getAttribute("aria-current"), "true");
+   assert.equal(await commitRow("Switch second base").count(), 1);
+   const activeMark = row => row.evaluate(element => getComputedStyle(element, "::before").content);
+   assert.equal(await activeMark(first), "none");
+   assert.notEqual(await activeMark(second), "none");
+   await firstButton.click({ modifiers: ["Control"] });
+   assert.equal(await first.getAttribute("aria-selected"), "true");
+   assert.equal(await secondButton.getAttribute("aria-current"), "true");
+   await page.keyboard.press("Escape");
+   assert.equal(await first.getAttribute("aria-selected"), "false");
+   await first.getByRole("button", { name: "Close switch-one" }).click();
+   await feature.waitFor();
+   assert(await installGate(["repo_open"]));
+   await feature.click();
+   await page.waitForFunction(() => window.__fastSwitchGate.held.some(entry => entry.command === "repo_open"));
+   await first.locator(".repository-select[aria-current=true]").waitFor();
+   assert.equal(await commitRow("Switch second base").count(), 0, "Previous repository's graph remained visible while reopening");
+   await secondButton.click();
+   await commitRow("Switch second base").waitFor();
+   await page.evaluate(() => window.__fastSwitchGate.restore());
+   await first.and(page.locator("[data-repository-state='open']")).waitFor();
+   assert.equal(await secondButton.getAttribute("aria-current"), "true");
+   assert.equal(await feature.getAttribute("aria-current"), "false");
+   assert.equal(await commitRow("Switch first feature").count(), 0);
+   await feature.click();
+   await commitRow("Switch first feature").waitFor();
+   assert.equal(await firstButton.getAttribute("aria-current"), "true");
+   assert.equal(await feature.getAttribute("aria-current"), "true");
+   assert.equal(await commitRow("Switch second base").count(), 0);
+   assert.match(await page.getByLabel("History scope").locator("option:checked").textContent(), /Branch context.*feature\/mine/);
+   assert.equal(git(one, "branch", "--show-current"), "main");
+
+   // Both repositories advertise the same PR number and branches. Distinguish
+   // their responses by content, then release the previous response last.
+   git(two, "remote", "add", "origin", "https://example.invalid/team/second.git");
+   await secondButton.click();
+   await page.getByRole("button", { name: "Refresh", exact: true }).click();
+   const fixtures = [one, two].map((root, index) => {
+    const project = "team/" + path.basename(root);
+    const webUrl = "https://example.invalid/" + project;
+    return {root, page: {forge: {kind: "github", host: "example.invalid", project, remote: "origin", webUrl, api: webUrl, accountLogin: "test", connectionRevision: "connection-" + index},
+      items: [{number: 7, title: "PR from " + path.basename(root), author: "My author", head: "feature/mine", base: "main", state: "open", draft: false, url: webUrl + "/pull/7", created: "2026-01-01T00:00:00Z", headSha: "a".repeat(40)}], nextCursor: null}};
+   });
+   assert(await installGate(["pr_page"], null, fixtures));
+   const pulls = page.locator(".main-head").getByRole("button", { name: "Pull requests", exact: true });
+   await pulls.click();
+   await page.waitForFunction(() => window.__fastSwitchGate.held.some(entry => entry.repo.endsWith("switch-two")));
+   await firstButton.click();
+   await page.waitForFunction(() => window.__fastSwitchGate.held.some(entry => entry.repo.endsWith("switch-one")));
+   await page.evaluate(() => {
+    for (const entry of window.__fastSwitchGate.held) if (entry.repo.endsWith("switch-one")) entry.release();
+   });
+   await prCenter.getByText("PR from switch-one", { exact: true }).waitFor();
+   await page.evaluate(() => window.__fastSwitchGate.restore());
+   assert.equal(await firstButton.getAttribute("aria-current"), "true");
+   assert.equal(await prCenter.getByText("PR from switch-two", { exact: true }).count(), 0);
+
+   const nested = path.join(one, "stale-nested");
+   fs.mkdirSync(nested);
+   git(nested, "init", "-qb", "main");
+   await invoke("plugin:event|emit", {event: "open-paths", payload: [nested]});
+   const nestedRow = repoRow("stale-nested");
+   await nestedRow.and(page.locator("[data-repository-state='open']")).waitFor();
+   await nestedRow.getByRole("button", { name: "Close stale-nested" }).click();
+   fs.renameSync(path.join(nested, ".git"), path.join(nested, "saved-git-metadata"));
+   assert.equal(fs.realpathSync(git(nested, "rev-parse", "--show-toplevel")), fs.realpathSync(one));
+   await nestedRow.locator(".repository-select").click();
+   await page.getByRole("alert").filter({hasText: "This saved folder is no longer a Git repository"}).waitFor();
+   assert.equal(await nestedRow.locator(".repository-select").getAttribute("aria-current"), "true");
+   assert.equal(await firstButton.getAttribute("aria-current"), "false");
+   assert.equal(await prCenter.count(), 0);
   }catch(error){if(out)await page?.screenshot({path:path.join(out,"fast-switch-failure.png")}).catch(()=>{});throw error;}
   finally{await page?.evaluate(()=>window.__fastSwitchGate?.restore()).catch(()=>{});if(app){for(const repo of [one,two])await invoke("unwatch_repo",{repo}).catch(()=>{});await app.close();}}
  });

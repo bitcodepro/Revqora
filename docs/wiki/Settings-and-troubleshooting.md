@@ -108,4 +108,7 @@ and retains the last seven days, up to 2,000 entries. Repeated errors within a
 minute are counted together. Review local paths and repository names before
 sharing the copied text.
 
+Choose **Clear log** and confirm to remove the recorded application errors. Use
+**Refresh** to see any errors recorded since clearing the log.
+
 Open a [GitHub issue](https://github.com/bitcodepro/Revqora/issues) with the version from About, OS, action/steps, expected result and relevant error or screenshot. Remove tokens and private code from shared logs. State whether an operation actually changed Git/server state before the error.

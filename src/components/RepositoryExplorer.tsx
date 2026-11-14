@@ -169,7 +169,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     const opening = repos.open(root);
     const intent = useRepos.getState().selectionVersion;
     void opening.then(actual => {
-      if (actual && useRepos.getState().selectionVersion === intent) run(actual);
+      const current = useRepos.getState();
+      if (actual && current.active === actual && current.selectionVersion === intent) run(actual);
     }, error => toast.error(error, "Could not open repository"));
   };
 

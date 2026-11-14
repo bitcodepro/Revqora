@@ -407,6 +407,11 @@ async fn error_log_list() -> GitResult<Vec<error_log::Entry>> {
 }
 
 #[tauri::command]
+async fn error_log_clear() -> GitResult<()> {
+    blocking(|| error_log::clear().map_err(|e| GitError::new(format!("Could not clear the error log: {e}")))).await
+}
+
+#[tauri::command]
 async fn error_log_record(source: String, code: String, message: String) -> GitResult<()> {
     blocking(move || error_log::record(&source, &code, &message).map_err(|e| GitError::new(format!("Could not write the error log: {e}")))).await
 }
@@ -2510,6 +2515,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             error_log_list,
+            error_log_clear,
             error_log_record,
             mcp::mcp_info,
             mcp::mcp_enable,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const saved = vi.hoisted(() => ({ set: vi.fn(), addRecent: vi.fn(), remember: vi.fn(), hideIncomingByRepo: {} }));
+const saved = vi.hoisted(() => ({ set: vi.fn(), addRecent: vi.fn(), remember: vi.fn(), hideIncomingByRepo: {}, knownRoots: [] as string[] }));
 vi.mock("./api", () => ({ api: Object.fromEntries(["repoOpen", "repoInfo", "status", "repositorySidebarStatus", "refs", "repoExtras", "layersState", "squashMerged", "graphLoad", "watchRepo", "unwatchRepo"].map(name => [name, vi.fn()])), errorMessage: String }));
 vi.mock("./settings", () => ({ useSettings: { getState: () => saved } }));
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => saved } }));
@@ -14,6 +14,7 @@ const info = (root: string) => ({ root, name: root.split("/").at(-1), head: { br
 const status = { branch: "main", oid: "a".repeat(40), files: [], stateToken: "fresh", stateVersion: 1 } as unknown as StatusSummary;
 beforeEach(() => {
   vi.resetAllMocks();
+  saved.knownRoots = [];
   useRepos.setState({ order: [], tabs: {}, active: null });
   vi.mocked(api.repoOpen).mockImplementation(async root => info(root));
   vi.mocked(api.repoInfo).mockImplementation(async root => info(root));
@@ -102,6 +103,21 @@ describe("repository session restoration", () => {
     expect(await first).toBeNull();
     expect(useRepos.getState().tabs["/closed"].info?.name).toBe("closed");
     expect(api.watchRepo).toHaveBeenCalledTimes(calls);
+  });
+
+  it("keeps a saved nested repository unavailable when Git finds only its parent", async () => {
+    const parent = "/parent";
+    const nested = "/parent/nested";
+    await useRepos.getState().open(parent);
+    saved.knownRoots = [parent, nested];
+    saved.remember.mockClear();
+    vi.mocked(api.repoOpen).mockResolvedValueOnce(info(parent));
+
+    await expect(useRepos.getState().open(nested)).rejects.toThrow("This saved folder is no longer a Git repository");
+    expect(useRepos.getState().active).toBe(nested);
+    expect(useRepos.getState().tabs[nested]).toMatchObject({ info: null, graph: null, status: null, refs: null });
+    expect(saved.remember).not.toHaveBeenCalled();
+    expect(await useRepos.getState().open(nested)).toBe(nested);
   });
 
   it("loads an inactive history only on selection and keeps watcher refreshes lightweight", async () => {
