@@ -17,6 +17,7 @@ export const PANEL_NAMES = {
 
 const unassignedCommands: [id: string, label: string, description: string][] = [
   ["operation-log", "Operation log", "Inspect the repository or application-wide operation history."],
+  ["error-log", "Error log", "Inspect and copy recent application errors."],
   ["repository-library", "Repository library", "Manage saved repositories and groups."],
   ["repository-actions", "Toggle repository actions", "Show or collapse the action block below the repository list."],
   ["import-folder", "Import repositories from a folder", "Scan a folder for Git repositories and recreate its structure as groups."],

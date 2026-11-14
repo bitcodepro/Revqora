@@ -183,13 +183,54 @@ pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl Fn
     })
 }
 
+fn fingerprint_io(action: &str, path: &Path, error: std::io::Error) -> GitError {
+    let mut result = GitError::from(error).kind("status-file-io");
+    result.message = format!("{action} {} ({})", path.display(), result.message);
+    result
+}
+
+fn open_fingerprint_file(path: &Path) -> std::io::Result<fs::File> {
+    #[cfg(windows)]
+    for _ in 0..3 {
+        match fs::File::open(path) {
+            Err(error) if matches!(error.raw_os_error(), Some(5 | 32 | 33)) => std::thread::sleep(std::time::Duration::from_millis(40)),
+            result => return result,
+        }
+    }
+    fs::File::open(path)
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn status_fingerprint_retries_a_temporary_windows_file_lock() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("locked.txt");
+    fs::write(&path, "content").unwrap();
+    let lock = || fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+    let handle = lock();
+    let error = hash_file(&mut Sha256::new(), &path).unwrap_err();
+    assert_eq!(error.kind, "status-file-io");
+    assert!(error.message.contains("locked.txt"));
+    assert!(error.details.iter().any(|detail| matches!(detail.as_str(), "os_error=5" | "os_error=32" | "os_error=33")));
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            drop(handle);
+        });
+        hash_file(&mut Sha256::new(), &path).unwrap();
+    });
+}
+
 fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<[u8; 32]> {
     // One content read supplies both the repository guard and the path's display token.
     let mut content = Sha256::new();
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
             content.update(b"symlink");
-            let target = fs::read_link(path)?;
+            let target = fs::read_link(path).map_err(|error| fingerprint_io("Read link", path, error))?;
             let bytes = target.as_os_str().as_encoded_bytes();
             content.update((bytes.len() as u64).to_le_bytes());
             content.update(bytes);
@@ -202,10 +243,10 @@ fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<[u8; 32]> {
                 use std::os::unix::fs::PermissionsExt;
                 content.update((meta.permissions().mode() & 0o111).to_le_bytes());
             }
-            let mut file = fs::File::open(path)?;
+            let mut file = open_fingerprint_file(path).map_err(|error| fingerprint_io("Open file for status", path, error))?;
             let mut buf = [0; 64 * 1024];
             loop {
-                let len = file.read(&mut buf)?;
+                let len = file.read(&mut buf).map_err(|error| fingerprint_io("Read file for status", path, error))?;
                 if len == 0 {
                     break;
                 }
@@ -218,7 +259,7 @@ fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<[u8; 32]> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             content.update(b"missing");
         }
-        Err(e) => return Err(e.into()),
+        Err(error) => return Err(fingerprint_io("Inspect file for status", path, error)),
     }
     let digest = content.finalize().into();
     hash.update(digest);

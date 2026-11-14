@@ -216,6 +216,7 @@ async fn sync_execute(
 // Revqora: Tauri command surface over the git backend.
 
 pub mod askpass;
+pub mod error_log;
 pub mod git;
 pub mod journal;
 pub mod mcp;
@@ -398,6 +399,16 @@ fn log_error(message: String) -> GitError {
 #[tauri::command]
 async fn operation_log_health() -> GitResult<journal::Health> {
     blocking(|| Ok(journal::health())).await
+}
+
+#[tauri::command]
+async fn error_log_list() -> GitResult<Vec<error_log::Entry>> {
+    blocking(|| error_log::list().map_err(|e| GitError::new(format!("Could not read the error log: {e}")))).await
+}
+
+#[tauri::command]
+async fn error_log_record(source: String, code: String, message: String) -> GitResult<()> {
+    blocking(move || error_log::record(&source, &code, &message).map_err(|e| GitError::new(format!("Could not write the error log: {e}")))).await
 }
 
 #[tauri::command]
@@ -2470,6 +2481,10 @@ pub fn run() {
             if let Some(root) = update::launch().map(|l| l.root.clone()) {
                 std::thread::spawn(move || update::cleanup(&root));
             }
+            std::thread::spawn(|| loop {
+                error_log::maintain();
+                std::thread::sleep(std::time::Duration::from_secs(3600));
+            });
             let handle = app.handle().clone();
             let warning_handle = handle.clone();
             let exe = std::env::current_exe()?;
@@ -2483,12 +2498,15 @@ pub fn run() {
                     let _ = warning_handle.emit("git-credential-storage-warning", ());
                 }),
             ) {
+                let _ = error_log::record("startup.askpass", "io", &e.to_string());
                 eprintln!("askpass server failed to start: {e}");
             }
             portable::automation_startup("setup-ready");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            error_log_list,
+            error_log_record,
             mcp::mcp_info,
             mcp::mcp_enable,
             mcp::mcp_restore,

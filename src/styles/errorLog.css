@@ -1,0 +1,33 @@
+.error-log {
+  width: min(720px, 75vw);
+  max-height: 58vh;
+  overflow: auto;
+}
+.error-log article {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 8px 10px 0;
+}
+.error-log article header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+.error-log article header button { margin-left: auto; }
+.error-log time { color: var(--text-dim); }
+.statusbar button.statusbar-error {
+  border: 0;
+  background: transparent;
+  border-radius: 4px;
+  color: var(--red);
+  font: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.statusbar button.statusbar-error:hover { background: var(--bg-hover); }
+.error-log pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

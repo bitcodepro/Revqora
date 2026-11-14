@@ -5,6 +5,7 @@ import type { RebaseItem, StudioReview, StudioReport, StudioComparison, Validati
 import type { IgnoredFiles, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
+import { recordError } from "./errorLog";
 import type { DeletionPlan, DeletionProof, DeletionResult, RemoteBranchTarget, RemoteDeletionReview, OperationLogDetail, OperationLogFilter, OperationLogPage, OperationLogHealth, RecoveryCatalog, RecoveryCheckpoint, RecoverySummary } from "./types";
 import type {
   Check,
@@ -66,7 +67,16 @@ export function errorMessage(e: unknown): string {
   return String(e);
 }
 
-const call = <T>(cmd: string, args?: Record<string, unknown>) => repositoryCall<T>(invoke, cmd, args);
+const invokeWithErrorLog = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    recordError(command, error, typeof args?.repo === "string" ? args.repo : undefined);
+    throw error;
+  }
+};
+
+const call = <T>(cmd: string, args?: Record<string, unknown>) => repositoryCall<T>(invokeWithErrorLog, cmd, args);
 
 let opCounter = 0;
 export const newOpId = () => `op-${Date.now()}-${++opCounter}`;

@@ -541,6 +541,10 @@ async function refreshOnce(root: string, parts: Parts) {
     patch.error = null;
   } catch (e) {
     patch.error = errorMessage(e);
+    if (current() && !sidebarOnly) {
+      const status = useRepos.getState().tabs[root]?.status;
+      if (status && status === before.status) patch.status = { ...status, stateToken: null };
+    }
   }
   if (!current()) return;
   useRepos.getState().patch(root, { ...patch, loaded: true });

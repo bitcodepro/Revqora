@@ -40,3 +40,5 @@ Before opening or updating a PR:
 - [ ] MCP read results and errors distinguish completeness and failures. Confirmable actions respect the configured approval mode, report their final outcome and preserve repository state on cancellation.
 - [ ] Update packages verify the checksum, release version and platform before replacing files. On Windows the helper waits for the exact desktop process to exit. A failed installation identifies the operation and path and rolls back changed files. If rollback fails, preserve its backup. Verify that the portable data directory and repositories survive.
 - [ ] Update card actions wrap inside the card when space is limited. Release notes wrap long links without hiding the end of the text.
+- [ ] Error log lists recent application errors independently of Operation log. It copies one entry or all entries, preserves diagnostic codes, redacts credentials before storage and prunes entries older than seven days.
+- [ ] On Windows, a briefly locked working file can be read after the lock is released. A persistent read failure reports its file and OS error and does not supply a mutation precondition.

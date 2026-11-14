@@ -6,7 +6,9 @@ import "./styles/theme.css";
 import "./styles/app.css";
 import App from "./App";
 import { restoreRepositorySession } from "./lib/restoreRepositorySession";
+import { installErrorReporting } from "./lib/errorLog";
 
+installErrorReporting();
 void restoreRepositorySession();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

@@ -19,6 +19,11 @@ fn main() {
     }
     revqora_lib::portable::automation_startup("process-enter");
     revqora_lib::update::launch();
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = revqora_lib::error_log::record("desktop", "panic", &info.to_string());
+        previous_hook(info);
+    }));
     revqora_lib::portable::automation_startup("portable-environment-start");
     revqora_lib::portable::configure_environment().expect("Cannot write Revqora data beside the executable");
     revqora_lib::portable::automation_startup("portable-environment-ready");

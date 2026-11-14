@@ -27,9 +27,21 @@ const MAX_ENTRIES: usize = 10_000;
 struct UpdateLease(fs::File);
 impl UpdateLease {
     fn acquire(root: &Path) -> GitResult<Self> {
-        let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(root.join(".revqora-update.lock"))?;
-        fs2::FileExt::try_lock_exclusive(&file)
-            .map_err(|_| GitError::new("Another update or update cleanup is running. Wait for it to finish.").kind("update-busy"))?;
+        let path = root.join(".revqora-update.lock");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|error| update_io("Open update lock", &path, error))?;
+        fs2::FileExt::try_lock_exclusive(&file).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock || error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+                GitError::new("Another update or update cleanup is running. Wait for it to finish.").kind("update-busy")
+            } else {
+                update_io("Acquire update lock", &path, error)
+            }
+        })?;
         Ok(Self(file))
     }
 }
@@ -301,7 +313,7 @@ pub fn install(info: &UpdateInfo, mut progress: impl FnMut(Progress)) -> GitResu
     let (mut downloaded, mut reported) = (0u64, 0u64);
     progress(Progress { downloaded: 0, total });
     loop {
-        let n = reader.read(&mut buf)?;
+        let n = reader.read(&mut buf).map_err(|error| update_io("Read update download", &archive, error))?;
         if n == 0 {
             break;
         }
@@ -328,7 +340,9 @@ pub fn install(info: &UpdateInfo, mut progress: impl FnMut(Progress)) -> GitResu
 }
 
 fn update_io(step: &str, path: &Path, error: std::io::Error) -> GitError {
-    GitError::new(format!("{step}: {} ({error})", path.display())).kind("update-install")
+    let mut result = GitError::from(error).kind("update-install");
+    result.message = format!("{step}: {} ({})", path.display(), result.message);
+    result
 }
 
 fn archive_digest(path: &Path) -> GitResult<String> {
@@ -571,18 +585,29 @@ fn swap_entries(
 
 /// Removes what a previous update left behind (the old exe may still be locked for a moment).
 pub fn cleanup(root: &Path) {
-    let Ok(_lease) = UpdateLease::acquire(root) else {
-        return;
+    let _lease = match UpdateLease::acquire(root) {
+        Ok(lease) => lease,
+        Err(error) => {
+            if error.kind != "update-busy" {
+                let _ = crate::error_log::record("update.cleanup", &error.kind, &error.message);
+            }
+            return;
+        }
     };
     let staging = root.join(STAGING);
     if staging.join("rollback-incomplete").exists() || staging.join(PENDING).exists() {
         return;
     }
-    for _ in 0..20 {
-        if !staging.exists() || fs::remove_dir_all(&staging).is_ok() {
-            return;
+    for attempt in 0..20 {
+        match fs::remove_dir_all(&staging) {
+            Ok(()) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) if attempt == 19 => {
+                let error = update_io("Clean up update files", &staging, error);
+                let _ = crate::error_log::record("update.cleanup", &error.kind, &error.message);
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(500)),
         }
-        std::thread::sleep(Duration::from_millis(500));
     }
 }
 
@@ -634,7 +659,7 @@ pub fn relaunch() -> GitResult<()> {
     }
     let mut c = std::process::Command::new(&exe);
     c.args(std::env::args_os().skip(1)).env("REVQORA_RESTART_AFTER", std::process::id().to_string());
-    c.spawn()?;
+    c.spawn().map_err(|error| update_io("Start the updated app", &exe, error))?;
     Ok(())
 }
 
@@ -657,6 +682,19 @@ pub use windows_install::run_worker;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_lock_io_failure_identifies_the_failed_step_and_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join(".revqora-update.lock")).unwrap();
+        let error = UpdateLease::acquire(root).err().unwrap();
+        assert_eq!(error.kind, "update-install");
+        assert!(error.message.contains("Open update lock"));
+        assert!(error.message.contains(".revqora-update.lock"));
+        assert!(error.details.iter().any(|detail| detail.starts_with("os_error=")));
+    }
+
     #[test]
     fn download_url_is_validated_after_url_path_normalization() {
         assert!(trusted_url("https://github.com/bitcodepro/Revqora/releases/download/v1/app.zip"));

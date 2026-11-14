@@ -140,6 +140,14 @@ describe("background repository observation", () => {
     expect(api.repositoryChangesStatus).not.toHaveBeenCalled();
     expect(api.status).toHaveBeenCalledTimes(2);
   });
+  it("shows a failed status read without reusing its previous mutation guard", async () => {
+    vi.mocked(api.status).mockRejectedValueOnce(new Error("Open file for status locked.txt (os error 32)"));
+    await useRepos.getState().refresh(root, { background: true, status: true });
+    const tab = useRepos.getState().tabs[root];
+    expect(tab.error).toContain("locked.txt");
+    expect(tab.status?.stateToken).toBeNull();
+    expect(tab.status?.files[0].path).toBe("selected.txt");
+  });
   it("keeps an explicit refresh effective even if the file token did not change", async () => {
     const generation = previewGeneration(root);
     await useRepos.getState().refresh(root, { status: true, layers: true });

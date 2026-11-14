@@ -76,6 +76,7 @@ import { canCheckUpdates, useUpdate } from "../lib/update";
 import { confirmDialog, reflogDialog, settingsDialog } from "./dialogs";
 import { applyPatchFile, repoToolsDialog } from "./RepoTools";
 import { OperationLogButton, operationLogDialog } from "./OperationLog";
+import { ErrorLogButton, errorLogDialog } from "./ErrorLog";
 import { recoveryDialog } from "./RecoveryCenter";
 import {gitConnectionDialog} from "./GitConnections";
 
@@ -164,6 +165,7 @@ export function TopBar() {
     { label: "Panels in separate windows", children: panelWindowMenu },
     { label: "Command palette", icon: <Command size={15}/>, onClick: () => useUi.getState().setPalette(true) },
     { label: "Operation log", hint: prettyCombo(bindingFor("operation-log", shortcuts)), onClick: () => void operationLogDialog(root ?? null) },
+    { label: "Error log", hint: prettyCombo(bindingFor("error-log", shortcuts)), onClick: () => void errorLogDialog() },
     { label: dark ? "Light theme" : "Dark theme", icon: dark ? <Sun size={15}/> : <Moon size={15}/>, onClick: () => setS({ theme: dark ? "light" : "dark" }) },
     { label: "Accounts and API connections…", icon: <UserRound size={15}/>, onClick: () => void forgeAccountsDialog(root ?? null) },
     { label: "Check Updates", icon: <Download size={15}/>, disabled: !canCheckUpdates(updatePhase), onClick: () => void checkUpdates() },
@@ -237,6 +239,7 @@ export function TopBar() {
         <Command size={16} />
       </button>
       <OperationLogButton root={root} />
+      <ErrorLogButton />
       <button className="icon-btn" title={dark ? "Light theme" : "Dark theme"} data-shortcut="theme" onClick={() => setS({ theme: dark ? "light" : "dark" })}>
         {dark ? <Sun size={16} /> : <Moon size={16} />}
       </button>
@@ -494,9 +497,10 @@ export function StatusBar() {
         </button>}
         <div className="spacer" />
         {tab?.error && (
-          <span className="item" style={{ color: "var(--red)" }} title={tab.error}>
+          <button type="button" className="item statusbar-error" title={tab.error} aria-label="Open error log"
+            onClick={() => void errorLogDialog()}>
             {tab.error.slice(0, 80)}
-          </span>
+          </button>
         )}
       </div>
       <UpdateChip />
@@ -620,6 +624,7 @@ function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
     { id: "settings", label: "Settings", group: "App", icon: <Settings2 size={15} />, run: () => settingsDialog(tab?.root ?? null) },
     { id: "about", label: "About Revqora", group: "App", icon: <Info size={15} />, run: () => aboutDialog() },
     { id: "operation-log", label: "Operation log…", group: "App", icon: <History size={15} />, run: () => operationLogDialog(tab?.root ?? null) },
+    { id: "error-log", label: "Error log…", group: "App", icon: <Bug size={15} />, run: () => errorLogDialog() },
     { id: "repository-library", label: "Repository library…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => repositoryLibraryDialog() },
     { id: "group-create", label: "Create group…", group: "Repository", icon: <FolderTree size={15} />, run: () => groupEditorDialog() },
     { id: "check-updates", label: "Check Updates", group: "App", icon: <Download size={15} />, run: checkUpdates },
