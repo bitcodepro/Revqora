@@ -99,6 +99,7 @@ fn parse_track(t: &str) -> (u32, u32, bool) {
 }
 
 pub fn branch_names(repo: &Path) -> GitResult<Vec<String>> {
+    super::repo::require_directory(repo)?;
     let raw = runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(symref)", "refs/heads", "refs/remotes"])?;
     Ok(raw
         .lines()
@@ -109,7 +110,18 @@ pub fn branch_names(repo: &Path) -> GitResult<Vec<String>> {
         .collect())
 }
 
+#[test]
+fn refs_classify_an_unavailable_repository_folder() {
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("removed");
+    assert_eq!(branch_names(&path).unwrap_err().kind, "repository-folder-unavailable");
+    std::fs::write(&path, "not a folder").unwrap();
+    assert_eq!(snapshot(&path).err().unwrap().kind, "repository-folder-unavailable");
+    assert_eq!(super::repo::discover(&path).unwrap_err().kind, "repository-folder-unavailable");
+}
+
 pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
+    super::repo::require_directory(repo)?;
     let remotes = remotes(repo)?;
     let raw = runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"])?;
     let mut local = Vec::new();

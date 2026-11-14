@@ -178,7 +178,7 @@ export const api = {
   remoteRenamePlan: (repo: string, trackingRef: string, newName: string) => call<RemoteRenamePlan>("remote_rename_plan", { repo, trackingRef, newName }),
   remoteBranchRename: (repo: string, plan: RemoteRenamePlan) => call<RemoteRenameResult>("remote_branch_rename", { repo, plan, expectedState: plan.stateToken }),
   statusWithOperation: (repo: string) => call<StatusSummary & { operation: string }>("repository_status_with_operation", { repo }),
-  status: (repo: string, requireUnsealed?: boolean) => call<StatusSummary>("status", { repo, requireUnsealed }),
+  status: (repo: string, requireUnsealed?: boolean, display?: boolean) => call<StatusSummary>("status", { repo, requireUnsealed, display }),
   identityGet: (repo: string) => call<Identity>("identity_get", { repo }),
   identitySet: (repo: string, name: string, email: string, global: boolean) => call<void>("identity_set", { repo, name, email, global }),
 

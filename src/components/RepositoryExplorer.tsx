@@ -4,7 +4,6 @@ import { defaultGroupRoots, explorerRepositoryKey, orderExplorerSiblings, reposi
 import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
 import { findExplorerDrop, useLibraryPointerDrag } from "../lib/libraryDrag";
 import { recordExplorerMove, useRepositoryDrag } from "../lib/explorerMoves";
-import { errorMessage } from "../lib/api";
 import { loadBranchPreferences } from "../lib/branchManager";
 import { useExplorerBranchReads } from "../lib/explorerBranchReads";
 import { selectExplorerBranches } from "../lib/explorerBranches";
@@ -171,7 +170,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     const intent = useRepos.getState().selectionVersion;
     void opening.then(actual => {
       if (actual && useRepos.getState().selectionVersion === intent) run(actual);
-    }, error => toast.error("Could not open repository", errorMessage(error)));
+    }, error => toast.error(error, "Could not open repository"));
   };
 
   const visibleEntries = rows.map(row => row.entry);
@@ -329,6 +328,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
               const repos = useRepos.getState();
               repos.order.filter(root => keys.has(repositoryKey(root))).forEach(repos.close);
               library().removeRepositories(roots);
+              const settings = useSettings.getState();
+              settings.set({ recent: settings.recent.filter(root => !keys.has(repositoryKey(root))) });
               clearSelection();
               setFocusedEntry(null);
             } }} current={entry.root === active && !overview} selected={selection.includes(entry.id)} groupId={entry.parentId ?? undefined}

@@ -233,6 +233,10 @@ pub fn apply(root: &Path, command: &mut Command, selected: Option<&Options>, arg
             .env("GCM_GITHUB_AUTHMODES", "oauth")
             .env("GCM_GITLAB_AUTHMODES", "browser")
             .env("GCM_BITBUCKET_AUTHMODES", "oauth");
+    } else if network && options.https == Https::Auto {
+        // Git validates access on the transport request. GCM's profile probe
+        // can reject an otherwise valid Bitbucket repository token.
+        command.args(["-c", "credential.https://bitbucket.org.bitbucketValidateStoredCredentials=false"]);
     }
     if options.https == Https::Token {
         command.args(["-c", "credential.helper="]);
@@ -413,6 +417,16 @@ mod tests {
         assert_eq!(env(&command, "SSH_ASKPASS_REQUIRE").as_deref(), Some("never"));
         runner::run(root.path(), ["config", "--add", "credential.helper", ""]).unwrap();
         assert!(!snapshot(root.path()).unwrap().credential_manager_configured);
+    }
+    #[test]
+    fn automatic_fetch_uses_the_saved_bitbucket_credential_without_a_profile_probe() {
+        let root = root();
+        let mut command = runner::command(root.path());
+        apply(root.path(), &mut command, Some(&Options::default()), &["fetch".into()]).unwrap();
+        assert!(command.get_args().any(|arg| arg == "credential.https://bitbucket.org.bitbucketValidateStoredCredentials=false"));
+        let mut command = runner::command(root.path());
+        apply(root.path(), &mut command, Some(&Options::default()), &["status".into()]).unwrap();
+        assert!(!command.get_args().any(|arg| arg == "credential.https://bitbucket.org.bitbucketValidateStoredCredentials=false"));
     }
     #[test]
     fn corrupt_auth_preferences_fail_network_operations_without_disabling_local_git_or_overwriting_settings() {

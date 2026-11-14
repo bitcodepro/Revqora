@@ -473,7 +473,8 @@ async function refreshOnce(root: string, parts: Parts) {
     && (!before.info?.state || before.info.state.kind === "none");
   const infoP = parts.info || (parts.status && !parts.summary && !changesDisplay) ? api.repoInfo(root) : Promise.resolve(null);
   const statusP = parts.status
-    ? sidebarOnly ? api.repositorySidebarStatus(root) : changesDisplay ? api.repositoryChangesStatus(root, before.changeSel?.path ?? null) : api.status(root)
+    ? sidebarOnly ? api.repositorySidebarStatus(root) : changesDisplay ? api.repositoryChangesStatus(root, before.changeSel?.path ?? null)
+      : api.status(root, undefined, !parts.guard)
     : Promise.resolve(null);
   const refsP = parts.refs && (!parts.summary || trackedBranchRefs.has(repositoryKey(root))) ? api.refs(root).then(refs => {
     if (before.refsError && current()) useRepos.getState().patch(root, { refsError: undefined });

@@ -5,6 +5,13 @@ import { readErrorLog, recordError } from "./errorLog";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => vi.unstubAllGlobals());
 
+it("keeps unavailable saved folders out of the application error log", () => {
+  vi.stubGlobal("window", {});
+  vi.mocked(invoke).mockClear();
+  recordError("refs_snapshot", { kind: "repository-folder-unavailable", message: "Repository folder is unavailable" }, "missing-repo");
+  expect(invoke).not.toHaveBeenCalled();
+});
+
 it("records a status failure once and waits for it before opening the log", async () => {
   vi.stubGlobal("window", {});
   let finish!: () => void;

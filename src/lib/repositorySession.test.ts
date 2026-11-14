@@ -133,7 +133,7 @@ describe("repository session restoration", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       expect(api.watchRepo).toHaveBeenNthCalledWith(3, root, true);
       expect(api.refs).toHaveBeenCalledWith(root);
-      expect(api.status).toHaveBeenCalledWith(root);
+      expect(api.status).toHaveBeenCalledWith(root, undefined, true);
 
       retryRepositoryWatch(root);
       useRepos.getState().close(root);
