@@ -480,6 +480,8 @@ fn stalled_background_fetch_times_out_and_releases_the_repository() {
         while start.elapsed() < Duration::from_secs(8) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    // Winsock inherits the listener's nonblocking mode on accept.
+                    stream.set_nonblocking(false).unwrap();
                     stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                     assert!(stream.read(&mut [0; 1024]).unwrap() > 0);
                     request.send(()).unwrap();
