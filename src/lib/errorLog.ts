@@ -36,6 +36,11 @@ export async function readErrorLog() {
   return invoke<ErrorLogEntry[]>("error_log_list");
 }
 
+export async function clearErrorLog() {
+  await Promise.allSettled(writes);
+  await invoke("error_log_clear");
+}
+
 export function installErrorReporting() {
   window.addEventListener("error", event => {
     if (event instanceof ErrorEvent) recordError("JavaScript", event.error ?? event.message);
