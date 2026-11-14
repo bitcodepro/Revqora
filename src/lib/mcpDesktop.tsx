@@ -524,6 +524,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
               if (!await authorize()) throw new McpToolError("session_expired", cancellationMessages.session_expired);
             } });
           Object.assign(status, outcome);
+          if (outcome.phase === "partial") return;
           break;
         }
         status.phase = "handed_off";
@@ -675,7 +676,9 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
         if (!file) throw new McpToolError(a.diffVersion ? "diff_changed" : "file_not_found", "Choose a changed path from commit_details and start at offset 0.");
         return diffPage(await api.revDiff(root, diffBase, oid, path, { disableTextconv: true, renameFrom: file.oldPath ?? undefined }), a);
       }
-      const file = (await api.status(root)).files.find(file => file.path === path);
+      // Path eligibility needs porcelain status. The diff or index stages
+      // below supply their own version for continuation from a previous read.
+      const file = (await api.repositorySidebarStatus(root)).files.find(file => file.path === path);
       if (!file || path.endsWith("/") || a.side === "staged" && file.untracked) throw new McpToolError(a.diffVersion ? "diff_changed" : "file_not_found", "Choose a changed file from repository_status and start at offset 0.");
       if (file.conflict) {
         const sides = await api.conflictIndexSides(root, path).catch(error => {

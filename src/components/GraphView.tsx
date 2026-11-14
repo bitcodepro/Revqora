@@ -458,13 +458,23 @@ export function GraphView({
   // search
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<SearchMode>("quick");
-  const [results, setResults] = useState<number[]>([]);
+  const [found, setFound] = useState<{ scope: string; matches: Awaited<ReturnType<typeof api.historySearch>> } | null>(null);
   const [cursor, setCursor] = useState(0);
   const [searching, setSearching] = useState(false);
   const [filterOnly, setFilterOnly] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const panelMenu = usePanelTitleMenu("history");
-  const matchSet = useMemo(() => new Set(results), [results]);
+  const searchScope = JSON.stringify([root, graphKey, tab.branchFilter, tab.branchContext, mode, query.trim()]);
+  const results = useMemo(() => found?.scope === searchScope ? found.matches : [], [found, searchScope]);
+  const matchSet = useMemo(() => new Set(results.map(({ row }) => row.oid)), [results]);
+  // An older hit can be opened directly by SHA. Show it in the same history
+  // pane without constructing all the intervening graph lanes.
+  const filtered = results.length > 0 && (filterOnly || results[cursor]?.graphIndex == null);
+  useEffect(() => {
+    anchor.current = null;
+    hoveredCommit.current = null;
+    setKeyboardCommit(null);
+  }, [filtered, results]);
 
   const total = summary?.total ?? 0;
   const commitCount = summary?.commitCount ?? total - Number(tab.graphHasWorktree);
@@ -577,48 +587,44 @@ export function GraphView({
   }, []);
 
   // Rows visible (or filtered list when "show only matches" is on).
-  const indexList: number[] | null =
-    filterOnly && results.length ? results : null;
-  const count = indexList ? indexList.length : total;
+  const count = filtered ? results.length : total;
   const first = Math.max(0, Math.floor(scrollTop / rowH) - 8);
   const last = Math.min(count - 1, Math.ceil((scrollTop + viewH) / rowH) + 8);
 
   useEffect(() => {
-    if (!summary) return;
+    if (!summary || filtered) return;
     const need = new Set<number>();
     const fresh = cacheVersion.current === tab.graphVersion;
     for (let i = first; i <= last; i++) {
-      const idx = indexList ? indexList[i] : i;
-      if (idx !== undefined && (!fresh || !cache.current.has(idx)))
-        need.add(Math.floor(idx / PAGE));
+      if (!fresh || !cache.current.has(i)) need.add(Math.floor(i / PAGE));
     }
     need.forEach((p) => loadPage(p, tab.graphVersion));
   });
 
-  const rowAt = (i: number) => cache.current.get(i);
+  const rowAt = useCallback((i: number) => filtered ? results[i]?.row : cache.current.get(i), [filtered, results]);
 
   const moreHistory = hasMoreHistory(tab);
   const expandedFrom = useRef<string | undefined>(undefined);
   // Extend the ordered prefix as the user approaches the end of the loaded rows.
   useEffect(() => {
-    if (!moreHistory || tab.graphLoading || indexList || scrollTop <= 0 || last < count - 24 || expandedFrom.current === graphKey) return;
+    if (!moreHistory || tab.graphLoading || filtered || scrollTop <= 0 || last < count - 24 || expandedFrom.current === graphKey) return;
     expandedFrom.current = graphKey;
     void loadGraph(root, undefined, Math.min(summary?.commitCount ?? Infinity, tab.graphLimit + INITIAL_GRAPH_COMMITS));
-  }, [moreHistory, last, count, graphKey, indexList, scrollTop, summary?.commitCount, tab.graphLoading, tab.graphLimit, root]);
+  }, [moreHistory, last, count, graphKey, filtered, scrollTop, summary?.commitCount, tab.graphLoading, tab.graphLimit, root]);
   const selectedIndex = useMemo(() => {
     if (!tab.selected) return -1;
+    if (filtered) return results.findIndex(({ row }) => row.oid === tab.selected);
     for (const [i, r] of cache.current) if (r.oid === tab.selected) return i;
     return -1;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab.selected, tab.graphVersion, cache.current.size]);
+  }, [tab.selected, tab.graphVersion, cache.current.size, filtered, results]);
 
   const scrollToIndex = useCallback(
     (idx: number, center = false) => {
       const el = scrollRef.current;
       if (!el) return false;
-      const pos = indexList ? indexList.indexOf(idx) : idx;
-      if (pos < 0) return false;
-      const y = pos * rowH;
+      if (idx < 0) return false;
+      const y = idx * rowH;
       if (center)
         el.scrollTop = Math.max(0, y - el.clientHeight / 2 + rowH / 2);
       else if (y < el.scrollTop) el.scrollTop = y;
@@ -626,7 +632,7 @@ export function GraphView({
         el.scrollTop = y + rowH - el.clientHeight;
       return true;
     },
-    [indexList, rowH],
+    [rowH],
   );
 
   useEffect(() => {
@@ -662,6 +668,16 @@ export function GraphView({
   const selectIndex = useCallback(
     async (idx: number) => {
       const current = useRepos.getState().tabs[root];
+      if (filtered) {
+        const match = results[idx];
+        if (match && current?.graph?.key === graphKey) {
+          patch(root, { selected: match.row.oid, multi: [] });
+          setCursor(idx);
+          anchor.current = idx;
+          scrollToIndex(idx);
+        }
+        return;
+      }
       if (!current?.graph || idx < 0 || idx >= current.graph.total) return;
       const key = current.graph.key;
       let r = cacheVersion.current === current.graphVersion ? cache.current.get(idx) : undefined;
@@ -674,7 +690,7 @@ export function GraphView({
       anchor.current = idx;
       scrollToIndex(idx);
     },
-    [root, patch, scrollToIndex],
+    [root, patch, scrollToIndex, graphKey, filtered, results],
   );
 
   const onSelect = useCallback(
@@ -706,7 +722,7 @@ export function GraphView({
         ];
         const oids: string[] = [];
         for (let i = a; i <= b; i++) {
-          const rr = cache.current.get(i);
+          const rr = rowAt(i);
           if (rr && rr.oid !== WORKTREE) oids.push(rr.oid);
         }
         patch(root, { multi: oids, selected: r.oid });
@@ -722,7 +738,7 @@ export function GraphView({
           : { selected: r.oid, multi: [] },
       );
     },
-    [root, patch],
+    [root, patch, rowAt],
   );
 
   const onMenu = useCallback(
@@ -735,12 +751,11 @@ export function GraphView({
       const multi = t?.multi.includes(r.oid) ? t.multi : [];
       if (!multi.length && t?.selected !== r.oid)
         patch(root, { selected: r.oid, multi: [] });
-      const sel = multi
-        .map((o) => [...cache.current.values()].find((x) => x.oid === o))
-        .filter(Boolean) as GraphRow[];
+      const visibleRows = filtered ? results.map(({ row }) => row) : [...cache.current.values()];
+      const sel = visibleRows.filter(row => multi.includes(row.oid));
       contextMenu(e, commitMenu(root, r, sel.length > 1 ? sel : [r]));
     },
-    [root, patch],
+    [root, patch, filtered, results],
   );
 
   const onRefClick = useCallback(
@@ -814,8 +829,8 @@ export function GraphView({
   // Search (debounced for quick mode).
   useEffect(() => {
     let current = true;
-    if (!query.trim()) {
-      setResults([]);
+    if (!query.trim() || !graphKey) {
+      setFound(null);
       setCursor(0);
       setSearching(false);
       return;
@@ -825,15 +840,10 @@ export function GraphView({
     const t = setTimeout(async () => {
       setSearching(true);
       try {
-        await loadEntireHistory(root);
-        if (!current) return;
-        const res = await api.graphSearch(root, query, mode);
-        if (!current) return;
-        setResults(res);
+        const res = await api.historySearch(root, graphKey, query, mode);
+        if (!current || useRepos.getState().tabs[root]?.graph?.key !== graphKey) return;
+        setFound({ scope: searchScope, matches: res });
         setCursor(0);
-        if (res.length) {
-          scrollToIndex(res[0], true);
-        }
       } catch (e) {
         if (current) toast.error(e, "Search failed");
       } finally {
@@ -842,14 +852,21 @@ export function GraphView({
     }, delay);
     return () => { current = false; clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, mode, root, tab.branchFilter, tab.branchContext, tab.graphVersion]);
+  }, [query, mode, root, graphKey, searchScope]);
+
+  useEffect(() => {
+    const match = results[cursor];
+    if (match) scrollToIndex(filtered ? cursor : match.graphIndex ?? 0, true);
+  }, [results, cursor, filtered, scrollToIndex]);
 
   const gotoResult = (dir: number) => {
     if (!results.length) return;
-    const next = (cursor + dir + results.length) % results.length;
+    const selected = results.findIndex(({ row }) => row.oid === tab.selected);
+    const next = selected >= 0 ? (selected + dir + results.length) % results.length
+      : dir < 0 ? results.length - 1 : cursor;
     setCursor(next);
-    selectIndex(results[next]);
-    scrollToIndex(results[next], true);
+    patch(root, { selected: results[next].row.oid, multi: [] });
+    anchor.current = null;
   };
 
   useEffect(() => {
@@ -890,11 +907,9 @@ export function GraphView({
       const hover = hoveredCommit.current;
       const current = keyboardIndex ?? (hover?.version === tab.graphVersion ? hover.index : null);
       if (current === null) return false;
-      const position = indexList ? indexList.indexOf(current) : current;
-      const firstCommit = !indexList && tab.graphHasWorktree ? 1 : 0;
-      if (position < firstCommit || position >= count) return false;
-      const next = Math.max(firstCommit, Math.min(count - 1, position + (nextCommit ? 1 : -1)));
-      const index = indexList ? indexList[next] : next;
+      const firstCommit = !filtered && tab.graphHasWorktree ? 1 : 0;
+      if (current < firstCommit || current >= count) return false;
+      const index = Math.max(firstCommit, Math.min(count - 1, current + (nextCommit ? 1 : -1)));
       setKeyboardCommit({ index, version: tab.graphVersion });
       el.focus({ preventScroll: true });
       scrollToIndex(index);
@@ -918,12 +933,13 @@ export function GraphView({
     if (e.defaultPrevented || actionFor(e)) return;
     if (navigateHoveredCommit(e.nativeEvent)) return;
     if (tab.selected && tab.selected !== WORKTREE && (e.ctrlKey || e.altKey || e.metaKey || /^F\d+$/.test(e.key))) {
-      const row = [...cache.current.values()].find(candidate => candidate.oid === tab.selected);
+      const visibleRows = filtered ? results.map(({ row }) => row) : [...cache.current.values()];
+      const row = visibleRows.find(candidate => candidate.oid === tab.selected);
       if (row) {
         const multi = tab.multi.includes(row.oid) ? tab.multi : [];
-        const selected = [...cache.current.values()].filter(candidate => multi.includes(candidate.oid));
+        const selected = visibleRows.filter(candidate => multi.includes(candidate.oid));
         if (selected.length !== multi.length) return;
-      if (runMenuShortcut(e, commitMenu(root, row, selected.length > 1 ? selected : [row]), "commit-")) return;
+        if (runMenuShortcut(e, commitMenu(root, row, selected.length > 1 ? selected : [row]), "commit-")) return;
       }
     }
     const cur =
@@ -937,13 +953,13 @@ export function GraphView({
       useRepos.getState().patch(tab.root, { selected: null, multi: [] });
     } else if (matchesShortcut(e, "historyNextCommit")) {
       e.preventDefault();
-      selectIndex(Math.min(total - 1, cur + 1));
+      selectIndex(Math.min(count - 1, cur + 1));
     } else if (matchesShortcut(e, "historyPreviousCommit")) {
       e.preventDefault();
       selectIndex(Math.max(0, cur - 1));
     } else if (matchesShortcut(e, "historyNextPage")) {
       e.preventDefault();
-      selectIndex(Math.min(total - 1, cur + pageRows));
+      selectIndex(Math.min(count - 1, cur + pageRows));
     } else if (matchesShortcut(e, "historyPreviousPage")) {
       e.preventDefault();
       selectIndex(Math.max(0, cur - pageRows));
@@ -952,6 +968,7 @@ export function GraphView({
       selectIndex(0);
     } else if (matchesShortcut(e, "historyLastCommit")) {
       e.preventDefault();
+      if (filtered) { void selectIndex(count - 1); return; }
       void loadEntireHistory(root).then(() => {
         const latest = useRepos.getState().tabs[root];
         if (latest && latest.branchFilter === tab.branchFilter && latest.branchContext === tab.branchContext && latest.selected === tab.selected && latest.graph) {
@@ -974,7 +991,7 @@ export function GraphView({
   const rows: React.ReactNode[] = [];
   if (summary) {
     for (let i = first; i <= last; i++) {
-      const idx = indexList ? indexList[i] : i;
+      const idx = i;
       const r = rowAt(idx);
       rows.push(
         <Row
@@ -987,26 +1004,26 @@ export function GraphView({
           selected={!!r && r.oid === tab.selected}
           keyboardHighlighted={idx === keyboardIndex}
           multi={!!r && multiSet.has(r.oid)}
-          match={matchSet.has(idx)}
+          match={!!r && matchSet.has(r.oid)}
           dim={
-            !indexList &&
+            !filtered &&
             results.length > 0 &&
             query.trim() !== "" &&
-            !matchSet.has(idx) &&
+            !!r && !matchSet.has(r.oid) &&
             r?.oid !== WORKTREE
           }
-          hl={hl}
-          pinnedLaneMember={!!r && r.oid !== WORKTREE && r.laneId === pinned}
-          branchMember={highlightedRows?.has(idx) ?? false}
-          branchContext={branchContext}
+          hl={filtered ? null : hl}
+          pinnedLaneMember={!filtered && !!r && r.oid !== WORKTREE && r.laneId === pinned}
+          branchMember={!filtered && (highlightedRows?.has(idx) ?? false)}
+          branchContext={filtered ? undefined : branchContext}
           animDelay={drawing ? Math.max(0, i - first) * 16 : null}
           dateStyle={dateStyle}
           showRemote={showRemote}
           root={root}
           onSelect={onSelect}
           onMenu={onMenu}
-          onHover={setHl}
-          onPin={pinLane}
+          onHover={filtered ? () => {} : setHl}
+          onPin={filtered ? () => {} : pinLane}
           onRefClick={onRefClick}
           compact={compact}
           rowH={rowH}

@@ -473,29 +473,38 @@ fn stalled_background_fetch_times_out_and_releases_the_repository() {
     let repo = fixture.path();
     runner::run(repo, ["init", "-qb", "main"]).unwrap();
     runner::run(repo, ["remote", "add", "origin", &url]).unwrap();
-    let (request, accepted) = std::sync::mpsc::channel();
+    runner::run(repo, ["config", "--local", "remote.origin.proxy", ""]).unwrap();
+    let deadline = Duration::from_secs(15);
     let (release, done) = std::sync::mpsc::channel();
-    let server = std::thread::spawn(move || {
+    let server = std::thread::spawn(move || -> std::io::Result<usize> {
         let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(8) {
+        while start.elapsed() < deadline + Duration::from_secs(5) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-                    assert!(stream.read(&mut [0; 1024]).unwrap() > 0);
-                    request.send(()).unwrap();
-                    let _ = done.recv_timeout(Duration::from_secs(8));
-                    return;
+                    // Winsock inherits the listener's nonblocking mode on accept.
+                    stream.set_nonblocking(false)?;
+                    stream.set_read_timeout(Some(deadline))?;
+                    let bytes = stream.read(&mut [0; 1024])?;
+                    let _ = done.recv_timeout(deadline);
+                    return Ok(bytes);
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(20)),
-                Err(error) => panic!("{error}"),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if !matches!(done.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => return Err(error),
             }
         }
-        panic!("Git never connected to the fixture remote");
+        Err(std::io::Error::other("Git never connected to the fixture remote"))
     });
-    let result = fetch_background_with_deadline(repo, Duration::from_secs(3));
+    let start = std::time::Instant::now();
+    let result = fetch_background_with_deadline(repo, deadline);
+    let elapsed = start.elapsed();
     let _ = release.send(());
-    server.join().unwrap();
-    accepted.try_recv().unwrap();
+    let observed = server.join().unwrap();
+    assert!(matches!(observed, Ok(bytes) if bytes > 0), "Fixture {url}: {observed:?}; fetch elapsed {elapsed:?}, result {result:?}");
     assert_eq!(result.unwrap_err().kind, "git-timeout");
     runner::run(repo, ["config", "--local", "user.name", "After fetch"]).unwrap();
     assert_eq!(runner::run(repo, ["config", "--get", "user.name"]).unwrap().trim(), "After fetch");

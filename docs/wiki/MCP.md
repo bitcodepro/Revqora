@@ -48,6 +48,10 @@ Every `request_action` requires `repository` and `action`. Extra parameters that
 
 If a provider write returns `result_unverified`, inspect the PR, reviews or merge status on the provider before retrying. Revqora guards against duplicate writes when the first result is uncertain.
 
+Automatic Sync reports `partial` if a requested direction did not complete
+or a verification warning remains. Inspect the `received`, `sent` and
+`checkpoint` fields before retrying.
+
 The MCP confirmation dialog expires after 120 seconds. The action reports `cancelled` with reason `approval_timed_out`, and the desktop releases the next request.
 
 ## Checkout and stash recovery

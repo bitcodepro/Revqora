@@ -70,6 +70,44 @@ fn sidebar_status_matches_git_counts_without_hashing_content_or_supplying_mutati
 }
 
 #[test]
+fn changes_status_only_fingerprints_the_selected_file_and_does_not_issue_a_guard() {
+    let repo = Repo::new();
+    fs::write(repo.root.join(".gitattributes"), "*.txt text\n").unwrap();
+    repo.git(&["add", ".gitattributes"]);
+    fs::remove_file(repo.root.join(".gitattributes")).unwrap();
+    fs::write(repo.root.join("selected.txt"), "aaaa\n").unwrap();
+    fs::write(repo.root.join("large.txt"), "x".repeat(3 * 1024 * 1024)).unwrap();
+    let full = repo.status();
+    let display = status::changes_status(&repo.root, "selected.txt").unwrap();
+    assert!(display.state_token.is_none());
+    assert_eq!(Repo::token(&display), Repo::token(&full));
+    assert_eq!(display.diff_context_token, full.diff_context_token);
+    let other = |snapshot: &status::StatusSummary| snapshot.files.iter().find(|file| file.path == "large.txt").unwrap().diff_token.clone();
+    fs::write(repo.root.join("large.txt"), "y".repeat(3 * 1024 * 1024)).unwrap();
+    let updated = status::changes_status(&repo.root, "selected.txt").unwrap();
+    assert_eq!(Repo::token(&updated), Repo::token(&display));
+    assert_eq!(other(&updated), other(&display));
+    assert_ne!(repo.status().state_token, full.state_token);
+    fs::write(repo.root.join("selected.txt"), "bbbb\n").unwrap();
+    assert_ne!(Repo::token(&status::changes_status(&repo.root, "selected.txt").unwrap()), Repo::token(&display));
+}
+
+#[test]
+fn large_diff_preview_stops_at_a_complete_line_without_creating_a_stage_snapshot() {
+    let repo = Repo::new();
+    let text = format!("first visible line\n{}\nlast line\n", "x".repeat(3 * 1024 * 1024));
+    fs::write(repo.root.join("selected.txt"), &text).unwrap();
+    let opts = diff::DiffOptions::default();
+    let preview = diff::working_diff_view(&repo.root, "selected.txt", diff::WorkSide::Unstaged, None, false, &opts, true).unwrap();
+    assert!(preview.truncated && preview.preview_limited && !preview.empty);
+    assert!(preview.stage_snapshot.is_none());
+    assert!(preview.hunks.iter().flat_map(|h| &h.lines).any(|line| line.text == "first visible line"));
+    assert!(preview.hunks.iter().flat_map(|h| &h.lines).all(|line| line.text.len() < 100));
+    let raw = diff::working_raw(&repo.root, "selected.txt", diff::WorkSide::Unstaged, None, false, &opts).unwrap();
+    assert!(raw.len() > 3 * 1024 * 1024);
+}
+
+#[test]
 fn unrelated_wal_writes_keep_selected_diff_token_but_not_the_mutation_guard() {
     let repo = Repo::new();
     fs::write(repo.root.join("selected.txt"), "edit\n").unwrap();

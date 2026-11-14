@@ -63,7 +63,7 @@ export const diffKey = (root: string, from: string | null, oid: string, path: st
 export const peekDetails = (key: string, oid: string) => immutable(oid) ? details.peek(key) : undefined;
 export const loadDetails = (key: string, root: string, oid: string) => immutable(oid) ? details.load(key, () => api.commitDetails(root, oid)) : api.commitDetails(root, oid);
 export const peekDiff = (key: string, oid: string) => immutable(oid) ? diffs.peek(key) : undefined;
-export const loadDiff = (key: string, root: string, from: string | null, oid: string, path: string, opts: DiffOptions) => immutable(oid) ? diffs.load(key, () => api.revDiff(root, from, oid, path, opts)) : api.revDiff(root, from, oid, path, opts);
+export const loadDiff = (key: string, root: string, from: string | null, oid: string, path: string, opts: DiffOptions) => immutable(oid) ? diffs.load(key, () => api.revDiff(root, from, oid, path, opts, true)) : api.revDiff(root, from, oid, path, opts, true);
 
 /** Attributes/config may change the interpretation of immutable trees. */
 export function invalidatePreview(root: string) {

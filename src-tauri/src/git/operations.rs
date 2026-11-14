@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Read;
+use std::mem::DropGuard;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -32,21 +33,13 @@ thread_local! {
     static SCOPES: RefCell<Vec<(PathBuf, bool)>> = const { RefCell::new(Vec::new()) };
 }
 
-struct Scope;
-impl Drop for Scope {
-    fn drop(&mut self) {
+fn enter_scope(key: PathBuf, write: bool) -> impl Drop {
+    SCOPES.with(|s| s.borrow_mut().push((key, write)));
+    DropGuard::new((), |()| {
         SCOPES.with(|s| {
             s.borrow_mut().pop();
         });
-    }
-}
-
-struct Turn<'a>(&'a Gate);
-impl Drop for Turn<'_> {
-    fn drop(&mut self) {
-        self.0.tickets.lock().serving += 1;
-        self.0.changed.notify_all();
-    }
+    })
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -119,16 +112,18 @@ pub fn access<T>(repo: &Path, write: bool, mut phase: impl FnMut(&str, usize), f
             gate.changed.wait(&mut q);
         }
         drop(q);
-        let _turn = Turn(&gate);
+        // Advance the FIFO only after the thread scope and the write lock are released.
+        let _turn = DropGuard::new(gate.as_ref(), |gate| {
+            gate.tickets.lock().serving += 1;
+            gate.changed.notify_all();
+        });
         let _access = gate.access.write();
-        SCOPES.with(|s| s.borrow_mut().push((key, true)));
-        let _scope = Scope;
+        let _scope = enter_scope(key, true);
         phase("running", 0);
         f()
     } else {
         let _access = gate.access.read();
-        SCOPES.with(|s| s.borrow_mut().push((key, false)));
-        let _scope = Scope;
+        let _scope = enter_scope(key, false);
         f()
     }
 }
@@ -188,13 +183,54 @@ pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl Fn
     })
 }
 
+fn fingerprint_io(action: &str, path: &Path, error: std::io::Error) -> GitError {
+    let mut result = GitError::from(error).kind("status-file-io");
+    result.message = format!("{action} {} ({})", path.display(), result.message);
+    result
+}
+
+fn open_fingerprint_file(path: &Path) -> std::io::Result<fs::File> {
+    #[cfg(windows)]
+    for _ in 0..3 {
+        match fs::File::open(path) {
+            Err(error) if matches!(error.raw_os_error(), Some(5 | 32 | 33)) => std::thread::sleep(std::time::Duration::from_millis(40)),
+            result => return result,
+        }
+    }
+    fs::File::open(path)
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn status_fingerprint_retries_a_temporary_windows_file_lock() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("locked.txt");
+    fs::write(&path, "content").unwrap();
+    let lock = || fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+    let handle = lock();
+    let error = hash_file(&mut Sha256::new(), &path).unwrap_err();
+    assert_eq!(error.kind, "status-file-io");
+    assert!(error.message.contains("locked.txt"));
+    assert!(error.details.iter().any(|detail| matches!(detail.as_str(), "os_error=5" | "os_error=32" | "os_error=33")));
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            drop(handle);
+        });
+        hash_file(&mut Sha256::new(), &path).unwrap();
+    });
+}
+
 fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<[u8; 32]> {
     // One content read supplies both the repository guard and the path's display token.
     let mut content = Sha256::new();
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => {
             content.update(b"symlink");
-            let target = fs::read_link(path)?;
+            let target = fs::read_link(path).map_err(|error| fingerprint_io("Read link", path, error))?;
             let bytes = target.as_os_str().as_encoded_bytes();
             content.update((bytes.len() as u64).to_le_bytes());
             content.update(bytes);
@@ -207,10 +243,10 @@ fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<[u8; 32]> {
                 use std::os::unix::fs::PermissionsExt;
                 content.update((meta.permissions().mode() & 0o111).to_le_bytes());
             }
-            let mut file = fs::File::open(path)?;
+            let mut file = open_fingerprint_file(path).map_err(|error| fingerprint_io("Open file for status", path, error))?;
             let mut buf = [0; 64 * 1024];
             loop {
-                let len = file.read(&mut buf)?;
+                let len = file.read(&mut buf).map_err(|error| fingerprint_io("Read file for status", path, error))?;
                 if len == 0 {
                     break;
                 }
@@ -223,7 +259,7 @@ fn hash_file(hash: &mut Sha256, path: &Path) -> GitResult<[u8; 32]> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             content.update(b"missing");
         }
-        Err(e) => return Err(e.into()),
+        Err(error) => return Err(fingerprint_io("Inspect file for status", path, error)),
     }
     let digest = content.finalize().into();
     hash.update(digest);
@@ -360,7 +396,7 @@ fn submodule_fingerprint(module: &Path) -> GitResult<[u8; 32]> {
 
 /// No write-tree, index refresh or snapshots. Hash changed files and Git attributes,
 /// not the entire worktree. The display context never substitutes for the full guard.
-pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus]) -> GitResult<StateTokens> {
+pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus], display_path: Option<&str>) -> GitResult<StateTokens> {
     let mut hash = Sha256::new();
     hash.update(raw_status.as_bytes());
     let gd = super::repo::git_dir(repo)?;
@@ -371,8 +407,14 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
     let external_attributes = hash_external_attributes(&mut hash, repo)?;
     // Cache-tree/stat extensions and packed-ref layout can change without changing
     // what the user staged. Compare semantic index entries and resolved refs instead.
-    let index = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
-    hash.update(&index);
+    let mut index_args = vec!["ls-files", "--stage", "-v", "-z"];
+    if display_path.is_some() {
+        index_args.extend(["--", ":(glob)**/.gitattributes"]);
+    }
+    let index = runner::run_bytes(repo, index_args)?;
+    if display_path.is_none() {
+        hash.update(&index);
+    }
     // Git falls back to indexed .gitattributes when the worktree copy is absent.
     let mut indexed_attributes: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
     for entry in String::from_utf8_lossy(&index).split('\0') {
@@ -385,30 +427,31 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
     // Recovery pins are app metadata, not changes to the user's prepared Git
     // state. A rejected action may save a checkpoint before offering force
     // consent. Recovery itself verifies each pin independently with exact OIDs.
-    for reference in runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"])?.lines() {
-        if !reference.starts_with(super::recovery::PREFIX) {
-            hash.update(reference.as_bytes());
-            hash.update(b"\n");
+    if display_path.is_none() {
+        for reference in runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"])?.lines() {
+            if !reference.starts_with(super::recovery::PREFIX) {
+                hash.update(reference.as_bytes());
+                hash.update(b"\n");
+            }
         }
+        for name in [
+            "MERGE_HEAD",
+            "MERGE_MSG",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "SQUASH_MSG",
+            "BISECT_LOG",
+            "rebase-merge/git-rebase-todo",
+            "rebase-merge/done",
+            "rebase-apply/next",
+            "sequencer/todo",
+        ] {
+            hash_file(&mut hash, &gd.join(name))?;
+        }
+        // Stash reflog entries below the tip are part of the mutation proof.
+        hash_file(&mut hash, &common.join("logs/refs/stash"))?;
+        hash_file(&mut hash, &super::storage::dir(repo)?.join("squash-target"))?;
     }
-    for name in [
-        "MERGE_HEAD",
-        "MERGE_MSG",
-        "CHERRY_PICK_HEAD",
-        "REVERT_HEAD",
-        "SQUASH_MSG",
-        "BISECT_LOG",
-        "rebase-merge/git-rebase-todo",
-        "rebase-merge/done",
-        "rebase-apply/next",
-        "sequencer/todo",
-    ] {
-        hash_file(&mut hash, &gd.join(name))?;
-    }
-    // Stashes and their reflog are shared, including entries below refs/stash.
-    // Removing a middle entry changes stash@{n} without changing the top OID.
-    hash_file(&mut hash, &common.join("logs/refs/stash"))?;
-    hash_file(&mut hash, &super::storage::dir(repo)?.join("squash-target"))?;
     let mut attributes = BTreeMap::new();
     // Indexed attributes may affect a sealed layer even if later layers cancel
     // that file's net index change and it is absent from the ordinary status list.
@@ -424,17 +467,24 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
         }
     }
     for file in files {
-        hash.update(file.path.as_bytes());
-        let content = hash_file(&mut hash, &repo.join(&file.path))?;
+        let track_content = display_path.is_none_or(|path| path == file.path);
+        let content = if track_content {
+            hash.update(file.path.as_bytes());
+            Some(hash_file(&mut hash, &repo.join(&file.path))?)
+        } else {
+            None
+        };
         let mut display = Sha256::new();
         // The porcelain seed includes index/base OIDs, modes and submodule state:
         // editing an already-MM file or staging different bytes must still refresh it.
         display.update(file.diff_token.as_bytes());
-        display.update(content);
+        if let Some(content) = content {
+            display.update(content);
+        }
         display.update(config);
         display.update(info_attributes);
         display.update(external_attributes);
-        if file.submodule {
+        if track_content && file.submodule {
             let module = submodule_fingerprint(&repo.join(&file.path))?;
             hash.update(module);
             display.update(module);
@@ -454,7 +504,9 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
                 display.update(digest);
             }
         }
-        file.diff_token = format!("{:x}", display.finalize());
+        if track_content {
+            file.diff_token = format!("{:x}", display.finalize());
+        }
     }
     let mut context = Sha256::new();
     context.update(config);

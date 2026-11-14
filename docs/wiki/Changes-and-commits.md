@@ -45,6 +45,9 @@ replaces the previous staged version. **Stage hunk** uses the selected
 diff snapshot, so a later write to the working file can appear as a separate
 unstaged change.
 
+If a diff exceeds the preview size limit, its visible portion is marked partial.
+Whole-file actions remain available.
+
 **Unstage** removes content from the proposed commit and keeps your working edits. **Discard** removes working changes; review the selected files/lines and available recovery information before confirming it.
 
 ## Make a commit

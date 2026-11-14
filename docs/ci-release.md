@@ -57,8 +57,8 @@ hosted workflow run must validate these newly prepared native build paths.
 
 Jobs have bounded timeouts after a runner starts. Runner queue time and hosted
 ARM/macOS capacity are controlled by GitHub. npm uses `package-lock.json` and
-Rust uses `src-tauri/Cargo.lock`; the Rust stable toolchain is installed with
-rustfmt and clippy.
+Rust uses `src-tauri/Cargo.lock`. Rustup selects the compiler, rustfmt and
+Clippy from `rust-toolchain.toml` for local builds and CI.
 
 ## Version selection and publication
 

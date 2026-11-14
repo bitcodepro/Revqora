@@ -101,6 +101,8 @@ pub fn run_worker() -> Option<i32> {
     // identity across shutdown, even if Windows subsequently recycles its PID.
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if handle.is_null() {
+        let error = io::Error::last_os_error();
+        let _ = crate::error_log::record_at(&root.join(crate::portable::DATA_DIR), "updater.wait", "update-install", &error.to_string());
         return Some(1);
     }
     let desktop = DesktopProcess(handle);
@@ -111,20 +113,20 @@ pub fn run_worker() -> Option<i32> {
     match unsafe { WaitForSingleObject(desktop.0, 60_000) } {
         WAIT_OBJECT_0 => {}
         WAIT_TIMEOUT => {
-            show_error("Revqora did not close within 60 seconds. The downloaded update is kept. Close Revqora and try again.");
+            show_error(root, "Revqora did not close within 60 seconds. The downloaded update is kept. Close Revqora and try again.");
             return Some(1);
         }
         _ => {
-            show_error(&format!("Could not wait for Revqora to close: {}", io::Error::last_os_error()));
+            show_error(root, &format!("Could not wait for Revqora to close: {}", io::Error::last_os_error()));
             return Some(1);
         }
     }
     let args: Vec<_> = args.collect();
     if let Err(error) = apply(root, &args) {
-        show_error(&error.message);
+        show_error(root, &error.message);
         if !staging.join("rollback-incomplete").exists() {
             if let Err(restart) = restart_desktop(root, &args) {
-                show_error(&format!("Could not reopen Revqora at {} ({restart}).", root.display()));
+                show_error(root, &format!("Could not reopen Revqora at {} ({restart}).", root.display()));
             }
         }
         return Some(1);
@@ -136,7 +138,8 @@ fn restart_desktop(root: &Path, args: &[std::ffi::OsString]) -> io::Result<()> {
     Command::new(root.join("revqora.exe")).args(args).env("REVQORA_RESTART_AFTER", std::process::id().to_string()).current_dir(root).spawn().map(|_| ())
 }
 
-fn show_error(message: &str) {
+fn show_error(root: &Path, message: &str) {
+    let _ = crate::error_log::record_at(&root.join(crate::portable::DATA_DIR), "updater", "update-install", message);
     let title: Vec<_> = "Revqora update".encode_utf16().chain(Some(0)).collect();
     let text: Vec<_> = message.encode_utf16().chain(Some(0)).collect();
     // SAFETY: both buffers are terminated UTF-16 and live for the duration of the call.

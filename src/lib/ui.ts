@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { create } from "zustand";
 import { errorMessage, isGitError } from "./api";
 import { focusedUiSurface } from "./uiSurfaces";
+import { recordError } from "./errorLog";
 
 export type ToastKind = "info" | "success" | "error" | "warning";
 
@@ -119,6 +120,7 @@ export const toast = {
   success: (title: string, detail?: string) => useUi.getState().toast({ kind: "success", title, detail }),
   warning: (title: string, detail?: string) => useUi.getState().toast({ kind: "warning", title, detail }),
   error: (e: unknown, title?: string) => {
+    recordError(title ?? "Interface", e);
     const msg = errorMessage(e);
     const detail = isGitError(e) && e.details.length ? `${msg}\n${e.details.slice(0, 8).join("\n")}` : msg;
     useUi.getState().toast({ kind: "error", title: title ?? "Operation failed", detail });

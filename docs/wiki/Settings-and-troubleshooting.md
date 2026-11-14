@@ -101,4 +101,11 @@ Read the action's explanation and [PR Center provider notes](https://github.com/
 
 ## Report a problem
 
+Open **Error log** from the toolbar or Command palette. Use **Copy error**
+for one entry or **Copy all** for the journal. The log includes the operation,
+timestamp and error code when available. It lives in `data/errors.sqlite3`
+and retains the last seven days, up to 2,000 entries. Repeated errors within a
+minute are counted together. Review local paths and repository names before
+sharing the copied text.
+
 Open a [GitHub issue](https://github.com/bitcodepro/Revqora/issues) with the version from About, OS, action/steps, expected result and relevant error or screenshot. Remove tokens and private code from shared logs. State whether an operation actually changed Git/server state before the error.

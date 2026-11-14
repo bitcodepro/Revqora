@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mcpNeedsApproval } from "./mcpAutomatic";
+import { mcpNeedsApproval, mcpSyncOutcome } from "./mcpAutomatic";
 
 describe("MCP approval modes", () => {
   it("preserves review by default and lets Full approve cover deletion", () => {
@@ -21,5 +21,16 @@ describe("MCP approval modes", () => {
     expect(mcpNeedsApproval("delete_only", "review_workflow_step", {}, "prCleanup")).toBe(true);
     expect(mcpNeedsApproval("delete_only", "review_workflow_step", {}, "command")).toBe(true);
     expect(mcpNeedsApproval("delete_only", "review_workflow_step", {}, "checkClean")).toBe(false);
+  });
+});
+
+it("reports incomplete Sync with its checkpoint and actual Git effect", () => {
+  const result = { sent: true, received: false, checkpoint: { id: "checkpoint" }, warnings: [] };
+  expect(mcpSyncOutcome(result, false, true).phase).toBeUndefined();
+  expect(mcpSyncOutcome(result, true, true)).toMatchObject({
+    phase: "partial", errorCode: "sync_incomplete", result: { received: false, sent: true, checkpoint: "checkpoint" },
+  });
+  expect(mcpSyncOutcome({ ...result, warnings: ["Server state changed"] }, false, true)).toMatchObject({
+    phase: "partial", message: "Server state changed",
   });
 });

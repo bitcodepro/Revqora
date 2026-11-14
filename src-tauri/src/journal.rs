@@ -1,5 +1,5 @@
 //! Persistent, bounded diagnostics. Journal failures never retry or undo Git work.
-mod redact;
+pub(crate) mod redact;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

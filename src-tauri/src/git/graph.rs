@@ -1,6 +1,6 @@
 //! Commit history loading and lane layout for the graph view.
 
-use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -187,6 +187,9 @@ pub struct GraphCache {
     pub source: String,
     pub branch_context: Option<BranchContext>,
     incoming: Option<IncomingHistory>,
+    labels: HashMap<String, Vec<refs::RefLabel>>,
+    local_commits: HashMap<String, ()>,
+    has_remotes: bool,
     lane_anchors: Arc<LaneAnchors>,
     previous_anchors: Option<(String, Arc<LaneAnchors>)>,
 }
@@ -503,8 +506,11 @@ pub struct GraphSummary {
 
 /// Loads commit metadata. `fast` skips `--date-order` (which needs a full history walk before
 /// the first line) so the newest commits stream out immediately; used for the first paint.
-fn log_arguments(repo: &Path, limit: usize, fast: bool) -> Vec<String> {
-    let mut args: Vec<String> = vec!["log".into(), format!("--max-count={limit}"), "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ct%x1f%s%x1e".into()];
+fn log_arguments(repo: &Path, limit: Option<usize>, fast: bool) -> Vec<String> {
+    let mut args: Vec<String> = vec!["log".into(), "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ct%x1f%s%x1e".into()];
+    if let Some(limit) = limit {
+        args.push(format!("--max-count={limit}"));
+    }
     // With a commit-graph file git can order the newest commits without a full walk.
     if !fast || has_commit_graph(repo) {
         args.insert(1, "--date-order".into());
@@ -513,7 +519,7 @@ fn log_arguments(repo: &Path, limit: usize, fast: bool) -> Vec<String> {
 }
 
 pub fn load_commits(repo: &Path, branch_filter: Option<&str>, limit: usize, fast: bool) -> GitResult<Vec<CommitMeta>> {
-    let mut args = log_arguments(repo, limit, fast);
+    let mut args = log_arguments(repo, Some(limit), fast);
     match branch_filter {
         Some(b) if !b.is_empty() => {
             args.push("--end-of-options".into());
@@ -620,7 +626,7 @@ fn incoming_history(
         return Ok(Some(previous.clone()));
     }
     // Reserve a row for the local tip even when the incoming history fills the window.
-    let mut args = log_arguments(repo, limit.saturating_sub(1), fast);
+    let mut args = log_arguments(repo, Some(limit.saturating_sub(1)), fast);
     args.extend(["--end-of-options".into(), tip.clone(), format!("^{base}"), "--".into()]);
     let commits = Arc::new(read_commits(repo, &args)?);
     Ok(Some(IncomingHistory { base: base.clone(), tip: tip.clone(), commits }))
@@ -670,7 +676,7 @@ pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool,
         let commits = match (&reused, &branch_context) {
             (Some((c, _)), _) => Ok(c.clone()),
             (None, Some(context)) => {
-                let mut args = log_arguments(repo, limit, fast);
+                let mut args = log_arguments(repo, Some(limit), fast);
                 args.push("--end-of-options".into());
                 args.extend(context.tips(&refs));
                 args.push("--".into());
@@ -783,6 +789,9 @@ pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool,
         source,
         branch_context,
         incoming,
+        labels,
+        local_commits: local,
+        has_remotes,
         lane_anchors: Arc::new(lane_anchors),
         previous_anchors,
     })
@@ -791,7 +800,7 @@ pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool,
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SearchMode {
-    /// Message, author, hash and refs over the loaded history (instant).
+    /// Commit subject, author, hash and refs.
     Quick,
     Message,
     Author,
@@ -1096,12 +1105,136 @@ pub fn search(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode) ->
     Ok(res)
 }
 
+/// Search the pinned history scope using commit metadata alone. The displayed graph
+/// stays paged, including when a hit is older than all its loaded rows.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryMatch {
+    row: GraphRow,
+    graph_index: Option<usize>,
+}
+
+pub fn search_history(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode) -> GitResult<Vec<HistoryMatch>> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let revisions: Vec<String> = if let Some(context) = &cache.branch_context {
+        context.tips(&cache.refs)
+    } else if let Some(reference) = &cache.filter {
+        match cache.refs.iter().find(|(name, _)| name == reference) {
+            Some((_, oid)) => vec![oid.clone()],
+            None if reference == "HEAD" => Vec::new(),
+            None => {
+                let out = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{reference}^{{commit}}")])?;
+                if !out.ok() {
+                    return Ok(Vec::new());
+                }
+                vec![out.text().trim().to_owned()]
+            }
+        }
+    } else {
+        cache.refs.iter().map(|(_, oid)| oid.clone()).collect()
+    };
+    if revisions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let read = |revisions: &[String]| -> GitResult<Vec<CommitMeta>> {
+        let mut args = log_arguments(repo, None, false);
+        // Feeding refs over stdin keeps repositories with many tags below the
+        // Windows command line limit. Revision input comes from the graph scope.
+        args.push("--stdin".into());
+        search_arguments(&mut args, query, mode);
+        let raw = runner::run_env(repo, &args, &[], Some(revisions.join("\n").as_bytes()))?;
+        Ok(parse_log(&raw))
+    };
+    let incoming = cache.incoming.as_ref().map(|range| read(&[range.tip.clone(), format!("^{}", range.base)])).transpose()?.unwrap_or_default();
+    let incoming_count = incoming.len();
+    let local = read(&revisions)?;
+    let needle = query.to_lowercase();
+    let mut seen = HashSet::new();
+    Ok(incoming
+        .into_iter()
+        .chain(local)
+        .enumerate()
+        .filter_map(|(index, commit)| {
+            let refs = cache.labels.get(&commit.oid).map_or(&[][..], Vec::as_slice);
+            let author_matches = || commit.author.to_lowercase().contains(&needle) || commit.email.to_lowercase().contains(&needle);
+            let matched = match mode {
+                SearchMode::Quick => {
+                    commit.subject.to_lowercase().contains(&needle)
+                        || author_matches()
+                        || commit.oid.starts_with(&needle)
+                        || refs.iter().any(|label| label.name.to_lowercase().contains(&needle))
+                }
+                SearchMode::Author => author_matches(),
+                SearchMode::Hash => commit.oid.starts_with(&needle),
+                _ => true,
+            };
+            (matched && seen.insert(commit.oid.clone())).then_some((commit, refs, index < incoming_count))
+        })
+        .enumerate()
+        .map(|(index, (commit, refs, incoming))| HistoryMatch {
+            graph_index: cache.index.get(&commit.oid).copied(),
+            row: GraphRow {
+                index,
+                is_head: commit.oid == cache.head_oid,
+                local_only: !cache.has_remotes || cache.local_commits.contains_key(&commit.oid),
+                is_merge: commit.parents.len() > 1,
+                oid: commit.oid,
+                parents: commit.parents,
+                author: commit.author,
+                email: commit.email,
+                author_time: commit.author_time,
+                committer: commit.committer,
+                commit_time: commit.commit_time,
+                subject: commit.subject,
+                refs: refs.to_vec(),
+                col: 0,
+                color: 0,
+                lane_id: 0,
+                segs: Vec::new(),
+                incoming,
+            },
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn c(o: &str, p: &[&str]) -> (String, Vec<String>) {
         (o.to_string(), p.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn history_search_finds_old_results_without_changing_the_graph_window_or_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        runner::run(repo, ["init", "-qb", "main"]).unwrap();
+        let commit = |message: &str| {
+            runner::run(
+                repo,
+                ["-c", "user.name=Finder", "-c", "user.email=finder@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", message],
+            )
+            .unwrap();
+        };
+        commit("Common needle\n\nBodyOnlyToken");
+        commit("Main needle");
+        runner::run(repo, ["branch", "side", "HEAD~1"]).unwrap();
+        runner::run(repo, ["switch", "-q", "side"]).unwrap();
+        commit("Unrelated side needle");
+        runner::run(repo, ["switch", "-q", "main"]).unwrap();
+        let graph = build(repo, Some("HEAD"), false, 1, false).unwrap();
+        let hits = search_history(repo, &graph, "needle", SearchMode::Quick).unwrap();
+        assert_eq!(hits.iter().map(|m| m.row.subject.as_str()).collect::<Vec<_>>(), ["Main needle", "Common needle"]);
+        assert_eq!(hits[0].graph_index, Some(0));
+        assert_eq!(hits[1].graph_index, None);
+        assert_eq!(graph.rows.len(), 1);
+        let body = search_history(repo, &graph, "bodyonlytoken", SearchMode::Message).unwrap();
+        assert_eq!(body.len(), 1);
+        assert_eq!(body[0].row.oid, hits[1].row.oid);
     }
 
     #[test]

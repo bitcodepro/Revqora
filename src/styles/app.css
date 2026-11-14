@@ -3226,7 +3226,7 @@ select[size="1"]:not([multiple]) {
   right: 0;
   bottom: calc(100% + 10px);
   z-index: 200;
-  width: 360px;
+  width: min(360px, calc(100vw - 24px));
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -3272,6 +3272,7 @@ select[size="1"]:not([multiple]) {
   border: 1px solid var(--border);
   color: var(--text-dim);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   line-height: 1.5;
 }
 .update-progress {
@@ -3294,8 +3295,13 @@ select[size="1"]:not([multiple]) {
 }
 .update-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
+}
+.update-foot > .btn:first-child {
+  margin-inline-end: auto;
 }
 
 /* ───────────── status bar: running operation ───────────── */

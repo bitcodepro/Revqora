@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-vi.mock("./api", () => ({ api: { status: vi.fn(), repoInfo: vi.fn(), layersState: vi.fn(), refs: vi.fn(), repoExtras: vi.fn(), squashMerged: vi.fn(), graphLoad: vi.fn(), graphCommitCount: vi.fn(), watchRepo: vi.fn() }, errorMessage: String }));
+vi.mock("./api", () => ({ api: { status: vi.fn(), repositoryChangesStatus: vi.fn(), repoInfo: vi.fn(), layersState: vi.fn(), refs: vi.fn(), repoExtras: vi.fn(), squashMerged: vi.fn(), graphLoad: vi.fn(), graphCommitCount: vi.fn(), watchRepo: vi.fn() }, errorMessage: String }));
 vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), hideIncomingByRepo: {} }) } }));
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() }, toast: { warning: vi.fn() } }));
@@ -119,6 +119,34 @@ describe("background repository observation", () => {
     expect(tab.status?.files[0].diffToken).toBe("same-content");
     expect(previewGeneration(root)).toBe(generation);
     expect(tab.diffRefreshVersion).toBe(0);
+  });
+  it("refreshes the Changes display for its selected path and drops the old mutation guard", async () => {
+    const store = useRepos.getState();
+    store.patch(root, { view: "changes", changeSel: { kind: "unstaged", path: "selected.txt", untracked: false } });
+    vi.mocked(api.repositoryChangesStatus).mockResolvedValue({ ...snapshot("unused", 2), stateToken: null });
+    await store.refresh(root, { background: true, status: true, changesDisplay: true });
+    expect(api.repositoryChangesStatus).toHaveBeenCalledExactlyOnceWith(root, "selected.txt");
+    expect(api.status).not.toHaveBeenCalled();
+    expect(api.repoInfo).not.toHaveBeenCalled();
+    expect(useRepos.getState().tabs[root].status).toMatchObject({ stateToken: null, stateVersion: 2 });
+  });
+  it("keeps the full status for active conflict validation and clean-worktree actions", async () => {
+    const store = useRepos.getState();
+    const initial = useRepos.getState().tabs[root].status!;
+    for (const status of [{ ...initial, stateVersion: 3, conflictCount: 1 }, { ...initial, stateVersion: 4, files: [] }]) {
+      store.patch(root, { view: "changes", status });
+      await store.refresh(root, { background: true, status: true, changesDisplay: true });
+    }
+    expect(api.repositoryChangesStatus).not.toHaveBeenCalled();
+    expect(api.status).toHaveBeenCalledTimes(2);
+  });
+  it("shows a failed status read without reusing its previous mutation guard", async () => {
+    vi.mocked(api.status).mockRejectedValueOnce(new Error("Open file for status locked.txt (os error 32)"));
+    await useRepos.getState().refresh(root, { background: true, status: true });
+    const tab = useRepos.getState().tabs[root];
+    expect(tab.error).toContain("locked.txt");
+    expect(tab.status?.stateToken).toBeNull();
+    expect(tab.status?.files[0].path).toBe("selected.txt");
   });
   it("keeps an explicit refresh effective even if the file token did not change", async () => {
     const generation = previewGeneration(root);

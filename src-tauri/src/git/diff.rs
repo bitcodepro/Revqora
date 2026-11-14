@@ -99,6 +99,7 @@ pub struct FileDiff {
     pub additions: u32,
     pub deletions: u32,
     pub truncated: bool,
+    pub preview_limited: bool,
     /// Fingerprint of the raw diff for actions that require a fresh worktree.
     pub hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,6 +117,18 @@ pub struct DiffOptions {
     #[serde(default)]
     pub disable_textconv: bool,
     pub rename_from: Option<String>,
+}
+
+const PREVIEW_BYTES: usize = 2 * 1024 * 1024;
+
+fn diff_output(repo: &Path, args: &[String], preview: bool, allowed_code: i32) -> GitResult<(Vec<u8>, bool)> {
+    let env = [("GIT_LITERAL_PATHSPECS", "1")];
+    let (output, truncated) =
+        if preview { runner::exec_preview(repo, args, &env, PREVIEW_BYTES)? } else { (runner::exec_full(repo, args, &env, None)?, false) };
+    if output.code < 0 || output.code > allowed_code {
+        return Err(runner::to_error("git diff", &output));
+    }
+    Ok((output.stdout, truncated))
 }
 
 pub fn fingerprint(data: &[u8]) -> String {
@@ -236,11 +249,11 @@ pub fn parse(data: &[u8]) -> Vec<RawFileDiff> {
         f.header.push(line.to_vec());
         if let Some(p) = t.strip_prefix("--- ") {
             if p != "/dev/null" {
-                f.old_path = Some(unquote_path(p.strip_prefix("a/").unwrap_or(p)));
+                f.old_path = Some(unquote_path(p.trim_prefix("a/")));
             }
         } else if let Some(p) = t.strip_prefix("+++ ") {
             if p != "/dev/null" {
-                f.new_path = Some(unquote_path(p.strip_prefix("b/").unwrap_or(p)));
+                f.new_path = Some(unquote_path(p.trim_prefix("b/")));
             }
         } else if let Some(m) = t.strip_prefix("new file mode ") {
             f.is_new = true;
@@ -366,6 +379,18 @@ pub enum WorkSide {
 
 /// Raw bytes of a working copy diff for a single path.
 pub fn working_raw(repo: &Path, path: &str, side: WorkSide, base: Option<&str>, untracked: bool, opts: &DiffOptions) -> GitResult<Vec<u8>> {
+    working_output(repo, path, side, base, untracked, opts, false).map(|(raw, _)| raw)
+}
+
+fn working_output(
+    repo: &Path,
+    path: &str,
+    side: WorkSide,
+    base: Option<&str>,
+    untracked: bool,
+    opts: &DiffOptions,
+    preview: bool,
+) -> GitResult<(Vec<u8>, bool)> {
     let mut args = vec!["diff".to_string(), "--full-index".into()];
     args.extend(base_args(opts));
     if untracked && side == WorkSide::Unstaged {
@@ -373,11 +398,7 @@ pub fn working_raw(repo: &Path, path: &str, side: WorkSide, base: Option<&str>, 
         args.push("--".into());
         args.push("/dev/null".into());
         args.push(path.into());
-        let out = runner::exec_full(repo, &args, &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
-        if out.code > 1 {
-            return Err(runner::to_error("git diff --no-index", &out));
-        }
-        return Ok(out.stdout);
+        return diff_output(repo, &args, preview, 1);
     }
     if side == WorkSide::Staged {
         args.push("--cached".into());
@@ -392,24 +413,36 @@ pub fn working_raw(repo: &Path, path: &str, side: WorkSide, base: Option<&str>, 
             args.push(old.clone());
         }
     }
-    let out = runner::exec_full(repo, &args, &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
-    if !out.ok() {
-        return Err(runner::to_error("git diff", &out));
-    }
-    Ok(out.stdout)
+    diff_output(repo, &args, preview, 0)
 }
 
 pub fn working_diff(repo: &Path, path: &str, side: WorkSide, base: Option<&str>, untracked: bool, opts: &DiffOptions) -> GitResult<FileDiff> {
-    let raw = working_raw(repo, path, side, base, untracked, opts)?;
+    working_diff_view(repo, path, side, base, untracked, opts, false)
+}
+
+pub fn working_diff_view(
+    repo: &Path,
+    path: &str,
+    side: WorkSide,
+    base: Option<&str>,
+    untracked: bool,
+    opts: &DiffOptions,
+    preview: bool,
+) -> GitResult<FileDiff> {
+    let (raw, preview_limited) = working_output(repo, path, side, base, untracked, opts, preview)?;
     let hash = fingerprint(&raw);
     let files = parse(&raw);
     // Pick the file entry matching the path (renames can produce one entry).
     let pick = files.iter().find(|f| f.new_path.as_deref() == Some(path)).or_else(|| files.first());
     let Some(file) = pick else {
-        return Ok(FileDiff { path: path.to_string(), hash, empty: true, ..Default::default() });
+        return Ok(FileDiff { path: path.to_string(), hash, empty: !preview_limited, truncated: preview_limited, preview_limited, ..Default::default() });
     };
     let mut display = to_display(file, path, hash);
+    display.truncated |= preview_limited;
+    display.preview_limited = preview_limited;
+    display.empty &= !preview_limited;
     if side == WorkSide::Unstaged
+        && !preview_limited
         && files.len() == 1
         && !display.binary
         && !display.hunks.is_empty()
@@ -458,6 +491,10 @@ pub fn stage_selection_snapshot(repo: &Path, path: &str, selection: &[(usize, us
 
 /// Diff of a path between two revisions (`from` may be None for a root commit).
 pub fn rev_raw(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &DiffOptions) -> GitResult<Vec<u8>> {
+    rev_output(repo, from, to, path, opts, false).map(|(raw, _)| raw)
+}
+
+fn rev_output(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &DiffOptions, preview: bool) -> GitResult<(Vec<u8>, bool)> {
     let mut args = vec!["diff".to_string()];
     args.extend(base_args(opts));
     args.push(match from {
@@ -470,22 +507,26 @@ pub fn rev_raw(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &Dif
     if let Some(old) = opts.rename_from.as_ref().filter(|old| old.as_str() != path) {
         args.push(old.clone());
     }
-    let out = runner::exec_full(repo, &args, &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
-    if !out.ok() {
-        return Err(runner::to_error("git diff", &out));
-    }
-    Ok(out.stdout)
+    diff_output(repo, &args, preview, 0)
 }
 
 pub fn rev_diff(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &DiffOptions) -> GitResult<FileDiff> {
-    let raw = rev_raw(repo, from, to, path, opts)?;
+    rev_diff_view(repo, from, to, path, opts, false)
+}
+
+pub fn rev_diff_view(repo: &Path, from: Option<&str>, to: &str, path: &str, opts: &DiffOptions, preview: bool) -> GitResult<FileDiff> {
+    let (raw, preview_limited) = rev_output(repo, from, to, path, opts, preview)?;
     let hash = fingerprint(&raw);
     let files = parse(&raw);
     let pick = files.iter().find(|f| f.new_path.as_deref() == Some(path)).or_else(|| files.first());
-    Ok(match pick {
+    let mut display = match pick {
         Some(f) => to_display(f, path, hash),
         None => FileDiff { path: path.to_string(), hash, empty: true, ..Default::default() },
-    })
+    };
+    display.truncated |= preview_limited;
+    display.preview_limited = preview_limited;
+    display.empty &= !preview_limited;
+    Ok(display)
 }
 
 /// Builds a patch containing only the selected lines.

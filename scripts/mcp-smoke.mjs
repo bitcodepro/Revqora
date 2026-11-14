@@ -381,6 +381,38 @@ async function searchAndStatusPagination({ page, original, work, tool, rawTool }
   await openRepository(page, original);
 }
 
+async function incompleteSync({ page, original, work, tool, waitPhase }) {
+  const root = path.join(work, "mcp-sync");
+  const remote = path.join(work, "mcp-sync-remote.git");
+  fs.mkdirSync(root);
+  const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true }).trim();
+  git("init", "-qb", "main");
+  git("config", "user.name", "MCP Sync Fixture");
+  git("config", "user.email", "sync@example.invalid");
+  git("config", "commit.gpgsign", "false");
+  git("commit", "--allow-empty", "-qm", "Base");
+  execFileSync("git", ["init", "--bare", "-qb", "main", remote], { windowsHide: true });
+  git("remote", "add", "origin", remote);
+  git("push", "-qu", "origin", "main");
+  const before = git("rev-parse", "HEAD");
+  git("commit", "--allow-empty", "-qm", "Outgoing");
+  // Let Sync read the upstream and prepare normally, then reject its push.
+  const hooks = path.join(remote, "hooks");
+  execFileSync("git", ["-C", remote, "config", "core.hooksPath", "hooks"], { windowsHide: true });
+  fs.writeFileSync(path.join(hooks, "pre-receive"), "#!/bin/sh\necho 'Test server rejected push' >&2\nexit 1\n", { mode: 0o755 });
+  await openRepository(page, root);
+  await page.locator(".topbar .repo-current > span").filter({ hasText: "main" }).waitFor();
+  const { active: repository } = await tool("list_repositories");
+  assert(repository && path.relative(root, repository) === "", "The Sync fixture must be available to MCP");
+  const request = await tool("request_action", { repository, action: "sync", receive: false, send: true });
+  const result = await waitPhase(request.id, "partial", 90_000);
+  assert.equal(result.errorCode, "sync_incomplete");
+  assert.equal(result.result.sent, false);
+  assert(result.result.checkpoint);
+  assert.equal(execFileSync("git", ["-C", remote, "rev-parse", "main"], { encoding: "utf8", windowsHide: true }).trim(), before);
+  await openRepository(page, original);
+}
+
 async function diffStageAndStash({ page, original, work, tool, rawTool, waitPhase }) {
   const root = path.join(work, "mcp-diff-stage-stash");
   fs.mkdirSync(root);
@@ -552,8 +584,8 @@ export async function mcpSmoke({ page, exe, profile, work, restart }) {
     if (result.isError) throw new Error(result.content[0].text);
     return JSON.parse(result.content[0].text);
   };
-  const waitPhase = async (action, phase) => {
-    const end = Date.now() + 20_000;
+  const waitPhase = async (action, phase, timeout = 20_000) => {
+    const end = Date.now() + timeout;
     let result;
     while (Date.now() < end) {
       result = await tool("action_status", { id: action });
@@ -657,6 +689,7 @@ export async function mcpSmoke({ page, exe, profile, work, restart }) {
     await diffStageAndStash({ page, original: root, work, tool, rawTool, waitPhase });
     await searchAndStatusPagination({ page, original: root, work, tool, rawTool });
     const oldAction = await approvalModes({ page, root, work, tool, waitPhase, selectApproval });
+    await incompleteSync({ page, original: root, work, tool, waitPhase });
     page = await restart(root, async () => {
       const offline = await rawTool("action_status", { id: oldAction });
       assert.equal(offline.structuredContent.code, "desktop_closed");
