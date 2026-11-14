@@ -181,6 +181,47 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    await prCenter.getByText("No remote configured", { exact: true }).waitFor();
    assert.equal(await page.locator(".sidebar [data-branch-name='feature/mine']").count(), 0);
    assert.equal(await page.getByLabel("Pull request scope").inputValue(), "repository");
+
+   // Navigate using only Explorer and History, including a late open from a branch.
+   if (await repositories.getAttribute("aria-expanded") === "true") await repositories.click();
+   await page.locator(".main-head").getByRole("button", { name: "History", exact: true }).click();
+   await commitRow("Switch second base").waitFor();
+   const first = repoRow("switch-one"), second = repoRow("switch-two");
+   const firstButton = first.locator(".repository-select"), secondButton = second.locator(".repository-select");
+   await first.getByRole("button", { name: "Expand branches in switch-one" }).click();
+   const feature = explorer.getByRole("treeitem", { name: "feature/mine", exact: true }).locator(".repository-select");
+   await feature.waitFor();
+   assert.equal(await secondButton.getAttribute("aria-current"), "true");
+   assert.equal(await commitRow("Switch second base").count(), 1);
+   const activeMark = row => row.evaluate(element => getComputedStyle(element, "::before").content);
+   assert.equal(await activeMark(first), "none");
+   assert.notEqual(await activeMark(second), "none");
+   await firstButton.click({ modifiers: ["Control"] });
+   assert.equal(await first.getAttribute("aria-selected"), "true");
+   assert.equal(await secondButton.getAttribute("aria-current"), "true");
+   await page.keyboard.press("Escape");
+   assert.equal(await first.getAttribute("aria-selected"), "false");
+   await first.getByRole("button", { name: "Close switch-one" }).click();
+   await feature.waitFor();
+   assert(await installGate(["repo_open"]));
+   await feature.click();
+   await page.waitForFunction(() => window.__fastSwitchGate.held.some(entry => entry.command === "repo_open"));
+   await first.locator(".repository-select[aria-current=true]").waitFor();
+   assert.equal(await commitRow("Switch second base").count(), 0, "Previous repository's graph remained visible while reopening");
+   await secondButton.click();
+   await commitRow("Switch second base").waitFor();
+   await page.evaluate(() => window.__fastSwitchGate.restore());
+   await first.and(page.locator("[data-repository-state='open']")).waitFor();
+   assert.equal(await secondButton.getAttribute("aria-current"), "true");
+   assert.equal(await feature.getAttribute("aria-current"), "false");
+   assert.equal(await commitRow("Switch first feature").count(), 0);
+   await feature.click();
+   await commitRow("Switch first feature").waitFor();
+   assert.equal(await firstButton.getAttribute("aria-current"), "true");
+   assert.equal(await feature.getAttribute("aria-current"), "true");
+   assert.equal(await commitRow("Switch second base").count(), 0);
+   assert.match(await page.getByLabel("History scope").locator("option:checked").textContent(), /Branch context.*feature\/mine/);
+   assert.equal(git(one, "branch", "--show-current"), "main");
   }catch(error){if(out)await page?.screenshot({path:path.join(out,"fast-switch-failure.png")}).catch(()=>{});throw error;}
   finally{await page?.evaluate(()=>window.__fastSwitchGate?.restore()).catch(()=>{});if(app){for(const repo of [one,two])await invoke("unwatch_repo",{repo}).catch(()=>{});await app.close();}}
  });

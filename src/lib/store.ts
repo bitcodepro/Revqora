@@ -492,7 +492,13 @@ async function refreshOnce(root: string, parts: Parts) {
   // or refs that are already ready. The full status still owns action guards.
   void infoP.then(info=>{if(info&&current())useRepos.getState().patch(root,{info});}).catch(()=>{});
   const initialDirty = !!(before.status ?? before.sidebarStatus)?.files.length;
-  let graphP = canLoadGraph() && parts.graph && !before.graph ? loadGraph(root, initialDirty) : null;
+  let graphP: Promise<void> | null = null;
+  let requestedHead: string | null | undefined;
+  const refreshHistory = (tab: RepoTab, dirty?: boolean) => {
+    requestedHead = tab.branchFilter === CURRENT_HISTORY_BRANCH && !tab.branchContext ? historyHead(tab) : undefined;
+    graphP = loadGraph(root, dirty);
+  };
+  if (canLoadGraph() && parts.graph && !before.graph) refreshHistory(before, initialDirty);
   void refsP.then(refs => {
     if (!refs || !current()) return;
     const state = useRepos.getState(), tab = state.tabs[root];
@@ -500,7 +506,7 @@ async function refreshOnce(root: string, parts: Parts) {
     const missing = scope?.startsWith("refs/") && !refs.local.some(branch => branch.fullName === scope) && !refs.remote.some(branch => branch.fullName === scope);
     const rebuild = missing && canLoadGraph();
     state.patch(root, missing ? { refs, branchFilter: CURRENT_HISTORY_BRANCH, branchContext: null, viewedBranch: null, selected: null, multi: [], historyJump: null, ...(rebuild ? { graph: null } : {}) } : { refs });
-    if (rebuild) graphP = loadGraph(root);
+    if (rebuild) refreshHistory(state.tabs[root]);
   }).catch(() => {});
   for (const p of [infoP, refsP]) p.catch(() => {}); // rejections are handled below
   try {
@@ -516,7 +522,7 @@ async function refreshOnce(root: string, parts: Parts) {
     if (status) useRepos.getState().patch(root, sidebarOnly ? { sidebarStatus: status } : { status });
     const graphWorktree = graphP ? includeWorkingChanges(before, initialDirty) : tab.graphHasWorktree;
     if (canLoadGraph() && ((!graphP && (parts.graph || !tab.graph)) || includeWorkingChanges(tab, dirty) !== graphWorktree)) {
-      graphP = loadGraph(root, dirty);
+      refreshHistory(tab, dirty);
     }
     const [info, refs] = await Promise.all([infoP, refsP]);
     const graphHeadChanged = info && before.graph?.headOid !== undefined && before.graph.headOid !== (info.head.oid ?? "");
@@ -530,9 +536,14 @@ async function refreshOnce(root: string, parts: Parts) {
           graphRequests.set(root, (graphRequests.get(root) ?? 0) + 1);
           useRepos.getState().patch(root, { graph: null, graphLoading: false });
         }
-      } else if (parts.revalidate) {
-        invalidatePreview(root);
-        if (!graphP) graphP = loadGraph(root, dirty);
+      } else {
+        const latest = useRepos.getState().tabs[root];
+        if (parts.revalidate) invalidatePreview(root);
+        // The fast initial graph can start before repo_info observes a checkout.
+        // Its rows belong to the old scope, even if the Git command saw the new HEAD.
+        const headScopeChanged = requestedHead !== undefined && latest.branchFilter === CURRENT_HISTORY_BRANCH &&
+          !latest.branchContext && requestedHead !== historyHead(latest);
+        if (headScopeChanged || (parts.revalidate && !graphP)) refreshHistory(latest, dirty);
       }
     }
     const [layers, extras] = await Promise.all([layersP, extrasP]);
@@ -583,10 +594,11 @@ export async function loadEntireHistory(root: string) {
   if (tab && hasMoreHistory(tab)) await loadGraph(root, undefined, tab.graph?.commitCount ?? 2_147_483_647);
 }
 
+const historyHead = (tab: RepoTab) => tab.info?.head.branch ?? tab.info?.head.oid ?? null;
+
 export function graphHistoryScope(tab: RepoTab, primary: string | undefined, showIncoming: boolean) {
   const scope = tab.branchContext ? { reference: tab.branchContext, primary: primary ?? null } : tab.branchFilter;
-  const head = tab.info?.head;
-  return { scope, key: JSON.stringify([scope, showIncoming, scope === CURRENT_HISTORY_BRANCH ? (head?.branch ?? head?.oid) : null]) };
+  return { scope, key: JSON.stringify([scope, showIncoming, scope === CURRENT_HISTORY_BRANCH ? historyHead(tab) : null]) };
 }
 
 async function loadGraphOnce(root: string, includeWorktree: boolean | undefined, minimumCommits: number, current: () => boolean) {

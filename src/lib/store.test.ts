@@ -4,7 +4,7 @@ vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), h
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() }, toast: { warning: vi.fn() } }));
 import { api } from "./api";
-import { hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, useRepos, type RepoTab } from "./store";
+import { CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, useRepos, type RepoTab } from "./store";
 import { previewGeneration } from "./commitPreview";
 import { repositoryCall, type Invoke } from "./operationClient";
 import type { RepoInfo, StatusSummary } from "./types";
@@ -54,6 +54,27 @@ describe("background repository observation", () => {
     vi.mocked(api.graphLoad).mockResolvedValue({key:"graph-b",headOid:"b",total:1,maxLanes:1,headIndex:0});useRepos.setState({active:root});
     await useRepos.getState().refresh(root,{background:true,revalidate:true,info:true,refs:true});
     await vi.waitFor(()=>expect(useRepos.getState().tabs[root].graph?.headOid).toBe("b"));expect(api.graphLoad).toHaveBeenCalledTimes(1);
+  });
+  it("rebuilds an initial Current branch graph when repo info arrives with a newer HEAD", async () => {
+    const store = useRepos.getState();
+    const before = { head: { branch: "main", oid: "first" } } as RepoInfo;
+    const after = { head: { branch: "other", oid: "second" } } as RepoInfo;
+    store.patch(root, { info: before, graph: null, branchFilter: CURRENT_HISTORY_BRANCH, graphVersion: 0 });
+    let publishHead!: (info: RepoInfo) => void;
+    vi.mocked(api.repoInfo).mockImplementationOnce(() => new Promise(resolve => { publishHead = resolve; }));
+    vi.mocked(api.graphLoad)
+      .mockResolvedValueOnce({ key: "old-head", total: 2, maxLanes: 1, headIndex: 0 })
+      .mockResolvedValueOnce({ key: "new-head", total: 3, maxLanes: 1, headIndex: 0 });
+
+    const refresh = store.refresh(root, { background: true, graph: true, info: true });
+    await vi.waitFor(() => expect(useRepos.getState().tabs[root].graph?.key).toBe("old-head"));
+    publishHead(after);
+    await refresh;
+
+    const tab = useRepos.getState().tabs[root];
+    expect(tab.graph?.key).toBe("new-head");
+    expect(tab.graphScope).toBe(graphHistoryScope(tab, undefined, true).key);
+    expect(api.graphLoad).toHaveBeenCalledTimes(2);
   });
   it("serializes graph cache builds and publishes only the latest branch request", async () => {
     let release!: (v: never) => void;
