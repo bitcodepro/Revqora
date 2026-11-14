@@ -19,7 +19,7 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
     git(bare,"branch","topic",head);git(bare,"update-server-info");
     const token="scoped-bitbucket-fixture-token",secondToken="other-bitbucket-fixture-token",password="portable bitbucket test vault",user="fixture-user",email="fixture@example.invalid",seen=[];
     const anonymousToken="anonymous-bitbucket-fixture-token";
-    let denyPrList=false,denyPrFiles=false;
+    let denyPrList=false,denyPrFiles=false,profileStatus=403;
     const pr={id:7,title:"Scoped Bitbucket PR",description:"Token with repository and PR scopes only",state:"OPEN",author:{display_name:"Fixture Author",nickname:"fixture-author",uuid:"{author}"},source:{branch:{name:"topic"},commit:{hash:head.slice(0,12)}},destination:{branch:{name:"main"},commit:{hash:head.slice(0,12)}},updated_on:"2026-01-01T00:00:00Z",participants:[{user:{display_name:"Alex Reviewer"},approved:true},{user:{display_name:"Sam Reviewer"},state:"changes_requested"}]};
     const server=http.createServer(async(req,res)=>{
       const url=new URL(req.url,"http://fixture"),auth=req.headers.authorization??"";
@@ -34,7 +34,7 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
         if(!file.startsWith(bare+path.sep)||!fs.existsSync(file)||!fs.statSync(file).isFile()){res.writeHead(404);res.end();return;}
         res.writeHead(200,{"content-type":"text/plain"});res.end(fs.readFileSync(file));return;
       }
-      if(url.pathname==="/2.0/user")return send(403,{error:{message:"Profile permission deliberately unavailable"}});
+      if(url.pathname==="/2.0/user")return send(profileStatus,{error:{message:"Profile permission deliberately unavailable"}});
       if(auth!==apiAuth&&auth!==`Bearer ${secondToken}`&&auth!==`Bearer ${anonymousToken}`)return send(401,{error:{message:"Token rejected"}});
       if((denyPrList&&url.pathname==="/2.0/repositories/team/repo/pullrequests")||(denyPrFiles&&url.pathname.endsWith("/pullrequests/7/diff"))){
         return send(403,{error:{message:"Repository scopes deliberately unavailable"}});
@@ -220,9 +220,12 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       const restored=await invoke("pr_page",{repo:root,state:"open",cursor:null});assert.equal(restored.items[0].title,pr.title);assert.equal(seen.filter(r=>r.path==="/2.0/user").length,0);
       // Return the native error through evaluate because CDP only preserves the
       // message of a promise rejection crossing the page boundary.
-      const identityError=await page.evaluate(repo=>window.__TAURI_INTERNALS__.invoke("forge_connection_identity",{repo}).catch(error=>error),root);
-      assert.equal(identityError.kind,"identity-unavailable");
-      assert.match(identityError.message,/read:user:bitbucket/);
+      for(const status of [403,401]){
+        profileStatus=status;
+        const identityError=await page.evaluate(repo=>window.__TAURI_INTERNALS__.invoke("forge_connection_identity",{repo}).catch(error=>error),root);
+        assert.equal(identityError.kind,"identity-unavailable");
+        assert.match(identityError.message,/read:user:bitbucket/);
+      }
     }catch(error){if(out)await page?.screenshot({path:path.join(out,"bitbucket-token-failure.png")}).catch(()=>{});throw error;}
     finally{if(app){await invoke("unwatch_repo",{repo:root}).catch(()=>{});await app.close();}server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
   });

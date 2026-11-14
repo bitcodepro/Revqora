@@ -120,12 +120,24 @@ pub fn connection_identity(repo: &Path) -> GitResult<ConnectionIdentity> {
             Some(credential) => credential,
             None => token(repo, &context.git_url)?,
         };
-        let identity = if context.profile.is_some() {
-            super::forge_accounts::verify_identity(&info.kind, &info.api, &credential)
-        } else {
-            send_with_git_credential(&info.kind, credential, |c| super::forge_accounts::verify_identity(&info.kind, &info.api, c))
-        }
-        .map_err(connection_identity_error)?;
+        let verify = |credential: &super::forge_accounts::Credential| {
+            super::forge_accounts::verify_identity(&info.kind, &info.api, credential).map_err(|error| {
+                // Bitbucket can reject /user even though the credential grants
+                // PR access. Only reinterpret a 401 after checking the same connection.
+                let pr_access = error.details.iter().any(|detail| detail == "forge_http_status=bitbucket:401")
+                    && super::forge_accounts::request_json(
+                        &info.kind,
+                        &info.api,
+                        credential,
+                        "GET",
+                        &format!("/repositories/{}/pullrequests?pagelen=1", project_path(&info.project)),
+                        None,
+                    )
+                    .is_ok();
+                connection_identity_error(error, pr_access)
+            })
+        };
+        let identity = if context.profile.is_some() { verify(&credential) } else { send_with_git_credential(&info.kind, credential, verify) }?;
         (identity.user_id, identity.login, identity.name, "provider")
     };
     Ok(ConnectionIdentity {
@@ -140,8 +152,8 @@ pub fn connection_identity(repo: &Path) -> GitResult<ConnectionIdentity> {
     })
 }
 
-fn connection_identity_error(error: GitError) -> GitError {
-    if error.details.iter().any(|detail| detail == "forge_http_status=bitbucket:403") {
+fn connection_identity_error(error: GitError, pr_access: bool) -> GitError {
+    if pr_access || error.details.iter().any(|detail| detail == "forge_http_status=bitbucket:403") {
         return GitError::new("Bitbucket denied access to the selected connection's user profile. A personal API token needs read:user:bitbucket (OAuth: account). Repository-scoped tokens may still read pull requests without a personal profile.")
             .kind("identity-unavailable");
     }
@@ -152,8 +164,9 @@ fn connection_identity_error(error: GitError) -> GitError {
 fn bitbucket_profile_denial_is_distinct_from_rejected_credentials() {
     let denied = GitError::new("Forbidden").kind("auth").details(vec!["forge_http_status=bitbucket:403".into()]);
     let rejected = GitError::new("Unauthorized").kind("auth").details(vec!["forge_http_status=bitbucket:401".into()]);
-    assert_eq!(connection_identity_error(denied).kind, "identity-unavailable");
-    assert_eq!(connection_identity_error(rejected).kind, "auth");
+    assert_eq!(connection_identity_error(denied, false).kind, "identity-unavailable");
+    assert_eq!(connection_identity_error(rejected.clone(), false).kind, "auth");
+    assert_eq!(connection_identity_error(rejected, true).kind, "identity-unavailable");
 }
 
 /// Provider discovery for navigation uses public remote and account metadata.
