@@ -44,9 +44,11 @@ The Add API account form manages GitHub, GitLab, Azure and Bitbucket Cloud accou
 For HTTPS Git operations, Revqora first uses the configured credential helper.
 On Windows, if Revqora prompts for a token, **Remember in Revqora on this Windows
 account** stores Git-approved credentials under `data/git-credentials`, encrypted
-for that Windows user. Enter your Atlassian email with a Bitbucket API token to
-reuse it for PRs. If a remembered token expires, sign in again or reconnect the
-API account.
+for that Windows user. In the Bitbucket prompt, enter the token to sign in to Git.
+Leave the optional PR email blank to reuse the token as Bearer. If your PR API
+connection uses Basic authentication, choose **Add email for pull requests
+(optional)** and enter your Atlassian email. Basic uses that email and the same
+token. If a remembered token expires, sign in again or reconnect the API account.
 
 To persist an API account token in Revqora's separate vault:
 

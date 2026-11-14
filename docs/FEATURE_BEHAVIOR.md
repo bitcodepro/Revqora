@@ -35,6 +35,10 @@ Before opening or updating a PR:
 - [ ] Apply restores a stash and keeps its entry. Pop drops it after a complete restoration. When conflicts or partial index restoration occur, report them and preserve the stash. Drop preserves a recovery checkpoint and leaves the working files alone.
 - [ ] Destructive actions show consequences before confirmation. Branch deletion outside the comparison history offers an explicit confirmation. Remote deletion checks the exact reviewed SHA.
 
+## Bitbucket credentials
+
+- [ ] The Bitbucket Git prompt accepts a token by itself. With Remember enabled, it offers an optional email for Basic authentication in Pull Requests. Closing the email field submits a token-only sign-in.
+
 ## MCP and portable updates
 
 - [ ] MCP read results and errors distinguish completeness and failures. Confirmable actions respect the configured approval mode, report their final outcome and preserve repository state on cancellation.
