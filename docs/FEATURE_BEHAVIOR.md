@@ -11,6 +11,7 @@ Before opening or updating a PR:
 ## Explorer, Repositories and Branches
 
 - [ ] Explorer shows folders, repositories and branches. Only folders and repositories can move in the tree. Moving a repository keeps its branches with it and changes only the app's organization.
+- [ ] Explorer highlights the active repository after switches from any panel or shortcut. Keyboard focus and multi-selection are independent. History, Changes, Branches and repository-scoped Pull Requests follow the active repository.
 - [ ] Repositories remains available as a flat panel. Clicking a repository highlights its entire row in both themes, even after the pointer leaves. Ctrl/Shift selection has its own styling. Escape clears the multi-selection.
 - [ ] Branches remains available as a separate panel. Both surfaces share branch actions. A single click opens branch context while keeping the current checkout. Primary appears first and survives My branches. Favorites can show a branch with its repository and parent folders.
 - [ ] Branch rows show ↑/↓ against their upstream. With a configured remote and no upstream, ↑ counts commits absent from the fetched remote branches.
@@ -26,6 +27,7 @@ Before opening or updating a PR:
 - [ ] Search all repositories scans the open repositories, including ones whose History view has never loaded. Results appear as each repository completes and are sorted newest first within each repository.
 - [ ] A saved compact search dialog grows once when the first results or a repository error arrive. Users can resize it afterward. Its automatic size does not overwrite their saved size.
 - [ ] Opening a match selects its repository and commit. Branch context, current-branch history and All branches are distinct scopes. Verify Graph, Review and Columns when changing shared history behavior.
+- [ ] When the branch scope changes, History waits for that scope's graph. Updates to the same scope can keep the existing rows visible.
 - [ ] History search covers the whole selected scope while the graph stays paged. A match outside the loaded graph is available in the match list and opens its commit by SHA.
 
 ## Working changes, staging and stash

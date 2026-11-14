@@ -542,7 +542,7 @@ function MainApp() {
       <DetachedPanel id="repositories"><RepositorySidebar/></DetachedPanel>
       <DetachedPanel id="branches">{tab?.info && <Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/>}</DetachedPanel>
       <DetachedPanel id="history">{tab?.info && <GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/>}</DetachedPanel>
-      <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <CommitDetails root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/> : null}</DetachedPanel>
+      <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <CommitDetails key={tab.root} root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/> : null}</DetachedPanel>
       <DetachedPanel id="pulls">{tab && (tab.info || prAllRepositories) && <PullRequestsView key={prAllRepositories ? "all-pull-requests" : tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/>}</DetachedPanel>
       <DetachedPanel id="changes">{tab?.info && <ChangesView key={tab.root} tab={tab} onOpenConflict={path => showMainChanges(tab.root, path)}/>}</DetachedPanel>
       <DetachedPanel id="worktrees">{tab?.info && <WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/>}</DetachedPanel>

@@ -583,6 +583,12 @@ export async function loadEntireHistory(root: string) {
   if (tab && hasMoreHistory(tab)) await loadGraph(root, undefined, tab.graph?.commitCount ?? 2_147_483_647);
 }
 
+export function graphHistoryScope(tab: RepoTab, primary: string | undefined, showIncoming: boolean) {
+  const scope = tab.branchContext ? { reference: tab.branchContext, primary: primary ?? null } : tab.branchFilter;
+  const head = tab.info?.head;
+  return { scope, key: JSON.stringify([scope, showIncoming, scope === CURRENT_HISTORY_BRANCH ? (head?.branch ?? head?.oid) : null]) };
+}
+
 async function loadGraphOnce(root: string, includeWorktree: boolean | undefined, minimumCommits: number, current: () => boolean) {
   const store = useRepos.getState();
   const tab = store.tabs[root];
@@ -590,9 +596,8 @@ async function loadGraphOnce(root: string, includeWorktree: boolean | undefined,
   const dirty = includeWorkingChanges(tab, includeWorktree ?? (!!tab.status && tab.status.files.length > 0));
   const settings = useSettings.getState();
   const showIncoming = !settings.hideIncomingByRepo[root];
-  const scope = tab.branchContext ? { reference: tab.branchContext, primary: settings.primaryBranchByRepo[repositoryKey(root)] ?? null } : tab.branchFilter;
-  const head = tab.info?.head;
-  const scopeKey = JSON.stringify([scope, showIncoming, scope === CURRENT_HISTORY_BRANCH ? (head?.branch ?? head?.oid) : null]);
+  const primary = tab.branchContext ? settings.primaryBranchByRepo[repositoryKey(root)] : undefined;
+  const { scope, key: scopeKey } = graphHistoryScope(tab, primary, showIncoming);
   const limit = Math.max(tab.graphScope === scopeKey ? tab.graphLimit : INITIAL_GRAPH_COMMITS, minimumCommits);
   store.patch(root, { graphLoading: true });
   try {
