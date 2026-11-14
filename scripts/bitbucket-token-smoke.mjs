@@ -134,8 +134,8 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await prButton("Load checks").click();
       await detailPanel.getByText("Build fixture",{exact:true}).waitFor();
       assert.equal(seen.filter(r=>r.path.endsWith("/statuses")).length,1);
-      const connection=(await invoke("forge_info",{repo:root})).connectionRevision;
-      const checks=await invoke("pr_checks",{repo:root,number:7,expectedConnection:connection});
+      const checksConnection=(await invoke("forge_info",{repo:root})).connectionRevision;
+      const checks=await invoke("pr_checks",{repo:root,number:7,expectedConnection:checksConnection});
       assert(checks.revision&&checks.checks.some(check=>check.name==="Build fixture"));
       pr.updated_on="2026-01-02T00:00:00Z";
       await prButton("Discussions").click();
