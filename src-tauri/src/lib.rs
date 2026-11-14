@@ -195,24 +195,6 @@ async fn branch_manager_snapshot(repo: String, base: Option<String>) -> git::run
 async fn branch_manager_compare(repo: String, base: String, tip: String) -> git::runner::GitResult<git::branch_manager::Distance> {
     blocking(move || git::branch_manager::compare(&p(&repo), &base, &tip)).await
 }
-#[tauri::command]
-async fn sync_prepare(repo: String, expected_state: Option<String>, app: AppHandle) -> git::runner::GitResult<git::sync::SyncPlan> {
-    mutating(repo.clone(), expected_state, app, "sync_prepare", None, move || git::sync::prepare(&p(&repo))).await
-}
-#[tauri::command]
-async fn sync_execute(
-    repo: String,
-    plan: git::sync::SyncPlan,
-    receive: bool,
-    send: bool,
-    expected_state: Option<String>,
-    app: AppHandle,
-) -> git::runner::GitResult<git::sync::SyncResult> {
-    if expected_state.as_deref() != Some(plan.state_token.as_str()) || plan.state_token.is_empty() {
-        return Err(git::runner::GitError::new("Prepare a Sync review first."));
-    }
-    mutating(repo.clone(), expected_state, app, "sync_execute", None, move || git::sync::execute(&p(&repo), &plan, receive, send)).await
-}
 // Revqora: Tauri command surface over the git backend.
 
 pub mod askpass;
@@ -2141,8 +2123,8 @@ async fn pr_detail(repo: String, number: u64, expected_connection: String) -> Gi
     blocking(move || git::pr_center::detail(&p(&repo), number, &expected_connection)).await
 }
 #[tauri::command]
-async fn pr_checks(repo: String, number: u64, expected_connection: String, expected_revision: String) -> GitResult<Vec<forge::Check>> {
-    blocking(move || git::pr_center::checks(&p(&repo), number, &expected_connection, &expected_revision)).await
+async fn pr_checks(repo: String, number: u64, expected_connection: String, expected_revision: Option<String>) -> GitResult<git::pr_center::Checks> {
+    blocking(move || git::pr_center::checks(&p(&repo), number, &expected_connection, expected_revision.as_deref())).await
 }
 #[tauri::command]
 async fn pr_create(
@@ -2177,8 +2159,8 @@ async fn pr_templates(repo: String, expected_connection: String) -> GitResult<gi
     blocking(move || git::pr_center::templates(&p(&repo), &expected_connection)).await
 }
 #[tauri::command]
-async fn pr_files(repo: String, number: u64, expected_connection: String, expected_revision: String, offset: u32) -> GitResult<git::pr_center::Files> {
-    blocking(move || git::pr_center::files(&p(&repo), number, &expected_connection, &expected_revision, offset)).await
+async fn pr_files(repo: String, number: u64, expected_connection: String, expected_revision: Option<String>, offset: u32) -> GitResult<git::pr_center::Files> {
+    blocking(move || git::pr_center::files(&p(&repo), number, &expected_connection, expected_revision.as_deref(), offset)).await
 }
 #[tauri::command]
 async fn pr_file(repo: String, number: u64, expected_connection: String, expected_revision: String, file_id: String) -> GitResult<git::pr_center::FileView> {
@@ -2346,7 +2328,7 @@ fn startup_paths() -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     portable::automation_startup("tauri-context-start");
-    let context = tauri::generate_context!();
+    let context = app_context();
     portable::automation_startup("tauri-context-ready");
     #[cfg(all(windows, feature = "ui-automation"))]
     let context = {
@@ -2528,8 +2510,6 @@ pub fn run() {
             branch_cleanup_execute,
             branch_manager_snapshot,
             branch_manager_compare,
-            sync_prepare,
-            sync_execute,
             operation_log_health,
             operation_log_list,
             operation_log_detail,
@@ -2795,4 +2775,8 @@ pub fn run() {
                 git::agents::cancel_all();
             }
         });
+}
+
+fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
 }

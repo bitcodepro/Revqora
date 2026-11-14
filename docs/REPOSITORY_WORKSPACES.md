@@ -1,4 +1,4 @@
-# Explorer, repository library and reviewed Sync
+# Explorer and repository library
 
 Open **Repository library** from the toolbar, or **Manage library**
 from the Repositories panel. A star keeps a repository accessible after its tab is
@@ -72,38 +72,3 @@ memberships and favorites carried over. An existing workspace and group with the
 same sibling name remain separate entries with distinct names. Group operations
 update only Revqora's library metadata, which is stored in the executable-local
 WebView profile. The working copies remain on disk.
-
-## Sync
-
-Sync prepares each selected repository independently and reads its actual server
-tip. Preparation fetches commit objects without changing local branches, tracking
-refs, tags, index or working files. The review shows local/server revisions and
-incoming/outgoing counts. **Receive** defaults on for incoming commits; **Send**
-defaults off and must be selected explicitly. Cancel performs no synchronization.
-
-Execution rechecks the reviewed repository state, upstream mapping and server SHA
-after acquiring the repository writer queue. Receive fast-forwards only to the
-reviewed SHA, with autostash and overwriting ignored files disabled. Send publishes
-one fixed SHA to one reviewed upstream ref, verifies ancestry and uses a server
-SHA lease. It never intentionally rewrites server history, mirrors other refs or
-publishes tags, regardless of the configured remote's mirror/followTags options.
-
-Dirty, conflicted, detached, unborn, bare, diverged or ambiguous-upstream repositories
-are skipped with reasons. A missing server branch must first be published with Push.
-Fetch and push must resolve to the same single server. Custom upstream destinations
-outside `refs/remotes/` require the existing individual Git actions.
-
-Sync also refuses replacement refs, legacy grafts and history-override environment
-variables. Its Git commands disable replacement/graft interpretation so ancestry,
-receiving and publication use physical commit parents. Explicit receive options
-override squash, fast-forward and autostash settings while retaining other merge
-policies, including signature verification. Receive checks the resulting branch,
-exact HEAD and clean working tree before reporting success or updating the tracking
-cache.
-
-A recovery checkpoint is created after preflight and before execution. Results
-report completed receive/send steps and warnings per repository; one failure does
-not stop the remaining repositories. A lost transport response is checked against
-the server. An uncertain outcome requires a new review rather than an automatic
-retry. Local tracking-cache failures after server success are warnings. Recovery
-does not promise to reverse a remote push automatically.

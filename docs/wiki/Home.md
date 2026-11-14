@@ -23,7 +23,7 @@ Revqora is a desktop Git client for working with repositories, reviewing changes
 | Understand the screen, panels and review layouts | [Interface and navigation](https://github.com/bitcodepro/Revqora/wiki/Interface-and-navigation) |
 | Add another repository without closing the app | [Explorer and repository library](https://github.com/bitcodepro/Revqora/wiki/Repositories-and-workspaces) |
 | Understand staging, commit, amend and signing | [Changes and commits](https://github.com/bitcodepro/Revqora/wiki/Changes-and-commits) |
-| Choose between Fetch, Pull, Push and Sync | [Remote operations](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync) |
+| Choose between Fetch, Pull and Push | [Remote operations](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync) |
 | Create, switch, rename or safely delete branches | [Branches and cleanup](https://github.com/bitcodepro/Revqora/wiki/Branches-and-cleanup) |
 | Inspect a commit, compare branches or find changed code | [History, diff and search](https://github.com/bitcodepro/Revqora/wiki/History-diff-and-search) |
 | Merge branches, resolve conflicts or edit commit history | [Merge, rebase and conflicts](https://github.com/bitcodepro/Revqora/wiki/Merge-rebase-and-conflicts) |
@@ -46,7 +46,7 @@ Revqora is a desktop Git client for working with repositories, reviewing changes
 | **Working tree** | Files in your repository folder, including your current edits. |
 | **Staging / index** | The exact content selected for the next commit. Staging does not hide files. |
 | **Commit** | A saved snapshot in local Git history. It is not uploaded until you push it. |
-| **Upstream** | The branch your local branch tracks, such as `origin/main`. Pull and Sync use this relationship. |
+| **Upstream** | The branch your local branch tracks, such as `origin/main`. Pull uses this relationship. |
 | **Worktree** | Another working folder attached to the same Git repository, usually checked out on another branch. |
 
 ## Using this documentation

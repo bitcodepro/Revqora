@@ -25,6 +25,7 @@ const gitErrorCodes = new Map([
   ["git-timeout", "git_timeout"],
   ["auth", "provider_authentication_failed"],
   ["forge-network", "provider_unavailable"],
+  ["forge-timeout", "provider_timeout"],
   ["forge-server", "provider_unavailable"],
   ["forge-write-uncertain", "result_unverified"],
   ["forge-rate-limit", "provider_rate_limited"],

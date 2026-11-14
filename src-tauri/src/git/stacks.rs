@@ -2,7 +2,7 @@
 use super::{
     branch_protection, forge, history, operations, pr_center, recovery, repo,
     runner::{self, GitError, GitResult},
-    status, storage, sync, workflows as json,
+    status, storage, workflows as json,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -201,7 +201,7 @@ pub fn append(root: &Path, id: &str, name: &str, existing: bool, expected: &str,
         Some(expected_state),
         |_, _| {},
         || {
-            sync::require_actual_history(root)?;
+            history::require_actual_history(root)?;
             branch(root, name)?;
             let d = dir(root)?;
             let _lock = json::lock(&d, "catalog.lock")?;
@@ -291,7 +291,7 @@ pub struct Plan {
 }
 pub fn review(root: &Path, id: &str, index: usize, rules: &[String]) -> GitResult<Plan> {
     let (mut plan, state) = operations::inspect(root, || {
-        sync::require_actual_history(root)?;
+        history::require_actual_history(root)?;
         let c = catalog(root)?;
         let s = c.stacks.iter().find(|s| s.id == id).ok_or_else(|| fail("Stack not found."))?;
         let e = s.entries.get(index).ok_or_else(|| fail("Layer not found."))?;
@@ -451,7 +451,7 @@ pub fn finalize(root: &Path, id: &str, index: usize, expected: &str, expected_st
         Some(expected_state),
         |_, _| {},
         || {
-            sync::require_actual_history(root)?;
+            history::require_actual_history(root)?;
             let d = dir(root)?;
             let _lock = json::lock(&d, "catalog.lock")?;
             let mut c = catalog(root)?;

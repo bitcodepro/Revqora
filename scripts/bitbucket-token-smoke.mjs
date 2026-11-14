@@ -134,6 +134,9 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await prButton("Load checks").click();
       await detailPanel.getByText("Build fixture",{exact:true}).waitFor();
       assert.equal(seen.filter(r=>r.path.endsWith("/statuses")).length,1);
+      const connection=(await invoke("forge_info",{repo:root})).connectionRevision;
+      const checks=await invoke("pr_checks",{repo:root,number:7,expectedConnection:connection});
+      assert(checks.revision&&checks.checks.some(check=>check.name==="Build fixture"));
       pr.updated_on="2026-01-02T00:00:00Z";
       await prButton("Discussions").click();
       const staleDiscussions=detailPanel.getByRole("alert").filter({hasText:"Reload it to see the latest discussions"});
@@ -215,6 +218,11 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await button("Close").click();
       await center.locator('[data-pr-detail="7"]').waitFor();
       const restored=await invoke("pr_page",{repo:root,state:"open",cursor:null});assert.equal(restored.items[0].title,pr.title);assert.equal(seen.filter(r=>r.path==="/2.0/user").length,0);
+      // Return the native error through evaluate because CDP only preserves the
+      // message of a promise rejection crossing the page boundary.
+      const identityError=await page.evaluate(repo=>window.__TAURI_INTERNALS__.invoke("forge_connection_identity",{repo}).catch(error=>error),root);
+      assert.equal(identityError.kind,"identity-unavailable");
+      assert.match(identityError.message,/read:user:bitbucket/);
     }catch(error){if(out)await page?.screenshot({path:path.join(out,"bitbucket-token-failure.png")}).catch(()=>{});throw error;}
     finally{if(app){await invoke("unwatch_repo",{repo:root}).catch(()=>{});await app.close();}server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
   });

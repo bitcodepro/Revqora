@@ -27,8 +27,6 @@ const unassignedCommands: [id: string, label: string, description: string][] = [
   ["git-connections", "Git connection settings", "Choose how Git authenticates for this repository."],
   ["check-updates", "Check Updates", "Check for a new version of Revqora now."],
   ["about", "About Revqora", "Show the app version and project information."],
-  ["sync", "Sync repository", "Review a safe sync of the current repository."],
-  ["sync-all", "Sync all repositories", "Review sync for the open repositories."],
   ["fetch-all", "Fetch all repositories", "Fetch remote updates for the open repositories."],
   ["pull-all", "Pull all repositories", "Review fast-forward pulls for the open repositories."],
   ["worktree-manager", "Worktree manager", "Manage worktrees in the current repository."],

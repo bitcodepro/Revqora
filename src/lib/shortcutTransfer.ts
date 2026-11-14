@@ -8,7 +8,7 @@ const knownCommands: Record<string, string> = {
   "workbench.action.showCommands": "palette", "workbench.action.files.openFolder": "open",
   "workbench.action.openSettings": "settings", "workbench.view.scm": "changes",
   "workbench.action.terminal.toggleTerminal": "terminal", "renameFile": "renameItem",
-  "git.fetch": "fetch", "git.pull": "pull", "git.push": "push", "git.sync": "sync",
+  "git.fetch": "fetch", "git.pull": "pull", "git.push": "push",
   "git.branch": "branch", "git.stage": "stage-file", "git.stageAll": "stage-all",
   "git.unstage": "unstage-file", "git.unstageAll": "unstage-all", "git.stash": "stash",
   "Git.Fetch": "fetch", "Git.Pull": "pull", "Vcs.Push": "push", "GotoAction": "palette",

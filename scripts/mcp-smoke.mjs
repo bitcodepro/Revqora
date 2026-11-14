@@ -381,38 +381,6 @@ async function searchAndStatusPagination({ page, original, work, tool, rawTool }
   await openRepository(page, original);
 }
 
-async function incompleteSync({ page, original, work, tool, waitPhase }) {
-  const root = path.join(work, "mcp-sync");
-  const remote = path.join(work, "mcp-sync-remote.git");
-  fs.mkdirSync(root);
-  const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true }).trim();
-  git("init", "-qb", "main");
-  git("config", "user.name", "MCP Sync Fixture");
-  git("config", "user.email", "sync@example.invalid");
-  git("config", "commit.gpgsign", "false");
-  git("commit", "--allow-empty", "-qm", "Base");
-  execFileSync("git", ["init", "--bare", "-qb", "main", remote], { windowsHide: true });
-  git("remote", "add", "origin", remote);
-  git("push", "-qu", "origin", "main");
-  const before = git("rev-parse", "HEAD");
-  git("commit", "--allow-empty", "-qm", "Outgoing");
-  // Let Sync read the upstream and prepare normally, then reject its push.
-  const hooks = path.join(remote, "hooks");
-  execFileSync("git", ["-C", remote, "config", "core.hooksPath", "hooks"], { windowsHide: true });
-  fs.writeFileSync(path.join(hooks, "pre-receive"), "#!/bin/sh\necho 'Test server rejected push' >&2\nexit 1\n", { mode: 0o755 });
-  await openRepository(page, root);
-  await page.locator(".topbar .repo-current > span").filter({ hasText: "main" }).waitFor();
-  const { active: repository } = await tool("list_repositories");
-  assert(repository && path.relative(root, repository) === "", "The Sync fixture must be available to MCP");
-  const request = await tool("request_action", { repository, action: "sync", receive: false, send: true });
-  const result = await waitPhase(request.id, "partial", 90_000);
-  assert.equal(result.errorCode, "sync_incomplete");
-  assert.equal(result.result.sent, false);
-  assert(result.result.checkpoint);
-  assert.equal(execFileSync("git", ["-C", remote, "rev-parse", "main"], { encoding: "utf8", windowsHide: true }).trim(), before);
-  await openRepository(page, original);
-}
-
 async function diffStageAndStash({ page, original, work, tool, rawTool, waitPhase }) {
   const root = path.join(work, "mcp-diff-stage-stash");
   fs.mkdirSync(root);
@@ -624,9 +592,11 @@ export async function mcpSmoke({ page, exe, profile, work, restart }) {
   try {
     const init = await rpc("initialize", { protocolVersion: "2025-11-25", clientInfo: { name: "Revqora smoke", version: "1" }, capabilities: {} });
     assert.equal(init.protocolVersion, "2025-11-25");
+    assert.equal(init.serverInfo.version, await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("plugin:app|version")));
     child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
     const { tools } = await rpc("tools/list");
-    assert(tools.some(entry => entry.name === "request_action"));
+    const actions = tools.find(entry => entry.name === "request_action").inputSchema.properties.action.enum;
+    assert(actions.includes("fetch") && actions.includes("pull") && actions.includes("push") && !actions.includes("sync"));
     assert.equal((await rawTool("list_repositories")).isError, true);
     await toggle(true);
     await page.locator(".topbar .repo-current > span").waitFor();
@@ -689,7 +659,8 @@ export async function mcpSmoke({ page, exe, profile, work, restart }) {
     await diffStageAndStash({ page, original: root, work, tool, rawTool, waitPhase });
     await searchAndStatusPagination({ page, original: root, work, tool, rawTool });
     const oldAction = await approvalModes({ page, root, work, tool, waitPhase, selectApproval });
-    await incompleteSync({ page, original: root, work, tool, waitPhase });
+    const removedSync = await rawTool("request_action", { repository: root, action: "sync", receive: true });
+    assert.equal(removedSync.structuredContent.code, "action_removed");
     page = await restart(root, async () => {
       const offline = await rawTool("action_status", { id: oldAction });
       assert.equal(offline.structuredContent.code, "desktop_closed");

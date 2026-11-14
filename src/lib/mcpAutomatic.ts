@@ -5,14 +5,13 @@ import { forgeRepositoryIdentity, prWriteAttemptKey, prWriteAttemptPending, setP
 import { canMerge, mergeDraftKey } from "./prMerge";
 import { reviewAttemptPending, reviewDraftKey, setReviewAttemptPending } from "./prReviews";
 import { cleanupCoversRules, workflowAgentPreview } from "./prWorkflow";
-import type { ForgeInfo, McpApprovalMode, PrDetail, PrMergePlan, PrReviewKind, StatusSummary, SwitchChoice, SyncResult, WorkflowStep } from "./types";
+import type { ForgeInfo, McpApprovalMode, PrDetail, PrMergePlan, PrReviewKind, StatusSummary, SwitchChoice, WorkflowStep } from "./types";
 
 export interface McpActionOptions {
   number?: number; target?: string; message?: string; branch?: string; base?: string;
   title?: string; draft?: boolean; reviewKind?: Extract<PrReviewKind, "comment" | "approve" | "request_changes">;
   method?: string; dirtyAction?: SwitchChoice["action"]; includeUntracked?: boolean; keepIndex?: boolean;
   prune?: boolean; force?: boolean; remote?: string; remoteBranch?: string; setUpstream?: boolean;
-  receive?: boolean; send?: boolean;
   stashIndex?: number; restoreIndex?: boolean;
 }
 
@@ -48,22 +47,10 @@ interface AutomaticContext {
   mergePlan?: PrMergePlan; workflowCursor?: number; authorize: () => Promise<void>;
 }
 
-export function mcpSyncOutcome(result: Pick<SyncResult, "received" | "sent" | "warnings"> & { checkpoint: Pick<SyncResult["checkpoint"], "id"> },
-  receive: boolean, send: boolean): AutomaticOutcome {
-  const complete = (!receive || result.received) && (!send || result.sent) && result.warnings.length === 0;
-  return {
-    ...(complete ? {} : { phase: "partial" as const, errorCode: "sync_incomplete" }),
-    message: result.warnings.join(" · ") || (complete ? undefined : "Sync did not complete all requested directions. Inspect the repository and checkpoint."),
-    result: { received: result.received, sent: result.sent, checkpoint: result.checkpoint.id },
-  };
-}
-
 interface AutomaticOutcome {
   message?: string;
   result?: Record<string, unknown>;
   runId?: string;
-  phase?: "partial";
-  errorCode?: string;
 }
 
 export async function runAutomaticMcpAction({ root, action, options: a, baseline, expectedState, mode, pullMode, pr, mergePlan, workflowCursor, authorize }: AutomaticContext):
@@ -92,19 +79,6 @@ Promise<AutomaticOutcome> {
       const message = await api.push(root, { remote: remote.name, branch: baseline.branch, remoteBranch: destination,
         forceWithLease: a.force ?? false, setUpstream: a.setUpstream ?? false }, newOpId(), expectedState);
       return { message, result: { remote: remote.name, branch: baseline.branch, destination } };
-    }
-    case "sync": {
-      const plan = await api.syncPrepare(root);
-      if (plan.stateToken !== expectedState) throw new McpToolError("stale_state", "The repository changed while preparing Sync.");
-      const receive = a.receive ?? plan.behind > 0;
-      const send = a.send ?? false;
-      if (!receive && !send) {
-        if (plan.ahead) throw missing("Supply send=true to publish the outgoing commits.");
-        return { message: "The branch is up to date." };
-      }
-      await authorize();
-      const result = await api.syncExecute(root, plan, receive, send);
-      return mcpSyncOutcome(result, receive, send);
     }
     case "create_pr": {
       if (!a.title?.trim() || !a.branch?.trim() || !a.base?.trim()) throw missing("Supply title, branch (published source), and base (target) to create a pull request.");

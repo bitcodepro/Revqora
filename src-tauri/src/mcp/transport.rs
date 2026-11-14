@@ -16,7 +16,7 @@ const REQUEST_MAX: usize = 128 * 1024;
 const REPLY_MAX: usize = 2 * 1024 * 1024;
 const AUTH_MAX: usize = 1024;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
-const REPLY_TIMEOUT: Duration = super::DISPATCH_TIMEOUT.saturating_add(Duration::from_secs(5));
+const REPLY_GRACE: Duration = Duration::from_secs(5);
 
 fn nonce() -> io::Result<[u8; 32]> {
     rand::generate::<[u8; 32]>(&rand::SystemRandom::new()).map(rand::Random::expose).map_err(|_| io::Error::other("Secure randomness is unavailable."))
@@ -185,7 +185,7 @@ impl Auth {
     }
 }
 
-pub(super) fn call(request: &impl Serialize) -> super::Reply {
+pub(super) fn call(request: &super::protocol::ToolCall) -> super::Reply {
     let (port, key) = descriptor_path().and_then(|path| read_descriptor(&path)).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => {
             if super::preference_path().is_ok_and(|path| super::saved_enabled(&path).unwrap_or_default()) {
@@ -200,10 +200,10 @@ pub(super) fn call(request: &impl Serialize) -> super::Reply {
         io::ErrorKind::ConnectionRefused => ToolError::desktop_closed(),
         _ => ToolError::new("desktop_unavailable", "Could not connect to Revqora's local MCP session. Check Settings → General → MCP."),
     })?;
-    exchange(socket, &key, request, AUTH_TIMEOUT)
+    exchange(socket, &key, request, AUTH_TIMEOUT, super::dispatch_timeout(request) + REPLY_GRACE)
 }
 
-fn exchange(socket: TcpStream, key: &Secret, request: &impl Serialize, auth_timeout: Duration) -> super::Reply {
+fn exchange(socket: TcpStream, key: &Secret, request: &impl Serialize, auth_timeout: Duration, reply_timeout: Duration) -> super::Reply {
     let mut connection = BufReader::new(socket);
     let auth = (|| -> io::Result<Auth> {
         let socket = connection.get_mut();
@@ -222,7 +222,7 @@ fn exchange(socket: TcpStream, key: &Secret, request: &impl Serialize, auth_time
     })?;
     // Updating a different socket handle left the Windows reader with the
     // handshake timeout. Use the same connection throughout the exchange.
-    connection.get_ref().set_read_timeout(Some(REPLY_TIMEOUT)).map_err(reply_error)?;
+    connection.get_ref().set_read_timeout(Some(reply_timeout)).map_err(reply_error)?;
     auth.send(connection.get_mut(), b"request", request, REQUEST_MAX)
         .map_err(|_| ToolError::new("request_send_failed", "Could not send the MCP request to Revqora."))?;
     auth.receive(&mut connection, b"reply", REPLY_MAX).map_err(reply_error)?
@@ -293,7 +293,7 @@ mod tests {
                 })
                 .unwrap();
             });
-            assert_eq!(exchange(client, &key, &request, auth_timeout), Ok(result.clone()));
+            assert_eq!(exchange(client, &key, &request, auth_timeout, Duration::from_secs(3)), Ok(result.clone()));
             worker.join().unwrap();
         });
     }

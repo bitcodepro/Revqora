@@ -23,7 +23,6 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
   const waitActive = (name) => page.locator(".topbar .repo-current > b").filter({ hasText: name }).waitFor();
   const open = async (dir) => { await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), dir); await waitActive(path.basename(dir)); };
   const library = async (tab) => { await page.getByRole("button", { name: "Repository library", exact: true }).click(); await page.locator(".library-tabs").getByRole("button", { name: tab, exact: true }).click(); };
-  const done = () => page.locator(".modal").last().getByRole("button", { name: "Done", exact: true }).click();
   const explorer = page.getByRole("complementary", { name: "Explorer", exact: true });
   const explorerToggle = page.getByRole("button", { name: "Toggle Explorer panel", exact: true });
   const sidebar = page.locator(".repository-slot > .repository-sidebar");
@@ -117,7 +116,7 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     await hideExplorer();
     await open(root);
   });
-  await check("Sync reviews exact incoming revisions and requires opt-in before publishing outgoing commits", async () => {
+  await check("Fetch previews incoming commits across History layouts and Pull applies them", async () => {
     const localTip = git(root, "rev-parse", "HEAD");
     for (let i = 1; i < 12; i++) git(peer, "commit", "--allow-empty", "-qm", `workspace fetched ${i}`);
     const fetchedTip = commit(peer, "workspace fetched tip");
@@ -167,17 +166,7 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
     if (git(root, "rev-parse", "HEAD") !== fetchedTip) throw new Error("Pull did not update the local branch");
     await layouts.getByRole("button", { name: originalLayout, exact: true }).click();
 
-    const incoming = commit(peer, "workspace incoming"); git(peer, "push", "origin", "main");
-    await page.locator(".toolbar").getByRole("button", { name: "Sync", exact: true }).click(); await page.waitForSelector(".modal:has-text('Review Sync')");
-    if (!await page.getByRole("checkbox", { name: "Receive 1", exact: true }).isChecked()) throw new Error("incoming revision not selected");
-    await shot("77-sync-review"); await page.getByRole("button", { name: "Sync selected (1)", exact: true }).click(); await page.waitForSelector(".modal:has-text('Sync results')", { timeout: syncTimeout });
-    if (git(root, "rev-parse", "HEAD") !== incoming || !(await page.locator(".modal").innerText()).includes("Incoming commits received")) throw new Error("incoming Sync failed"); await done();
-    const outgoing = commit(root, "workspace outgoing"); await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    await page.locator(".toolbar").getByRole("button", { name: "Sync", exact: true }).click(); await page.waitForSelector(".modal:has-text('Review Sync')");
-    if (await page.getByRole("checkbox", { name: "Send 1", exact: true }).isChecked() || !await page.getByRole("button", { name: "Sync selected (0)", exact: true }).isDisabled()) throw new Error("outgoing publication was implicit");
-    if (git(bare, "rev-parse", "main") !== incoming) throw new Error("preview pushed commits");
-    await page.getByRole("checkbox", { name: "Send 1", exact: true }).check(); await page.getByRole("button", { name: "Sync selected (1)", exact: true }).click(); await page.waitForSelector(".modal:has-text('Sync results')", { timeout: syncTimeout });
-    if (git(bare, "rev-parse", "main") !== outgoing || !(await page.locator(".modal").innerText()).includes("Outgoing commits sent")) throw new Error("outgoing Sync failed"); await shot("78-sync-results"); await done();
+    if (await page.locator(".toolbar").getByRole("button", { name: "Sync", exact: true }).count()) throw Error("Sync is still shown");
   });
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

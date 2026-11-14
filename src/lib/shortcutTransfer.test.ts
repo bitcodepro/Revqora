@@ -72,7 +72,7 @@ it("detects conflicts between imported base keys and captured shifted symbols", 
 });
 
 it("preserves non-ASCII and browser key names in native backups", () => {
-  const shortcuts = { fetch: "Ctrl+Ф", push: "Ctrl+Shift+É", pull: "Alt+𐐀", sync: "Ctrl+CapsLock", settings: "Ctrl+Shift++" };
+  const shortcuts = { fetch: "Ctrl+Ф", push: "Ctrl+Shift+É", pull: "Alt+𐐀", open: "Ctrl+CapsLock", settings: "Ctrl+Shift++" };
   const imported = readShortcutFile(exportShortcuts(shortcuts));
   expect(imported.skipped).toBe(0);
   const restored = reviewShortcutAssignments({}, imported.rows.map(row => ({ id: row.suggested, key: row.key })));

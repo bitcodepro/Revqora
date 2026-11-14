@@ -385,7 +385,7 @@ function BitbucketOverview({ root, connection, detail }: { root: string; connect
   async function loadChecks() {
     setLoading(true);
     setError("");
-    try { setChecks(await api.prChecks(root, detail.pull.number, connection, detail.revision)); }
+    try { setChecks((await api.prChecks(root, detail.pull.number, connection, detail.revision)).checks); }
     catch (cause) { setChecks(null); setError(errorMessage(cause)); }
     finally { setLoading(false); }
   }

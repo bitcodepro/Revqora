@@ -121,10 +121,11 @@ pub fn connection_identity(repo: &Path) -> GitResult<ConnectionIdentity> {
             None => token(repo, &context.git_url)?,
         };
         let identity = if context.profile.is_some() {
-            super::forge_accounts::verify_identity(&info.kind, &info.api, &credential)?
+            super::forge_accounts::verify_identity(&info.kind, &info.api, &credential)
         } else {
-            send_with_git_credential(&info.kind, credential, |c| super::forge_accounts::verify_identity(&info.kind, &info.api, c))?
-        };
+            send_with_git_credential(&info.kind, credential, |c| super::forge_accounts::verify_identity(&info.kind, &info.api, c))
+        }
+        .map_err(connection_identity_error)?;
         (identity.user_id, identity.login, identity.name, "provider")
     };
     Ok(ConnectionIdentity {
@@ -137,6 +138,22 @@ pub fn connection_identity(repo: &Path) -> GitResult<ConnectionIdentity> {
         source,
         connection_revision: info.connection_revision,
     })
+}
+
+fn connection_identity_error(error: GitError) -> GitError {
+    if error.details.iter().any(|detail| detail == "forge_http_status=bitbucket:403") {
+        return GitError::new("Bitbucket denied access to the selected connection's user profile. A personal API token needs read:user:bitbucket (OAuth: account). Repository-scoped tokens may still read pull requests without a personal profile.")
+            .kind("identity-unavailable");
+    }
+    error
+}
+
+#[test]
+fn bitbucket_profile_denial_is_distinct_from_rejected_credentials() {
+    let denied = GitError::new("Forbidden").kind("auth").details(vec!["forge_http_status=bitbucket:403".into()]);
+    let rejected = GitError::new("Unauthorized").kind("auth").details(vec!["forge_http_status=bitbucket:401".into()]);
+    assert_eq!(connection_identity_error(denied).kind, "identity-unavailable");
+    assert_eq!(connection_identity_error(rejected).kind, "auth");
 }
 
 /// Provider discovery for navigation uses public remote and account metadata.

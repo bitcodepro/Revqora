@@ -407,13 +407,20 @@ pub fn detail(repo: &Path, n: u64, connection: &str) -> GitResult<Detail> {
     load_detail(repo, &f, n).map(|x| x.0).map_err(pr_read_error)
 }
 
-pub fn checks(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Vec<forge::Check>> {
+#[derive(Serialize)]
+pub struct Checks {
+    pub revision: String,
+    pub checks: Vec<forge::Check>,
+}
+
+pub fn checks(repo: &Path, n: u64, connection: &str, revision: Option<&str>) -> GitResult<Checks> {
     let f = forge::reviewed_connection(repo, connection)?;
-    let (d, _) = load_detail(repo, &f, n)?;
-    if d.revision != revision {
+    let (d, _) = load_detail(repo, &f, n).map_err(pr_read_error)?;
+    if revision.is_some_and(|revision| revision != d.revision) {
         return Err(stale());
     }
-    forge::checks_for(repo, &f, &d.pull.head_sha)
+    let checks = forge::checks_for(repo, &f, &d.pull.head_sha).map_err(pr_read_error)?;
+    Ok(Checks { revision: d.revision, checks })
 }
 
 #[derive(Deserialize)]
@@ -637,6 +644,7 @@ pub struct File {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Files {
+    pub revision: String,
     pub items: Vec<File>,
     pub next_offset: Option<u32>,
     pub notice: Option<String>,
@@ -957,21 +965,22 @@ fn azure_bundle(repo: &Path, f: &ForgeInfo, d: &Detail, snapshot: String, key: S
     let next = if v.get("allChangesIncluded").and_then(Value::as_bool) == Some(true) || rows.is_empty() { None } else { Some(offset + rows.len() as u32) };
     Ok(Bundle { key, snapshot, files, next, notice: Some(AZURE_METADATA_NOTICE.into()), cost: rows.len() * 2048, created: Instant::now() })
 }
-pub fn files(repo: &Path, n: u64, connection: &str, revision: &str, offset: u32) -> GitResult<Files> {
+pub fn files(repo: &Path, n: u64, connection: &str, revision: Option<&str>, offset: u32) -> GitResult<Files> {
     number(n)?;
     if offset > 100_000 {
         return Err(fail("Invalid file page offset."));
     }
     let f = forge::reviewed_connection(repo, connection)?;
-    let snapshot = snapshot(connection, n, revision);
+    let (d, metadata) = load_detail(repo, &f, n).map_err(pr_read_error)?;
+    if revision.is_some_and(|revision| revision != d.revision) {
+        return Err(stale());
+    }
+    let revision = d.revision.clone();
+    let snapshot = snapshot(connection, n, &revision);
     let key = format!("{snapshot}:{}", if f.kind == "azure" { offset } else { 0 });
     let bundle = if let Some(b) = cache_get(&key) {
         b
     } else {
-        let (d, metadata) = load_detail(repo, &f, n).map_err(pr_read_error)?;
-        if d.revision != revision {
-            return Err(stale());
-        }
         if f.kind == "gitlab" && text(&metadata, "/diff_refs/head_sha") != d.pull.head_sha {
             return Err(fail("GitLab is still preparing the diff for this source commit. Refresh shortly."));
         }
@@ -991,10 +1000,11 @@ pub fn files(repo: &Path, n: u64, connection: &str, revision: &str, offset: u32)
         cache_put(b)
     };
     if f.kind == "azure" {
-        Ok(Files { items: bundle.files.iter().map(|e| e.meta.clone()).collect(), next_offset: bundle.next, notice: bundle.notice.clone() })
+        Ok(Files { revision, items: bundle.files.iter().map(|e| e.meta.clone()).collect(), next_offset: bundle.next, notice: bundle.notice.clone() })
     } else {
         let start = offset as usize;
         Ok(Files {
+            revision,
             items: bundle.files.iter().skip(start).take(PAGE).map(|e| e.meta.clone()).collect(),
             next_offset: if start + PAGE < bundle.files.len() { Some(offset + PAGE as u32) } else { None },
             notice: bundle.notice.clone(),
