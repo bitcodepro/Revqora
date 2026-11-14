@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
+import { execFile } from "node:child_process";
 import assert from "node:assert/strict";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
 import {launch} from "./ui-driver.mjs";
@@ -226,6 +227,28 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
         assert.equal(identityError.kind,"identity-unavailable");
         assert.match(identityError.message,/read:user:bitbucket/);
       }
+      await invoke("mcp_enable",{enabled:true});
+      try {
+        // The CLI and desktop must use the same isolated profile for the bridge.
+        const messages=[
+          {id:1,method:"initialize",params:{protocolVersion:"2025-11-25"}},
+          {method:"notifications/initialized"},
+          ...["files","checks"].map((section,index)=>({id:index+2,method:"tools/call",params:{name:"pull_request",arguments:{repository:root,number:7,section}}})),
+        ];
+        const responses=await new Promise((resolve,reject)=>{
+          const child=execFile(exe,["--mcp"],{windowsHide:true,timeout:140_000,env:{...process.env,REVQORA_MULTI_INSTANCE:"1",WEBVIEW2_USER_DATA_FOLDER:profile}},
+            (error,stdout)=>error?reject(error):resolve(stdout));
+          child.stdin.on("error",reject);
+          child.stdin.end(messages.map(message=>JSON.stringify({jsonrpc:"2.0",...message})).join("\n")+"\n");
+        });
+        const [initialized,filesReply,checksReply]=responses.trim().split(/\r?\n/).map(line=>JSON.parse(line));
+        assert.equal(initialized.result.serverInfo.version,await invoke("plugin:app|version"));
+        for(const response of [filesReply,checksReply]) assert.equal(response.result?.isError,false,JSON.stringify(response));
+        const files=JSON.parse(filesReply.result.content[0].text),ci=JSON.parse(checksReply.result.content[0].text);
+        assert(files.items.some(file=>file.path==="file.txt"));
+        assert(ci.checks.some(check=>check.name==="Build fixture"));
+        assert.equal(files.revision,ci.revision);
+      } finally {await invoke("mcp_enable",{enabled:false});}
     }catch(error){if(out)await page?.screenshot({path:path.join(out,"bitbucket-token-failure.png")}).catch(()=>{});throw error;}
     finally{if(app){await invoke("unwatch_repo",{repo:root}).catch(()=>{});await app.close();}server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
   });

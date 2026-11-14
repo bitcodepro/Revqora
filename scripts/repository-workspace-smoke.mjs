@@ -23,6 +23,7 @@ export async function repositoryWorkspaceSmoke({ page, check, shot, work }) {
   const waitActive = (name) => page.locator(".topbar .repo-current > b").filter({ hasText: name }).waitFor();
   const open = async (dir) => { await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "open-paths", payload: [root] }), dir); await waitActive(path.basename(dir)); };
   const library = async (tab) => { await page.getByRole("button", { name: "Repository library", exact: true }).click(); await page.locator(".library-tabs").getByRole("button", { name: tab, exact: true }).click(); };
+  const done = () => page.locator(".modal").last().getByRole("button", { name: "Done", exact: true }).click();
   const explorer = page.getByRole("complementary", { name: "Explorer", exact: true });
   const explorerToggle = page.getByRole("button", { name: "Toggle Explorer panel", exact: true });
   const sidebar = page.locator(".repository-slot > .repository-sidebar");
