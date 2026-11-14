@@ -401,8 +401,9 @@ async function incompleteSync({ page, original, work, tool, waitPhase }) {
   execFileSync("git", ["-C", remote, "config", "core.hooksPath", "hooks"], { windowsHide: true });
   fs.writeFileSync(path.join(hooks, "pre-receive"), "#!/bin/sh\necho 'Test server rejected push' >&2\nexit 1\n", { mode: 0o755 });
   await openRepository(page, root);
+  await page.locator(".topbar .repo-current > span").filter({ hasText: "main" }).waitFor();
   const { active: repository } = await tool("list_repositories");
-  assert.equal(path.relative(root, repository), "");
+  assert(repository && path.relative(root, repository) === "", "The Sync fixture must be available to MCP");
   const request = await tool("request_action", { repository, action: "sync", receive: false, send: true });
   const result = await waitPhase(request.id, "partial", 90_000);
   assert.equal(result.errorCode, "sync_incomplete");
