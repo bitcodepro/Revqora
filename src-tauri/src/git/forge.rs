@@ -358,12 +358,16 @@ pub(super) fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::
     let protocol = transport.as_ref().map_or("https", |u| u.scheme());
     let input = format!("protocol={protocol}\nhost={host}\npath={git_path}\n{user}\n");
     let out = crate::journal::suspend(|| {
-        runner::exec_full(
-            repo,
-            ["-c", "credential.interactive=false", "-c", "core.askPass=", "credential", "fill"],
-            &[("GIT_ASKPASS", ""), ("GCM_INTERACTIVE", "never"), ("GIT_TERMINAL_PROMPT", "0")],
-            Some(input.as_bytes()),
-        )
+        let args = ["-c", "credential.interactive=false", "-c", "core.askPass=", "credential", "fill"];
+        let mut env = vec![("GIT_ASKPASS", ""), ("GCM_INTERACTIVE", "never"), ("GIT_TERMINAL_PROMPT", "0")];
+        let out = runner::exec_full(repo, args, &env, Some(input.as_bytes()))?;
+        if out.ok() || protocol != "https" || host != "bitbucket.org" {
+            return Ok(out);
+        }
+        // GCM can reject a repository-scoped token when its user-profile
+        // probe fails. Retry the same lookup and let the PR API check access.
+        env.push(("GCM_BITBUCKET_VALIDATE_STORED_CREDENTIALS", "false"));
+        runner::exec_full(repo, args, &env, Some(input.as_bytes()))
     })?;
     if !out.ok() {
         #[cfg(windows)]
@@ -1213,6 +1217,45 @@ mod connection_tests {
 #[cfg(test)]
 mod credential_scope_tests {
     use super::*;
+    #[test]
+    fn bitbucket_api_retries_a_failed_profile_probe_with_the_same_credential_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        runner::run(repo, ["init", "-q"]).unwrap();
+        runner::run(repo, ["config", "credential.helper", ""]).unwrap();
+        runner::run(repo, ["config", "credential.useHttpPath", "true"]).unwrap();
+        let helper = r#"!f() {
+username=; protocol=; host=; path=;
+while IFS='=' read -r key value; do
+  case "$key" in username) username="$value";; protocol) protocol="$value";; host) host="$value";; path) path="$value";; esac
+done
+if [ "$1" = get ] && [ "$protocol" = https ] && [ "$username" = alice ] && [ "$path" = team/repo.git ]; then
+  if [ "$GCM_BITBUCKET_VALIDATE_STORED_CREDENTIALS" = false ]; then
+    printf '%s\n' 'username=alice' 'password=repository-scoped-fixture'
+  elif [ "$host" = bitbucket.org ] && test -f normal-lookup; then
+    printf '%s\n' 'username=alice' 'password=normal-fixture'
+  fi
+fi
+}; f"#;
+        runner::run(repo, ["config", "--add", "credential.helper", helper]).unwrap();
+        let config = std::fs::read(repo.join(".git/config")).unwrap();
+        let url = "https://alice@bitbucket.org/team/repo.git";
+        let credential = token(repo, url).unwrap();
+        assert_eq!(credential.username, "alice");
+        assert_eq!(credential.token, "repository-scoped-fixture");
+        for wrong_scope in [
+            "https://bob@bitbucket.org/team/repo.git",
+            "https://alice@bitbucket.org/team/other.git",
+            "https://alice@bitbucket.org.example/team/repo.git",
+            "http://alice@bitbucket.org/team/repo.git",
+        ] {
+            assert!(token(repo, wrong_scope).is_err(), "{wrong_scope}");
+        }
+        std::fs::write(repo.join("normal-lookup"), "").unwrap();
+        assert_eq!(token(repo, url).unwrap().token, "normal-fixture");
+        assert_eq!(std::fs::read(repo.join(".git/config")).unwrap(), config);
+    }
+
     #[test]
     fn ssh_transport_users_do_not_constrain_https_account_matching() {
         let t = tempfile::tempdir().unwrap();
