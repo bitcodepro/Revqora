@@ -18,6 +18,7 @@ Existing stashes appear in **Branches → Stashes**. Inspect the selected stash 
 | Apply | Restores changes while retaining the stash entry. |
 | Pop | Applies the stash and removes it after successful application. If conflicts occur, inspect the retained entry/result. |
 | Drop | Removes the saved entry; it does not apply the changes first. |
+| Restore on a new branch (apply and drop)… | Asks for a branch name, checks out a new branch at the commit the stash was made on, restores the stash there (staging included) and deletes it from the list. Useful when the stash no longer applies cleanly to the current branch. |
 
 Stash is local Git data. It is not uploaded by an ordinary Push. After applying a stash on another branch, inspect and commit the restored changes there.
 

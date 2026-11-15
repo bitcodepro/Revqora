@@ -45,6 +45,13 @@ Open **Ctrl+N → Repository tools (gc, maintenance)…**.
 | **Ignored files** | Inspect files excluded from ordinary Git status. |
 | **Nested repositories** | Find separate Git repositories inside the working folder. |
 | **Validate / conflict drafts** | Run a reviewed check or inspect retained conflict text. |
+| **Reuse recorded conflict resolutions (rerere)** | Let Git replay conflict resolutions you made before; optionally **Stage replayed resolutions automatically**. |
+| **Fetch more history** / **Fetch full history** | Shown for shallow clones: add the chosen number of commits, or remove the shallow boundary. |
+| **Hooks** tab | List the hooks Git runs in this repository. |
+
+### Git hooks
+
+Open **Repository tools → Hooks**, or **Git hooks…** in the command palette. The tab shows the hooks folder (including a `core.hooksPath` override) and each installed hook as **runs** or **skipped** (not executable, so Git skips it). **Open** shows the script as text. Sample files (`*.sample`) do not run. To skip hooks for one commit, use **Skip hooks** in the commit box.
 
 Maintenance is not a substitute for fixing a failed operation or selecting the correct repository/branch. Read its result before retrying a larger workflow.
 
@@ -59,6 +66,8 @@ Submodule initialization/update follows Git configuration and can need network c
 ## Git LFS
 
 Install Git LFS separately if the repository uses it. Use **Track files with Git LFS…** to add an intended pattern and inspect **LFS files** for tracked objects.
+
+The **Git LFS files** dialog also shows file locks when the server supports them. Each file shows **locked by** its owner, or a **Lock** button; **Unlock** releases a lock. If the server refuses because someone else holds the lock, Revqora asks whether to **Force unlock**; the owner may lose work. **Refresh locks** reloads them. When locks are not available, the dialog says why and lists files only.
 
 Tracking changes `.gitattributes`; review and commit that configuration with the relevant changes. Adding a pattern does not automatically migrate all old history or make hosting storage limits disappear.
 

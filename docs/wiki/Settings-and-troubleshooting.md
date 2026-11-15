@@ -21,6 +21,12 @@ On Windows, the main window starts maximized. Revqora restores normal bounds
 when they match the display and uses the available work area if the monitor
 configuration changes.
 
+### External editor, diff tool and merge tool
+
+In **Settings → Diff**, **External editor** offers presets (System text editor, Visual Studio Code, VS Code Insiders, Cursor, Sublime Text, Notepad++, JetBrains IDE, Rider, Zed, Kate, gedit) or a custom command. `{file}`, `{line}` and `{column}` are filled in; without `{file}` the file is added as the last argument. The command runs directly, without a shell. With the System text editor, files open in the system's default text application.
+
+**External diff tool** and **External merge tool** list the graphical tools Git finds installed (`git difftool` / `git mergetool --tool-help`), or **Git's default** from `diff.tool` / `merge.tool`. Terminal-only tools such as vimdiff, nvimdiff and emerge are refused because Revqora has no terminal to show them. Without a chosen or configured tool, Revqora asks you to choose one first.
+
 ## Default shortcuts
 
 Change bindings in **Settings → Shortcuts**. Search for commands such as
@@ -56,6 +62,8 @@ proposed matches and choose what to assign.
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous repository |
 | Ctrl+W | Close repository tab |
 | Ctrl+, | Settings |
+| Ctrl+Shift+A / Ctrl+Shift+U | Stage / unstage the file selected in Changes |
+| S / U | Stage / unstage the focused hunk in the diff |
 | Alt+↑ / Alt+↓ | Previous / next conflict block in the editor |
 | Ctrl+S | Save in the conflict editor |
 

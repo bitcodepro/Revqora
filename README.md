@@ -102,15 +102,15 @@ or check out anything.
 | --- | --- |
 | Repository workspace | Open, initialize and clone repositories; browse groups and repositories in Explorer or use a flat repository list; Fetch/Pull across open repositories. |
 | Review layouts | Switch between Graph, Review and Columns; hide repository and branch panels, resize file/diff panes, and keep visibility and widths separately for each layout. |
-| History | Virtualized graph, ref labels, commit and branch details, search by message/author/SHA/code/path combined with author, path, date and merge filters, branch comparison, file history, blame (whitespace, moved-line and ignore-revs options, find) and revision browsing. |
-| Diff | Unified and side-by-side views, word highlighting, line wrapping or horizontal scrolling, image comparison, hunk navigation, file-tree and flat file lists. |
-| Changes and commits | Stage/unstage files, hunks and lines; discard with backups; ignored-file and nested-repository views; amend, sign-off, signed commits, templates and Conventional Commits helpers. |
+| History | Virtualized graph, ref labels, commit and branch details, search by message/author/SHA/code/path combined with author, path, date and merge filters, branch comparison, file, line and folder history, blame (whitespace, moved-line and ignore-revs options, find), optional signature status, commit notes, and revision browsing with archive export. |
+| Diff | Unified and side-by-side views, word highlighting, line wrapping or horizontal scrolling, image comparison, hunk navigation, moved-line highlighting, diff algorithm and context options, external diff tool and editor, file-tree and flat file lists. |
+| Changes and commits | Stage/unstage files, hunks, blocks and line ranges; act on several selected files; add ignore rules from the file menu; discard with backups; ignored-file and nested-repository views; amend, sign-off, signed commits, templates and Conventional Commits helpers. |
 | Stage layers | Keep several logical groups of staged work, inspect dependencies, reorder or combine layers, and commit a layer separately. |
 | Branch management | Create, switch, rename, compare and delete branches; inspect upstream/ahead/behind; filter protected, stale, merged, unmerged or diverged branches; review bulk cleanup. |
-| Git operations | Fetch, Pull, Push, tags, stash and partial stash, patches, cherry-pick, revert, reset and reflog. |
-| Rebase and conflicts | Rebase Studio with reorder/reword/squash/fixup/drop, previews and recovery; conflict editor with Base, Ours, Theirs and editable Result; selected validation commands. |
+| Git operations | Fetch, Pull, Push, tags, stash and partial stash (including restore on a new branch), patches, cherry-pick, revert, reset and reflog. |
+| Rebase and conflicts | Rebase Studio with reorder/reword/squash/fixup/drop, previews and recovery; conflict editor with Base, Ours, Theirs and editable Result; external merge tool; rerere; selected validation commands. |
 | Recovery | Operation log, Undo Center, recovery checkpoints, deleted-branch restoration and discard backups, with operation-specific recovery limits. |
-| Worktrees and repository tools | Create/open/lock/remove/prune worktrees; submodules, LFS, bisect, signing, repository size and Git maintenance. |
+| Worktrees and repository tools | Create/open/lock/remove/prune worktrees; submodules with pointer summaries, LFS with file locks, Git hooks, bisect, signing, fetching more history for shallow clones, repository size and Git maintenance. |
 | Pull Request Center | Browse, create and edit PRs/MRs; templates, changed files, discussions, inline comments, reviews, CI and supported policy-checked merge/cleanup actions. |
 | Agent Workspace | Run an installed CLI in a reviewed worktree; inspect logs and changes, stop its process tree and keep native task history across restarts. |
 | Workflow Builder | Save ordered checks, commands and reviewed Git/service steps; PR follow-up recipes connect agents, validation, publication, CI and re-review. |
