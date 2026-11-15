@@ -1899,6 +1899,21 @@ async fn lfs_track(app: AppHandle, expected_state: Option<String>, repo: String,
 }
 
 #[tauri::command]
+async fn lfs_locks(repo: String) -> GitResult<Vec<extras::LfsLock>> {
+    blocking(move || extras::lfs_locks(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn lfs_lock(app: AppHandle, expected_state: Option<String>, repo: String, path: String) -> GitResult<extras::LfsLock> {
+    mutating(repo.clone(), expected_state, app.clone(), "lfs_lock", None, move || extras::lfs_lock(&p(&repo), &path)).await
+}
+
+#[tauri::command]
+async fn lfs_unlock(app: AppHandle, expected_state: Option<String>, repo: String, path: String, force: bool) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "lfs_unlock", None, move || extras::lfs_unlock(&p(&repo), &path, force)).await
+}
+
+#[tauri::command]
 async fn lfs_run(expected_state: Option<String>, app: AppHandle, repo: String, action: String, op_id: String) -> GitResult<String> {
     mutating(repo.clone(), expected_state, app.clone(), "lfs_run", Some(op_id.clone()), move || extras::lfs_run(&p(&repo), &action, progress(&app, &op_id)))
         .await
@@ -2859,6 +2874,9 @@ pub fn run() {
             bisect_reset,
             lfs_files,
             lfs_track,
+            lfs_locks,
+            lfs_lock,
+            lfs_unlock,
             lfs_run,
             signing_get,
             signing_set,

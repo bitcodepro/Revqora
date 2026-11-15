@@ -623,6 +623,7 @@ export interface LfsStatus {
   patterns: string[];
 }
 
+export interface LfsLock { id: string; path: string; owner: string; lockedAt: string; }
 export interface LfsFile {
   oid: string;
   downloaded: boolean;
