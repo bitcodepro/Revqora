@@ -2,13 +2,61 @@
 use crate::git::runner::{GitError, GitResult};
 use std::path::Path;
 
+/// Extensions Windows (and some desktops) run instead of opening. "Open file" on a file shown in
+/// a commit must never launch a program the commit added, whatever its name looks like.
+const RUNNABLE: &[&str] = &[
+    "exe",
+    "com",
+    "bat",
+    "cmd",
+    "ps1",
+    "psm1",
+    "vbs",
+    "vbe",
+    "js",
+    "jse",
+    "wsf",
+    "wsh",
+    "msi",
+    "msp",
+    "scr",
+    "pif",
+    "lnk",
+    "hta",
+    "cpl",
+    "jar",
+    "reg",
+    "appref-ms",
+    "application",
+    "url",
+    "desktop",
+    "sh",
+    "command",
+    "app",
+];
+
+/// An existing absolute path without `..` segments (a crafted name such as `a.md\..\tool.exe`
+/// would otherwise resolve somewhere else than the file shown).
+pub fn local_path(value: &str) -> GitResult<&Path> {
+    let path = Path::new(value);
+    if value.contains('\0') || !path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(GitError::new("Choose a file inside the repository.").kind("invalid-path"));
+    }
+    if !path.exists() {
+        return Err(GitError::new("The selected file or folder no longer exists."));
+    }
+    Ok(path)
+}
+
 fn target(value: &str) -> GitResult<String> {
     if value.contains('\0') {
         return Err(GitError::new("Invalid file or web address."));
     }
     if Path::new(value).is_absolute() {
-        if !Path::new(value).exists() {
-            return Err(GitError::new("The selected file or folder no longer exists."));
+        let path = local_path(value)?;
+        let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+        if path.is_file() && RUNNABLE.contains(&ext.as_str()) {
+            return Err(GitError::new("Revqora does not run programs or scripts. Use Show in folder or open it from your editor.").kind("runnable-file"));
         }
         return Ok(value.to_owned());
     }
@@ -57,5 +105,22 @@ mod tests {
         for value in ["javascript:alert(1)", "file:///private/file", "https://user:password@example.com", "relative.txt", "https://example.com/\0"] {
             assert!(target(value).is_err());
         }
+    }
+
+    #[test]
+    fn never_runs_programs_or_follows_dot_dot_segments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = tmp.path().join("tool.exe");
+        std::fs::write(&tool, b"MZ").unwrap();
+        std::fs::write(tmp.path().join("readme.md"), b"text").unwrap();
+        assert_eq!(target(tool.to_str().unwrap()).unwrap_err().kind, "runnable-file");
+        let script = tmp.path().join("build.CMD");
+        std::fs::write(&script, b"echo").unwrap();
+        assert_eq!(target(script.to_str().unwrap()).unwrap_err().kind, "runnable-file");
+        // A name crafted to climb out of the shown file.
+        let crafted = format!("{}{}..{}tool.exe", tmp.path().join("readme.md").display(), std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR);
+        assert_eq!(target(&crafted).unwrap_err().kind, "invalid-path");
+        assert!(target(tmp.path().join("readme.md").to_str().unwrap()).is_ok());
+        assert!(target(tmp.path().to_str().unwrap()).is_ok(), "folders still open");
     }
 }

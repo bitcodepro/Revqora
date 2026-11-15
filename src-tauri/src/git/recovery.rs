@@ -1013,6 +1013,11 @@ pub fn automatic_expected(root: &Path, command: &str, workspace: bool, ignored: 
 /// Ordinary branch/tag refspecs are unaffected. External CLI mirror operations
 /// remain outside this client's control.
 pub fn protect_transport(root: &Path, push: bool, remote: Option<&str>, explicit: Option<&str>, all: bool) -> GitResult<()> {
+    // Checked before anything else: fetch and push pass the remote name as an argument, and a
+    // leading '-' would be read as an option even when no recovery refs need protecting.
+    if remote.is_some_and(|name| name.starts_with('-')) {
+        return Err(fail("Choose a remote name that does not start with '-'."));
+    }
     let protected = runner::run(root, ["for-each-ref", "--format=%(refname)", PREFIX])?;
     if protected.trim().is_empty() {
         return Ok(());

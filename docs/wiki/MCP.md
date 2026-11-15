@@ -6,7 +6,7 @@
 
 The client launches the installed executable with `--mcp`. Revqora remembers the **Enable MCP** setting and starts the local bridge when the desktop app opens. The generated configuration includes the path and arguments.
 
-An enabled client can read status, branches, commit history, diffs and PR discussions available in the current workspace. It can open views and request Git or PR operations. Under **Approval mode**, choose **Ask my approval** for desktop review, **Full approve** for automatic execution, or **Ask before deleting** for confirmation of operations that delete or discard data. Revqora saves the mode. Automatic requests that need additional choices return the required fields through `action_status`.
+An enabled client can read status, branches, commit history, diffs and PR discussions available in the current workspace. It can open views and request Git or PR operations. Under **Approval mode**, choose **Ask my approval** for desktop review, **Full approve** for automatic execution, or **Ask before deleting** for confirmation of operations that delete or discard data, merge or approve pull requests, or push anywhere other than the branch's own upstream. Revqora saves the mode. Automatic requests that need additional choices return the required fields through `action_status`.
 
 A staged rename retains both paths in its diff and approval. For a conflicted file, `file_diff` can show the base, ours and theirs index stages. A paused cherry-pick stays in `waiting_for_resolution` until you continue, skip or abort it in Revqora. After resolving the working file, the client can `stage` its path to mark it resolved, then request `cherry_pick_continue`. Use `cherry_pick_abort` to cancel the cherry-pick.
 

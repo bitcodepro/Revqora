@@ -78,7 +78,7 @@ pub fn submodule_update(repo: &Path, paths: &[String], on_line: impl FnMut(&str)
 }
 
 pub fn submodule_add(repo: &Path, url: &str, path: &str, on_line: impl FnMut(&str)) -> GitResult<String> {
-    runner::run_streaming(repo, &["submodule".into(), "add".into(), "--progress".into(), url.trim().into(), path.trim().into()], &[], on_line)
+    runner::run_streaming(repo, &["submodule".into(), "add".into(), "--progress".into(), "--".into(), url.trim().into(), path.trim().into()], &[], on_line)
 }
 
 pub fn submodule_sync(repo: &Path) -> GitResult<()> {

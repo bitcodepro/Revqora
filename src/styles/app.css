@@ -3459,3 +3459,8 @@ select[size="1"]:not([multiple]) {
   align-items: center;
   gap: 5px;
 }
+
+/* Dialogs that take focus themselves (agent approvals) need no ring on the container. */
+.modal:focus {
+  outline: none;
+}

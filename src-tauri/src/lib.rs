@@ -2246,9 +2246,14 @@ fn unwatch_repo(state: State<'_, AppState>, repo: String) {
 
 #[tauri::command]
 fn reveal_path(path: String) -> GitResult<()> {
+    desktop::local_path(&path)?;
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        // The path is quoted on a raw command line, so a quote in it would add arguments.
+        if path.contains('"') {
+            return Err(GitError::new("This path cannot be shown in Explorer."));
+        }
         std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", path.replace('/', "\\"))).spawn()?;
     }
     #[cfg(target_os = "macos")]
@@ -2272,7 +2277,8 @@ fn open_path(path: String) -> GitResult<()> {
 fn open_terminal(path: String) -> GitResult<()> {
     #[cfg(windows)]
     {
-        let wt = std::process::Command::new("wt.exe").args(["-d", &path]).spawn();
+        // Windows Terminal treats an unescaped ';' as a separator between commands.
+        let wt = std::process::Command::new("wt.exe").args(["-d", &path.replace(';', "\\;")]).spawn();
         if wt.is_err() {
             std::process::Command::new("cmd").args(["/C", "start", "cmd"]).current_dir(&path).spawn()?;
         }

@@ -37,11 +37,24 @@ pub fn automation_startup(stage: &str) {
     let _ = stage;
 }
 
+/// Settings, logs and helper scripts are readable and writable by the owner only (Unix).
+/// On Windows the folder inherits the ACL of the folder the user unpacked Revqora into.
+fn owner_only(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
 /// `<install root>/data` (created on first use). `None` only if the app folder is unknown.
 pub fn data_dir() -> Option<&'static Path> {
     DATA.get_or_init(|| {
         let dir = crate::update::launch()?.root.join(DATA_DIR);
         let _ = fs::create_dir_all(&dir);
+        owner_only(&dir);
         Some(dir)
     })
     .as_deref()

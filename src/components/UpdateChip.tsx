@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Download, ExternalLink, Loader2, RotateCw, Sparkles, TriangleAlert, X } from "lucide-react";
 import { api } from "../lib/api";
+import { safeWebUrl } from "../lib/prCenter";
 import { useSettings } from "../lib/settings";
 import { useUpdate, visibleUpdate } from "../lib/update";
 
@@ -128,7 +129,7 @@ export function UpdateChip() {
             >
               Skip this version
             </button>
-            <button type="button" className="btn sm" onClick={() => api.openPath(update.htmlUrl)}>
+            <button type="button" className="btn sm" onClick={() => { const url = safeWebUrl(update.htmlUrl); if (url) void api.openPath(url); }}>
               <ExternalLink size={13} /> What's new
             </button>
             {phase === "ready" ? (
@@ -140,7 +141,7 @@ export function UpdateChip() {
                 {working ? <Loader2 size={13} className="spin" /> : <Download size={13} />} {phase === "error" ? "Try again" : "Update now"}
               </button>
             ) : (
-              <button type="button" className="btn primary sm" onClick={() => api.openPath(update.htmlUrl)}>
+              <button type="button" className="btn primary sm" onClick={() => { const url = safeWebUrl(update.htmlUrl); if (url) void api.openPath(url); }}>
                 <Download size={13} /> Download
               </button>
             )}

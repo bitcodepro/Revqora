@@ -112,15 +112,25 @@ struct Channels {
 }
 impl Channels {
     fn origin(&self, token: &str) -> Option<Origin> {
-        if token == self.git {
+        if same_secret(token, &self.git) {
             Some(Origin::Git)
-        } else if token == self.ssh {
+        } else if same_secret(token, &self.ssh) {
             Some(Origin::Ssh)
         } else {
             None
         }
     }
 }
+
+/// Constant-time comparison, so response timing reveals nothing about the token.
+fn same_secret(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Concurrent prompt connections; git and ssh need one or two, so this only stops a flood.
+const MAX_CONNECTIONS: usize = 16;
+static ACTIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn random_token() -> std::io::Result<String> {
     let mut bytes = [0u8; 32];
@@ -192,12 +202,19 @@ pub(crate) fn start_with_storage_warning(
     let _ = ENV.set(vars);
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
+            use std::sync::atomic::Ordering;
+            if ACTIVE.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                ACTIVE.fetch_sub(1, Ordering::SeqCst);
+                drop(stream);
+                continue;
+            }
             let server = server.clone();
             let channels = channels.clone();
             let on_request = on_request.clone();
             let storage_warning = storage_warning.clone();
             std::thread::spawn(move || {
                 let _ = handle(stream, &server, &channels, &on_request, storage_warning.as_ref());
+                ACTIVE.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             });
         }
     });
@@ -333,7 +350,15 @@ pub fn run_helper_if_requested() -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::classify;
+    use super::{classify, same_secret};
+
+    #[test]
+    fn compares_tokens_exactly() {
+        assert!(same_secret("abc123", "abc123"));
+        assert!(!same_secret("abc123", "abc124"));
+        assert!(!same_secret("abc", "abc123"));
+        assert!(!same_secret("", "x"));
+    }
 
     #[test]
     fn classifies_prompts() {

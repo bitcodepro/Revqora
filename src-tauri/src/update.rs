@@ -188,7 +188,12 @@ pub fn installable(root: &Path) -> Result<(), String> {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).timeout_read(Duration::from_secs(30)).user_agent("Revqora-updater").build()
+    ureq::AgentBuilder::new()
+        .try_proxy_from_env(true)
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(30))
+        .user_agent("Revqora-updater")
+        .build()
 }
 
 fn net_err(e: ureq::Error) -> GitError {

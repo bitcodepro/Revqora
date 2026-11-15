@@ -8,7 +8,7 @@ import type { McpApprovalMode } from "../lib/types";
 const approvalHelp: Record<McpApprovalMode, string> = {
   ask: "Review every Git or pull request action in Revqora before it runs.",
   full: "Local MCP clients can execute Git and pull request actions, including deletions, without prompting you.",
-  delete_only: "Ask before deleting, discarding, pruning, overwriting history, or running workflow steps that may delete data. Other actions run automatically.",
+  delete_only: "Ask before deleting, discarding, pruning, overwriting history, merging or approving pull requests, pushing anywhere but the branch's own upstream, or running workflow steps that may delete data. Other actions run automatically.",
 };
 
 export function McpSettings() {

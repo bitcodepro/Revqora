@@ -533,7 +533,7 @@ Use your actual path, or copy the ready-to-use entry from Settings. Add the VS C
 | Show me a screen in the app | `open_view` |
 | Prepare a Git or PR operation | `request_action`, then `action_status` |
 
-**Settings → General → MCP → Approval mode** controls requests from local MCP clients. **Ask my approval** is the default and opens a desktop review. **Full approve** lets fully specified actions run automatically, including deletions. **Ask before deleting** runs other actions automatically and asks before branch deletion, aborting a cherry-pick, pruning, force-pushing, or running workflow steps that can remove data. Revqora also asks when the provider may delete a PR source branch on merge. The selected mode survives a restart.
+**Settings → General → MCP → Approval mode** controls requests from local MCP clients. **Ask my approval** is the default and opens a desktop review. **Full approve** lets fully specified actions run automatically, including deletions. **Ask before deleting** runs other actions automatically and asks before branch deletion, aborting a cherry-pick, pruning, force-pushing, pushing anywhere other than the branch's own upstream, merging or approving a pull request, or running workflow steps that can remove data. The selected mode survives a restart.
 
 In a manual review, inspect the exact paths and targets in the **MCP request** dialog. An action status of `handed_off` means Revqora opened another review. Poll `action_status` for tracked actions, which report whether approval was manual or automatic. An automatic request that needs additional choices returns `action_details_required` with the required fields. Provider permissions and repository state checks apply in all modes.
 

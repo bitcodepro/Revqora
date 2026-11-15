@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, newOpId } from "./api";
 import { McpToolError, mcpError } from "./mcpErrors";
-import { mcpNeedsApproval, runAutomaticMcpAction, type McpActionOptions } from "./mcpAutomatic";
+import { mcpNeedsApproval, pushesToTrackedUpstream, runAutomaticMcpAction, type McpActionOptions } from "./mcpAutomatic";
 import { assertDiffVersion, conflictLine, conflictSidePage, diffPage, type DiffPageOptions } from "./mcpDiff";
 import { loadBranchPreferences } from "./branchManager";
 import { deletionProtection } from "./branchProtection";
@@ -137,14 +137,28 @@ const actionNames: Record<string, string> = {
 interface ApprovalField { label: string; initial: string; multiline?: boolean; validate: (value: string) => string | null }
 type ApprovalResult = { value: string } | { reason: "user_declined" | "dialog_dismissed" | "approval_timed_out" };
 
+export const APPROVAL_ARM_MS = 800;
+
+function useApprovalArming(): boolean {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setArmed(true), APPROVAL_ARM_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  return armed;
+}
+
 function Approval({ action, description, details, field, close }: {
   action: string; description: string; details: string[]; field?: ApprovalField; close: (approved: ApprovalResult | null) => void;
 }) {
   const [value, setValue] = useState(field?.initial ?? "");
   const error = field?.validate(value);
-  return <Modal title={`MCP request · ${action}`} subtitle={description} wide onClose={() => close({reason:"dialog_dismissed"})} onSubmit={() => { if (!error) close({value}); }}
+  // The request appears on its own, possibly while the user is typing elsewhere: approval stays
+  // disarmed briefly so a keystroke meant for something else cannot approve it.
+  const armed = useApprovalArming();
+  return <Modal title={`MCP request · ${action}`} subtitle={description} wide initialFocus="dialog" onClose={() => close({reason:"dialog_dismissed"})} onSubmit={() => { if (!error && armed) close({value}); }}
     footer={<><button className="btn" type="button" onClick={() => close({reason:"user_declined"})}>Decline</button>
-      <button className="btn primary" type="submit" disabled={!!error}>Approve in Revqora</button></>}>
+      <button className="btn primary" type="submit" disabled={!!error || !armed}>Approve in Revqora</button></>}>
     <p className="muted">A local MCP client requested this action. This approval applies to this request only.</p>
     {field && <>
       <label className="field">{field.label}
@@ -361,7 +375,9 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       ? await api.prMergePlan(root, number!, pr.connection, pr.detail.revision) : undefined;
     const mergeMayDelete = !!mergePlan && mergePlan.sourceBranchMayBeDeleted !== false;
     if (mergeMayDelete) detail.push("The provider may delete the source branch after merging.");
-    const manual = mcpNeedsApproval(mode, action, a, run?.definition.steps[run.cursor]?.kind, mergeMayDelete, pullMode === "rebase");
+    const ownUpstream = action !== "push" || pushesToTrackedUpstream(a, baseline.branch, baseline.upstream);
+    if (!ownUpstream) detail.push("This push does not go to the branch's own upstream.");
+    const manual = mcpNeedsApproval(mode, action, a, run?.definition.steps[run.cursor]?.kind, pullMode === "rebase", ownUpstream);
     status.approval = manual ? "manual" : "automatic";
     if (manual && useUi.getState().dialogs.length) throw new McpToolError("review_pending", "Finish the open Revqora dialog before requesting another action.");
     requireRepo(root);

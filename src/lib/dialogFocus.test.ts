@@ -34,4 +34,11 @@ describe("initial dialog focus", () => {
     scheduleDialogFocus(()=>f.dialog);vi.advanceTimersByTime(30);
     expect(cancel.focus).toHaveBeenCalledOnce();
   });
+  it("for agent requests focuses the dialog itself, never a field or the approve button", () => {
+    vi.useFakeTimers(); const f = fixture();
+    const focusDialog = vi.fn(); (f.dialog as unknown as { focus: () => void }).focus = focusDialog;
+    scheduleDialogFocus(() => f.dialog, "dialog"); vi.advanceTimersByTime(30);
+    expect(focusDialog).toHaveBeenCalledOnce();
+    expect(f.first.focus).not.toHaveBeenCalled(); expect(f.first.select).not.toHaveBeenCalled();
+  });
 });
