@@ -934,3 +934,6 @@ export interface RepositoryFolderScan {
   skipped: number;
   excluded: number;
 }
+export type CloneFilter = "none" | "blob:none" | "tree:0";
+/** Optional clone arguments; see `ops::CloneOptions`. */
+export interface CloneOptions { branch: string | null; depth: number | null; noSingleBranch: boolean; filter: CloneFilter; recurseSubmodules: boolean; shallowSubmodules: boolean }

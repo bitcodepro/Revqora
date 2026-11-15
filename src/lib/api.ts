@@ -163,7 +163,7 @@ export const api = {
   repositorySidebarStatus: (repo: string) => call<StatusSummary>("repository_sidebar_status", { repo }),
   repositoryChangesStatus: (repo: string, path: string | null) => call<StatusSummary>("repository_changes_status", { repo, path }),
   repoInit: (path: string, branch?: string) => call<RepoInfo>("repo_init", { path, branch }),
-  repoClone: (parent: string, url: string, name: string, opId: string,connection?:import("./types").GitConnectionOptions) => call<RepoInfo&{connectionWarning:string|null}>("repo_clone", { parent, url, name, opId,connection:connection??null }),
+  repoClone: (parent: string, url: string, name: string, opId: string,connection?:import("./types").GitConnectionOptions, options?: import("./types").CloneOptions) => call<RepoInfo&{connectionWarning:string|null}>("repo_clone", { parent, url, name, opId,connection:connection??null, options: options ?? null }),
   gitConnectionSnapshot:(repo:string)=>call<import("./types").GitConnectionSnapshot>("git_connection_snapshot",{repo}),
   gitConnectionSave:(repo:string,options:import("./types").GitConnectionOptions,expected:string)=>call<import("./types").GitConnectionSnapshot>("git_connection_save",{repo,options,expected}),
   gitConnectionTest:(repo:string,remote:string,expectedUrlFingerprint:string)=>call<string>("git_connection_test",{repo,remote,expectedUrlFingerprint}),
@@ -262,6 +262,9 @@ export const api = {
   undoCommit: (repo: string) => call<void>("undo_commit", { repo }),
 
   fetch: (repo: string, remote: string | null, prune: boolean, opId: string) => call<string>("fetch", { repo, remote, prune, opId }),
+  repoIsShallow: (repo: string) => call<boolean>("repo_is_shallow", { repo }),
+  /** `deepen: null` fetches the complete history (`--unshallow`). */
+  fetchMoreHistory: (repo: string, deepen: number | null, opId: string) => call<string>("fetch_more_history", { repo, deepen, opId }),
   pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string, pruneRemote?: boolean) =>
     call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState, pruneRemote }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),

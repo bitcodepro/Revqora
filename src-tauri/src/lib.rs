@@ -560,6 +560,7 @@ async fn repo_clone(
     name: String,
     op_id: String,
     connection: Option<git::connection::Options>,
+    options: Option<ops::CloneOptions>,
 ) -> GitResult<CloneInfo> {
     blocking(move || {
         journal::record(
@@ -569,7 +570,8 @@ async fn repo_clone(
                 let _ = app.emit("operation-log-changed", ());
             },
             || {
-                let (root, connection_warning) = ops::clone_with_connection(&p(&parent), &url, &name, progress(&app, &op_id), connection.as_ref())?;
+                let (root, connection_warning) =
+                    ops::clone_with_options(&p(&parent), &url, &name, &options.unwrap_or_default(), progress(&app, &op_id), connection.as_ref())?;
                 Ok(CloneInfo { info: repo::info(&root)?, connection_warning })
             },
         )
@@ -1243,6 +1245,19 @@ async fn undo_commit(app: AppHandle, expected_state: Option<String>, repo: Strin
 async fn fetch(expected_state: Option<String>, app: AppHandle, repo: String, remote: Option<String>, prune: bool, op_id: String) -> GitResult<String> {
     mutating(repo.clone(), expected_state, app.clone(), "fetch", Some(op_id.clone()), move || {
         ops::fetch(&p(&repo), remote.as_deref(), prune, progress(&app, &op_id))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn repo_is_shallow(repo: String) -> GitResult<bool> {
+    blocking(move || ops::is_shallow(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn fetch_more_history(expected_state: Option<String>, app: AppHandle, repo: String, deepen: Option<u32>, op_id: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "fetch_more_history", Some(op_id.clone()), move || {
+        ops::fetch_more_history(&p(&repo), deepen, progress(&app, &op_id))
     })
     .await
 }
@@ -2619,6 +2634,8 @@ pub fn run() {
             repo_cancel_folder_scan,
             repo_init,
             repo_clone,
+            repo_is_shallow,
+            fetch_more_history,
             git_connection_snapshot,
             git_connection_save,
             git_connection_test,
