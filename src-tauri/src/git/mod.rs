@@ -20,6 +20,7 @@ pub mod layers;
 pub mod line_history;
 pub mod locate;
 pub mod maint;
+pub mod misc_tools;
 pub mod more;
 pub mod operations;
 pub mod ops;

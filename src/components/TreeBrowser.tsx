@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, File, Folder, FolderClock, FolderTree, History, Loader2, ScanSearch, Search, SquarePen, X } from "lucide-react";
+import { Archive, ChevronDown, ChevronRight, File, Folder, FolderClock, FolderTree, History, Loader2, ScanSearch, Search, SquarePen, X } from "lucide-react";
 import { EditorState } from "@codemirror/state";
 import { EditorView, lineNumbers, highlightActiveLine } from "@codemirror/view";
 import { syntaxHighlighting } from "@codemirror/language";
@@ -15,6 +15,7 @@ import { shortOid } from "../lib/format";
 import { openInEditor } from "../lib/externalTools";
 import { fileHistoryDialog } from "./FileHistory";
 import { folderHistoryDialog } from "./HistoryDialogs";
+import { exportArchive } from "../lib/miscActions";
 
 interface Node {
   name: string;
@@ -170,6 +171,9 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
           {hits && <span className="count">{hits.length} hits</span>}
         </div>
         <div className="spacer" />
+        <button className="btn" title="Save these files as a zip or tar.gz archive" onClick={() => void exportArchive(root, rev)}>
+          <Archive size={14} /> Export archive…
+        </button>
         <button className="btn" onClick={closeOverlay}>
           <X size={14} /> Close
         </button>

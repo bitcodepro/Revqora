@@ -24,6 +24,7 @@ import { fileCopyMenu } from "./NamePathMenu";
 import { commitMenu } from "./menus";
 import { openInDiffTool, openInEditor } from "../lib/externalTools";
 import { folderHistoryDialog } from "./HistoryDialogs";
+import { CommitNote } from "./CommitNote";
 
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
   const fileNavigation = useFileListNavigation();
@@ -150,6 +151,7 @@ ${oid}`;
           await showDialog<void>((close) => <CommitMessageDialog subject={current.subject} body={current.body} oid={current.oid} author={current.author} onClose={() => close()} />);
           if (trigger.isConnected) trigger.focus({ preventScroll: true });
         }}><FileText size={14} /> Message</button>
+        {current && <CommitNote root={root} oid={current.oid} />}
         <button type="button" className="btn sm" disabled={!current} aria-haspopup="menu" title="Commit actions: cherry-pick, revert, branch, tag, reset and more" onClick={(event) => {
           if (!current) return;
           const box = event.currentTarget.getBoundingClientRect();

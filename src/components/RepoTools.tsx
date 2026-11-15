@@ -7,7 +7,7 @@ import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
 import { Archive, FileDiff, GitBranch, History, Loader2, Undo2, Wrench, Zap } from "lucide-react";
 import { Modal } from "./Modal";
 import { api, errorMessage, newOpId } from "../lib/api";
-import type { GitHooks } from "../lib/types";
+import type { GitHooks, Rerere } from "../lib/types";
 import { useRepos } from "../lib/store";
 import { endBusy, showDialog, startBusy, toast } from "../lib/ui";
 import { act, handleOutcome, resetTo, createBranch } from "../lib/actions";
@@ -110,6 +110,7 @@ function RepoToolsBody({ root, initial, close }: { root: string; initial: "overv
       </div>
       {tab === "overview" && (
         <>
+          <RerereToggle root={root} />
           {!size ? (
             <div className="loading-center" style={{ minHeight: 120 }}>
               <span className="loader" />
@@ -321,6 +322,26 @@ function HooksTab({ root }: { root: string }) {
         </div>
       ))}
       <div className="faint">To skip hooks for one commit, use Skip hooks in the commit box.</div>
+    </div>
+  );
+}
+
+/** Reuse recorded conflict resolutions (git rerere) in this repository. */
+function RerereToggle({ root }: { root: string }) {
+  const [state, setState] = useState<Rerere | null>(null);
+  useEffect(() => { api.rerereGet(root).then(setState, () => setState(null)); }, [root]);
+  if (!state) return null;
+  const set = (enabled: boolean, autoUpdate: boolean) => void api.rerereSet(root, enabled, autoUpdate).then(setState, (e) => toast.error(e, "Could not change rerere"));
+  return (
+    <div className="vstack" style={{ gap: 4, marginBottom: 8 }}>
+      <label className="check" title="Git remembers how you resolved a conflict and replays it when the same conflict comes back (for example while rebasing again)">
+        <input type="checkbox" checked={state.enabled} onChange={(e) => set(e.target.checked, state.autoUpdate)} /> Reuse recorded conflict resolutions (rerere)
+      </label>
+      {state.enabled && (
+        <label className="check" style={{ marginLeft: 22 }}>
+          <input type="checkbox" checked={state.autoUpdate} onChange={(e) => set(true, e.target.checked)} /> Stage replayed resolutions automatically
+        </label>
+      )}
     </div>
   );
 }

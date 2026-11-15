@@ -1904,6 +1904,36 @@ async fn submodule_log(repo: String, path: String, from: Option<String>, to: Opt
 }
 
 #[tauri::command]
+async fn rerere_get(repo: String) -> GitResult<git::misc_tools::Rerere> {
+    blocking(move || Ok(git::misc_tools::rerere(&p(&repo)))).await
+}
+
+#[tauri::command]
+async fn rerere_set(app: AppHandle, expected_state: Option<String>, repo: String, enabled: bool, auto_update: bool) -> GitResult<git::misc_tools::Rerere> {
+    mutating(repo.clone(), expected_state, app.clone(), "rerere_set", None, move || git::misc_tools::set_rerere(&p(&repo), enabled, auto_update)).await
+}
+
+#[tauri::command]
+async fn note_get(repo: String, oid: String) -> GitResult<Option<String>> {
+    blocking(move || git::misc_tools::note(&p(&repo), &oid)).await
+}
+
+#[tauri::command]
+async fn note_set(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, text: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "note_set", None, move || git::misc_tools::set_note(&p(&repo), &oid, &text)).await
+}
+
+#[tauri::command]
+async fn archive_export(repo: String, rev: String, format: String, dest: String, prefix: Option<String>) -> GitResult<()> {
+    blocking(move || git::misc_tools::archive(&p(&repo), &rev, &format, std::path::Path::new(&dest), prefix.as_deref())).await
+}
+
+#[tauri::command]
+async fn stash_branch(app: AppHandle, expected_state: Option<String>, repo: String, name: String, index: u32, oid: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "stash_branch", None, move || git::misc_tools::stash_branch(&p(&repo), &name, index, &oid)).await
+}
+
+#[tauri::command]
 async fn hooks_list(repo: String) -> GitResult<git::hooks::Hooks> {
     blocking(move || git::hooks::list(&p(&repo))).await
 }
@@ -2886,6 +2916,12 @@ pub fn run() {
             lfs_track,
             lfs_locks,
             hooks_list,
+            rerere_get,
+            rerere_set,
+            note_get,
+            note_set,
+            archive_export,
+            stash_branch,
             submodule_log,
             lfs_lock,
             lfs_unlock,
