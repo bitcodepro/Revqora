@@ -3485,3 +3485,9 @@ select[size="1"]:not([multiple]) {
 .check.subtle.warn { color: var(--amber); }
 .branch-scope-results { margin-top: 8px; max-height: min(50vh, 420px); overflow: auto; }
 .toast button { pointer-events: auto; }
+/* Long details: clamped in the click-through card; "Details" expands them, and an expanded toast
+   takes the pointer so its text can be scrolled and selected. */
+.toast .td.clamped { max-height: none; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.toast.expanded { pointer-events: auto; }
+.toast.expanded .td { max-height: 40vh; }
+.toast-detail-actions { display: flex; gap: 6px; margin-top: 6px; }
