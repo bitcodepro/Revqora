@@ -1,10 +1,9 @@
 import { repositoryFiles } from "./RepositoryFiles";
 import { openRepoFile } from "../lib/openFile";
 import { fileCopyMenu } from "./NamePathMenu";
-import { WorkingFileEditor } from "./WorkingFileEditor";
 import { useFileListNavigation } from "../lib/useFileListNavigation";
 import {workingDiffSnapshot,rememberWorkingDiff} from "../lib/workingDiffSnapshot";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, lazy, Suspense } from "react";
 import {
   Archive,
   ArrowDown,
@@ -51,7 +50,6 @@ import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { contextMenu, endBusy, openOverlay, showDialog, startBusy, toast, updateBusy, type MenuItem } from "../lib/ui";
 import * as A from "../lib/actions";
 import type { CommitHelpers, FileDiff, FileStatus, GitError, LargeFile, LayerConflict, LayerOp, LayerView } from "../lib/types";
-import { MergeEditor } from "./ConflictEditor";
 import { conflictLabel, joinPath, plural, relativeTime } from "../lib/format";
 import { FileGroups, PathLabel, StatusIcon } from "./bits";
 import { DiffView, useDiffOpts, type LineAction } from "./DiffView";
@@ -64,6 +62,10 @@ import { ignoreDialog } from "./IgnoreDialog";
 import { ignoreChoices } from "../lib/ignoreRules";
 import { openInDiffTool, openInEditor, resolveInMergeTool } from "../lib/externalTools";
 import { folderHistoryDialog } from "./HistoryDialogs";
+
+// The editors pull in the CodeMirror editing packages; load them when an editor first opens.
+const WorkingFileEditor = lazy(() => import("./WorkingFileEditor").then((m) => ({ default: m.WorkingFileEditor })));
+const MergeEditor = lazy(() => import("./ConflictEditor").then((m) => ({ default: m.MergeEditor })));
 
 const isNestedFile = (f: FileStatus) => f.untracked && f.path.endsWith("/");
 const openNestedFile = (root: string, f: FileStatus) => { void useRepos.getState().open(joinPath(root, f.path)).catch((e) => toast.error(e)); };
@@ -148,7 +150,7 @@ async function resolveLayerConflicts(root: string, op: LayerOp): Promise<Record<
       const info = conflict.files[i];
       const text = await showDialog<string | null>((close) => (
         <div style={{ position: "fixed", inset: 0, zIndex: 880, background: "var(--bg)" }}>
-          <MergeEditor
+          <Suspense fallback={null}><MergeEditor
             path={info.path}
             info={info}
             position={`${conflict!.label} · file ${i + 1} of ${conflict!.files.length}`}
@@ -159,7 +161,7 @@ async function resolveLayerConflicts(root: string, op: LayerOp): Promise<Record<
               if (which === "delete") throw new Error("Deleting a file is not supported while resolving layers.");
               close(which === "ours" ? info.ours.text : info.theirs.text);
             }}
-          />
+          /></Suspense>
         </div>
       ));
       if (text === null) return null;
@@ -854,8 +856,8 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
       {conflictSel ? (
         <ConflictSummary root={root} file={conflictSel} onOpen={() => onOpenConflict(conflictSel.path)} />
       ) : editing?.root === root ? (
-        <WorkingFileEditor key={JSON.stringify([root, editing.path])} root={root} path={editing.path} untracked={editing.untracked}
-          displayDiff={editing.diff} close={() => setEditing(null)} />
+        <Suspense fallback={<section className="working-file-editor" aria-busy="true" />}><WorkingFileEditor key={JSON.stringify([root, editing.path])} root={root} path={editing.path} untracked={editing.untracked}
+          displayDiff={editing.diff} close={() => setEditing(null)} /></Suspense>
       ) : (
         <DiffView
           diff={diff}

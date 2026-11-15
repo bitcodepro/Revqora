@@ -1,13 +1,10 @@
 import { ActivityIndicator } from "./components/ActivityIndicator";
 import { createStartupBarrier, type StartupPhase } from "./lib/startupReady";
 import { restoreRepositorySession } from "./lib/restoreRepositorySession";
-import { StackManager } from "./components/StackManager";
-import { HistoryExplorer } from "./components/HistoryExplorer";
 import { WorkflowBuilder } from "./components/WorkflowBuilder";
-import { AgentWorkspace } from "./components/AgentWorkspace";
 import { WorktreeManager } from "./components/WorktreeManager";
 import { undoExplorerMove } from "./lib/explorerMoves";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { listenMcpDesktop } from "./lib/mcpDesktop";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -32,15 +29,8 @@ import { Sidebar } from "./components/Sidebar";
 import { GraphView } from "./components/GraphView";
 import { CommitDetails } from "./components/CommitDetails";
 import { ChangesView } from "./components/ChangesView";
-import { ConflictEditor } from "./components/ConflictEditor";
 import { AskpassHost } from "./components/Askpass";
-import { BlameView } from "./components/BlameView";
-import { CompareView } from "./components/CompareView";
 import { branchCommitCompare } from "./components/BranchCommitCompare";
-import { BranchManager } from "./components/BranchManager";
-import { RebaseView } from "./components/RebaseView";
-import { StashView } from "./components/StashView";
-import { TreeBrowser } from "./components/TreeBrowser";
 import { startUpdateChecks } from "./lib/update";
 import { createAutoFetch, defaultFetch } from "./lib/autofetch";
 import { useBackgroundPoll } from "./lib/backgroundPolling";
@@ -52,6 +42,18 @@ import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayou
 import { RepositoryExplorer } from "./components/RepositoryExplorer";
 import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows, type PanelId } from "./components/PanelWindows";
 import "./styles/workspace.css";
+
+// Full-screen tools open on demand, so their code stays out of the startup bundle.
+const ConflictEditor = lazy(() => import("./components/ConflictEditor").then((m) => ({ default: m.ConflictEditor })));
+const StackManager = lazy(() => import("./components/StackManager").then((m) => ({ default: m.StackManager })));
+const HistoryExplorer = lazy(() => import("./components/HistoryExplorer").then((m) => ({ default: m.HistoryExplorer })));
+const AgentWorkspace = lazy(() => import("./components/AgentWorkspace").then((m) => ({ default: m.AgentWorkspace })));
+const BlameView = lazy(() => import("./components/BlameView").then((m) => ({ default: m.BlameView })));
+const CompareView = lazy(() => import("./components/CompareView").then((m) => ({ default: m.CompareView })));
+const BranchManager = lazy(() => import("./components/BranchManager").then((m) => ({ default: m.BranchManager })));
+const RebaseView = lazy(() => import("./components/RebaseView").then((m) => ({ default: m.RebaseView })));
+const StashView = lazy(() => import("./components/StashView").then((m) => ({ default: m.StashView })));
+const TreeBrowser = lazy(() => import("./components/TreeBrowser").then((m) => ({ default: m.TreeBrowser })));
 
 function useAppearance() {
   // Only the appearance fields: any other settings write must not re-render the whole app.
@@ -240,18 +242,20 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
         ) : (
           panels.changes ? <DetachedPlaceholder id="changes"/> : <ChangesView tab={tab} onOpenConflict={openConflict} />
         )}
-        {tab.conflictPath && <ConflictEditor key={`${root}:${tab.conflictPath}`} root={root} path={tab.conflictPath} onClose={() => patch(root, { conflictPath: null })} />}
-        {overlay?.kind === "blame" && <BlameView root={root} path={overlay.path} rev={overlay.rev} line={overlay.line} />}
-        {overlay?.kind === "branches" && <BranchManager key={root} root={root} />}
-        {overlay?.kind === "worktrees" && !panels.worktrees && <WorktreeManager key={root} root={root} />}
-        {overlay?.kind === "stacks" && <StackManager key={root} root={root}/>}
-        {overlay?.kind === "historyExplorer" && <HistoryExplorer key={root} root={root}/>}
-        {overlay?.kind === "workflows" && <WorkflowBuilder key={overlay.root} root={overlay.root} pull={overlay.pull} />}
-        {overlay?.kind === "agents" && <AgentWorkspace key={root} root={root} />}
-        {overlay?.kind === "stash" && <StashView key={`${overlay.root}:${overlay.oid}`} root={overlay.root} index={overlay.index} oid={overlay.oid} />}
-        {overlay?.kind === "tree" && <TreeBrowser key={overlay.rev} root={root} rev={overlay.rev} />}
-        {overlay?.kind === "rebase" && <RebaseView key={overlay.oldest} root={root} oldest={overlay.oldest} autosquash={overlay.autosquash} />}
-        {overlay?.kind === "compare" && <CompareView key={`${overlay.from}..${overlay.to}`} root={root} from={overlay.from} to={overlay.to} direct={overlay.direct} />}
+        <Suspense fallback={null}>
+          {tab.conflictPath && <ConflictEditor key={`${root}:${tab.conflictPath}`} root={root} path={tab.conflictPath} onClose={() => patch(root, { conflictPath: null })} />}
+          {overlay?.kind === "blame" && <BlameView root={root} path={overlay.path} rev={overlay.rev} line={overlay.line} />}
+          {overlay?.kind === "branches" && <BranchManager key={root} root={root} />}
+          {overlay?.kind === "worktrees" && !panels.worktrees && <WorktreeManager key={root} root={root} />}
+          {overlay?.kind === "stacks" && <StackManager key={root} root={root}/>}
+          {overlay?.kind === "historyExplorer" && <HistoryExplorer key={root} root={root}/>}
+          {overlay?.kind === "workflows" && <WorkflowBuilder key={overlay.root} root={overlay.root} pull={overlay.pull} />}
+          {overlay?.kind === "agents" && <AgentWorkspace key={root} root={root} />}
+          {overlay?.kind === "stash" && <StashView key={`${overlay.root}:${overlay.oid}`} root={overlay.root} index={overlay.index} oid={overlay.oid} />}
+          {overlay?.kind === "tree" && <TreeBrowser key={overlay.rev} root={root} rev={overlay.rev} />}
+          {overlay?.kind === "rebase" && <RebaseView key={overlay.oldest} root={root} oldest={overlay.oldest} autosquash={overlay.autosquash} />}
+          {overlay?.kind === "compare" && <CompareView key={`${overlay.from}..${overlay.to}`} root={root} from={overlay.from} to={overlay.to} direct={overlay.direct} />}
+        </Suspense>
       </div>
     </div>
   );
