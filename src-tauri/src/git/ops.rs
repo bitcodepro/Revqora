@@ -1483,31 +1483,66 @@ fn refuse_hidden_edits(repo: &Path, action: &str) -> GitResult<()> {
     .kind("hidden-changes"))
 }
 
-/// Whether the working copy of `path` differs from its index entry, by content, ignoring the
-/// assume-unchanged / skip-worktree flags that make `git diff` skip a file.
+/// Whether the working copy of `path` differs from its index entry, ignoring the
+/// assume-unchanged / skip-worktree flags that make `git diff` skip a file: by content, by file
+/// type (symlink or file, when `core.symlinks` is on) and by the executable bit (when
+/// `core.filemode` is on). A skip-worktree path absent from the working tree is a sparse
+/// checkout leaving it out on purpose, not a change.
 fn worktree_differs_from_index(repo: &Path, path: &str) -> GitResult<bool> {
     let literal = [("GIT_LITERAL_PATHSPECS", "1")];
-    let entry = runner::run_env(repo, ["ls-files", "-s", "-z", "--", path], &literal, None)?;
-    let indexed = entry.split('\0').find(|e| !e.is_empty()).and_then(|e| e.split_whitespace().nth(1)).map(str::to_string);
+    let listing = runner::run_env(repo, ["ls-files", "-v", "-s", "-z", "--", path], &literal, None)?;
+    // "<tag> <mode> <oid> <stage>\t<path>"
+    let Some(entry) = listing.split('\0').find(|e| !e.is_empty()) else { return Ok(false) }; // untracked: separate check
+    let mut fields = entry.split('\t').next().unwrap_or("").split_whitespace();
+    let (tag, mode, oid) = (fields.next().unwrap_or(""), fields.next().unwrap_or(""), fields.next().unwrap_or("").to_string());
     let full = repo.join(path);
-    let meta = std::fs::symlink_metadata(&full).ok();
-    match (indexed, meta) {
-        (None, _) => Ok(false),      // not in the index: covered by the untracked check
-        (Some(_), None) => Ok(true), // deleted from the working tree meanwhile
-        (Some(oid), Some(meta)) => {
-            if meta.is_dir() {
-                return Ok(true);
-            }
-            if meta.file_type().is_symlink() {
-                // Git stores a link's target text, not what it points to.
-                let target = std::fs::read_link(&full)?;
-                let hashed = runner::run_env(repo, ["hash-object", "--stdin"], &[], Some(target.to_string_lossy().as_bytes()))?;
-                return Ok(hashed.trim() != oid);
-            }
-            let hashed = runner::run_env(repo, ["hash-object", &format!("--path={path}"), "--", path], &literal, None)?;
-            Ok(hashed.trim() != oid)
-        }
+    let Ok(meta) = std::fs::symlink_metadata(&full) else {
+        return Ok(tag != "S"); // missing: deleted meanwhile, unless sparse checkout excludes it
+    };
+    if mode == "160000" {
+        return Ok(!meta.is_dir()); // a submodule's own changes are its own business
     }
+    if meta.is_dir() {
+        return Ok(true);
+    }
+    let symlinks = git_bool(repo, "core.symlinks", true);
+    let is_link = meta.file_type().is_symlink();
+    if mode == "120000" && symlinks {
+        if !is_link {
+            return Ok(true); // a symlink replaced by a file
+        }
+        let target = std::fs::read_link(&full)?;
+        let hashed = runner::run_env(repo, ["hash-object", "--stdin"], &[], Some(target.to_string_lossy().as_bytes()))?;
+        return Ok(hashed.trim() != oid);
+    }
+    if is_link {
+        return Ok(true); // a file replaced by a symlink (with symlinks off Git writes links as files)
+    }
+    if mode == "120000" {
+        // core.symlinks off: the link is a plain file holding its target, stored without filters.
+        let hashed = runner::run_env(repo, ["hash-object", "--no-filters", "--", path], &literal, None)?;
+        return Ok(hashed.trim() != oid);
+    }
+    if cfg!(unix) && git_bool(repo, "core.filemode", true) && executable(&meta) != (mode == "100755") {
+        return Ok(true);
+    }
+    let hashed = runner::run_env(repo, ["hash-object", &format!("--path={path}"), "--", path], &literal, None)?;
+    Ok(hashed.trim() != oid)
+}
+
+fn git_bool(repo: &Path, key: &str, default: bool) -> bool {
+    runner::run(repo, ["config", "--bool", "--get", key]).map(|v| v.trim() == "true").unwrap_or(default)
+}
+
+#[cfg(unix)]
+fn executable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn executable(_meta: &std::fs::Metadata) -> bool {
+    false // no executable bit: Git sets core.filemode=false here
 }
 
 /// Restores changes saved before a paused operation into a finished outcome: the note is added,

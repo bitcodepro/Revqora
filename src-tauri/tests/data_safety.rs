@@ -529,3 +529,63 @@ fn edits_hidden_by_assume_unchanged_are_never_overwritten() {
         assert!(repo.p().join(".git/rebase-merge").exists() || repo.p().join(".git/rebase-apply").exists());
     }
 }
+
+/// A rebase paused on a.txt in a sparse checkout that leaves out.txt out (skip-worktree, absent).
+fn paused_sparse_rebase() -> Repo {
+    let repo = Repo::new();
+    repo.write("a.txt", "base\n");
+    repo.write("out.txt", "excluded\n");
+    repo.commit_all("base");
+    repo.git(&["switch", "-q", "-c", "other"]);
+    repo.write("a.txt", "theirs\n");
+    repo.commit_all("theirs");
+    repo.git(&["switch", "-q", "main"]);
+    repo.write("a.txt", "ours\n");
+    repo.commit_all("ours");
+    repo.git(&["sparse-checkout", "set", "--no-cone", "/a.txt"]);
+    assert!(!repo.p().join("out.txt").exists());
+    let out = ops::rebase_onto(repo.p(), "other").unwrap();
+    assert_eq!(out.status, "conflicts", "{out:?}");
+    repo
+}
+
+#[test]
+fn sparse_checkout_does_not_block_abort_or_skip() {
+    let repo = paused_sparse_rebase();
+    ops::abort_op(repo.p(), "rebase").unwrap();
+    let repo = paused_sparse_rebase();
+    ops::skip_op(repo.p(), "rebase").unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn hidden_type_and_mode_changes_are_never_overwritten() {
+    use std::os::unix::fs::PermissionsExt;
+    // Same bytes, different executable bit; then a symlink whose target text equals the content.
+    for symlink in [false, true] {
+        let repo = paused_rebase_saving_new_file();
+        repo.git(&["config", "core.filemode", "true"]);
+        repo.git(&["config", "core.symlinks", "true"]);
+        repo.git(&["update-index", "--assume-unchanged", "s.txt"]);
+        let file = repo.p().join("s.txt");
+        if symlink {
+            fs::remove_file(&file).unwrap();
+            std::os::unix::fs::symlink("s\n", &file).unwrap();
+        } else {
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let err = ops::skip_op(repo.p(), "rebase").unwrap_err();
+        assert_eq!(err.kind, "hidden-changes", "{}", err.message);
+        repo.write("a.txt", "resolved\n");
+        repo.git(&["add", "a.txt"]);
+        let out = ops::continue_op(repo.p(), "rebase", None).unwrap();
+        assert!(out.message.contains("s.txt"), "{out:?}");
+        let meta = fs::symlink_metadata(&file).unwrap();
+        if symlink {
+            assert!(meta.file_type().is_symlink(), "the symlink was replaced");
+        } else {
+            assert_ne!(meta.permissions().mode() & 0o111, 0, "the executable bit was reset");
+        }
+        assert!(!repo.git(&["stash", "list"]).is_empty(), "the saved changes stay in Stashes");
+    }
+}
