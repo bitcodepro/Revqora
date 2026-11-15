@@ -1,7 +1,6 @@
 import {forgeAccountsDialog} from "./ForgeAccounts";
 import { aboutDialog } from "./AboutDialog";
 import { branchCommitCompare } from "./BranchCommitCompare";
-import { SyncButton, syncRepositories } from "./SyncRepositories";
 import { RepositoryLibraryButton, groupEditorDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
 import { fetchRepositories, pullRepositories } from "./Repositories";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
@@ -142,7 +141,6 @@ export function TopBar() {
       { label: "Pull requests / Merge requests", onClick: () => showView("pulls") },
       { label: "Refresh repository", icon: <RefreshCw size={15}/>, onClick: () => void useRepos.getState().refresh(root) },
       { separator: true },
-      { label: "Sync…", onClick: () => void syncRepositories([root]) },
       { label: "Fetch all remotes", icon: <RefreshCw size={15}/>, onClick: () => void A.fetchAll(root) },
       { label: "Pull…", icon: <ArrowDownToLine size={15}/>, onClick: () => void A.pull(root) },
       { label: "Push…", icon: <ArrowUpFromLine size={15}/>, onClick: () => void A.push(root) },
@@ -186,7 +184,6 @@ export function TopBar() {
       <button className="icon-btn" title={shortcutTitle("Open repository", "open")} aria-label="Open repositories" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>
       {root && tab?.info && !overview && (
         <div className="toolbar">
-          <SyncButton roots={[root]} />
           <button className="tb-btn" aria-label="Open worktree manager" title="Worktree manager" data-shortcut="worktree-manager" onClick={() => openWorktrees(root)}><FolderGit2 size={15} />Worktrees</button>
           <button className="tb-btn" aria-label="Open branch manager" title="Branch manager" data-shortcut="branch-manager" onClick={() => openOverlay({ kind: "branches", root })}><GitBranch size={15} />Branches</button>
           <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes" data-shortcut="fetch" aria-busy={fetching}>
@@ -629,7 +626,6 @@ function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
     { id: "group-create", label: "Create group…", group: "Repository", icon: <FolderTree size={15} />, run: () => groupEditorDialog() },
     { id: "check-updates", label: "Check Updates", group: "App", icon: <Download size={15} />, run: checkUpdates },
     { id: "workspace-search", label: "Search all repositories", group: "History", icon: <FolderSearch size={15} />, run: () => workspaceCommitSearch("", "quick") },
-    { id: "sync-all", label: "Sync all repositories…", group: "Remote", icon: <RefreshCw size={15} />, run: () => { const roots = useRepos.getState().order; if (roots.length) void syncRepositories(roots); } },
     { id: "fetch-all", label: "Fetch all repositories", group: "Remote", icon: <Download size={15} />, run: () => fetchRepositories() },
     { id: "pull-all", label: "Pull all repositories…", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => { const roots = useRepos.getState().order; if (roots.length) void pullRepositories(roots); } },
     ...(tab ? [{ id: "recovery-center", label: "Undo Center…", group: "Repository", icon: <ShieldCheck size={15} />, run: () => recoveryDialog(tab.root) }] : []),
@@ -648,7 +644,6 @@ function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
     const root = tab.root;
     list.push(
       { id: "fetch", label: "Fetch", group: "Remote", icon: <RefreshCw size={15} />, run: () => A.fetchAll(root) },
-      { id: "sync", label: "Sync repository…", group: "Remote", icon: <RefreshCw size={15} />, run: () => syncRepositories([root]) },
       { id:"git-connections",label:"Git connection settings…",group:"Remote",icon:<KeyRound size={15}/>,run:()=>gitConnectionDialog(root) },
       { id: "pull", label: "Pull", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => A.pull(root) },
       { id: "push", label: "Push…", group: "Remote", icon: <ArrowUpFromLine size={15} />, run: () => A.push(root) },

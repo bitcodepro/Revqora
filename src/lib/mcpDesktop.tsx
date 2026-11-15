@@ -17,7 +17,6 @@ import { validBranchName } from "../components/dialogs";
 import { createPullRequest } from "../components/PullRequests";
 import { chooseReview } from "../components/PrReviews";
 import { mergeDialog } from "../components/PrMerge";
-import { syncRepositories } from "../components/SyncRepositories";
 import { openWorkflowStepReview } from "../components/WorkflowBuilder";
 
 type Arguments = McpActionOptions & DiffPageOptions & {
@@ -84,20 +83,29 @@ async function prContext(root: string, number: number) {
 
 async function pullRequest(root: string, a: Arguments) {
   const number = a.number!;
-  const { connection, detail } = await prContext(root, number);
-  const { revision } = detail;
-  if (a.revision && a.revision !== revision) throw new McpToolError(a.section === "diff" && a.diffVersion ? "diff_changed" : "stale_state", "The PR changed. Read its files or overview again.");
+  if (!a.section || a.section === "overview") {
+    const { detail } = await prContext(root, number);
+    if (a.revision && a.revision !== detail.revision) throw new McpToolError("stale_state", "The PR changed. Read its overview again.");
+    return detail;
+  }
+  if (a.section === "diff" && (!a.revision || !a.fileId)) throw new McpToolError("invalid_arguments", "Supply fileId and revision from the files section.");
+  const connection = (await api.forgeInfo(root))?.connectionRevision;
+  if (!connection) throw new McpToolError("pr_connection_required", "Choose an API account and remote in Revqora's PR Center first.");
+  if (a.section === "files") return api.prFiles(root, number, connection, a.revision, a.offset ?? 0);
+  if (a.section === "checks") return api.prChecks(root, number, connection, a.revision);
   switch (a.section) {
-    case "files": return { revision, ...await api.prFiles(root, number, connection, revision, a.offset ?? 0) };
     case "diff": {
-      if (!a.revision || !a.fileId) throw new McpToolError("invalid_arguments", "Supply fileId and revision from the files section.");
-      const { diff, notice } = await api.prFile(root, number, connection, revision, a.fileId);
+      const { revision } = await api.prDetail(root, number, connection);
+      if (a.revision !== revision) throw new McpToolError(a.diffVersion ? "diff_changed" : "stale_state", "The PR changed. Read its files again.");
+      const { diff, notice } = await api.prFile(root, number, connection, revision, a.fileId!);
       if (!diff && a.diffVersion) throw new McpToolError("diff_changed", "The provider diff is unavailable. Start again from the PR files.");
       return { revision, notice, diff: diff ? diffPage(diff, a) : null };
     }
-    case "discussions": return { revision, ...await api.prReviewPage(root, number, connection, revision, a.feed ?? "threads", a.cursor) };
-    case "checks": return { revision, checks: await api.prChecks(root, number, connection, revision) };
-    default: return detail;
+    case "discussions": {
+      const revision = a.revision ?? (await api.prDetail(root, number, connection)).revision;
+      return { revision, ...await api.prReviewPage(root, number, connection, revision, a.feed ?? "threads", a.cursor) };
+    }
+    default: throw new McpToolError("invalid_arguments", "Unknown pull request section.");
   }
 }
 
@@ -121,7 +129,7 @@ const actionNames: Record<string, string> = {
   checkout: "Switch branch", delete_branch: "Review branch deletion", cherry_pick: "Cherry-pick commit", stash: "Open stash dialog",
   stash_apply: "Apply stash", stash_pop: "Pop stash", stash_drop: "Delete stash",
   cherry_pick_continue: "Continue cherry-pick", cherry_pick_abort: "Abort cherry-pick",
-  fetch: "Fetch from all remotes", pull: "Pull current branch", push: "Open push review", sync: "Open Sync review",
+  fetch: "Fetch from all remotes", pull: "Pull current branch", push: "Open push review",
   create_pr: "Open PR creation", review_pr: "Open PR review", merge_pr: "Open PR merge review", pr_workflow: "Open PR workflow",
   start_workflow: "Create waiting workflow run", review_workflow_step: "Open workflow step review",
 };
@@ -524,7 +532,6 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
               if (!await authorize()) throw new McpToolError("session_expired", cancellationMessages.session_expired);
             } });
           Object.assign(status, outcome);
-          if (outcome.phase === "partial") return;
           break;
         }
         status.phase = "handed_off";
@@ -533,7 +540,6 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
           case "stash": await A.stash(root, expectedState); break;
           case "pull": await A.pull(root, pullMode, expectedState, a.prune ?? false); break;
           case "push": await A.push(root); break;
-          case "sync": await syncRepositories([root]); break;
           case "create_pr": await createPullRequest(root, null); break;
           case "review_pr": await chooseReview(pr!, () => { void useRepos.getState().refresh(root); }); break;
           case "merge_pr":

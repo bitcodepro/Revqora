@@ -1,6 +1,5 @@
 import type { BranchCleanupRequest, BranchCleanupSelection, BranchCleanupReview, BranchCleanupReport } from "./types";
 import type { RepositoryFolderScan } from "./types";
-import type { SyncPlan, SyncResult } from "./types";
 import type { RebaseItem, StudioReview, StudioReport, StudioComparison, ValidationReport } from "./types";
 import type { IgnoredFiles, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
 import { invoke } from "@tauri-apps/api/core";
@@ -134,8 +133,6 @@ export const api = {
   forgeConnectionSelect:(repo:string,selection:import("./types").ForgeConnectionSelection,expected:string)=>call<import("./types").ForgeConnections>("forge_connection_select",{repo,selection,expected}),
   branchManagerSnapshot: (repo: string, base: string | null) => call<import("./types").BranchManagerSnapshot>("branch_manager_snapshot", { repo, base }),
   branchManagerCompare: (repo: string, base: string, tip: string) => call<{ ahead: number; behind: number }>("branch_manager_compare", { repo, base, tip }),
-  syncPrepare: (repo: string) => call<SyncPlan>("sync_prepare", { repo }),
-  syncExecute: (repo: string, plan: SyncPlan, receive: boolean, send: boolean) => call<SyncResult>("sync_execute", { repo, plan, receive, send, expectedState: plan.stateToken }),
   validationStart: (repo: string, command: string, expectedState: string, timeoutSeconds: number) => call<ValidationReport>("validation_start", { repo, command, expectedState, timeoutSeconds }),
   validationReport: (repo: string) => call<ValidationReport | null>("validation_report", { repo }),
   validationCancel: (repo: string, id: string) => call<void>("validation_cancel", { repo, id }),
@@ -364,11 +361,11 @@ export const api = {
   prReviewThread: (repo: string, number: number, expectedConnection: string, expectedRevision: string, thread: string) => call<import("./types").PrThread>("pr_review_thread", { repo, number, expectedConnection, expectedRevision, thread }),
   prReviewAct: (repo: string, number: number, expectedConnection: string, expectedRevision: string, action: import("./types").PrReviewAction) => call<void>("pr_review_act", { repo, number, expectedConnection, expectedRevision, action }),
   prDetail: (repo: string, number: number, expectedConnection: string) => call<import("./types").PrDetail>("pr_detail", { repo, number, expectedConnection }),
-  prChecks: (repo: string, number: number, expectedConnection: string, expectedRevision: string) => call<Check[]>("pr_checks", { repo, number, expectedConnection, expectedRevision }),
+  prChecks: (repo: string, number: number, expectedConnection: string, expectedRevision?: string) => call<{ revision: string; checks: Check[] }>("pr_checks", { repo, number, expectedConnection, expectedRevision }),
   prCreate: (repo: string, title: string, body: string, head: string, base: string, draft: boolean, expectedConnection: string) => call<PullRequest>("pr_create", { repo, title, body, head, base, draft, expectedConnection }),
   prEdit: (repo: string, number: number, expectedConnection: string, expectedRevision: string, edit: import("./types").PrEdit) => call<import("./types").PrEditResult>("pr_edit", { repo, number, expectedConnection, expectedRevision, edit }),
   prTemplates: (repo: string, expectedConnection: string) => call<import("./types").PrTemplates>("pr_templates", { repo, expectedConnection }),
-  prFiles: (repo: string, number: number, expectedConnection: string, expectedRevision: string, offset = 0) => call<import("./types").PrFiles>("pr_files", { repo, number, expectedConnection, expectedRevision, offset }),
+  prFiles: (repo: string, number: number, expectedConnection: string, expectedRevision?: string, offset = 0) => call<import("./types").PrFiles>("pr_files", { repo, number, expectedConnection, expectedRevision, offset }),
   prFile: (repo: string, number: number, expectedConnection: string, expectedRevision: string, fileId: string) => call<import("./types").PrFileView>("pr_file", { repo, number, expectedConnection, expectedRevision, fileId }),
   pullRequestCreate: (repo: string, title: string, body: string, head: string, base: string, draft: boolean, expectedConnection: string) =>
     call<PullRequest>("pull_request_create", { repo, title, body, head, base, draft, expectedConnection }),

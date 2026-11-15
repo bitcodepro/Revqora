@@ -22,8 +22,17 @@ pub use protocol::stdio;
 
 const DISABLED: &str = "Open Revqora and enable MCP under Settings → General → MCP.";
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(25);
+const PR_READ_TIMEOUT: Duration = Duration::from_secs(120);
 const WORKERS: usize = 8;
 type Reply = Result<Value, ToolError>;
+
+fn dispatch_timeout(request: &protocol::ToolCall) -> Duration {
+    if request.is_pr_read() {
+        PR_READ_TIMEOUT
+    } else {
+        DISPATCH_TIMEOUT
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub(crate) struct ToolError {
@@ -79,6 +88,7 @@ impl Session {
     }
 
     fn dispatch(&self, app: &AppHandle, request: protocol::ToolCall) -> Reply {
+        let timeout = dispatch_timeout(&request);
         let id = transport::random_id().map_err(|e| ToolError::new("desktop_unavailable", e.to_string()))?;
         let (send, receive) = mpsc::sync_channel(1);
         {
@@ -91,7 +101,7 @@ impl Session {
         let result = app
             .emit_to("main", "mcp-request", &Event { id: &id, session: &self.id, request })
             .map_err(|_| ToolError::new("desktop_unavailable", "Revqora's main window is unavailable."))
-            .and_then(|_| match receive.recv_timeout(DISPATCH_TIMEOUT) {
+            .and_then(|_| match receive.recv_timeout(timeout) {
                 Ok(reply) => reply,
                 Err(mpsc::RecvTimeoutError::Timeout) => Err(ToolError::new("request_timeout", "Revqora did not finish the MCP request in time.")),
                 Err(mpsc::RecvTimeoutError::Disconnected) => Err(ToolError::disabled()),

@@ -751,6 +751,21 @@ fn api_agent(local: bool) -> ureq::Agent {
     ureq::AgentBuilder::new().try_proxy_from_env(!local).redirects(0).timeout(Duration::from_secs(20)).user_agent("Revqora").build()
 }
 
+fn is_api_timeout(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut source = Some(error);
+    while let Some(error) = source {
+        if error.downcast_ref::<std::io::Error>().is_some_and(|e| matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)) {
+            return true;
+        }
+        source = error.source();
+    }
+    false
+}
+
+fn api_timeout() -> GitError {
+    fail("The Git provider did not finish its API response in time. Retry the request.").kind("forge-timeout")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn request_content(
     kind: &str,
@@ -823,6 +838,7 @@ pub(super) fn request_content(
             }
             return Err(error);
         }
+        Err(error) if matches!(method, "GET" | "HEAD") && is_api_timeout(&error) => return Err(api_timeout()),
         Err(_) => return Err(fail("API connection failed. Check the server URL, network, proxy and TLS certificate.").kind("forge-network")),
     };
     let status = response.status();
@@ -833,7 +849,13 @@ pub(super) fn request_content(
     if (300..400).contains(&status) {
         return Ok(ApiContent { status, location, link, next_page, bytes });
     }
-    response.into_reader().take(limit + 1).read_to_end(&mut bytes).map_err(|_| fail("Could not read the API response."))?;
+    response.into_reader().take(limit + 1).read_to_end(&mut bytes).map_err(|error| {
+        if matches!(method, "GET" | "HEAD") && is_api_timeout(&error) {
+            api_timeout()
+        } else {
+            fail("Could not read the API response.")
+        }
+    })?;
     if bytes.len() as u64 > limit {
         return Err(fail("API response exceeds the display size limit."));
     }

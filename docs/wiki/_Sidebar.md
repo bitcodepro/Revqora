@@ -8,7 +8,7 @@
 - [Interface and navigation](https://github.com/bitcodepro/Revqora/wiki/Interface-and-navigation)
 - [Explorer and repository library](https://github.com/bitcodepro/Revqora/wiki/Repositories-and-workspaces)
 - [Changes and commits](https://github.com/bitcodepro/Revqora/wiki/Changes-and-commits)
-- [Fetch, Pull, Push and Sync](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync)
+- [Fetch, Pull and Push](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync)
 - [Branches and cleanup](https://github.com/bitcodepro/Revqora/wiki/Branches-and-cleanup)
 - [History, diff and search](https://github.com/bitcodepro/Revqora/wiki/History-diff-and-search)
 

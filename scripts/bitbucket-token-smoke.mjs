@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
+import { execFile } from "node:child_process";
 import assert from "node:assert/strict";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
 import {launch} from "./ui-driver.mjs";
@@ -19,7 +20,7 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
     git(bare,"branch","topic",head);git(bare,"update-server-info");
     const token="scoped-bitbucket-fixture-token",secondToken="other-bitbucket-fixture-token",password="portable bitbucket test vault",user="fixture-user",email="fixture@example.invalid",seen=[];
     const anonymousToken="anonymous-bitbucket-fixture-token";
-    let denyPrList=false,denyPrFiles=false;
+    let denyPrList=false,denyPrFiles=false,profileStatus=403;
     const pr={id:7,title:"Scoped Bitbucket PR",description:"Token with repository and PR scopes only",state:"OPEN",author:{display_name:"Fixture Author",nickname:"fixture-author",uuid:"{author}"},source:{branch:{name:"topic"},commit:{hash:head.slice(0,12)}},destination:{branch:{name:"main"},commit:{hash:head.slice(0,12)}},updated_on:"2026-01-01T00:00:00Z",participants:[{user:{display_name:"Alex Reviewer"},approved:true},{user:{display_name:"Sam Reviewer"},state:"changes_requested"}]};
     const server=http.createServer(async(req,res)=>{
       const url=new URL(req.url,"http://fixture"),auth=req.headers.authorization??"";
@@ -34,7 +35,7 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
         if(!file.startsWith(bare+path.sep)||!fs.existsSync(file)||!fs.statSync(file).isFile()){res.writeHead(404);res.end();return;}
         res.writeHead(200,{"content-type":"text/plain"});res.end(fs.readFileSync(file));return;
       }
-      if(url.pathname==="/2.0/user")return send(403,{error:{message:"Profile permission deliberately unavailable"}});
+      if(url.pathname==="/2.0/user")return send(profileStatus,{error:{message:"Profile permission deliberately unavailable"}});
       if(auth!==apiAuth&&auth!==`Bearer ${secondToken}`&&auth!==`Bearer ${anonymousToken}`)return send(401,{error:{message:"Token rejected"}});
       if((denyPrList&&url.pathname==="/2.0/repositories/team/repo/pullrequests")||(denyPrFiles&&url.pathname.endsWith("/pullrequests/7/diff"))){
         return send(403,{error:{message:"Repository scopes deliberately unavailable"}});
@@ -134,6 +135,9 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await prButton("Load checks").click();
       await detailPanel.getByText("Build fixture",{exact:true}).waitFor();
       assert.equal(seen.filter(r=>r.path.endsWith("/statuses")).length,1);
+      const checksConnection=(await invoke("forge_info",{repo:root})).connectionRevision;
+      const checks=await invoke("pr_checks",{repo:root,number:7,expectedConnection:checksConnection});
+      assert(checks.revision&&checks.checks.some(check=>check.name==="Build fixture"));
       pr.updated_on="2026-01-02T00:00:00Z";
       await prButton("Discussions").click();
       const staleDiscussions=detailPanel.getByRole("alert").filter({hasText:"Reload it to see the latest discussions"});
@@ -215,6 +219,36 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await button("Close").click();
       await center.locator('[data-pr-detail="7"]').waitFor();
       const restored=await invoke("pr_page",{repo:root,state:"open",cursor:null});assert.equal(restored.items[0].title,pr.title);assert.equal(seen.filter(r=>r.path==="/2.0/user").length,0);
+      // Return the native error through evaluate because CDP only preserves the
+      // message of a promise rejection crossing the page boundary.
+      for(const status of [403,401]){
+        profileStatus=status;
+        const identityError=await page.evaluate(repo=>window.__TAURI_INTERNALS__.invoke("forge_connection_identity",{repo}).catch(error=>error),root);
+        assert.equal(identityError.kind,"identity-unavailable");
+        assert.match(identityError.message,/read:user:bitbucket/);
+      }
+      await invoke("mcp_enable",{enabled:true});
+      try {
+        // The CLI and desktop must use the same isolated profile for the bridge.
+        const messages=[
+          {id:1,method:"initialize",params:{protocolVersion:"2025-11-25"}},
+          {method:"notifications/initialized"},
+          ...["files","checks"].map((section,index)=>({id:index+2,method:"tools/call",params:{name:"pull_request",arguments:{repository:root,number:7,section}}})),
+        ];
+        const responses=await new Promise((resolve,reject)=>{
+          const child=execFile(exe,["--mcp"],{windowsHide:true,timeout:140_000,env:{...process.env,REVQORA_MULTI_INSTANCE:"1",WEBVIEW2_USER_DATA_FOLDER:profile}},
+            (error,stdout)=>error?reject(error):resolve(stdout));
+          child.stdin.on("error",reject);
+          child.stdin.end(messages.map(message=>JSON.stringify({jsonrpc:"2.0",...message})).join("\n")+"\n");
+        });
+        const [initialized,filesReply,checksReply]=responses.trim().split(/\r?\n/).map(line=>JSON.parse(line));
+        assert.equal(initialized.result.serverInfo.version,await invoke("plugin:app|version"));
+        for(const response of [filesReply,checksReply]) assert.equal(response.result?.isError,false,JSON.stringify(response));
+        const files=JSON.parse(filesReply.result.content[0].text),ci=JSON.parse(checksReply.result.content[0].text);
+        assert(files.items.some(file=>file.path==="file.txt"));
+        assert(ci.checks.some(check=>check.name==="Build fixture"));
+        assert.equal(files.revision,ci.revision);
+      } finally {await invoke("mcp_enable",{enabled:false});}
     }catch(error){if(out)await page?.screenshot({path:path.join(out,"bitbucket-token-failure.png")}).catch(()=>{});throw error;}
     finally{if(app){await invoke("unwatch_repo",{repo:root}).catch(()=>{});await app.close();}server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
   });

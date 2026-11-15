@@ -739,7 +739,7 @@ export interface PrEditResult { detail: PrDetail; notice: string | null }
 export interface PrTemplate { path: string; body: string }
 export interface PrTemplates { items: PrTemplate[]; notice: string | null }
 export interface PrFile { id: string; path: string; oldPath: string | null; status: string; binary: boolean; additions: number | null; deletions: number | null }
-export interface PrFiles { items: PrFile[]; nextOffset: number | null; notice: string | null }
+export interface PrFiles { revision: string; items: PrFile[]; nextOffset: number | null; notice: string | null }
 export interface PrFileView { diff: FileDiff | null; notice: string | null }
 export interface PrReviewCapabilities { actor: string; actorId: string; comment: boolean; approve: boolean; requestChanges: boolean; inline: boolean; reason: string; summaryWithVote: boolean }
 export interface PrReviewComment {
@@ -835,21 +835,6 @@ export interface ValidationReport {
   error: string | null;
 }
 
-export interface SyncPlan {
-  branch: string;
-  localOid: string;
-  serverOid: string;
-  target: RemoteBranchTarget;
-  ahead: number;
-  behind: number;
-  stateToken: string;
-}
-export interface SyncResult {
-  received: boolean;
-  sent: boolean;
-  checkpoint: RecoverySummary;
-  warnings: string[];
-}
 export interface ManagedBranch {
   creator?: {name:string;email:string}|null;
   fullRef: string; name: string; oid: string; local: boolean; current: boolean;

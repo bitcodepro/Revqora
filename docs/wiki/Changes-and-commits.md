@@ -80,4 +80,4 @@ They serve different purposes. Revqora uses your installed Git configuration and
 
 IDE, terminal and agent edits are detected by repository watchers. If an operation reports that its prepared state is stale, refresh, inspect the new content and prepare it again. The action was bound to an older view of the repository.
 
-**Next:** [Publish with Push or Sync](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync) · [Stage layers](https://github.com/bitcodepro/Revqora/wiki/Stash-stage-layers-and-patches) · [Resolve conflicts](https://github.com/bitcodepro/Revqora/wiki/Merge-rebase-and-conflicts)
+**Next:** [Publish with Push](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync) · [Stage layers](https://github.com/bitcodepro/Revqora/wiki/Stash-stage-layers-and-patches) · [Resolve conflicts](https://github.com/bitcodepro/Revqora/wiki/Merge-rebase-and-conflicts)

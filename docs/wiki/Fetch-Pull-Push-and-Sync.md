@@ -1,4 +1,4 @@
-# Fetch, Pull, Push and Sync
+# Fetch, Pull and Push
 
 ## Choose an action
 
@@ -7,7 +7,6 @@
 | **Fetch** | You want to see what arrived on the server. | Downloads remote history and updates tracking information without integrating it into your current branch. |
 | **Pull** | You want to receive upstream changes in the current branch. | Fetches and integrates according to the selected Pull mode. |
 | **Push** | You have local commits to publish. | Sends commits to a selected remote branch. |
-| **Sync** | You want to review incoming/outgoing commits before choosing actions. | Prepares a receive/send review; Receive is fast-forward only and Send requires selection. |
 
 You can Pull directly. Running Fetch immediately beforehand is optional.
 
@@ -21,9 +20,9 @@ For a local branch with the wrong tracking relationship, use its context menu â†
 
 ## Where is Fetch all?
 
-Open the left **Repositories** panel with **Ctrl+Alt+R**. **Fetch all** is below its search field, beside **Sync all**. **All repositories** also exposes these actions.
+Open the left **Repositories** panel with **Ctrl+Alt+R**. **Fetch all** is below its search field. **All repositories** also exposes these actions.
 
-The top-bar **Fetch** operates on the current repository's remotes. **Fetch all**, **Pull all** and **Sync all** are available in the unfiltered repository list.
+The top-bar **Fetch** operates on the current repository's remotes. **Fetch all** and **Pull all** are available in the unfiltered repository list.
 
 Right-click a branch for **Fetch** or **Pull**. **Fetch** updates its remote, or offers a choice of remotes for a local branch without an upstream. **Pull** uses the selected local branch's upstream and asks before switching branches. For a remote branch, **Pull** uses a local branch that tracks it.
 
@@ -48,19 +47,6 @@ If a Push response is lost or reports a partial/uncertain result, inspect the se
 
 Choose the mode in Settings. If local and remote histories both contain unique commits, inspect them before choosing merge or rebase. Commit/stash unfinished work when requested; ignored-file collisions and conflicts can also stop an update.
 
-## Use Sync step by step
-
-1. Click **Sync** in the top bar, or **Sync all** in Repositories.
-2. Wait for **Review Sync**. It checks the actual server tip for each selected repository.
-3. Inspect the current branch, upstream and incoming/outgoing counts.
-4. Leave **Receive N** selected if you want incoming commits.
-5. Select **Send N** explicitly if you want to publish local commits.
-6. Click **Sync selected** and read **Sync results**.
-
-Sync works on each repository's current branch. It does not commit your edits or synchronize every branch in that repository. A clean Git-visible working state and one unambiguous upstream are required. Diverged histories need explicit merge/rebase first.
-
-Canceling the review does not integrate or publish changes. A failed repository does not automatically cancel successful work in other repositories; inspect each result.
-
 ## When a completed feature branch has disappeared
 
 A hosting service may delete the source branch after merging its PR. Your local feature branch can still track that now-missing remote branch.
@@ -69,7 +55,7 @@ Pull verifies the missing upstream, refreshes/reconciles available remote inform
 
 The default may be outside a single-branch clone's fetch configuration. Follow the reported upstream/fetch-settings explanation rather than assuming it was loaded. Your local feature branch is not deleted automatically.
 
-For a *new unpublished branch*, publish it with Push before using Sync. For a *merged and deleted branch*, return to the appropriate continuing branch instead of republishing it unintentionally.
+For a *new unpublished branch*, publish it with Push. For a *merged and deleted branch*, return to the appropriate continuing branch instead of republishing it unintentionally.
 
 ## Auto-fetch and Refresh
 

@@ -36,7 +36,6 @@ Every `request_action` requires `repository` and `action`. Extra parameters that
 | `stash_drop` | `stashIndex` and full stash SHA as `target` | |
 | `fetch`, `pull` | | `prune` defaults to `false` in all approval modes |
 | `push` | | `remote`, `remoteBranch`, `force`, `setUpstream` for automatic push |
-| `sync` | | `receive`, `send` for automatic sync |
 | `create_pr` | `title`, `branch` and `base` for automatic creation | `message`, `draft` for automatic creation |
 | `review_pr` | `number` | `revision`, `reviewKind`, `message` |
 | `merge_pr` | `number` | `revision`, `method`, `message` |
@@ -48,11 +47,11 @@ Every `request_action` requires `repository` and `action`. Extra parameters that
 
 If a provider write returns `result_unverified`, inspect the PR, reviews or merge status on the provider before retrying. Revqora guards against duplicate writes when the first result is uncertain.
 
-Automatic Sync reports `partial` if a requested direction did not complete
-or a verification warning remains. Inspect the `received`, `sent` and
-`checkpoint` fields before retrying.
+The former `sync` action returns `action_removed`. Use `fetch`, `pull` or `push` for the desired operation.
 
 The MCP confirmation dialog expires after 120 seconds. The action reports `cancelled` with reason `approval_timed_out`, and the desktop releases the next request.
+
+A `pull_request` read has a 120-second desktop deadline. Files and checks return their revision and accept an expected revision to detect stale requests. For diff, pass the revision and file ID returned by files. Bitbucket profile verification uses the selected PR connection. For personal tokens, `/user` requires `read:user:bitbucket` (OAuth: `account`).
 
 ## Checkout and stash recovery
 

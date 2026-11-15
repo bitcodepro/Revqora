@@ -34,12 +34,11 @@ Use **Shift+click** to select a range, **Ctrl+click** to toggle a row, and **Ctr
 
 Use the context menu to remove a repository from a group or from all groups. **Delete** opens a review for the selected groups and their descendants. These operations update Revqora's library and leave working copies on disk. Saved workspaces from older versions are carried over as Explorer groups.
 
-## Fetch all, Pull all and Sync all
+## Fetch all and Pull all
 
 These actions appear in the unfiltered **Repositories** panel and the **All repositories** overview. Open the overview with **Ctrl+Shift+O**. The bulk actions use the open repository set. Incoming and outgoing counts reflect the last known Git data.
 
 - **Fetch all** downloads remote updates.
 - **Pull all** lets you review which repositories can fast-forward their checked-out branches.
-- **Sync all** lets you review incoming and outgoing commits before choosing what to receive or send.
 
 **Related** · [Interface and navigation](https://github.com/bitcodepro/Revqora/wiki/Interface-and-navigation) · [Remote operations](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync) · [Settings and portable data](https://github.com/bitcodepro/Revqora/wiki/Settings-and-troubleshooting)

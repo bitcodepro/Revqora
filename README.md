@@ -100,14 +100,14 @@ or check out anything.
 
 | Area | What you can do |
 | --- | --- |
-| Repository workspace | Open, initialize and clone repositories; browse groups and repositories in Explorer or use a flat repository list; Fetch/Pull/Sync across open repositories. |
+| Repository workspace | Open, initialize and clone repositories; browse groups and repositories in Explorer or use a flat repository list; Fetch/Pull across open repositories. |
 | Review layouts | Switch between Graph, Review and Columns; hide repository and branch panels, resize file/diff panes, and keep visibility and widths separately for each layout. |
 | History | Virtualized graph, ref labels, commit and branch details, search by message/author/SHA/code/path, branch comparison, file history, blame and revision browsing. |
 | Diff | Unified and side-by-side views, word highlighting, line wrapping or horizontal scrolling, image comparison, hunk navigation, file-tree and flat file lists. |
 | Changes and commits | Stage/unstage files, hunks and lines; discard with backups; ignored-file and nested-repository views; amend, sign-off, signed commits, templates and Conventional Commits helpers. |
 | Stage layers | Keep several logical groups of staged work, inspect dependencies, reorder or combine layers, and commit a layer separately. |
 | Branch management | Create, switch, rename, compare and delete branches; inspect upstream/ahead/behind; filter protected, stale, merged, unmerged or diverged branches; review bulk cleanup. |
-| Git operations | Fetch, Pull, Push, explicit Sync, tags, stash and partial stash, patches, cherry-pick, revert, reset and reflog. |
+| Git operations | Fetch, Pull, Push, tags, stash and partial stash, patches, cherry-pick, revert, reset and reflog. |
 | Rebase and conflicts | Rebase Studio with reorder/reword/squash/fixup/drop, previews and recovery; conflict editor with Base, Ours, Theirs and editable Result; selected validation commands. |
 | Recovery | Operation log, Undo Center, recovery checkpoints, deleted-branch restoration and discard backups, with operation-specific recovery limits. |
 | Worktrees and repository tools | Create/open/lock/remove/prune worktrees; submodules, LFS, bisect, signing, repository size and Git maintenance. |
@@ -130,7 +130,7 @@ the top level. Use **Import folder…** to recreate the folder hierarchy in Expl
 Open the optional **Repositories** panel for a flat list. Select a group in Explorer
 to show all of its repositories, including those in subgroups. Select **All
 repositories** in Explorer to clear the filter. Search, favorites and incoming
-commit filters help narrow either view. **Fetch all**, **Pull all** and **Sync all**
+commit filters help narrow either view. **Fetch all** and **Pull all**
 appear in the unfiltered flat panel and apply to open repositories.
 
 Drag a group by its row to nest or reorder it. Drag a repository onto a group
@@ -241,14 +241,13 @@ Repository activation restores cached history, scroll position and file previews
 immediately, then revalidates local data in the background. Working-diff line
 actions stay unavailable until the fresh diff has been checked.
 
-### Fetch, Pull, Push and Sync
+### Fetch, Pull and Push
 
 | Action | Meaning |
 | --- | --- |
 | **Fetch** | Download remote history and update tracking references without integrating changes into your working branch. |
 | **Pull** | Receive and integrate upstream commits using the selected fast-forward, merge or rebase behavior. |
 | **Push** | Publish local commits to the selected remote branch. |
-| **Sync** | Review exact incoming/outgoing commits first. Receive is fast-forward only; sending must be selected explicitly. Dirty, diverged or ambiguous states stop with a reason. |
 
 In a local branch's history, fetched commits waiting for Pull are marked
 **Incoming**. Select one to inspect its diff, or use the eye icon beside
@@ -256,8 +255,6 @@ In a local branch's history, fetched commits waiting for Pull are marked
 branch. History initially loads up to 200 commits and extends as you scroll.
 Search includes older commits within the selected scope.
 
-Sync does not resolve divergence by rewriting remote history. Use the individual
-merge/rebase tools when the histories need reconciliation.
 
 ### Inspect whitespace and edit a working file
 
@@ -695,7 +692,7 @@ The [Revqora Wiki](https://github.com/bitcodepro/Revqora/wiki) has step-by-step
 guides. See also:
 
 - [Implementation roadmap and provider capabilities](https://github.com/bitcodepro/Revqora/blob/main/docs/ROADMAP.md)
-- [Explorer, repository library and Sync](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md)
+- [Explorer and repository library](https://github.com/bitcodepro/Revqora/blob/main/docs/REPOSITORY_WORKSPACES.md)
 - [Conflict Studio and validation](https://github.com/bitcodepro/Revqora/blob/main/docs/CONFLICT_STUDIO.md)
 - [Agent Workspace](https://github.com/bitcodepro/Revqora/blob/main/docs/AGENT_WORKSPACE.md)
 

@@ -341,7 +341,7 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
             let templates = templates(repo, &connection).unwrap();
             assert_eq!(templates.items[0].body, "Committed template Тест\n");
         }
-        let files = files(repo, 7, &connection, &d.revision, 0).unwrap();
+        let files = files(repo, 7, &connection, Some(&d.revision), 0).unwrap();
         assert_eq!(files.items.len(), 1, "{kind}");
         let v = file(repo, 7, &connection, &d.revision, &files.items[0].id).unwrap();
         if kind == "azure" {
@@ -374,7 +374,7 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
             assert_eq!(saved.detail.pull.head_sha, "a".repeat(40));
             assert_eq!(saved.detail.base_sha, "b".repeat(40));
             assert_eq!(saved.detail.revision, detail(repo, 7, &connection).unwrap().revision);
-            assert_eq!(super::files(repo, 7, &connection, &saved.detail.revision, 0).unwrap().items.len(), 1);
+            assert_eq!(super::files(repo, 7, &connection, Some(&saved.detail.revision), 0).unwrap().items.len(), 1);
             let again =
                 edit(repo, 7, &connection, &saved.detail.revision, Edit { title: "Updated twice".into(), body: "Second edit".into(), base: "develop".into() })
                     .unwrap();
@@ -400,7 +400,7 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
                 metadata["merge_commit"] = json!({"hash":"c".repeat(12)});
             }
             let merged = detail(repo, 7, &connection).unwrap();
-            let merged_files = super::files(repo, 7, &connection, &merged.revision, 0).unwrap();
+            let merged_files = super::files(repo, 7, &connection, Some(&merged.revision), 0).unwrap();
             assert_eq!(merged_files.items.len(), 1);
             assert_eq!(merged.pull.head_sha, "a".repeat(40), "Merge diff must not overwrite the source commit used by checkout");
             {
@@ -410,7 +410,7 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
             }
             let declined = detail(repo, 7, &connection).unwrap();
             assert!(declined.declined && declined.pull.head_sha.is_empty());
-            assert!(super::files(repo, 7, &connection, &declined.revision, 0).err().unwrap().message.contains("source commit"));
+            assert!(super::files(repo, 7, &connection, Some(&declined.revision), 0).err().unwrap().message.contains("source commit"));
             *state.lock() = open_metadata;
         }
         let count = h.seen.lock().iter().filter(|r| r.method != "GET").count();

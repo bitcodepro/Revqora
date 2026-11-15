@@ -312,7 +312,8 @@ fn real_review_contracts_pin_lines_and_identity_and_preserve_git_and_failed_draf
         stale_action.thread_revision = Some(t.revision.clone());
         assert_eq!(act(repo, 7, &connection, &d.revision, stale_action).unwrap_err().kind, "stale-operation");
         assert!(h.seen.lock()[before..].iter().all(|r| r.method == "GET" || r.body["query"].as_str().is_some_and(|q| q.starts_with("query"))));
-        let files = pr_center::files(repo, 7, &connection, &d.revision, 0).unwrap();
+        let files = pr_center::files(repo, 7, &connection, None, 0).unwrap();
+        assert_eq!(files.revision, d.revision);
         let mut inline = action("comment", &c.actor_id);
         inline.anchor = Some(Anchor { file_id: files.items[0].id.clone(), side: "LEFT".into(), line: 1 });
         act(repo, 7, &connection, &d.revision, inline).unwrap();

@@ -70,4 +70,4 @@ Read comments in **Discussions** and code in **Files**. Make further commits on 
 
 After the PR is merged, return to the shared branch and Pull. Review deletion of the completed feature branch separately.
 
-**Next:** [Changes and commits](https://github.com/bitcodepro/Revqora/wiki/Changes-and-commits) · [Fetch, Pull, Push and Sync](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync) · [Pull Request Center](https://github.com/bitcodepro/Revqora/wiki/Pull-Request-Center)
+**Next:** [Changes and commits](https://github.com/bitcodepro/Revqora/wiki/Changes-and-commits) · [Fetch, Pull and Push](https://github.com/bitcodepro/Revqora/wiki/Fetch-Pull-Push-and-Sync) · [Pull Request Center](https://github.com/bitcodepro/Revqora/wiki/Pull-Request-Center)

@@ -1,5 +1,5 @@
 use super::*;
-use crate::git::{branch_origin, forge, history, ops, pr_center, recovery, repo, runner, status, sync};
+use crate::git::{branch_origin, forge, history, ops, pr_center, recovery, repo, runner, status};
 fn expand(r: &Run, s: &str) -> String {
     match s {
         "${branch}" => r.parameters.branch.clone(),
@@ -31,7 +31,7 @@ fn urls(root: &Path, remote: &str) -> GitResult<String> {
     Ok(push.trim().to_owned())
 }
 fn server_head(root: &Path, url: &str, branch: &str) -> GitResult<Option<String>> {
-    let (mut args, name) = sync::transport(root, url)?;
+    let (mut args, name) = history::isolated_remote(root, url)?;
     args.extend(["ls-remote".into(), "--symref".into(), "--refs".into(), "--heads".into(), "--".into(), name, format!("refs/heads/{branch}")]);
     let raw = history::run(root, args)?;
     if raw.trim().is_empty() {
@@ -122,7 +122,7 @@ pub(super) fn build_review_with(root: &Path, r: &Run, previous: Option<&Review>)
                 out.explanation = format!("Require current branch: {}", step.value);
             }
             "branch" => {
-                sync::require_actual_history(root)?;
+                history::require_actual_history(root)?;
                 if !clean {
                     return Err(fail("Commit or stash Git-visible changes before creating/checking out a workflow branch."));
                 }
@@ -137,7 +137,7 @@ pub(super) fn build_review_with(root: &Path, r: &Run, previous: Option<&Review>)
                 out.explanation = format!("Create and check out {} from exact commit {}. Existing branches are never reset.", step.value, out.resolved[0]);
             }
             "cherryPick" => {
-                sync::require_actual_history(root)?;
+                history::require_actual_history(root)?;
                 if !clean || st.branch.is_none() {
                     return Err(fail("Cherry-pick requires a clean checked-out branch."));
                 }
@@ -167,7 +167,7 @@ pub(super) fn build_review_with(root: &Path, r: &Run, previous: Option<&Review>)
             }
             "publish" => {
                 pull_requests::publication(root, r, &step)?;
-                sync::require_actual_history(root)?;
+                history::require_actual_history(root)?;
                 branch(root, &step.extra)?;
                 let head = st.oid.as_ref().ok_or_else(|| fail("No commit to publish."))?;
                 let url = urls(root, &step.value)?;
@@ -335,7 +335,7 @@ pub(super) fn execute_action(root: &Path, original: &Run, prepared: &Review, job
                 "publish" => {
                     recovery::create(root, "workflow_publish", "Before publishing workflow branch", false, false)?;
                     let url = urls(root, &s.value)?;
-                    let (mut args, name) = sync::transport(root, &url)?;
+                    let (mut args, name) = history::isolated_remote(root, &url)?;
                     args.extend([
                         "-c".into(),
                         "push.followTags=false".into(),
