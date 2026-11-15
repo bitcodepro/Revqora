@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, isValidDate, removeFilter, historyListMode } from "./historyFilters";
+import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, isValidDate, removeFilter, historyListMode, jumpResets } from "./historyFilters";
 
 describe("history filters", () => {
   it("validates calendar dates", () => {
@@ -40,5 +40,16 @@ describe("history list mode", () => {
     expect(historyListMode({ ...base, searchActive: true, matches: 3, onlyMatching: true })).toBe("list");
     expect(historyListMode({ ...base, searchActive: true, matches: 3, currentOutsideGraph: true })).toBe("list");
     expect(historyListMode({ ...base, searchActive: true, matches: 0 })).toBe("graph");
+  });
+});
+
+describe("jumping to a commit", () => {
+  it("clears filters that would hide the target, including an empty filtered result", () => {
+    const alice = { ...EMPTY_HISTORY_FILTERS, author: "Alice" };
+    expect(jumpResets({ query: "", onlyMatching: false, filters: alice })).toEqual({ query: true, onlyMatching: true, filters: true });
+    const nothing = { ...EMPTY_HISTORY_FILTERS, author: "nobody-matches-this" };
+    expect(jumpResets({ query: "", onlyMatching: false, filters: nothing })?.filters).toBe(true);
+    expect(jumpResets({ query: "fix", onlyMatching: false, filters: EMPTY_HISTORY_FILTERS })).toEqual({ query: true, onlyMatching: true, filters: false });
+    expect(jumpResets({ query: "  ", onlyMatching: false, filters: EMPTY_HISTORY_FILTERS })).toBeNull();
   });
 });

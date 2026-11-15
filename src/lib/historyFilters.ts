@@ -72,3 +72,11 @@ export function historyListMode(o: {
   if (!o.searchActive || o.matches === 0) return "graph";
   return o.onlyMatching || o.currentOutsideGraph ? "list" : "graph";
 }
+
+/** Opening a commit from elsewhere (Folder History, workspace search, a link) must show it:
+ *  whatever narrows or searches History is cleared first, so the target is in the graph even
+ *  when the filters exclude it or match nothing. Null = nothing to clear, jump right away. */
+export function jumpResets(o: { query: string; onlyMatching: boolean; filters: HistoryFilters }): { query: true; onlyMatching: true; filters: boolean } | null {
+  const filters = filterRequest(o.filters) !== null || filterChips(o.filters).length > 0;
+  return o.query.trim() || o.onlyMatching || filters ? { query: true, onlyMatching: true, filters } : null;
+}

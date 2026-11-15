@@ -19,7 +19,7 @@ import { repositoryKey } from "../lib/repositoryLibrary";
 import { actionFor, matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
 import type { GraphLaneAnchor, GraphRow, GraphSummary, HistoryFilters, RefLabel, SearchMode, Seg } from "../lib/types";
-import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, historyListMode, removeFilter } from "../lib/historyFilters";
+import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, historyListMode, jumpResets, removeFilter } from "../lib/historyFilters";
 import { WORKTREE } from "../lib/types";
 import { absoluteTime, fullTime, relativeTime, shortOid } from "../lib/format";
 import { BranchAheadBehind, Avatar, RefBadge } from "./bits";
@@ -470,6 +470,9 @@ export function GraphView({
   const filterProblem = filterError(filters);
   const filterReq = filterProblem ? null : filterRequest(filters);
   const chips = filterChips(filters);
+  /** The current search and filters, for event handlers registered once. */
+  const narrowing = useRef({ query, onlyMatching: filterOnly, filters });
+  narrowing.current = { query, onlyMatching: filterOnly, filters };
   const searchRef = useRef<HTMLInputElement>(null);
   const panelMenu = usePanelTitleMenu("history");
   // The search the user asked for. A graph rebuild (paging, watcher, auto-fetch) re-runs it for
@@ -670,10 +673,13 @@ export function GraphView({
   useEffect(() => {
     const oid = tab.historyJump;
     if (!oid) return;
-    // An external selection takes precedence over the local search and its pending scroll.
-    if (query || filterOnly) {
+    // An external selection takes precedence over the local search, the filters and their
+    // pending scroll: the target may be excluded by them (or they may match nothing).
+    const reset = jumpResets({ query, onlyMatching: filterOnly, filters });
+    if (reset) {
       setQuery("");
       setFilterOnly(false);
+      if (reset.filters) setFilters(EMPTY_HISTORY_FILTERS);
       return;
     }
     if (!graphKey || tab.graphLoading) return;
@@ -697,7 +703,7 @@ export function GraphView({
       patch(root, { historyJump: null });
     }).catch(() => {});
     return () => { current = false; };
-  }, [root, graphKey, tab.historyJump, tab.graphLoading, tab.branchFilter, query, filterOnly, patch, scrollToIndex]);
+  }, [root, graphKey, tab.historyJump, tab.graphLoading, tab.branchFilter, query, filterOnly, filters, patch, scrollToIndex]);
 
   /** A graph key whose last row should be selected as soon as it renders (End on paged history). */
   const selectLastFor = useRef<string | null>(null);
@@ -818,6 +824,12 @@ export function GraphView({
       };
       if (r !== root) return;
       const request=++jump;
+      // Search or filters would hide the target: clear them and let the History jump select it
+      // once the full graph is shown again.
+      if (jumpResets(narrowing.current)) {
+        patch(root, { selected: oid, multi: [], historyJump: oid });
+        return;
+      }
       patch(root,{selected:oid,multi:[]});
       const local=[...cache.current.values()].find(row=>row.oid===oid);
       if(local){anchor.current=local.index;scrollToIndex(local.index,true);return;}

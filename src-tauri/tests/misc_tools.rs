@@ -131,3 +131,46 @@ fn branch_from_stash_never_overwrites_an_ignored_file() {
     assert_eq!(runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim(), stash, "the stash is kept");
     assert_eq!(runner::run(root, ["branch", "--show-current"]).unwrap().trim(), "main");
 }
+
+/// Stash made where `tracked` exists; then the branch removes it, ignores `ignore_rule` and an
+/// ignored `local` with precious data appears. Returns the stash id.
+fn stash_then_ignore(root: &Path, tracked: &str, ignore_rule: &str, local: &str) -> String {
+    if let Some(parent) = Path::new(tracked).parent() {
+        fs::create_dir_all(root.join(parent)).unwrap();
+    }
+    fs::write(root.join(tracked), "tracked once\n").unwrap();
+    commit(root, "a.txt", "base\n");
+    fs::write(root.join("a.txt"), "stashed edit\n").unwrap();
+    runner::run(root, ["stash", "push", "-q", "-m", "wip"]).unwrap();
+    runner::run(root, ["rm", "-q", "-r", tracked.split('/').next().unwrap()]).unwrap();
+    fs::write(root.join(".gitignore"), format!("{ignore_rule}\n")).unwrap();
+    runner::run(root, ["add", ".gitignore"]).unwrap();
+    runner::run(root, ["commit", "-q", "-m", "ignore"]).unwrap();
+    if let Some(parent) = Path::new(local).parent() {
+        fs::create_dir_all(root.join(parent)).unwrap();
+    }
+    fs::write(root.join(local), "precious local data\n").unwrap();
+    runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim().to_string()
+}
+
+#[test]
+fn branch_from_stash_never_replaces_an_ignored_folder_with_a_file() {
+    let dir = repo();
+    let root = dir.path();
+    let stash = stash_then_ignore(root, "cache", "cache/", "cache/precious");
+    let err = misc::stash_branch(root, "rescue", 0, &stash).unwrap_err();
+    assert_eq!(err.kind, "stash-branch-collision", "{}", err.message);
+    assert_eq!(fs::read_to_string(root.join("cache/precious")).unwrap(), "precious local data\n");
+    assert_eq!(runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim(), stash);
+}
+
+#[test]
+fn branch_from_stash_never_replaces_an_ignored_file_with_a_folder() {
+    let dir = repo();
+    let root = dir.path();
+    let stash = stash_then_ignore(root, "cache/file", "cache", "cache");
+    let err = misc::stash_branch(root, "rescue", 0, &stash).unwrap_err();
+    assert_eq!(err.kind, "stash-branch-collision", "{}", err.message);
+    assert_eq!(fs::read_to_string(root.join("cache")).unwrap(), "precious local data\n");
+    assert_eq!(runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim(), stash);
+}

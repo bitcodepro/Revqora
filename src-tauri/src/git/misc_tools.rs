@@ -125,12 +125,72 @@ pub fn stash_branch(repo: &Path, name: &str, index: u32, expected: &str) -> GitR
 /// Ignored files on disk that `tree` (a commit) contains: a checkout of it would overwrite them.
 fn ignored_files_in_tree(repo: &Path, commit: &str) -> GitResult<Vec<String>> {
     let ignored = runner::run_bytes(repo, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"])?;
-    let ignored: std::collections::HashSet<String> = String::from_utf8_lossy(&ignored).split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect();
+    let ignored: Vec<String> = String::from_utf8_lossy(&ignored).split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect();
     if ignored.is_empty() {
         return Ok(Vec::new());
     }
     let tree = runner::run_bytes(repo, ["ls-tree", "-r", "-z", "--name-only", "--end-of-options", commit])?;
-    let mut out: Vec<String> = String::from_utf8_lossy(&tree).split('\0').filter(|p| ignored.contains(*p)).map(str::to_string).collect();
+    let tree: Vec<String> = String::from_utf8_lossy(&tree).split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect();
+    Ok(checkout_collisions(&tree, &ignored))
+}
+
+/// Ignored paths a checkout of `tree` would destroy: the same path, an ignored file inside a
+/// folder the tree has as a file (`cache` vs `cache/precious`), or an ignored file where the
+/// tree has a folder (`cache` vs `cache/file`).
+pub(crate) fn checkout_collisions(tree: &[String], ignored: &[String]) -> Vec<String> {
+    use std::collections::HashSet;
+    let files: HashSet<&str> = tree.iter().map(String::as_str).collect();
+    let mut folders: HashSet<&str> = HashSet::new();
+    for path in tree {
+        let mut at = path.len();
+        while let Some(slash) = path[..at].rfind('/') {
+            if !folders.insert(&path[..slash]) {
+                break;
+            }
+            at = slash;
+        }
+    }
+    let mut out: Vec<String> = ignored
+        .iter()
+        .filter(|path| {
+            let p = path.as_str();
+            // Same path, or the tree has a folder where this ignored file is.
+            if files.contains(p) || folders.contains(p) {
+                return true;
+            }
+            // The tree has a file where one of this ignored file's folders is.
+            let mut at = p.len();
+            while let Some(slash) = p[..at].rfind('/') {
+                if files.contains(&p[..slash]) {
+                    return true;
+                }
+                at = slash;
+            }
+            false
+        })
+        .cloned()
+        .collect();
     out.sort();
-    Ok(out)
+    out
+}
+
+#[cfg(test)]
+mod collision_tests {
+    use super::checkout_collisions;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn file_and_folder_collisions_are_found_both_ways() {
+        // Same path.
+        assert_eq!(checkout_collisions(&v(&["cache"]), &v(&["cache"])), ["cache"]);
+        // Tree file `cache`, ignored folder content `cache/precious` (deep too).
+        assert_eq!(checkout_collisions(&v(&["cache"]), &v(&["cache/precious", "cache/a/b"])), ["cache/a/b", "cache/precious"]);
+        // Tree folder `cache/file`, ignored file `cache`.
+        assert_eq!(checkout_collisions(&v(&["cache/file", "src/x"]), &v(&["cache", "src"])), ["cache", "src"]);
+        // Similar names that do not overlap.
+        assert!(checkout_collisions(&v(&["cache", "a/b"]), &v(&["cache2", "cachex/y", "a/bc", "ab"])).is_empty());
+    }
 }
