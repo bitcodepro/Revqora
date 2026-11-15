@@ -2,7 +2,8 @@ import { menuFocusTarget } from "../lib/keyboardFocus";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertCircle, CheckCircle2, ChevronRight, Info, TriangleAlert, X } from "lucide-react";
-import { useUi, type MenuItem } from "../lib/ui";
+import { copyText, useUi, type MenuItem } from "../lib/ui";
+import { detailsNeedExpanding } from "../lib/toastDetails";
 import { surfaceDocument } from "../lib/uiSurfaces";
 import { bindingFor, prettyCombo } from "../lib/shortcuts";
 
@@ -125,21 +126,38 @@ export function ToastHost() {
   const toasts = useUi((s) => s.toasts);
   const dismiss = useUi((s) => s.dismissToast);
   const hold = useUi((s) => s.holdToast);
+  // Expanded toasts take the pointer (scroll, select) and stay until collapsed or dismissed.
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const toggle = (id: number) => setExpanded((current) => {
+    const next = new Set(current);
+    if (next.has(id)) { next.delete(id); hold(id, false, "expanded"); } else { next.add(id); hold(id, true, "expanded"); }
+    return next;
+  });
   return (
     <div className="toasts" role="region" aria-label="Notifications">
       {toasts.map((t) => (
-        <div key={t.id} className={`toast ${t.kind}`} role={t.kind === "error" ? "alert" : "status"} aria-live={t.kind === "error" ? "assertive" : "polite"} aria-atomic="true"
-          onMouseEnter={() => hold(t.id, true)} onMouseLeave={() => hold(t.id, false)} onFocus={() => hold(t.id, true)} onBlur={() => hold(t.id, false)}>
+        <div key={t.id} className={`toast ${t.kind} ${expanded.has(t.id) ? "expanded" : ""}`} role={t.kind === "error" ? "alert" : "status"} aria-live={t.kind === "error" ? "assertive" : "polite"} aria-atomic="true"
+          onFocus={() => hold(t.id, true, "focus")} onBlur={() => hold(t.id, false, "focus")}>
           <span className="ti">
             {t.kind === "success" ? <CheckCircle2 size={17} /> : t.kind === "error" ? <AlertCircle size={17} /> : t.kind === "warning" ? <TriangleAlert size={17} /> : <Info size={17} />}
           </span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="tt">{t.title}</div>
-            {t.detail && <div className="td">{t.detail}</div>}
+            {t.detail && <div className={`td ${detailsNeedExpanding(t.detail) && !expanded.has(t.id) ? "clamped" : ""}`}>{t.detail}</div>}
+            {detailsNeedExpanding(t.detail) && (
+              <div className="toast-detail-actions">
+                <button type="button" className="btn sm ghost" aria-expanded={expanded.has(t.id)} onClick={() => toggle(t.id)}>{expanded.has(t.id) ? "Less" : "Details"}</button>
+                <button type="button" className="btn sm ghost" onMouseEnter={() => hold(t.id, true)} onMouseLeave={() => hold(t.id, false)}
+                  onClick={() => void copyText(`${t.title}
+${t.detail}`, "Details copied")}>Copy</button>
+              </div>
+            )}
             {t.action && (
               <button
                 className="btn sm"
                 style={{ marginTop: 8 }}
+                onMouseEnter={() => hold(t.id, true)}
+                onMouseLeave={() => hold(t.id, false)}
                 onClick={() => {
                   dismiss(t.id);
                   t.action!.run();
@@ -149,7 +167,7 @@ export function ToastHost() {
               </button>
             )}
           </div>
-          <button className="icon-btn sm" onClick={() => dismiss(t.id)} aria-label="Dismiss">
+          <button className="icon-btn sm" onClick={() => { setExpanded((c) => { const n = new Set(c); n.delete(t.id); return n; }); dismiss(t.id); }} aria-label="Dismiss" onMouseEnter={() => hold(t.id, true)} onMouseLeave={() => hold(t.id, false)}>
             <X size={14} />
           </button>
         </div>

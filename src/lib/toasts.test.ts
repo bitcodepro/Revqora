@@ -30,4 +30,18 @@ describe("toasts", () => {
     vi.advanceTimersByTime(200);
     expect(useUi.getState().toasts).toEqual([]);
   });
+
+  it("an expanded toast stays while the pointer and focus come and go", () => {
+    useUi.getState().toast({ kind: "error", title: "push failed", detail: "long" });
+    const id = useUi.getState().toasts[0].id;
+    const hold = useUi.getState().holdToast;
+    hold(id, true, "expanded");
+    hold(id, true); hold(id, false);                     // hover Dismiss, move back to the text
+    hold(id, true, "focus"); hold(id, false, "focus");   // Details button loses focus
+    vi.advanceTimersByTime(10 * 60_000);
+    expect(useUi.getState().toasts).toHaveLength(1);
+    hold(id, false, "expanded");                         // collapse: the timer runs again
+    vi.advanceTimersByTime(8000);
+    expect(useUi.getState().toasts).toEqual([]);
+  });
 });

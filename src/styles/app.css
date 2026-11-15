@@ -2421,7 +2421,9 @@ select[size="1"]:not([multiple]) {
   border: 1px solid var(--border-strong);
   box-shadow: var(--shadow-pop);
   animation: slideUp 0.22s var(--ease);
-  pointer-events: auto;
+  /* Clicks pass through the card to whatever it covers (a dialog's Close or Save button);
+     only the toast's own buttons take the pointer. */
+  pointer-events: none;
   position: relative;
   overflow: hidden;
 }
@@ -3530,3 +3532,10 @@ select[size="1"]:not([multiple]) {
 .sig-mark.good { background: var(--green); }
 .sig-mark.warn { background: var(--amber); }
 .sig-mark.bad { background: var(--red); }
+.toast button { pointer-events: auto; }
+/* Long details: clamped in the click-through card; "Details" expands them, and an expanded toast
+   takes the pointer so its text can be scrolled and selected. */
+.toast .td.clamped { max-height: none; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.toast.expanded { pointer-events: auto; }
+.toast.expanded .td { max-height: 40vh; }
+.toast-detail-actions { display: flex; gap: 6px; margin-top: 6px; }

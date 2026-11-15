@@ -85,16 +85,20 @@ interface UiState {
   toast: (t: Omit<Toast, "id">, ttl?: number) => void;
   dismissToast: (id: number) => void;
   /** Pauses a toast's timer while it is hovered or focused (it is read or acted on). */
-  holdToast: (id: number, held: boolean) => void;
+  /** Pauses a toast while any reason holds it: the pointer on its buttons, keyboard focus,
+   *  or expanded details. Releasing one reason keeps the others. */
+  holdToast: (id: number, held: boolean, reason?: ToastHold) => void;
   openMenu: (x: number, y: number, items: MenuItem[], surface?: Window) => void;
   closeMenu: () => void;
   setPalette: (open: boolean) => void;
 }
 
-const toastTimers = new Map<number, { life: number; timer?: ReturnType<typeof setTimeout> }>();
+export type ToastHold = "pointer" | "focus" | "expanded";
+const toastTimers = new Map<number, { life: number; timer?: ReturnType<typeof setTimeout>; holds: Set<ToastHold> }>();
 function startToastTimer(id: number, life: number) {
-  clearTimeout(toastTimers.get(id)?.timer);
-  toastTimers.set(id, { life, timer: setTimeout(() => useUi.getState().dismissToast(id), life) });
+  const current = toastTimers.get(id);
+  clearTimeout(current?.timer);
+  toastTimers.set(id, { life, holds: current?.holds ?? new Set(), timer: setTimeout(() => useUi.getState().dismissToast(id), life) });
 }
 let toastId = 0;
 let dialogId = 0;
@@ -123,11 +127,17 @@ export const useUi = create<UiState>()((set, get) => ({
     toastTimers.delete(id);
     set({ toasts: get().toasts.filter((t) => t.id !== id) });
   },
-  holdToast: (id, held) => {
+  holdToast: (id, held, reason = "pointer") => {
     const timer = toastTimers.get(id);
     if (!timer) return;
-    if (held) { clearTimeout(timer.timer); timer.timer = undefined; }
-    else if (!timer.timer) startToastTimer(id, Math.max(2500, timer.life / 2));
+    if (held) {
+      timer.holds.add(reason);
+      clearTimeout(timer.timer);
+      timer.timer = undefined;
+    } else {
+      timer.holds.delete(reason);
+      if (!timer.holds.size && !timer.timer) startToastTimer(id, Math.max(2500, timer.life / 2));
+    }
   },
   openMenu: (x, y, items, surface = focusedUiSurface()) => set({ menu: { x, y, items, surface, opener: get().menu?.opener ?? (surface.document.activeElement as HTMLElement | null) } }),
   closeMenu: () => set({ menu: null }),
