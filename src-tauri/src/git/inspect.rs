@@ -30,6 +30,8 @@ pub struct BlameLine {
     pub orig_line: u32,
     pub line: u32,
     pub text: String,
+    /// File the line came from in `oid` (differs from the blamed path for renames and -M/-C moves).
+    pub orig_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,11 +47,17 @@ pub fn parse_blame(raw: &str) -> (Vec<BlameLine>, HashMap<String, BlameCommit>) 
     let mut lines = Vec::new();
     let mut commits: HashMap<String, BlameCommit> = HashMap::new();
     let mut cur: Option<(String, u32, u32)> = None;
+    // Porcelain prints `filename` once per group; later lines of the group reuse it.
+    let mut file = String::new();
     for l in raw.split('\n') {
         if let Some(text) = l.strip_prefix('\t') {
             if let Some((oid, orig, fin)) = cur.take() {
-                lines.push(BlameLine { oid, orig_line: orig, line: fin, text: text.trim_end_matches('\r').to_string() });
+                lines.push(BlameLine { oid, orig_line: orig, line: fin, text: text.trim_end_matches('\r').to_string(), orig_path: file.clone() });
             }
+            continue;
+        }
+        if let Some(name) = l.strip_prefix("filename ") {
+            file = unquote_path(name.trim_end_matches('\r'));
             continue;
         }
         let mut parts = l.split(' ');
@@ -83,9 +91,112 @@ pub fn parse_blame(raw: &str) -> (Vec<BlameLine>, HashMap<String, BlameCommit>) 
     (lines, commits)
 }
 
+fn unquote_path(name: &str) -> String {
+    let Some(inner) = name.strip_prefix('"').and_then(|n| n.strip_suffix('"')) else { return name.to_string() };
+    let mut bytes = Vec::new();
+    let mut it = inner.bytes().peekable();
+    while let Some(b) = it.next() {
+        if b != b'\\' {
+            bytes.push(b);
+            continue;
+        }
+        match it.next() {
+            Some(b'n') => bytes.push(b'\n'),
+            Some(b't') => bytes.push(b'\t'),
+            Some(d @ b'0'..=b'7') => {
+                let mut v = (d - b'0') as u32;
+                for _ in 0..2 {
+                    if let Some(n @ b'0'..=b'7') = it.peek().copied() {
+                        v = v * 8 + (n - b'0') as u32;
+                        it.next();
+                    }
+                }
+                bytes.push(v as u8);
+            }
+            Some(o) => bytes.push(o),
+            None => {}
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// How lines moved between places are attributed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BlameMoves {
+    #[default]
+    Off,
+    /// `-M`: lines moved or copied within the file.
+    File,
+    /// `-C -C`: also lines moved or copied from other files.
+    Files,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BlameOptions {
+    pub ignore_whitespace: bool,
+    pub moves: BlameMoves,
+    /// Skip the revisions listed in `.git-blame-ignore-revs` / `blame.ignoreRevsFile`.
+    pub ignore_revs: bool,
+}
+
+impl Default for BlameOptions {
+    fn default() -> Self {
+        BlameOptions { ignore_whitespace: true, moves: BlameMoves::Off, ignore_revs: true }
+    }
+}
+
+pub const IGNORE_REVS_FILE: &str = ".git-blame-ignore-revs";
+
+fn validate_rev(rev: &str) -> GitResult<()> {
+    if rev.is_empty() || rev.starts_with('-') || rev.starts_with(char::is_whitespace) || rev.ends_with(char::is_whitespace) || rev.chars().any(char::is_control)
+    {
+        return Err(GitError::new("Invalid revision.").kind("invalid-argument"));
+    }
+    Ok(())
+}
+
 /// Line-by-line authorship of a file at `rev` (None = the working tree version).
 pub fn blame(repo: &Path, path: &str, rev: Option<&str>) -> GitResult<Blame> {
-    let mut args: Vec<String> = vec!["blame".into(), "--porcelain".into(), "-w".into()];
+    blame_with(repo, path, rev, BlameOptions::default())
+}
+
+pub fn blame_with(repo: &Path, path: &str, rev: Option<&str>, options: BlameOptions) -> GitResult<Blame> {
+    if let Some(r) = rev {
+        validate_rev(r)?;
+    }
+    let mut args: Vec<String> = vec!["-c".into(), "core.quotePath=false".into()];
+    // A configured ignore-revs file that does not exist makes Git fail. `--no-ignore-revs-file`
+    // clears the configured list (neither `-c blame.ignoreRevsFile=` nor an empty file name does);
+    // the configured files that do exist are then passed again.
+    let configured = runner::exec(repo, ["config", "--type=path", "--get-all", "blame.ignoreRevsFile"])?;
+    let configured: Vec<String> =
+        if configured.ok() { configured.text().lines().map(str::trim).filter(|f| !f.is_empty()).map(String::from).collect() } else { Vec::new() };
+    let configured_missing = configured.iter().any(|f| !repo.join(f).is_file());
+    args.extend(["blame".into(), "--porcelain".into()]);
+    if !options.ignore_revs || configured_missing {
+        args.push("--no-ignore-revs-file".into());
+        if options.ignore_revs {
+            for file in configured.iter().filter(|f| repo.join(f).is_file()) {
+                args.push(format!("--ignore-revs-file={}", repo.join(file).display()));
+            }
+        }
+    }
+    if options.ignore_whitespace {
+        args.push("-w".into());
+    }
+    match options.moves {
+        BlameMoves::Off => {}
+        BlameMoves::File => args.push("-M".into()),
+        BlameMoves::Files => args.extend(["-C".into(), "-C".into()]),
+    }
+    if options.ignore_revs {
+        let file = repo.join(IGNORE_REVS_FILE);
+        if file.is_file() {
+            args.push(format!("--ignore-revs-file={}", file.display()));
+        }
+    }
     if let Some(r) = rev {
         args.push(r.to_string());
     }

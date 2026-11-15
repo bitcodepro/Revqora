@@ -18,7 +18,8 @@ import { useSettings } from "../lib/settings";
 import { repositoryKey } from "../lib/repositoryLibrary";
 import { actionFor, matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
-import type { GraphLaneAnchor, GraphRow, GraphSummary, RefLabel, SearchMode, Seg } from "../lib/types";
+import type { GraphLaneAnchor, GraphRow, GraphSummary, HistoryFilters, RefLabel, SearchMode, Seg } from "../lib/types";
+import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, removeFilter } from "../lib/historyFilters";
 import { WORKTREE } from "../lib/types";
 import { absoluteTime, fullTime, relativeTime, shortOid } from "../lib/format";
 import { BranchAheadBehind, Avatar, RefBadge } from "./bits";
@@ -460,11 +461,17 @@ export function GraphView({
   const [cursor, setCursor] = useState(0);
   const [searching, setSearching] = useState(false);
   const [filterOnly, setFilterOnly] = useState(false);
+  /** Author/path/date/topology filters combined with the search text. */
+  const [filters, setFilters] = useState<HistoryFilters>(EMPTY_HISTORY_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filterProblem = filterError(filters);
+  const filterReq = filterProblem ? null : filterRequest(filters);
+  const chips = filterChips(filters);
   const searchRef = useRef<HTMLInputElement>(null);
   const panelMenu = usePanelTitleMenu("history");
   // The search the user asked for. A graph rebuild (paging, watcher, auto-fetch) re-runs it for
   // the new rows but keeps the current match and scroll position.
-  const searchScope = JSON.stringify([root, tab.branchFilter, tab.branchContext, mode, query.trim()]);
+  const searchScope = JSON.stringify([root, tab.branchFilter, tab.branchContext, mode, query.trim(), filterReq]);
   const results = useMemo(() => found?.scope === searchScope ? found.matches : [], [found, searchScope]);
   const foundRef = useRef(found);
   foundRef.current = found;
@@ -850,7 +857,7 @@ export function GraphView({
   // Search (debounced for quick mode).
   useEffect(() => {
     let current = true;
-    if (!query.trim() || !graphKey) {
+    if ((!query.trim() && !filterReq) || !graphKey) {
       setFound(null);
       setCursor(0);
       setSearching(false);
@@ -861,7 +868,7 @@ export function GraphView({
     const t = setTimeout(async () => {
       setSearching(true);
       try {
-        const res = await api.historySearch(root, graphKey, query, mode);
+        const res = await api.historySearch(root, graphKey, query, mode, filterReq);
         if (!current || useRepos.getState().tabs[root]?.graph?.key !== graphKey) return;
         const previous = foundRef.current;
         if (previous?.scope === searchScope) {
@@ -1097,7 +1104,7 @@ export function GraphView({
               }
             }}
           />
-          {query && (
+          {(query || filterReq) && (
             <span className="count">
               {results.length
                 ? `${cursor + 1} / ${results.length}`
@@ -1141,6 +1148,13 @@ export function GraphView({
           >
             <Filter size={13} />
           </button>
+          <button aria-label="Filters" aria-expanded={filtersOpen} aria-pressed={chips.length > 0}
+            className={`btn sm ${chips.length ? "active" : ""}`}
+            onClick={() => setFiltersOpen((v) => !v)}
+            title="Combine author, path, date and merge filters"
+          >
+            Filters{chips.length ? ` (${chips.length})` : ""}
+          </button>
           {query && (
             <button aria-label="Clear"
               className="icon-btn sm"
@@ -1151,6 +1165,30 @@ export function GraphView({
             </button>
           )}
         </div>
+        {filtersOpen && (
+          <div className="history-filters" role="group" aria-label="History filters">
+            <label>Author <input value={filters.author} placeholder="Name or email" onChange={(e) => setFilters({ ...filters, author: e.target.value })} /></label>
+            <label>Path <input value={filters.path} placeholder="File or folder" onChange={(e) => setFilters({ ...filters, path: e.target.value })} /></label>
+            <label>Since <input type="date" aria-label="Since date" value={filters.since} onChange={(e) => setFilters({ ...filters, since: e.target.value })} /></label>
+            <label>Until <input type="date" aria-label="Until date" value={filters.until} onChange={(e) => setFilters({ ...filters, until: e.target.value })} /></label>
+            <label className="check"><input type="checkbox" checked={filters.firstParent} onChange={(e) => setFilters({ ...filters, firstParent: e.target.checked })} /> First parent only</label>
+            <label className="check"><input type="checkbox" checked={filters.noMerges} onChange={(e) => setFilters({ ...filters, noMerges: e.target.checked })} /> Hide merge commits</label>
+            {filterProblem && <span className="error-text">{filterProblem}</span>}
+            <button type="button" className="btn sm" disabled={!chips.length} onClick={() => setFilters(EMPTY_HISTORY_FILTERS)}>Clear filters</button>
+          </div>
+        )}
+        {chips.length > 0 && (
+          <div className="history-filter-chips">
+            {chips.map((chip) => (
+              <span key={chip.key} className="chip">
+                {chip.label}
+                <button type="button" className="icon-btn sm" aria-label={`Remove filter ${chip.label}`} title="Remove filter" onClick={() => setFilters((f) => removeFilter(f, chip.key))}>
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <button type="button" className="btn sm" onClick={() => void workspaceCommitSearch(query, mode)}>
           <FolderSearch size={14} /> Search all repositories
         </button>

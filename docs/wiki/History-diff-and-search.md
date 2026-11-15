@@ -14,6 +14,8 @@ Select a commit to see its author, SHA, message and changed files. Choose a file
 
 The graph shows relationships between commits. Labels identify branches, tags and the checked-out HEAD. Use search and filters to narrow a large history by the supported message, author, SHA, path or code criteria.
 
+Choose **Filters** beside the search box to combine an author, a file or folder path (taken literally, no wildcards), **Since** / **Until** dates, **First parent only** and **Hide merge commits**. Filters combine with each other and with the search text; with no search text they list every matching commit. Active filters appear as chips; click a chip's **×** to remove it.
+
 ## Read a diff
 
 Right-click the filename above the diff and choose **Copy name** to copy the full filename with its extension.
@@ -37,6 +39,8 @@ Open **Ctrl+N → Compare branches…** or a branch's comparison action. Review 
 Example: compare `main` with `feature/login` to inspect the feature. Reading the comparison does not merge either branch.
 
 **Browse files (HEAD)** opens a revision's tree without checking it out. Right-click a tracked file in Changes or a commit's changed-file list for **File history** and **Blame** / **Blame at this commit**. Select a history entry to inspect its recorded changes. Blame points to the recorded commit/author; it does not establish why a change was made.
+
+The Blame header has **Ignore whitespace** (on by default), **Moved lines** (**Off**, **Within file**, **Across files**) and **Use ignore-revs file**, which skips the commits listed in the repository's `.git-blame-ignore-revs` or `blame.ignoreRevsFile`. Revqora remembers these choices. With moved-line detection, a line copied from another file is attributed to the commit that wrote it there, and **History of this line…** follows that file. Press **Ctrl+F** to find text (Enter / Shift+Enter for next / previous). Use **↑ / ↓** to move between lines, **Shift+↑ / ↓** to extend the selection, and **Enter** to open the line's commit.
 
 ## Search actual changed code
 

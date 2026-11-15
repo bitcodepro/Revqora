@@ -941,10 +941,17 @@ async fn graph_search(state: State<'_, AppState>, repo: String, query: String, m
 }
 
 #[tauri::command]
-async fn history_search(state: State<'_, AppState>, repo: String, key: String, query: String, mode: SearchMode) -> GitResult<Vec<graph::HistoryMatch>> {
+async fn history_search(
+    state: State<'_, AppState>,
+    repo: String,
+    key: String,
+    query: String,
+    mode: SearchMode,
+    filters: Option<graph::HistoryFilters>,
+) -> GitResult<Vec<graph::HistoryMatch>> {
     let cache = state.graphs.lock().get(&repo).cloned().ok_or_else(|| GitError::new("History is not loaded."))?;
     cache.check_key(Some(&key))?;
-    blocking(move || graph::search_history(&p(&repo), &cache, &query, mode)).await
+    blocking(move || graph::search_history_filtered(&p(&repo), &cache, &query, mode, &filters.unwrap_or_default())).await
 }
 
 #[tauri::command]
@@ -1013,8 +1020,8 @@ async fn file_text(repo: String, spec: String) -> GitResult<Option<String>> {
 }
 
 #[tauri::command]
-async fn blame(repo: String, path: String, rev: Option<String>) -> GitResult<git::inspect::Blame> {
-    blocking(move || git::inspect::blame(&p(&repo), &path, rev.as_deref())).await
+async fn blame(repo: String, path: String, rev: Option<String>, options: Option<git::inspect::BlameOptions>) -> GitResult<git::inspect::Blame> {
+    blocking(move || git::inspect::blame_with(&p(&repo), &path, rev.as_deref(), options.unwrap_or_default())).await
 }
 
 #[tauri::command]

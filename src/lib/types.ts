@@ -496,6 +496,24 @@ export interface BlameLine {
   origLine: number;
   line: number;
   text: string;
+  /** File the line came from in `oid` (another file when moves/copies are detected). */
+  origPath: string;
+}
+
+export interface BlameOptions {
+  ignoreWhitespace: boolean;
+  moves: "off" | "file" | "files";
+  ignoreRevs: boolean;
+}
+
+/** History filters combined with the quick search. Dates are YYYY-MM-DD. */
+export interface HistoryFilters {
+  author: string;
+  path: string;
+  since: string;
+  until: string;
+  firstParent: boolean;
+  noMerges: boolean;
 }
 
 export interface Blame {

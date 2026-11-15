@@ -23,6 +23,7 @@ function restoreExplorerFolderHover(saved?: ExplorerFolderHover): ExplorerFolder
   };
   return { light: restore("light"), dark: restore("dark") };
 }
+export type BlameMoves = "off" | "file" | "files";
 export type DiffMode = "unified" | "split";
 export type DateStyle = "relative" | "absolute";
 export interface PullRequestWatch {
@@ -89,6 +90,10 @@ export interface Settings {
   /** Graph, stacked Review, or commit/file/diff columns. */
   historyMode: HistoryMode;
   skippedUpdate: string | null;
+  /** Blame options: ignore whitespace (-w), detect moved lines, use the repository's ignore-revs file. */
+  blameIgnoreWhitespace: boolean;
+  blameMoves: BlameMoves;
+  blameIgnoreRevs: boolean;
   set: (patch: Partial<Settings>) => void;
   addRecent: (path: string) => void;
   removeRecent: (path: string) => void;
@@ -160,6 +165,9 @@ export const useSettings = create<Settings>()(
       prWatches: {},
       historyMode: "graph",
       skippedUpdate: null,
+      blameIgnoreWhitespace: true,
+      blameMoves: "off",
+      blameIgnoreRevs: true,
       set: (patch) => set(patch),
       addRecent: (path) => set({ recent: [path, ...get().recent.filter((p) => p.toLowerCase() !== path.toLowerCase())].slice(0, 100) }),
       removeRecent: (path) => set({ recent: get().recent.filter((p) => p !== path) }),
