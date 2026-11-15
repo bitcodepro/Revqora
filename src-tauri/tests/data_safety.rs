@@ -480,3 +480,52 @@ fn restoring_saved_changes_never_overwrites_files_created_while_paused() {
         assert!(!repo.git(&["stash", "list"]).is_empty(), "the saved changes stay in Stashes");
     }
 }
+
+#[test]
+fn edits_hidden_by_assume_unchanged_are_never_overwritten() {
+    // Continue: the restore compares content, not Git's index flags, and keeps the stash.
+    let repo = paused_rebase_saving_new_file();
+    repo.git(&["update-index", "--assume-unchanged", "s.txt"]);
+    repo.write(
+        "s.txt",
+        "edited while paused
+",
+    );
+    repo.write(
+        "a.txt",
+        "resolved
+",
+    );
+    repo.git(&["add", "a.txt"]);
+    let out = ops::continue_op(repo.p(), "rebase", None).unwrap();
+    assert!(out.message.contains("s.txt"), "{out:?}");
+    assert_eq!(
+        fs::read_to_string(repo.p().join("s.txt")).unwrap(),
+        "edited while paused
+"
+    );
+    assert!(!repo.git(&["stash", "list"]).is_empty(), "the saved changes stay in Stashes");
+
+    // Skip and Abort reset the working tree, which Git does without seeing flagged files:
+    // they stop first, with the file named, and nothing is lost.
+    for abort in [false, true] {
+        let repo = paused_rebase_saving_new_file();
+        repo.git(&["update-index", "--assume-unchanged", "s.txt"]);
+        repo.write(
+            "s.txt",
+            "edited while paused
+",
+        );
+        let err = if abort { ops::abort_op(repo.p(), "rebase").unwrap_err() } else { ops::skip_op(repo.p(), "rebase").unwrap_err() };
+        assert_eq!(err.kind, "hidden-changes", "{}", err.message);
+        assert!(err.message.contains("s.txt"), "{}", err.message);
+        assert_eq!(
+            fs::read_to_string(repo.p().join("s.txt")).unwrap(),
+            "edited while paused
+"
+        );
+        assert!(!repo.git(&["stash", "list"]).is_empty(), "the saved changes stay in Stashes");
+        // Still paused: the user can clear the flag or copy the file, then try again.
+        assert!(repo.p().join(".git/rebase-merge").exists() || repo.p().join(".git/rebase-apply").exists());
+    }
+}

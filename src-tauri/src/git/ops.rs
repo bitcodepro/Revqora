@@ -1191,6 +1191,7 @@ fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autosta
 }
 
 pub fn abort_op(repo: &Path, kind: &str) -> GitResult<()> {
+    refuse_hidden_edits(repo, "Abort")?;
     let gd = repo::git_dir(repo)?;
     match kind {
         "merge" => {
@@ -1281,6 +1282,7 @@ pub fn continue_op(repo: &Path, kind: &str, message: Option<&str>) -> GitResult<
 }
 
 pub fn skip_op(repo: &Path, kind: &str) -> GitResult<OpOutcome> {
+    refuse_hidden_edits(repo, "Skip")?;
     let out = runner::exec(repo, [kind, "--skip"])?;
     let c = conflicted(repo);
     if out.ok() && c.is_empty() {
@@ -1422,6 +1424,13 @@ fn restore_exact(repo: &Path, oid: &str) -> GitResult<Restore> {
             blocked.push(path.clone());
         }
     }
+    // `git diff` trusts index flags: assume-unchanged and skip-worktree files are never compared.
+    // Compare the working file's content (through clean filters) with its index entry directly.
+    for path in &paths {
+        if !blocked.contains(path) && worktree_differs_from_index(repo, path)? {
+            blocked.push(path.clone());
+        }
+    }
     if !blocked.is_empty() {
         return Ok(Restore::Blocked(blocked));
     }
@@ -1448,6 +1457,57 @@ fn restore_exact(repo: &Path, oid: &str) -> GitResult<Restore> {
         }
     }
     Ok(Restore::Done)
+}
+
+/// Skip and Abort reset the working tree. Git cannot see edits to files marked assume-unchanged
+/// or skip-worktree, so it overwrites them silently (and no checkpoint captures them). Stop
+/// before that and say which files, instead of losing them.
+fn refuse_hidden_edits(repo: &Path, action: &str) -> GitResult<()> {
+    let listing = runner::run(repo, ["ls-files", "-v", "-z"])?;
+    let mut hidden = Vec::new();
+    for entry in listing.split('\0').filter(|e| e.len() > 2) {
+        let (tag, path) = entry.split_at(2);
+        let flagged = tag.starts_with(|c: char| c.is_ascii_lowercase()) || tag.starts_with('S');
+        if flagged && worktree_differs_from_index(repo, path)? {
+            hidden.push(path.to_string());
+        }
+    }
+    if hidden.is_empty() {
+        return Ok(());
+    }
+    let shown = hidden.iter().take(10).cloned().collect::<Vec<_>>().join(", ");
+    let more = if hidden.len() > 10 { format!(" and {} more", hidden.len() - 10) } else { String::new() };
+    Err(GitError::new(format!(
+        "{action} would overwrite edits Git is told to ignore (assume-unchanged or skip-worktree): {shown}{more}. Clear the flag (git update-index --no-assume-unchanged / --no-skip-worktree) or copy the files, then try again."
+    ))
+    .kind("hidden-changes"))
+}
+
+/// Whether the working copy of `path` differs from its index entry, by content, ignoring the
+/// assume-unchanged / skip-worktree flags that make `git diff` skip a file.
+fn worktree_differs_from_index(repo: &Path, path: &str) -> GitResult<bool> {
+    let literal = [("GIT_LITERAL_PATHSPECS", "1")];
+    let entry = runner::run_env(repo, ["ls-files", "-s", "-z", "--", path], &literal, None)?;
+    let indexed = entry.split('\0').find(|e| !e.is_empty()).and_then(|e| e.split_whitespace().nth(1)).map(str::to_string);
+    let full = repo.join(path);
+    let meta = std::fs::symlink_metadata(&full).ok();
+    match (indexed, meta) {
+        (None, _) => Ok(false),      // not in the index: covered by the untracked check
+        (Some(_), None) => Ok(true), // deleted from the working tree meanwhile
+        (Some(oid), Some(meta)) => {
+            if meta.is_dir() {
+                return Ok(true);
+            }
+            if meta.file_type().is_symlink() {
+                // Git stores a link's target text, not what it points to.
+                let target = std::fs::read_link(&full)?;
+                let hashed = runner::run_env(repo, ["hash-object", "--stdin"], &[], Some(target.to_string_lossy().as_bytes()))?;
+                return Ok(hashed.trim() != oid);
+            }
+            let hashed = runner::run_env(repo, ["hash-object", &format!("--path={path}"), "--", path], &literal, None)?;
+            Ok(hashed.trim() != oid)
+        }
+    }
 }
 
 /// Restores changes saved before a paused operation into a finished outcome: the note is added,
