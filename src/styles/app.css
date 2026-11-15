@@ -3491,3 +3491,14 @@ select[size="1"]:not([multiple]) {
 .dl.moved, .split-dl .half.moved { box-shadow: inset 3px 0 0 var(--cyan); }
 .dl.moved.add, .split-dl .half.moved.add { background: color-mix(in srgb, var(--cyan) 12%, var(--diff-add)); }
 .dl.moved.del, .split-dl .half.moved.del { background: color-mix(in srgb, var(--cyan) 12%, var(--diff-del)); }
+
+/* Line numbers select lines (click, Shift+click, drag): no text selection while dragging. */
+.diff .ln { user-select: none; }
+/* "Stage block": one block of changes inside a larger hunk. */
+.dl { position: relative; }
+.block-actions { position: absolute; right: 8px; top: 0; display: none; }
+.dl:hover > .block-actions, .dl:focus-within > .block-actions { display: block; }
+.block-actions .btn { height: 18px; padding: 0 6px; font-size: var(--fs-xs); }
+
+/* Several files picked with Ctrl/Shift+click in Changes. */
+.file-row.multi-picked { background: var(--bg-selected); box-shadow: inset 2px 0 0 var(--accent); }

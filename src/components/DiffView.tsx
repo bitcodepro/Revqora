@@ -35,6 +35,7 @@ import { TextDiffPreview } from "./TextDiffPreview";
 import { useDiffWordSelection } from "./DiffWordSelection";
 import { create } from "zustand";
 import { movedLines } from "../lib/movedLines";
+import { changeBlocks, lineRange } from "../lib/lineSelection";
 
 export type DiffMode = "unstaged" | "staged" | "readonly" | "pick";
 export type LineAction = "stage" | "unstage" | "discard" | "apply" | "stash";
@@ -392,25 +393,52 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     }
   };
 
+  /** A drag across line numbers: the selection before it, and whether it adds or removes. */
+  const drag = useRef<{ base: Set<string>; add: boolean; from: { h: number; l: number } } | null>(null);
+  useEffect(() => {
+    const end = () => { drag.current = null; };
+    const view = bodyRef.current?.ownerDocument.defaultView ?? window;
+    view.addEventListener("mouseup", end);
+    return () => view.removeEventListener("mouseup", end);
+  }, []);
   const toggle = (h: number, l: number, shift: boolean) => {
     if (!interactive || !diff) return;
     const line = diff.hunks[h].lines[l];
     if (line.kind !== "+" && line.kind !== "-") return;
     const next = new Set(sel);
-    if (shift && anchor && anchor.h === h) {
-      const [a, b] = [Math.min(anchor.l, l), Math.max(anchor.l, l)];
-      for (let i = a; i <= b; i++) {
-        const k = diff.hunks[h].lines[i].kind;
-        if (k === "+" || k === "-") next.add(key(h, i));
-      }
+    if (shift && anchor) {
+      // Shift: the range from the anchor, across hunks too.
+      for (const k of lineRange(diff.hunks, anchor, { h, l }, collapsed)) next.add(k);
     } else {
       const k = key(h, l);
-      if (next.has(k)) next.delete(k);
-      else next.add(k);
+      const add = !next.has(k);
+      if (add) next.add(k);
+      else next.delete(k);
       setAnchor({ h, l });
+      // Press and drag over more line numbers to extend.
+      drag.current = { base: new Set(sel), add, from: { h, l } };
     }
     setSel(next);
   };
+  const dragOver = (h: number, l: number) => {
+    const d = drag.current;
+    if (!d || !diff) return;
+    const next = new Set(d.base);
+    for (const k of lineRange(diff.hunks, d.from, { h, l }, collapsed)) {
+      if (d.add) next.add(k);
+      else next.delete(k);
+    }
+    setSel(next);
+  };
+  /** Change blocks per hunk, so one hunk can be staged piece by piece. */
+  const blocks = useMemo(() => {
+    const out = new Map<string, number[]>();
+    diff?.hunks.forEach((h, hi) => {
+      const list = changeBlocks(h);
+      if (list.length > 1) for (const b of list) out.set(key(hi, b.start), b.lines);
+    });
+    return out;
+  }, [diff]);
 
   const apply = async (selection: [number, number][], action: LineAction) => {
     if (!onApply || !selection.length) return;
@@ -472,11 +500,18 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     const selectable = interactive && (l.kind === "+" || l.kind === "-");
     const hit = hitSet.has(k) ? (curHit && curHit.h === hi && curHit.l === li ? "search-cur" : "search-hit") : "";
     return (
-      <div key={k} data-line={k} className={`dl ${cls} ${moved.has(k) ? "moved" : ""} ${sel.has(k) ? "sel" : ""} ${selectable ? "selectable" : ""} ${hit}`} style={style} title={moved.has(k) ? "Moved: the same line was removed or added elsewhere in this diff" : undefined}>
+      <div key={k} data-line={k} onMouseEnter={drag.current ? () => dragOver(hi, li) : undefined} className={`dl ${cls} ${moved.has(k) ? "moved" : ""} ${sel.has(k) ? "sel" : ""} ${selectable ? "selectable" : ""} ${hit}`} style={style} title={moved.has(k) ? "Moved: the same line was removed or added elsewhere in this diff" : undefined}>
         {onComment && l.oldNo !== null ? <button className="ln review-line" title={`Comment on old line ${l.oldNo}`} aria-label={`Comment on old line ${l.oldNo}`} onClick={()=>onComment("LEFT",l.oldNo!)}>{l.oldNo}</button> : <span className="ln" onMouseDown={e=>toggle(hi,li,e.shiftKey)}>{l.oldNo??""}</span>}
         {onComment && l.newNo !== null ? <button className="ln review-line" title={`Comment on new line ${l.newNo}`} aria-label={`Comment on new line ${l.newNo}`} onClick={()=>onComment("RIGHT",l.newNo!)}>{l.newNo}</button> : <span className="ln" onMouseDown={e=>toggle(hi,li,e.shiftKey)}>{l.newNo??""}</span>}
         <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
         <span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, hl?.[hi]?.[li], words?.[hi]?.get(li), l.kind,s.showWhitespace)}</span>
+        {interactive && blocks.has(k) && (mode === "unstaged" || mode === "staged") && (
+          <span className="block-actions">
+            <button type="button" className="btn sm" disabled={busy} title="Only this block of changes" onClick={() => apply(blocks.get(k)!.map((i) => [hi, i] as [number, number]), mode === "unstaged" ? "stage" : "unstage")}>
+              {mode === "unstaged" ? "Stage block" : "Unstage block"}
+            </button>
+          </span>
+        )}
       </div>
     );
   };
@@ -651,7 +686,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       if (r.kind === "hunk") rows.push(<Fragment key={"h" + r.h}>{hunkHeader(diff.hunks[r.h], r.h, { ...style, height: rowH })}</Fragment>);
       else if (r.kind === "line") rows.push(lineRow(r.h, r.l, style));
       else {
-        const split: SplitProps = { hunk: diff.hunks[r.h], hi: r.h, toks: hl?.[r.h], words: words?.[r.h], sel, onToggle: toggle, interactive, hits: hitSet, onComment, whitespace: s.showWhitespace, moved };
+        const split: SplitProps = { hunk: diff.hunks[r.h], hi: r.h, toks: hl?.[r.h], words: words?.[r.h], sel, onToggle: toggle, interactive, hits: hitSet, onComment, whitespace: s.showWhitespace, moved, onDragOver: dragOver };
         rows.push(<div className="split-dl" key={`p${r.h}:${r.a}:${r.b}`} style={style}><SplitHalf {...split} idx={r.a} side="l" /><SplitHalf {...split} idx={r.b} side="r" /></div>);
       }
     }
@@ -668,7 +703,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
             {hunkHeader(h, hi)}
             {!collapsed.has(hi) &&
               (s.diffMode === "split" ? (
-                <SplitHunk hunk={h} hi={hi} toks={hl?.[hi]} words={words?.[hi]} sel={sel} onToggle={toggle} interactive={interactive} hits={hitSet} onComment={onComment} whitespace={s.showWhitespace} moved={moved}/>
+                <SplitHunk hunk={h} hi={hi} toks={hl?.[hi]} words={words?.[hi]} sel={sel} onToggle={toggle} interactive={interactive} hits={hitSet} onComment={onComment} whitespace={s.showWhitespace} moved={moved} onDragOver={dragOver}/>
               ) : (
                 h.lines.map((_, li) => lineRow(hi, li))
               ))}
@@ -763,6 +798,7 @@ type SplitProps = {
   onComment?: Props["onComment"];
   whitespace: boolean;
   moved?: Set<string>;
+  onDragOver?: (h: number, l: number) => void;
 };
 
 /** Side-by-side rows of a hunk: [left line index | null, right line index | null]. */
@@ -786,7 +822,7 @@ function splitRows(lines: DiffLine[]): [number | null, number | null][] {
   return rows;
 }
 
-function SplitHalf({ idx, side, hunk: { lines }, hi, toks, words, sel, onToggle, interactive, hits, onComment, whitespace, moved }: SplitProps & { idx: number | null; side: "l" | "r" }) {
+function SplitHalf({ idx, side, hunk: { lines }, hi, toks, words, sel, onToggle, interactive, hits, onComment, whitespace, moved, onDragOver }: SplitProps & { idx: number | null; side: "l" | "r" }) {
   if (idx === null) return <div className="half empty" />;
   const l = lines[idx];
   const cls = l.kind === "+" ? "add" : l.kind === "-" ? "del" : "";
@@ -795,6 +831,7 @@ function SplitHalf({ idx, side, hunk: { lines }, hi, toks, words, sel, onToggle,
   return (
     <div
       data-line={k}
+      onMouseEnter={onDragOver ? () => onDragOver(hi, idx) : undefined}
       className={`half ${cls} ${moved?.has(k) ? "moved" : ""} ${sel.has(k) ? "sel" : ""} ${hits.has(k) ? "search-hit" : ""}`}
       style={sel.has(k) ? { boxShadow: "inset 3px 0 0 var(--accent)" } : undefined}
     >

@@ -356,6 +356,55 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
     patch(root, { changeSel: s });
   };
 
+  // Several files at once: Ctrl+click toggles, Shift+click picks a range, plain click clears.
+  const [picked, setPicked] = useState<{ kind: "unstaged" | "staged"; paths: string[]; anchor: string | null }>({ kind: "unstaged", paths: [], anchor: null });
+  useEffect(() => setPicked({ kind: "unstaged", paths: [], anchor: null }), [root]);
+  const pickedSet = new Set(picked.paths);
+  const isPicked = (kind: "unstaged" | "staged", path: string) => picked.kind === kind && pickedSet.has(path);
+  /** Handles a row click; returns true when it was a multi-select gesture. */
+  const pickClick = (e: React.MouseEvent, kind: "unstaged" | "staged", path: string) => {
+    const list = (kind === "unstaged" ? visibleUnstaged : visibleStaged).map((f) => f.path);
+    if (e.shiftKey) {
+      const current = sel && sel.kind === kind ? sel.path : null;
+      const anchor = picked.kind === kind && picked.anchor ? picked.anchor : current ?? path;
+      const [a, b] = [list.indexOf(anchor), list.indexOf(path)];
+      if (a < 0 || b < 0) return false;
+      const range = list.slice(Math.min(a, b), Math.max(a, b) + 1);
+      const keep = e.ctrlKey || e.metaKey ? (picked.kind === kind ? picked.paths : []) : [];
+      setPicked({ kind, paths: [...new Set([...keep, ...range])], anchor });
+      return true;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      const base = picked.kind === kind ? picked.paths : [];
+      // The file shown in the diff joins the selection the first time.
+      const start = base.length === 0 && sel && sel.kind === kind && sel.path !== path ? [sel.path] : base;
+      setPicked({ kind, paths: start.includes(path) ? start.filter((p) => p !== path) : [...start, path], anchor: path });
+      return true;
+    }
+    if (picked.paths.length) setPicked({ kind, paths: [], anchor: path });
+    else setPicked((p) => ({ ...p, anchor: path }));
+    return false;
+  };
+  const bulkMenu = (kind: "unstaged" | "staged"): MenuItem[] => {
+    const files = (kind === "unstaged" ? unstaged : staged).filter((f) => pickedSet.has(f.path));
+    const paths = files.map((f) => f.path);
+    const n = plural(paths.length, "file");
+    const clear = () => setPicked({ kind, paths: [], anchor: null });
+    return kind === "unstaged" ? [
+      { label: `Stage ${n}`, icon: <Plus size={14} />, onClick: () => { clear(); void A.stagePaths(root, paths); } },
+      { label: `Stage ${n} into a new layer`, icon: <ListPlus size={14} />, onClick: () => { clear(); void A.stageAsNewLayer(root, paths); } },
+      { label: `Stash ${n}`, icon: <Archive size={14} />, onClick: () => { clear(); void A.act(root, () => api.stashSave(root, `Stash ${paths.length} files`, true, false, paths), { success: "Files stashed" }); } },
+      { separator: true },
+      { label: `Discard changes in ${n}…`, icon: <Undo2 size={14} />, danger: true, onClick: () => { clear(); void A.discardPaths(root, files.filter((f) => !f.untracked).map((f) => f.path), files.filter((f) => f.untracked).map((f) => f.path)); } },
+      { separator: true },
+      { label: "Clear selection", onClick: clear },
+    ] : [
+      { label: `Unstage ${n}`, icon: <Minus size={14} />, onClick: () => { clear(); void A.unstagePaths(root, paths); } },
+      { separator: true },
+      { label: "Clear selection", onClick: clear },
+    ];
+  };
+
   const onApply = async (selection: [number, number][], action: LineAction) => {
     if (!diff || diff.previewLimited || !sel || (sel.kind !== "unstaged" && sel.kind !== "staged") || action === "apply") return;
     if (diffLoading && (action !== "stage" || !diff.stageSnapshot)) return;
@@ -604,14 +653,15 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
             <FileGroups items={visibleUnstaged} tree={treeView} expandAll={!!query} idPrefix="u" onFolderMenu={(e, folder) => contextMenu(e, [{ label: "Folder history…", icon: <History size={14} />, onClick: () => void folderHistoryDialog(root, folder) }])} render={(f, grouped) => (
               <div
                 key={f.path}
-                className={`file-row ${selectedIs("unstaged", f.path) ? "selected" : ""}`}
+                className={`file-row ${selectedIs("unstaged", f.path) ? "selected" : ""} ${isPicked("unstaged", f.path) ? "multi-picked" : ""}`}
+                aria-selected={isPicked("unstaged", f.path) || undefined}
                 data-file-nav={isNestedFile(f) ? undefined : ""}
                 data-file-path={f.path}
-                onClick={() => isNestedFile(f) ? openNestedFile(root, f) : select({ kind: "unstaged", path: f.path, untracked: f.untracked })}
+                onClick={(e) => { if (pickClick(e, "unstaged", f.path)) return; if (isNestedFile(f)) openNestedFile(root, f); else select({ kind: "unstaged", path: f.path, untracked: f.untracked }); }}
                 onDoubleClick={() => { if (!isNestedFile(f)) void A.stagePaths(root, [f.path]); }}
                 draggable
                 onDragStart={(e) => dragFile(e, "unstaged", f.path)}
-                onContextMenu={(e) => contextMenu(e, fileMenu(f, "unstaged"))}
+                onContextMenu={(e) => contextMenu(e, picked.paths.length > 1 && isPicked("unstaged", f.path) ? bulkMenu("unstaged") : fileMenu(f, "unstaged"))}
                 title={f.path}
               >
                 <StatusIcon code={f.untracked ? "?" : f.worktree} />
@@ -671,13 +721,14 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
             <FileGroups items={visibleStaged} tree={treeView} expandAll={!!query} idPrefix="s" onFolderMenu={(e, folder) => contextMenu(e, [{ label: "Folder history…", icon: <History size={14} />, onClick: () => void folderHistoryDialog(root, folder) }])} render={(f, grouped) => (
               <div
                 key={f.path}
-                className={`file-row ${selectedIs("staged", f.path) ? "selected" : ""}`}
+                className={`file-row ${selectedIs("staged", f.path) ? "selected" : ""} ${isPicked("staged", f.path) ? "multi-picked" : ""}`}
+                aria-selected={isPicked("staged", f.path) || undefined}
                 data-file-nav=""
-                onClick={() => select({ kind: "staged", path: f.path })}
+                onClick={(e) => { if (!pickClick(e, "staged", f.path)) select({ kind: "staged", path: f.path }); }}
                 onDoubleClick={() => A.unstagePaths(root, [f.path])}
                 draggable
                 onDragStart={(e) => dragFile(e, "staged", f.path)}
-                onContextMenu={(e) => contextMenu(e, fileMenu(f, "staged"))}
+                onContextMenu={(e) => contextMenu(e, picked.paths.length > 1 && isPicked("staged", f.path) ? bulkMenu("staged") : fileMenu(f, "staged"))}
                 title={f.origPath ? `${f.origPath} → ${f.path}` : f.path}
               >
                 <StatusIcon code={f.index} />
