@@ -1335,9 +1335,19 @@ fn restore_saved(repo: &Path, saved: Option<String>, outcome: &mut OpOutcome) ->
 fn apply_saved(repo: &Path, oid: &str) -> GitResult<Option<String>> {
     let _ = std::fs::remove_file(super::storage::dir(repo)?.join(SAVED_MARKER));
     const CONFLICTED: &str = "Restoring your saved changes conflicted. Resolve the files; a copy of the changes is kept in Stashes.";
-    if restore_exact(repo, oid)? {
-        drop_stash_by_oid(repo, oid)?;
-        return Ok(None);
+    match restore_exact(repo, oid)? {
+        Restore::Done => {
+            drop_stash_by_oid(repo, oid)?;
+            return Ok(None);
+        }
+        Restore::Blocked(files) => {
+            // Never overwrite work that appeared meanwhile (staged or not, untracked or ignored).
+            return Ok(Some(format!(
+                "Your saved changes were not restored because these files changed meanwhile: {}. They are kept in Stashes; apply them when ready.",
+                files.join(", ")
+            )));
+        }
+        Restore::Merge => {}
     }
     if runner::exec(repo, ["stash", "apply", "--index", oid])?.ok() {
         drop_stash_by_oid(repo, oid)?;
@@ -1359,10 +1369,19 @@ fn apply_saved(repo: &Path, oid: &str) -> GitResult<Option<String>> {
     Ok(Some("Your saved changes could not be restored automatically. They are kept in Stashes.".into()))
 }
 
+enum Restore {
+    /// Put back exactly.
+    Done,
+    /// The operation changed saved paths: merge with `stash apply`.
+    Merge,
+    /// Saved paths hold new work (staged, unstaged, untracked or ignored): restore nothing.
+    Blocked(Vec<String>),
+}
+
 /// When the operation did not touch any saved path, puts the saved index and working files back
 /// exactly, from the stash's own trees, instead of merging (`stash apply --index` behaves
-/// differently between Git versions). Returns false when a merge is needed.
-fn restore_exact(repo: &Path, oid: &str) -> GitResult<bool> {
+/// differently between Git versions). Nothing is written when a saved path holds new work.
+fn restore_exact(repo: &Path, oid: &str) -> GitResult<Restore> {
     let base = format!("{oid}^1");
     let index = format!("{oid}^2");
     let mut paths: Vec<String> = Vec::new();
@@ -1375,20 +1394,42 @@ fn restore_exact(repo: &Path, oid: &str) -> GitResult<bool> {
         }
     }
     if paths.is_empty() {
-        return Ok(true);
+        return Ok(Restore::Done);
     }
     let literal = [("GIT_LITERAL_PATHSPECS", "1")];
+    let names = |extra: &[&str]| -> GitResult<Vec<String>> {
+        let mut args: Vec<String> = vec!["diff".into(), "--name-only".into(), "--no-renames".into(), "-z".into()];
+        args.extend(extra.iter().map(|a| a.to_string()));
+        args.push("--".into());
+        args.extend(paths.iter().cloned());
+        let out = runner::exec_full(repo, &args, &literal, None)?;
+        if out.code != 0 {
+            return Err(GitError::new(out.stderr.trim().to_string()));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect())
+    };
+    // New work on saved paths: staged (index vs HEAD), unstaged (working tree vs index), or a
+    // file that appeared where HEAD has none (untracked or ignored).
+    let mut blocked = names(&["--cached", "HEAD"])?;
+    for path in names(&[])? {
+        if !blocked.contains(&path) {
+            blocked.push(path);
+        }
+    }
+    let exists = |tree: &str, path: &str| -> GitResult<bool> { Ok(runner::exec(repo, ["cat-file", "-e", &format!("{tree}:{path}")])?.ok()) };
+    for path in &paths {
+        if !blocked.contains(path) && !exists("HEAD", path)? && std::fs::symlink_metadata(repo.join(path)).is_ok() {
+            blocked.push(path.clone());
+        }
+    }
+    if !blocked.is_empty() {
+        return Ok(Restore::Blocked(blocked));
+    }
     let mut args = vec!["diff".to_string(), "--quiet".into(), base.clone(), "HEAD".into(), "--".into()];
     args.extend(paths.iter().cloned());
     if runner::exec_full(repo, &args, &literal, None)?.code != 0 {
-        return Ok(false); // the operation changed a saved file: needs a merge
+        return Ok(Restore::Merge); // the operation changed a saved file
     }
-    let mut args = vec!["diff".to_string(), "--quiet".into(), "HEAD".into(), "--".into()];
-    args.extend(paths.iter().cloned());
-    if runner::exec_full(repo, &args, &literal, None)?.code != 0 {
-        return Ok(false); // the working tree changed meanwhile
-    }
-    let exists = |tree: &str, path: &str| -> GitResult<bool> { Ok(runner::exec(repo, ["cat-file", "-e", &format!("{tree}:{path}")])?.ok()) };
     for path in &paths {
         // Index: the saved staged version, or no entry when the path was staged as deleted.
         if exists(&index, path)? {
@@ -1406,7 +1447,7 @@ fn restore_exact(repo: &Path, oid: &str) -> GitResult<bool> {
             }
         }
     }
-    Ok(true)
+    Ok(Restore::Done)
 }
 
 /// Restores changes saved before a paused operation into a finished outcome: the note is added,
@@ -2225,4 +2266,53 @@ pub fn reflog(repo: &Path, limit: usize) -> GitResult<Vec<ReflogEntry>> {
             (f.len() == 4).then(|| ReflogEntry { oid: f[0].into(), selector: f[1].into(), message: f[2].into(), time: f[3].parse().unwrap_or(0) })
         })
         .collect())
+}
+
+#[cfg(test)]
+#[test]
+fn saved_changes_never_overwrite_work_staged_meanwhile() {
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = fixture.path();
+    for args in [&["init", "-qb", "main"][..], &["config", "user.name", "T"], &["config", "user.email", "t@example.com"], &["config", "core.autocrlf", "false"]]
+    {
+        runner::run(repo, args).unwrap();
+    }
+    std::fs::write(
+        repo.join("s.txt"),
+        "s
+",
+    )
+    .unwrap();
+    runner::run(repo, ["add", "s.txt"]).unwrap();
+    runner::run(repo, ["commit", "-qm", "base"]).unwrap();
+    std::fs::write(
+        repo.join("s.txt"),
+        "saved
+",
+    )
+    .unwrap();
+    runner::run(repo, ["add", "s.txt"]).unwrap();
+    let saved = stash_staged(repo, "test").unwrap().expect("stashed");
+    // New staged content, with the working copy back at HEAD: `git diff HEAD` sees nothing.
+    std::fs::write(
+        repo.join("s.txt"),
+        "staged meanwhile
+",
+    )
+    .unwrap();
+    runner::run(repo, ["add", "s.txt"]).unwrap();
+    std::fs::write(
+        repo.join("s.txt"),
+        "s
+",
+    )
+    .unwrap();
+    let note = apply_saved(repo, &saved).unwrap().expect("reported");
+    assert!(note.contains("s.txt"), "{note}");
+    assert_eq!(
+        runner::run(repo, ["show", ":s.txt"]).unwrap(),
+        "staged meanwhile
+"
+    );
+    assert!(!runner::run(repo, ["stash", "list"]).unwrap().is_empty(), "the saved changes stay in Stashes");
 }

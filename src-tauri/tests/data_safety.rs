@@ -25,7 +25,7 @@ impl Repo {
     fn clone_of(remote: &Path) -> Repo {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("clone");
-        runner::run(dir.path(), ["clone", "-q", remote.to_str().unwrap(), path.to_str().unwrap()]).unwrap();
+        runner::run(dir.path(), ["clone", "-q", "-c", "core.autocrlf=false", remote.to_str().unwrap(), path.to_str().unwrap()]).unwrap();
         let repo = Repo { _dir: dir, path };
         repo.configure();
         repo
@@ -437,4 +437,46 @@ fn utf16_without_bom_is_saved_back_as_utf16() {
     assert!(!info.ours.ascii, "UTF-16 text is not interchangeable with ASCII");
     conflicts::save_resolution(repo.p(), "w.txt", "merged line\r\n", true).unwrap();
     assert_eq!(fs::read(repo.p().join("w.txt")).unwrap(), utf16("merged line\r\n"));
+}
+
+/// A rebase paused on a.txt, with a new file n.txt and an edit of s.txt staged before it.
+fn paused_rebase_saving_new_file() -> Repo {
+    let repo = Repo::new();
+    repo.write("a.txt", "base\n");
+    repo.write("s.txt", "s\n");
+    repo.commit_all("base");
+    repo.git(&["switch", "-q", "-c", "other"]);
+    repo.write("a.txt", "theirs\n");
+    repo.commit_all("theirs");
+    repo.git(&["switch", "-q", "main"]);
+    repo.write("a.txt", "ours\n");
+    repo.commit_all("ours");
+    repo.write("n.txt", "saved new\n");
+    repo.write("s.txt", "saved s\n");
+    repo.git(&["add", "n.txt", "s.txt"]);
+    let out = ops::rebase_onto(repo.p(), "other").unwrap();
+    assert_eq!(out.status, "conflicts", "{out:?}");
+    assert!(!repo.p().join("n.txt").exists());
+    repo
+}
+
+#[test]
+fn restoring_saved_changes_never_overwrites_files_created_while_paused() {
+    for (skip, ignored) in [(false, false), (true, false), (false, true)] {
+        let repo = paused_rebase_saving_new_file();
+        if ignored {
+            fs::write(repo.p().join(".git/info/exclude"), "n.txt\n").unwrap();
+        }
+        repo.write("n.txt", "made while paused\n");
+        let out = if skip {
+            ops::skip_op(repo.p(), "rebase").unwrap()
+        } else {
+            repo.write("a.txt", "resolved\n");
+            repo.git(&["add", "a.txt"]);
+            ops::continue_op(repo.p(), "rebase", None).unwrap()
+        };
+        assert!(out.message.contains("n.txt"), "{out:?}");
+        assert_eq!(fs::read_to_string(repo.p().join("n.txt")).unwrap(), "made while paused\n");
+        assert!(!repo.git(&["stash", "list"]).is_empty(), "the saved changes stay in Stashes");
+    }
 }
