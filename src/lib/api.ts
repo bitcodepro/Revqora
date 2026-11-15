@@ -1,5 +1,6 @@
 import type { BranchCleanupRequest, BranchCleanupSelection, BranchCleanupReview, BranchCleanupReport } from "./types";
 import type { RepositoryFolderScan } from "./types";
+import type { BlameOptions, HistoryFilters } from "./types";
 import type { RebaseItem, StudioReview, StudioReport, StudioComparison, ValidationReport } from "./types";
 import type { ExternalTools, FolderHistoryEntry, LineHistoryEntry, IgnoredFiles, IgnoreKind, IgnorePreview, IgnoreResult, IgnoreScope, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
 import { invoke } from "@tauri-apps/api/core";
@@ -223,7 +224,8 @@ export const api = {
   graphBranchMembers: (repo: string, key: string, reference: string) => call<number[]>("graph_branch_members", { repo, key, reference }),
   graphLaneAnchor: (repo: string, key: string, id: number) => call<import("./types").GraphLaneAnchor | null>("graph_lane_anchor", { repo, key, id }),
   graphResolveLane: (repo: string, key: string, anchor: import("./types").GraphLaneAnchor) => call<number | null>("graph_resolve_lane", { repo, key, anchor }),
-  historySearch: (repo: string, key: string, query: string, mode: SearchMode) => call<{ row: GraphRow; graphIndex: number | null }[]>("history_search", { repo, key, query, mode }),
+  historySearch: (repo: string, key: string, query: string, mode: SearchMode, filters: HistoryFilters | null = null) =>
+    call<{ row: GraphRow; graphIndex: number | null }[]>("history_search", { repo, key, query, mode, filters }),
   repositoryCommitSearch: (repo: string, query: string, mode: SearchMode) => call<import("./types").CommitSearchHit[]>("repository_commit_search", { repo, query, mode }),
   repositoryCommitSearchPage: (repo: string, query: string, mode: SearchMode, cursor: string | null, limit: number) => call<import("./types").CommitSearchPage>("repository_commit_search_page", { repo, query, mode, cursor, limit }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),
@@ -233,7 +235,7 @@ export const api = {
   fileHistory: (repo: string, path: string, limit?: number) => call<FileHistoryEntry[]>("file_history", { repo, path, limit }),
   fileText: (repo: string, spec: string) => call<string | null>("file_text", { repo, spec }),
   reflog: (repo: string) => call<ReflogEntry[]>("reflog", { repo }),
-  blame: (repo: string, path: string, rev: string | null) => call<Blame>("blame", { repo, path, rev }),
+  blame: (repo: string, path: string, rev: string | null, options: BlameOptions | null = null) => call<Blame>("blame", { repo, path, rev, options }),
   compare: (repo: string, from: string, to: string, threeDot: boolean) => call<Comparison>("compare", { repo, from, to, threeDot }),
   compareBranchCommits: (repo: string, from: string, to: string) => call<import("./types").BranchCommitComparison>("compare_branch_commits", { repo, from, to }),
   branchCommitPage: (repo: string, from: string, to: string, offset: number) => call<import("./types").RangeCommit[]>("branch_commit_page", { repo, from, to, offset }),

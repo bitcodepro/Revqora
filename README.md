@@ -102,7 +102,7 @@ or check out anything.
 | --- | --- |
 | Repository workspace | Open, initialize and clone repositories; browse groups and repositories in Explorer or use a flat repository list; Fetch/Pull across open repositories. |
 | Review layouts | Switch between Graph, Review and Columns; hide repository and branch panels, resize file/diff panes, and keep visibility and widths separately for each layout. |
-| History | Virtualized graph, ref labels, commit and branch details, search by message/author/SHA/code/path, branch comparison, file history, blame and revision browsing. |
+| History | Virtualized graph, ref labels, commit and branch details, search by message/author/SHA/code/path combined with author, path, date and merge filters, branch comparison, file history, blame (whitespace, moved-line and ignore-revs options, find) and revision browsing. |
 | Diff | Unified and side-by-side views, word highlighting, line wrapping or horizontal scrolling, image comparison, hunk navigation, file-tree and flat file lists. |
 | Changes and commits | Stage/unstage files, hunks and lines; discard with backups; ignored-file and nested-repository views; amend, sign-off, signed commits, templates and Conventional Commits helpers. |
 | Stage layers | Keep several logical groups of staged work, inspect dependencies, reorder or combine layers, and commit a layer separately. |

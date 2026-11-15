@@ -3506,3 +3506,21 @@ select[size="1"]:not([multiple]) {
 .submodule-commit { display: grid; grid-template-columns: 14px 64px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; }
 .submodule-commit .a { color: var(--green); }
 .submodule-commit .d { color: var(--red); }
+/* Blame options, find and keyboard focus */
+.blame-opt { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-dim); margin-right: 8px; white-space: nowrap; }
+.blame-opt select { font-size: 12px; }
+.blame-find { display: flex; align-items: center; gap: 6px; padding: 4px 12px; border-bottom: 1px solid var(--border-soft); }
+.blame-find input { flex: 0 1 260px; }
+.blame-row.find-match .blame-code { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.blame-row.find-current .blame-code { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+.blame-scroll:focus { outline: none; }
+.blame-scroll:focus-visible .blame-row.focused, .blame-scroll:focus .blame-row.focused { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* History filters popover and chips */
+.graph-toolbar { position: relative; flex-wrap: wrap; }
+.history-filters { position: absolute; top: 100%; left: 12px; z-index: 30; display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 8px 12px; padding: 10px 12px; background: var(--bg-elev, var(--bg)); border: 1px solid var(--border-soft); border-radius: 8px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.25); font-size: 12px; }
+.history-filters label { display: flex; align-items: center; gap: 6px; }
+.history-filters label input:not([type="checkbox"]) { flex: 1; min-width: 0; }
+.history-filters .error-text { grid-column: 1 / -1; color: var(--red, #e5534b); }
+.history-filter-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.history-filter-chips .chip { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 8px; border-radius: 10px; background: var(--bg-selected); font-size: 11px; }

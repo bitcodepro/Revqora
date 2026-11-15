@@ -29,6 +29,13 @@ Before opening or updating a PR:
 - [ ] Opening a match selects its repository and commit. Branch context, current-branch history and All branches are distinct scopes. Verify Graph, Review and Columns when changing shared history behavior.
 - [ ] When the branch scope changes, History waits for that scope's graph. Updates to the same scope can keep the existing rows visible.
 - [ ] History search covers the whole selected scope while the graph stays paged. A match outside the loaded graph is available in the match list and opens its commit by SHA.
+- [ ] History **Filters** (author, literal file/folder path, since/until dates, first parent only, hide merge commits) combine with each other and with the search text (AND). Active filters show as removable chips; filters alone list matching commits. Dates are YYYY-MM-DD and values starting with '-' are rejected.
+
+## Blame
+
+- [ ] Blame options (ignore whitespace, moved lines off / within file / across files, use ignore-revs file) are remembered in settings. A `.git-blame-ignore-revs` file at the worktree root is used when the option is on; a configured `blame.ignoreRevsFile` that does not exist must not make Blame fail.
+- [ ] With moved-line detection a line may come from another file; "History of this line…" follows the line in that original file. Blame rejects revisions that are empty or look like options.
+- [ ] Ctrl+F finds text in the blamed file (Enter / Shift+Enter next / previous). Up/Down move the focused line, Shift+Up/Down extend the selected range, Enter opens the line's commit.
 
 ## Working changes, staging and stash
 
