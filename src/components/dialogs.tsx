@@ -33,7 +33,9 @@ import { showDialog, toast } from "../lib/ui";
 import { api, errorMessage } from "../lib/api";
 import { EDITOR_PRESETS, editorPresetLabel } from "../lib/externalTools";
 import type { ExternalTools } from "../lib/types";
-import { CODE_FONTS, DEFAULT_EXPLORER_FOLDER_HOVER, UI_FONTS, useSettings } from "../lib/settings";
+import { CODE_FONTS, DEFAULT_EXPLORER_FOLDER_HOVER, UI_FONTS, useSettings, type ThemePref } from "../lib/settings";
+import { BUILTIN_THEMES, customThemePref } from "../lib/themes";
+import { themeEditorDialog } from "./ThemeEditor";
 import { McpSettings } from "./McpSettings";
 import type { GitSelection, PushOptions, ReflogEntry, RemoteInfo, SigningConfig } from "../lib/types";
 import { useRepos } from "../lib/store";
@@ -742,12 +744,17 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
       <div className="section-title">Appearance</div>
       <div className="settings-grid">
         <label>Theme</label>
-        <div className="seg">
-          {(["system", "dark", "light"] as const).map((t) => (
-            <button type="button" key={t} className={s.theme === t ? "on" : ""} onClick={() => s.set({ theme: t })}>
-              {t[0].toUpperCase() + t.slice(1)}
-            </button>
-          ))}
+        <div className="hstack theme-picker">
+          <select className="select" aria-label="Theme"
+            value={s.theme === "system" || BUILTIN_THEMES.some(t => t.id === s.theme) || s.customThemes.some(t => customThemePref(t.id) === s.theme) ? s.theme : "system"}
+            onChange={(e) => s.set({ theme: e.target.value as ThemePref })}>
+            <option value="system">System</option>
+            {BUILTIN_THEMES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            {s.customThemes.length > 0 && <optgroup label="Custom themes">
+              {s.customThemes.map(t => <option key={t.id} value={customThemePref(t.id)}>{t.name}</option>)}
+            </optgroup>}
+          </select>
+          <button type="button" className="btn sm" onClick={() => void themeEditorDialog()}>Edit themes…</button>
         </div>
         <label>Explorer folder hover</label>
         <div className="folder-hover-settings">

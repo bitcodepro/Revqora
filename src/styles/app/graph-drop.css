@@ -1,0 +1,47 @@
+/* ───────────── drag and drop in History and Branches ───────────── */
+/* The name that follows the pointer while a branch or commits are dragged. */
+.graph-drag-label {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1500;
+  pointer-events: none;
+  max-width: min(360px, 60vw);
+  padding: 4px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-dim);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-pop);
+  transition: border-color 0.08s, color 0.08s;
+}
+/* Over a target that offers at least one action. */
+.graph-drag-label[data-valid] {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.graph-dragging,
+.graph-dragging * {
+  cursor: grabbing !important;
+}
+/* Valid drop targets only: a branch badge, a Branches row or a commit row. */
+.ref[data-graph-drop] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* The pointer rests on the target, so these must win over the rows' hover background. */
+.graph-rows .grow[data-graph-drop],
+.sidebar .sb-item[data-graph-drop] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .graph-drag-label {
+    transition: none;
+  }
+}

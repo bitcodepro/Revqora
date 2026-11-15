@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keyboardOwner, listKeysBlocked, shortcutBlocked } from "./keyboardOwner";
+import { keyboardOwner, listKeysBlocked, shortcutBlocked, viewSwitchUnderTool, VIEW_SWITCHES } from "./keyboardOwner";
 
 const page = (...present: string[]) => ({ querySelector: (selector: string) => (present.includes(selector) ? {} : null) });
 
@@ -30,5 +30,28 @@ describe("keyboard owner", () => {
 
   it("keeps unbound list keys away from a history list behind any surface", () => {
     for (const owner of ["dialog", "palette", "menu", "tool"] as const) expect(listKeysBlocked(owner)).toBe(true);
+  });
+});
+
+describe("view switches under a tool window", () => {
+  it("switches directly when no tool window covers the workspace", () => {
+    expect(viewSwitchUnderTool(null, null, false)).toBe("switch");
+    // A detached Worktree Manager keeps its overlay state without covering the workspace.
+    expect(viewSwitchUnderTool(null, "worktrees", false)).toBe("switch");
+  });
+
+  it("closes a viewer so the new view is visible", () => {
+    for (const kind of ["blame", "compare", "stash", "tree", "branches", "worktrees", "stacks", "historyExplorer"]) expect(viewSwitchUnderTool("tool", kind, false)).toBe("close-tool");
+  });
+
+  it("keeps a tool that holds work, and any tool window it does not know", () => {
+    for (const kind of ["rebase", "workflows", "agents"]) expect(viewSwitchUnderTool("tool", kind, false)).toBe("keep-tool");
+    expect(viewSwitchUnderTool("tool", "blame", true)).toBe("keep-tool");
+    expect(viewSwitchUnderTool("tool", null, true)).toBe("keep-tool");
+    expect(viewSwitchUnderTool("tool", null, false)).toBe("keep-tool");
+  });
+
+  it("covers every view shortcut", () => {
+    expect([...VIEW_SWITCHES].sort()).toEqual(["changes", "history", "overview", "pulls", "reviewMode"]);
   });
 });

@@ -109,7 +109,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "compare", label: "Compare branches", description: "Open the branch comparison view.", default: "Ctrl+Shift+C" },
   { id: "browse", label: "Browse files", description: "Browse files in the selected commit or HEAD.", default: "Ctrl+Shift+E" },
   { id: "tools", label: "Repository tools", description: "Open repository utilities and maintenance actions.", default: "" },
-  { id: "theme", label: "Toggle dark / light theme", description: "Switch the app between light and dark.", default: "Ctrl+Shift+T" },
+  { id: "theme", label: "Toggle dark / light theme", description: "Switch the app between light and dark; a high-contrast theme stays high contrast.", default: "Ctrl+Shift+T" },
   { id: "settings", label: "Settings", description: "Open application preferences.", default: "Ctrl+," },
   { id: "closeTab", label: "Close repository tab", description: "Close the current repository tab.", default: "Ctrl+W" },
   { id: "nextTab", label: "Next repository tab", description: "Select the next open repository.", default: "Ctrl+Tab" },

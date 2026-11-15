@@ -2,9 +2,10 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { restoreWorkspaceLayouts, type HistoryMode, type WorkspaceLayout, type WorkspaceMode } from "./workspaceLayouts";
 import type { DiffAlgorithm } from "./types";
+import { resolveTheme, restoreCustomThemes, toggledTheme, type ColorScheme, type CustomTheme, type ThemeEnvironment, type ThemePref } from "./themes";
 
-export type ThemePref = "system" | "dark" | "light";
-type ColorTheme = Exclude<ThemePref, "system">;
+export type { ThemePref };
+type ColorTheme = ColorScheme;
 interface FolderHoverStyle { color: string; opacity: number }
 type ExplorerFolderHover = Record<ColorTheme, FolderHoverStyle>;
 
@@ -34,6 +35,8 @@ export type PullRequestWatches = Record<string, Record<string, PullRequestWatch>
 
 export interface Settings {
   theme: ThemePref;
+  /** User-made themes; `theme` selects one as `custom:<id>`. Edited through the theme editor only. */
+  customThemes: CustomTheme[];
   uiFontSize: number;
   codeFontSize: number;
   uiFont: string;
@@ -115,6 +118,7 @@ export const useSettings = create<Settings>()(
   persist(
     (set, get) => ({
       theme: "system",
+      customThemes: [],
       uiFontSize: 13,
       codeFontSize: 12.5,
       uiFont: "Inter Variable",
@@ -205,6 +209,7 @@ export const useSettings = create<Settings>()(
         return {
           ...current, ...old, prWatches, shortcuts, explorerFavoritesOnly: old.explorerFavoritesOnly ?? workspaceFavoritesOnly ?? false, layouts: restoreWorkspaceLayouts(stored),
           explorerFolderHover: restoreExplorerFolderHover(old.explorerFolderHover),
+          customThemes: restoreCustomThemes(old.customThemes),
           prWatchMineSince: old?.prWatchMineSince !== undefined ? old.prWatchMineSince : legacyMine ? Date.now() : null,
         };
       },
@@ -212,7 +217,22 @@ export const useSettings = create<Settings>()(
   ),
 );
 
+/** What the system asks for: a light interface, and more contrast (also Windows contrast themes). */
+export function themeEnvironment(): ThemeEnvironment {
+  const matches = (query: string) => window.matchMedia(query).matches;
+  return {
+    light: matches("(prefers-color-scheme: light)"),
+    moreContrast: matches("(prefers-contrast: more)") || matches("(forced-colors: active)"),
+  };
+}
+
+/** The colour scheme of the chosen theme: a high-contrast or custom theme answers with the scheme of its base. */
 export function resolvedTheme(pref: ThemePref): "dark" | "light" {
-  if (pref === "system") return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-  return pref;
+  return resolveTheme(pref, useSettings.getState().customThemes, themeEnvironment()).scheme;
+}
+
+/** The theme "Toggle dark / light theme" switches to; see `toggledTheme`. */
+export function toggledThemePref(): ThemePref {
+  const { theme, customThemes } = useSettings.getState();
+  return toggledTheme(theme, customThemes, themeEnvironment());
 }

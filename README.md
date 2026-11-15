@@ -606,7 +606,8 @@ preferences. Keep your vault password and back up portable data appropriately.
 Do not delete `data` if you want to retain settings, drafts, credentials or recovery
 history. Close the application before copying a portable installation.
 
-Settings also controls auto-fetch, themes, fonts, shortcuts and optional avatars.
+Settings also controls auto-fetch, themes, fonts, shortcuts and optional avatars. Themes include
+light, dark, two high-contrast themes and your own custom themes (duplicate, edit, export, import).
 Revqora checks for updates at startup and every hour while open. Turn off
 **Check for updates every hour** in **Settings → Updates** to keep only the
 startup check. Use **Check now** in Settings or **Check for updates** in the toolbar

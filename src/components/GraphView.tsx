@@ -26,6 +26,7 @@ import { BranchAheadBehind, Avatar, RefBadge } from "./bits";
 import { branchMenu, commitMenu, runMenuShortcut, tagMenu } from "./menus";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { usePanelTitleMenu } from "./PanelWindows";
+import { useGraphDrag, type CommitDrag } from "./GraphDrop";
 import { pickBranchScope } from "./BranchScopePicker";
 import { signatureBadge, useSignature } from "../lib/signatureStatus";
 import { jumpStep, lastRowStep } from "../lib/historyJump";
@@ -192,6 +193,7 @@ const Row = memo(function Row(p: RowProps) {
     return (
       <div
         className={`grow compact ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${branchStyle} ${r.incoming ? "incoming" : ""}`}
+        data-commit-oid={wip ? undefined : r.oid}
         style={{ top, height: p.rowH }}
         onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
         onContextMenu={(e) => p.onMenu(r, e)}
@@ -223,6 +225,7 @@ ${r.oid}`
     <div
       className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""} ${p.pinnedLaneMember ? "lane-member" : ""} ${branchStyle} ${r.incoming ? "incoming" : ""} ${p.keyboardHighlighted ? "keyboard-highlighted" : ""}`}
       data-commit-index={wip ? undefined : r.index}
+      data-commit-oid={wip ? undefined : r.oid}
       style={{ top, height: p.rowH, ...anim, ["--pinned-lane-color" as string]: p.pinnedLaneMember ? nodeColor : undefined }}
       onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
       onContextMenu={(e) => p.onMenu(r, e)}
@@ -825,6 +828,29 @@ export function GraphView({
     },
     [root, patch, filtered, results],
   );
+
+  // Drag and drop (GraphDrop.tsx). Called on pointerdown, before the mousedown that follows it
+  // changes the selection: a dragged commit takes its whole multi-selection along.
+  const dragCommits = useCallback(
+    (oid: string): CommitDrag | null => {
+      const t = useRepos.getState().tabs[root];
+      if (!t) return null;
+      const previous = { selected: t.selected, multi: t.multi };
+      // The press toggles or collapses the selection; a drag puts it back.
+      const restore = () => patch(root, previous);
+      if (previous.multi.length > 1 && previous.multi.includes(oid)) {
+        const chosen = new Set(previous.multi);
+        const visibleRows = filtered ? results.map(({ row }) => row) : [...cache.current.values()];
+        const sel = visibleRows.filter(row => chosen.has(row.oid));
+        if (sel.length !== chosen.size) return { oids: [oid] };
+        // Oldest first, the order the commit menu cherry-picks in.
+        return { oids: sel.sort((a, b) => b.index - a.index).map(row => row.oid), onStart: restore };
+      }
+      return { oids: [oid], onStart: previous.selected === oid ? restore : undefined };
+    },
+    [root, patch, filtered, results],
+  );
+  const startDrag = useGraphDrag(root, dragCommits);
 
   const onRefClick = useCallback(
     async (name: string) => {
@@ -1439,7 +1465,8 @@ export function GraphView({
           if (keyboardIndex !== null) setKeyboardCommit(null);
         }}
         onPointerLeave={() => { hoveredCommit.current = null; }}
-        onPointerDown={() => { hoveredCommit.current = null; setKeyboardCommit(null); }}
+        onPointerDown={(e) => { hoveredCommit.current = null; setKeyboardCommit(null); startDrag(e); }}
+        data-drop-root={root}
         onBlur={() => setKeyboardCommit(null)}
         data-hl={hl !== null ? hl : undefined}
         data-pinned-lane={pinned ?? undefined}

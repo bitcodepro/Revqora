@@ -1,19 +1,18 @@
 import { ActivityIndicator } from "./components/ActivityIndicator";
 import { createStartupBarrier, type StartupPhase } from "./lib/startupReady";
 import { restoreRepositorySession } from "./lib/restoreRepositorySession";
-import { WorkflowBuilder } from "./components/WorkflowBuilder";
-import { WorktreeManager } from "./components/WorktreeManager";
 import { undoExplorerMove } from "./lib/explorerMoves";
+import { keyboardOwner, shortcutBlocked, viewSwitchUnderTool, VIEW_SWITCHES } from "./lib/keyboardOwner";
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { listenMcpDesktop } from "./lib/mcpDesktop";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Columns3, FilePlus2, GitCommitHorizontal, GitGraph, GitPullRequest, Maximize2, Minimize2, RefreshCw, Rows3 } from "lucide-react";
-import { PullRequestsView } from "./components/PullRequests";
 import { retryRepositoryWatch, useRepos, type RepoTab } from "./lib/store";
-import { resolvedTheme, useSettings } from "./lib/settings";
-import { openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
+import { resolvedTheme, toggledThemePref, useSettings } from "./lib/settings";
+import { applyTheme } from "./lib/themeApply";
+import { closeOverlay, openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
 import { actionFor, matchesShortcut, PANEL_NAMES, shortcutTitle } from "./lib/shortcuts";
 import { settingsDialog } from "./components/dialogs";
 import { repoToolsDialog } from "./components/RepoTools";
@@ -45,6 +44,9 @@ import "./styles/workspace.css";
 
 // Full-screen tools open on demand, so their code stays out of the startup bundle.
 const ConflictEditor = lazy(() => import("./components/ConflictEditor").then((m) => ({ default: m.ConflictEditor })));
+const WorkflowBuilder = lazy(() => import("./components/WorkflowBuilder").then((m) => ({ default: m.WorkflowBuilder })));
+const WorktreeManager = lazy(() => import("./components/WorktreeManager").then((m) => ({ default: m.WorktreeManager })));
+const PullRequestsView = lazy(() => import("./components/PullRequests").then((m) => ({ default: m.PullRequestsView })));
 const StackManager = lazy(() => import("./components/StackManager").then((m) => ({ default: m.StackManager })));
 const HistoryExplorer = lazy(() => import("./components/HistoryExplorer").then((m) => ({ default: m.HistoryExplorer })));
 const AgentWorkspace = lazy(() => import("./components/AgentWorkspace").then((m) => ({ default: m.AgentWorkspace })));
@@ -67,7 +69,7 @@ function useAppearance() {
   useEffect(() => {
     const apply = () => {
       const t = resolvedTheme(s.theme);
-      document.documentElement.dataset.theme = t;
+      applyTheme();
       getCurrentWindow()
         .setTheme(t)
         .catch(() => {});
@@ -238,7 +240,7 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
             )}
           </div>
         ) : tab.view === "pulls" ? (
-          panels.pulls ? <DetachedPlaceholder id="pulls"/> : <PullRequestsView tab={tab} remotesKey={remotesKey} />
+          panels.pulls ? <DetachedPlaceholder id="pulls"/> : <Suspense fallback={null}><PullRequestsView tab={tab} remotesKey={remotesKey} /></Suspense>
         ) : (
           panels.changes ? <DetachedPlaceholder id="changes"/> : <ChangesView tab={tab} onOpenConflict={openConflict} />
         )}
@@ -413,7 +415,7 @@ function MainApp() {
       const owner = target?.ownerDocument ?? document;
       const inNavigation = target?.closest?.(".repository-sidebar") || (target === owner.body && useSettings.getState().explorerOpen);
       if (matchesShortcut(e, "workspaceUndo") && inNavigation &&
-          !target.closest("input, textarea, select, [contenteditable], .cm-editor") && !A.shortcutBlocked("workspaceUndo", A.keyboardOwner(owner)) && undoExplorerMove()) {
+          !target.closest("input, textarea, select, [contenteditable], .cm-editor") && !shortcutBlocked("workspaceUndo", keyboardOwner(owner)) && undoExplorerMove()) {
         e.preventDefault();
         toast.success("Explorer move undone");
         return;
@@ -424,7 +426,7 @@ function MainApp() {
       if (!id) return;
       // A dialog, the palette or an open menu owns the keyboard: nothing runs behind it. A tool
       // window (Blame, Compare, the merge editor) blocks only what acts on the view it covers.
-      if (A.shortcutBlocked(id, A.keyboardOwner(owner))) return;
+      if (shortcutBlocked(id, keyboardOwner(owner))) return;
       // Typing never starts network or repository work by a stray chord.
       if (typing && ["fetch", "pull", "push", "stash", "branch"].includes(id)) return;
       const st = useRepos.getState();
@@ -460,7 +462,7 @@ function MainApp() {
         tools: () => a && repoToolsDialog(a),
         theme: () => {
           const s = useSettings.getState();
-          s.set({ theme: resolvedTheme(s.theme) === "dark" ? "light" : "dark" });
+          s.set({ theme: toggledThemePref() });
         },
         settings: () => settingsDialog(a),
         closeTab: () => a && st.close(a),
@@ -477,6 +479,15 @@ function MainApp() {
       };
       if (run[id]) {
         e.preventDefault();
+        if (VIEW_SWITCHES.has(id)) {
+          // Never change the view unseen behind a tool window.
+          const under = viewSwitchUnderTool(keyboardOwner(owner), useUi.getState().overlay?.kind ?? null, !!t?.conflictPath);
+          if (under === "keep-tool") {
+            toast.info("Close the open tool first", "It holds work in progress, so the view was not switched.");
+            return;
+          }
+          if (under === "close-tool") closeOverlay();
+        }
         if (["history", "changes", "pulls", "reviewMode"].includes(id)) useUi.setState({ repositoryOverview: false });
         run[id]();
         return;
@@ -560,9 +571,9 @@ function MainApp() {
       <DetachedPanel id="branches">{tab?.info && <Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/>}</DetachedPanel>
       <DetachedPanel id="history">{tab?.info && <GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/>}</DetachedPanel>
       <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <CommitDetails key={tab.root} root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/> : null}</DetachedPanel>
-      <DetachedPanel id="pulls">{tab && (tab.info || prAllRepositories) && <PullRequestsView key={prAllRepositories ? "all-pull-requests" : tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/>}</DetachedPanel>
+      <DetachedPanel id="pulls">{tab && (tab.info || prAllRepositories) && <Suspense fallback={null}><PullRequestsView key={prAllRepositories ? "all-pull-requests" : tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/></Suspense>}</DetachedPanel>
       <DetachedPanel id="changes">{tab?.info && <ChangesView key={tab.root} tab={tab} onOpenConflict={path => showMainChanges(tab.root, path)}/>}</DetachedPanel>
-      <DetachedPanel id="worktrees">{tab?.info && <WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/>}</DetachedPanel>
+      <DetachedPanel id="worktrees">{tab?.info && <Suspense fallback={null}><WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/></Suspense>}</DetachedPanel>
     </div></WorkspaceLayoutContext.Provider>
   );
 }

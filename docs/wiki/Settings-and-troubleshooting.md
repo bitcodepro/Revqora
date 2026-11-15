@@ -27,6 +27,20 @@ In **Settings → Diff**, **External editor** offers presets (System text editor
 
 **External diff tool** and **External merge tool** list the graphical tools Git finds installed (`git difftool` / `git mergetool --tool-help`), or **Git's default** from `diff.tool` / `merge.tool`. Terminal-only tools such as vimdiff, nvimdiff and emerge are refused because Revqora has no terminal to show them. Without a chosen or configured tool, Revqora asks you to choose one first.
 
+### Themes
+
+**Settings → Appearance → Theme** lists **System**, **Light**, **Dark**, **High contrast light**, **High contrast dark** and your custom themes. **System** follows the operating system: light or dark, and the high-contrast variant when the system asks for more contrast (for example a Windows contrast theme). The high-contrast themes use at least 7:1 contrast for text and 3:1 for borders, the focus ring and graph lanes. Panels in separate windows use the same theme.
+
+**Toggle dark / light theme** (**Ctrl+Shift+T**, the toolbar button or the command palette) switches to the built-in theme of the other colour scheme. A high-contrast theme stays high contrast. With a custom theme in use, it switches to the built-in opposite of the theme it was based on; the custom theme is kept and can be chosen again in Settings.
+
+Select **Edit themes…** (or **Theme editor…** in the command palette) to make your own theme:
+
+1. Choose a theme under **New theme from** and select **Duplicate**. The copy is saved, named and put in use. Built-in themes cannot be changed.
+2. Change colours in the groups **Surfaces**, **Text**, **Accents and status**, **Diff and code** and **Graph**. Use the colour picker, or type a hex, `rgb()` or `hsl()` value; `rgba()` / `hsla()` set the opacity. Changes show at once in the app and in the preview. The reset button returns one colour to the base theme.
+3. Select **Save theme**. **Discard changes** or **Close without saving** drops unsaved edits. Rename the theme in **Name**; **Delete…** asks first and, for the theme in use, returns to its base theme.
+
+A custom theme keeps the light or dark colour scheme of the theme it was based on. **Export theme…** writes a JSON file with every colour. **Import theme…** adds such a file as a new custom theme. The file may contain only the fields `format`, `version`, `name`, `base` and `colors`, known colour tokens and hex, `rgb()` or `hsl()` colours. Anything else — an unknown token, `url()`, `var()`, a colour name, extra text — rejects the whole file with a message naming the problem. Custom themes are stored with the other settings in portable data; Revqora keeps up to 50.
+
 ## Default shortcuts
 
 Change bindings in **Settings → Shortcuts**. Search for commands such as
