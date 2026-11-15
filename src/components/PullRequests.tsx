@@ -2,7 +2,7 @@ import {PrMergePanel,mergeDialog,cleanupDialog} from "./PrMerge";
 import {PrReviews,composeReview,chooseReview} from "./PrReviews";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useFileListNavigation } from "../lib/useFileListNavigation";
-import { Bell, CheckCircle2, ChevronLeft, ChevronRight, CircleDashed, Download, ExternalLink, FileDiff, GitPullRequest, GitPullRequestCreate, List, Loader2, Maximize2, MinusCircle, Pencil, RefreshCw, XCircle } from "lucide-react";
+import { Bell, ChevronLeft, ChevronRight, Download, ExternalLink, FileDiff, GitPullRequest, GitPullRequestCreate, List, Loader2, Maximize2, Pencil, RefreshCw } from "lucide-react";
 import { forgeAccountsDialog } from "./ForgeAccounts";
 import { api, errorMessage, isGitError } from "../lib/api";
 import { getTab, type RepoTab } from "../lib/store";
@@ -17,6 +17,7 @@ import { Modal } from "./Modal";
 import { Splitter } from "./Overlays";
 import { fileCopyMenu } from "./NamePathMenu";
 import { DiffView } from "./DiffView";
+import { CheckIcon } from "./PrChecks";
 import { confirmDialog } from "./dialogs";
 import { holdListFocus, virtualRange } from "../lib/virtualRange";
 import {authorSelectionValue,authorScope,authorPreferencesKey,loadAuthorPreferences,mergePrAuthors,matchesPrAuthor,rememberAccountAuthor,restoreAuthorPreferences,samePrAuthor,type PrAuthor,type AuthorPreferences} from "../lib/prAuthors";
@@ -29,19 +30,10 @@ const FORGE_NAMES: Record<string, string> = { github: "GitHub", azure: "Azure De
 const prUrlMenu = (p: PullRequest) => [copyUrlMenu(() => p.url, "The provider did not supply a web address for this pull request.")];
 const browser = (url: string) => { const safe = safeWebUrl(url); if (safe) void api.openPath(safe); };
 
-export function CheckIcon({ state, size = 14 }: { state: Check["state"]; size?: number }) {
-  switch (state) {
-    case "success": return <CheckCircle2 size={size} style={{ color: "var(--green)" }} />;
-    case "failure": return <XCircle size={size} style={{ color: "var(--red)" }} />;
-    case "pending": return <CircleDashed size={size} className="spin" style={{ color: "var(--amber)" }} />;
-    default: return <MinusCircle size={size} style={{ color: "var(--text-faint)" }} />;
-  }
-}
 export function ChecksList({ checks }: { checks: Check[] }) {
   if (!checks.length) return <div className="faint">No CI checks reported for this commit.</div>;
   return <div className="vstack" style={{ gap: 4 }}>{checks.map((c, i) => <div key={i} className="hstack" style={{ gap: 8 }}><CheckIcon state={c.state} /><span className="ellipsis" style={{ flex: 1 }}>{c.name}</span>{safeWebUrl(c.url) && <button aria-label="Open" className="icon-btn sm" title="Open" onClick={() => browser(c.url!)}><ExternalLink size={12} /></button>}</div>)}</div>;
 }
-export function summarizeChecks(checks: Check[]): Check["state"] | null { return !checks.length ? null : checks.some(c => c.state === "failure") ? "failure" : checks.some(c => c.state === "pending") ? "pending" : "success"; }
 
 const PR_STATES = ["open", "closed", "merged", "all"] as const;
 

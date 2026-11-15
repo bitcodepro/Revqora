@@ -102,8 +102,12 @@ fn location(git_dir: &Path) -> io::Result<PathBuf> {
 
 /// Per-worktree state (messages, temporary indexes, bisect notes, discard backups).
 pub fn dir(root: &Path) -> GitResult<PathBuf> {
-    let gd = repo::git_dir(root)?;
-    Ok(location(&fs::canonicalize(&gd).unwrap_or(gd))?)
+    dir_for(&repo::git_dir(root)?)
+}
+
+/// `dir` for a caller that already resolved the worktree's Git directory.
+pub(super) fn dir_for(git_dir: &Path) -> GitResult<PathBuf> {
+    Ok(location(&fs::canonicalize(git_dir).unwrap_or_else(|_| git_dir.to_owned()))?)
 }
 
 /// Checkpoints are shared by all linked worktrees of a repository.

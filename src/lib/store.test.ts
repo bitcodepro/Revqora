@@ -4,7 +4,7 @@ vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), h
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() }, toast: { warning: vi.fn() } }));
 import { api } from "./api";
-import { CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, useRepos, type RepoTab } from "./store";
+import { covers, CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, useRepos, type RepoTab } from "./store";
 import { previewGeneration } from "./commitPreview";
 import { repositoryCall, type Invoke } from "./operationClient";
 import type { RepoInfo, StatusSummary } from "./types";
@@ -76,7 +76,7 @@ describe("background repository observation", () => {
     expect(tab.graphScope).toBe(graphHistoryScope(tab, undefined, true).key);
     expect(api.graphLoad).toHaveBeenCalledTimes(2);
   });
-  it("serializes graph cache builds and publishes only the latest branch request", async () => {
+  it("starts a new branch selection beside an obsolete build and publishes only the latest request", async () => {
     let release!: (v: never) => void;
     const first = new Promise<never>(resolve => { release = resolve; });
     vi.mocked(api.graphLoad).mockImplementationOnce(() => first).mockResolvedValue({key:"latest-branch",total:1,maxLanes:1,headIndex:0});
@@ -85,15 +85,88 @@ describe("background repository observation", () => {
     await vi.waitFor(() => expect(api.graphLoad).toHaveBeenCalledTimes(1));
     useRepos.getState().patch(root, {branchFilter:"feature"});
     const current = loadGraph(root);
-    await Promise.resolve();
-    expect(api.graphLoad).toHaveBeenCalledTimes(1);
-    release({key:"old-main",total:4,maxLanes:1,headIndex:0} as never);
-    await Promise.all([old,current]);
+    // The obsolete build is still running: the new selection does not wait for it.
+    await current;
     expect(vi.mocked(api.graphLoad).mock.calls.map(args=>args[1])).toEqual(["main","feature"]);
+    expect(useRepos.getState().tabs[root]).toMatchObject({graph:{key:"latest-branch"},graphVersion:1,graphLoading:false});
+    // The backend orders builds by this number and keeps the newest request's graph.
+    const [older,newer]=vi.mocked(api.graphLoad).mock.calls.map(args=>args[7] as number);
+    expect(newer).toBeGreaterThan(older);
+    release({key:"old-main",total:4,maxLanes:1,headIndex:0} as never);
+    await old;
     const tab=useRepos.getState().tabs[root];
     expect(tab.graph?.key).toBe("latest-branch");
     expect(tab.graphVersion).toBe(1);
     expect(tab.graphLoading).toBe(false);
+  });
+  it("runs at most two history builds per repository and only the newest queued request", async () => {
+    const releases: ((v: never) => void)[] = [];
+    const held = () => new Promise<never>(resolve => { releases.push(resolve); });
+    vi.mocked(api.graphLoad).mockImplementationOnce(held).mockImplementationOnce(held).mockImplementationOnce(held);
+    const summary = (key: string) => ({key,total:1,maxLanes:1,headIndex:0}) as never;
+    useRepos.getState().patch(root, {branchFilter:"one",graphVersion:0});
+    const one = loadGraph(root);
+    useRepos.getState().patch(root, {branchFilter:"two"});
+    const two = loadGraph(root);
+    useRepos.getState().patch(root, {branchFilter:"three"});
+    const three = loadGraph(root);
+    useRepos.getState().patch(root, {branchFilter:"four"});
+    const four = loadGraph(root);
+    await Promise.resolve(); await Promise.resolve();
+    expect(vi.mocked(api.graphLoad).mock.calls.map(args=>args[1])).toEqual(["one","two"]);
+    releases[1](summary("two"));
+    await Promise.all([two,three]);
+    await vi.waitFor(() => expect(vi.mocked(api.graphLoad).mock.calls.map(args=>args[1])).toEqual(["one","two","four"]));
+    expect(useRepos.getState().tabs[root].graph?.key).not.toBe("two");
+    releases[2](summary("four")); releases[0](summary("one"));
+    await Promise.all([one,four]);
+    expect(useRepos.getState().tabs[root]).toMatchObject({graph:{key:"four"},graphVersion:1,graphLoading:false});
+    const order=vi.mocked(api.graphLoad).mock.calls.map(args=>args[7] as number);
+    expect([...order].sort((a,b)=>a-b)).toEqual(order);
+  });
+  it("keeps loaded rows and the exact total when the backend returns the same build", async () => {
+    vi.mocked(api.graphLoad).mockResolvedValue({key:"graph-7",total:200,maxLanes:1,headIndex:0} as never);
+    vi.mocked(api.graphCommitCount).mockResolvedValue(5275);
+    useRepos.getState().patch(root, {branchFilter:null,graphVersion:3,graph:null});
+    await loadGraph(root, false);
+    await vi.waitFor(() => expect(useRepos.getState().tabs[root].graph?.commitCount).toBe(5275));
+    expect(useRepos.getState().tabs[root].graphVersion).toBe(4);
+    await loadGraph(root, false);
+    const same=useRepos.getState().tabs[root];
+    expect(same).toMatchObject({graphVersion:4,graphLoading:false,graph:{key:"graph-7",commitCount:5275}});
+    expect(api.graphCommitCount).toHaveBeenCalledTimes(1);
+    // The same key in another scope or with the working-tree row is a different view.
+    await loadGraph(root, true);
+    expect(useRepos.getState().tabs[root].graphVersion).toBe(5);
+    vi.mocked(api.graphLoad).mockResolvedValue({key:"graph-8",total:200,maxLanes:1,headIndex:0} as never);
+    await loadGraph(root, true);
+    expect(useRepos.getState().tabs[root]).toMatchObject({graphVersion:6,graph:{key:"graph-8"}});
+  });
+  it("answers a repository selection from the read that is already running", async () => {
+    const refs={local:[],remote:[],tags:[],remotes:[]};const info={head:{branch:"main",oid:"a"}} as RepoInfo;
+    useRepos.getState().patch(root,{info,refs:refs as never,loaded:true});vi.mocked(api.repoInfo).mockResolvedValue(info);vi.mocked(api.refs).mockResolvedValue(refs as never);
+    let release!:(value:StatusSummary)=>void;vi.mocked(api.status).mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+    vi.mocked(api.graphLoad).mockResolvedValue({key:"selection",total:1,maxLanes:1,headIndex:0} as never);
+    const quiet={background:true,revalidate:true,info:true,status:true,refs:true,layers:true,graph:false};
+    const running=useRepos.getState().refresh(root,quiet);
+    await vi.waitFor(()=>expect(api.status).toHaveBeenCalledTimes(1));
+    const joined=useRepos.getState().refresh(root,quiet);
+    // A change notification is new information and still gets its own read.
+    release(snapshot("after-wal",2));await Promise.all([running,joined]);
+    expect(api.status).toHaveBeenCalledTimes(1);expect(api.refs).toHaveBeenCalledTimes(1);expect(api.layersState).toHaveBeenCalledTimes(1);
+    vi.mocked(api.status).mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+    const next=useRepos.getState().refresh(root,quiet);
+    await vi.waitFor(()=>expect(api.status).toHaveBeenCalledTimes(2));
+    const watcher=useRepos.getState().refresh(root,{background:true,status:true});
+    const missingHistory=useRepos.getState().refresh(root,{...quiet,graph:true});
+    release(snapshot("after-wal",3));await Promise.all([next,watcher,missingHistory]);
+    expect(api.status).toHaveBeenCalledTimes(3);
+    expect(covers({info:true,status:true,refs:true,layers:true,graph:true},quiet)).toBe(true);
+    expect(covers({summary:true,status:true,refs:true},{status:true})).toBe(false);
+    expect(covers({changesDisplay:true,status:true},{status:true})).toBe(false);
+    expect(covers({status:true},{status:true,refs:true})).toBe(false);
+    expect(covers({status:true},{status:true,guard:true})).toBe(false);
+    expect(covers(undefined,{status:true})).toBe(false);
   });
   it("loads a bounded history, expands it on demand and starts the next branch with a fresh window", async () => {
     vi.mocked(api.graphLoad).mockImplementation(async (_root, scope, _worktree, limit) => ({

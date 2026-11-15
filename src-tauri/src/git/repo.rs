@@ -220,7 +220,8 @@ pub fn op_state(repo: &Path, gd: &Path) -> OpState {
         st.message = std::fs::read_to_string(gd.join("MERGE_MSG")).ok();
         return st;
     }
-    let squash = super::storage::dir(repo).ok().map(|dir| dir.join("squash-target"));
+    // `gd` is this worktree's Git directory: no second lookup for the storage folder.
+    let squash = super::storage::dir_for(gd).ok().map(|dir| dir.join("squash-target"));
     if gd.join("SQUASH_MSG").exists() && squash.as_ref().is_some_and(|p| p.is_file()) {
         st.kind = "squash".into();
         st.message = std::fs::read_to_string(gd.join("SQUASH_MSG")).ok();
@@ -234,8 +235,22 @@ pub fn op_state(repo: &Path, gd: &Path) -> OpState {
 }
 
 pub fn info(path: &Path) -> GitResult<RepoInfo> {
-    let root = discover(path)?;
-    let gd = git_dir(&root)?;
+    // One Git process answers both questions on every refresh. Unusual output (a path
+    // containing a line break) falls back to the separate reads.
+    require_directory(path)?;
+    let both = runner::exec(path, ["rev-parse", "--show-toplevel", "--absolute-git-dir"])?;
+    let text = both.text();
+    let lines: Vec<&str> = text.lines().collect();
+    let (root, gd) = match lines.as_slice() {
+        [top, git] if both.ok() && !top.trim().is_empty() && !git.trim().is_empty() => {
+            (normalize(PathBuf::from(top.trim())), normalize(PathBuf::from(git.trim())))
+        }
+        _ => {
+            let root = discover(path)?;
+            let gd = git_dir(&root)?;
+            (root, gd)
+        }
+    };
     let head = head(&root)?;
     let state = op_state(&root, &gd);
     let name = root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| root.to_string_lossy().into_owned());

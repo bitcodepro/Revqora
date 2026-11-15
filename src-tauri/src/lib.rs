@@ -272,6 +272,7 @@ use git::watcher::{self, RepoWatcher};
 #[derive(Default)]
 struct AppState {
     graphs: Mutex<HashMap<String, Arc<GraphCache>>>,
+    graph_order: graph::BuildOrder,
     watchers: Mutex<HashMap<String, RepoWatcher>>,
     folder_scans: git::repository_import::FolderScans,
 }
@@ -855,6 +856,8 @@ async fn fixup_commit(app: AppHandle, expected_state: Option<String>, repo: Stri
 struct GraphLoadOptions {
     show_incoming: bool,
     defer_count: bool,
+    /// Increasing per client. A newer request supersedes builds that are still running.
+    request: Option<u64>,
 }
 
 #[tauri::command]
@@ -870,6 +873,9 @@ async fn graph_load(
     let key = repo.clone();
     let fast = fast.unwrap_or(false);
     let options = options.unwrap_or_default();
+    if options.request.is_some_and(|request| !state.graph_order.begin(&repo, request)) {
+        return Err(graph::BuildOrder::superseded());
+    }
     let prev = state.graphs.lock().get(&repo).cloned();
     let (cache, commit_count) = blocking(move || {
         let (branch, context) = match &branch {
@@ -878,13 +884,13 @@ async fn graph_load(
             None => (None, None),
         };
         let path = p(&repo);
-        let cache = graph::build_for_view(
+        let cache = graph::refresh_for_view(
             &path,
             graph::ViewScope { branch, show_incoming: options.show_incoming, context },
             include_worktree,
             limit.unwrap_or(150_000),
             fast,
-            prev.as_deref(),
+            prev.as_ref(),
         )?;
         let count = if options.defer_count { None } else { cache.commit_count(&path, include_worktree) };
         Ok((cache, count))
@@ -900,7 +906,12 @@ async fn graph_load(
         head_index,
         branch_context: cache.branch_context.clone(),
     };
-    state.graphs.lock().insert(key, Arc::new(cache));
+    let mut graphs = state.graphs.lock();
+    // An obsolete build must not replace the graph of a selection made after it started.
+    if options.request.is_some_and(|request| !state.graph_order.is_latest(&key, request)) {
+        return Err(graph::BuildOrder::superseded());
+    }
+    graphs.insert(key, cache);
     Ok(summary)
 }
 
@@ -1006,15 +1017,25 @@ async fn commit_graph_write(expected_state: Option<String>, app: AppHandle, repo
 }
 
 #[tauri::command]
-async fn commit_details(repo: String, oid: String, exact: Option<bool>) -> GitResult<CommitDetails> {
+async fn commit_details(repo: String, oid: String, exact: Option<bool>, defer_containment: Option<bool>) -> GitResult<CommitDetails> {
     blocking(move || {
         let root = p(&repo);
         if exact == Some(true) {
             gcommit::verify_commit_oid(&root, &oid)?;
         }
-        gcommit::details(&root, &oid)
+        // The preview shows the header and files first and asks for containment separately.
+        if defer_containment == Some(true) {
+            gcommit::header(&root, &oid)
+        } else {
+            gcommit::details(&root, &oid)
+        }
     })
     .await
+}
+
+#[tauri::command]
+async fn commit_remote_containment(repo: String, oid: String) -> GitResult<bool> {
+    blocking(move || gcommit::remote_containment(&p(&repo), &oid)).await
 }
 
 #[tauri::command]
@@ -2762,6 +2783,7 @@ pub fn run() {
             repository_commit_search,
             repository_commit_search_page,
             commit_details,
+            commit_remote_containment,
             verify_commit,
             commit_graph_status,
             commit_graph_write,

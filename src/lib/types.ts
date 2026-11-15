@@ -248,7 +248,8 @@ export interface CommitDetails {
   body: string;
   files: ChangedFile[];
   diffBase: string | null;
-  containedInRemote: boolean;
+  /** null = not checked by this read; ask commitRemoteContainment for a fresh answer. */
+  containedInRemote: boolean | null;
 }
 
 export interface FileHistoryEntry {

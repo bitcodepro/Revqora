@@ -367,3 +367,32 @@ fn panic_and_finished_scopes_cannot_capture_later_actions() {
     assert!(f.log.detail(&id).unwrap().steps.is_empty());
     assert_eq!(f.log.detail(&abandoned).unwrap().steps.len(), 1);
 }
+
+#[test]
+fn precondition_reads_on_helper_threads_stay_in_the_operation_entry() {
+    let f = Fixture::new();
+    fs::write(f.root.join("file.txt"), "content\n").unwrap();
+    let token = crate::git::status::status(&f.root).unwrap().state_token.unwrap();
+    let op = f.log.begin(&f.root, "stage").unwrap();
+    let id = op.context.id.clone();
+    op.phase("running", &f.root);
+    let result = operations::run(&f.root, "stage", Some(&token), |_, _| {}, || runner::run(&f.root, ["add", "file.txt"]));
+    op.after(&f.root);
+    op.finish(&result);
+    drop(op);
+    let detail = f.log.detail(&id).unwrap();
+    assert_eq!(detail.entry.status, "succeeded");
+    let commands: Vec<&str> = detail.steps.iter().filter_map(|step| step.args.first().map(String::as_str)).collect();
+    // The state token is read by parallel helpers; the log still shows every Git process.
+    for expected in ["status", "ls-files", "for-each-ref", "rev-parse", "add"] {
+        assert!(commands.contains(&expected), "{expected} is missing from {commands:?}");
+    }
+    assert_eq!(commands.first(), Some(&"status"));
+    assert_eq!(commands.last(), Some(&"add"));
+    let mut sequences: Vec<i64> = detail.steps.iter().map(|step| step.sequence).collect();
+    sequences.dedup();
+    assert_eq!(sequences.len(), detail.steps.len(), "every command keeps its own sequence number");
+    // Outside that operation the helper threads record nothing.
+    let other = share();
+    assert!(std::thread::scope(|sc| sc.spawn(|| other.enter(|| command(&f.root, &["status".to_string()]).is_none())).join().unwrap()));
+}

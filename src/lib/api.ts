@@ -219,8 +219,9 @@ export const api = {
   fixupCommit: (repo: string, oid: string, opts: import("./types").FixupOptions, expectedState: string) =>
     call<string>("fixup_commit", { repo, oid, opts, expectedState }),
 
-  graphLoad: (repo: string, branch: string | { reference: string; primary: string | null } | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean, deferCount?: boolean) =>
-    call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast, options: { showIncoming, deferCount } }),
+  /** request: increasing number; the backend keeps only the build of the newest request per repository. */
+  graphLoad: (repo: string, branch: string | { reference: string; primary: string | null } | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean, deferCount?: boolean, request?: number) =>
+    call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast, options: { showIncoming, deferCount, request } }),
   graphCommitCount: (repo: string, key: string, includeWorktree: boolean) =>
     call<number | null>("graph_commit_count", { repo, key, includeWorktree }),
   graphRows: (repo: string, start: number, count: number,expectedKey?:string) => call<GraphRow[]>("graph_rows", { repo, start, count,expectedKey }),
@@ -234,7 +235,9 @@ export const api = {
   repositoryCommitSearchPage: (repo: string, query: string, mode: SearchMode, cursor: string | null, limit: number) => call<import("./types").CommitSearchPage>("repository_commit_search_page", { repo, query, mode, cursor, limit }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),
   commitGraphWrite: (repo: string, opId: string) => call<string>("commit_graph_write", { repo, opId }),
-  commitDetails: (repo: string, oid: string, exact?: boolean) => call<CommitDetails>("commit_details", { repo, oid, exact }),
+  /** deferContainment: header and files only; containedInRemote stays null (see commitRemoteContainment). */
+  commitDetails: (repo: string, oid: string, exact?: boolean, deferContainment?: boolean) => call<CommitDetails>("commit_details", { repo, oid, exact, deferContainment }),
+  commitRemoteContainment: (repo: string, oid: string) => call<boolean>("commit_remote_containment", { repo, oid }),
   verifyCommit: (repo: string, oid: string) => call<void>("verify_commit", { repo, oid }),
   fileHistory: (repo: string, path: string, limit?: number) => call<FileHistoryEntry[]>("file_history", { repo, path, limit }),
   fileText: (repo: string, spec: string) => call<string | null>("file_text", { repo, spec }),

@@ -324,6 +324,21 @@ pub fn squash_merged(repo: &Path) -> GitResult<Vec<String>> {
 }
 
 pub fn labels_by_oid(repo: &Path) -> GitResult<HashMap<String, Vec<RefLabel>>> {
+    Ok(graph_refs(repo)?.labels)
+}
+
+/// What one history build needs to know about refs, from a single enumeration.
+pub struct GraphRefs {
+    /// refname -> object name for branches, remote branches and tags, plus HEAD. Sorted.
+    pub snapshot: Vec<(String, String)>,
+    pub labels: HashMap<String, Vec<RefLabel>>,
+    /// Empty while HEAD is unborn.
+    pub head_oid: String,
+}
+
+/// Reads refs once for both the graph's ref snapshot and its labels, so the two
+/// cannot disagree and a build does not enumerate refs or resolve HEAD twice.
+pub fn graph_refs(repo: &Path) -> GitResult<GraphRefs> {
     let raw = runner::run(
         repo,
         [
@@ -335,13 +350,22 @@ pub fn labels_by_oid(repo: &Path) -> GitResult<HashMap<String, Vec<RefLabel>>> {
             "refs/bisect",
         ],
     )?;
-    let head_detached = runner::exec(repo, ["symbolic-ref", "-q", "HEAD"])?.code != 0;
+    let head_out = runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD"])?;
+    let head_oid = if head_out.ok() { head_out.text().trim().to_string() } else { String::new() };
+    let mut snapshot = Vec::new();
     let mut map: HashMap<String, Vec<RefLabel>> = HashMap::new();
     let mut remote_at: HashMap<String, Vec<String>> = HashMap::new();
     let mut entries = Vec::new();
     for line in raw.lines() {
         let f: Vec<&str> = line.split('\x1f').collect();
-        if f.len() < 5 || !f[4].is_empty() {
+        if f.len() < 5 {
+            continue;
+        }
+        if !f[0].starts_with("refs/bisect/") {
+            snapshot.push((f[0].to_string(), f[1].to_string()));
+        }
+        // Symbolic refs (origin/HEAD) are part of the snapshot but carry no label.
+        if !f[4].is_empty() {
             continue;
         }
         let oid = if !f[2].is_empty() { f[2] } else { f[1] };
@@ -384,11 +408,16 @@ pub fn labels_by_oid(repo: &Path) -> GitResult<HashMap<String, Vec<RefLabel>>> {
             map.entry(oid.clone()).or_default().push(RefLabel { name: name.into(), kind: "bisect".into(), synced_remote: None });
         }
     }
-    if head_detached {
-        if let Ok(h) = runner::run(repo, ["rev-parse", "-q", "--verify", "HEAD"]) {
-            map.entry(h.trim().to_string()).or_default().insert(0, RefLabel { name: "HEAD".into(), kind: "detached".into(), synced_remote: None });
-        }
+    // A branch marked as checked out proves HEAD is attached. Ask Git only otherwise
+    // (detached, unborn, or HEAD on a ref outside refs/heads).
+    let head_detached = !entries.iter().any(|(_, _, is_head)| *is_head) && runner::exec(repo, ["symbolic-ref", "-q", "HEAD"])?.code != 0;
+    if head_detached && !head_oid.is_empty() {
+        map.entry(head_oid.clone()).or_default().insert(0, RefLabel { name: "HEAD".into(), kind: "detached".into(), synced_remote: None });
     }
+    if !head_oid.is_empty() {
+        snapshot.push(("HEAD".into(), head_oid.clone()));
+    }
+    snapshot.sort();
     for v in map.values_mut() {
         let rank = |k: &str| match k {
             "head" | "detached" => 0,
@@ -398,7 +427,7 @@ pub fn labels_by_oid(repo: &Path) -> GitResult<HashMap<String, Vec<RefLabel>>> {
         };
         v.sort_by(|a, b| rank(&a.kind).cmp(&rank(&b.kind)).then(a.name.cmp(&b.name)));
     }
-    Ok(map)
+    Ok(GraphRefs { snapshot, labels: map, head_oid })
 }
 
 #[derive(Debug, Clone, Serialize)]

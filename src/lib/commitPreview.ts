@@ -61,14 +61,22 @@ const immutable = (oid: string) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(oid);
 export const detailsKey = (root: string, oid: string, remoteRefs: string) => JSON.stringify([root, oid, remoteRefs]);
 export const diffKey = (root: string, from: string | null, oid: string, path: string, opts: DiffOptions) => JSON.stringify([root, from, oid, path, opts]);
 export const peekDetails = (key: string, oid: string) => immutable(oid) ? details.peek(key) : undefined;
-export const loadDetails = (key: string, root: string, oid: string) => immutable(oid) ? details.load(key, () => api.commitDetails(root, oid)) : api.commitDetails(root, oid);
+// The preview opens with the header and file list. Remote containment walks history
+// from every remote tip, so it is a separate read with its own unknown state.
+export const loadDetails = (key: string, root: string, oid: string) => immutable(oid) ? details.load(key, () => api.commitDetails(root, oid, undefined, true)) : api.commitDetails(root, oid, undefined, true);
+const containment = new PreviewCache<boolean>(256, 1024 * 1024);
+/** Keyed by the remote-ref snapshot: a fetch or push changes the answer. */
+export const containmentKey = (root: string, oid: string, remoteRefs: string) => JSON.stringify([root, oid, remoteRefs]);
+/** undefined = unknown: not asked yet, or invalidated since. */
+export const peekContainment = (key: string) => containment.peek(key);
+export const loadContainment = (key: string, root: string, oid: string) => containment.load(key, () => api.commitRemoteContainment(root, oid));
 export const peekDiff = (key: string, oid: string) => immutable(oid) ? diffs.peek(key) : undefined;
 export const loadDiff = (key: string, root: string, from: string | null, oid: string, path: string, opts: DiffOptions) => immutable(oid) ? diffs.load(key, () => api.revDiff(root, from, oid, path, opts, true)) : api.revDiff(root, from, oid, path, opts, true);
 
 /** Attributes/config may change the interpretation of immutable trees. */
 export function invalidatePreview(root: string) {
   const matches = (key: string) => JSON.parse(key)[0] === root;
-  details.invalidate(matches); diffs.invalidate(matches);
+  details.invalidate(matches); diffs.invalidate(matches); containment.invalidate(matches);
   generations.set(root, previewGeneration(root) + 1);
   for (const listener of subscribers.get(root) ?? []) listener();
 }

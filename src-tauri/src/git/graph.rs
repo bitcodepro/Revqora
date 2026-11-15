@@ -188,8 +188,11 @@ pub struct GraphCache {
     pub branch_context: Option<BranchContext>,
     incoming: Option<IncomingHistory>,
     labels: HashMap<String, Vec<refs::RefLabel>>,
-    local_commits: HashMap<String, ()>,
+    /// Shared with later builds while the ref snapshot is unchanged.
+    local_commits: Arc<HashMap<String, ()>>,
     has_remotes: bool,
+    include_worktree: bool,
+    show_incoming: bool,
     lane_anchors: Arc<LaneAnchors>,
     previous_anchors: Option<(String, Arc<LaneAnchors>)>,
 }
@@ -399,18 +402,36 @@ impl GraphCache {
     }
 }
 
-/// refname → oid for everything the graph shows, plus HEAD.
-fn ref_snapshot(repo: &Path) -> Vec<(String, String)> {
-    let mut v: Vec<(String, String)> = runner::run(repo, ["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes", "refs/tags"])
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|l| l.split_once(' ').map(|(a, b)| (a.to_string(), b.to_string())))
-        .collect();
-    if let Ok(h) = runner::run(repo, ["rev-parse", "-q", "--verify", "HEAD"]) {
-        v.push(("HEAD".into(), h.trim().to_string()));
+/// Lets a newer history request for a repository supersede builds that are still running.
+/// The application keeps one graph per repository: an older build that finishes last
+/// must not replace the graph of the selection the user made after it.
+#[derive(Default)]
+pub struct BuildOrder {
+    latest: parking_lot::Mutex<HashMap<String, u64>>,
+}
+
+impl BuildOrder {
+    /// Registers a request number (increasing per client). False: a newer request
+    /// has already started, so this one is obsolete before doing any work.
+    pub fn begin(&self, repo: &str, request: u64) -> bool {
+        let mut latest = self.latest.lock();
+        match latest.get(repo) {
+            Some(&seen) if seen > request => false,
+            _ => {
+                latest.insert(repo.to_owned(), request);
+                true
+            }
+        }
     }
-    v.sort();
-    v
+
+    /// Whether the finished build still belongs to the newest request.
+    pub fn is_latest(&self, repo: &str, request: u64) -> bool {
+        self.latest.lock().get(repo).is_none_or(|&seen| seen == request)
+    }
+
+    pub fn superseded() -> GitError {
+        GitError::new("A newer history request replaced this one.").kind("superseded")
+    }
 }
 
 fn parse_log(text: &str) -> Vec<CommitMeta> {
@@ -645,7 +666,41 @@ pub fn build_with_incoming(
 }
 
 pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool, limit: usize, fast: bool, prev: Option<&GraphCache>) -> GitResult<GraphCache> {
-    let refs = ref_snapshot(repo);
+    match build_view(repo, scope, include_worktree, limit, fast, prev, false)? {
+        Some(cache) => Ok(cache),
+        None => Err(GitError::new("History build returned no rows.")),
+    }
+}
+
+/// Like `build_for_view`, but an identical request returns the previous build itself
+/// (same key, same rows): unchanged refs, labels, scope, window and display options
+/// need no new walk or layout, and readers keep the rows they already loaded.
+pub fn refresh_for_view(
+    repo: &Path,
+    scope: ViewScope<'_>,
+    include_worktree: bool,
+    limit: usize,
+    fast: bool,
+    prev: Option<&Arc<GraphCache>>,
+) -> GitResult<Arc<GraphCache>> {
+    match (build_view(repo, scope, include_worktree, limit, fast, prev.map(Arc::as_ref), true)?, prev) {
+        (Some(cache), _) => Ok(Arc::new(cache)),
+        (None, Some(prev)) => Ok(Arc::clone(prev)),
+        (None, None) => Err(GitError::new("History build returned no rows.")),
+    }
+}
+
+/// `Ok(None)` (only with `keep_identical`): the result would equal `prev` exactly.
+fn build_view(
+    repo: &Path,
+    scope: ViewScope<'_>,
+    include_worktree: bool,
+    limit: usize,
+    fast: bool,
+    prev: Option<&GraphCache>,
+    keep_identical: bool,
+) -> GitResult<Option<GraphCache>> {
+    let refs::GraphRefs { snapshot: refs, labels, head_oid } = refs::graph_refs(repo)?;
     let branch_context = scope.context.map(|request| BranchContext::resolve(repo, &refs, request)).transpose()?;
     let filter = scope.branch.filter(|b| !b.is_empty()).map(str::to_owned);
     let scoped_tip = filter.as_ref().and_then(|reference| refs.iter().find(|(name, _)| name == reference));
@@ -661,13 +716,18 @@ pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool,
         // A scoped history is reusable only while its own tip is unchanged.
         p.refs.contains(scoped_tip?).then(|| ((*p.commits).clone(), "reused"))
     });
-    // The history walk dominates; fetch decorations and remote info in parallel with it.
-    let (commits, incoming, labels, head_oid, local, has_remotes) = std::thread::scope(|sc| {
-        let labels = sc.spawn(|| refs::labels_by_oid(repo));
-        let head = sc.spawn(|| runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD"]).map(|o| o.text().trim().to_string()));
+    // Local-only marks depend on branch, remote and HEAD tips alone. A branch switch or a
+    // larger window with the same ref snapshot reuses them instead of walking history again.
+    let stable_refs = prev.filter(|p| p.refs == refs);
+    // The history walk dominates; fetch remote info in parallel with it.
+    let (commits, incoming, local, has_remotes) = std::thread::scope(|sc| {
         let local = sc.spawn(|| {
             let has_remotes = !runner::run(repo, ["remote"]).unwrap_or_default().trim().is_empty();
-            (if has_remotes { local_only(repo) } else { HashMap::new() }, has_remotes)
+            let local = match stable_refs.filter(|p| p.has_remotes == has_remotes) {
+                Some(p) => Arc::clone(&p.local_commits),
+                None => Arc::new(if has_remotes { local_only(repo) } else { HashMap::new() }),
+            };
+            (local, has_remotes)
         });
         let incoming = sc.spawn(|| match filter.as_deref().filter(|_| scope.show_incoming && branch_context.is_none()) {
             Some(scope) => incoming_history(repo, scope, &refs, limit, fast, reusable.and_then(|p| p.incoming.as_ref())),
@@ -688,15 +748,24 @@ pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool,
         };
         let join_err = || GitError::new("Background history task failed.");
         let (local, has_remotes) = local.join().map_err(|_| join_err())?;
-        GitResult::Ok((
-            commits?,
-            incoming.join().map_err(|_| join_err())??,
-            labels.join().map_err(|_| join_err())??,
-            head.join().map_err(|_| join_err())??,
-            local,
-            has_remotes,
-        ))
+        GitResult::Ok((commits?, incoming.join().map_err(|_| join_err())??, local, has_remotes))
     })?;
+
+    // Every input of the rows is unchanged: keep the previous build and its key.
+    let same_incoming = |p: &GraphCache| p.incoming.as_ref().map(|h| (&h.base, &h.tip)) == incoming.as_ref().map(|h| (&h.base, &h.tip));
+    if keep_identical
+        && matches!(reused, Some((_, "reused")))
+        && stable_refs.is_some_and(|p| {
+            p.labels == labels
+                && p.head_oid == head_oid
+                && p.has_remotes == has_remotes
+                && p.include_worktree == include_worktree
+                && p.show_incoming == scope.show_incoming
+                && same_incoming(p)
+        })
+    {
+        return Ok(None);
+    }
 
     let upstream_commits = incoming.as_ref().map_or(&[][..], |history| history.commits.as_slice());
     let local_limit = limit.saturating_sub(upstream_commits.len()).min(commits.len());
@@ -776,7 +845,7 @@ pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool,
     let source = if fast { "fast" } else { reused.as_ref().map(|(_, s)| *s).unwrap_or("full") }.to_string();
     // Rows from the previous build can still be displayed until the first new page arrives.
     let previous_anchors = prev.map(|cache| (cache.key.clone(), Arc::clone(&cache.lane_anchors)));
-    Ok(GraphCache {
+    Ok(Some(GraphCache {
         head_oid,
         key,
         rows,
@@ -792,9 +861,11 @@ pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool,
         labels,
         local_commits: local,
         has_remotes,
+        include_worktree,
+        show_incoming: scope.show_incoming,
         lane_anchors: Arc::new(lane_anchors),
         previous_anchors,
-    })
+    }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
