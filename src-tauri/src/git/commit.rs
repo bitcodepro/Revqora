@@ -95,7 +95,9 @@ pub fn verify_commit_oid(repo: &Path, oid: &str) -> GitResult<()> {
 }
 
 pub fn details(repo: &Path, oid: &str) -> GitResult<CommitDetails> {
-    let raw = runner::run(repo, ["show", "--no-show-signature", "-s", "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%B", oid])?;
+    // `--end-of-options`: a value such as `--output=<file>` must never be read as an option.
+    let raw =
+        runner::run(repo, ["show", "--no-show-signature", "-s", "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%B", "--end-of-options", oid])?;
     let f: Vec<&str> = raw.splitn(9, '\x1f').collect();
     let parents: Vec<String> = f.get(1).unwrap_or(&"").split_whitespace().map(|s| s.to_string()).collect();
     let message = f.get(8).unwrap_or(&"").trim_end().to_string();

@@ -14,9 +14,12 @@ interface ModalProps {
   onSubmit?: () => void;
   sizeKey?: string;
   expandForResults?: boolean;
+  /** "dialog" focuses the dialog itself instead of its first field or primary button, for
+   *  prompts that open on their own (an agent's request) while the user may be typing. */
+  initialFocus?: "auto" | "dialog";
 }
 
-export function Modal({ title, subtitle, icon, tone = "accent", wide, children, footer, onClose, onSubmit, sizeKey, expandForResults }: ModalProps) {
+export function Modal({ title, subtitle, icon, tone = "accent", wide, children, footer, onClose, onSubmit, sizeKey, expandForResults, initialFocus = "auto" }: ModalProps) {
   const ref = useRef<HTMLFormElement>(null);
   const titleId = useId();
   const size = useWindowSize(sizeKey ?? (typeof title === "string" ? title : wide ? "Wide dialog" : "Dialog"));
@@ -59,7 +62,7 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
     };
     view.addEventListener("keydown", onKey, true);
     // Focus the first input once, when the dialog opens, for keyboard-first use.
-    const cancelFocus = scheduleDialogFocus(() => ref.current);
+    const cancelFocus = scheduleDialogFocus(() => ref.current, initialFocus);
     return () => {
       view.removeEventListener("keydown", onKey, true);
       cancelFocus();
@@ -71,7 +74,7 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
         className={`modal ${wide ? "wide" : ""}`}
         ref={ref}
         style={size.style}
-        role="dialog" aria-modal="true" aria-labelledby={titleId}
+        role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
         onSubmit={(e) => {
           e.preventDefault();
           onSubmit?.();

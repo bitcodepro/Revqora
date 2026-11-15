@@ -845,7 +845,8 @@ pub fn clone_with_connection(
     let root = parent.join(dir_name);
     runner::run_streaming_with_connection(
         parent,
-        &["clone".into(), "--progress".into(), url.into(), dir_name.into()],
+        // `--`: a pasted "URL" such as --upload-pack=... must never be read as an option.
+        &["clone".into(), "--progress".into(), "--".into(), url.into(), dir_name.into()],
         &[(crate::git_credentials::REPO_VAR, &root.to_string_lossy())],
         on_line,
         connection,
@@ -864,7 +865,7 @@ pub fn clone_with_connection(
 }
 
 pub fn remote_add(repo: &Path, name: &str, url: &str) -> GitResult<()> {
-    runner::run(repo, ["remote", "add", name.trim(), url.trim()])?;
+    runner::run(repo, ["remote", "add", "--", name.trim(), url.trim()])?;
     Ok(())
 }
 
@@ -874,7 +875,7 @@ pub fn remote_remove(repo: &Path, name: &str) -> GitResult<()> {
 }
 
 pub fn remote_set_url(repo: &Path, name: &str, url: &str) -> GitResult<()> {
-    runner::run(repo, ["remote", "set-url", name, url.trim()])?;
+    runner::run(repo, ["remote", "set-url", "--", name, url.trim()])?;
     Ok(())
 }
 
