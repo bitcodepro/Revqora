@@ -1,7 +1,7 @@
 import type { BranchCleanupRequest, BranchCleanupSelection, BranchCleanupReview, BranchCleanupReport } from "./types";
 import type { RepositoryFolderScan } from "./types";
 import type { RebaseItem, StudioReview, StudioReport, StudioComparison, ValidationReport } from "./types";
-import type { IgnoredFiles, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
+import type { IgnoredFiles, IgnoreKind, IgnorePreview, IgnoreResult, IgnoreScope, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
 import { recordError } from "./errorLog";
@@ -170,6 +170,9 @@ export const api = {
   gitConnectionForget: (repo: string) => call<void>("git_connection_forget", { repo }),
   repoInfo: (repo: string) => call<RepoInfo>("repo_info", { repo }),
   ignoredFiles: (repo: string) => call<IgnoredFiles>("ignored_files", { repo }),
+  ignorePreview: (repo: string, path: string, kind: IgnoreKind, scope: IgnoreScope) => call<IgnorePreview>("ignore_preview", { repo, path, kind, scope }),
+  ignoreApply: (repo: string, path: string, kind: IgnoreKind, scope: IgnoreScope, token: string, untrack: boolean) =>
+    call<IgnoreResult>("ignore_apply", { repo, path, kind, scope, token, untrack }),
   nestedRepositories: (repo: string) => call<NestedRepositories>("nested_repositories", { repo }),
   stashSelection: (repo: string, path: string, selection: [number, number][], hash: string, opts: DiffOptions, message: string, expectedState: string | null) => call<PartialStashResult>("stash_selection", { repo, path, selection, hash, opts, message, expectedState }),
   remoteRenamePlan: (repo: string, trackingRef: string, newName: string) => call<RemoteRenamePlan>("remote_rename_plan", { repo, trackingRef, newName }),

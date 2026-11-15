@@ -807,6 +807,10 @@ export interface BranchCleanupReport { status: "done" | "stopped"; preflightFail
 export interface DeletionResult { checkpoint: RecoverySummary | null; warning: string | null }
 
 export interface IgnoredFiles { paths: string[]; truncated: boolean; }
+export type IgnoreKind = "file" | "extension" | "folder";
+export type IgnoreScope = "shared" | "local";
+export interface IgnorePreview { pattern: string; file: string; before: string; after: string; token: string; alreadyIgnored: boolean; tracked: string[]; trackedCount: number; }
+export interface IgnoreResult { pattern: string; file: string; ignored: boolean; untracked: number; }
 export interface NestedRepository { path: string; relativePath: string; kind: string; branch: string | null; }
 export interface NestedRepositories { repositories: NestedRepository[]; truncated: boolean; skipped: number; }
 export interface PartialStashResult { oid: string; removed: boolean; warning: string | null; }

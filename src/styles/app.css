@@ -3482,3 +3482,5 @@ select[size="1"]:not([multiple]) {
 .check.subtle { color: var(--text-faint); font-weight: 400; }
 .check.subtle.warn { color: var(--amber); }
 .branch-scope-results { margin-top: 8px; max-height: min(50vh, 420px); overflow: auto; }
+.ignore-preview { max-height: 180px; overflow: auto; }
+.ignore-preview .added { color: var(--green); font-weight: 600; }

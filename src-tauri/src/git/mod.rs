@@ -13,6 +13,7 @@ pub mod forge_accounts;
 #[cfg(test)]
 pub(crate) mod forge_test_http;
 pub mod graph;
+pub mod ignore;
 pub mod inspect;
 pub mod layers;
 pub mod locate;

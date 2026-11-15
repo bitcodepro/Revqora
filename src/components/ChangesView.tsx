@@ -27,6 +27,7 @@ import {
   Swords,
   Trash2,
   Undo2,
+  EyeOff,
   Info,
   Combine,
   ScanSearch,
@@ -53,6 +54,8 @@ import { Modal } from "./Modal";
 import { fileHistoryDialog } from "./FileHistory";
 import { Splitter } from "./Overlays";
 import { previewGeneration, subscribePreview } from "../lib/commitPreview";
+import { ignoreDialog } from "./IgnoreDialog";
+import { ignoreChoices } from "../lib/ignoreRules";
 
 const isNestedFile = (f: FileStatus) => f.untracked && f.path.endsWith("/");
 const openNestedFile = (root: string, f: FileStatus) => { void useRepos.getState().open(joinPath(root, f.path)).catch((e) => toast.error(e)); };
@@ -392,6 +395,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
         ]
       : [{ label: "Unstage", icon: <Minus size={14} />, onClick: () => A.unstagePaths(root, [f.path]) }]),
     { label: "Stash this file", icon: <Archive size={14} />, onClick: () => A.act(root, () => api.stashSave(root, `Stash ${f.path}`, true, false, [f.path]), { success: "File stashed" }) },
+    { label: "Ignore", icon: <EyeOff size={14} />, children: ignoreChoices(f.path).map((choice) => ({ label: `${choice.label}…`, onClick: () => void ignoreDialog(root, choice.path, choice.kind) })) },
     { separator: true },
     { label: "File history", icon: <History size={14} />, disabled: f.untracked, onClick: () => fileHistoryDialog(root, f.path) },
     { label: "Blame", icon: <ScanSearch size={14} />, disabled: f.untracked || f.worktree === "D", onClick: () => openOverlay({ kind: "blame", root, path: f.path, rev: null }) },

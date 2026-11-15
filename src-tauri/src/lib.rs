@@ -1491,6 +1491,16 @@ async fn conflict_unresolve(app: AppHandle, expected_state: Option<String>, repo
 }
 
 #[tauri::command]
+async fn ignore_preview(repo: String, path: String, kind: String, scope: String) -> GitResult<git::ignore::IgnorePreview> {
+    blocking(move || git::ignore::preview(&p(&repo), &path, &kind, &scope)).await
+}
+
+#[tauri::command]
+async fn ignore_apply(repo: String, path: String, kind: String, scope: String, token: String, untrack: bool) -> GitResult<git::ignore::IgnoreResult> {
+    blocking(move || git::ignore::apply(&p(&repo), &path, &kind, &scope, &token, untrack)).await
+}
+
+#[tauri::command]
 async fn ignored_files(repo: String) -> GitResult<git::workspace_files::IgnoredFiles> {
     blocking(move || git::workspace_files::ignored(&p(&repo))).await
 }
@@ -2694,6 +2704,8 @@ pub fn run() {
             conflict_mark_resolved,
             conflict_unresolve,
             ignored_files,
+            ignore_preview,
+            ignore_apply,
             nested_repositories,
             stash_selection,
             remote_rename_plan,
