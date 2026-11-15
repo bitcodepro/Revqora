@@ -551,10 +551,21 @@ fn paused_sparse_rebase() -> Repo {
 
 #[test]
 fn sparse_checkout_does_not_block_abort_or_skip() {
-    let repo = paused_sparse_rebase();
-    ops::abort_op(repo.p(), "rebase").unwrap();
-    let repo = paused_sparse_rebase();
-    ops::skip_op(repo.p(), "rebase").unwrap();
+    // Plain skip-worktree ("S"), and skip-worktree with assume-unchanged too ("s").
+    for assume in [false, true] {
+        for abort in [false, true] {
+            let repo = paused_sparse_rebase();
+            if assume {
+                repo.git(&["update-index", "--assume-unchanged", "out.txt"]);
+                assert!(repo.git(&["ls-files", "-v", "out.txt"]).starts_with("s "));
+            }
+            if abort {
+                ops::abort_op(repo.p(), "rebase").unwrap()
+            } else {
+                ops::skip_op(repo.p(), "rebase").map(drop).unwrap()
+            }
+        }
+    }
 }
 
 #[cfg(unix)]

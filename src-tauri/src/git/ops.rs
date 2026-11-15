@@ -1497,7 +1497,9 @@ fn worktree_differs_from_index(repo: &Path, path: &str) -> GitResult<bool> {
     let (tag, mode, oid) = (fields.next().unwrap_or(""), fields.next().unwrap_or(""), fields.next().unwrap_or("").to_string());
     let full = repo.join(path);
     let Ok(meta) = std::fs::symlink_metadata(&full) else {
-        return Ok(tag != "S"); // missing: deleted meanwhile, unless sparse checkout excludes it
+        // Missing: deleted meanwhile, unless sparse checkout excludes it. `ls-files -v` shows
+        // skip-worktree as "S", or "s" when assume-unchanged is set too.
+        return Ok(!tag.eq_ignore_ascii_case("s"));
     };
     if mode == "160000" {
         return Ok(!meta.is_dir()); // a submodule's own changes are its own business
