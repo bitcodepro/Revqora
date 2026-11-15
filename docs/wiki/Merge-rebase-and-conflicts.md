@@ -58,6 +58,10 @@ Open a conflicted file from **Changes** or choose **Resolve conflicts** in the o
 
 During rebase, Ours/Theirs follow Git's current operation: the target and replayed commit can be the opposite of what you intuitively call “my side.” Read the displayed revisions before choosing a whole side.
 
+To use your own merge tool instead, choose **External tool** in the conflict editor, or **Resolve in external merge tool** in a conflicted file's menu in Changes. Revqora runs Git's `mergetool` with the tool chosen in **Settings → Diff** (or Git's `merge.tool`), waits until you close it, and closes the conflict editor if the file is no longer conflicted. No backup `.orig` file is kept.
+
+To have Git replay a conflict resolution you already made (for example when rebasing the same branch again), turn on **Reuse recorded conflict resolutions (rerere)** in **Repository tools**. **Stage replayed resolutions automatically** additionally stages files Git resolved this way. Inspect replayed results before continuing.
+
 **Save draft** writes the current result without marking it resolved. An unsaved editor buffer can survive navigation during the current app session, but is not guaranteed after quitting. Save before exit.
 
 **Abort** returns through the operation's abort path. Check recovery information for manual edits made since the operation began.

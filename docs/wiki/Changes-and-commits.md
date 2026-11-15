@@ -38,6 +38,13 @@ The commit contains the staged login change. The theme edit remains in your work
 
 Open a file's diff and select the desired hunk or lines. Use the offered stage/unstage action for that selection. This is useful when one file contains two unrelated fixes.
 
+- Click a line number to select or deselect that added or removed line. Press and drag over more line numbers to extend the selection.
+- **Shift+click** a line number to select the range from the last clicked line, across hunks too.
+- When a hunk contains several separate blocks of changes, each block has its own **Stage block** (or **Unstage block** in the staged diff) button.
+- **S** / **U** stage or unstage the focused hunk in the diff. **Ctrl+Shift+A** / **Ctrl+Shift+U** stage or unstage the file selected in Changes. Rebind them in **Settings → Shortcuts**.
+
+To act on several files at once, **Ctrl+click** or **Shift+click** them in the Unstaged or Staged list, then right-click one of the selected files. Unstaged files offer **Stage N files**, **Stage N files into a new layer**, **Stash N files**, **Discard changes in N files…** and **Clear selection**; staged files offer **Unstage N files** and **Clear selection**.
+
 If you stage a file and edit it again, it can appear in both lists: the staged version is ready for commit, while newer edits remain unstaged. Inspect both before committing.
 
 **Stage file** reads the current file when you stage it. Staging it again
@@ -49,6 +56,18 @@ If a diff exceeds the preview size limit, its visible portion is marked partial.
 Whole-file actions remain available.
 
 **Unstage** removes content from the proposed commit and keeps your working edits. **Discard** removes working changes; review the selected files/lines and available recovery information before confirming it.
+
+## Ignore a file from Changes
+
+Right-click a changed file and open **Ignore**. Choose the file itself (for example **Ignore app.log…**), its extension (**Ignore all \*.log files…**, when the name has one) or a parent folder (**Ignore folder logs/…**, up to three folders, nearest first).
+
+The **Ignore files** dialog asks where to **Write the rule to**: **.gitignore (shared with the project)** or **Only this clone (info/exclude)**. It previews the last lines of that file with the added rule, and says when the path is already ignored by an existing rule. Special characters in the path are escaped so the rule matches literally. Choose **Add rule** to append it.
+
+Ignore rules do not apply to files Git already tracks. If the rule matches tracked files, the dialog lists them and offers **Stop tracking them**: the files stay on disk and their removal is staged for your next commit. If the ignore file changed after the preview, Revqora refuses to write, shows the current file and asks you to review the rule again. A symbolic link as the ignore file is refused; edit the file it points to.
+
+## Open files in external tools
+
+Set the tools in **Settings → Diff** (see [Settings](https://github.com/bitcodepro/Revqora/wiki/Settings-and-troubleshooting)). A changed file's context menu offers **Open in editor** and **Compare in external diff tool** (not for untracked files). A conflicted file offers **Resolve in external merge tool**. The same editor and diff-tool entries appear for files in a commit's changed-file list, and **Open in editor** in **Browse files**.
 
 ## Make a commit
 
