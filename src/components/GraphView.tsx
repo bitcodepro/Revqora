@@ -13,7 +13,6 @@ import {
 } from "lucide-react";
 import { api, newOpId } from "../lib/api";
 import {cachedGraphRows,rememberGraphRows,rememberGraphPosition} from "../lib/graphRowsCache";
-import * as A from "../lib/actions";
 import { CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, loadMoreHistory, useRepos, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
 import { repositoryKey } from "../lib/repositoryLibrary";
@@ -162,11 +161,7 @@ const Row = memo(function Row(p: RowProps) {
           : undefined
       }
       color={l.kind === "local" || l.kind === "head" ? r.color : undefined}
-      onClick={(e) =>
-        (e.ctrlKey || e.metaKey) && (l.kind === "local" || l.kind === "remote")
-          ? void A.checkout(p.root, l.name, l.kind)
-          : p.onRefClick(l.name)
-      }
+      onClick={() => p.onRefClick(l.name)}
       onContextMenu={(e) =>
         contextMenu(
           e,

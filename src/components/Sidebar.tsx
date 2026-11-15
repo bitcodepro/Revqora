@@ -233,21 +233,18 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
             tabIndex={selectionAnchor.current === b.fullName || (!selectionAnchor.current && isCur) ? 0 : -1}
             className={`sb-item ${isCur ? "current" : ""} ${selectedSet.has(b.fullName) ? "branch-selected" : ""} ${viewed && (viewed === b.fullName || viewed === upstream?.fullName) ? "viewed-branch" : ""}`}
             style={{ paddingLeft: pad + 16 }}
-            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}\n${b.creator?`Created by ${b.creator.name} <${b.creator.email}> (local creation log)`:"Branch creator unknown"}${b.upstream ? `\ntracks ${b.upstream}` : ""}\nCtrl+Shift+click to toggle selection; Shift+click to select a range${isCur ? "" : "\nCtrl+click or double-click to check out"}`}
+            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}\n${b.creator?`Created by ${b.creator.name} <${b.creator.email}> (local creation log)`:"Branch creator unknown"}${b.upstream ? `\ntracks ${b.upstream}` : ""}\nCtrl+click to toggle selection; Shift+click to select a range${isCur ? "" : "\nDouble-click or right-click to check out"}`}
             onMouseDown={(e) => { if (e.button === 0 && (e.ctrlKey || e.metaKey || e.shiftKey)) e.preventDefault(); }}
             onClick={(e) => {
               if (e.button !== 0) return;
               e.currentTarget.focus({ preventScroll: true });
+              // Ctrl+click toggles the selection and Shift+click selects a range, as in Explorer;
+              // checking out is in the context menu (or a double-click).
               const modifier = e.ctrlKey || e.metaKey;
-              if (modifier && !e.shiftKey) {
-                beforeDoubleClick.current = null;
-                if (!isCur && e.detail <= 1) void A.checkout(root, b.name, kind);
-                return;
-              }
-              if (e.detail <= 1) beforeDoubleClick.current = e.shiftKey ? null : {
+              if (e.detail <= 1) beforeDoubleClick.current = e.shiftKey || modifier ? null : {
                 reference: b.fullName, branchFilter: tab.branchFilter, branchContext: tab.branchContext, viewedBranch: tab.viewedBranch,
               };
-              chooseBranch(b, modifier, e.shiftKey && !modifier);
+              chooseBranch(b, modifier, e.shiftKey);
             }}
             onKeyDown={(e) => {
               if (e.target !== e.currentTarget) return;

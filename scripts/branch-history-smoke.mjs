@@ -330,11 +330,11 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await branchRow("main").click();
   await graph.locator(".grow.branch-member").getByText("Advance pinned history line", { exact: true }).click();
   await preview.waitFor();
-  await branchRow("target").click({ modifiers: ["Control"] });
+  await branchRow("target").dblclick();
   await waitBranch("target");
   await preview.waitFor({ state: "detached" });
   assert.equal(git(root, "branch", "--show-current"), "target");
-  await branchRow("main").click({ modifiers: ["Control"] });
+  await branchRow("main").dblclick();
   await waitBranch("main");
   assert.equal(await preview.count(), 0);
   put(root, "file.txt", "staged");

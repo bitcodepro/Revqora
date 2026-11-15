@@ -71,7 +71,7 @@ export function RefBadge({ r, color, merged, branchMark, onClick, onContextMenu 
       title={
         merged
           ? `${r.name} — its changes are already in ${merged} (squash or rebase merge), so no merge line connects it`
-          : `${r.syncedRemote ? `${r.name} — in sync with ${r.syncedRemote}` : r.name}${r.kind === "local" || r.kind === "remote" ? "\nCtrl+click to check out" : ""}`
+          : `${r.syncedRemote ? `${r.name} — in sync with ${r.syncedRemote}` : r.name}${r.kind === "local" || r.kind === "remote" ? "\nRight-click to check out" : ""}`
       }
       onClick={(e) => {
         e.stopPropagation();
