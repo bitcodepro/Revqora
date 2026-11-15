@@ -1,3 +1,4 @@
+import { menuFocusTarget } from "../lib/keyboardFocus";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertCircle, CheckCircle2, ChevronRight, Info, TriangleAlert, X } from "lucide-react";
@@ -11,8 +12,8 @@ export function ContextMenuHost() {
   useEffect(() => {
     if (!menu) return;
     const view = menu.surface;
-    // Keyboard users return to where they opened the menu.
-    const previous = view.document.activeElement as HTMLElement | null;
+    // Keyboard users return to where they opened the menu (recorded before the menu took focus).
+    const previous = menu.opener;
     const onDown = (e: MouseEvent) => {
       if (!(e.target as HTMLElement).closest(".ctx-menu")) close();
     };
@@ -26,8 +27,10 @@ export function ContextMenuHost() {
       view.removeEventListener("keydown", onKey);
       view.removeEventListener("blur", close);
       view.removeEventListener("resize", close);
-      const active = view.document.activeElement;
-      if (previous?.isConnected && (!active || active === view.document.body || active.closest(".ctx-menu"))) previous.focus({ preventScroll: true });
+      // The menu is still in the DOM here; after it unmounts focus would fall to the body.
+      queueMicrotask(() => {
+        menuFocusTarget(previous, view.document.activeElement, view.document.body)?.focus({ preventScroll: true });
+      });
     };
   }, [menu, close]);
   if (!menu) return null;

@@ -71,7 +71,8 @@ export type Overlay =
 
 interface UiState {
   toasts: Toast[];
-  menu: { x: number; y: number; items: MenuItem[]; surface: Window } | null;
+  /** `opener` is the element focused when the menu opened: focus returns there when it closes. */
+  menu: { x: number; y: number; items: MenuItem[]; surface: Window; opener: HTMLElement | null } | null;
   dialogs: Dialog[];
   busy: BusyOp[];
   repositoryOperations: RepositoryOperation[];
@@ -128,7 +129,7 @@ export const useUi = create<UiState>()((set, get) => ({
     if (held) { clearTimeout(timer.timer); timer.timer = undefined; }
     else if (!timer.timer) startToastTimer(id, Math.max(2500, timer.life / 2));
   },
-  openMenu: (x, y, items, surface = focusedUiSurface()) => set({ menu: { x, y, items, surface } }),
+  openMenu: (x, y, items, surface = focusedUiSurface()) => set({ menu: { x, y, items, surface, opener: get().menu?.opener ?? (surface.document.activeElement as HTMLElement | null) } }),
   closeMenu: () => set({ menu: null }),
   setPalette: (open) => set({ paletteOpen: open }),
 }));

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { rowIn, steppedOid } from "../lib/keyboardFocus";
+import { useEffect, useRef, useState } from "react";
 import { History } from "lucide-react";
 import { Modal } from "./Modal";
 import { showDialog } from "../lib/ui";
@@ -40,12 +41,24 @@ function FileHistoryBody({ root, path, close }: { root: string; path: string; cl
     );
     return () => { alive = false; };
   }, [root, path, limit, attempt]);
-  const moveSelection = (step: number) => {
+  const listRef = useRef<HTMLDivElement>(null);
+  // The selected commit right now, also between a key press and the re-render (fast Down, Enter).
+  const selected = useRef<string | null>(null);
+  selected.current = sel?.oid ?? null;
+  /** Moves from the focused row (not a possibly stale selection), so Enter opens what is shown. */
+  const moveSelection = (from: string, step: number) => {
     if (!items?.length) return;
-    const at = items.findIndex((it) => it.oid === sel?.oid);
-    const next = items[Math.min(items.length - 1, Math.max(0, at + step))];
+    const oid = steppedOid(items, selected.current ?? from, step);
+    const next = items.find((it) => it.oid === oid);
+    if (!next) return;
+    selected.current = next.oid;
     setSel(next);
-    document.getElementById(`file-history-${next.oid}`)?.scrollIntoView({ block: "nearest" });
+    // The dialog may be in a detached window: look only inside this list, in its own document.
+    requestAnimationFrame(() => {
+      const row = rowIn(listRef.current, next.oid);
+      row?.scrollIntoView({ block: "nearest" });
+      row?.focus({ preventScroll: true });
+    });
   };
   useEffect(() => {
     if (!sel) return;
@@ -64,7 +77,7 @@ function FileHistoryBody({ root, path, close }: { root: string; path: string; cl
   return (
     <Modal title="File history" subtitle={path} icon={<History size={18} />} wide onClose={() => close()} footer={<button type="button" className="btn" onClick={() => close()}>Close</button>}>
       <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 10, height: "60vh", margin: "0 -8px" }}>
-        <div className="file-history-list" role="listbox" aria-label="File history" style={{ overflow: "auto", borderRight: "1px solid var(--border)" }}>
+        <div ref={listRef} className="file-history-list" role="listbox" aria-label="File history" style={{ overflow: "auto", borderRight: "1px solid var(--border)" }}>
           {listError && (
             <div className="empty" role="alert">
               <div>File history could not be loaded.</div>
@@ -75,12 +88,12 @@ function FileHistoryBody({ root, path, close }: { root: string; path: string; cl
           {!items && !listError && <div className="loading-center"><span className="loader" aria-label="Loading file history" /></div>}
           {items?.length === 0 && <div className="empty">No history</div>}
           {items?.map((it) => (
-            <div key={it.oid} id={`file-history-${it.oid}`} role="option" aria-selected={sel?.oid === it.oid} tabIndex={sel?.oid === it.oid ? 0 : -1}
+            <div key={it.oid} data-oid={it.oid} role="option" aria-selected={sel?.oid === it.oid} tabIndex={sel?.oid === it.oid ? 0 : -1}
               className={`file-row ${sel?.oid === it.oid ? "selected" : ""}`} style={{ height: "auto", padding: "6px 8px", flexDirection: "column", alignItems: "stretch", gap: 2 }}
               onClick={() => setSel(it)} onDoubleClick={() => { close(); jumpToCommit(root, it.oid); }}
               onKeyDown={(e) => {
-                if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); moveSelection(e.key === "ArrowDown" ? 1 : -1); requestAnimationFrame(() => (document.querySelector<HTMLElement>(".file-history-list [aria-selected=true]"))?.focus()); }
-                else if (e.key === "Enter") { e.preventDefault(); close(); jumpToCommit(root, it.oid); }
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); moveSelection(it.oid, e.key === "ArrowDown" ? 1 : -1); }
+                else if (e.key === "Enter") { e.preventDefault(); const oid = selected.current ?? it.oid; close(); jumpToCommit(root, oid); }
               }}>
               <span className="ellipsis" style={{ color: "var(--text)", fontWeight: 500 }}>{it.subject}</span>
               <span className="faint" style={{ fontSize: "var(--fs-xs)" }} title={absoluteTime(it.time)}>
