@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { restoreWorkspaceLayouts, type HistoryMode, type WorkspaceLayout, type WorkspaceMode } from "./workspaceLayouts";
+import type { DiffAlgorithm } from "./types";
 
 export type ThemePref = "system" | "dark" | "light";
 type ColorTheme = Exclude<ThemePref, "system">;
@@ -40,6 +41,10 @@ export interface Settings {
   ignoreWhitespace: boolean;
   showWhitespace: boolean;
   contextLines: number;
+  /** Git diff algorithm; "default" = Git's own choice (`diff.algorithm`). */
+  diffAlgorithm: "default" | DiffAlgorithm;
+  ignoreBlankLines: boolean;
+  highlightMovedLines: boolean;
   /** Editor command template ({file}, {line}, {column}); empty = the system's text editor. */
   externalEditor: string;
   /** Git difftool / mergetool names; empty = Git's configured default. */
@@ -109,6 +114,9 @@ export const useSettings = create<Settings>()(
       ignoreWhitespace: false,
       showWhitespace: false,
       contextLines: 3,
+      diffAlgorithm: "default",
+      ignoreBlankLines: false,
+      highlightMovedLines: true,
       externalEditor: "",
       diffTool: "",
       mergeTool: "",

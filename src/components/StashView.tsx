@@ -15,7 +15,7 @@ export function StashView({ root, index, oid }: { root: string; index: number; o
   const [err, setErr] = useState<string | null>(null);
   const [sel, setSel] = useState<{ path: string; untracked: boolean } | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
-  const diffOpts = useDiffOpts();
+  const diffOpts = useDiffOpts(sel?.path);
   const tab = useRepos(s => s.tabs[root]);
   const info = tab?.refs?.stashes.find((s) => s.oid === oid);
   const diffContext = tab?.status?.diffContextToken;

@@ -236,7 +236,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const pending = tab.pendingMutations > 0;
   const patch = useRepos((s) => s.patch);
   const { mode, layout: { changesListWidth: width }, setLayout: setSettings } = useWorkspaceLayout();
-  const opts = useDiffOpts();
+  const opts = useDiffOpts(tab.changeSel?.path);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [fileQuery, setFileQuery] = useState("");
   const fileSearch = useRef<HTMLInputElement>(null);

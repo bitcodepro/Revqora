@@ -33,6 +33,8 @@ import type { LanguageSupport } from "@codemirror/language";
 import { ImageDiff, isImagePath, type ImageSides } from "./ImageDiff";
 import { TextDiffPreview } from "./TextDiffPreview";
 import { useDiffWordSelection } from "./DiffWordSelection";
+import { create } from "zustand";
+import { movedLines } from "../lib/movedLines";
 
 export type DiffMode = "unstaged" | "staged" | "readonly" | "pick";
 export type LineAction = "stage" | "unstage" | "discard" | "apply" | "stash";
@@ -56,12 +58,29 @@ interface Props {
   onComment?: (side: "LEFT" | "RIGHT", line: number) => void;
 }
 
-/** Diff options from the settings (context / whole file / whitespace) for backend calls. */
-export function useDiffOpts() {
+/** Extra context lines asked for per file path ("Show more context"); not persisted. */
+export const useContextExpansion = create<{ extra: Record<string, number>; more: (path: string) => void; reset: (path: string) => void }>((set) => ({
+  extra: {},
+  more: (path) => set((s) => ({ extra: { ...s.extra, [path]: Math.min(10_000, (s.extra[path] ?? 0) + CONTEXT_STEP) } })),
+  reset: (path) => set((s) => { const extra = { ...s.extra }; delete extra[path]; return { extra }; }),
+}));
+const CONTEXT_STEP = 20;
+
+/** Diff options from the settings (context / whole file / whitespace / algorithm) for backend
+ *  calls, plus any extra context asked for on `path`. */
+export function useDiffOpts(path?: string | null) {
   const ctx = useSettings((s) => s.contextLines);
   const full = useSettings((s) => s.diffFullFile);
   const ws = useSettings((s) => s.ignoreWhitespace);
-  return useMemo(() => ({ context: full ? 100000 : ctx, ignoreWhitespace: ws }), [ctx, full, ws]);
+  const blank = useSettings((s) => s.ignoreBlankLines);
+  const algorithm = useSettings((s) => s.diffAlgorithm);
+  const extra = useContextExpansion((s) => (path ? s.extra[path] ?? 0 : 0));
+  return useMemo(() => ({
+    context: full ? 100000 : ctx + extra,
+    ignoreWhitespace: ws,
+    ...(blank ? { ignoreBlankLines: true } : {}),
+    ...(algorithm !== "default" ? { algorithm } : {}),
+  }), [ctx, full, ws, blank, algorithm, extra]);
 }
 
 const key = (h: number, l: number) => `${h}:${l}`;
@@ -152,10 +171,14 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   const s = useSettings(useShallow((st) => ({
     set: st.set, codeFont: st.codeFont, codeFontSize: st.codeFontSize, diffFullFile: st.diffFullFile, diffMode: st.diffMode,
     ignoreWhitespace: st.ignoreWhitespace, showWhitespace: st.showWhitespace, wrapDiff: st.wrapDiff,
+    ignoreBlankLines: st.ignoreBlankLines, diffAlgorithm: st.diffAlgorithm, highlightMovedLines: st.highlightMovedLines,
   })));
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [anchor, setAnchor] = useState<{ h: number; l: number } | null>(null);
   const [busy, setBusy] = useState(false);
+  const contextExtra = useContextExpansion((st) => (path ? st.extra[path] ?? 0 : 0));
+  const moreContext = useContextExpansion((st) => st.more);
+  const resetContext = useContextExpansion((st) => st.reset);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   const [findOpen, setFindOpen] = useState(false);
   const [find, setFind] = useState("");
@@ -188,6 +211,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     });
   }, [diff, expensive]);
 
+  const moved = useMemo(() => (diff && s.highlightMovedLines && !expensive ? movedLines(diff.hunks) : new Set<string>()), [diff, s.highlightMovedLines, expensive]);
   useEffect(() => {
     setSel(new Set());
     setAnchor(null);
@@ -448,7 +472,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     const selectable = interactive && (l.kind === "+" || l.kind === "-");
     const hit = hitSet.has(k) ? (curHit && curHit.h === hi && curHit.l === li ? "search-cur" : "search-hit") : "";
     return (
-      <div key={k} data-line={k} className={`dl ${cls} ${sel.has(k) ? "sel" : ""} ${selectable ? "selectable" : ""} ${hit}`} style={style}>
+      <div key={k} data-line={k} className={`dl ${cls} ${moved.has(k) ? "moved" : ""} ${sel.has(k) ? "sel" : ""} ${selectable ? "selectable" : ""} ${hit}`} style={style} title={moved.has(k) ? "Moved: the same line was removed or added elsewhere in this diff" : undefined}>
         {onComment && l.oldNo !== null ? <button className="ln review-line" title={`Comment on old line ${l.oldNo}`} aria-label={`Comment on old line ${l.oldNo}`} onClick={()=>onComment("LEFT",l.oldNo!)}>{l.oldNo}</button> : <span className="ln" onMouseDown={e=>toggle(hi,li,e.shiftKey)}>{l.oldNo??""}</span>}
         {onComment && l.newNo !== null ? <button className="ln review-line" title={`Comment on new line ${l.newNo}`} aria-label={`Comment on new line ${l.newNo}`} onClick={()=>onComment("RIGHT",l.newNo!)}>{l.newNo}</button> : <span className="ln" onMouseDown={e=>toggle(hi,li,e.shiftKey)}>{l.newNo??""}</span>}
         <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
@@ -518,10 +542,17 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
           contextMenu({ clientX: Math.max(6, box.right - 250), clientY: box.bottom + 4, currentTarget: e.currentTarget, preventDefault: () => {} }, [
             { label: "Wrap lines", icon: <WrapText size={14} />, checked: s.wrapDiff, onClick: () => s.set({ wrapDiff: !s.wrapDiff }) },
             { label: "Show whitespace", icon: <Pilcrow size={14} />, checked: s.showWhitespace, onClick: () => s.set({ showWhitespace: !s.showWhitespace }) },
+            { label: "Highlight moved lines", checked: s.highlightMovedLines, onClick: () => s.set({ highlightMovedLines: !s.highlightMovedLines }) },
             ...(sourceOptions ? [
               { separator: true },
               { label: "Show the whole file", icon: <UnfoldVertical size={14} />, checked: s.diffFullFile, hint: "not only the changes", onClick: () => s.set({ diffFullFile: !s.diffFullFile }) },
               { label: "Ignore whitespace changes", icon: <RemoveFormatting size={14} />, checked: s.ignoreWhitespace, onClick: () => s.set({ ignoreWhitespace: !s.ignoreWhitespace }) },
+              { label: "Ignore blank lines", checked: s.ignoreBlankLines, onClick: () => s.set({ ignoreBlankLines: !s.ignoreBlankLines }) },
+              { label: "Show more context", hint: path && contextExtra ? `+${contextExtra} lines` : undefined, disabled: !path || s.diffFullFile, onClick: () => { if (path) moreContext(path); } },
+              ...(path && contextExtra ? [{ label: "Normal context", onClick: () => resetContext(path) }] : []),
+              { separator: true },
+              { label: "Diff algorithm", children: (["default", "myers", "minimal", "patience", "histogram"] as const).map((value) => ({
+                label: value === "default" ? "Git's default" : value[0].toUpperCase() + value.slice(1), checked: s.diffAlgorithm === value, onClick: () => s.set({ diffAlgorithm: value }) })) },
             ] : []),
           ]);
         }}>
@@ -620,7 +651,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       if (r.kind === "hunk") rows.push(<Fragment key={"h" + r.h}>{hunkHeader(diff.hunks[r.h], r.h, { ...style, height: rowH })}</Fragment>);
       else if (r.kind === "line") rows.push(lineRow(r.h, r.l, style));
       else {
-        const split: SplitProps = { hunk: diff.hunks[r.h], hi: r.h, toks: hl?.[r.h], words: words?.[r.h], sel, onToggle: toggle, interactive, hits: hitSet, onComment, whitespace: s.showWhitespace };
+        const split: SplitProps = { hunk: diff.hunks[r.h], hi: r.h, toks: hl?.[r.h], words: words?.[r.h], sel, onToggle: toggle, interactive, hits: hitSet, onComment, whitespace: s.showWhitespace, moved };
         rows.push(<div className="split-dl" key={`p${r.h}:${r.a}:${r.b}`} style={style}><SplitHalf {...split} idx={r.a} side="l" /><SplitHalf {...split} idx={r.b} side="r" /></div>);
       }
     }
@@ -637,7 +668,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
             {hunkHeader(h, hi)}
             {!collapsed.has(hi) &&
               (s.diffMode === "split" ? (
-                <SplitHunk hunk={h} hi={hi} toks={hl?.[hi]} words={words?.[hi]} sel={sel} onToggle={toggle} interactive={interactive} hits={hitSet} onComment={onComment} whitespace={s.showWhitespace}/>
+                <SplitHunk hunk={h} hi={hi} toks={hl?.[hi]} words={words?.[hi]} sel={sel} onToggle={toggle} interactive={interactive} hits={hitSet} onComment={onComment} whitespace={s.showWhitespace} moved={moved}/>
               ) : (
                 h.lines.map((_, li) => lineRow(hi, li))
               ))}
@@ -731,6 +762,7 @@ type SplitProps = {
   hits: Set<string>;
   onComment?: Props["onComment"];
   whitespace: boolean;
+  moved?: Set<string>;
 };
 
 /** Side-by-side rows of a hunk: [left line index | null, right line index | null]. */
@@ -754,7 +786,7 @@ function splitRows(lines: DiffLine[]): [number | null, number | null][] {
   return rows;
 }
 
-function SplitHalf({ idx, side, hunk: { lines }, hi, toks, words, sel, onToggle, interactive, hits, onComment, whitespace }: SplitProps & { idx: number | null; side: "l" | "r" }) {
+function SplitHalf({ idx, side, hunk: { lines }, hi, toks, words, sel, onToggle, interactive, hits, onComment, whitespace, moved }: SplitProps & { idx: number | null; side: "l" | "r" }) {
   if (idx === null) return <div className="half empty" />;
   const l = lines[idx];
   const cls = l.kind === "+" ? "add" : l.kind === "-" ? "del" : "";
@@ -763,7 +795,7 @@ function SplitHalf({ idx, side, hunk: { lines }, hi, toks, words, sel, onToggle,
   return (
     <div
       data-line={k}
-      className={`half ${cls} ${sel.has(k) ? "sel" : ""} ${hits.has(k) ? "search-hit" : ""}`}
+      className={`half ${cls} ${moved?.has(k) ? "moved" : ""} ${sel.has(k) ? "sel" : ""} ${hits.has(k) ? "search-hit" : ""}`}
       style={sel.has(k) ? { boxShadow: "inset 3px 0 0 var(--accent)" } : undefined}
     >
       {onComment && no !== null ? <button className="ln review-line" title={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} aria-label={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} onClick={()=>onComment(side === "l" ? "LEFT" : "RIGHT",no)}>{no}</button> : <span className="ln" style={{ cursor: interactive && cls ? "pointer" : undefined }} onMouseDown={e=>onToggle(hi,idx,e.shiftKey)}>{no??""}</span>}

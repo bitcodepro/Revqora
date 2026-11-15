@@ -154,7 +154,10 @@ export interface DiffOptions {
   ignoreWhitespace?: boolean;
   disableTextconv?: boolean;
   renameFrom?: string;
+  algorithm?: DiffAlgorithm;
+  ignoreBlankLines?: boolean;
 }
+export type DiffAlgorithm = "myers" | "minimal" | "patience" | "histogram";
 
 export interface Seg {
   a: number;

@@ -3486,3 +3486,8 @@ select[size="1"]:not([multiple]) {
 .ignore-preview .added { color: var(--green); font-weight: 600; }
 .blame-row.selected { box-shadow: inset 3px 0 0 var(--accent); background: var(--bg-selected); }
 .blame-ln[role="button"] { cursor: pointer; }
+
+/* Moved lines: the same text removed in one place and added in another. */
+.dl.moved, .split-dl .half.moved { box-shadow: inset 3px 0 0 var(--cyan); }
+.dl.moved.add, .split-dl .half.moved.add { background: color-mix(in srgb, var(--cyan) 12%, var(--diff-add)); }
+.dl.moved.del, .split-dl .half.moved.del { background: color-mix(in srgb, var(--cyan) 12%, var(--diff-del)); }

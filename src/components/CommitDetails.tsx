@@ -80,7 +80,7 @@ ${oid}`;
       if (shownCommit.current === asked) setChecksBusy(false);
     }
   };
-  const diffOpts = useDiffOpts();
+  const diffOpts = useDiffOpts(file);
   const treeView = useSettings((s) => s.fileView) === "tree";
 
   useEffect(() => {
