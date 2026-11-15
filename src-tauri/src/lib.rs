@@ -1941,6 +1941,11 @@ async fn stash_branch(app: AppHandle, expected_state: Option<String>, repo: Stri
 }
 
 #[tauri::command]
+async fn signature_status(repo: String, oids: Vec<String>) -> GitResult<std::collections::HashMap<String, String>> {
+    blocking(move || git::commit::signature_status(&p(&repo), &oids)).await
+}
+
+#[tauri::command]
 async fn hooks_list(repo: String) -> GitResult<git::hooks::Hooks> {
     blocking(move || git::hooks::list(&p(&repo))).await
 }
@@ -2923,6 +2928,7 @@ pub fn run() {
             lfs_track,
             lfs_locks,
             hooks_list,
+            signature_status,
             rerere_get,
             rerere_set,
             note_get,

@@ -93,3 +93,16 @@ fn branch_from_stash_checks_out_its_base_with_the_changes_and_staging() {
     assert_eq!(runner::run(root, ["show", ":a.txt"]).unwrap(), "staged\n");
     assert!(runner::run(root, ["stash", "list"]).unwrap().trim().is_empty(), "applied stash is dropped");
 }
+
+#[test]
+fn signature_status_is_reported_per_commit() {
+    let dir = repo();
+    let root = dir.path();
+    let a = commit(root, "a.txt", "one");
+    let b = commit(root, "b.txt", "two");
+    let status = revqora_lib::git::commit::signature_status(root, &[a.clone(), b.clone()]).unwrap();
+    assert_eq!(status.get(&a).map(String::as_str), Some("N"));
+    assert_eq!(status.get(&b).map(String::as_str), Some("N"));
+    assert!(revqora_lib::git::commit::signature_status(root, &["--all".into()]).is_err());
+    assert!(revqora_lib::git::commit::signature_status(root, &[]).unwrap().is_empty());
+}

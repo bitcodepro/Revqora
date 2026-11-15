@@ -345,6 +345,7 @@ export const api = {
   lfsTrack: (repo: string, pattern: string, track: boolean) => call<void>("lfs_track", { repo, pattern, track }),
   lfsLocks: (repo: string) => call<LfsLock[]>("lfs_locks", { repo }),
   hooksList: (repo: string) => call<GitHooks>("hooks_list", { repo }),
+  signatureStatus: (repo: string, oids: string[]) => call<Record<string, string>>("signature_status", { repo, oids }),
   rerereGet: (repo: string) => call<Rerere>("rerere_get", { repo }),
   rerereSet: (repo: string, enabled: boolean, autoUpdate: boolean) => call<Rerere>("rerere_set", { repo, enabled, autoUpdate }),
   noteGet: (repo: string, oid: string) => call<string | null>("note_get", { repo, oid }),

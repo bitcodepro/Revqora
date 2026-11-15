@@ -3524,3 +3524,9 @@ select[size="1"]:not([multiple]) {
 .history-filters .error-text { grid-column: 1 / -1; color: var(--red, #e5534b); }
 .history-filter-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .history-filter-chips .chip { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 8px; border-radius: 10px; background: var(--bg-selected); font-size: 11px; }
+
+/* Signature status in History rows. */
+.sig-mark { flex: none; display: inline-grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; font-size: max(10px, calc(var(--fs) - 4px)); font-weight: 700; margin-right: 4px; color: #fff; }
+.sig-mark.good { background: var(--green); }
+.sig-mark.warn { background: var(--amber); }
+.sig-mark.bad { background: var(--red); }

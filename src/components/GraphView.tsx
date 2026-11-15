@@ -27,6 +27,7 @@ import { branchMenu, commitMenu, runMenuShortcut, tagMenu } from "./menus";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { usePanelTitleMenu } from "./PanelWindows";
 import { pickBranchScope } from "./BranchScopePicker";
+import { signatureBadge, useSignature } from "../lib/signatureStatus";
 
 const ROW_H = 30;
 /** Review mode: two-line rows (subject, then author, date and hash) without the graph. */
@@ -202,6 +203,7 @@ ${r.oid}`
         <div className="g-subject">
           {incomingBadge}
           {badges}
+          {!wip && <SignatureMark root={p.root} oid={r.oid} />}
           <span className="text">{r.subject}</span>
         </div>
         {!wip && (
@@ -322,6 +324,7 @@ ${r.oid}`
       <div className="g-subject">
         {incomingBadge}
         {badges}
+        <SignatureMark root={p.root} oid={r.oid} />
         <span className="text" title={r.subject}>
           {r.subject}
         </span>
@@ -1450,4 +1453,13 @@ function trimRowCache(cache: Map<number, GraphRow>, center: number, selected: st
     if (cache.size <= MAX_CACHED_ROWS) break;
     if (cache.get(index)?.oid !== selected) cache.delete(index);
   }
+}
+
+/** A small shield on signed commits (Settings → Show signature status in History). */
+function SignatureMark({ root, oid }: { root: string; oid: string }) {
+  const enabled = useSettings((st) => st.showSignatures);
+  const status = useSignature(root, oid, enabled && /^[0-9a-f]{40,64}$/i.test(oid));
+  const badge = enabled ? signatureBadge(status) : null;
+  if (!badge) return null;
+  return <span className={`sig-mark ${badge.tone}`} role="img" aria-label={badge.label} title={badge.label}>{badge.tone === "good" ? "✓" : "!"}</span>;
 }

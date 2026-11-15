@@ -45,6 +45,8 @@ export interface Settings {
   /** Git diff algorithm; "default" = Git's own choice (`diff.algorithm`). */
   diffAlgorithm: "default" | DiffAlgorithm;
   ignoreBlankLines: boolean;
+  /** Check commit signatures for the visible History rows (runs gpg/ssh per commit). */
+  showSignatures: boolean;
   highlightMovedLines: boolean;
   /** Editor command template ({file}, {line}, {column}); empty = the system's text editor. */
   externalEditor: string;
@@ -121,6 +123,7 @@ export const useSettings = create<Settings>()(
       contextLines: 3,
       diffAlgorithm: "default",
       ignoreBlankLines: false,
+      showSignatures: false,
       highlightMovedLines: true,
       externalEditor: "",
       diffTool: "",

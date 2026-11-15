@@ -844,6 +844,9 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
           <label className="check">
             <input type="checkbox" checked={s.wrapDiff} onChange={(e) => s.set({ wrapDiff: e.target.checked })} /> Wrap long lines
           </label>
+          <label className="check" title="Checks each visible commit's signature with gpg or ssh; can be slow in large histories">
+            <input type="checkbox" checked={s.showSignatures} onChange={(e) => s.set({ showSignatures: e.target.checked })} /> Show signature status in History
+          </label>
         </div>
         <ExternalToolSettings root={root} />
       </div>
