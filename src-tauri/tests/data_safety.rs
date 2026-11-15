@@ -589,3 +589,57 @@ fn hidden_type_and_mode_changes_are_never_overwritten() {
         assert!(!repo.git(&["stash", "list"]).is_empty(), "the saved changes stay in Stashes");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn hidden_mode_change_follows_the_owner_execute_bit() {
+    use std::os::unix::fs::PermissionsExt;
+    // Committed executable (100755); made 0645 while paused: Git reads that as 100644 because
+    // only the owner-execute bit counts, even though other-execute is still set.
+    let repo = Repo::new();
+    repo.git(&["config", "core.filemode", "true"]);
+    repo.write(
+        "a.txt", "base
+",
+    );
+    repo.write(
+        "s.sh", "s
+",
+    );
+    fs::set_permissions(repo.p().join("s.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    repo.commit_all("base");
+    repo.git(&["switch", "-q", "-c", "other"]);
+    repo.write(
+        "a.txt", "theirs
+",
+    );
+    repo.commit_all("theirs");
+    repo.git(&["switch", "-q", "main"]);
+    repo.write(
+        "a.txt", "ours
+",
+    );
+    repo.commit_all("ours");
+    repo.write(
+        "s.sh", "saved
+",
+    );
+    repo.git(&["add", "s.sh"]);
+    let out = ops::rebase_onto(repo.p(), "other").unwrap();
+    assert_eq!(out.status, "conflicts", "{out:?}");
+    repo.git(&["update-index", "--assume-unchanged", "s.sh"]);
+    let file = repo.p().join("s.sh");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o645)).unwrap();
+    let err = ops::skip_op(repo.p(), "rebase").unwrap_err();
+    assert_eq!(err.kind, "hidden-changes", "{}", err.message);
+    repo.write(
+        "a.txt",
+        "resolved
+",
+    );
+    repo.git(&["add", "a.txt"]);
+    let out = ops::continue_op(repo.p(), "rebase", None).unwrap();
+    assert!(out.message.contains("s.sh"), "{out:?}");
+    assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o645, "the user's mode was reset");
+    assert!(!repo.git(&["stash", "list"]).is_empty(), "the saved changes stay in Stashes");
+}

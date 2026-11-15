@@ -1537,7 +1537,8 @@ fn git_bool(repo: &Path, key: &str, default: bool) -> bool {
 #[cfg(unix)]
 fn executable(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    meta.permissions().mode() & 0o111 != 0
+    // Git records 100755 from the owner-execute bit alone (0645 is 100644).
+    meta.permissions().mode() & 0o100 != 0
 }
 
 #[cfg(not(unix))]
