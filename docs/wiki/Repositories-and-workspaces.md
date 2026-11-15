@@ -4,6 +4,8 @@
 
 Press **Ctrl+O** to open a local repository alongside those already open. You can also drag its folder into Revqora or use **Ctrl+N** and choose **Open repository…**. To start from a remote URL, choose **Clone repository…** from the command palette.
 
+The clone dialog's **Advanced** section can check out a specific branch, make a shallow clone with a chosen depth (all branches stay visible unless you clear **Fetch all branches**), make a blobless (`blob:none`) or treeless (`tree:0`) partial clone, and choose whether submodules are cloned too (on by default; shallow submodules are available with a depth). Bare clones are not offered because Revqora opens repositories with a working tree. For a shallow clone, **Repository tools** shows **Fetch more history** (adds the chosen number of commits) and **Fetch full history** (removes the shallow boundary).
+
 Revqora remembers repository paths in **Repository library**, available from the right side of the toolbar. Closing a repository leaves its library entry and working copy on disk. Click the saved entry in Explorer to reopen it. If the saved folder no longer has its own Git repository, Revqora shows it as unavailable.
 
 To remove the entry, right-click the repository and choose **Remove from Explorer**. This closes the repository and removes it from the library, groups and Favorites. The working copy stays on disk and can be opened again.

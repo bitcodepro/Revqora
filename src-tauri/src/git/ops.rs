@@ -415,6 +415,24 @@ pub fn fetch(repo: &Path, remote: Option<&str>, prune: bool, on_line: impl FnMut
     Ok(out)
 }
 
+pub fn is_shallow(repo: &Path) -> GitResult<bool> {
+    Ok(runner::run(repo, ["rev-parse", "--is-shallow-repository"])?.trim() == "true")
+}
+
+/// Fetches more history into a shallow clone: `deepen = Some(n)` adds n commits, `None` unshallows.
+pub fn fetch_more_history(repo: &Path, deepen: Option<u32>, on_line: impl FnMut(&str)) -> GitResult<String> {
+    if !is_shallow(repo)? {
+        return Err(GitError::new("This repository already has its full history.").kind("not-shallow"));
+    }
+    let arg = match deepen {
+        Some(0) => return Err(GitError::new("Depth must be a positive whole number.").kind("invalid-depth")),
+        Some(n) => format!("--deepen={n}"),
+        None => "--unshallow".into(),
+    };
+    super::recovery::protect_transport(repo, false, None, None, true)?;
+    runner::run_streaming(repo, &["fetch".into(), "--progress".into(), arg], &LOG_TRACKING, on_line)
+}
+
 /// `--prune` removes refs under every destination of the fetch refspecs, including local tags
 /// or branches when a refspec maps there (e.g. `+refs/tags/*:refs/tags/*`), and `fetch.pruneTags`
 /// adds local tags. Only prune when every refspec of the fetched remotes targets
@@ -963,6 +981,71 @@ pub fn push_ref(repo: &Path, remote: &str, refspec: &str, on_line: impl FnMut(&s
     runner::run_streaming(repo, &["push".into(), "--progress".into(), remote.into(), refspec.into()], &[], on_line)
 }
 
+/// Partial clone filters offered by the clone dialog; free-form filter specs are never accepted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CloneFilter {
+    #[default]
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "blob:none")]
+    BlobNone,
+    #[serde(rename = "tree:0")]
+    TreeZero,
+}
+
+/// Optional `git clone` arguments. The default reproduces a plain clone with submodules.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CloneOptions {
+    pub branch: Option<String>,
+    pub depth: Option<u32>,
+    pub no_single_branch: bool,
+    pub filter: CloneFilter,
+    pub recurse_submodules: bool,
+    pub shallow_submodules: bool,
+}
+
+impl Default for CloneOptions {
+    fn default() -> Self {
+        Self { branch: None, depth: None, no_single_branch: true, filter: CloneFilter::None, recurse_submodules: true, shallow_submodules: false }
+    }
+}
+
+/// Validated option arguments placed before `--`; each value is a separate argv entry.
+pub fn clone_option_args(parent: &Path, options: &CloneOptions) -> GitResult<Vec<String>> {
+    let mut args = Vec::new();
+    if let Some(branch) = options.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+        if branch.starts_with('-') || branch.chars().any(|c| c.is_control()) {
+            return Err(GitError::new("Enter a valid branch name.").kind("invalid-branch"));
+        }
+        if !runner::exec(parent, ["check-ref-format", "--branch", branch])?.ok() {
+            return Err(GitError::new(format!("{branch} is not a valid branch name.")).kind("invalid-branch"));
+        }
+        args.extend(["--branch".into(), branch.to_string()]);
+    }
+    if let Some(depth) = options.depth {
+        if depth == 0 {
+            return Err(GitError::new("Depth must be a positive whole number.").kind("invalid-depth"));
+        }
+        args.extend(["--depth".into(), depth.to_string()]);
+        if options.no_single_branch {
+            args.push("--no-single-branch".into());
+        }
+    }
+    match options.filter {
+        CloneFilter::None => {}
+        CloneFilter::BlobNone => args.push("--filter=blob:none".into()),
+        CloneFilter::TreeZero => args.push("--filter=tree:0".into()),
+    }
+    if options.recurse_submodules {
+        args.push("--recurse-submodules".into());
+        if options.depth.is_some() && options.shallow_submodules {
+            args.push("--shallow-submodules".into());
+        }
+    }
+    Ok(args)
+}
+
 pub fn clone(parent: &Path, url: &str, dir_name: &str, on_line: impl FnMut(&str)) -> GitResult<PathBuf> {
     clone_with_connection(parent, url, dir_name, on_line, None).map(|result| result.0)
 }
@@ -973,19 +1056,26 @@ pub fn clone_with_connection(
     on_line: impl FnMut(&str),
     connection: Option<&super::connection::Options>,
 ) -> GitResult<(PathBuf, Option<String>)> {
+    clone_with_options(parent, url, dir_name, &CloneOptions::default(), on_line, connection)
+}
+pub fn clone_with_options(
+    parent: &Path,
+    url: &str,
+    dir_name: &str,
+    options: &CloneOptions,
+    on_line: impl FnMut(&str),
+    connection: Option<&super::connection::Options>,
+) -> GitResult<(PathBuf, Option<String>)> {
     if let Some(options) = connection {
         super::connection::validate_for(parent, options)?;
     }
     std::fs::create_dir_all(parent)?;
     let root = parent.join(dir_name);
-    runner::run_streaming_with_connection(
-        parent,
-        // `--`: a pasted "URL" such as --upload-pack=... must never be read as an option.
-        &["clone".into(), "--progress".into(), "--".into(), url.into(), dir_name.into()],
-        &[(crate::git_credentials::REPO_VAR, &root.to_string_lossy())],
-        on_line,
-        connection,
-    )?;
+    let mut args: Vec<String> = vec!["clone".into(), "--progress".into()];
+    args.extend(clone_option_args(parent, options)?);
+    // `--`: a pasted "URL" such as --upload-pack=... must never be read as an option.
+    args.extend(["--".into(), url.into(), dir_name.into()]);
+    runner::run_streaming_with_connection(parent, &args, &[(crate::git_credentials::REPO_VAR, &root.to_string_lossy())], on_line, connection)?;
     // An explicit default selection must replace preferences left by a previous
     // clone at this path too; otherwise Auto silently reuses its old SSH key.
     let warning = connection.and_then(|options| {

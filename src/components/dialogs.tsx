@@ -3,7 +3,8 @@ import {forgeAccountsDialog} from "./ForgeAccounts";
 import { aboutDialog } from "./AboutDialog";
 import { parseCloneInput, repoNameFromUrl } from "../lib/cloneInput";
 import {GitConnectionFields,defaultGitConnection,gitTransport} from "./GitConnections";
-import type {GitConnectionOptions} from "../lib/types";
+import type {CloneFilter, CloneOptions, GitConnectionOptions} from "../lib/types";
+import { CLONE_FILTERS, buildCloneOptions, defaultCloneOptionsForm, parseDepth, type CloneOptionsForm } from "../lib/cloneOptions";
 import { useEffect, useState, type ReactNode } from "react";
 import { canCheckUpdates, useUpdate } from "../lib/update";
 import { SHORTCUTS, acceptsPlainShortcut, bindingFor, comboFromEvent, prettyCombo, shortcutConflict } from "../lib/shortcuts";
@@ -444,11 +445,11 @@ function ResetBody({ branch, target, subject, close }: { branch: string; target:
 
 // ───────────── clone / init ─────────────
 
-export function cloneDialog(): Promise<{ url: string; parent: string; name: string;connection:GitConnectionOptions } | null> {
+export function cloneDialog(): Promise<{ url: string; parent: string; name: string;connection:GitConnectionOptions; options: CloneOptions } | null> {
   return showDialog((close) => <CloneBody close={close} />);
 }
 
-function CloneBody({ close }: { close: (v: { url: string; parent: string; name: string;connection:GitConnectionOptions } | null) => void }) {
+function CloneBody({ close }: { close: (v: { url: string; parent: string; name: string;connection:GitConnectionOptions; options: CloneOptions } | null) => void }) {
   const [url, setUrl] = useState("");
   const [parent, setParent] = useState(localStorage.getItem("revqora.cloneParent") ?? "");
   const [name, setName] = useState("");
@@ -456,6 +457,10 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
   const source = parseCloneInput(url);
   const [connection,setConnection]=useState(defaultGitConnection);
   const transport=gitTransport(source.url);
+  const [advanced, setAdvanced] = useState(defaultCloneOptionsForm);
+  const built = buildCloneOptions(advanced);
+  const setAdv = (patch: Partial<CloneOptionsForm>) => setAdvanced((a) => ({ ...a, ...patch }));
+  const shallow = parseDepth(advanced.depth).depth !== null;
   useEffect(() => {
     if (!touched) setName(repoNameFromUrl(source.url));
   }, [source.url, touched]);
@@ -463,16 +468,16 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
     const dir = await openDialog({ directory: true, title: "Choose where to clone" });
     if (typeof dir === "string") setParent(dir);
   };
-  const ok = !source.error && source.url && parent.trim() && name.trim();
+  const ok = !source.error && source.url && parent.trim() && name.trim() && built.options;
   return (
     <Modal
       title="Clone repository"
       icon={<Download size={18} />}
       onClose={() => close(null)}
       onSubmit={() => {
-        if (!ok) return;
+        if (!ok || !built.options) return;
         localStorage.setItem("revqora.cloneParent", parent);
-        close({ url: source.url, parent: parent.trim(), name: name.trim(),connection:transport==="ssh"?{...connection,https:"auto"}:transport==="https"?{...connection,ssh:"auto",privateKey:"",sshProgram:""}:defaultGitConnection() });
+        close({ url: source.url, parent: parent.trim(), name: name.trim(), options: built.options, connection:transport==="ssh"?{...connection,https:"auto"}:transport==="https"?{...connection,ssh:"auto",privateKey:"",sshProgram:""}:defaultGitConnection() });
       }}
       footer={
         <>
@@ -513,6 +518,34 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
         />
       </div>
       {transport!=="local"&&<GitConnectionFields value={connection} onChange={setConnection} transport={transport}/>}
+      <details className="field" data-clone-advanced>
+        <summary>Advanced</summary>
+        <div className="field">
+          <label>Branch to check out</label>
+          <input className="input mono" aria-label="Clone branch" value={advanced.branch} placeholder="Remote default branch" onChange={(e) => setAdv({ branch: e.target.value })} />
+        </div>
+        <div className="field">
+          <label>Shallow clone depth</label>
+          <input className="input" aria-label="Clone depth" inputMode="numeric" value={advanced.depth} placeholder="Full history" onChange={(e) => setAdv({ depth: e.target.value })} />
+          <small>Number of recent commits to download. Leave empty for the full history.</small>
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={advanced.noSingleBranch} disabled={!shallow} onChange={(e) => setAdv({ noSingleBranch: e.target.checked })} /> Fetch all branches (--no-single-branch)
+        </label>
+        <div className="field">
+          <label>Partial clone</label>
+          <select className="input" aria-label="Partial clone filter" value={advanced.filter} onChange={(e) => setAdv({ filter: e.target.value as CloneFilter })}>
+            {CLONE_FILTERS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={advanced.recurseSubmodules} onChange={(e) => setAdv({ recurseSubmodules: e.target.checked })} /> Clone submodules (--recurse-submodules)
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={advanced.shallowSubmodules} disabled={!shallow || !advanced.recurseSubmodules} onChange={(e) => setAdv({ shallowSubmodules: e.target.checked })} /> Shallow submodules (--shallow-submodules)
+        </label>
+        {built.error && <p role="alert" className="muted">{built.error}</p>}
+      </details>
     </Modal>
   );
 }

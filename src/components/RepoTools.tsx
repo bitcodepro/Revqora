@@ -12,6 +12,7 @@ import { endBusy, showDialog, startBusy, toast } from "../lib/ui";
 import { act, handleOutcome, resetTo, createBranch } from "../lib/actions";
 import type { DeletedBranch, RefLogEntry, RepoSize } from "../lib/types";
 import { absoluteTime, relativeTime, shortOid } from "../lib/format";
+import { parseDepth } from "../lib/cloneOptions";
 
 const kib = (n: number) => (n < 1024 ? `${n} KB` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} MB` : `${(n / 1024 / 1024).toFixed(2)} GB`);
 
@@ -24,8 +25,11 @@ function RepoToolsBody({ root, initial, close }: { root: string; initial: "overv
   const [size, setSize] = useState<RepoSize | null>(null);
   const [deleted, setDeleted] = useState<DeletedBranch[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [shallow, setShallow] = useState(false);
+  const [deepen, setDeepen] = useState("100");
   const reload = () => {
     api.repoSize(root).then(setSize, (e) => toast.error(e));
+    api.repoIsShallow(root).then(setShallow, () => setShallow(false));
     api.deletedBranches(root).then(setDeleted, () => setDeleted([]));
   };
   useEffect(reload, [root]);
@@ -39,6 +43,23 @@ function RepoToolsBody({ root, initial, close }: { root: string; initial: "overv
       toast.success(`${label} done`);
     } catch (e) {
       toast.error(e, `${label} failed`);
+    } finally {
+      endBusy(id);
+      setBusy(null);
+      reload();
+    }
+  };
+  const deepenValue = parseDepth(deepen);
+  const moreHistory = async (all: boolean) => {
+    const id = newOpId();
+    const label = all ? "Fetching full history" : "Fetching more history";
+    setBusy("deepen");
+    startBusy(id, label);
+    try {
+      await api.fetchMoreHistory(root, all ? null : deepenValue.depth, id);
+      toast.success(all ? "Fetched full history" : "Fetched more history");
+    } catch (e) {
+      toast.error(e, "Fetch more history failed");
     } finally {
       endBusy(id);
       setBusy(null);
@@ -128,6 +149,23 @@ function RepoToolsBody({ root, initial, close }: { root: string; initial: "overv
               </button>
             )}
           </div>
+          {shallow && (
+            <div className="callout" data-shallow-history>
+              <History size={15} />
+              <div className="hstack" style={{ flex: 1, justifyContent: "space-between", flexWrap: "wrap" }}>
+                <span>This is a shallow clone with partial history.</span>
+                <div className="hstack">
+                  <input className="input" style={{ width: 90 }} aria-label="Commits to fetch" inputMode="numeric" value={deepen} onChange={(e) => setDeepen(e.target.value)} />
+                  <button type="button" className="btn sm" disabled={!!busy || deepenValue.depth === null} onClick={() => moreHistory(false)}>
+                    Fetch more history
+                  </button>
+                  <button type="button" className="btn sm" disabled={!!busy} onClick={() => moreHistory(true)}>
+                    Fetch full history
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="callout">
             <FileDiff size={15} />
             <div className="hstack" style={{ flex: 1, justifyContent: "space-between" }}>
