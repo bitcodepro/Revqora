@@ -656,6 +656,7 @@ function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
       { id: "pop-stash", label: "Pop latest stash", group: "Changes", icon: <ArchiveRestore size={15} />, run: () => { if (tab.refs?.stashes.length) void A.stashApply(root, 0, true); } },
       { id: "tools", label: "Repository tools (gc, maintenance)…", group: "Repository", icon: <Wrench size={15} />, run: () => repoToolsDialog(root) },
       { id: "deleted", label: "Recently deleted branches…", group: "Branch", icon: <Undo2 size={15} />, run: () => repoToolsDialog(root, "deleted") },
+      { id: "hooks", label: "Git hooks…", group: "Repository", icon: <Wrench size={15} />, run: () => repoToolsDialog(root, "hooks") },
       { id: "patch", label: "Apply patch file…", group: "Repository", icon: <Plus size={15} />, run: () => applyPatchFile(root) },
       { id: "browse", label: "Browse files (HEAD)", group: "Repository", icon: <FolderOpen size={15} />, run: () => openOverlay({ kind: "tree", root, rev: "HEAD" }) },
       { id: "worktree-manager", label: "Worktree Manager…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => openOverlay({ kind: "worktrees", root }) },

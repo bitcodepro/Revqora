@@ -623,6 +623,8 @@ export interface LfsStatus {
   patterns: string[];
 }
 
+export interface GitHook { name: string; path: string; active: boolean; size: number; }
+export interface GitHooks { dir: string; customPath: string | null; hooks: GitHook[]; }
 export interface LfsLock { id: string; path: string; owner: string; lockedAt: string; }
 export interface LfsFile {
   oid: string;

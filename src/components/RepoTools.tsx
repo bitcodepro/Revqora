@@ -6,7 +6,8 @@ import { useEffect, useState } from "react";
 import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
 import { Archive, FileDiff, GitBranch, History, Loader2, Undo2, Wrench, Zap } from "lucide-react";
 import { Modal } from "./Modal";
-import { api, newOpId } from "../lib/api";
+import { api, errorMessage, newOpId } from "../lib/api";
+import type { GitHooks } from "../lib/types";
 import { useRepos } from "../lib/store";
 import { endBusy, showDialog, startBusy, toast } from "../lib/ui";
 import { act, handleOutcome, resetTo, createBranch } from "../lib/actions";
@@ -16,11 +17,11 @@ import { parseDepth } from "../lib/cloneOptions";
 
 const kib = (n: number) => (n < 1024 ? `${n} KB` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} MB` : `${(n / 1024 / 1024).toFixed(2)} GB`);
 
-export function repoToolsDialog(root: string, tab: "overview" | "deleted" = "overview") {
+export function repoToolsDialog(root: string, tab: "overview" | "deleted" | "hooks" = "overview") {
   return showDialog<void>((close) => <RepoToolsBody root={root} initial={tab} close={close} />);
 }
 
-function RepoToolsBody({ root, initial, close }: { root: string; initial: "overview" | "deleted"; close: () => void }) {
+function RepoToolsBody({ root, initial, close }: { root: string; initial: "overview" | "deleted" | "hooks"; close: () => void }) {
   const [tab, setTab] = useState(initial);
   const [size, setSize] = useState<RepoSize | null>(null);
   const [deleted, setDeleted] = useState<DeletedBranch[] | null>(null);
@@ -99,6 +100,9 @@ function RepoToolsBody({ root, initial, close }: { root: string; initial: "overv
         <button type="button" onClick={()=>{close();void gitConnectionDialog(root);}}>Git connections…</button>
         <button type="button" className={tab === "overview" ? "on" : ""} onClick={() => setTab("overview")}>
           Housekeeping
+        </button>
+        <button type="button" className={tab === "hooks" ? "on" : ""} onClick={() => setTab("hooks")}>
+          Hooks
         </button>
         <button type="button" className={tab === "deleted" ? "on" : ""} onClick={() => setTab("deleted")}>
           Recently deleted branches {deleted?.length ? `(${deleted.length})` : ""}
@@ -184,6 +188,7 @@ function RepoToolsBody({ root, initial, close }: { root: string; initial: "overv
           </div>
         </>
       )}
+      {tab === "hooks" && <HooksTab root={root} />}
       {tab === "deleted" && (
         <div style={{ maxHeight: "50vh", overflow: "auto", margin: "0 -8px" }}>
           {!deleted && <div className="loading-center">Loading…</div>}
@@ -290,5 +295,32 @@ function BranchReflogBody({ root, name, close }: { root: string; name: string; c
         ))}
       </div>
     </Modal>
+  );
+}
+
+/** Hooks Git runs in this repository (commit, push, checkout…), from core.hooksPath if set. */
+function HooksTab({ root }: { root: string }) {
+  const [hooks, setHooks] = useState<GitHooks | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { api.hooksList(root).then(setHooks, (e) => setError(errorMessage(e))); }, [root]);
+  if (error) return <div className="error-text" role="alert">{error}</div>;
+  if (!hooks) return <div className="loading-center" style={{ minHeight: 120 }}><span className="loader" aria-label="Loading hooks" /></div>;
+  return (
+    <div className="vstack" style={{ gap: 8 }}>
+      <div className="faint">
+        Git runs these scripts on events such as commit and push. Folder: <span className="mono">{hooks.dir}</span>
+        {hooks.customPath && <> (set by core.hooksPath = <span className="mono">{hooks.customPath}</span>)</>}
+      </div>
+      {hooks.hooks.length === 0 && <div className="empty">No hooks are installed. Sample files (*.sample) do not run.</div>}
+      {hooks.hooks.map((h) => (
+        <div key={h.name} className="reflog-row" style={{ gridTemplateColumns: "180px 1fr auto auto" }}>
+          <b>{h.name}</b>
+          <span className="mono faint ellipsis" title={h.path}>{h.path}</span>
+          {h.active ? <span className="pill green">runs</span> : <span className="pill amber" title="Not executable, so Git skips it">skipped</span>}
+          <button type="button" className="btn sm" onClick={() => void api.openPathAsText(h.path).catch((e) => toast.error(e, "Could not open the hook"))}>Open</button>
+        </div>
+      ))}
+      <div className="faint">To skip hooks for one commit, use Skip hooks in the commit box.</div>
+    </div>
   );
 }

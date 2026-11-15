@@ -49,6 +49,7 @@ pub mod branch_manager;
 pub mod branch_origin;
 pub mod branch_switch;
 pub mod history;
+pub mod hooks;
 
 pub mod worktree_manager;
 

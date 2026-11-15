@@ -1899,6 +1899,11 @@ async fn lfs_track(app: AppHandle, expected_state: Option<String>, repo: String,
 }
 
 #[tauri::command]
+async fn hooks_list(repo: String) -> GitResult<git::hooks::Hooks> {
+    blocking(move || git::hooks::list(&p(&repo))).await
+}
+
+#[tauri::command]
 async fn lfs_locks(repo: String) -> GitResult<Vec<extras::LfsLock>> {
     blocking(move || extras::lfs_locks(&p(&repo))).await
 }
@@ -2875,6 +2880,7 @@ pub fn run() {
             lfs_files,
             lfs_track,
             lfs_locks,
+            hooks_list,
             lfs_lock,
             lfs_unlock,
             lfs_run,
