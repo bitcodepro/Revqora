@@ -202,7 +202,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     if(process.platform==="win32") {
       const externalWriter=fs.openSync(file,"r+");
       try {
-        await content.press("Control+s");await page.getByRole("alert").filter({hasText:"another editor's write handle"}).waitFor();
+        await content.press("Control+s");await page.getByRole("alert").and(page.locator(":not(.toast)")).filter({hasText:"another editor's write handle"}).waitFor();
         assert.equal(fs.readFileSync(file,"utf8"),initial,"A competing writer must prevent any save");
       } finally {fs.closeSync(externalWriter);}
     }
@@ -220,7 +220,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.waitForFunction(()=>!!document.activeElement?.closest(".working-code"));
     assert((await content.innerText()).includes("draft retained"),"Cancelling Close must retain the editor draft");
     fs.writeFileSync(file,"IDE latest\n");await page.getByRole("button",{name:"Save file",exact:true}).click();
-    await page.getByRole("alert").filter({hasText:"Your draft is kept"}).waitFor();assert((await content.innerText()).includes("draft retained"));assert.equal(fs.readFileSync(file,"utf8"),"IDE latest\n");
+    await page.getByRole("alert").and(page.locator(":not(.toast)")).filter({hasText:"Your draft is kept"}).waitFor();assert((await content.innerText()).includes("draft retained"));assert.equal(fs.readFileSync(file,"utf8"),"IDE latest\n");
     await page.getByRole("button",{name:"Reload from disk",exact:true}).click();await page.getByRole("button",{name:"Discard draft",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector(".working-code .cm-content")?.textContent.includes("IDE latest"));
     await page.locator(".working-file-editor").getByRole("button",{name:"Close",exact:true}).click();

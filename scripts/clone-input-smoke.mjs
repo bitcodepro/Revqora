@@ -20,7 +20,7 @@ export async function cloneInputSmoke({page,check,shot,work}){
     await field("Clone parent folder").fill(parent);
     if(await field("Repository URL").inputValue()!==`git clone ${bitbucket}`)throw Error("Blur rewrote the raw clone input, risking a second command parse");
     await shot("clone-bitbucket-command");
-    await field("Repository URL").fill(`git clone --depth 1 ${bitbucket}`);await page.getByRole("alert").filter({hasText:"command options and extra arguments"}).waitFor();
+    await field("Repository URL").fill(`git clone --depth 1 ${bitbucket}`);await page.getByRole("alert").and(page.locator(":not(.toast)")).filter({hasText:"command options and extra arguments"}).waitFor();
     if(!await page.getByRole("button",{name:"Clone",exact:true}).isDisabled())throw Error("Unsupported command arguments were silently ignored");
     // No real Bitbucket credentials or network access are needed to test transport.
     const literal=source.replaceAll("\\","/");
