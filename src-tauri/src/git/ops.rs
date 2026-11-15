@@ -282,6 +282,132 @@ pub fn last_message(repo: &Path) -> GitResult<String> {
     runner::run(repo, ["log", "-1", "--format=%B"]).map(|s| s.trim_end().to_string())
 }
 
+/// A person from recent history, for the co-author picker.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitAuthor {
+    pub name: String,
+    pub email: String,
+    pub commits: usize,
+}
+
+/// Authors of the last `scan` commits, de-duplicated by e-mail (case-insensitive),
+/// most frequent first, ties broken by the most recent commit.
+pub fn commit_authors(repo: &Path, scan: usize, limit: usize) -> GitResult<Vec<CommitAuthor>> {
+    if head_oid(repo).is_none() {
+        return Ok(Vec::new());
+    }
+    let n = scan.clamp(1, 10_000).to_string();
+    let out = runner::run(repo, ["log", "-n", n.as_str(), "--no-color", "--format=%an%x1f%ae"])?;
+    let mut found: Vec<(CommitAuthor, usize)> = Vec::new();
+    let mut index = std::collections::HashMap::<String, usize>::new();
+    for (pos, line) in out.lines().enumerate() {
+        let Some((name, email)) = line.split_once('\u{1f}') else { continue };
+        let (name, email) = (name.trim(), email.trim());
+        if name.is_empty() || email.is_empty() {
+            continue;
+        }
+        let key = email.to_lowercase();
+        if let Some(&i) = index.get(&key) {
+            found[i].0.commits += 1;
+        } else {
+            index.insert(key, found.len());
+            found.push((CommitAuthor { name: name.into(), email: email.into(), commits: 1 }, pos));
+        }
+    }
+    found.sort_by(|a, b| b.0.commits.cmp(&a.0.commits).then(a.1.cmp(&b.1)));
+    Ok(found.into_iter().take(limit).map(|(a, _)| a).collect())
+}
+
+/// Full messages of recent commits authored by the configured `user.email`, newest first, unique.
+pub fn own_recent_messages(repo: &Path, limit: usize) -> GitResult<Vec<String>> {
+    let Some(email) = repo::config_get(repo, "user.email").filter(|e| !e.trim().is_empty()) else { return Ok(Vec::new()) };
+    if head_oid(repo).is_none() {
+        return Ok(Vec::new());
+    }
+    let author = format!("--author=<{}>", regex_escape(email.trim()));
+    let out = runner::run(repo, ["log", "-n", "300", "--no-color", "-i", author.as_str(), "--format=%B%x00"])?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(out.split('\0').map(|m| m.trim().to_string()).filter(|m| !m.is_empty() && seen.insert(m.clone())).take(limit).collect())
+}
+
+fn regex_escape(s: &str) -> String {
+    s.chars().fold(String::new(), |mut acc, c| {
+        if "\\.^$|?*+()[]{}".contains(c) {
+            acc.push('\\');
+        }
+        acc.push(c);
+        acc
+    })
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FixupOptions {
+    /// "fixup" or "squash".
+    pub kind: String,
+    /// Extra message for squash! commits (appended after the subject line).
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub no_verify: bool,
+    #[serde(default)]
+    pub sign: Option<bool>,
+}
+
+/// Commits the staged changes as `fixup! <subject>` / `squash! <subject>` for `oid`.
+pub fn fixup_commit(repo: &Path, oid: &str, opts: &FixupOptions) -> GitResult<String> {
+    let oid = oid.trim();
+    if oid.is_empty() || oid.starts_with('-') || !oid.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(GitError::new("Choose a commit by its object ID.").kind("invalid-input"));
+    }
+    if opts.kind != "fixup" && opts.kind != "squash" {
+        return Err(GitError::new("Unknown fixup kind.").kind("invalid-input"));
+    }
+    let gd = repo::git_dir(repo)?;
+    let state = repo::op_state(repo, &gd);
+    if state.kind != "none" {
+        return Err(GitError::new(format!("Finish or abort the current {} operation first.", state.kind)).kind("operation-in-progress"));
+    }
+    let spec = format!("{oid}^{{commit}}");
+    let verified = runner::exec(repo, ["rev-parse", "-q", "--verify", "--end-of-options", spec.as_str()])?;
+    if !verified.ok() {
+        return Err(GitError::new("That commit does not exist in this repository.").kind("invalid-input"));
+    }
+    let full = verified.text().trim().to_string();
+    if runner::exec(repo, ["diff", "--cached", "--quiet", "--no-ext-diff"])?.ok() {
+        return Err(GitError::new("Stage the changes for this commit first.").kind("nothing-staged"));
+    }
+    let target = format!("--{}={full}", opts.kind);
+    let mut args: Vec<String> = vec!["commit".into(), target, "--cleanup=whitespace".into()];
+    let extra = opts.message.as_deref().map(str::trim).filter(|m| !m.is_empty() && opts.kind == "squash");
+    let file = match extra {
+        Some(m) => Some(temp_file(repo, "FIXUP_MSG", m)?),
+        None => None,
+    };
+    match &file {
+        Some(f) => {
+            args.push("-F".into());
+            args.push(f.to_string_lossy().into_owned());
+        }
+        None => args.push("--no-edit".into()),
+    }
+    if opts.no_verify {
+        args.push("--no-verify".into());
+    }
+    match opts.sign {
+        Some(true) => args.push("-S".into()),
+        Some(false) => args.push("--no-gpg-sign".into()),
+        None => {}
+    }
+    let result = runner::run(repo, &args);
+    if let Some(f) = &file {
+        let _ = std::fs::remove_file(f);
+    }
+    result?;
+    Ok(head_oid(repo).unwrap_or_default())
+}
+
 // ───────────────────────────── branches & tags ─────────────────────────────
 
 pub fn checkout(repo: &Path, target: &str, kind: &str) -> GitResult<String> {

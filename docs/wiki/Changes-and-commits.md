@@ -76,6 +76,17 @@ The replacement has a new SHA. If the original was already pushed, ordinary Push
 
 They serve different purposes. Revqora uses your installed Git configuration and signing tools; an API login does not create a signing key.
 
+## Co-authors and recent messages
+
+- **Co-author** opens a searchable list of people from the last 2000 commits (most frequent first). Pick one, or type `Name <email>`, to add a `Co-authored-by:` trailer at the end of the description. Each co-author appears as a chip; removing the chip removes its trailer line, and editing the trailer lines by hand updates the chips. Other trailers are kept.
+- **Recent messages** lists up to 30 messages: the ones Revqora committed recently in this repository, then your own commits (matching `user.email`). Choosing one fills the summary and description; Revqora asks first when the form already has text.
+
+## Fixup and squash commits
+
+In History, right-click a commit and choose **Create fixup! commit for this commit** or **Create squash! commit…**. Revqora commits only the currently staged changes with `git commit --fixup` / `--squash` (squash asks for an optional extra message); unstaged changes stay in the working tree. The items are disabled when nothing is staged or a merge, rebase or other operation is in progress, and squash is unavailable for merge commits.
+
+**Rebase and squash fixups now…** opens Rebase Studio from that commit with the autosquash plan already applied, so you can review it before starting the rebase.
+
 ## Changes made outside Revqora
 
 IDE, terminal and agent edits are detected by repository watchers. If an operation reports that its prepared state is stale, refresh, inspect the new content and prepare it again. The action was bound to an older view of the repository.

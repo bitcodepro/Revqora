@@ -33,7 +33,9 @@ import {
   FileDown,
   FolderTree,
   History,
+  Wrench,
 } from "lucide-react";
+import { createFixupCommit, fixupBlocker } from "./CommitAuthoring";
 import type { MenuItem } from "../lib/ui";
 import { copyText, openOverlay } from "../lib/ui";
 import * as A from "../lib/actions";
@@ -227,6 +229,18 @@ export function commitMenu(root: string, row: GraphRow, selection: GraphRow[]): 
   if (!row.isHead) items.push({ label: `Compare with ${current}`, icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: row.oid, to: "HEAD" }) });
   items.push({ label: "Revert commit", shortcut: "commit-revert", icon: <Undo2 size={I} />, disabled: busy, onClick: () => A.revertCommit(root, row.oid) });
   items.push({ label: `Reset ${current} to here…`, shortcut: "commit-reset", icon: <RotateCcw size={I} />, disabled: busy || row.isHead, onClick: () => A.resetTo(root, row.oid, row.subject) });
+  items.push({ separator: true });
+  const fixupBlocked = fixupBlocker(root, row.isMerge, "fixup");
+  const squashBlocked = fixupBlocker(root, row.isMerge, "squash");
+  items.push({ label: "Create fixup! commit for this commit", icon: <Wrench size={I} />, disabled: !!fixupBlocked, hint: fixupBlocked ?? "Commits the staged changes", onClick: () => createFixupCommit(root, row.oid, row.subject, "fixup") });
+  items.push({ label: "Create squash! commit…", icon: <Combine size={I} />, disabled: !!squashBlocked, hint: squashBlocked ?? "Commits the staged changes", onClick: () => createFixupCommit(root, row.oid, row.subject, "squash") });
+  items.push({
+    label: "Rebase and squash fixups now…",
+    icon: <ListOrdered size={I} />,
+    disabled: busy || row.isMerge,
+    hint: busy ? "Finish the current operation first" : row.isMerge ? "Start from a non-merge commit" : "Opens Rebase Studio with the autosquash plan",
+    onClick: () => openOverlay({ kind: "rebase", root, base: null, oldest: row.oid, autosquash: true }),
+  });
   items.push({ separator: true });
   const editable = !busy && !row.isMerge;
   items.push({

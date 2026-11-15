@@ -38,7 +38,11 @@ import {
   FolderTree,
   HardDrive,
   X,
+  UserPlus,
+  MessageSquareText,
 } from "lucide-react";
+import { coAuthorDialog } from "./CommitAuthoring";
+import { addCoAuthor, coAuthorsIn, mergeRecentMessages, rememberMessage, removeCoAuthor, splitMessage } from "../lib/commitTrailers";
 import { api, errorMessage, isGitError, newOpId } from "../lib/api";
 import { useRepos, type ChangeSel, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
@@ -957,6 +961,35 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   };
 
   const message = body.trim() ? `${summary.trim()}\n\n${body.trim()}` : summary.trim();
+  // Chips are derived from the trailer lines, so hand edits in the description stay in sync.
+  const coAuthors = coAuthorsIn(body);
+  const addCoAuthorPick = async () => {
+    const person = await coAuthorDialog(root, coAuthorsIn(messageRef.current.body));
+    if (person) setBody((cur) => addCoAuthor(cur, person));
+  };
+  const openRecentMessages = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    const target = e.currentTarget;
+    const rect = target.getBoundingClientRect();
+    const local = useSettings.getState().recentCommitMessagesByRepo[root] ?? [];
+    const history = await api.ownRecentMessages(root).catch(() => [] as string[]);
+    const messages = mergeRecentMessages(local, history, 30);
+    const items: MenuItem[] = messages.length
+      ? messages.map((m) => {
+          const { summary: s, body: b } = splitMessage(m);
+          return {
+            label: s.length > 72 ? `${s.slice(0, 71)}…` : s,
+            hint: b ? b.split("\n")[0].slice(0, 60) : undefined,
+            onClick: async () => {
+              const cur = messageRef.current;
+              if ((cur.summary.trim() || cur.body.trim()) && !await confirmDialog({ title: "Replace the current message?", message: "The summary and description you typed will be replaced by the chosen message.", confirm: "Replace message" })) return;
+              setSummary(s);
+              setBody(b);
+            },
+          };
+        })
+      : [{ label: "No recent messages by you in this repository", disabled: true }];
+    contextMenu({ clientX: rect.left, clientY: rect.bottom, currentTarget: target, preventDefault: () => {} }, items);
+  };
   const merging = kind === "merge" || kind === "squash";
   const picking = kind === "cherry-pick" || kind === "revert";
   const rebasing = kind === "rebase";
@@ -1057,6 +1090,8 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
       // The operation client refreshes the index and HEAD before resolving.
       // The repository event refreshes history independently of this form.
       toast.success(`Committed ${oid.slice(0, 8)}`);
+      const settings = useSettings.getState();
+      settings.set({ recentCommitMessagesByRepo: { ...settings.recentCommitMessagesByRepo, [root]: rememberMessage(settings.recentCommitMessagesByRepo[root] ?? [], finalMessage) } });
       return true;
     } catch (e) {
       if (isGitError(e) && e.kind === "identity") {
@@ -1141,6 +1176,24 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
         />
         {!body && <span className="commit-description-hint" aria-hidden="true">Description</span>}
       </div>
+      {!merging && !picking && (
+        <div className="hstack commit-authoring" style={{ gap: 6, flexWrap: "wrap" }}>
+          <button type="button" className="btn ghost sm" onClick={() => void addCoAuthorPick()} title="Add a Co-authored-by trailer from recent history">
+            <UserPlus size={14} /> Co-author
+          </button>
+          <button type="button" className="btn ghost sm" aria-haspopup="menu" onClick={(e) => void openRecentMessages(e)} title="Reuse one of your recent commit messages">
+            <MessageSquareText size={14} /> Recent messages
+          </button>
+          {coAuthors.map((p) => (
+            <span key={p.email.toLowerCase()} className="pill" title={`Co-authored-by: ${p.name} <${p.email}>`}>
+              {p.name}
+              <button type="button" className="btn ghost icon xs" aria-label={`Remove co-author ${p.name}`} onClick={() => setBody((cur) => removeCoAuthor(cur, p.email))}>
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       {!merging && !picking && (
         <div className="commit-opts">
           <label className="check">

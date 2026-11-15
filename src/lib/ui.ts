@@ -65,7 +65,7 @@ export type Overlay =
   | { kind: "worktrees"; root: string }
   | { kind: "blame"; root: string; path: string; rev: string | null; line?: number }
   | { kind: "compare"; root: string; from: string; to: string; direct?: boolean }
-  | { kind: "rebase"; root: string; base: string | null; oldest: string }
+  | { kind: "rebase"; root: string; base: string | null; oldest: string; autosquash?: boolean }
   | { kind: "stash"; root: string; index: number; oid: string }
   | { kind: "tree"; root: string; rev: string };
 

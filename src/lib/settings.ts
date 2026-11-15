@@ -72,6 +72,8 @@ export interface Settings {
   graphColumns: { author: boolean; date: boolean; hash: boolean };
   largeFileMb: number;
   conventionalCommits: boolean;
+  /** Messages Revqora committed recently, per repository root (newest first, at most 30). */
+  recentCommitMessagesByRepo: Record<string, string[]>;
   shortcuts: Record<string, string>;
   onboarded: boolean;
   syncScroll: boolean;
@@ -146,6 +148,7 @@ export const useSettings = create<Settings>()(
       graphColumns: { author: true, date: true, hash: true },
       largeFileMb: 20,
       conventionalCommits: false,
+      recentCommitMessagesByRepo: {},
       shortcuts: {},
       onboarded: false,
       syncScroll: true,
