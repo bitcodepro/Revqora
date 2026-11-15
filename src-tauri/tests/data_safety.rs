@@ -364,3 +364,77 @@ fn a_working_file_in_another_encoding_is_read_correctly_not_lossily() {
     conflicts::save_resolution(repo.p(), "note.txt", info.working.as_deref().unwrap(), true).unwrap();
     assert_eq!(fs::read(repo.p().join("note.txt")).unwrap(), b"\xcf\xf0\xe8\xe2\xe5\xf2 1+2\n");
 }
+
+#[test]
+fn force_push_after_reflogs_were_expired_does_not_overwrite_a_fetched_commit() {
+    let (_keep, server, me, colleague) = shared_remote();
+    me.write("a.txt", "base, reworded by me\n");
+    me.git(&["commit", "-q", "-a", "--amend", "-m", "base (amended)"]);
+    colleague.write("b.txt", "colleague work\n");
+    let theirs = colleague.commit_all("colleague");
+    colleague.git(&["push", "-q", "origin", "main"]);
+    ops::fetch_background(me.p()).unwrap();
+    // Every reflog is gone (gc, expiry or a manual clean-up): nothing shows what was fetched.
+    me.git(&["reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all"]);
+    let err = ops::push(me.p(), &force_push(&me), |_| {}).unwrap_err();
+    assert_eq!(err.kind, "lease-unverifiable", "{}", err.message);
+    assert_eq!(runner::run(&server, ["rev-parse", "main"]).unwrap().trim(), theirs);
+}
+
+/// A rebase that pauses on a.txt while s.txt was staged; the rebased commits also change s.txt,
+/// so restoring the saved change after the rebase conflicts.
+fn paused_rebase_with_saved_changes() -> Repo {
+    let repo = Repo::new();
+    repo.write("a.txt", "base\n");
+    repo.write("s.txt", "s\n");
+    repo.commit_all("base");
+    repo.git(&["switch", "-q", "-c", "other"]);
+    repo.write("a.txt", "theirs\n");
+    repo.write("s.txt", "other s\n");
+    repo.commit_all("theirs");
+    repo.git(&["switch", "-q", "main"]);
+    repo.write("a.txt", "ours\n");
+    repo.commit_all("ours");
+    repo.write("s.txt", "staged s\n");
+    repo.git(&["add", "s.txt"]);
+    let out = ops::rebase_onto(repo.p(), "other").unwrap();
+    assert_eq!(out.status, "conflicts", "{out:?}");
+    repo
+}
+
+#[test]
+fn continue_and_skip_report_conflicts_when_restoring_saved_changes_conflicts() {
+    let repo = paused_rebase_with_saved_changes();
+    repo.write("a.txt", "resolved\n");
+    repo.git(&["add", "a.txt"]);
+    let out = ops::continue_op(repo.p(), "rebase", None).unwrap();
+    assert_eq!(out.status, "conflicts", "continue: {out:?}");
+    assert!(out.conflicts.iter().any(|c| c == "s.txt"), "{out:?}");
+    assert!(!repo.git(&["stash", "list"]).is_empty(), "a copy stays in Stashes");
+
+    let repo = paused_rebase_with_saved_changes();
+    let out = ops::skip_op(repo.p(), "rebase").unwrap();
+    assert_eq!(out.status, "conflicts", "skip: {out:?}");
+    assert!(out.conflicts.iter().any(|c| c == "s.txt"), "{out:?}");
+}
+
+#[test]
+fn utf16_without_bom_is_saved_back_as_utf16() {
+    use revqora_lib::git::conflicts;
+    let utf16 = |text: &str| -> Vec<u8> { text.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+    let repo = Repo::new();
+    fs::write(repo.p().join("w.txt"), utf16("base line\r\n")).unwrap();
+    repo.commit_all("base");
+    repo.git(&["switch", "-q", "-c", "other"]);
+    fs::write(repo.p().join("w.txt"), utf16("theirs line\r\n")).unwrap();
+    repo.commit_all("other");
+    repo.git(&["switch", "-q", "main"]);
+    fs::write(repo.p().join("w.txt"), utf16("ours line\r\n")).unwrap();
+    repo.commit_all("main");
+    let _ = runner::exec(repo.p(), ["merge", "--no-commit", "other"]).unwrap();
+    let info = conflicts::info(repo.p(), "w.txt").unwrap();
+    assert_eq!(info.encoding, "UTF-16LE", "{info:?}");
+    assert!(!info.ours.ascii, "UTF-16 text is not interchangeable with ASCII");
+    conflicts::save_resolution(repo.p(), "w.txt", "merged line\r\n", true).unwrap();
+    assert_eq!(fs::read(repo.p().join("w.txt")).unwrap(), utf16("merged line\r\n"));
+}

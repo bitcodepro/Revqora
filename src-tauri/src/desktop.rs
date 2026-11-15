@@ -108,12 +108,17 @@ pub fn open_as_text(value: &str) -> GitResult<()> {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        // xdg-open would run a .desktop or executable; hand plain text to the text editor.
-        let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "xdg-open".into());
-        if editor == "xdg-open" {
-            std::process::Command::new("gio").args(["open", "--"]).arg(value).spawn().or_else(|_| std::process::Command::new("xdg-open").arg(value).spawn())?;
-        } else {
-            std::process::Command::new(editor).arg(value).spawn()?;
+        // Never the file's own association (it may run it): the desktop's default text editor,
+        // or a known graphical one, launched with the file as a document.
+        let default = std::process::Command::new("xdg-mime").args(["query", "default", "text/plain"]).output().ok();
+        let desktop = default.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|d| d.ends_with(".desktop"));
+        let launched = desktop.is_some_and(|d| std::process::Command::new("gtk-launch").arg(d).arg(value).spawn().is_ok());
+        if !launched {
+            const EDITORS: &[&str] = &["gnome-text-editor", "gedit", "kate", "kwrite", "mousepad", "xed", "pluma", "featherpad", "leafpad", "code"];
+            let found = EDITORS.iter().find(|name| std::process::Command::new(name).arg("--").arg(value).spawn().is_ok());
+            if found.is_none() {
+                return Err(GitError::new("No text editor was found. Set a default application for text files, then try again.").kind("no-text-editor"));
+            }
         }
     }
     Ok(())

@@ -83,7 +83,9 @@ pub(crate) fn text_side(data: &[u8], oid: Option<String>) -> GitResult<ConflictS
         Some(d) => ConflictSide {
             exists: true,
             binary: false,
-            ascii: data.is_ascii() && !d.bom,
+            // Plain ASCII fits any ASCII-compatible encoding; UTF-16/32 text of ASCII characters
+            // passes `is_ascii` byte-wise (its NULs are ASCII) but is not interchangeable.
+            ascii: data.is_ascii() && !d.bom && !data.contains(&0) && !d.encoding.starts_with("UTF-16") && !d.encoding.starts_with("UTF-32"),
             text: d.content,
             oid,
             encoding: Some(d.encoding.to_string()),

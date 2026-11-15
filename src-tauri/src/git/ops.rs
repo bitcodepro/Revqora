@@ -910,8 +910,20 @@ pub fn push(repo: &Path, o: &PushOptions, on_line: impl FnMut(&str)) -> GitResul
 /// them once anything is fetched or pushed), `--force-if-includes` refuses remote tips that never
 /// reached the local branch. Without them (fresh clone; nothing has moved the ref) the lease
 /// names the exact remote tip, or requires the remote branch to be absent.
-fn reflog_disabled(repo: &Path) -> bool {
-    runner::run(repo, ["config", "--bool", "--get", "core.logAllRefUpdates"]).is_ok_and(|v| v.trim() == "false")
+/// Whether `oid` was ever part of local branch `branch`: reachable from its tip or from one of
+/// its reflog entries (an amended or rebased-away commit stays in the reflog).
+fn integrated_locally(repo: &Path, branch: &str, oid: &str) -> GitResult<bool> {
+    let reference = format!("refs/heads/{branch}");
+    let mut candidates = vec![reference.clone()];
+    if let Ok(log) = runner::run(repo, ["reflog", "show", "--format=%H", "-n", "200", &reference]) {
+        candidates.extend(log.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()));
+    }
+    for candidate in candidates {
+        if runner::exec(repo, ["merge-base", "--is-ancestor", oid, &candidate])?.ok() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn lease_args(repo: &Path, o: &PushOptions) -> GitResult<Vec<String>> {
@@ -924,11 +936,16 @@ fn lease_args(repo: &Path, o: &PushOptions) -> GitResult<Vec<String>> {
         runner::run(repo, ["rev-parse", "--verify", "--quiet", &format!("{tracking}^{{commit}}")]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     // A fresh clone may leave an empty reflog file; only real entries make the check meaningful.
     let has_reflog = runner::run(repo, ["reflog", "show", "--format=%H", "-n", "1", &tracking]).map(|out| !out.trim().is_empty()).unwrap_or(false);
-    if tip.is_some() && !has_reflog && reflog_disabled(repo) {
-        return Err(GitError::new(
-            "Force push needs Git's reflog to tell your own commits from ones fetched in the background, and it is turned off (core.logAllRefUpdates). Pull first, or turn the reflog on.",
-        )
-        .kind("lease-unverifiable"));
+    // Without tracking reflog entries (fresh clone, or expired/cleared reflogs) the remote tip
+    // may have been fetched by anyone. Only lease on it with independent proof that it was part
+    // of the local branch: an ancestor of the branch or of one of its reflog entries.
+    if let (Some(oid), false) = (&tip, has_reflog) {
+        if !integrated_locally(repo, b, oid)? {
+            return Err(GitError::new(format!(
+                "The remote branch has commits that were never part of your local {b}, and Git's history cannot show whether you reviewed them. Pull (or merge {remote}/{rb}) first, then force push."
+            ))
+            .kind("lease-unverifiable"));
+        }
     }
     Ok(match tip {
         // Refname-only form: an explicit expected value would turn --force-if-includes off.
@@ -1220,9 +1237,7 @@ pub fn continue_op(repo: &Path, kind: &str, message: Option<&str>) -> GitResult<
                 .unwrap_or_else(|| "Merge".into());
             let oid = commit_confirmed(repo, &msg, &CommitOptions::default())?;
             let mut outcome = OpOutcome::done(oid);
-            if let Some(note) = finish_saved(repo)? {
-                outcome.message = format!("{}\n{note}", outcome.message);
-            }
+            finish_into(repo, &mut outcome)?;
             Ok(outcome)
         }
         "cherry-pick" | "revert" | "rebase" | "am" => {
@@ -1252,9 +1267,7 @@ pub fn continue_op(repo: &Path, kind: &str, message: Option<&str>) -> GitResult<
             };
             if out.ok() {
                 let mut outcome = OpOutcome::done(out.text());
-                if let Some(note) = finish_saved(repo)? {
-                    outcome.message = format!("{}\n{note}", outcome.message);
-                }
+                finish_into(repo, &mut outcome)?;
                 return Ok(outcome);
             }
             let c = conflicted(repo);
@@ -1272,9 +1285,7 @@ pub fn skip_op(repo: &Path, kind: &str) -> GitResult<OpOutcome> {
     let c = conflicted(repo);
     if out.ok() && c.is_empty() {
         let mut outcome = OpOutcome::done(out.text());
-        if let Some(note) = finish_saved(repo)? {
-            outcome.message = format!("{}\n{note}", outcome.message);
-        }
+        finish_into(repo, &mut outcome)?;
         return Ok(outcome);
     }
     if !c.is_empty() {
@@ -1323,19 +1334,93 @@ fn restore_saved(repo: &Path, saved: Option<String>, outcome: &mut OpOutcome) ->
 /// Re-applies saved changes with their staging; returns a note when that was not fully possible.
 fn apply_saved(repo: &Path, oid: &str) -> GitResult<Option<String>> {
     let _ = std::fs::remove_file(super::storage::dir(repo)?.join(SAVED_MARKER));
+    const CONFLICTED: &str = "Restoring your saved changes conflicted. Resolve the files; a copy of the changes is kept in Stashes.";
+    if restore_exact(repo, oid)? {
+        drop_stash_by_oid(repo, oid)?;
+        return Ok(None);
+    }
     if runner::exec(repo, ["stash", "apply", "--index", oid])?.ok() {
         drop_stash_by_oid(repo, oid)?;
         return Ok(None);
     }
     if !conflicted(repo).is_empty() {
-        return Ok(Some("Restoring your saved changes conflicted. Resolve the files; a copy of the changes is kept in Stashes.".into()));
+        return Ok(Some(CONFLICTED.into()));
     }
-    if runner::exec(repo, ["stash", "apply", oid])?.ok() {
+    // `--index` can fail without leaving conflicts; the plain apply may still conflict.
+    let plain = runner::exec(repo, ["stash", "apply", oid])?;
+    if !conflicted(repo).is_empty() {
+        return Ok(Some(CONFLICTED.into()));
+    }
+    if plain.ok() {
         return Ok(Some(
             "Your changes are back, but their staging could not be restored on the new commit. The original, with its staging, is kept in Stashes.".into(),
         ));
     }
     Ok(Some("Your saved changes could not be restored automatically. They are kept in Stashes.".into()))
+}
+
+/// When the operation did not touch any saved path, puts the saved index and working files back
+/// exactly, from the stash's own trees, instead of merging (`stash apply --index` behaves
+/// differently between Git versions). Returns false when a merge is needed.
+fn restore_exact(repo: &Path, oid: &str) -> GitResult<bool> {
+    let base = format!("{oid}^1");
+    let index = format!("{oid}^2");
+    let mut paths: Vec<String> = Vec::new();
+    for tree in [oid, index.as_str()] {
+        let changed = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "-z", &base, tree])?;
+        for path in String::from_utf8_lossy(&changed).split('\0').filter(|p| !p.is_empty()) {
+            if !paths.iter().any(|p| p == path) {
+                paths.push(path.to_string());
+            }
+        }
+    }
+    if paths.is_empty() {
+        return Ok(true);
+    }
+    let literal = [("GIT_LITERAL_PATHSPECS", "1")];
+    let mut args = vec!["diff".to_string(), "--quiet".into(), base.clone(), "HEAD".into(), "--".into()];
+    args.extend(paths.iter().cloned());
+    if runner::exec_full(repo, &args, &literal, None)?.code != 0 {
+        return Ok(false); // the operation changed a saved file: needs a merge
+    }
+    let mut args = vec!["diff".to_string(), "--quiet".into(), "HEAD".into(), "--".into()];
+    args.extend(paths.iter().cloned());
+    if runner::exec_full(repo, &args, &literal, None)?.code != 0 {
+        return Ok(false); // the working tree changed meanwhile
+    }
+    let exists = |tree: &str, path: &str| -> GitResult<bool> { Ok(runner::exec(repo, ["cat-file", "-e", &format!("{tree}:{path}")])?.ok()) };
+    for path in &paths {
+        // Index: the saved staged version, or no entry when the path was staged as deleted.
+        if exists(&index, path)? {
+            runner::run_env(repo, ["restore", "--source", &index, "--staged", "--", path], &literal, None)?;
+        } else {
+            runner::run_env(repo, ["rm", "--cached", "-q", "--ignore-unmatch", "--", path], &literal, None)?;
+        }
+        // Working file: the saved one (through checkout filters), or removed.
+        if exists(oid, path)? {
+            runner::run_env(repo, ["restore", "--source", oid, "--worktree", "--", path], &literal, None)?;
+        } else {
+            let full = repo.join(path);
+            if full.is_file() {
+                std::fs::remove_file(full)?;
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Restores changes saved before a paused operation into a finished outcome: the note is added,
+/// and conflicts from the restore make the outcome "conflicts" with the files listed.
+fn finish_into(repo: &Path, outcome: &mut OpOutcome) -> GitResult<()> {
+    if let Some(note) = finish_saved(repo)? {
+        outcome.message = format!("{}\n{note}", outcome.message);
+        let conflicts = conflicted(repo);
+        if !conflicts.is_empty() {
+            outcome.status = "conflicts".into();
+            outcome.conflicts = conflicts;
+        }
+    }
+    Ok(())
 }
 
 fn drop_stash_by_oid(repo: &Path, oid: &str) -> GitResult<()> {
