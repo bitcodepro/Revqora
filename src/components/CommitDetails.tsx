@@ -58,15 +58,23 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
   useEffect(() => {
     api.forgeInfo(root).then((f) => setHasForge(!!f), () => setHasForge(false));
   }, [root]);
-  useEffect(() => setChecks(null), [oid]);
+  // The commit shown now: a slow CI answer for a commit the user has left is dropped.
+  const shownCommit = useRef(`${root}
+${oid}`);
+  shownCommit.current = `${root}
+${oid}`;
+  useEffect(() => { setChecks(null); setChecksBusy(false); }, [root, oid]);
   const loadChecks = async () => {
+    const asked = `${root}
+${oid}`;
     setChecksBusy(true);
     try {
-      setChecks(await api.commitChecks(root, oid));
+      const result = await api.commitChecks(root, oid);
+      if (shownCommit.current === asked) setChecks(result);
     } catch (e) {
-      toast.error(e, "Could not load CI status");
+      if (shownCommit.current === asked) toast.error(e, "Could not load CI status");
     } finally {
-      setChecksBusy(false);
+      if (shownCommit.current === asked) setChecksBusy(false);
     }
   };
   const diffOpts = useDiffOpts();

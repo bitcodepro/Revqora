@@ -36,6 +36,32 @@ const rowSteps = [
   { shortcut: "explorerExtendPrevious", step: -1, extend: true },
 ];
 
+/** Branch rows per refs snapshot and filter: other repositories' refreshes re-render Explorer, but
+ *  only a repository whose refs or filter changed is sorted and filtered again. */
+const branchRowCache = new WeakMap<object, Map<string, ReturnType<typeof selectExplorerBranches>>>();
+function explorerBranches(refs: Parameters<typeof selectExplorerBranches>[0], options: Parameters<typeof selectExplorerBranches>[1]) {
+  let byOptions = branchRowCache.get(refs);
+  if (!byOptions) branchRowCache.set(refs, byOptions = new Map());
+  const key = JSON.stringify(options);
+  let rows = byOptions.get(key);
+  if (!rows) {
+    if (byOptions.size > 8) byOptions.clear();
+    byOptions.set(key, rows = selectExplorerBranches(refs, options));
+  }
+  return rows;
+}
+
+/** The saved "My branches" author per repository, read from storage once per second at most. */
+const authorQueryCache = new Map<string, { at: number; query: string }>();
+function storedAuthorQuery(root: string): string {
+  const now = Date.now();
+  const cached = authorQueryCache.get(root);
+  if (cached && now - cached.at < 1000) return cached.query;
+  const query = loadBranchPreferences(root).authorQuery;
+  authorQueryCache.set(root, { at: now, query });
+  return query;
+}
+
 export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const groups = useLibrary(s => s.groups), known = useLibrary(s => s.knownRoots);
   const activeGroup = useLibrary(s => s.activeGroupId), names = useLibrary(s => s.repositoryNames);
@@ -106,11 +132,11 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     const key = repositoryKey(root), read = branchReads[root];
     const refs = tabs[root]?.refs ?? (read && "refs" in read ? read.refs : null);
     if (!refs) return [];
-    const branches = selectExplorerBranches(refs, {
+    const options = {
       primary: primaryBranches[key], favorites: branchFavorites[key], favoritesOnly, myBranchesOnly,
-      authorQuery: myBranchesOnly ? authorQueries[key] ?? loadBranchPreferences(root).authorQuery : "",
-    });
-    return [[root, { refs, ...branches }] as const];
+      authorQuery: myBranchesOnly ? authorQueries[key] ?? storedAuthorQuery(root) : "",
+    };
+    return [[root, { refs, ...explorerBranches(refs, options) }] as const];
   }));
   const branchEntries = requested.flatMap((entry): ExplorerEntry[] => {
     const list = branchLists.get(entry.root);

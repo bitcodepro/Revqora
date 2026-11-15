@@ -201,10 +201,27 @@ describe("repository session restoration", () => {
       expect(api.graphLoad).not.toHaveBeenCalled();
       expect(useRepos.getState().tabs[root].graph).toBeNull();
       useRepos.getState().activate(root);
+      // A quick switch back refreshes once the user settles on the repository.
+      await new Promise((resolve) => setTimeout(resolve, 300));
       await flush();
       expect(api.graphLoad).toHaveBeenCalledTimes(1);
       expect(useRepos.getState().tabs[root].graph).not.toBeNull();
     } finally { stopTracking(); }
+  });
+
+  it("refreshes only the repository the user settles on when switching quickly", async () => {
+    const roots = ["/quick-a", "/quick-b", "/quick-c", "/quick-d"];
+    await useRepos.getState().openMany(roots, roots[0]);
+    await Promise.all(roots.map(root => useRepos.getState().refresh(root, { background: true, summary: true })));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    vi.mocked(api.status).mockClear();
+    for (const root of roots.slice(1)) useRepos.getState().activate(root);
+    // The first switch refreshes at once; the quick ones after it wait for the last.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await Promise.all(roots.map(root => useRepos.getState().refresh(root, { background: true, summary: true })));
+    const refreshed = new Set(vi.mocked(api.status).mock.calls.map(([root]) => root));
+    expect(refreshed.has(roots[3])).toBe(true);
+    expect(refreshed.has(roots[2])).toBe(false);
   });
 
   it("does not rebuild history when a repository loses focus during revalidation", async () => {

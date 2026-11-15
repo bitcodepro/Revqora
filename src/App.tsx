@@ -54,7 +54,14 @@ import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitle
 import "./styles/workspace.css";
 
 function useAppearance() {
-  const s = useSettings();
+  // Only the appearance fields: any other settings write must not re-render the whole app.
+  const s = {
+    theme: useSettings((st) => st.theme),
+    uiFontSize: useSettings((st) => st.uiFontSize),
+    codeFontSize: useSettings((st) => st.codeFontSize),
+    uiFont: useSettings((st) => st.uiFont),
+    codeFont: useSettings((st) => st.codeFont),
+  };
   useEffect(() => {
     const apply = () => {
       const t = resolvedTheme(s.theme);
@@ -342,7 +349,7 @@ function MainApp() {
       listen<{ repo: string; git: boolean; worktree: boolean }>("repo-changed", (e) => {
         const { repo, git } = e.payload;
         if (!useRepos.getState().tabs[repo]) return;
-        useRepos.getState().refresh(repo, git ? { background: true, info: true, status: true, refs: true, layers: true, graph: true } : { background: true, status: true, layers: true, changesDisplay: true });
+        useRepos.getState().refresh(repo, git ? { background: true, revalidate: true, info: true, status: true, refs: true, layers: true, graph: true } : { background: true, status: true, layers: true, changesDisplay: true });
         window.dispatchEvent(new CustomEvent("revqora:worktree", { detail: { repo } }));
       }),
     );
@@ -387,7 +394,8 @@ function MainApp() {
       if (now - last < 1500) return;
       last = now;
       const a = useRepos.getState().active;
-      if (a) useRepos.getState().refresh(a, { info: true, status: true, refs: true, layers: true });
+      // Background revalidation: commit previews stay, nothing flashes; real changes still update.
+      if (a) useRepos.getState().refresh(a, { info: true, status: true, refs: true, layers: true, background: true, revalidate: true });
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
@@ -410,6 +418,10 @@ function MainApp() {
       if (typing && !e.ctrlKey && !e.metaKey && !e.altKey && !/^F\d+$/.test(e.key)) return;
       const id = actionFor(e);
       if (!id) return;
+      // A dialog or the palette owns the keyboard: nothing runs behind it.
+      if (owner.querySelector(".modal, .palette")) return;
+      // Typing never starts network or repository work by a stray chord.
+      if (typing && ["fetch", "pull", "push", "stash", "branch"].includes(id)) return;
       const st = useRepos.getState();
       const a = st.active;
       const t = a ? st.tabs[a] : null;
@@ -464,7 +476,7 @@ function MainApp() {
         run[id]();
         return;
       }
-      if (e.repeat || owner.querySelector(".modal, .palette") || typing) return;
+      if (e.repeat || typing) return;
       const panel = id.startsWith("window-") ? id.slice(7) as PanelId : null;
       if (panel && Object.hasOwn(PANEL_NAMES, panel)) {
         if (panels[panel]) { e.preventDefault(); attach(panel); return; }

@@ -10,6 +10,7 @@ import { PanelWindowsButton, usePanelWindowMenu, usePanelWindows } from "./Panel
 import { WORKTREE } from "../lib/types";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { validationDialog } from "./ConflictValidation";
 import { useValidation, validationFresh, validationRunning } from "../lib/validation";
 import { conflictHasUnsaved, useConflictDrafts } from "../lib/conflictStudio";
@@ -98,9 +99,8 @@ async function checkUpdates() {
 
 export function TopBar() {
   const { panels, toggleSidebar } = usePanelWindows();
-  const tabs = useRepos((s) => s.tabs);
-  const active = useRepos((s) => s.active);
-  const tab = active ? tabs[active] : null;
+  // Only the shown repository: patches to other open repositories do not re-render the bar.
+  const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   const theme = useSettings((s) => s.theme);
   const setS = useSettings((s) => s.set);
   const status = tab?.status;
@@ -703,9 +703,7 @@ export function CommandPalette() {
   const open = useUi(s => s.paletteOpen);
   const setOpen = useUi(s => s.setPalette);
   const { toggleSidebar } = usePanelWindows();
-  const active = useRepos(s => s.active);
   const order = useRepos(s => s.order);
-  const tabs = useRepos(s => s.tabs);
   const groups = useLibrary(s => s.groups);
   const known = useLibrary(s => s.knownRoots);
   const names = useLibrary(s => s.repositoryNames);
@@ -717,6 +715,10 @@ export function CommandPalette() {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const roots = useMemo(() => uniqueRoots([...order, ...known, ...recent]), [order, known, recent]);
+  // Only what the palette lists: other repository patches (status, graph) do not re-render it.
+  const tab = useRepos(s => (s.active ? s.tabs[s.active] : null));
+  const rootRefs = useRepos(useShallow(s => roots.map(root => s.tabs[root]?.refs)));
+  const rootNames = useRepos(useShallow(s => roots.map(root => s.tabs[root]?.info?.name)));
   const ql = q.trim().toLowerCase();
   const shouldLoad = open && !!ql;
 
@@ -807,7 +809,24 @@ export function CommandPalette() {
     } catch (error) { toast.error(error, "Could not open branch"); }
   };
 
-  const tab = active ? tabs[active] : null;
+  const locations = useMemo(() => {
+    if (!open || !ql) return [];
+    const out: { id: string; label: string; group: string; context: string; search?: string; root: string; reference: string | null }[] = [];
+    roots.forEach((root, i) => {
+      const name = names[repositoryKey(root)] ?? rootNames[i] ?? basename(root);
+      out.push({ id: "repository:" + root, label: name, group: "Repository", context: root, root, reference: null });
+      const refs = rootRefs[i];
+      const references = refs ? [...refs.local, ...refs.remote].map(branch => branch.fullName) : branches[root] ?? [];
+      for (const reference of references) {
+        const local = reference.startsWith("refs/heads/");
+        const branch = reference.slice(local ? "refs/heads/".length : "refs/remotes/".length);
+        out.push({ id: JSON.stringify([root, reference]), label: branch, group: local ? "Branch" : "Remote branch", context: name, search: root, root, reference });
+      }
+    });
+    return out;
+    // `ql` only switches the index on; its value does not change the entries.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, !!ql, roots, rootRefs, rootNames, names, branches]);
   const filtered: Cmd[] = [];
   if (open) {
     const list = paletteActions(tab);
@@ -831,31 +850,21 @@ export function CommandPalette() {
           icon: <Folder size={15} />, run: () => revealExplorer(group.id),
         });
       }
-      for (const root of roots) {
-        const name = names[repositoryKey(root)] ?? tabs[root]?.info?.name ?? basename(root);
-        list.push({
-          id: "repository:" + root, label: name, group: "Repository", context: root,
-          icon: <FolderGit2 size={15} />, run: () => void revealRepository(root),
-        });
-        const refs = tabs[root]?.refs;
-        const references = refs ? [...refs.local, ...refs.remote].map(branch => branch.fullName) : branches[root] ?? [];
-        for (const reference of references) {
-          const local = reference.startsWith("refs/heads/");
-          const branch = reference.slice(local ? "refs/heads/".length : "refs/remotes/".length);
-          list.push({
-            id: JSON.stringify([root, reference]), label: branch, group: local ? "Branch" : "Remote branch",
-            context: name, search: root, icon: <GitBranch size={15} />, run: () => void revealBranch(root, reference),
-          });
-        }
-      }
     }
     const tokens = ql.split(/\s+/);
-    const matches = list.map(item => {
+    const rank = (item: { label: string; context?: string; search?: string }) => {
       const context = [item.label, item.context, item.search].filter(Boolean).join(" ").toLowerCase();
-      const rank = score(ql, item.label) || (tokens.every(token => context.includes(token)) ? 12 : 0);
-      return { item, rank };
-    }).filter(result => result.rank > 0).sort((a, b) => b.rank - a.rank);
-    filtered.push(...matches.slice(0, 60).map(({ item }) => item));
+      return score(ql, item.label) || (tokens.every(token => context.includes(token)) ? 12 : 0);
+    };
+    const matches: { rank: number; make: () => Cmd }[] = list.map(item => ({ rank: rank(item), make: () => item }));
+    // Repositories and branches are ranked as plain data; commands are built for the shown ones only.
+    if (ql) for (const entry of locations) {
+      const r = rank(entry);
+      if (r > 0) matches.push({ rank: r, make: () => entry.reference === null
+        ? { id: entry.id, label: entry.label, group: entry.group, context: entry.context, icon: <FolderGit2 size={15} />, run: () => void revealRepository(entry.root) }
+        : { id: entry.id, label: entry.label, group: entry.group, context: entry.context, search: entry.search, icon: <GitBranch size={15} />, run: () => void revealBranch(entry.root, entry.reference!) } });
+    }
+    filtered.push(...matches.filter(m => m.rank > 0).sort((a, b) => b.rank - a.rank).slice(0, 60).map(m => m.make()));
   }
 
   const idx = Math.max(0, filtered.findIndex(item => item.id === highlight));

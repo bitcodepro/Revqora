@@ -3464,3 +3464,8 @@ select[size="1"]:not([multiple]) {
 .modal:focus {
   outline: none;
 }
+
+/* Virtual side-by-side rows: two equal columns per absolutely placed row. */
+.virtual-split > .split-dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* Long wrapped diffs and long file lists: the browser skips layout and paint off screen. */
+.diff-body.wrap .hunk { content-visibility: auto; contain-intrinsic-size: auto 600px; }

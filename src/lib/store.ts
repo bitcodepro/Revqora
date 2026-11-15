@@ -41,6 +41,8 @@ export interface RepoTab {
   historyJump?: string | null;
   diffRefreshVersion: number;
   graphLoading: boolean;
+  /** Why the last history load failed; shown in History with Retry (the status error is shared). */
+  graphError?: string | null;
   graphHasWorktree: boolean;
   branchFilter: string | null;
   branchContext?: string | null;
@@ -130,6 +132,9 @@ const openingQueue = repositoryQueue();
 const summaryQueue = repositoryQueue();
 const openingJobs = new Map<string, Promise<string | null>>();
 const lifetimes = new Map<string, symbol>();
+const ACTIVATION_SETTLE_MS = 250;
+let lastActivation = 0;
+let activationTimer: ReturnType<typeof setTimeout> | undefined;
 const watchRetries = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function retryRepositoryWatch(root: string) {
@@ -363,8 +368,19 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     if (root) {
       openingQueue.prioritize(root);
       summaryQueue.prioritize(root);
-      if (get().tabs[root]?.info) void get().refresh(root, {...ALL,graph:!get().tabs[root].graph,background:true,revalidate:true});
-      else void hydrate(root).catch(() => {});
+      // Ctrl+Tab through many repositories: the first switch refreshes at once, quick
+      // follow-ups wait until the user settles, and only the repository still shown refreshes.
+      const now = Date.now();
+      const settling = now - lastActivation < ACTIVATION_SETTLE_MS;
+      lastActivation = now;
+      clearTimeout(activationTimer);
+      const revalidate = () => {
+        if (get().active !== root) return;
+        if (get().tabs[root]?.info) void get().refresh(root, {...ALL,graph:!get().tabs[root].graph,background:true,revalidate:true});
+        else void hydrate(root).catch(() => {});
+      };
+      if (settling) activationTimer = setTimeout(revalidate, ACTIVATION_SETTLE_MS);
+      else revalidate();
     }
   },
 
@@ -595,6 +611,15 @@ export function hasMoreHistory(tab: RepoTab) {
   return loaded >= tab.graphLimit && (tab.graph?.commitCount == null || loaded < tab.graph.commitCount);
 }
 
+/** Loads several times more history (toward an older commit) instead of building all of it. */
+export async function loadMoreHistory(root: string, factor = 8) {
+  await graphQueues.get(root);
+  const tab = useRepos.getState().tabs[root];
+  if (!tab || !hasMoreHistory(tab)) return;
+  const limit = Math.min(tab.graph?.commitCount ?? 2_147_483_647, Math.max(INITIAL_GRAPH_COMMITS, tab.graphLimit) * factor);
+  await loadGraph(root, undefined, limit);
+}
+
 export async function loadEntireHistory(root: string) {
   await graphQueues.get(root);
   const tab = useRepos.getState().tabs[root];
@@ -618,7 +643,7 @@ async function loadGraphOnce(root: string, includeWorktree: boolean | undefined,
   const primary = tab.branchContext ? settings.primaryBranchByRepo[repositoryKey(root)] : undefined;
   const { scope, key: scopeKey } = graphHistoryScope(tab, primary, showIncoming);
   const limit = Math.max(tab.graphScope === scopeKey ? tab.graphLimit : INITIAL_GRAPH_COMMITS, minimumCommits);
-  store.patch(root, { graphLoading: true });
+  store.patch(root, { graphLoading: true, graphError: null });
   try {
     const summary = await api.graphLoad(root, scope, dirty, limit, false, showIncoming, true);
     if (!current()) return;
@@ -639,7 +664,7 @@ async function loadGraphOnce(root: string, includeWorktree: boolean | undefined,
     }
   } catch (e) {
     if (!current()) return;
-    useRepos.getState().patch(root, { graphLoading: false, error: errorMessage(e) });
+    useRepos.getState().patch(root, { graphLoading: false, error: errorMessage(e), graphError: errorMessage(e) });
   }
 }
 

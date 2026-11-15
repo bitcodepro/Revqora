@@ -847,7 +847,9 @@ function ConflictSummary({ root, file, onOpen }: { root: string; file: FileStatu
 
 // ───────────── commit box ─────────────
 
-const drafts = new Map<string, { summary: string; body: string }>();
+/** Commit message drafts, with Amend: an amend draft holds the previous commit's message, so
+ *  coming back without Amend would commit that message again as a new commit. */
+const drafts = new Map<string, { summary: string; body: string; amend?: boolean }>();
 /** Messages Revqora filled in for a merge / cherry-pick, removed again when it ends. */
 const prefilledMessages = new Map<string, { summary: string; body: string }>();
 
@@ -860,7 +862,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const [body, publishBody] = useState(draft.body);
   const messageRef = useRef({ summary: draft.summary, body: draft.body });
   const amendRequest = useRef(0);
-  const amendRef = useRef(false);
+  const amendRef = useRef(!!draft.amend);
   const submitting = useRef(false);
   const setSummary = (value: string | ((current: string) => string)) => {
     amendRequest.current++;
@@ -875,7 +877,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
     publishBody(next);
   };
   useEffect(() => () => { amendRequest.current++; }, [root]);
-  const [amend, setAmend] = useState(false);
+  const [amend, setAmend] = useState(!!draft.amend);
   const [signOff, setSignOff] = useState(false);
   const [noVerify, setNoVerify] = useState(false);
   const [sign, setSign] = useState(false);
@@ -906,8 +908,8 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const layers = tab.layers?.active ? tab.layers.layers : [];
 
   useEffect(() => {
-    drafts.set(root, { summary, body });
-  }, [root, summary, body]);
+    drafts.set(root, { summary, body, amend });
+  }, [root, summary, body, amend]);
 
   // Prefill the message for merges / cherry-picks; drop it again once the operation ends.
   useEffect(() => {

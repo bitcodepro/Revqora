@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSettings } from "../lib/settings";
 import { Bug, Check, ChevronDown, ChevronRight, Cloud, Folder, GitBranch, Tag, CircleDot } from "lucide-react";
 import type { BranchInfo, RefLabel } from "../lib/types";
@@ -139,7 +139,13 @@ export function FileGroups<T extends { path: string }>({
   idPrefix: string;
 }) {
   const [closed, setClosed] = useState<Set<string>>(new Set());
-  if (!tree) return <>{items.map((it) => render(it, false))}</>;
+  // Huge lists (tens of thousands of untracked files) render in steps as they scroll into view.
+  const [limit, setLimit] = useState(FILE_STEP);
+  const more = items.length > limit ? <MoreFiles shown={limit} total={items.length} onMore={(all) => setLimit((n) => all ? items.length : n + FILE_STEP)} /> : null;
+  if (!tree) return <>{items.slice(0, limit).map((it) => render(it, false))}{more}</>;
+  let budget = limit;
+  /** The files of an open folder that still fit in the rendered budget. */
+  const take = (files: T[]) => { const shown = files.slice(0, budget); budget -= shown.length; return shown; };
   const groups = new Map<string, T[]>();
   for (const it of items) {
     const d = dirname(it.path) || ".";
@@ -166,10 +172,33 @@ export function FileGroups<T extends { path: string }>({
                 {groups.get(d)!.length}
               </span>
             </div>
-            {!isClosed && <div className="folder-children">{groups.get(d)!.map((it) => render(it, true))}</div>}
+            {!isClosed && budget > 0 && <div className="folder-children">{take(groups.get(d)!).map((it) => render(it, true))}</div>}
           </div>
         );
       })}
+      {more}
     </>
+  );
+}
+
+const FILE_STEP = 600;
+
+/** The end of a partly rendered file list: loads the next rows when it scrolls into view. */
+function MoreFiles({ shown, total, onMore }: { shown: number; total: number; onMore: (all: boolean) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const latest = useRef(onMore);
+  latest.current = onMore;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) latest.current(false); }, { rootMargin: "400px" });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [shown]);
+  return (
+    <div ref={ref} className="file-row more-files" role="status">
+      <span className="muted">{shown.toLocaleString()} of {total.toLocaleString()} files shown</span>
+      <button type="button" className="btn sm" onClick={() => onMore(true)}>Show all</button>
+    </div>
   );
 }

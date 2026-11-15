@@ -1,3 +1,4 @@
+import { useShallow } from "zustand/react/shallow";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
@@ -144,9 +145,14 @@ function renderCode(text: string, toks: Tok[] | undefined, spans: Span[] | undef
 }
 
 type FlatRow = { kind: "hunk"; h: number } | { kind: "line"; h: number; l: number };
+type VirtualRow = FlatRow | { kind: "pair"; h: number; a: number | null; b: number | null };
 
 export function DiffView({ diff, loading, error, mode, path, badge, actions, canStash = false, onApply, emptyText, root, images, sourceOptions = true, onComment }: Props) {
-  const s = useSettings();
+  // Only the diff settings: unrelated settings writes must not re-render every open diff.
+  const s = useSettings(useShallow((st) => ({
+    set: st.set, codeFont: st.codeFont, codeFontSize: st.codeFontSize, diffFullFile: st.diffFullFile, diffMode: st.diffMode,
+    ignoreWhitespace: st.ignoreWhitespace, showWhitespace: st.showWhitespace, wrapDiff: st.wrapDiff,
+  })));
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [anchor, setAnchor] = useState<{ h: number; l: number } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -163,7 +169,8 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   const findRef = useRef<HTMLInputElement>(null);
 
   const totalLines = diff?.hunks.reduce((a, h) => a + h.lines.length, 0) ?? 0;
-  const virtual = totalLines > VIRTUAL_THRESHOLD && !s.wrapDiff && s.diffMode === "unified";
+  // Long diffs render only the visible rows, side by side too (wrapped lines have no fixed height).
+  const virtual = totalLines > VIRTUAL_THRESHOLD && !s.wrapDiff;
   const expensive = totalLines > VIRTUAL_THRESHOLD || !!diff?.previewLimited;
   const hl = useHighlight(path, diff?.hunks, !expensive);
   const words = useMemo(() => {
@@ -254,6 +261,18 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     });
     return out;
   }, [diff, collapsed]);
+  /** The rows a virtual diff draws: unified lines, or side-by-side pairs. */
+  const vrows = useMemo<VirtualRow[]>(() => {
+    if (!virtual || !diff) return [];
+    if (s.diffMode !== "split") return flat;
+    const out: VirtualRow[] = [];
+    diff.hunks.forEach((h, hi) => {
+      out.push({ kind: "hunk", h: hi });
+      if (!collapsed.has(hi)) for (const [a, b] of splitRows(h.lines)) out.push({ kind: "pair", h: hi, a, b });
+    });
+    return out;
+  }, [virtual, diff, collapsed, flat, s.diffMode]);
+  const vrowIndex = (h: number, l: number | null) => vrows.findIndex((r) => r.h === h && (l === null ? r.kind === "hunk" : r.kind === "line" ? r.l === l : r.kind === "pair" && (r.a === l || r.b === l)));
   const wordSelection = useDiffWordSelection(contentRef, JSON.stringify([root, path, diff?.hash]), function* () {
     if (!diff) return;
     for (const row of flat) {
@@ -280,7 +299,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     if (!el) return;
     if (collapsed.has(h)) setCollapsed((c) => new Set([...c].filter((x) => x !== h)));
     if (virtual) {
-      const idx = flat.findIndex((r) => r.h === h && (l === null ? r.kind === "hunk" : r.kind === "line" && r.l === l));
+      const idx = vrowIndex(h, l);
       if (idx >= 0) el.scrollTop = Math.max(0, idx * rowH - el.clientHeight / 3);
       return;
     }
@@ -298,7 +317,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     const el = bodyRef.current;
     if (!el || !diff) return;
     const tops: number[] = virtual
-      ? diff.hunks.map((_, hi) => flat.findIndex((r) => r.kind === "hunk" && r.h === hi) * rowH)
+      ? diff.hunks.map((_, hi) => vrowIndex(hi, null) * rowH)
       : diff.hunks.map((_, hi) => el.querySelector<HTMLElement>(`[data-hunk="${hi}"]`)?.offsetTop ?? 0);
     const cur = el.scrollTop + 4;
     const idx = dir > 0 ? tops.findIndex((t) => t > cur + 8) : tops.map((t, i) => [t, i] as const).filter(([t]) => t < cur - 8).pop()?.[1] ?? -1;
@@ -587,15 +606,20 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   } else if (virtual) {
     // Very long diffs: fixed-height rows, only the visible window is rendered.
     const first = Math.max(0, Math.floor(scroll / rowH) - 30);
-    const last = Math.min(flat.length - 1, Math.ceil((scroll + viewH) / rowH) + 30);
+    const last = Math.min(vrows.length - 1, Math.ceil((scroll + viewH) / rowH) + 30);
     const rows: ReactNode[] = [];
     for (let i = first; i <= last; i++) {
-      const r = flat[i];
+      const r = vrows[i];
       const style: React.CSSProperties = { position: "absolute", top: i * rowH, left: 0, right: 0, height: rowH };
-      rows.push(r.kind === "hunk" ? <Fragment key={"h" + r.h}>{hunkHeader(diff.hunks[r.h], r.h, { ...style, height: rowH })}</Fragment> : lineRow(r.h, r.l, style));
+      if (r.kind === "hunk") rows.push(<Fragment key={"h" + r.h}>{hunkHeader(diff.hunks[r.h], r.h, { ...style, height: rowH })}</Fragment>);
+      else if (r.kind === "line") rows.push(lineRow(r.h, r.l, style));
+      else {
+        const split: SplitProps = { hunk: diff.hunks[r.h], hi: r.h, toks: hl?.[r.h], words: words?.[r.h], sel, onToggle: toggle, interactive, hits: hitSet, onComment, whitespace: s.showWhitespace };
+        rows.push(<div className="split-dl" key={`p${r.h}:${r.a}:${r.b}`} style={style}><SplitHalf {...split} idx={r.a} side="l" /><SplitHalf {...split} idx={r.b} side="r" /></div>);
+      }
     }
     body = (
-      <div className="virtual-diff" style={{ height: flat.length * rowH + 20, minWidth: textWidth + 150 }}>
+      <div className={`virtual-diff ${s.diffMode === "split" ? "virtual-split" : ""}`} style={{ height: vrows.length * rowH + 20, minWidth: s.diffMode === "split" ? undefined : textWidth + 150 }}>
         {rows}
       </div>
     );
@@ -690,18 +714,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   );
 }
 
-function SplitHunk({
-  hunk,
-  hi,
-  toks,
-  words,
-  sel,
-  onToggle,
-  interactive,
-  hits,
-  onComment,
-  whitespace,
-}: {
+type SplitProps = {
   hunk: DiffHunk;
   hi: number;
   toks: (Tok[] | undefined)[] | undefined;
@@ -712,10 +725,11 @@ function SplitHunk({
   hits: Set<string>;
   onComment?: Props["onComment"];
   whitespace: boolean;
-}) {
-  // Build rows of [left index | null, right index | null].
+};
+
+/** Side-by-side rows of a hunk: [left line index | null, right line index | null]. */
+function splitRows(lines: DiffLine[]): [number | null, number | null][] {
   const rows: [number | null, number | null][] = [];
-  const lines = hunk.lines;
   let i = 0;
   while (i < lines.length) {
     const l = lines[i];
@@ -728,32 +742,39 @@ function SplitHunk({
     const adds: number[] = [];
     while (i < lines.length && lines[i].kind === "-") dels.push(i++);
     while (i < lines.length && lines[i].kind === "+") adds.push(i++);
+    if (!dels.length && !adds.length) { rows.push([i, null]); i++; continue; }
     for (let k = 0; k < Math.max(dels.length, adds.length); k++) rows.push([dels[k] ?? null, adds[k] ?? null]);
   }
-  const half = (idx: number | null, side: "l" | "r") => {
-    if (idx === null) return <div className="half empty" />;
-    const l = lines[idx];
-    const cls = l.kind === "+" ? "add" : l.kind === "-" ? "del" : "";
-    const no = side === "l" ? l.oldNo : l.newNo;
-    const k = `${hi}:${idx}`;
-    return (
-      <div
-        data-line={k}
-        className={`half ${cls} ${sel.has(k) ? "sel" : ""} ${hits.has(k) ? "search-hit" : ""}`}
-        style={sel.has(k) ? { boxShadow: "inset 3px 0 0 var(--accent)" } : undefined}
-      >
-        {onComment && no !== null ? <button className="ln review-line" title={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} aria-label={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} onClick={()=>onComment(side === "l" ? "LEFT" : "RIGHT",no)}>{no}</button> : <span className="ln" style={{ cursor: interactive && cls ? "pointer" : undefined }} onMouseDown={e=>onToggle(hi,idx,e.shiftKey)}>{no??""}</span>}
-        <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
-        <span className="code-viewport"><span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, toks?.[idx], words?.get(idx), l.kind,whitespace)}</span></span>
-      </div>
-    );
-  };
+  return rows;
+}
+
+function SplitHalf({ idx, side, hunk: { lines }, hi, toks, words, sel, onToggle, interactive, hits, onComment, whitespace }: SplitProps & { idx: number | null; side: "l" | "r" }) {
+  if (idx === null) return <div className="half empty" />;
+  const l = lines[idx];
+  const cls = l.kind === "+" ? "add" : l.kind === "-" ? "del" : "";
+  const no = side === "l" ? l.oldNo : l.newNo;
+  const k = `${hi}:${idx}`;
+  return (
+    <div
+      data-line={k}
+      className={`half ${cls} ${sel.has(k) ? "sel" : ""} ${hits.has(k) ? "search-hit" : ""}`}
+      style={sel.has(k) ? { boxShadow: "inset 3px 0 0 var(--accent)" } : undefined}
+    >
+      {onComment && no !== null ? <button className="ln review-line" title={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} aria-label={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} onClick={()=>onComment(side === "l" ? "LEFT" : "RIGHT",no)}>{no}</button> : <span className="ln" style={{ cursor: interactive && cls ? "pointer" : undefined }} onMouseDown={e=>onToggle(hi,idx,e.shiftKey)}>{no??""}</span>}
+      <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
+      <span className="code-viewport"><span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, toks?.[idx], words?.get(idx), l.kind,whitespace)}</span></span>
+    </div>
+  );
+}
+
+function SplitHunk(props: SplitProps) {
+  const rows = splitRows(props.hunk.lines);
   return (
     <div className="split-hunk">
       {rows.map(([a, b], ri) => (
         <div className="split-dl" key={ri}>
-          {half(a, "l")}
-          {half(b, "r")}
+          <SplitHalf {...props} idx={a} side="l" />
+          <SplitHalf {...props} idx={b} side="r" />
         </div>
       ))}
     </div>

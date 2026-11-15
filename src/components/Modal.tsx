@@ -35,6 +35,8 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
   // which would re-focus and select the input after each keystroke (typing replaced the text).
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  // Typed input is never thrown away by a stray click beside the dialog.
+  const dirty = useRef(false);
   useLayoutEffect(() => {
     const backdrop = ref.current!.parentElement!;
     const doc = backdrop.ownerDocument;
@@ -61,15 +63,27 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
       }
     };
     view.addEventListener("keydown", onKey, true);
+    // Keep keyboard focus inside the top dialog: the app behind it must not take Enter/Space.
+    const isTop = () => { const dialogs = doc.querySelectorAll(".modal"); return dialogs[dialogs.length - 1] === ref.current; };
+    const onFocusIn = (e: FocusEvent) => {
+      const dialog = ref.current;
+      const target = e.target as HTMLElement | null;
+      if (!dialog || !target || !isTop() || dialog.contains(target)) return;
+      // Menus, pickers and toasts opened from the dialog live outside it.
+      if (target.closest(".ctx-menu, .palette, .toasts, [data-dialog-companion]")) return;
+      (focusables(dialog)[0] ?? dialog).focus({ preventScroll: true });
+    };
+    doc.addEventListener("focusin", onFocusIn);
     // Focus the first input once, when the dialog opens, for keyboard-first use.
     const cancelFocus = scheduleDialogFocus(() => ref.current, initialFocus);
     return () => {
       view.removeEventListener("keydown", onKey, true);
+      doc.removeEventListener("focusin", onFocusIn);
       cancelFocus();
     };
   }, []);
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && !dirty.current && onClose()}>
       <form
         className={`modal ${wide ? "wide" : ""}`}
         ref={ref}
@@ -79,7 +93,18 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
           e.preventDefault();
           onSubmit?.();
         }}
+        onInput={() => { dirty.current = true; }}
         onKeyDown={(e) => {
+          if (e.key === "Tab" && ref.current) {
+            // Wrap Tab and Shift+Tab inside the dialog.
+            const items = focusables(ref.current);
+            if (items.length) {
+              const first = items[0], last = items[items.length - 1];
+              const active = ref.current.ownerDocument.activeElement;
+              if (e.shiftKey && (active === first || active === ref.current)) { e.preventDefault(); last.focus(); return; }
+              if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); return; }
+            }
+          }
           if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && onSubmit) {
             e.preventDefault();
             onSubmit();
@@ -99,4 +124,10 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
       </form>
     </div>
   );
+}
+
+const FOCUSABLE = "a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1']), [contenteditable=true]";
+
+function focusables(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(el => !el.closest("[inert]") && el.getClientRects().length > 0);
 }

@@ -681,7 +681,8 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   );
 }
 
-const ROW_H = 27;
+/** Matches `.sb-item` min-height: max(28px, var(--fs) + 11px). */
+const rowHeight = (fontSize: number) => Math.max(28, fontSize + 11);
 const HEAD_H = 32;
 
 /** Renders only the visible sidebar rows (thousands of branches stay smooth). */
@@ -692,6 +693,7 @@ function VirtualRows({ rows, reveal, pinned }: {
   const [scroll, setScroll] = useState(0);
   const [viewH, setViewH] = useState(800);
   const focused = useRef<typeof reveal>(null);
+  const ROW_H = rowHeight(useSettings((st) => st.uiFontSize));
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
