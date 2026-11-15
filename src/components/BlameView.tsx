@@ -1,13 +1,15 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ScanSearch, X } from "lucide-react";
+import { ArrowLeft, History, ScanSearch, X } from "lucide-react";
 import type { LanguageSupport } from "@codemirror/language";
 import { api, errorMessage } from "../lib/api";
 import { useRepos } from "../lib/store";
-import { closeOverlay, openOverlay } from "../lib/ui";
+import { closeOverlay, contextMenu, openOverlay, type MenuItem } from "../lib/ui";
 import type { Blame } from "../lib/types";
 import { absoluteTime, initials, relativeTime, shortOid, avatarHue } from "../lib/format";
 import { highlightLines, languageFor, type Tok } from "../lib/languages";
 import { jumpToCommit } from "./GraphView";
+import { openInEditor } from "../lib/externalTools";
+import { lineHistoryDialog } from "./HistoryDialogs";
 
 const ROW = 20;
 
@@ -19,6 +21,8 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
   const [viewH, setViewH] = useState(600);
   const [hover, setHover] = useState<string | null>(null);
   const [history, setHistory] = useState<(string | null)[]>([]);
+  /** Selected line range (final line numbers), for "History of these lines". */
+  const [range, setRange] = useState<{ anchor: number; start: number; end: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -67,6 +71,21 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
     useRepos.getState().patch(root, { view: "history" });
     setTimeout(() => jumpToCommit(root, oid), 50);
   };
+  const lineMenu = (l: Blame["lines"][number]): MenuItem[] => {
+    const committed = !/^0+$/.test(l.oid);
+    const inRange = range && l.line >= range.start && l.line <= range.end && range.end > range.start;
+    const dirtyNote = rev === null ? "Line numbers are taken from the last commit; uncommitted edits above these lines can shift them." : undefined;
+    return [
+      // One line: follow it from the commit that last changed it, at its line number there (exact).
+      { label: "History of this line…", icon: <History size={14} />, disabled: !committed, hint: committed ? undefined : "not committed",
+        onClick: () => void lineHistoryDialog(root, path, l.origLine, l.origLine, l.oid) },
+      ...(inRange ? [{ label: `History of lines ${range.start}–${range.end}…`, icon: <History size={14} />,
+        onClick: () => void lineHistoryDialog(root, path, range.start, range.end, rev, dirtyNote) }] : []),
+      { separator: true },
+      { label: "Open commit", disabled: !committed, onClick: () => goto(l.oid) },
+      { label: "Open in editor at this line", onClick: () => void openInEditor(root, path, l.line) },
+    ];
+  };
   const dig = (prev: string) => {
     setHistory((h) => [...h, rev]);
     openOverlay({ kind: "blame", root, path, rev: prev });
@@ -90,7 +109,8 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
       rows.push(
         <div
           key={i}
-          className="blame-row"
+          className={`blame-row ${range && l.line >= range.start && l.line <= range.end ? "selected" : ""}`}
+          onContextMenu={(e) => contextMenu(e, lineMenu(l))}
           style={{ top: i * ROW, background: hover === l.oid ? "var(--bg-selected)" : undefined, borderTop: startsGroup && i > 0 ? "1px solid var(--border-soft)" : undefined }}
           onMouseEnter={() => setHover(l.oid)}
         >
@@ -123,7 +143,8 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
               </>
             )}
           </div>
-          <span className="blame-ln">{l.line}</span>
+          <span className="blame-ln" role="button" tabIndex={-1} title="Click to select lines (Shift+click for a range); right-click for their history"
+            onClick={(e) => setRange((r) => (e.shiftKey && r ? { anchor: r.anchor, start: Math.min(r.anchor, l.line), end: Math.max(r.anchor, l.line) } : { anchor: l.line, start: l.line, end: l.line }))}>{l.line}</span>
           <span className="blame-code">
             {toks?.[i]?.length ? toks[i].map((t, k) => (t.cls ? <span key={k} className={t.cls}>{t.text}</span> : <Fragment key={k}>{t.text}</Fragment>)) : l.text || " "}
           </span>

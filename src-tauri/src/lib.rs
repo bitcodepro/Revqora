@@ -1513,6 +1513,23 @@ async fn conflict_unresolve(app: AppHandle, expected_state: Option<String>, repo
 }
 
 #[tauri::command]
+async fn line_history(
+    repo: String,
+    path: String,
+    start: u32,
+    end: u32,
+    rev: Option<String>,
+    limit: Option<usize>,
+) -> GitResult<Vec<git::line_history::LineHistoryEntry>> {
+    blocking(move || git::line_history::line_history(&p(&repo), &path, start, end, rev.as_deref(), limit.unwrap_or(200))).await
+}
+
+#[tauri::command]
+async fn folder_history(repo: String, folder: String, limit: Option<usize>) -> GitResult<Vec<git::line_history::FolderHistoryEntry>> {
+    blocking(move || git::line_history::folder_history(&p(&repo), &folder, limit.unwrap_or(500))).await
+}
+
+#[tauri::command]
 async fn ignore_preview(repo: String, path: String, kind: String, scope: String) -> GitResult<git::ignore::IgnorePreview> {
     blocking(move || git::ignore::preview(&p(&repo), &path, &kind, &scope)).await
 }
@@ -2727,6 +2744,8 @@ pub fn run() {
             conflict_unresolve,
             ignored_files,
             ignore_preview,
+            line_history,
+            folder_history,
             ignore_apply,
             conflict_external,
             external_tools,

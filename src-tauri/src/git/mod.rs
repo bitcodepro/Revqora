@@ -17,6 +17,7 @@ pub mod graph;
 pub mod ignore;
 pub mod inspect;
 pub mod layers;
+pub mod line_history;
 pub mod locate;
 pub mod maint;
 pub mod more;

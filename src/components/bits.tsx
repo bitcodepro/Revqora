@@ -131,12 +131,15 @@ export function FileGroups<T extends { path: string }>({
   expandAll = false,
   render,
   idPrefix,
+  onFolderMenu,
 }: {
   items: T[];
   tree: boolean;
   expandAll?: boolean;
   render: (item: T, grouped: boolean) => React.ReactNode;
   idPrefix: string;
+  /** Context menu for a folder row ("." = the repository root). */
+  onFolderMenu?: (e: React.MouseEvent, folder: string) => void;
 }) {
   const [closed, setClosed] = useState<Set<string>>(new Set());
   // Huge lists (tens of thousands of untracked files) render in steps as they scroll into view.
@@ -161,6 +164,7 @@ export function FileGroups<T extends { path: string }>({
           <div key={`${idPrefix}:${d}`}>
             <div
               className="file-row folder-row"
+              onContextMenu={onFolderMenu ? (e) => onFolderMenu(e, d === "." ? "" : d) : undefined}
               onClick={() => { if (!expandAll) setClosed((c) => (c.has(d) ? new Set([...c].filter((x) => x !== d)) : new Set([...c, d]))); }}
             >
               {isClosed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}

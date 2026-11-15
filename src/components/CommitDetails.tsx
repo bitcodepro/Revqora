@@ -23,6 +23,7 @@ import { usePanelTitleMenu } from "./PanelWindows";
 import { fileCopyMenu } from "./NamePathMenu";
 import { commitMenu } from "./menus";
 import { openInDiffTool, openInEditor } from "../lib/externalTools";
+import { folderHistoryDialog } from "./HistoryDialogs";
 
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
   const fileNavigation = useFileListNavigation();
@@ -277,7 +278,7 @@ ${oid}`;
             </span>
           </div>
           <div className="file-list" {...fileNavigation} aria-label="Commit files">
-            <FileGroups items={d.files} tree={treeView} idPrefix="c" render={(f, grouped) => (
+            <FileGroups items={d.files} tree={treeView} idPrefix="c" onFolderMenu={(e, folder) => contextMenu(e, [{ label: "Folder history…", icon: <History size={14} />, onClick: () => void folderHistoryDialog(root, folder) }])} render={(f, grouped) => (
               <div
                 key={f.path}
                 className={`file-row ${file === f.path ? "selected" : ""}`}

@@ -807,6 +807,8 @@ export interface BranchCleanupReport { status: "done" | "stopped"; preflightFail
 export interface DeletionResult { checkpoint: RecoverySummary | null; warning: string | null }
 
 export interface IgnoredFiles { paths: string[]; truncated: boolean; }
+export interface LineHistoryEntry { oid: string; author: string; time: number; subject: string; path: string; diff: FileDiff; }
+export interface FolderHistoryEntry { oid: string; author: string; time: number; subject: string; files: string[]; }
 export interface ExternalTools { diffTools: string[]; mergeTools: string[]; diffDefault: string | null; mergeDefault: string | null; }
 export type IgnoreKind = "file" | "extension" | "folder";
 export type IgnoreScope = "shared" | "local";

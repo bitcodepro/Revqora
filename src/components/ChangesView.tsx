@@ -59,6 +59,7 @@ import { previewGeneration, subscribePreview } from "../lib/commitPreview";
 import { ignoreDialog } from "./IgnoreDialog";
 import { ignoreChoices } from "../lib/ignoreRules";
 import { openInDiffTool, openInEditor, resolveInMergeTool } from "../lib/externalTools";
+import { folderHistoryDialog } from "./HistoryDialogs";
 
 const isNestedFile = (f: FileStatus) => f.untracked && f.path.endsWith("/");
 const openNestedFile = (root: string, f: FileStatus) => { void useRepos.getState().open(joinPath(root, f.path)).catch((e) => toast.error(e)); };
@@ -600,7 +601,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
           )}
           {!query && !sectionClosed("unstaged") && unstaged.length === 0 && <div className="cg-empty">No unstaged changes.</div>}
           {!sectionClosed("unstaged") &&
-            <FileGroups items={visibleUnstaged} tree={treeView} expandAll={!!query} idPrefix="u" render={(f, grouped) => (
+            <FileGroups items={visibleUnstaged} tree={treeView} expandAll={!!query} idPrefix="u" onFolderMenu={(e, folder) => contextMenu(e, [{ label: "Folder history…", icon: <History size={14} />, onClick: () => void folderHistoryDialog(root, folder) }])} render={(f, grouped) => (
               <div
                 key={f.path}
                 className={`file-row ${selectedIs("unstaged", f.path) ? "selected" : ""}`}
@@ -667,7 +668,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
           {!query && !sectionClosed("staged") && !layers && staged.length === 0 && <div className="cg-empty">Nothing staged. Double-click a file or use + to stage it.</div>}
           {!sectionClosed("staged") &&
             !layers &&
-            <FileGroups items={visibleStaged} tree={treeView} expandAll={!!query} idPrefix="s" render={(f, grouped) => (
+            <FileGroups items={visibleStaged} tree={treeView} expandAll={!!query} idPrefix="s" onFolderMenu={(e, folder) => contextMenu(e, [{ label: "Folder history…", icon: <History size={14} />, onClick: () => void folderHistoryDialog(root, folder) }])} render={(f, grouped) => (
               <div
                 key={f.path}
                 className={`file-row ${selectedIs("staged", f.path) ? "selected" : ""}`}
