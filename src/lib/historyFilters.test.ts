@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, isValidDate, removeFilter } from "./historyFilters";
+import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, isValidDate, removeFilter, historyListMode } from "./historyFilters";
 
 describe("history filters", () => {
   it("validates calendar dates", () => {
@@ -25,5 +25,20 @@ describe("history filters", () => {
     const f = { ...EMPTY_HISTORY_FILTERS, author: "Ann", since: "2024-01-01", firstParent: true };
     expect(filterChips(f).map((c) => c.key)).toEqual(["author", "since", "firstParent"]);
     expect(filterChips(removeFilter(f, "firstParent")).map((c) => c.key)).toEqual(["author", "since"]);
+  });
+});
+
+describe("history list mode", () => {
+  const base = { filtersActive: false, searchActive: false, loaded: true, matches: 0, onlyMatching: false, currentOutsideGraph: false };
+  it("filters alone show only matching commits, or an empty state", () => {
+    expect(historyListMode({ ...base, filtersActive: true, matches: 3 })).toBe("list");
+    expect(historyListMode({ ...base, filtersActive: true, matches: 0 })).toBe("empty");
+    expect(historyListMode({ ...base, filtersActive: true, loaded: false })).toBe("graph");
+  });
+  it("search text alone keeps highlighting in the graph", () => {
+    expect(historyListMode({ ...base, searchActive: true, matches: 3 })).toBe("graph");
+    expect(historyListMode({ ...base, searchActive: true, matches: 3, onlyMatching: true })).toBe("list");
+    expect(historyListMode({ ...base, searchActive: true, matches: 3, currentOutsideGraph: true })).toBe("list");
+    expect(historyListMode({ ...base, searchActive: true, matches: 0 })).toBe("graph");
   });
 });

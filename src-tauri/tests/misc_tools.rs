@@ -106,3 +106,28 @@ fn signature_status_is_reported_per_commit() {
     assert!(revqora_lib::git::commit::signature_status(root, &["--all".into()]).is_err());
     assert!(revqora_lib::git::commit::signature_status(root, &[]).unwrap().is_empty());
 }
+
+#[test]
+fn branch_from_stash_never_overwrites_an_ignored_file() {
+    let dir = repo();
+    let root = dir.path();
+    // The stash base tracks `cache`; later the branch deletes and ignores it, and a local
+    // ignored `cache` appears. Checking out the base would overwrite it silently.
+    fs::write(root.join("cache"), "tracked once\n").unwrap();
+    commit(root, "a.txt", "base\n");
+    fs::write(root.join("a.txt"), "stashed edit\n").unwrap();
+    runner::run(root, ["stash", "push", "-q", "-m", "wip"]).unwrap();
+    runner::run(root, ["rm", "-q", "cache"]).unwrap();
+    fs::write(root.join(".gitignore"), "cache\n").unwrap();
+    runner::run(root, ["add", ".gitignore"]).unwrap();
+    runner::run(root, ["commit", "-q", "-m", "ignore cache"]).unwrap();
+    fs::write(root.join("cache"), "precious local data\n").unwrap();
+    let stash = runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim().to_string();
+
+    let err = misc::stash_branch(root, "rescue", 0, &stash).unwrap_err();
+    assert_eq!(err.kind, "stash-branch-collision", "{}", err.message);
+    assert!(err.message.contains("cache"));
+    assert_eq!(fs::read_to_string(root.join("cache")).unwrap(), "precious local data\n");
+    assert_eq!(runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim(), stash, "the stash is kept");
+    assert_eq!(runner::run(root, ["branch", "--show-current"]).unwrap().trim(), "main");
+}

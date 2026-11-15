@@ -104,9 +104,33 @@ pub fn stash_branch(repo: &Path, name: &str, index: u32, expected: &str) -> GitR
         return Err(GitError::new(format!("{name} is not a valid branch name.")).kind("invalid-branch"));
     }
     super::ops::check_stash(repo, index, expected)?;
+    // Checking out the stash base silently replaces ignored files that the base tracks (Git
+    // refuses only for tracked and untracked ones), and checkpoints do not keep ignored files.
+    let clashes = ignored_files_in_tree(repo, &format!("{expected}^1"))?;
+    if !clashes.is_empty() {
+        let shown = clashes.iter().take(10).cloned().collect::<Vec<_>>().join(", ");
+        let more = if clashes.len() > 10 { format!(" and {} more", clashes.len() - 10) } else { String::new() };
+        return Err(GitError::new(format!(
+            "The stash's base commit has files that exist here as ignored files and would be overwritten: {shown}{more}. Move or delete them first."
+        ))
+        .kind("stash-branch-collision"));
+    }
     let out = runner::exec(repo, ["stash", "branch", name, &format!("stash@{{{index}}}")])?;
     if !out.ok() {
         return Err(GitError::new(out.text().trim().to_string()));
     }
     Ok(out.text())
+}
+
+/// Ignored files on disk that `tree` (a commit) contains: a checkout of it would overwrite them.
+fn ignored_files_in_tree(repo: &Path, commit: &str) -> GitResult<Vec<String>> {
+    let ignored = runner::run_bytes(repo, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"])?;
+    let ignored: std::collections::HashSet<String> = String::from_utf8_lossy(&ignored).split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect();
+    if ignored.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tree = runner::run_bytes(repo, ["ls-tree", "-r", "-z", "--name-only", "--end-of-options", commit])?;
+    let mut out: Vec<String> = String::from_utf8_lossy(&tree).split('\0').filter(|p| ignored.contains(*p)).map(str::to_string).collect();
+    out.sort();
+    Ok(out)
 }

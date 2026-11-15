@@ -95,6 +95,21 @@ pub fn pattern_for(path: &str, kind: &str) -> GitResult<String> {
     }
 }
 
+/// What a preview approved: the ignore file's content, and the tracked files the rule matched
+/// at the commit then checked out. Apply refuses if either changed.
+fn preview_token(file: &[u8], tracked: &[String], head: &str) -> String {
+    let mut listing = head.as_bytes().to_vec();
+    for path in tracked {
+        listing.push(0);
+        listing.extend_from_slice(path.as_bytes());
+    }
+    format!("{}:{}", token(file), token(&listing))
+}
+
+fn head(repo: &Path) -> String {
+    runner::run(repo, ["rev-parse", "-q", "--verify", "HEAD"]).map(|h| h.trim().to_string()).unwrap_or_default()
+}
+
 fn token(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|b| format!("{b:02x}")).collect()
@@ -155,10 +170,11 @@ pub fn preview(repo: &Path, path: &str, kind: &str, scope: &str) -> GitResult<Ig
     let after = appended(&before, &pattern);
     let mut tracked = tracked_matches(repo, &pattern)?;
     let tracked_count = tracked.len();
+    let token = preview_token(&before, &tracked, &head(repo));
     tracked.truncate(SHOWN_TRACKED);
     Ok(IgnorePreview {
         already_ignored: is_ignored(repo, path.trim_matches('/'))?,
-        token: token(&before),
+        token,
         before: String::from_utf8_lossy(&before).into_owned(),
         after: String::from_utf8_lossy(&after).into_owned(),
         pattern,
@@ -175,8 +191,16 @@ pub fn apply(repo: &Path, path: &str, kind: &str, scope: &str, expected: &str, u
     let pattern = pattern_for(path, kind)?;
     let (file_path, file) = target(repo, scope)?;
     let before = read_target(&file_path)?;
-    if token(&before) != expected {
+    let (expected_file, expected_tracked) = expected.split_once(':').unwrap_or((expected, ""));
+    if token(&before) != expected_file {
         return Err(GitError::new(format!("{file} changed after the preview. Review the rule again.")).kind("ignore-file-changed"));
+    }
+    // The files to untrack must be exactly the ones the preview listed (another tool may have
+    // staged or committed more, or switched branches, since).
+    let tracked = tracked_matches(repo, &pattern)?;
+    let current = preview_token(&before, &tracked, &head(repo));
+    if current.split_once(':').map(|(_, t)| t) != Some(expected_tracked) {
+        return Err(GitError::new("The files this rule matches changed after the preview. Review the rule again.").kind("ignore-preview-stale"));
     }
     let parent = file_path.parent().ok_or_else(|| GitError::new("The ignore file has no folder."))?;
     std::fs::create_dir_all(parent)?;
@@ -189,13 +213,12 @@ pub fn apply(repo: &Path, path: &str, kind: &str, scope: &str, expected: &str, u
         temporary.as_file().sync_all()?;
     }
     // Last check right before replacing: the narrowest window for a concurrent writer.
-    if token(&read_target(&destination)?) != expected {
+    if token(&read_target(&destination)?) != expected_file {
         return Err(GitError::new(format!("{file} changed after the preview. Review the rule again.")).kind("ignore-file-changed"));
     }
     atomic_file::replace(temporary, &destination)?;
     let mut untracked = 0;
     if untrack {
-        let tracked = tracked_matches(repo, &pattern)?;
         for chunk in tracked.chunks(200) {
             let mut args = vec!["rm".to_string(), "--cached".into(), "-q".into(), "--ignore-unmatch".into(), "--".into()];
             args.extend(chunk.iter().cloned());

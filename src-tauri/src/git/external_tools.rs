@@ -202,25 +202,35 @@ pub fn editor_argv(template: &str, file: &str, line: u32, column: u32) -> GitRes
 /// Finds a program on PATH, including Windows `.cmd`/`.bat` launchers (VS Code's `code` is
 /// `code.cmd`). Rust quotes arguments safely for those when the full path is given.
 fn resolve_program(name: &str) -> Option<PathBuf> {
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    resolve_program_in(name, &std::env::var_os("PATH")?, cfg!(windows).then_some(pathext.as_str()))
+}
+
+/// `pathext` is Windows' PATHEXT (None elsewhere). On Windows a bare name is tried with each
+/// extension; a name that already ends in one (`notepad.exe`, `code.cmd`) is taken as is.
+fn resolve_program_in(name: &str, path: &std::ffi::OsStr, pathext: Option<&str>) -> Option<PathBuf> {
     let given = Path::new(name);
     if given.components().count() > 1 || given.is_absolute() {
         return given.is_file().then(|| given.to_path_buf());
     }
-    let exts: Vec<String> = if cfg!(windows) {
-        let mut e = vec![String::new()];
-        e.extend(
-            std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into()).split(';').filter(|x| !x.is_empty()).map(|x| x.to_ascii_lowercase()),
-        );
-        e
-    } else {
-        vec![String::new()]
+    let exts: Vec<String> = match pathext {
+        Some(list) => list.split(';').filter(|x| !x.is_empty()).map(|x| x.to_ascii_lowercase()).collect(),
+        None => Vec::new(),
     };
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        for ext in &exts {
-            let candidate = dir.join(format!("{name}{ext}"));
-            if candidate.is_file() && (cfg!(windows) && !ext.is_empty() || !cfg!(windows)) {
-                return Some(candidate);
+    let lower = name.to_ascii_lowercase();
+    let has_ext = exts.iter().any(|e| lower.ends_with(e.as_str()));
+    // Elsewhere: the name itself. On Windows: the name when it already has an executable
+    // extension, else the name with each extension (never an extension-less file).
+    let candidates: Vec<String> = match pathext {
+        None => vec![name.to_string()],
+        Some(_) if has_ext => vec![name.to_string()],
+        Some(_) => exts.iter().map(|e| format!("{name}{e}")).collect(),
+    };
+    for dir in std::env::split_paths(path) {
+        for candidate in &candidates {
+            let full = dir.join(candidate);
+            if full.is_file() {
+                return Some(full);
             }
         }
     }
@@ -260,6 +270,22 @@ mod tests {
         assert_eq!(argv, ["subl", "x:2", ";", "rm", "-rf", "/"], "no shell: separators are plain arguments");
         assert!(editor_argv("  ", "x", 1, 1).is_err());
         assert!(editor_argv("ed \"unclosed", "x", 1, 1).is_err());
+    }
+
+    #[test]
+    fn programs_are_found_on_path_with_or_without_their_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("code.cmd"), "@echo off").unwrap();
+        std::fs::write(dir.path().join("notepad.exe"), "").unwrap();
+        std::fs::write(dir.path().join("plain"), "").unwrap();
+        let path = std::env::join_paths([dir.path()]).unwrap();
+        let win = Some(".COM;.EXE;.BAT;.CMD");
+        assert_eq!(resolve_program_in("code", &path, win), Some(dir.path().join("code.cmd")));
+        assert_eq!(resolve_program_in("code.cmd", &path, win), Some(dir.path().join("code.cmd")));
+        assert_eq!(resolve_program_in("notepad.exe", &path, win), Some(dir.path().join("notepad.exe")));
+        assert_eq!(resolve_program_in("plain", &path, win), None, "Windows never runs an extension-less file");
+        assert_eq!(resolve_program_in("plain", &path, None), Some(dir.path().join("plain")));
+        assert_eq!(resolve_program_in("missing", &path, win), None);
     }
 
     #[test]

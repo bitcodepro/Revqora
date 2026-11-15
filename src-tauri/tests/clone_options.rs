@@ -95,6 +95,24 @@ fn depth_gives_shallow_clone_and_history_can_be_fetched() {
 }
 
 #[test]
+fn fetching_more_history_never_prunes_local_tags() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bare = server(tmp.path(), "tags", 4);
+    let root = clone(&tmp.path().join("out"), &file_url(&bare), "t", &CloneOptions { depth: Some(1), ..Default::default() }).unwrap();
+    configure(&root);
+    // A tag only this clone has, with pruning of tags switched on in its configuration.
+    git(&root, &["tag", "local-only"]);
+    git(&root, &["config", "fetch.prune", "true"]);
+    git(&root, &["config", "fetch.pruneTags", "true"]);
+    git(&root, &["config", "remote.origin.prune", "true"]);
+    git(&root, &["config", "remote.origin.pruneTags", "true"]);
+    ops::fetch_more_history(&root, Some(1), |_| {}).unwrap();
+    assert_eq!(git(&root, &["tag", "--list", "local-only"]), "local-only");
+    ops::fetch_more_history(&root, None, |_| {}).unwrap();
+    assert_eq!(git(&root, &["tag", "--list", "local-only"]), "local-only");
+}
+
+#[test]
 fn single_branch_shallow_clone_when_toggle_off() {
     let tmp = tempfile::tempdir().unwrap();
     let bare = server(tmp.path(), "single", 2);

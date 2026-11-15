@@ -19,7 +19,7 @@ import { repositoryKey } from "../lib/repositoryLibrary";
 import { actionFor, matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
 import type { GraphLaneAnchor, GraphRow, GraphSummary, HistoryFilters, RefLabel, SearchMode, Seg } from "../lib/types";
-import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, removeFilter } from "../lib/historyFilters";
+import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, historyListMode, removeFilter } from "../lib/historyFilters";
 import { WORKTREE } from "../lib/types";
 import { absoluteTime, fullTime, relativeTime, shortOid } from "../lib/format";
 import { BranchAheadBehind, Avatar, RefBadge } from "./bits";
@@ -485,7 +485,18 @@ export function GraphView({
   const matchSet = useMemo(() => new Set(results.map(({ row }) => row.oid)), [results]);
   // An older hit can be opened directly by SHA. Show it in the same history
   // pane without constructing all the intervening graph lanes.
-  const filtered = results.length > 0 && (filterOnly || results[cursor]?.graphIndex == null);
+  // Active filters narrow History to the matching commits even without search text (and show
+  // "no matches" instead of the whole graph); search text alone highlights within the graph.
+  const listMode = historyListMode({
+    filtersActive: !!filterReq,
+    searchActive: !!query.trim(),
+    loaded: found?.scope === searchScope,
+    matches: results.length,
+    onlyMatching: filterOnly,
+    currentOutsideGraph: results[cursor]?.graphIndex == null,
+  });
+  const filtered = listMode === "list";
+  const noMatches = listMode === "empty";
   useEffect(() => {
     anchor.current = null;
     hoveredCommit.current = null;
@@ -605,7 +616,7 @@ export function GraphView({
   }, []);
 
   // Rows visible (or filtered list when "show only matches" is on).
-  const count = filtered ? results.length : total;
+  const count = noMatches ? 0 : filtered ? results.length : total;
   const first = Math.max(0, Math.floor(scrollTop / rowH) - 8);
   const last = Math.min(count - 1, Math.ceil((scrollTop + viewH) / rowH) + 8);
 
@@ -1409,6 +1420,12 @@ export function GraphView({
         ) : !summary && (
           <div className="loading-center" style={{ height: "100%" }}>
             <span className="loader" />
+          </div>
+        )}
+        {summary && total > 0 && noMatches && (
+          <div className="empty" role="status" style={{ height: "100%" }}>
+            <h3>No commits match the filters</h3>
+            <button type="button" className="btn sm" onClick={() => setFilters(EMPTY_HISTORY_FILTERS)}>Clear filters</button>
           </div>
         )}
         {summary && total === 0 && (

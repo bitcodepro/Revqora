@@ -53,3 +53,22 @@ export function filterChips(f: HistoryFilters): FilterChip[] {
 export function removeFilter(f: HistoryFilters, key: keyof HistoryFilters): HistoryFilters {
   return { ...f, [key]: EMPTY_HISTORY_FILTERS[key] };
 }
+
+/** What History shows: the whole graph, only the matching commits, or "no matches".
+ *  Active filters always narrow the list (with or without search text); search text alone
+ *  highlights matches in the graph unless "only matching" is on or a hit is outside it. */
+export function historyListMode(o: {
+  filtersActive: boolean;
+  searchActive: boolean;
+  loaded: boolean;
+  matches: number;
+  onlyMatching: boolean;
+  currentOutsideGraph: boolean;
+}): "graph" | "list" | "empty" {
+  if (o.filtersActive) {
+    if (!o.loaded) return "graph";
+    return o.matches > 0 ? "list" : "empty";
+  }
+  if (!o.searchActive || o.matches === 0) return "graph";
+  return o.onlyMatching || o.currentOutsideGraph ? "list" : "graph";
+}

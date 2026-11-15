@@ -38,8 +38,9 @@ function IgnoreRule({ root, path, kind, close }: { root: string; path: string; k
       void useRepos.getState().refresh(root, { status: true });
     } catch (e) {
       setError(errorMessage(e));
-      // The file changed after the preview: show the current one.
-      if ((e as { kind?: string })?.kind === "ignore-file-changed") api.ignorePreview(root, path, kind, scope).then(setPreview, () => {});
+      // The ignore file or the matched files changed after the preview: show the current state.
+      const stale = (e as { kind?: string })?.kind;
+      if (stale === "ignore-file-changed" || stale === "ignore-preview-stale") api.ignorePreview(root, path, kind, scope).then(setPreview, () => {});
     } finally {
       setBusy(false);
     }

@@ -69,6 +69,18 @@ fn own_recent_messages_use_the_configured_identity() {
 }
 
 #[test]
+fn own_recent_messages_match_plus_addressed_email_literally() {
+    let dir = repo();
+    let root = dir.path();
+    runner::run(root, ["config", "user.email", "alice+tag@example.com"]).unwrap();
+    commit_as(root, "Alice", "alice+tag@example.com", "a.txt", "plus addressed");
+    // Would match if the address were read as a regex ("e+" = one or more 'e').
+    commit_as(root, "Decoy", "aliceeetag@example.com", "a.txt", "regex lookalike");
+    commit_as(root, "Decoy", "alice.tag@example.com", "a.txt", "dot lookalike");
+    assert_eq!(ops::own_recent_messages(root, 30).unwrap(), ["plus addressed"]);
+}
+
+#[test]
 fn fixup_and_squash_commit_only_staged_changes() {
     let dir = repo();
     let root = dir.path();

@@ -1572,8 +1572,21 @@ async fn ignore_preview(repo: String, path: String, kind: String, scope: String)
 }
 
 #[tauri::command]
-async fn ignore_apply(repo: String, path: String, kind: String, scope: String, token: String, untrack: bool) -> GitResult<git::ignore::IgnoreResult> {
-    blocking(move || git::ignore::apply(&p(&repo), &path, &kind, &scope, &token, untrack)).await
+#[allow(clippy::too_many_arguments)]
+async fn ignore_apply(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    path: String,
+    kind: String,
+    scope: String,
+    token: String,
+    untrack: bool,
+) -> GitResult<git::ignore::IgnoreResult> {
+    // Under the repository's operation gate: nothing else writes the index between the check
+    // against the preview and the untracking.
+    mutating(repo.clone(), expected_state, app.clone(), "ignore_apply", None, move || git::ignore::apply(&p(&repo), &path, &kind, &scope, &token, untrack))
+        .await
 }
 
 #[tauri::command]

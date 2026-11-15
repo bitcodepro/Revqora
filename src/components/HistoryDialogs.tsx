@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FolderClock, History } from "lucide-react";
 import { Modal } from "./Modal";
-import { DiffView } from "./DiffView";
+import { DiffView, useDiffOpts } from "./DiffView";
 import { jumpToCommit } from "./GraphView";
 import { showDialog } from "../lib/ui";
 import { api, errorMessage } from "../lib/api";
@@ -127,6 +127,8 @@ function FolderHistory({ root, folder, close }: { root: string; folder: string; 
   const [file, setFile] = useState<string | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
+  // The View menu of the diff below (whitespace, context, algorithm) applies here as well.
+  const diffOpts = useDiffOpts(file);
   const entry = useMemo(() => items?.find((i) => i.oid === sel) ?? null, [items, sel]);
   useEffect(() => { setFile(entry?.files[0] ?? null); }, [entry]);
   useEffect(() => {
@@ -135,10 +137,10 @@ function FolderHistory({ root, folder, close }: { root: string; folder: string; 
     setDiff(null);
     setDiffError(null);
     api.commitDetails(root, entry.oid)
-      .then((d) => api.revDiff(root, d.diffBase, d.oid, file))
+      .then((d) => api.revDiff(root, d.diffBase, d.oid, file, diffOpts))
       .then((r) => { if (alive) setDiff(r); }, (e) => { if (alive) setDiffError(errorMessage(e)); });
     return () => { alive = false; };
-  }, [root, entry, file]);
+  }, [root, entry, file, diffOpts]);
   const open = (it: Row) => { close(); jumpToCommit(root, it.oid); };
   const prefix = folder ? folder + "/" : "";
   return (

@@ -325,20 +325,11 @@ pub fn own_recent_messages(repo: &Path, limit: usize) -> GitResult<Vec<String>> 
     if head_oid(repo).is_none() {
         return Ok(Vec::new());
     }
-    let author = format!("--author=<{}>", regex_escape(email.trim()));
-    let out = runner::run(repo, ["log", "-n", "300", "--no-color", "-i", author.as_str(), "--format=%B%x00"])?;
+    // A fixed string, not a regex: e-mail addresses contain '+', '.' and other regex characters.
+    let author = format!("--author=<{}>", email.trim());
+    let out = runner::run(repo, ["log", "-n", "300", "--no-color", "-i", "--fixed-strings", author.as_str(), "--format=%B%x00"])?;
     let mut seen = std::collections::HashSet::new();
     Ok(out.split('\0').map(|m| m.trim().to_string()).filter(|m| !m.is_empty() && seen.insert(m.clone())).take(limit).collect())
-}
-
-fn regex_escape(s: &str) -> String {
-    s.chars().fold(String::new(), |mut acc, c| {
-        if "\\.^$|?*+()[]{}".contains(c) {
-            acc.push('\\');
-        }
-        acc.push(c);
-        acc
-    })
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -556,7 +547,9 @@ pub fn fetch_more_history(repo: &Path, deepen: Option<u32>, on_line: impl FnMut(
         None => "--unshallow".into(),
     };
     super::recovery::protect_transport(repo, false, None, None, true)?;
-    runner::run_streaming(repo, &["fetch".into(), "--progress".into(), arg], &LOG_TRACKING, on_line)
+    // Only history is wanted: never prune here, whatever fetch.prune / fetch.pruneTags say
+    // (pruning could delete local-only tags or branches mapped by a refspec).
+    runner::run_streaming(repo, &["fetch".into(), "--progress".into(), "--no-prune".into(), "--no-prune-tags".into(), arg], &LOG_TRACKING, on_line)
 }
 
 /// `--prune` removes refs under every destination of the fetch refspecs, including local tags

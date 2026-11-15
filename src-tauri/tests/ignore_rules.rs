@@ -140,3 +140,31 @@ fn a_symlinked_gitignore_is_not_replaced() {
     let err = ignore::preview(root, "x", "file", "shared").unwrap_err();
     assert_eq!(err.kind, "ignore-file-symlink");
 }
+
+#[test]
+fn untracking_is_refused_when_the_matched_files_changed_after_the_preview() {
+    let dir = repo();
+    let root = dir.path();
+    fs::write(root.join("a.log"), "a").unwrap();
+    fs::write(root.join("main.rs"), "m").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    let p = ignore::preview(root, "a.log", "extension", "shared").unwrap();
+    assert_eq!(p.tracked, vec!["a.log".to_string()]);
+    // Another tool tracks b.log before the user confirms.
+    fs::write(root.join("b.log"), "b").unwrap();
+    git(root, &["add", "b.log"]);
+    let err = ignore::apply(root, "a.log", "extension", "shared", &p.token, true).unwrap_err();
+    assert_eq!(err.kind, "ignore-preview-stale");
+    assert!(!root.join(".gitignore").exists(), "nothing was written");
+    assert!(git(root, &["ls-files", "b.log"]).contains("b.log"), "b.log is still tracked");
+    assert!(git(root, &["ls-files", "a.log"]).contains("a.log"), "a.log is still tracked");
+
+    // A branch switch since the preview is refused too.
+    let p = ignore::preview(root, "a.log", "extension", "shared").unwrap();
+    git(root, &["commit", "-q", "-m", "track b"]);
+    assert_eq!(ignore::apply(root, "a.log", "extension", "shared", &p.token, true).unwrap_err().kind, "ignore-preview-stale");
+    // A fresh preview applies.
+    let p = ignore::preview(root, "a.log", "extension", "shared").unwrap();
+    assert_eq!(ignore::apply(root, "a.log", "extension", "shared", &p.token, true).unwrap().untracked, 2);
+}
