@@ -3502,3 +3502,7 @@ select[size="1"]:not([multiple]) {
 
 /* Several files picked with Ctrl/Shift+click in Changes. */
 .file-row.multi-picked { background: var(--bg-selected); box-shadow: inset 2px 0 0 var(--accent); }
+.submodule-summary { margin: 10px 12px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; display: grid; gap: 4px; font-size: var(--fs-sm); }
+.submodule-commit { display: grid; grid-template-columns: 14px 64px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; }
+.submodule-commit .a { color: var(--green); }
+.submodule-commit .d { color: var(--red); }

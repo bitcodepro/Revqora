@@ -34,6 +34,7 @@ pub mod repository_import;
 pub mod runner;
 pub mod status;
 pub mod storage;
+pub mod submodule_log;
 pub mod watcher;
 
 pub mod file_editor;

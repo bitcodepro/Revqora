@@ -623,6 +623,8 @@ export interface LfsStatus {
   patterns: string[];
 }
 
+export interface SubmoduleCommit { oid: string; author: string; time: number; subject: string; }
+export interface SubmoduleLog { added: SubmoduleCommit[]; removed: SubmoduleCommit[]; addedCount: number; removedCount: number; unavailable: string | null; }
 export interface GitHook { name: string; path: string; active: boolean; size: number; }
 export interface GitHooks { dir: string; customPath: string | null; hooks: GitHook[]; }
 export interface LfsLock { id: string; path: string; owner: string; lockedAt: string; }

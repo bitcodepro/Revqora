@@ -1899,6 +1899,11 @@ async fn lfs_track(app: AppHandle, expected_state: Option<String>, repo: String,
 }
 
 #[tauri::command]
+async fn submodule_log(repo: String, path: String, from: Option<String>, to: Option<String>) -> GitResult<git::submodule_log::SubmoduleLog> {
+    blocking(move || git::submodule_log::log(&p(&repo), &path, from.as_deref(), to.as_deref())).await
+}
+
+#[tauri::command]
 async fn hooks_list(repo: String) -> GitResult<git::hooks::Hooks> {
     blocking(move || git::hooks::list(&p(&repo))).await
 }
@@ -2881,6 +2886,7 @@ pub fn run() {
             lfs_track,
             lfs_locks,
             hooks_list,
+            submodule_log,
             lfs_lock,
             lfs_unlock,
             lfs_run,

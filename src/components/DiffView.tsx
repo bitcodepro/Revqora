@@ -36,6 +36,8 @@ import { useDiffWordSelection } from "./DiffWordSelection";
 import { create } from "zustand";
 import { movedLines } from "../lib/movedLines";
 import { changeBlocks, lineRange } from "../lib/lineSelection";
+import { submodulePointers } from "../lib/submodulePointer";
+import { SubmoduleSummary } from "./SubmoduleSummary";
 
 export type DiffMode = "unstaged" | "staged" | "readonly" | "pick";
 export type LineAction = "stage" | "unstage" | "discard" | "apply" | "stash";
@@ -212,6 +214,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     });
   }, [diff, expensive]);
 
+  const pointers = useMemo(() => submodulePointers(diff ?? null), [diff]);
   const moved = useMemo(() => (diff && s.highlightMovedLines && !expensive ? movedLines(diff.hunks) : new Set<string>()), [diff, s.highlightMovedLines, expensive]);
   useEffect(() => {
     setSel(new Set());
@@ -738,7 +741,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
           onMouseDownCapture={selectionMenu.onMouseDownCapture}
           onContextMenu={e => {
             if (!(e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) selectionMenu.onContextMenu(e);
-          }}>{body}</div>
+          }}>{root && path && pointers && <SubmoduleSummary root={root} path={path} from={pointers.from} to={pointers.to} />}{body}</div>
       </div>
       {!s.wrapDiff && horizontal.max > 1 && (
         <div className="diff-hscroll">
