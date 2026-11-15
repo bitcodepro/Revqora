@@ -1,7 +1,7 @@
 import type { BranchCleanupRequest, BranchCleanupSelection, BranchCleanupReview, BranchCleanupReport } from "./types";
 import type { RepositoryFolderScan } from "./types";
 import type { RebaseItem, StudioReview, StudioReport, StudioComparison, ValidationReport } from "./types";
-import type { IgnoredFiles, IgnoreKind, IgnorePreview, IgnoreResult, IgnoreScope, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
+import type { ExternalTools, IgnoredFiles, IgnoreKind, IgnorePreview, IgnoreResult, IgnoreScope, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
 import { recordError } from "./errorLog";
@@ -170,6 +170,11 @@ export const api = {
   gitConnectionForget: (repo: string) => call<void>("git_connection_forget", { repo }),
   repoInfo: (repo: string) => call<RepoInfo>("repo_info", { repo }),
   ignoredFiles: (repo: string) => call<IgnoredFiles>("ignored_files", { repo }),
+  externalTools: (repo: string) => call<ExternalTools>("external_tools", { repo }),
+  externalDifftool: (repo: string, path: string, side: "unstaged" | "staged" | "commits", from: string | null, to: string | null, tool: string | null) =>
+    call<void>("external_difftool", { repo, path, side, from, to, tool }),
+  conflictExternal: (repo: string, path: string, tool: string | null, expectedState?: string | null) => call<void>("conflict_external", { repo, path, tool, expectedState }),
+  openInEditor: (repo: string, path: string, line: number, column: number, command: string) => call<void>("open_in_editor", { repo, path, line, column, command }),
   ignorePreview: (repo: string, path: string, kind: IgnoreKind, scope: IgnoreScope) => call<IgnorePreview>("ignore_preview", { repo, path, kind, scope }),
   ignoreApply: (repo: string, path: string, kind: IgnoreKind, scope: IgnoreScope, token: string, untrack: boolean) =>
     call<IgnoreResult>("ignore_apply", { repo, path, kind, scope, token, untrack }),

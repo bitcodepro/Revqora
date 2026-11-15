@@ -28,6 +28,8 @@ import {
   Trash2,
   Undo2,
   EyeOff,
+  SquarePen,
+  Columns2,
   Info,
   Combine,
   ScanSearch,
@@ -56,6 +58,7 @@ import { Splitter } from "./Overlays";
 import { previewGeneration, subscribePreview } from "../lib/commitPreview";
 import { ignoreDialog } from "./IgnoreDialog";
 import { ignoreChoices } from "../lib/ignoreRules";
+import { openInDiffTool, openInEditor, resolveInMergeTool } from "../lib/externalTools";
 
 const isNestedFile = (f: FileStatus) => f.untracked && f.path.endsWith("/");
 const openNestedFile = (root: string, f: FileStatus) => { void useRepos.getState().open(joinPath(root, f.path)).catch((e) => toast.error(e)); };
@@ -400,6 +403,8 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
     { label: "File history", icon: <History size={14} />, disabled: f.untracked, onClick: () => fileHistoryDialog(root, f.path) },
     { label: "Blame", icon: <ScanSearch size={14} />, disabled: f.untracked || f.worktree === "D", onClick: () => openOverlay({ kind: "blame", root, path: f.path, rev: null }) },
     { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void openRepoFile(joinPath(root, f.path)) },
+    { label: "Open in editor", icon: <SquarePen size={14} />, disabled: kind === "unstaged" && f.worktree === "D", onClick: () => void openInEditor(root, f.path) },
+    { label: "Compare in external diff tool", icon: <Columns2 size={14} />, disabled: f.untracked, onClick: () => void openInDiffTool(root, f.path, kind) },
     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(joinPath(root, f.path)) },
     ...fileCopyMenu(f.path),
   ];
@@ -550,11 +555,13 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                     onContextMenu={(e) =>
                       contextMenu(e, [
                         { label: "Open merge editor", icon: <Swords size={14} />, onClick: () => onOpenConflict(f.path) },
+                        { label: "Resolve in external merge tool", icon: <Columns2 size={14} />, onClick: () => void resolveInMergeTool(root, f.path) },
                         { label: "Take ours (current branch)", icon: <ArrowUp size={14} />, onClick: () => A.act(root, () => api.conflictTake(root, f.path, "ours"), { success: "Resolved with ours" }) },
                         { label: "Take theirs (incoming)", icon: <ArrowDown size={14} />, onClick: () => A.act(root, () => api.conflictTake(root, f.path, "theirs"), { success: "Resolved with theirs" }) },
                         { label: "Mark as resolved", icon: <Check size={14} />, onClick: () => A.act(root, () => api.conflictMarkResolved(root, [f.path]), { success: "Marked resolved" }) },
                         { separator: true },
                         { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void openRepoFile(joinPath(root, f.path)) },
+                        { label: "Open in editor", icon: <SquarePen size={14} />, onClick: () => void openInEditor(root, f.path) },
                         ...fileCopyMenu(f.path),
                       ])
                     }

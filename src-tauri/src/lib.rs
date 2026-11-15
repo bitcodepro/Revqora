@@ -1476,6 +1476,28 @@ async fn conflict_save(
 }
 
 #[tauri::command]
+async fn conflict_external(app: AppHandle, expected_state: Option<String>, repo: String, path: String, tool: Option<String>) -> GitResult<()> {
+    // The operation stays open while the merge tool is: no other change lands meanwhile.
+    mutating(repo.clone(), expected_state, app.clone(), "conflict_external", None, move || git::external_tools::mergetool(&p(&repo), &path, tool.as_deref()))
+        .await
+}
+
+#[tauri::command]
+async fn external_tools(repo: String) -> GitResult<git::external_tools::ExternalTools> {
+    blocking(move || git::external_tools::tools(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn external_difftool(repo: String, path: String, side: String, from: Option<String>, to: Option<String>, tool: Option<String>) -> GitResult<()> {
+    blocking(move || git::external_tools::difftool(&p(&repo), &path, &side, from.as_deref(), to.as_deref(), tool.as_deref())).await
+}
+
+#[tauri::command]
+async fn open_in_editor(repo: String, path: String, line: u32, column: u32, command: String) -> GitResult<()> {
+    blocking(move || git::external_tools::open_in_editor(&p(&repo), &path, line, column, &command)).await
+}
+
+#[tauri::command]
 async fn conflict_take(app: AppHandle, expected_state: Option<String>, repo: String, path: String, which: String) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "conflict_take", None, move || conflicts::take_side(&p(&repo), &path, &which)).await
 }
@@ -2706,6 +2728,10 @@ pub fn run() {
             ignored_files,
             ignore_preview,
             ignore_apply,
+            conflict_external,
+            external_tools,
+            external_difftool,
+            open_in_editor,
             nested_repositories,
             stash_selection,
             remote_rename_plan,

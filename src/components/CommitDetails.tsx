@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { openRepoFile } from "../lib/openFile";
-import { Ellipsis, List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
+import { Columns2, SquarePen, Ellipsis, List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
 import * as A from "../lib/actions";
 import { api, errorMessage } from "../lib/api";
 import type { Check, CommitDetails as Details, FileDiff, GraphRow, RefLabel, Signature } from "../lib/types";
@@ -22,6 +22,7 @@ import { useFileListNavigation } from "../lib/useFileListNavigation";
 import { usePanelTitleMenu } from "./PanelWindows";
 import { fileCopyMenu } from "./NamePathMenu";
 import { commitMenu } from "./menus";
+import { openInDiffTool, openInEditor } from "../lib/externalTools";
 
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
   const fileNavigation = useFileListNavigation();
@@ -300,6 +301,8 @@ ${oid}`;
                     { separator: true },
                     { label: "Blame at this commit", icon: <ScanSearch size={14} />, disabled: f.status === "D", onClick: () => openOverlay({ kind: "blame", root, path: f.path, rev: d.oid }) },
                     { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void openRepoFile(joinPath(root, f.path)) },
+                    { label: "Open in editor", icon: <SquarePen size={14} />, disabled: f.status === "D", onClick: () => void openInEditor(root, f.path) },
+                    { label: "Compare in external diff tool", icon: <Columns2 size={14} />, onClick: () => void openInDiffTool(root, f.path, "commits", d.diffBase, d.oid) },
                     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(joinPath(root, f.path)) },
                     { separator: true },
                     ...fileCopyMenu(f.path),

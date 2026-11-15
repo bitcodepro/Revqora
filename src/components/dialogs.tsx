@@ -30,6 +30,8 @@ import {
 import { Modal } from "./Modal";
 import { showDialog, toast } from "../lib/ui";
 import { api, errorMessage } from "../lib/api";
+import { EDITOR_PRESETS, editorPresetLabel } from "../lib/externalTools";
+import type { ExternalTools } from "../lib/types";
 import { CODE_FONTS, DEFAULT_EXPLORER_FOLDER_HOVER, UI_FONTS, useSettings } from "../lib/settings";
 import { McpSettings } from "./McpSettings";
 import type { GitSelection, PushOptions, ReflogEntry, RemoteInfo, SigningConfig } from "../lib/types";
@@ -810,6 +812,7 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
             <input type="checkbox" checked={s.wrapDiff} onChange={(e) => s.set({ wrapDiff: e.target.checked })} /> Wrap long lines
           </label>
         </div>
+        <ExternalToolSettings root={root} />
       </div>
       <div className="section-title">API accounts</div><button className="btn" type="button" onClick={()=>{close();void forgeAccountsDialog(root);}}>Accounts and API connections…</button>
       <div className="section-title">Behaviour</div>
@@ -1052,6 +1055,43 @@ function ShortcutSettings() {
         })}
       </div>
       {!filtered.length && <div className="cg-empty">No matching shortcuts.</div>}
+    </>
+  );
+}
+
+/** Editor, diff tool and merge tool. Tools come from Git's own lists (installed, graphical). */
+function ExternalToolSettings({ root }: { root: string | null }) {
+  const editor = useSettings((st) => st.externalEditor);
+  const diffTool = useSettings((st) => st.diffTool);
+  const mergeTool = useSettings((st) => st.mergeTool);
+  const set = useSettings((st) => st.set);
+  const [tools, setTools] = useState<ExternalTools | null>(null);
+  useEffect(() => { if (root) api.externalTools(root).then(setTools, () => setTools(null)); }, [root]);
+  const preset = editorPresetLabel(editor);
+  const toolSelect = (label: string, value: string, list: string[], fallback: string | null, key: "diffTool" | "mergeTool") => (
+    <>
+      <label htmlFor={`setting-${key}`}>{label}</label>
+      <select id={`setting-${key}`} className="select" style={{ width: 260 }} value={value} onChange={(e) => set({ [key]: e.target.value })}>
+        <option value="">{fallback ? `Git's default (${fallback})` : "Git's default (not set)"}</option>
+        {[...new Set([...list, ...(value ? [value] : [])])].map((t) => <option key={t} value={t}>{t}</option>)}
+      </select>
+    </>
+  );
+  return (
+    <>
+      <label htmlFor="setting-editor">External editor</label>
+      <div className="vstack" style={{ gap: 6 }}>
+        <select id="setting-editor" className="select" style={{ width: 260 }} value={preset}
+          onChange={(e) => { const p = EDITOR_PRESETS.find((x) => x.label === e.target.value); if (p) set({ externalEditor: p.command }); }}>
+          {EDITOR_PRESETS.map((p) => <option key={p.label}>{p.label}</option>)}
+          {preset === "Custom" && <option>Custom</option>}
+        </select>
+        <input className="input mono" aria-label="Editor command" placeholder="System text editor" value={editor}
+          onChange={(e) => set({ externalEditor: e.target.value })} />
+        <span className="faint">Placeholders: {"{file}"}, {"{line}"}, {"{column}"}. Run directly, without a shell.</span>
+      </div>
+      {toolSelect("External diff tool", diffTool, tools?.diffTools ?? [], tools?.diffDefault ?? null, "diffTool")}
+      {toolSelect("External merge tool", mergeTool, tools?.mergeTools ?? [], tools?.mergeDefault ?? null, "mergeTool")}
     </>
   );
 }

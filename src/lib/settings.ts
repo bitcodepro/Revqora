@@ -40,6 +40,11 @@ export interface Settings {
   ignoreWhitespace: boolean;
   showWhitespace: boolean;
   contextLines: number;
+  /** Editor command template ({file}, {line}, {column}); empty = the system's text editor. */
+  externalEditor: string;
+  /** Git difftool / mergetool names; empty = Git's configured default. */
+  diffTool: string;
+  mergeTool: string;
   dateStyle: DateStyle;
   confirmDiscard: boolean;
   showRemoteBranchesInGraph: boolean;
@@ -104,6 +109,9 @@ export const useSettings = create<Settings>()(
       ignoreWhitespace: false,
       showWhitespace: false,
       contextLines: 3,
+      externalEditor: "",
+      diffTool: "",
+      mergeTool: "",
       dateStyle: "relative",
       confirmDiscard: true,
       showRemoteBranchesInGraph: true,

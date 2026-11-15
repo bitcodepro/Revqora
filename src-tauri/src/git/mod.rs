@@ -7,6 +7,7 @@ pub mod commit;
 pub mod conflicts;
 pub mod connection;
 pub mod diff;
+pub mod external_tools;
 pub mod extras;
 pub mod forge;
 pub mod forge_accounts;
