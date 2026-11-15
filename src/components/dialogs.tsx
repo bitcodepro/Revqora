@@ -248,7 +248,8 @@ function PushBody({ o, close }: { o: Parameters<typeof pushDialog>[0]; close: (v
   const [remote, setRemote] = useState(upRemote ?? o.remotes[0]?.name ?? "origin");
   const [remoteBranch, setRemoteBranch] = useState(upBranch ?? o.branch);
   const [setUp, setSetUp] = useState(!o.upstream);
-  const [force, setForce] = useState(o.behind > 0);
+  // Never pre-select a force push: the safe default when behind is to pull first.
+  const [force, setForce] = useState(false);
   const [tags, setTags] = useState(false);
   return (
     <Modal
@@ -286,7 +287,7 @@ function PushBody({ o, close }: { o: Parameters<typeof pushDialog>[0]; close: (v
           <input type="checkbox" checked={setUp} onChange={(e) => setSetUp(e.target.checked)} /> Track this remote branch (set upstream)
         </label>
         <label className="check">
-          <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} /> Force push (with lease — refuses if someone else pushed)
+          <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} /> Force push (with lease — refuses if someone else pushed commits you have not pulled)
         </label>
         <label className="check">
           <input type="checkbox" checked={tags} onChange={(e) => setTags(e.target.checked)} /> Also push all tags

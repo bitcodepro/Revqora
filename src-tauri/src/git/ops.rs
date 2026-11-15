@@ -406,13 +406,28 @@ pub fn fetch(repo: &Path, remote: Option<&str>, prune: bool, on_line: impl FnMut
         Some(r) => args.push(r.into()),
         None => args.push("--all".into()),
     }
-    if prune {
-        args.push("--prune".into());
-    } else {
-        args.extend(["--no-prune".into(), "--no-prune-tags".into()]);
-    }
+    args.extend(prune_args(repo, remote, prune)?);
     args.push("--tags".into());
     runner::run_streaming(repo, &args, &[], on_line)
+}
+
+/// `--prune` removes refs under every destination of the fetch refspecs, including local tags
+/// or branches when a refspec maps there (e.g. `+refs/tags/*:refs/tags/*`), and `fetch.pruneTags`
+/// adds local tags. Only prune when every refspec of the fetched remotes targets
+/// `refs/remotes/`, and never prune tags.
+fn prune_args(repo: &Path, remote: Option<&str>, requested: bool) -> GitResult<Vec<String>> {
+    let safe = requested && {
+        let remotes: Vec<String> = match remote {
+            Some(r) => vec![r.to_string()],
+            None => runner::run(repo, ["remote"])?.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
+        };
+        let mut all = !remotes.is_empty();
+        for r in &remotes {
+            all &= pull_can_prune(repo, r)?;
+        }
+        all
+    };
+    Ok(if safe { vec!["--prune".into(), "--no-prune-tags".into()] } else { vec!["--no-prune".into(), "--no-prune-tags".into()] })
 }
 
 /// Environment for fetches nobody is watching: no askpass helpers (git's or Revqora's), no
@@ -451,12 +466,11 @@ fn fetch_background_with_deadline(repo: &Path, timeout: std::time::Duration) -> 
         || std::env::var_os("GIT_SSH").is_some()
         || super::connection::managed_ssh(repo)?
         || runner::run(repo, ["config", "--get", "core.sshCommand"]).map(|s| !s.trim().is_empty()).unwrap_or(false);
-    runner::run_with_deadline(
-        repo,
-        &["fetch", "--all", "--prune", "--tags", "--quiet", "--no-write-fetch-head", "--no-auto-maintenance"],
-        &background_env(ssh_configured),
-        timeout,
-    )
+    let mut args: Vec<String> = ["fetch", "--all"].map(String::from).to_vec();
+    args.extend(prune_args(repo, None, true)?);
+    args.extend(["--tags", "--quiet", "--no-write-fetch-head", "--no-auto-maintenance"].map(String::from));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    runner::run_with_deadline(repo, &args, &background_env(ssh_configured), timeout)
 }
 
 #[cfg(test)]
@@ -604,6 +618,9 @@ pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<Pul
 pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
     super::recovery::protect_transport(repo, false, None, None, false)?;
     let before = status::status(repo)?;
+    if mode == "merge" || mode == "rebase" {
+        refuse_autostash_with_staged(repo, "Pull")?;
+    }
     let branch = before.branch.as_deref().ok_or_else(|| GitError::new("Choose a branch with an upstream before pulling."))?;
     let config_key = format!("branch.{branch}.merge");
     let merges = runner::exec(repo, ["config", "--get-all", &config_key])?;
@@ -745,6 +762,7 @@ pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, mut on_line:
             }
             let args = ["rebase", "--autostash", "--onto", targets[0], upstream].map(String::from);
             match runner::run_streaming(repo, &args, &[], &mut on_line) {
+                Ok(output) if autostash_conflict(&output) => autostash_outcome(repo),
                 Ok(output) => OpOutcome::done(output),
                 Err(error) => {
                     let conflicts = conflicted(repo);
@@ -805,7 +823,10 @@ pub fn push(repo: &Path, o: &PushOptions, on_line: impl FnMut(&str)) -> GitResul
         args.push("--set-upstream".into());
     }
     if o.force_with_lease {
-        args.push("--force-with-lease".into());
+        // A bare lease compares with the remote-tracking ref, which background fetch keeps
+        // moving, so it would overwrite commits pushed by others. `--force-if-includes` also
+        // requires that the remote tip was once part of the local branch (its reflog).
+        args.extend(lease_args(repo, o));
     }
     if o.tags {
         args.push("--tags".into());
@@ -818,6 +839,28 @@ pub fn push(repo: &Path, o: &PushOptions, on_line: impl FnMut(&str)) -> GitResul
         }
     }
     runner::run_streaming(repo, &args, &[], on_line)
+}
+
+/// Lease arguments for a force push. With entries in the remote-tracking ref's reflog (it gets
+/// them once anything is fetched or pushed), `--force-if-includes` refuses remote tips that never
+/// reached the local branch. Without them (fresh clone; nothing has moved the ref) the lease
+/// names the exact remote tip, or requires the remote branch to be absent.
+fn lease_args(repo: &Path, o: &PushOptions) -> Vec<String> {
+    let (Some(remote), Some(b)) = (&o.remote, &o.branch) else {
+        return vec!["--force-with-lease".into(), "--force-if-includes".into()];
+    };
+    let rb = o.remote_branch.as_deref().unwrap_or(b);
+    let tracking = format!("refs/remotes/{remote}/{rb}");
+    let tip =
+        runner::run(repo, ["rev-parse", "--verify", "--quiet", &format!("{tracking}^{{commit}}")]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    // A fresh clone may leave an empty reflog file; only real entries make the check meaningful.
+    let has_reflog = runner::run(repo, ["reflog", "show", "--format=%H", "-n", "1", &tracking]).map(|out| !out.trim().is_empty()).unwrap_or(false);
+    match tip {
+        // Refname-only form: an explicit expected value would turn --force-if-includes off.
+        Some(_) if has_reflog => vec![format!("--force-with-lease=refs/heads/{rb}"), "--force-if-includes".into()],
+        Some(oid) => vec![format!("--force-with-lease=refs/heads/{rb}:{oid}")],
+        None => vec![format!("--force-with-lease=refs/heads/{rb}:")],
+    }
 }
 
 pub fn push_ref(repo: &Path, remote: &str, refspec: &str, on_line: impl FnMut(&str)) -> GitResult<String> {
@@ -1022,6 +1065,9 @@ fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autosta
     args.push(target);
     let out = runner::exec(repo, &args)?;
     let text = format!("{}\n{}", out.text(), out.stderr);
+    if out.ok() && autostash_conflict(&text) {
+        return Ok(autostash_outcome(repo));
+    }
     if text.contains("Already up to date") || text.contains("Already up-to-date") {
         return Ok(OpOutcome { status: "upToDate".into(), conflicts: Vec::new(), message: format!("Already up to date with {target}.") });
     }
@@ -1148,7 +1194,35 @@ pub fn skip_op(repo: &Path, kind: &str) -> GitResult<OpOutcome> {
     Err(runner::to_error(&format!("git {kind} --skip"), &out))
 }
 
+/// Git's `--autostash` re-applies saved changes without `--index`: everything staged (and with
+/// it any stage layers) comes back unstaged. Refuse instead of silently losing the staging.
+fn refuse_autostash_with_staged(repo: &Path, what: &str) -> GitResult<()> {
+    let staged = runner::exec(repo, ["diff", "--cached", "--quiet", "--ignore-submodules=dirty"])?;
+    match staged.code {
+        0 => Ok(()),
+        1 => Err(GitError::new(format!("{what} would unstage your staged changes. Commit them, or stash them (Stash keeps what is staged), then try again."))
+            .kind("staged-changes")),
+        _ => Err(runner::to_error("git diff --cached", &staged)),
+    }
+}
+
+/// Git exits 0 when re-applying the autostash conflicts and only says so on stderr.
+fn autostash_conflict(text: &str) -> bool {
+    text.contains("Applying autostash resulted in conflicts")
+}
+
+fn autostash_outcome(repo: &Path) -> OpOutcome {
+    OpOutcome {
+        status: "conflicts".into(),
+        conflicts: conflicted(repo),
+        message: "The operation finished, but restoring your local changes conflicted. Resolve the conflicted files; a copy of your changes is kept in the stash list.".into(),
+    }
+}
+
 fn sequence_outcome(repo: &Path, out: runner::Output, what: &str) -> GitResult<OpOutcome> {
+    if out.ok() && autostash_conflict(&out.stderr) {
+        return Ok(autostash_outcome(repo));
+    }
     if out.ok() {
         let gd = repo::git_dir(repo)?;
         let st = repo::op_state(repo, &gd);
@@ -1370,6 +1444,7 @@ pub fn revert(repo: &Path, oid: &str, no_commit: bool) -> GitResult<OpOutcome> {
 }
 
 pub fn rebase_onto(repo: &Path, upstream: &str) -> GitResult<OpOutcome> {
+    refuse_autostash_with_staged(repo, "Rebase")?;
     let out = runner::exec(repo, ["rebase", "--autostash", upstream])?;
     sequence_outcome(repo, out, "git rebase")
 }
@@ -1414,6 +1489,7 @@ fn commits_since(repo: &Path, base: Option<&str>) -> GitResult<Vec<String>> {
 }
 
 fn run_todo(repo: &Path, base: Option<&str>, todo: &str) -> GitResult<OpOutcome> {
+    refuse_autostash_with_staged(repo, "Editing history")?;
     run_todo_logged(repo, base, todo, None)
 }
 fn run_todo_logged(repo: &Path, base: Option<&str>, todo: &str, reflog: Option<&str>) -> GitResult<OpOutcome> {
@@ -1454,7 +1530,7 @@ pub fn rewrite(repo: &Path, action: &RewriteAction) -> GitResult<OpOutcome> {
             }
             let msg_file = temp_file(repo, "REWORD_MSG", message)?;
             if oid == head {
-                runner::run(repo, ["commit", "--amend", "--only", "--allow-empty", "--cleanup=strip", "-F", &msg_file.to_string_lossy()])?;
+                runner::run(repo, ["commit", "--amend", "--only", "--allow-empty", "--cleanup=whitespace", "-F", &msg_file.to_string_lossy()])?;
                 return Ok(OpOutcome::done("Message updated."));
             }
             let base = ensure_rewritable(repo, &oid)?;
@@ -1462,7 +1538,7 @@ pub fn rewrite(repo: &Path, action: &RewriteAction) -> GitResult<OpOutcome> {
             for c in commits_since(repo, base.as_deref())? {
                 todo.push_str(&format!("pick {c}\n"));
                 if c == oid {
-                    todo.push_str(&format!("exec git commit --amend --only --allow-empty --cleanup=strip -F '{}'\n", sh_path(&msg_file)));
+                    todo.push_str(&format!("exec git commit --amend --only --allow-empty --cleanup=whitespace -F '{}'\n", sh_path(&msg_file)));
                 }
             }
             run_todo(repo, base.as_deref(), &todo)
@@ -1513,7 +1589,7 @@ pub fn rewrite(repo: &Path, action: &RewriteAction) -> GitResult<OpOutcome> {
                     todo.push_str(&format!("pick {c}\n"));
                 }
                 if &c == newest {
-                    todo.push_str(&format!("exec git commit --amend --only --allow-empty --cleanup=strip -F '{}'\n", sh_path(&msg_file)));
+                    todo.push_str(&format!("exec git commit --amend --only --allow-empty --cleanup=whitespace -F '{}'\n", sh_path(&msg_file)));
                 }
             }
             run_todo(repo, base.as_deref(), &todo)
@@ -1632,7 +1708,7 @@ pub fn build_todo(repo: &Path, items: &[RebaseItem]) -> GitResult<String> {
         if let Some(m) = pending.take() {
             n += 1;
             let f = temp_file(repo, &format!("ri-msg-{n}"), &m)?;
-            todo.push_str(&format!("exec git commit --amend --only --allow-empty --cleanup=strip -F '{}'\n", sh_path(&f)));
+            todo.push_str(&format!("exec git commit --amend --only --allow-empty --cleanup=whitespace -F '{}'\n", sh_path(&f)));
         }
         Ok(())
     };
@@ -1680,8 +1756,11 @@ pub fn build_todo(repo: &Path, items: &[RebaseItem]) -> GitResult<String> {
 
 /// Runs an interactive rebase over `base..HEAD` with the given plan (oldest first).
 pub fn interactive_rebase(repo: &Path, base: Option<&str>, items: &[RebaseItem]) -> GitResult<OpOutcome> {
+    refuse_autostash_with_staged(repo, "Interactive rebase")?;
     interactive_rebase_logged(repo, base, items, None)
 }
+/// Rebase Studio entry: the user has explicitly confirmed how autostash treats their working
+/// changes, and a full checkpoint (index included) is taken first, so staged work is allowed.
 pub fn interactive_rebase_logged(repo: &Path, base: Option<&str>, items: &[RebaseItem], reflog: Option<&str>) -> GitResult<OpOutcome> {
     let gd = repo::git_dir(repo)?;
     if repo::op_state(repo, &gd).kind != "none" {
@@ -1721,7 +1800,10 @@ pub fn stash_save(repo: &Path, message: &str, include_untracked: bool, keep_inde
         args.push("--".into());
         args.extend(paths.iter().cloned());
     }
-    let out = runner::run(repo, &args)?;
+    // Paths are file names, not glob patterns: "pages/[id].tsx" must not also match "pages/i.tsx".
+    // Only with explicit paths: without any, literal mode breaks stash's own pathspec handling.
+    let literal: &[(&str, &str)] = if paths.is_empty() { &[] } else { &[("GIT_LITERAL_PATHSPECS", "1")] };
+    let out = runner::run_env(repo, &args, literal, None)?;
     if out.contains("No local changes to save") {
         return Err(GitError::new("No local changes to stash."));
     }

@@ -610,7 +610,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
             <h3 style={{ margin: 0 }}>{conflictLabel(info.code)}</h3>
             <div className="muted">
               {info.ours.binary || info.theirs.binary
-                ? "This is a binary file, so the sides cannot be merged line by line. Pick the version to keep."
+                ? "This file is binary or not UTF-8 text, so the sides cannot be merged line by line without changing its bytes. Pick the version to keep."
                 : !info.ours.exists
                   ? `The file was deleted on ${labels.ours} but changed on ${labels.theirs}.`
                   : `The file was changed on ${labels.ours} but deleted on ${labels.theirs}.`}

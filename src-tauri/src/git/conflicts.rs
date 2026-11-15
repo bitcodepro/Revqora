@@ -65,12 +65,19 @@ fn is_binary(data: &[u8]) -> bool {
     data.iter().take(8000).any(|b| *b == 0)
 }
 
+/// Content the line-by-line editor cannot round-trip: binary data, or text in an encoding other
+/// than UTF-8 (CP1251, Shift-JIS, ...), whose bytes a UTF-8 save would replace with U+FFFD.
+/// Such files are resolved by taking a whole side instead.
+pub(crate) fn not_editable_text(data: &[u8]) -> bool {
+    is_binary(data) || std::str::from_utf8(data).is_err()
+}
+
 fn side(repo: &Path, oid: Option<&str>) -> GitResult<(ConflictSide, Vec<u8>)> {
     match oid {
         None => Ok((ConflictSide { exists: false, binary: false, text: String::new(), oid: None }, Vec::new())),
         Some(o) => {
             let data = runner::run_bytes(repo, ["cat-file", "blob", o])?;
-            let binary = is_binary(&data);
+            let binary = not_editable_text(&data);
             let text = if binary { String::new() } else { String::from_utf8_lossy(&data).into_owned() };
             Ok((ConflictSide { exists: true, binary, text, oid: Some(o.to_string()) }, data))
         }
@@ -234,6 +241,15 @@ pub fn merge_file(ours: &[u8], base: &[u8], theirs: &[u8]) -> GitResult<(String,
 /// Writes the resolved content and marks the file as resolved.
 pub fn save_resolution(repo: &Path, path: &str, content: &str, stage: bool) -> GitResult<()> {
     let full = checked_path(repo, path, false)?;
+    // Text resolutions are UTF-8; refuse to write one over a side the editor could not decode.
+    if let Ok(current) = info(repo, path) {
+        if current.ours.binary || current.theirs.binary || current.base.binary {
+            return Err(GitError::new(
+                "This file is binary or not UTF-8 text, so it cannot be saved as edited text without changing its bytes. Keep one side instead.",
+            )
+            .kind("not-text"));
+        }
+    }
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent)?;
     }

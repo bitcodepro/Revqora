@@ -681,9 +681,10 @@ pub fn apply_selection(
         // Make the file known to the index so a normal patch can be applied.
         runner::run(repo, ["add", "--intent-to-add", "--", path])?;
     }
-    // Stage the validated snapshot. A second worktree read can return different
-    // lines while retaining the selection's old numeric coordinates.
-    let raw = if untracked || mode == SelectionMode::Stage { raw } else { working_raw(repo, path, side, staged_base, false, opts)? };
+    // Always apply the validated snapshot, in every mode. A second worktree read can return
+    // different lines while the selection keeps its old numeric coordinates, so a discard
+    // would remove changes the user never reviewed. If the file changed after this check,
+    // `git apply` refuses the stale context instead.
     let files = parse(&raw);
     let Some(file) = files.into_iter().next() else {
         return Err(GitError::new("Nothing to apply."));

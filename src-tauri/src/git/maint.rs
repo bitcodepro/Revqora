@@ -45,11 +45,16 @@ pub fn size(repo: &Path) -> GitResult<RepoSize> {
     Ok(s)
 }
 
+/// Unreachable objects younger than this survive "Prune" (Git's own default for `gc`).
+pub const PRUNE_GRACE: &str = "2.weeks.ago";
+
 /// Runs a housekeeping task: "gc" | "prune" | "maintenance-start" | "maintenance-stop" | "repack".
 pub fn run(repo: &Path, task: &str, on_line: impl FnMut(&str)) -> GitResult<String> {
     let args: Vec<String> = match task {
         "gc" => vec!["gc".into()],
-        "prune" => vec!["prune".into(), "--verbose".into()],
+        // Like `gc`, keep recent unreachable objects: another git process (an IDE, an agent)
+        // may have written objects it has not referenced yet, and pruning them corrupts its work.
+        "prune" => vec!["prune".into(), format!("--expire={PRUNE_GRACE}"), "--verbose".into()],
         "repack" => vec!["repack".into(), "-a".into(), "-d".into()],
         "maintenance-start" => vec!["maintenance".into(), "start".into()],
         "maintenance-stop" => vec!["maintenance".into(), "unregister".into()],

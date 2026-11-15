@@ -42,7 +42,7 @@ import { reviewBranchCleanup } from "./BranchCleanup";
 import { usePanelTitleMenu, usePanelWindows } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
 import { highlightBranch, jumpToCommit } from "./GraphView";
-import { promptDialog } from "./dialogs";
+import { confirmDialog, promptDialog } from "./dialogs";
 import { branchConnection, branchPairs } from "../lib/branchPresentation";
 import {sidebarBranchesKey,sidebarBranchPreferences,selectSidebarBranches} from "../lib/sidebarBranches";
 import {loadBranchPreferences,preferencesKey} from "../lib/branchManager";
@@ -413,7 +413,28 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                           },
                         },
                         { separator: true },
-                        { label: `Remove ${name}…`, icon: <Trash2 size={14} />, danger: true, onClick: () => A.act(root, () => api.remoteRemove(root, name), { success: `Removed ${name}` }) },
+                        {
+                          label: `Remove ${name}…`,
+                          icon: <Trash2 size={14} />,
+                          danger: true,
+                          onClick: async () => {
+                            // Removing a remote deletes its configuration and every tracking branch.
+                            const tracking = (refs?.remote ?? []).filter((b) => b.name.startsWith(`${name}/`)).length;
+                            const local = (refs?.local ?? []).filter((b) => b.upstream?.startsWith(`${name}/`)).map((b) => b.name);
+                            const ok = await confirmDialog({
+                              title: `Remove remote ${name}?`,
+                              message: "Revqora deletes this remote from the repository configuration. Nothing changes on the server.",
+                              details: [
+                                `URL: ${info?.fetchUrl ?? "unknown"}`,
+                                `${tracking} remote-tracking ${tracking === 1 ? "branch is" : "branches are"} deleted (${name}/…)`,
+                                ...(local.length ? [`${local.length} local ${local.length === 1 ? "branch loses its" : "branches lose their"} upstream: ${local.slice(0, 5).join(", ")}${local.length > 5 ? "…" : ""}`] : []),
+                              ],
+                              confirm: "Remove remote",
+                              danger: true,
+                            });
+                            if (ok) A.act(root, () => api.remoteRemove(root, name), { success: `Removed ${name}` });
+                          },
+                        },
                       ])
                     }
                   >
