@@ -21,6 +21,7 @@ import { conflictDraftKey, conflictDrafts, conflictInitialText, conflictOutput, 
 import { ConflictValidation } from "./ConflictValidation";
 import { useValidation, validationRunning } from "../lib/validation";
 import "../styles/conflictStudio.css";
+import { resolveInMergeTool } from "../lib/externalTools";
 
 interface Labels {
   ours: string;
@@ -248,6 +249,10 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
       onDraft={(text) => { if (info) conflictDrafts.set(draftKey, { info: conflictDrafts.get(draftKey)?.info ?? info, text, token: observedState.current }); }}
       blocked={validationRunning(validation)}
       tools={<>
+        <button className="btn sm" title="Resolve this file in your external merge tool (Settings → Diff); Revqora waits until you close it"
+          onClick={() => void resolveInMergeTool(root, path).then(() => { if (!useRepos.getState().tabs[root]?.status?.files.some((f) => f.path === path && f.conflict)) onClose(); })}>
+          External tool
+        </button>
         {changedOnDisk && <span className="pill red">File changed on disk · review current versions</span>}
         {info && !info.ours.binary && !info.theirs.binary && (
           info.encodingsDiffer ? (

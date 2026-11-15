@@ -27,6 +27,9 @@ import {
   Swords,
   Trash2,
   Undo2,
+  EyeOff,
+  SquarePen,
+  Columns2,
   Info,
   Combine,
   ScanSearch,
@@ -35,7 +38,11 @@ import {
   FolderTree,
   HardDrive,
   X,
+  UserPlus,
+  MessageSquareText,
 } from "lucide-react";
+import { coAuthorDialog } from "./CommitAuthoring";
+import { addCoAuthor, coAuthorsIn, mergeRecentMessages, rememberMessage, removeCoAuthor, splitMessage } from "../lib/commitTrailers";
 import { api, errorMessage, isGitError, newOpId } from "../lib/api";
 import { useRepos, type ChangeSel, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
@@ -53,6 +60,10 @@ import { Modal } from "./Modal";
 import { fileHistoryDialog } from "./FileHistory";
 import { Splitter } from "./Overlays";
 import { previewGeneration, subscribePreview } from "../lib/commitPreview";
+import { ignoreDialog } from "./IgnoreDialog";
+import { ignoreChoices } from "../lib/ignoreRules";
+import { openInDiffTool, openInEditor, resolveInMergeTool } from "../lib/externalTools";
+import { folderHistoryDialog } from "./HistoryDialogs";
 
 const isNestedFile = (f: FileStatus) => f.untracked && f.path.endsWith("/");
 const openNestedFile = (root: string, f: FileStatus) => { void useRepos.getState().open(joinPath(root, f.path)).catch((e) => toast.error(e)); };
@@ -229,7 +240,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const pending = tab.pendingMutations > 0;
   const patch = useRepos((s) => s.patch);
   const { mode, layout: { changesListWidth: width }, setLayout: setSettings } = useWorkspaceLayout();
-  const opts = useDiffOpts();
+  const opts = useDiffOpts(tab.changeSel?.path);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [fileQuery, setFileQuery] = useState("");
   const fileSearch = useRef<HTMLInputElement>(null);
@@ -349,6 +360,55 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
     patch(root, { changeSel: s });
   };
 
+  // Several files at once: Ctrl+click toggles, Shift+click picks a range, plain click clears.
+  const [picked, setPicked] = useState<{ kind: "unstaged" | "staged"; paths: string[]; anchor: string | null }>({ kind: "unstaged", paths: [], anchor: null });
+  useEffect(() => setPicked({ kind: "unstaged", paths: [], anchor: null }), [root]);
+  const pickedSet = new Set(picked.paths);
+  const isPicked = (kind: "unstaged" | "staged", path: string) => picked.kind === kind && pickedSet.has(path);
+  /** Handles a row click; returns true when it was a multi-select gesture. */
+  const pickClick = (e: React.MouseEvent, kind: "unstaged" | "staged", path: string) => {
+    const list = (kind === "unstaged" ? visibleUnstaged : visibleStaged).map((f) => f.path);
+    if (e.shiftKey) {
+      const current = sel && sel.kind === kind ? sel.path : null;
+      const anchor = picked.kind === kind && picked.anchor ? picked.anchor : current ?? path;
+      const [a, b] = [list.indexOf(anchor), list.indexOf(path)];
+      if (a < 0 || b < 0) return false;
+      const range = list.slice(Math.min(a, b), Math.max(a, b) + 1);
+      const keep = e.ctrlKey || e.metaKey ? (picked.kind === kind ? picked.paths : []) : [];
+      setPicked({ kind, paths: [...new Set([...keep, ...range])], anchor });
+      return true;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      const base = picked.kind === kind ? picked.paths : [];
+      // The file shown in the diff joins the selection the first time.
+      const start = base.length === 0 && sel && sel.kind === kind && sel.path !== path ? [sel.path] : base;
+      setPicked({ kind, paths: start.includes(path) ? start.filter((p) => p !== path) : [...start, path], anchor: path });
+      return true;
+    }
+    if (picked.paths.length) setPicked({ kind, paths: [], anchor: path });
+    else setPicked((p) => ({ ...p, anchor: path }));
+    return false;
+  };
+  const bulkMenu = (kind: "unstaged" | "staged"): MenuItem[] => {
+    const files = (kind === "unstaged" ? unstaged : staged).filter((f) => pickedSet.has(f.path));
+    const paths = files.map((f) => f.path);
+    const n = plural(paths.length, "file");
+    const clear = () => setPicked({ kind, paths: [], anchor: null });
+    return kind === "unstaged" ? [
+      { label: `Stage ${n}`, icon: <Plus size={14} />, onClick: () => { clear(); void A.stagePaths(root, paths); } },
+      { label: `Stage ${n} into a new layer`, icon: <ListPlus size={14} />, onClick: () => { clear(); void A.stageAsNewLayer(root, paths); } },
+      { label: `Stash ${n}`, icon: <Archive size={14} />, onClick: () => { clear(); void A.act(root, () => api.stashSave(root, `Stash ${paths.length} files`, true, false, paths), { success: "Files stashed" }); } },
+      { separator: true },
+      { label: `Discard changes in ${n}…`, icon: <Undo2 size={14} />, danger: true, onClick: () => { clear(); void A.discardPaths(root, files.filter((f) => !f.untracked).map((f) => f.path), files.filter((f) => f.untracked).map((f) => f.path)); } },
+      { separator: true },
+      { label: "Clear selection", onClick: clear },
+    ] : [
+      { label: `Unstage ${n}`, icon: <Minus size={14} />, onClick: () => { clear(); void A.unstagePaths(root, paths); } },
+      { separator: true },
+      { label: "Clear selection", onClick: clear },
+    ];
+  };
+
   const onApply = async (selection: [number, number][], action: LineAction) => {
     if (!diff || diff.previewLimited || !sel || (sel.kind !== "unstaged" && sel.kind !== "staged") || action === "apply") return;
     if (diffLoading && (action !== "stage" || !diff.stageSnapshot)) return;
@@ -392,10 +452,13 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
         ]
       : [{ label: "Unstage", icon: <Minus size={14} />, onClick: () => A.unstagePaths(root, [f.path]) }]),
     { label: "Stash this file", icon: <Archive size={14} />, onClick: () => A.act(root, () => api.stashSave(root, `Stash ${f.path}`, true, false, [f.path]), { success: "File stashed" }) },
+    { label: "Ignore", icon: <EyeOff size={14} />, children: ignoreChoices(f.path).map((choice) => ({ label: `${choice.label}…`, onClick: () => void ignoreDialog(root, choice.path, choice.kind) })) },
     { separator: true },
     { label: "File history", icon: <History size={14} />, disabled: f.untracked, onClick: () => fileHistoryDialog(root, f.path) },
     { label: "Blame", icon: <ScanSearch size={14} />, disabled: f.untracked || f.worktree === "D", onClick: () => openOverlay({ kind: "blame", root, path: f.path, rev: null }) },
     { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void openRepoFile(joinPath(root, f.path)) },
+    { label: "Open in editor", icon: <SquarePen size={14} />, disabled: kind === "unstaged" && f.worktree === "D", onClick: () => void openInEditor(root, f.path) },
+    { label: "Compare in external diff tool", icon: <Columns2 size={14} />, disabled: f.untracked, onClick: () => void openInDiffTool(root, f.path, kind) },
     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(joinPath(root, f.path)) },
     ...fileCopyMenu(f.path),
   ];
@@ -546,11 +609,13 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                     onContextMenu={(e) =>
                       contextMenu(e, [
                         { label: "Open merge editor", icon: <Swords size={14} />, onClick: () => onOpenConflict(f.path) },
+                        { label: "Resolve in external merge tool", icon: <Columns2 size={14} />, onClick: () => void resolveInMergeTool(root, f.path) },
                         { label: "Take ours (current branch)", icon: <ArrowUp size={14} />, onClick: () => A.act(root, () => api.conflictTake(root, f.path, "ours"), { success: "Resolved with ours" }) },
                         { label: "Take theirs (incoming)", icon: <ArrowDown size={14} />, onClick: () => A.act(root, () => api.conflictTake(root, f.path, "theirs"), { success: "Resolved with theirs" }) },
                         { label: "Mark as resolved", icon: <Check size={14} />, onClick: () => A.act(root, () => api.conflictMarkResolved(root, [f.path]), { success: "Marked resolved" }) },
                         { separator: true },
                         { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void openRepoFile(joinPath(root, f.path)) },
+                        { label: "Open in editor", icon: <SquarePen size={14} />, onClick: () => void openInEditor(root, f.path) },
                         ...fileCopyMenu(f.path),
                       ])
                     }
@@ -589,17 +654,18 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
           )}
           {!query && !sectionClosed("unstaged") && unstaged.length === 0 && <div className="cg-empty">No unstaged changes.</div>}
           {!sectionClosed("unstaged") &&
-            <FileGroups items={visibleUnstaged} tree={treeView} expandAll={!!query} idPrefix="u" render={(f, grouped) => (
+            <FileGroups items={visibleUnstaged} tree={treeView} expandAll={!!query} idPrefix="u" onFolderMenu={(e, folder) => contextMenu(e, [{ label: "Folder history…", icon: <History size={14} />, onClick: () => void folderHistoryDialog(root, folder) }])} render={(f, grouped) => (
               <div
                 key={f.path}
-                className={`file-row ${selectedIs("unstaged", f.path) ? "selected" : ""}`}
+                className={`file-row ${selectedIs("unstaged", f.path) ? "selected" : ""} ${isPicked("unstaged", f.path) ? "multi-picked" : ""}`}
+                aria-selected={isPicked("unstaged", f.path) || undefined}
                 data-file-nav={isNestedFile(f) ? undefined : ""}
                 data-file-path={f.path}
-                onClick={() => isNestedFile(f) ? openNestedFile(root, f) : select({ kind: "unstaged", path: f.path, untracked: f.untracked })}
+                onClick={(e) => { if (pickClick(e, "unstaged", f.path)) return; if (isNestedFile(f)) openNestedFile(root, f); else select({ kind: "unstaged", path: f.path, untracked: f.untracked }); }}
                 onDoubleClick={() => { if (!isNestedFile(f)) void A.stagePaths(root, [f.path]); }}
                 draggable
                 onDragStart={(e) => dragFile(e, "unstaged", f.path)}
-                onContextMenu={(e) => contextMenu(e, fileMenu(f, "unstaged"))}
+                onContextMenu={(e) => contextMenu(e, picked.paths.length > 1 && isPicked("unstaged", f.path) ? bulkMenu("unstaged") : fileMenu(f, "unstaged"))}
                 title={f.path}
               >
                 <StatusIcon code={f.untracked ? "?" : f.worktree} />
@@ -656,16 +722,17 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
           {!query && !sectionClosed("staged") && !layers && staged.length === 0 && <div className="cg-empty">Nothing staged. Double-click a file or use + to stage it.</div>}
           {!sectionClosed("staged") &&
             !layers &&
-            <FileGroups items={visibleStaged} tree={treeView} expandAll={!!query} idPrefix="s" render={(f, grouped) => (
+            <FileGroups items={visibleStaged} tree={treeView} expandAll={!!query} idPrefix="s" onFolderMenu={(e, folder) => contextMenu(e, [{ label: "Folder history…", icon: <History size={14} />, onClick: () => void folderHistoryDialog(root, folder) }])} render={(f, grouped) => (
               <div
                 key={f.path}
-                className={`file-row ${selectedIs("staged", f.path) ? "selected" : ""}`}
+                className={`file-row ${selectedIs("staged", f.path) ? "selected" : ""} ${isPicked("staged", f.path) ? "multi-picked" : ""}`}
+                aria-selected={isPicked("staged", f.path) || undefined}
                 data-file-nav=""
-                onClick={() => select({ kind: "staged", path: f.path })}
+                onClick={(e) => { if (!pickClick(e, "staged", f.path)) select({ kind: "staged", path: f.path }); }}
                 onDoubleClick={() => A.unstagePaths(root, [f.path])}
                 draggable
                 onDragStart={(e) => dragFile(e, "staged", f.path)}
-                onContextMenu={(e) => contextMenu(e, fileMenu(f, "staged"))}
+                onContextMenu={(e) => contextMenu(e, picked.paths.length > 1 && isPicked("staged", f.path) ? bulkMenu("staged") : fileMenu(f, "staged"))}
                 title={f.origPath ? `${f.origPath} → ${f.path}` : f.path}
               >
                 <StatusIcon code={f.index} />
@@ -945,6 +1012,35 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   };
 
   const message = body.trim() ? `${summary.trim()}\n\n${body.trim()}` : summary.trim();
+  // Chips are derived from the trailer lines, so hand edits in the description stay in sync.
+  const coAuthors = coAuthorsIn(body);
+  const addCoAuthorPick = async () => {
+    const person = await coAuthorDialog(root, coAuthorsIn(messageRef.current.body));
+    if (person) setBody((cur) => addCoAuthor(cur, person));
+  };
+  const openRecentMessages = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    const target = e.currentTarget;
+    const rect = target.getBoundingClientRect();
+    const local = useSettings.getState().recentCommitMessagesByRepo[root] ?? [];
+    const history = await api.ownRecentMessages(root).catch(() => [] as string[]);
+    const messages = mergeRecentMessages(local, history, 30);
+    const items: MenuItem[] = messages.length
+      ? messages.map((m) => {
+          const { summary: s, body: b } = splitMessage(m);
+          return {
+            label: s.length > 72 ? `${s.slice(0, 71)}…` : s,
+            hint: b ? b.split("\n")[0].slice(0, 60) : undefined,
+            onClick: async () => {
+              const cur = messageRef.current;
+              if ((cur.summary.trim() || cur.body.trim()) && !await confirmDialog({ title: "Replace the current message?", message: "The summary and description you typed will be replaced by the chosen message.", confirm: "Replace message" })) return;
+              setSummary(s);
+              setBody(b);
+            },
+          };
+        })
+      : [{ label: "No recent messages by you in this repository", disabled: true }];
+    contextMenu({ clientX: rect.left, clientY: rect.bottom, currentTarget: target, preventDefault: () => {} }, items);
+  };
   const merging = kind === "merge" || kind === "squash";
   const picking = kind === "cherry-pick" || kind === "revert";
   const rebasing = kind === "rebase";
@@ -1045,6 +1141,8 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
       // The operation client refreshes the index and HEAD before resolving.
       // The repository event refreshes history independently of this form.
       toast.success(`Committed ${oid.slice(0, 8)}`);
+      const settings = useSettings.getState();
+      settings.set({ recentCommitMessagesByRepo: { ...settings.recentCommitMessagesByRepo, [root]: rememberMessage(settings.recentCommitMessagesByRepo[root] ?? [], finalMessage) } });
       return true;
     } catch (e) {
       if (isGitError(e) && e.kind === "identity") {
@@ -1129,6 +1227,24 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
         />
         {!body && <span className="commit-description-hint" aria-hidden="true">Description</span>}
       </div>
+      {!merging && !picking && (
+        <div className="hstack commit-authoring" style={{ gap: 6, flexWrap: "wrap" }}>
+          <button type="button" className="btn ghost sm" onClick={() => void addCoAuthorPick()} title="Add a Co-authored-by trailer from recent history">
+            <UserPlus size={14} /> Co-author
+          </button>
+          <button type="button" className="btn ghost sm" aria-haspopup="menu" onClick={(e) => void openRecentMessages(e)} title="Reuse one of your recent commit messages">
+            <MessageSquareText size={14} /> Recent messages
+          </button>
+          {coAuthors.map((p) => (
+            <span key={p.email.toLowerCase()} className="pill" title={`Co-authored-by: ${p.name} <${p.email}>`}>
+              {p.name}
+              <button type="button" className="btn ghost icon xs" aria-label={`Remove co-author ${p.name}`} onClick={() => setBody((cur) => removeCoAuthor(cur, p.email))}>
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       {!merging && !picking && (
         <div className="commit-opts">
           <label className="check">

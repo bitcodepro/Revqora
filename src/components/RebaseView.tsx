@@ -27,7 +27,7 @@ const ACTIONS: { v: RebaseAction; label: string; hint: string }[] = [
 
 const fullMessage = (c: PlanCommit) => (c.body ? `${c.subject}\n\n${c.body}` : c.subject);
 
-export function RebaseView({ root, oldest }: { root: string; oldest: string }) {
+export function RebaseView({ root, oldest, autosquash: applyAutosquash }: { root: string; oldest: string; autosquash?: boolean }) {
   const [expectedState, setExpectedState] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [orig, setOrig] = useState<string[]>([]);
@@ -54,10 +54,15 @@ export function RebaseView({ root, oldest }: { root: string; oldest: string }) {
       if (!alive) return;
       setExpectedState(p.stateToken ?? null);
       setOrig(p.commits.map((c) => c.oid));
-      setRows(p.commits.map((c) => ({ ...c, action: "pick", message: fullMessage(c) })));
+      if (applyAutosquash && loadVersion === 0) {
+        // Opened from "Rebase and squash fixups now": start from the reviewable autosquash plan.
+        const result = autosquash(p.commits);
+        setRows(result.rows); setAutosquashWarnings(result.warnings);
+        if (!result.matched) toast.info("No matching fixup!/squash! commits", "Choose a range that includes both the original commits and their fixups.");
+      } else setRows(p.commits.map((c) => ({ ...c, action: "pick", message: fullMessage(c) })));
     }, (e) => { if (alive) setErr(errorMessage(e)); });
     return () => { alive = false; reviewVersion.current++; };
-  }, [root, oldest, loadVersion]);
+  }, [root, oldest, loadVersion, applyAutosquash]);
 
   // For each head row, the combined message of the commits squashed into it.
   const groups = useMemo(() => {

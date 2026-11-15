@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, File, Folder, FolderTree, Loader2, Search, X } from "lucide-react";
+import { Archive, ChevronDown, ChevronRight, File, Folder, FolderClock, FolderTree, History, Loader2, ScanSearch, Search, SquarePen, X } from "lucide-react";
 import { EditorState } from "@codemirror/state";
 import { EditorView, lineNumbers, highlightActiveLine } from "@codemirror/view";
 import { syntaxHighlighting } from "@codemirror/language";
@@ -7,11 +7,15 @@ import { classHighlighter } from "@lezer/highlight";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { keymap } from "@codemirror/view";
 import { api, errorMessage } from "../lib/api";
-import { closeOverlay, contextMenu, copyText, toast } from "../lib/ui";
+import { closeOverlay, contextMenu, copyText, openOverlay, toast } from "../lib/ui";
 import { fileCopyMenu } from "./NamePathMenu";
 import type { GrepHit } from "../lib/types";
 import { languageFor } from "../lib/languages";
 import { shortOid } from "../lib/format";
+import { openInEditor } from "../lib/externalTools";
+import { fileHistoryDialog } from "./FileHistory";
+import { folderHistoryDialog } from "./HistoryDialogs";
+import { exportArchive } from "../lib/miscActions";
 
 interface Node {
   name: string;
@@ -114,7 +118,12 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
     for (const d of [...n.dirs.values()].sort((a, b) => a.name.localeCompare(b.name))) {
       const isOpen = f ? true : (open[d.path] ?? depth < 1);
       out.push(
-        <div key={"d:" + d.path} className="sb-item" style={{ paddingLeft: 8 + depth * 14 }} onClick={() => setOpen((o) => ({ ...o, [d.path]: !isOpen }))}>
+        <div key={"d:" + d.path} className="sb-item" style={{ paddingLeft: 8 + depth * 14 }} onClick={() => setOpen((o) => ({ ...o, [d.path]: !isOpen }))}
+          onContextMenu={(e) => contextMenu(e, [
+            { label: "Folder history…", icon: <FolderClock size={14} />, onClick: () => void folderHistoryDialog(root, d.path) },
+            { separator: true },
+            ...fileCopyMenu(d.path),
+          ])}>
           {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           <Folder size={13} style={{ flex: "none", color: "var(--text-faint)" }} />
           <span className="label">{d.name}</span>
@@ -132,7 +141,13 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
             setLine(null);
             setFile(p);
           }}
-          onContextMenu={(e) => contextMenu(e, fileCopyMenu(p))}
+          onContextMenu={(e) => contextMenu(e, [
+            { label: "File history…", icon: <History size={14} />, onClick: () => fileHistoryDialog(root, p) },
+            { label: "Blame", icon: <ScanSearch size={14} />, onClick: () => openOverlay({ kind: "blame", root, path: p, rev }) },
+            { label: "Open in editor", icon: <SquarePen size={14} />, onClick: () => void openInEditor(root, p) },
+            { separator: true },
+            ...fileCopyMenu(p),
+          ])}
         >
           <File size={13} style={{ flex: "none" }} />
           <span className="label">{p.split("/").pop()}</span>
@@ -156,6 +171,9 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
           {hits && <span className="count">{hits.length} hits</span>}
         </div>
         <div className="spacer" />
+        <button className="btn" title="Save these files as a zip or tar.gz archive" onClick={() => void exportArchive(root, rev)}>
+          <Archive size={14} /> Export archive…
+        </button>
         <button className="btn" onClick={closeOverlay}>
           <X size={14} /> Close
         </button>

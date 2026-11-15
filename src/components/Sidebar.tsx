@@ -50,6 +50,7 @@ import { matchesShortcut } from "../lib/shortcuts";
 import { renameRemoteBranch } from "./RemoteRename";
 import { repositoryKey } from "../lib/repositoryLibrary";
 import { useSettings } from "../lib/settings";
+import { stashToBranch } from "../lib/miscActions";
 
 interface TreeNode {
   name: string;
@@ -524,6 +525,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                     { label: "Apply", onClick: () => A.stashApply(root, s.index, false, s.oid) },
                     { label: "Pop (apply and delete)", onClick: () => A.stashApply(root, s.index, true, s.oid) },
                     { label: "Create branch from stash base…", onClick: () => A.createBranch(root, `${s.oid}^`, s.name) },
+                    { label: "Restore on a new branch (apply and drop)…", onClick: () => void stashToBranch(root, s.index, s.oid) },
                     { separator: true },
                     { label: "Delete…", danger: true, icon: <Trash2 size={14} />, onClick: () => A.stashDrop(root, s.index, s.oid) },
                   ])

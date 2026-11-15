@@ -154,7 +154,10 @@ export interface DiffOptions {
   ignoreWhitespace?: boolean;
   disableTextconv?: boolean;
   renameFrom?: string;
+  algorithm?: DiffAlgorithm;
+  ignoreBlankLines?: boolean;
 }
+export type DiffAlgorithm = "myers" | "minimal" | "patience" | "histogram";
 
 export interface Seg {
   a: number;
@@ -496,6 +499,24 @@ export interface BlameLine {
   origLine: number;
   line: number;
   text: string;
+  /** File the line came from in `oid` (another file when moves/copies are detected). */
+  origPath: string;
+}
+
+export interface BlameOptions {
+  ignoreWhitespace: boolean;
+  moves: "off" | "file" | "files";
+  ignoreRevs: boolean;
+}
+
+/** History filters combined with the quick search. Dates are YYYY-MM-DD. */
+export interface HistoryFilters {
+  author: string;
+  path: string;
+  since: string;
+  until: string;
+  firstParent: boolean;
+  noMerges: boolean;
 }
 
 export interface Blame {
@@ -620,6 +641,12 @@ export interface LfsStatus {
   patterns: string[];
 }
 
+export interface SubmoduleCommit { oid: string; author: string; time: number; subject: string; }
+export interface SubmoduleLog { added: SubmoduleCommit[]; removed: SubmoduleCommit[]; addedCount: number; removedCount: number; unavailable: string | null; }
+export interface Rerere { enabled: boolean; autoUpdate: boolean; }
+export interface GitHook { name: string; path: string; active: boolean; size: number; }
+export interface GitHooks { dir: string; customPath: string | null; hooks: GitHook[]; }
+export interface LfsLock { id: string; path: string; owner: string; lockedAt: string; }
 export interface LfsFile {
   oid: string;
   downloaded: boolean;
@@ -693,6 +720,19 @@ export interface GrepHit {
 export interface WorktreeComparison {
   from: string;
   files: ChangedFile[];
+}
+
+export interface CommitAuthor {
+  name: string;
+  email: string;
+  commits: number;
+}
+
+export interface FixupOptions {
+  kind: "fixup" | "squash";
+  message?: string | null;
+  noVerify?: boolean;
+  sign?: boolean | null;
 }
 
 export interface CommitHelpers {
@@ -807,6 +847,13 @@ export interface BranchCleanupReport { status: "done" | "stopped"; preflightFail
 export interface DeletionResult { checkpoint: RecoverySummary | null; warning: string | null }
 
 export interface IgnoredFiles { paths: string[]; truncated: boolean; }
+export interface LineHistoryEntry { oid: string; author: string; time: number; subject: string; path: string; diff: FileDiff; }
+export interface FolderHistoryEntry { oid: string; author: string; time: number; subject: string; files: string[]; }
+export interface ExternalTools { diffTools: string[]; mergeTools: string[]; diffDefault: string | null; mergeDefault: string | null; }
+export type IgnoreKind = "file" | "extension" | "folder";
+export type IgnoreScope = "shared" | "local";
+export interface IgnorePreview { pattern: string; file: string; before: string; after: string; token: string; alreadyIgnored: boolean; tracked: string[]; trackedCount: number; }
+export interface IgnoreResult { pattern: string; file: string; ignored: boolean; untracked: number; }
 export interface NestedRepository { path: string; relativePath: string; kind: string; branch: string | null; }
 export interface NestedRepositories { repositories: NestedRepository[]; truncated: boolean; skipped: number; }
 export interface PartialStashResult { oid: string; removed: boolean; warning: string | null; }
@@ -927,3 +974,6 @@ export interface RepositoryFolderScan {
   skipped: number;
   excluded: number;
 }
+export type CloneFilter = "none" | "blob:none" | "tree:0";
+/** Optional clone arguments; see `ops::CloneOptions`. */
+export interface CloneOptions { branch: string | null; depth: number | null; noSingleBranch: boolean; filter: CloneFilter; recurseSubmodules: boolean; shallowSubmodules: boolean }

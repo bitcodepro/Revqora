@@ -117,6 +117,32 @@ pub struct DiffOptions {
     #[serde(default)]
     pub disable_textconv: bool,
     pub rename_from: Option<String>,
+    /// Git's diff algorithm; None = Git's default (or `diff.algorithm`).
+    #[serde(default)]
+    pub algorithm: Option<DiffAlgorithm>,
+    #[serde(default)]
+    pub ignore_blank_lines: bool,
+}
+
+/// The algorithms `git diff --diff-algorithm` accepts; only these values deserialize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiffAlgorithm {
+    Myers,
+    Minimal,
+    Patience,
+    Histogram,
+}
+
+impl DiffAlgorithm {
+    fn arg(self) -> &'static str {
+        match self {
+            DiffAlgorithm::Myers => "--diff-algorithm=myers",
+            DiffAlgorithm::Minimal => "--diff-algorithm=minimal",
+            DiffAlgorithm::Patience => "--diff-algorithm=patience",
+            DiffAlgorithm::Histogram => "--diff-algorithm=histogram",
+        }
+    }
 }
 
 const PREVIEW_BYTES: usize = 2 * 1024 * 1024;
@@ -360,6 +386,12 @@ fn base_args(opts: &DiffOptions) -> Vec<String> {
     a.push(format!("-U{}", opts.context.unwrap_or(3)));
     if opts.ignore_whitespace {
         a.push("-w".into());
+    }
+    if opts.ignore_blank_lines {
+        a.push("--ignore-blank-lines".into());
+    }
+    if let Some(algorithm) = opts.algorithm {
+        a.push(algorithm.arg().into());
     }
     if opts.disable_textconv {
         a.push("--no-textconv".into());
@@ -711,6 +743,22 @@ fn apply_selection_patch(repo: &Path, file: &RawFileDiff, mode: SelectionMode, s
     args.push("-");
     runner::run_env(repo, &args, &[], Some(&patch))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::*;
+
+    #[test]
+    fn diff_options_become_git_arguments() {
+        let opts: DiffOptions = serde_json::from_str(r#"{"context":7,"ignoreWhitespace":true,"ignoreBlankLines":true,"algorithm":"histogram"}"#).unwrap();
+        let args = base_args(&opts);
+        for expected in ["-U7", "-w", "--ignore-blank-lines", "--diff-algorithm=histogram"] {
+            assert!(args.iter().any(|a| a == expected), "{expected} missing from {args:?}");
+        }
+        let plain = base_args(&DiffOptions::default());
+        assert!(!plain.iter().any(|a| a.starts_with("--diff-algorithm") || a == "--ignore-blank-lines"), "{plain:?}");
+    }
 }
 
 #[cfg(test)]

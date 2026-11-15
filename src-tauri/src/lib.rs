@@ -560,6 +560,7 @@ async fn repo_clone(
     name: String,
     op_id: String,
     connection: Option<git::connection::Options>,
+    options: Option<ops::CloneOptions>,
 ) -> GitResult<CloneInfo> {
     blocking(move || {
         journal::record(
@@ -569,7 +570,8 @@ async fn repo_clone(
                 let _ = app.emit("operation-log-changed", ());
             },
             || {
-                let (root, connection_warning) = ops::clone_with_connection(&p(&parent), &url, &name, progress(&app, &op_id), connection.as_ref())?;
+                let (root, connection_warning) =
+                    ops::clone_with_options(&p(&parent), &url, &name, &options.unwrap_or_default(), progress(&app, &op_id), connection.as_ref())?;
                 Ok(CloneInfo { info: repo::info(&root)?, connection_warning })
             },
         )
@@ -831,6 +833,21 @@ async fn last_message(repo: String) -> GitResult<String> {
     blocking(move || ops::last_message(&p(&repo))).await
 }
 
+#[tauri::command]
+async fn commit_authors(repo: String) -> GitResult<Vec<ops::CommitAuthor>> {
+    blocking(move || ops::commit_authors(&p(&repo), 2000, 500)).await
+}
+
+#[tauri::command]
+async fn own_recent_messages(repo: String) -> GitResult<Vec<String>> {
+    blocking(move || ops::own_recent_messages(&p(&repo), 30)).await
+}
+
+#[tauri::command]
+async fn fixup_commit(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, opts: ops::FixupOptions) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "fixup_commit", None, move || ops::fixup_commit(&p(&repo), &oid, &opts)).await
+}
+
 // ───────────────────────────── history ─────────────────────────────
 
 #[derive(Default, serde::Deserialize)]
@@ -939,10 +956,17 @@ async fn graph_search(state: State<'_, AppState>, repo: String, query: String, m
 }
 
 #[tauri::command]
-async fn history_search(state: State<'_, AppState>, repo: String, key: String, query: String, mode: SearchMode) -> GitResult<Vec<graph::HistoryMatch>> {
+async fn history_search(
+    state: State<'_, AppState>,
+    repo: String,
+    key: String,
+    query: String,
+    mode: SearchMode,
+    filters: Option<graph::HistoryFilters>,
+) -> GitResult<Vec<graph::HistoryMatch>> {
     let cache = state.graphs.lock().get(&repo).cloned().ok_or_else(|| GitError::new("History is not loaded."))?;
     cache.check_key(Some(&key))?;
-    blocking(move || graph::search_history(&p(&repo), &cache, &query, mode)).await
+    blocking(move || graph::search_history_filtered(&p(&repo), &cache, &query, mode, &filters.unwrap_or_default())).await
 }
 
 #[tauri::command]
@@ -1011,8 +1035,8 @@ async fn file_text(repo: String, spec: String) -> GitResult<Option<String>> {
 }
 
 #[tauri::command]
-async fn blame(repo: String, path: String, rev: Option<String>) -> GitResult<git::inspect::Blame> {
-    blocking(move || git::inspect::blame(&p(&repo), &path, rev.as_deref())).await
+async fn blame(repo: String, path: String, rev: Option<String>, options: Option<git::inspect::BlameOptions>) -> GitResult<git::inspect::Blame> {
+    blocking(move || git::inspect::blame_with(&p(&repo), &path, rev.as_deref(), options.unwrap_or_default())).await
 }
 
 #[tauri::command]
@@ -1247,6 +1271,19 @@ async fn fetch(expected_state: Option<String>, app: AppHandle, repo: String, rem
     .await
 }
 
+#[tauri::command]
+async fn repo_is_shallow(repo: String) -> GitResult<bool> {
+    blocking(move || ops::is_shallow(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn fetch_more_history(expected_state: Option<String>, app: AppHandle, repo: String, deepen: Option<u32>, op_id: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "fetch_more_history", Some(op_id.clone()), move || {
+        ops::fetch_more_history(&p(&repo), deepen, progress(&app, &op_id))
+    })
+    .await
+}
+
 /// Periodic fetch in the background: never asks for credentials.
 #[tauri::command]
 async fn fetch_background(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<String> {
@@ -1476,6 +1513,28 @@ async fn conflict_save(
 }
 
 #[tauri::command]
+async fn conflict_external(app: AppHandle, expected_state: Option<String>, repo: String, path: String, tool: Option<String>) -> GitResult<()> {
+    // The operation stays open while the merge tool is: no other change lands meanwhile.
+    mutating(repo.clone(), expected_state, app.clone(), "conflict_external", None, move || git::external_tools::mergetool(&p(&repo), &path, tool.as_deref()))
+        .await
+}
+
+#[tauri::command]
+async fn external_tools(repo: String) -> GitResult<git::external_tools::ExternalTools> {
+    blocking(move || git::external_tools::tools(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn external_difftool(repo: String, path: String, side: String, from: Option<String>, to: Option<String>, tool: Option<String>) -> GitResult<()> {
+    blocking(move || git::external_tools::difftool(&p(&repo), &path, &side, from.as_deref(), to.as_deref(), tool.as_deref())).await
+}
+
+#[tauri::command]
+async fn open_in_editor(repo: String, path: String, line: u32, column: u32, command: String) -> GitResult<()> {
+    blocking(move || git::external_tools::open_in_editor(&p(&repo), &path, line, column, &command)).await
+}
+
+#[tauri::command]
 async fn conflict_take(app: AppHandle, expected_state: Option<String>, repo: String, path: String, which: String) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "conflict_take", None, move || conflicts::take_side(&p(&repo), &path, &which)).await
 }
@@ -1488,6 +1547,46 @@ async fn conflict_mark_resolved(app: AppHandle, expected_state: Option<String>, 
 #[tauri::command]
 async fn conflict_unresolve(app: AppHandle, expected_state: Option<String>, repo: String, path: String) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "conflict_unresolve", None, move || conflicts::unresolve(&p(&repo), &path)).await
+}
+
+#[tauri::command]
+async fn line_history(
+    repo: String,
+    path: String,
+    start: u32,
+    end: u32,
+    rev: Option<String>,
+    limit: Option<usize>,
+) -> GitResult<Vec<git::line_history::LineHistoryEntry>> {
+    blocking(move || git::line_history::line_history(&p(&repo), &path, start, end, rev.as_deref(), limit.unwrap_or(200))).await
+}
+
+#[tauri::command]
+async fn folder_history(repo: String, folder: String, limit: Option<usize>) -> GitResult<Vec<git::line_history::FolderHistoryEntry>> {
+    blocking(move || git::line_history::folder_history(&p(&repo), &folder, limit.unwrap_or(500))).await
+}
+
+#[tauri::command]
+async fn ignore_preview(repo: String, path: String, kind: String, scope: String) -> GitResult<git::ignore::IgnorePreview> {
+    blocking(move || git::ignore::preview(&p(&repo), &path, &kind, &scope)).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn ignore_apply(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    path: String,
+    kind: String,
+    scope: String,
+    token: String,
+    untrack: bool,
+) -> GitResult<git::ignore::IgnoreResult> {
+    // Under the repository's operation gate: nothing else writes the index between the check
+    // against the preview and the untracking.
+    mutating(repo.clone(), expected_state, app.clone(), "ignore_apply", None, move || git::ignore::apply(&p(&repo), &path, &kind, &scope, &token, untrack))
+        .await
 }
 
 #[tauri::command]
@@ -1832,6 +1931,66 @@ async fn lfs_files(repo: String) -> GitResult<Vec<LfsFile>> {
 #[tauri::command]
 async fn lfs_track(app: AppHandle, expected_state: Option<String>, repo: String, pattern: String, track: bool) -> GitResult<()> {
     mutating(repo.clone(), expected_state, app.clone(), "lfs_track", None, move || extras::lfs_track(&p(&repo), &pattern, track)).await
+}
+
+#[tauri::command]
+async fn submodule_log(repo: String, path: String, from: Option<String>, to: Option<String>) -> GitResult<git::submodule_log::SubmoduleLog> {
+    blocking(move || git::submodule_log::log(&p(&repo), &path, from.as_deref(), to.as_deref())).await
+}
+
+#[tauri::command]
+async fn rerere_get(repo: String) -> GitResult<git::misc_tools::Rerere> {
+    blocking(move || Ok(git::misc_tools::rerere(&p(&repo)))).await
+}
+
+#[tauri::command]
+async fn rerere_set(app: AppHandle, expected_state: Option<String>, repo: String, enabled: bool, auto_update: bool) -> GitResult<git::misc_tools::Rerere> {
+    mutating(repo.clone(), expected_state, app.clone(), "rerere_set", None, move || git::misc_tools::set_rerere(&p(&repo), enabled, auto_update)).await
+}
+
+#[tauri::command]
+async fn note_get(repo: String, oid: String) -> GitResult<Option<String>> {
+    blocking(move || git::misc_tools::note(&p(&repo), &oid)).await
+}
+
+#[tauri::command]
+async fn note_set(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, text: String) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "note_set", None, move || git::misc_tools::set_note(&p(&repo), &oid, &text)).await
+}
+
+#[tauri::command]
+async fn archive_export(repo: String, rev: String, format: String, dest: String, prefix: Option<String>) -> GitResult<()> {
+    blocking(move || git::misc_tools::archive(&p(&repo), &rev, &format, std::path::Path::new(&dest), prefix.as_deref())).await
+}
+
+#[tauri::command]
+async fn stash_branch(app: AppHandle, expected_state: Option<String>, repo: String, name: String, index: u32, oid: String) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "stash_branch", None, move || git::misc_tools::stash_branch(&p(&repo), &name, index, &oid)).await
+}
+
+#[tauri::command]
+async fn signature_status(repo: String, oids: Vec<String>) -> GitResult<std::collections::HashMap<String, String>> {
+    blocking(move || git::commit::signature_status(&p(&repo), &oids)).await
+}
+
+#[tauri::command]
+async fn hooks_list(repo: String) -> GitResult<git::hooks::Hooks> {
+    blocking(move || git::hooks::list(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn lfs_locks(repo: String) -> GitResult<Vec<extras::LfsLock>> {
+    blocking(move || extras::lfs_locks(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn lfs_lock(app: AppHandle, expected_state: Option<String>, repo: String, path: String) -> GitResult<extras::LfsLock> {
+    mutating(repo.clone(), expected_state, app.clone(), "lfs_lock", None, move || extras::lfs_lock(&p(&repo), &path)).await
+}
+
+#[tauri::command]
+async fn lfs_unlock(app: AppHandle, expected_state: Option<String>, repo: String, path: String, force: bool) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "lfs_unlock", None, move || extras::lfs_unlock(&p(&repo), &path, force)).await
 }
 
 #[tauri::command]
@@ -2570,6 +2729,8 @@ pub fn run() {
             repo_cancel_folder_scan,
             repo_init,
             repo_clone,
+            repo_is_shallow,
+            fetch_more_history,
             git_connection_snapshot,
             git_connection_save,
             git_connection_test,
@@ -2586,6 +2747,9 @@ pub fn run() {
             discard,
             commit,
             last_message,
+            commit_authors,
+            own_recent_messages,
+            fixup_commit,
             graph_load,
             graph_commit_count,
             graph_rows,
@@ -2694,6 +2858,14 @@ pub fn run() {
             conflict_mark_resolved,
             conflict_unresolve,
             ignored_files,
+            ignore_preview,
+            line_history,
+            folder_history,
+            ignore_apply,
+            conflict_external,
+            external_tools,
+            external_difftool,
+            open_in_editor,
             nested_repositories,
             stash_selection,
             remote_rename_plan,
@@ -2785,6 +2957,18 @@ pub fn run() {
             bisect_reset,
             lfs_files,
             lfs_track,
+            lfs_locks,
+            hooks_list,
+            signature_status,
+            rerere_get,
+            rerere_set,
+            note_get,
+            note_set,
+            archive_export,
+            stash_branch,
+            submodule_log,
+            lfs_lock,
+            lfs_unlock,
             lfs_run,
             signing_get,
             signing_set,

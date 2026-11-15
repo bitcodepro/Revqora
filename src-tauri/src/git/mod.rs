@@ -7,16 +7,20 @@ pub mod commit;
 pub mod conflicts;
 pub mod connection;
 pub mod diff;
+pub mod external_tools;
 pub mod extras;
 pub mod forge;
 pub mod forge_accounts;
 #[cfg(test)]
 pub(crate) mod forge_test_http;
 pub mod graph;
+pub mod ignore;
 pub mod inspect;
 pub mod layers;
+pub mod line_history;
 pub mod locate;
 pub mod maint;
+pub mod misc_tools;
 pub mod more;
 pub mod operations;
 pub mod ops;
@@ -31,6 +35,7 @@ pub mod repository_import;
 pub mod runner;
 pub mod status;
 pub mod storage;
+pub mod submodule_log;
 pub mod watcher;
 
 pub mod file_editor;
@@ -46,6 +51,7 @@ pub mod branch_manager;
 pub mod branch_origin;
 pub mod branch_switch;
 pub mod history;
+pub mod hooks;
 
 pub mod worktree_manager;
 

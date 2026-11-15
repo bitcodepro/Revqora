@@ -1107,18 +1107,104 @@ pub fn search(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode) ->
 
 /// Search the pinned history scope using commit metadata alone. The displayed graph
 /// stays paged, including when a hit is older than all its loaded rows.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryMatch {
-    row: GraphRow,
-    graph_index: Option<usize>,
+    pub row: GraphRow,
+    pub graph_index: Option<usize>,
+}
+
+/// Extra History filters combined (AND) with the quick search.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HistoryFilters {
+    pub author: String,
+    /// Literal file or folder path.
+    pub path: String,
+    /// Inclusive `YYYY-MM-DD` dates.
+    pub since: String,
+    pub until: String,
+    pub first_parent: bool,
+    pub no_merges: bool,
+}
+
+/// Commits listed when only filters (no search text) are active.
+pub const FILTER_ONLY_LIMIT: usize = 5000;
+
+fn valid_date(value: &str) -> bool {
+    let b = value.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' || !b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit()) {
+        return false;
+    }
+    let month: u32 = value[5..7].parse().unwrap_or(0);
+    let day: u32 = value[8..10].parse().unwrap_or(0);
+    (1..=12).contains(&month) && (1..=31).contains(&day)
+}
+
+impl HistoryFilters {
+    pub fn is_active(&self) -> bool {
+        *self != HistoryFilters::default()
+    }
+
+    fn validate(&self) -> GitResult<()> {
+        let invalid = |message: &str| Err(GitError::new(message).kind("invalid-argument"));
+        for value in [&self.author, &self.path, &self.since, &self.until] {
+            if value.trim_start().starts_with('-') || value.chars().any(char::is_control) {
+                return invalid("Filter values cannot start with '-'.");
+            }
+        }
+        for date in [&self.since, &self.until] {
+            if !date.is_empty() && !valid_date(date) {
+                return invalid("Enter dates as YYYY-MM-DD.");
+            }
+        }
+        if !self.since.is_empty() && !self.until.is_empty() && self.since > self.until {
+            return invalid("The start date is after the end date.");
+        }
+        Ok(())
+    }
+
+    /// Revision-walk options; every value is its own argv entry.
+    fn arguments(&self, args: &mut Vec<String>) {
+        let author = self.author.trim();
+        if !author.is_empty() {
+            args.extend(["--regexp-ignore-case".into(), "--fixed-strings".into(), format!("--author={author}")]);
+        }
+        if !self.since.is_empty() {
+            args.push(format!("--since={} 00:00:00", self.since));
+        }
+        if !self.until.is_empty() {
+            args.push(format!("--until={} 23:59:59", self.until));
+        }
+        if self.first_parent {
+            args.push("--first-parent".into());
+        }
+        if self.no_merges {
+            args.push("--no-merges".into());
+        }
+    }
+
+    fn path(&self) -> Option<String> {
+        let path = self.path.trim().replace('\\', "/");
+        let path = path.trim_end_matches('/');
+        (!path.is_empty()).then(|| path.to_string())
+    }
 }
 
 pub fn search_history(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode) -> GitResult<Vec<HistoryMatch>> {
+    search_history_filtered(repo, cache, query, mode, &HistoryFilters::default())
+}
+
+pub fn search_history_filtered(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode, filters: &HistoryFilters) -> GitResult<Vec<HistoryMatch>> {
+    filters.validate()?;
     let query = query.trim();
-    if query.is_empty() {
+    if query.is_empty() && !filters.is_active() {
         return Ok(Vec::new());
     }
+    let filter_path = filters.path();
+    let filter_author = filters.author.trim().to_lowercase();
+    // Without search text the filters alone select the commits.
+    let mode = if query.is_empty() { SearchMode::Quick } else { mode };
     let revisions: Vec<String> = if let Some(context) = &cache.branch_context {
         context.tips(&cache.refs)
     } else if let Some(reference) = &cache.filter {
@@ -1144,8 +1230,35 @@ pub fn search_history(repo: &Path, cache: &GraphCache, query: &str, mode: Search
         // Feeding refs over stdin keeps repositories with many tags below the
         // Windows command line limit. Revision input comes from the graph scope.
         args.push("--stdin".into());
-        search_arguments(&mut args, query, mode);
-        let raw = runner::run_env(repo, &args, &[], Some(revisions.join("\n").as_bytes()))?;
+        if query.is_empty() {
+            args.push(format!("--max-count={FILTER_ONLY_LIMIT}"));
+        }
+        filters.arguments(&mut args);
+        let mut env: Vec<(&str, &str)> = Vec::new();
+        match &filter_path {
+            Some(path) if mode == SearchMode::Path => {
+                // Two pathspecs would widen the search; both must match, so keep the narrower one.
+                let narrower = |a: &str, b: &str| a == b || a.starts_with(&format!("{b}/"));
+                let q = query.replace('\\', "/");
+                let q = q.trim_end_matches('/');
+                let spec = if narrower(q, path) {
+                    q.to_string()
+                } else if narrower(path, q) {
+                    path.clone()
+                } else {
+                    return Ok(Vec::new());
+                };
+                args.extend(["--".into(), spec]);
+                env.push(("GIT_LITERAL_PATHSPECS", "1"));
+            }
+            Some(path) => {
+                search_arguments(&mut args, query, mode);
+                args.push(path.clone());
+                env.push(("GIT_LITERAL_PATHSPECS", "1"));
+            }
+            None => search_arguments(&mut args, query, mode),
+        }
+        let raw = runner::run_env(repo, &args, &env, Some(revisions.join("\n").as_bytes()))?;
         Ok(parse_log(&raw))
     };
     let incoming = cache.incoming.as_ref().map(|range| read(&[range.tip.clone(), format!("^{}", range.base)])).transpose()?.unwrap_or_default();
@@ -1160,17 +1273,21 @@ pub fn search_history(repo: &Path, cache: &GraphCache, query: &str, mode: Search
         .filter_map(|(index, commit)| {
             let refs = cache.labels.get(&commit.oid).map_or(&[][..], Vec::as_slice);
             let author_matches = || commit.author.to_lowercase().contains(&needle) || commit.email.to_lowercase().contains(&needle);
-            let matched = match mode {
-                SearchMode::Quick => {
-                    commit.subject.to_lowercase().contains(&needle)
-                        || author_matches()
-                        || commit.oid.starts_with(&needle)
-                        || refs.iter().any(|label| label.name.to_lowercase().contains(&needle))
-                }
-                SearchMode::Author => author_matches(),
-                SearchMode::Hash => commit.oid.starts_with(&needle),
-                _ => true,
-            };
+            // Git ORs repeated --author options, so the filter author is enforced here too.
+            let filter_matches =
+                filter_author.is_empty() || commit.author.to_lowercase().contains(&filter_author) || commit.email.to_lowercase().contains(&filter_author);
+            let matched = filter_matches
+                && match mode {
+                    SearchMode::Quick => {
+                        commit.subject.to_lowercase().contains(&needle)
+                            || author_matches()
+                            || commit.oid.starts_with(&needle)
+                            || refs.iter().any(|label| label.name.to_lowercase().contains(&needle))
+                    }
+                    SearchMode::Author => author_matches(),
+                    SearchMode::Hash => commit.oid.starts_with(&needle),
+                    _ => true,
+                };
             (matched && seen.insert(commit.oid.clone())).then_some((commit, refs, index < incoming_count))
         })
         .enumerate()

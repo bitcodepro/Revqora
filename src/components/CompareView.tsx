@@ -22,7 +22,7 @@ export function CompareView({ root, from: initialFrom, to: initialTo, direct = f
   const [file, setFile] = useState<string | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [diffErr, setDiffErr] = useState<string | null>(null);
-  const diffOpts = useDiffOpts();
+  const diffOpts = useDiffOpts(file);
   const request = useRef(0);
   const refs = getTab(root)?.refs;
   const names = useMemo(() => [...(refs?.local.map((b) => b.name) ?? []), ...(refs?.remote.map((b) => b.name) ?? []), ...(refs?.tags.map((t) => t.name) ?? []), "HEAD", WORKTREE], [refs]);

@@ -3,7 +3,8 @@ import {forgeAccountsDialog} from "./ForgeAccounts";
 import { aboutDialog } from "./AboutDialog";
 import { parseCloneInput, repoNameFromUrl } from "../lib/cloneInput";
 import {GitConnectionFields,defaultGitConnection,gitTransport} from "./GitConnections";
-import type {GitConnectionOptions} from "../lib/types";
+import type {CloneFilter, CloneOptions, GitConnectionOptions} from "../lib/types";
+import { CLONE_FILTERS, buildCloneOptions, defaultCloneOptionsForm, parseDepth, type CloneOptionsForm } from "../lib/cloneOptions";
 import { useEffect, useState, type ReactNode } from "react";
 import { canCheckUpdates, useUpdate } from "../lib/update";
 import { SHORTCUTS, acceptsPlainShortcut, bindingFor, comboFromEvent, prettyCombo, shortcutConflict } from "../lib/shortcuts";
@@ -30,6 +31,8 @@ import {
 import { Modal } from "./Modal";
 import { showDialog, toast } from "../lib/ui";
 import { api, errorMessage } from "../lib/api";
+import { EDITOR_PRESETS, editorPresetLabel } from "../lib/externalTools";
+import type { ExternalTools } from "../lib/types";
 import { CODE_FONTS, DEFAULT_EXPLORER_FOLDER_HOVER, UI_FONTS, useSettings } from "../lib/settings";
 import { McpSettings } from "./McpSettings";
 import type { GitSelection, PushOptions, ReflogEntry, RemoteInfo, SigningConfig } from "../lib/types";
@@ -444,11 +447,11 @@ function ResetBody({ branch, target, subject, close }: { branch: string; target:
 
 // ───────────── clone / init ─────────────
 
-export function cloneDialog(): Promise<{ url: string; parent: string; name: string;connection:GitConnectionOptions } | null> {
+export function cloneDialog(): Promise<{ url: string; parent: string; name: string;connection:GitConnectionOptions; options: CloneOptions } | null> {
   return showDialog((close) => <CloneBody close={close} />);
 }
 
-function CloneBody({ close }: { close: (v: { url: string; parent: string; name: string;connection:GitConnectionOptions } | null) => void }) {
+function CloneBody({ close }: { close: (v: { url: string; parent: string; name: string;connection:GitConnectionOptions; options: CloneOptions } | null) => void }) {
   const [url, setUrl] = useState("");
   const [parent, setParent] = useState(localStorage.getItem("revqora.cloneParent") ?? "");
   const [name, setName] = useState("");
@@ -456,6 +459,10 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
   const source = parseCloneInput(url);
   const [connection,setConnection]=useState(defaultGitConnection);
   const transport=gitTransport(source.url);
+  const [advanced, setAdvanced] = useState(defaultCloneOptionsForm);
+  const built = buildCloneOptions(advanced);
+  const setAdv = (patch: Partial<CloneOptionsForm>) => setAdvanced((a) => ({ ...a, ...patch }));
+  const shallow = parseDepth(advanced.depth).depth !== null;
   useEffect(() => {
     if (!touched) setName(repoNameFromUrl(source.url));
   }, [source.url, touched]);
@@ -463,16 +470,16 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
     const dir = await openDialog({ directory: true, title: "Choose where to clone" });
     if (typeof dir === "string") setParent(dir);
   };
-  const ok = !source.error && source.url && parent.trim() && name.trim();
+  const ok = !source.error && source.url && parent.trim() && name.trim() && built.options;
   return (
     <Modal
       title="Clone repository"
       icon={<Download size={18} />}
       onClose={() => close(null)}
       onSubmit={() => {
-        if (!ok) return;
+        if (!ok || !built.options) return;
         localStorage.setItem("revqora.cloneParent", parent);
-        close({ url: source.url, parent: parent.trim(), name: name.trim(),connection:transport==="ssh"?{...connection,https:"auto"}:transport==="https"?{...connection,ssh:"auto",privateKey:"",sshProgram:""}:defaultGitConnection() });
+        close({ url: source.url, parent: parent.trim(), name: name.trim(), options: built.options, connection:transport==="ssh"?{...connection,https:"auto"}:transport==="https"?{...connection,ssh:"auto",privateKey:"",sshProgram:""}:defaultGitConnection() });
       }}
       footer={
         <>
@@ -513,6 +520,34 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
         />
       </div>
       {transport!=="local"&&<GitConnectionFields value={connection} onChange={setConnection} transport={transport}/>}
+      <details className="field" data-clone-advanced>
+        <summary>Advanced</summary>
+        <div className="field">
+          <label>Branch to check out</label>
+          <input className="input mono" aria-label="Clone branch" value={advanced.branch} placeholder="Remote default branch" onChange={(e) => setAdv({ branch: e.target.value })} />
+        </div>
+        <div className="field">
+          <label>Shallow clone depth</label>
+          <input className="input" aria-label="Clone depth" inputMode="numeric" value={advanced.depth} placeholder="Full history" onChange={(e) => setAdv({ depth: e.target.value })} />
+          <small>Number of recent commits to download. Leave empty for the full history.</small>
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={advanced.noSingleBranch} disabled={!shallow} onChange={(e) => setAdv({ noSingleBranch: e.target.checked })} /> Fetch all branches (--no-single-branch)
+        </label>
+        <div className="field">
+          <label>Partial clone</label>
+          <select className="input" aria-label="Partial clone filter" value={advanced.filter} onChange={(e) => setAdv({ filter: e.target.value as CloneFilter })}>
+            {CLONE_FILTERS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={advanced.recurseSubmodules} onChange={(e) => setAdv({ recurseSubmodules: e.target.checked })} /> Clone submodules (--recurse-submodules)
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={advanced.shallowSubmodules} disabled={!shallow || !advanced.recurseSubmodules} onChange={(e) => setAdv({ shallowSubmodules: e.target.checked })} /> Shallow submodules (--shallow-submodules)
+        </label>
+        {built.error && <p role="alert" className="muted">{built.error}</p>}
+      </details>
     </Modal>
   );
 }
@@ -809,7 +844,11 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
           <label className="check">
             <input type="checkbox" checked={s.wrapDiff} onChange={(e) => s.set({ wrapDiff: e.target.checked })} /> Wrap long lines
           </label>
+          <label className="check" title="Checks each visible commit's signature with gpg or ssh; can be slow in large histories">
+            <input type="checkbox" checked={s.showSignatures} onChange={(e) => s.set({ showSignatures: e.target.checked })} /> Show signature status in History
+          </label>
         </div>
+        <ExternalToolSettings root={root} />
       </div>
       <div className="section-title">API accounts</div><button className="btn" type="button" onClick={()=>{close();void forgeAccountsDialog(root);}}>Accounts and API connections…</button>
       <div className="section-title">Behaviour</div>
@@ -1052,6 +1091,43 @@ function ShortcutSettings() {
         })}
       </div>
       {!filtered.length && <div className="cg-empty">No matching shortcuts.</div>}
+    </>
+  );
+}
+
+/** Editor, diff tool and merge tool. Tools come from Git's own lists (installed, graphical). */
+function ExternalToolSettings({ root }: { root: string | null }) {
+  const editor = useSettings((st) => st.externalEditor);
+  const diffTool = useSettings((st) => st.diffTool);
+  const mergeTool = useSettings((st) => st.mergeTool);
+  const set = useSettings((st) => st.set);
+  const [tools, setTools] = useState<ExternalTools | null>(null);
+  useEffect(() => { if (root) api.externalTools(root).then(setTools, () => setTools(null)); }, [root]);
+  const preset = editorPresetLabel(editor);
+  const toolSelect = (label: string, value: string, list: string[], fallback: string | null, key: "diffTool" | "mergeTool") => (
+    <>
+      <label htmlFor={`setting-${key}`}>{label}</label>
+      <select id={`setting-${key}`} className="select" style={{ width: 260 }} value={value} onChange={(e) => set({ [key]: e.target.value })}>
+        <option value="">{fallback ? `Git's default (${fallback})` : "Git's default (not set)"}</option>
+        {[...new Set([...list, ...(value ? [value] : [])])].map((t) => <option key={t} value={t}>{t}</option>)}
+      </select>
+    </>
+  );
+  return (
+    <>
+      <label htmlFor="setting-editor">External editor</label>
+      <div className="vstack" style={{ gap: 6 }}>
+        <select id="setting-editor" className="select" style={{ width: 260 }} value={preset}
+          onChange={(e) => { const p = EDITOR_PRESETS.find((x) => x.label === e.target.value); if (p) set({ externalEditor: p.command }); }}>
+          {EDITOR_PRESETS.map((p) => <option key={p.label}>{p.label}</option>)}
+          {preset === "Custom" && <option>Custom</option>}
+        </select>
+        <input className="input mono" aria-label="Editor command" placeholder="System text editor" value={editor}
+          onChange={(e) => set({ externalEditor: e.target.value })} />
+        <span className="faint">Placeholders: {"{file}"}, {"{line}"}, {"{column}"}. Run directly, without a shell.</span>
+      </div>
+      {toolSelect("External diff tool", diffTool, tools?.diffTools ?? [], tools?.diffDefault ?? null, "diffTool")}
+      {toolSelect("External merge tool", mergeTool, tools?.mergeTools ?? [], tools?.mergeDefault ?? null, "mergeTool")}
     </>
   );
 }

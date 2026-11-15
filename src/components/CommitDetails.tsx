@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { openRepoFile } from "../lib/openFile";
-import { Ellipsis, List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
+import { Columns2, SquarePen, Ellipsis, List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
 import * as A from "../lib/actions";
 import { api, errorMessage } from "../lib/api";
 import type { Check, CommitDetails as Details, FileDiff, GraphRow, RefLabel, Signature } from "../lib/types";
@@ -22,6 +22,9 @@ import { useFileListNavigation } from "../lib/useFileListNavigation";
 import { usePanelTitleMenu } from "./PanelWindows";
 import { fileCopyMenu } from "./NamePathMenu";
 import { commitMenu } from "./menus";
+import { openInDiffTool, openInEditor } from "../lib/externalTools";
+import { folderHistoryDialog } from "./HistoryDialogs";
+import { CommitNote } from "./CommitNote";
 
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
   const fileNavigation = useFileListNavigation();
@@ -78,7 +81,7 @@ ${oid}`;
       if (shownCommit.current === asked) setChecksBusy(false);
     }
   };
-  const diffOpts = useDiffOpts();
+  const diffOpts = useDiffOpts(file);
   const treeView = useSettings((s) => s.fileView) === "tree";
 
   useEffect(() => {
@@ -148,6 +151,7 @@ ${oid}`;
           await showDialog<void>((close) => <CommitMessageDialog subject={current.subject} body={current.body} oid={current.oid} author={current.author} onClose={() => close()} />);
           if (trigger.isConnected) trigger.focus({ preventScroll: true });
         }}><FileText size={14} /> Message</button>
+        {current && <CommitNote root={root} oid={current.oid} />}
         <button type="button" className="btn sm" disabled={!current} aria-haspopup="menu" title="Commit actions: cherry-pick, revert, branch, tag, reset and more" onClick={(event) => {
           if (!current) return;
           const box = event.currentTarget.getBoundingClientRect();
@@ -276,7 +280,7 @@ ${oid}`;
             </span>
           </div>
           <div className="file-list" {...fileNavigation} aria-label="Commit files">
-            <FileGroups items={d.files} tree={treeView} idPrefix="c" render={(f, grouped) => (
+            <FileGroups items={d.files} tree={treeView} idPrefix="c" onFolderMenu={(e, folder) => contextMenu(e, [{ label: "Folder history…", icon: <History size={14} />, onClick: () => void folderHistoryDialog(root, folder) }])} render={(f, grouped) => (
               <div
                 key={f.path}
                 className={`file-row ${file === f.path ? "selected" : ""}`}
@@ -300,6 +304,8 @@ ${oid}`;
                     { separator: true },
                     { label: "Blame at this commit", icon: <ScanSearch size={14} />, disabled: f.status === "D", onClick: () => openOverlay({ kind: "blame", root, path: f.path, rev: d.oid }) },
                     { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void openRepoFile(joinPath(root, f.path)) },
+                    { label: "Open in editor", icon: <SquarePen size={14} />, disabled: f.status === "D", onClick: () => void openInEditor(root, f.path) },
+                    { label: "Compare in external diff tool", icon: <Columns2 size={14} />, onClick: () => void openInDiffTool(root, f.path, "commits", d.diffBase, d.oid) },
                     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(joinPath(root, f.path)) },
                     { separator: true },
                     ...fileCopyMenu(f.path),

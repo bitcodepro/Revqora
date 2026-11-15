@@ -14,6 +14,12 @@ Select a commit to see its author, SHA, message and changed files. Choose a file
 
 The graph shows relationships between commits. Labels identify branches, tags and the checked-out HEAD. Use search and filters to narrow a large history by the supported message, author, SHA, path or code criteria.
 
+Choose **Filters** beside the search box to combine an author, a file or folder path (taken literally, no wildcards), **Since** / **Until** dates, **First parent only** and **Hide merge commits**. Filters combine with each other and with the search text; with no search text they list every matching commit. Active filters appear as chips; click a chip's **×** to remove it.
+
+To see who signed which commits, turn on **Settings → Diff → Show signature status in History** (off by default). Revqora checks the signatures of the visible rows with your installed gpg or ssh tools, which can be slow in large histories. Signed commits get a small mark: ✓ for a verified signature, ! otherwise. Hover it for the status, such as **Signed and verified**, **Signed; the key is not trusted**, **Signed with a revoked key** or **Bad signature**. Unsigned commits get no mark.
+
+The commit details show **Add note**, or **Note** when the commit already has a git note. Notes are attached to the commit without changing its SHA. They stay local until you push `refs/notes/commits`. Save an empty note to remove it.
+
 ## Read a diff
 
 Right-click the filename above the diff and choose **Copy name** to copy the full filename with its extension.
@@ -26,6 +32,15 @@ Right-click the filename above the diff and choose **Copy name** to copy the ful
 
 Use **Find in diff (Ctrl+F)** to search the open diff. Where offered, **View → Show the whole file** expands its context and **View → Ignore whitespace changes** reduces whitespace noise. Turn whitespace ignoring off when checking formatting-only changes; it changes the view, not the file.
 
+The **View** menu also has:
+
+- **Highlight moved lines** marks lines removed in one place and added in another within the same diff. Short lines (blank lines, braces) and lines edited in place do not count.
+- **Ignore blank lines** hides changes that only add or remove empty lines.
+- **Show more context** adds lines around each change for this file; the menu shows how many were added. **Normal context** returns to the default. It is unavailable while the whole file is shown.
+- **Diff algorithm** chooses **Git's default**, **Myers**, **Minimal**, **Patience** or **Histogram**.
+
+Above the diff of a submodule pointer change, Revqora summarizes the submodule: the old and new commit, how many commits were added or dropped, and their subjects. The list needs the submodule checked out and the commits fetched; otherwise it says why it is unavailable.
+
 Check file status and metadata as well as text: rename, binary, executable-bit and object-type changes can matter. An unavailable or partial preview is not evidence that the file did not change. Image comparisons are available for supported image files; arbitrary binary formats are not rendered as text.
 
 ## Compare branches or commits
@@ -36,7 +51,15 @@ Open **Ctrl+N → Compare branches…** or a branch's comparison action. Review 
 
 Example: compare `main` with `feature/login` to inspect the feature. Reading the comparison does not merge either branch.
 
-**Browse files (HEAD)** opens a revision's tree without checking it out. Right-click a tracked file in Changes or a commit's changed-file list for **File history** and **Blame** / **Blame at this commit**. Select a history entry to inspect its recorded changes. Blame points to the recorded commit/author; it does not establish why a change was made.
+**Browse files (HEAD)** opens a revision's tree without checking it out. Right-click a tracked file in Changes or a commit's changed-file list for **File history** and **Blame** / **Blame at this commit**. Select a history entry to inspect its recorded changes.
+
+To follow single lines, right-click a line in Blame and choose **History of this line…** (for committed lines). To follow a range, click a line number and **Shift+click** another, then choose **History of lines N–M…**. The dialog lists the commits that changed those lines with each change's diff; double-click a commit to open it in History. With uncommitted edits, a range is taken from the last commit's line numbers.
+
+Right-click a folder in **Browse files**, in the Changes tree or in a commit's file tree and choose **Folder history…** to list the commits that changed anything under it, with the files each commit touched there and their diffs. **Browse files** also offers **File history…**, **Blame** and **Open in editor** for files, and **Export archive…** to save the shown revision as a `.zip` or `.tar.gz` (chosen by the file name).
+
+Blame points to the recorded commit/author; it does not establish why a change was made.
+
+The Blame header has **Ignore whitespace** (on by default), **Moved lines** (**Off**, **Within file**, **Across files**) and **Use ignore-revs file**, which skips the commits listed in the repository's `.git-blame-ignore-revs` or `blame.ignoreRevsFile`. Revqora remembers these choices. With moved-line detection, a line copied from another file is attributed to the commit that wrote it there, and **History of this line…** follows that file. Press **Ctrl+F** to find text (Enter / Shift+Enter for next / previous). Use **↑ / ↓** to move between lines, **Shift+↑ / ↓** to extend the selection, and **Enter** to open the line's commit.
 
 ## Search actual changed code
 

@@ -94,6 +94,25 @@ pub fn verify_commit_oid(repo: &Path, oid: &str) -> GitResult<()> {
     }
 }
 
+/// Signature check result per commit (`%G?`: G good, B bad, U good but unknown validity,
+/// X/Y expired signature/key, R revoked key, E cannot be checked, N not signed). Batched for
+/// the visible History rows; at most 200 commits per call.
+pub fn signature_status(repo: &Path, oids: &[String]) -> GitResult<HashMap<String, String>> {
+    let mut args: Vec<String> = vec!["log".into(), "--no-walk=unsorted".into(), "--format=%H %G?".into()];
+    for oid in oids.iter().take(200) {
+        if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(GitError::new("Supply full commit hashes.").kind("invalid-commit"));
+        }
+        args.push(oid.clone());
+    }
+    if args.len() == 3 {
+        return Ok(HashMap::new());
+    }
+    args.push("--".into());
+    let raw = runner::run(repo, &args)?;
+    Ok(raw.lines().filter_map(|l| l.split_once(' ').map(|(oid, status)| (oid.to_string(), status.trim().to_string()))).collect())
+}
+
 pub fn details(repo: &Path, oid: &str) -> GitResult<CommitDetails> {
     // `--end-of-options`: a value such as `--output=<file>` must never be read as an option.
     let raw =

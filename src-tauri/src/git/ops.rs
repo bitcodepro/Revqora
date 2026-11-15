@@ -282,6 +282,123 @@ pub fn last_message(repo: &Path) -> GitResult<String> {
     runner::run(repo, ["log", "-1", "--format=%B"]).map(|s| s.trim_end().to_string())
 }
 
+/// A person from recent history, for the co-author picker.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitAuthor {
+    pub name: String,
+    pub email: String,
+    pub commits: usize,
+}
+
+/// Authors of the last `scan` commits, de-duplicated by e-mail (case-insensitive),
+/// most frequent first, ties broken by the most recent commit.
+pub fn commit_authors(repo: &Path, scan: usize, limit: usize) -> GitResult<Vec<CommitAuthor>> {
+    if head_oid(repo).is_none() {
+        return Ok(Vec::new());
+    }
+    let n = scan.clamp(1, 10_000).to_string();
+    let out = runner::run(repo, ["log", "-n", n.as_str(), "--no-color", "--format=%an%x1f%ae"])?;
+    let mut found: Vec<(CommitAuthor, usize)> = Vec::new();
+    let mut index = std::collections::HashMap::<String, usize>::new();
+    for (pos, line) in out.lines().enumerate() {
+        let Some((name, email)) = line.split_once('\u{1f}') else { continue };
+        let (name, email) = (name.trim(), email.trim());
+        if name.is_empty() || email.is_empty() {
+            continue;
+        }
+        let key = email.to_lowercase();
+        if let Some(&i) = index.get(&key) {
+            found[i].0.commits += 1;
+        } else {
+            index.insert(key, found.len());
+            found.push((CommitAuthor { name: name.into(), email: email.into(), commits: 1 }, pos));
+        }
+    }
+    found.sort_by(|a, b| b.0.commits.cmp(&a.0.commits).then(a.1.cmp(&b.1)));
+    Ok(found.into_iter().take(limit).map(|(a, _)| a).collect())
+}
+
+/// Full messages of recent commits authored by the configured `user.email`, newest first, unique.
+pub fn own_recent_messages(repo: &Path, limit: usize) -> GitResult<Vec<String>> {
+    let Some(email) = repo::config_get(repo, "user.email").filter(|e| !e.trim().is_empty()) else { return Ok(Vec::new()) };
+    if head_oid(repo).is_none() {
+        return Ok(Vec::new());
+    }
+    // A fixed string, not a regex: e-mail addresses contain '+', '.' and other regex characters.
+    let author = format!("--author=<{}>", email.trim());
+    let out = runner::run(repo, ["log", "-n", "300", "--no-color", "-i", "--fixed-strings", author.as_str(), "--format=%B%x00"])?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(out.split('\0').map(|m| m.trim().to_string()).filter(|m| !m.is_empty() && seen.insert(m.clone())).take(limit).collect())
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FixupOptions {
+    /// "fixup" or "squash".
+    pub kind: String,
+    /// Extra message for squash! commits (appended after the subject line).
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub no_verify: bool,
+    #[serde(default)]
+    pub sign: Option<bool>,
+}
+
+/// Commits the staged changes as `fixup! <subject>` / `squash! <subject>` for `oid`.
+pub fn fixup_commit(repo: &Path, oid: &str, opts: &FixupOptions) -> GitResult<String> {
+    let oid = oid.trim();
+    if oid.is_empty() || oid.starts_with('-') || !oid.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(GitError::new("Choose a commit by its object ID.").kind("invalid-input"));
+    }
+    if opts.kind != "fixup" && opts.kind != "squash" {
+        return Err(GitError::new("Unknown fixup kind.").kind("invalid-input"));
+    }
+    let gd = repo::git_dir(repo)?;
+    let state = repo::op_state(repo, &gd);
+    if state.kind != "none" {
+        return Err(GitError::new(format!("Finish or abort the current {} operation first.", state.kind)).kind("operation-in-progress"));
+    }
+    let spec = format!("{oid}^{{commit}}");
+    let verified = runner::exec(repo, ["rev-parse", "-q", "--verify", "--end-of-options", spec.as_str()])?;
+    if !verified.ok() {
+        return Err(GitError::new("That commit does not exist in this repository.").kind("invalid-input"));
+    }
+    let full = verified.text().trim().to_string();
+    if runner::exec(repo, ["diff", "--cached", "--quiet", "--no-ext-diff"])?.ok() {
+        return Err(GitError::new("Stage the changes for this commit first.").kind("nothing-staged"));
+    }
+    let target = format!("--{}={full}", opts.kind);
+    let mut args: Vec<String> = vec!["commit".into(), target, "--cleanup=whitespace".into()];
+    let extra = opts.message.as_deref().map(str::trim).filter(|m| !m.is_empty() && opts.kind == "squash");
+    let file = match extra {
+        Some(m) => Some(temp_file(repo, "FIXUP_MSG", m)?),
+        None => None,
+    };
+    match &file {
+        Some(f) => {
+            args.push("-F".into());
+            args.push(f.to_string_lossy().into_owned());
+        }
+        None => args.push("--no-edit".into()),
+    }
+    if opts.no_verify {
+        args.push("--no-verify".into());
+    }
+    match opts.sign {
+        Some(true) => args.push("-S".into()),
+        Some(false) => args.push("--no-gpg-sign".into()),
+        None => {}
+    }
+    let result = runner::run(repo, &args);
+    if let Some(f) = &file {
+        let _ = std::fs::remove_file(f);
+    }
+    result?;
+    Ok(head_oid(repo).unwrap_or_default())
+}
+
 // ───────────────────────────── branches & tags ─────────────────────────────
 
 pub fn checkout(repo: &Path, target: &str, kind: &str) -> GitResult<String> {
@@ -413,6 +530,26 @@ pub fn fetch(repo: &Path, remote: Option<&str>, prune: bool, on_line: impl FnMut
         prune_tracking_separately(repo, remote, &LOG_TRACKING, None)?;
     }
     Ok(out)
+}
+
+pub fn is_shallow(repo: &Path) -> GitResult<bool> {
+    Ok(runner::run(repo, ["rev-parse", "--is-shallow-repository"])?.trim() == "true")
+}
+
+/// Fetches more history into a shallow clone: `deepen = Some(n)` adds n commits, `None` unshallows.
+pub fn fetch_more_history(repo: &Path, deepen: Option<u32>, on_line: impl FnMut(&str)) -> GitResult<String> {
+    if !is_shallow(repo)? {
+        return Err(GitError::new("This repository already has its full history.").kind("not-shallow"));
+    }
+    let arg = match deepen {
+        Some(0) => return Err(GitError::new("Depth must be a positive whole number.").kind("invalid-depth")),
+        Some(n) => format!("--deepen={n}"),
+        None => "--unshallow".into(),
+    };
+    super::recovery::protect_transport(repo, false, None, None, true)?;
+    // Only history is wanted: never prune here, whatever fetch.prune / fetch.pruneTags say
+    // (pruning could delete local-only tags or branches mapped by a refspec).
+    runner::run_streaming(repo, &["fetch".into(), "--progress".into(), "--no-prune".into(), "--no-prune-tags".into(), arg], &LOG_TRACKING, on_line)
 }
 
 /// `--prune` removes refs under every destination of the fetch refspecs, including local tags
@@ -963,6 +1100,71 @@ pub fn push_ref(repo: &Path, remote: &str, refspec: &str, on_line: impl FnMut(&s
     runner::run_streaming(repo, &["push".into(), "--progress".into(), remote.into(), refspec.into()], &[], on_line)
 }
 
+/// Partial clone filters offered by the clone dialog; free-form filter specs are never accepted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CloneFilter {
+    #[default]
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "blob:none")]
+    BlobNone,
+    #[serde(rename = "tree:0")]
+    TreeZero,
+}
+
+/// Optional `git clone` arguments. The default reproduces a plain clone with submodules.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CloneOptions {
+    pub branch: Option<String>,
+    pub depth: Option<u32>,
+    pub no_single_branch: bool,
+    pub filter: CloneFilter,
+    pub recurse_submodules: bool,
+    pub shallow_submodules: bool,
+}
+
+impl Default for CloneOptions {
+    fn default() -> Self {
+        Self { branch: None, depth: None, no_single_branch: true, filter: CloneFilter::None, recurse_submodules: true, shallow_submodules: false }
+    }
+}
+
+/// Validated option arguments placed before `--`; each value is a separate argv entry.
+pub fn clone_option_args(parent: &Path, options: &CloneOptions) -> GitResult<Vec<String>> {
+    let mut args = Vec::new();
+    if let Some(branch) = options.branch.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+        if branch.starts_with('-') || branch.chars().any(|c| c.is_control()) {
+            return Err(GitError::new("Enter a valid branch name.").kind("invalid-branch"));
+        }
+        if !runner::exec(parent, ["check-ref-format", "--branch", branch])?.ok() {
+            return Err(GitError::new(format!("{branch} is not a valid branch name.")).kind("invalid-branch"));
+        }
+        args.extend(["--branch".into(), branch.to_string()]);
+    }
+    if let Some(depth) = options.depth {
+        if depth == 0 {
+            return Err(GitError::new("Depth must be a positive whole number.").kind("invalid-depth"));
+        }
+        args.extend(["--depth".into(), depth.to_string()]);
+        if options.no_single_branch {
+            args.push("--no-single-branch".into());
+        }
+    }
+    match options.filter {
+        CloneFilter::None => {}
+        CloneFilter::BlobNone => args.push("--filter=blob:none".into()),
+        CloneFilter::TreeZero => args.push("--filter=tree:0".into()),
+    }
+    if options.recurse_submodules {
+        args.push("--recurse-submodules".into());
+        if options.depth.is_some() && options.shallow_submodules {
+            args.push("--shallow-submodules".into());
+        }
+    }
+    Ok(args)
+}
+
 pub fn clone(parent: &Path, url: &str, dir_name: &str, on_line: impl FnMut(&str)) -> GitResult<PathBuf> {
     clone_with_connection(parent, url, dir_name, on_line, None).map(|result| result.0)
 }
@@ -973,19 +1175,26 @@ pub fn clone_with_connection(
     on_line: impl FnMut(&str),
     connection: Option<&super::connection::Options>,
 ) -> GitResult<(PathBuf, Option<String>)> {
+    clone_with_options(parent, url, dir_name, &CloneOptions::default(), on_line, connection)
+}
+pub fn clone_with_options(
+    parent: &Path,
+    url: &str,
+    dir_name: &str,
+    options: &CloneOptions,
+    on_line: impl FnMut(&str),
+    connection: Option<&super::connection::Options>,
+) -> GitResult<(PathBuf, Option<String>)> {
     if let Some(options) = connection {
         super::connection::validate_for(parent, options)?;
     }
     std::fs::create_dir_all(parent)?;
     let root = parent.join(dir_name);
-    runner::run_streaming_with_connection(
-        parent,
-        // `--`: a pasted "URL" such as --upload-pack=... must never be read as an option.
-        &["clone".into(), "--progress".into(), "--".into(), url.into(), dir_name.into()],
-        &[(crate::git_credentials::REPO_VAR, &root.to_string_lossy())],
-        on_line,
-        connection,
-    )?;
+    let mut args: Vec<String> = vec!["clone".into(), "--progress".into()];
+    args.extend(clone_option_args(parent, options)?);
+    // `--`: a pasted "URL" such as --upload-pack=... must never be read as an option.
+    args.extend(["--".into(), url.into(), dir_name.into()]);
+    runner::run_streaming_with_connection(parent, &args, &[(crate::git_credentials::REPO_VAR, &root.to_string_lossy())], on_line, connection)?;
     // An explicit default selection must replace preferences left by a previous
     // clone at this path too; otherwise Auto silently reuses its old SSH key.
     let warning = connection.and_then(|options| {

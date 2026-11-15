@@ -3484,6 +3484,54 @@ select[size="1"]:not([multiple]) {
 .check.subtle { color: var(--text-faint); font-weight: 400; }
 .check.subtle.warn { color: var(--amber); }
 .branch-scope-results { margin-top: 8px; max-height: min(50vh, 420px); overflow: auto; }
+.ignore-preview { max-height: 180px; overflow: auto; }
+.ignore-preview .added { color: var(--green); font-weight: 600; }
+.blame-row.selected { box-shadow: inset 3px 0 0 var(--accent); background: var(--bg-selected); }
+.blame-ln[role="button"] { cursor: pointer; }
+
+/* Moved lines: the same text removed in one place and added in another. */
+.dl.moved, .split-dl .half.moved { box-shadow: inset 3px 0 0 var(--cyan); }
+.dl.moved.add, .split-dl .half.moved.add { background: color-mix(in srgb, var(--cyan) 12%, var(--diff-add)); }
+.dl.moved.del, .split-dl .half.moved.del { background: color-mix(in srgb, var(--cyan) 12%, var(--diff-del)); }
+
+/* Line numbers select lines (click, Shift+click, drag): no text selection while dragging. */
+.diff .ln { user-select: none; }
+/* "Stage block": one block of changes inside a larger hunk. */
+.dl { position: relative; }
+.block-actions { position: absolute; right: 8px; top: 0; display: none; }
+.dl:hover > .block-actions, .dl:focus-within > .block-actions { display: block; }
+.block-actions .btn { height: 18px; padding: 0 6px; font-size: var(--fs-xs); }
+
+/* Several files picked with Ctrl/Shift+click in Changes. */
+.file-row.multi-picked { background: var(--bg-selected); box-shadow: inset 2px 0 0 var(--accent); }
+.submodule-summary { margin: 10px 12px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; display: grid; gap: 4px; font-size: var(--fs-sm); }
+.submodule-commit { display: grid; grid-template-columns: 14px 64px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; }
+.submodule-commit .a { color: var(--green); }
+.submodule-commit .d { color: var(--red); }
+/* Blame options, find and keyboard focus */
+.blame-opt { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-dim); margin-right: 8px; white-space: nowrap; }
+.blame-opt select { font-size: 12px; }
+.blame-find { display: flex; align-items: center; gap: 6px; padding: 4px 12px; border-bottom: 1px solid var(--border-soft); }
+.blame-find input { flex: 0 1 260px; }
+.blame-row.find-match .blame-code { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.blame-row.find-current .blame-code { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+.blame-scroll:focus { outline: none; }
+.blame-scroll:focus-visible .blame-row.focused, .blame-scroll:focus .blame-row.focused { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* History filters popover and chips */
+.graph-toolbar { position: relative; flex-wrap: wrap; }
+.history-filters { position: absolute; top: 100%; left: 12px; z-index: 30; display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 8px 12px; padding: 10px 12px; background: var(--bg-elev, var(--bg)); border: 1px solid var(--border-soft); border-radius: 8px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.25); font-size: 12px; }
+.history-filters label { display: flex; align-items: center; gap: 6px; }
+.history-filters label input:not([type="checkbox"]) { flex: 1; min-width: 0; }
+.history-filters .error-text { grid-column: 1 / -1; color: var(--red, #e5534b); }
+.history-filter-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.history-filter-chips .chip { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 8px; border-radius: 10px; background: var(--bg-selected); font-size: 11px; }
+
+/* Signature status in History rows. */
+.sig-mark { flex: none; display: inline-grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; font-size: max(10px, calc(var(--fs) - 4px)); font-weight: 700; margin-right: 4px; color: #fff; }
+.sig-mark.good { background: var(--green); }
+.sig-mark.warn { background: var(--amber); }
+.sig-mark.bad { background: var(--red); }
 .toast button { pointer-events: auto; }
 /* Long details: clamped in the click-through card; "Details" expands them, and an expanded toast
    takes the pointer so its text can be scrolled and selected. */

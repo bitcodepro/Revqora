@@ -29,15 +29,39 @@ Before opening or updating a PR:
 - [ ] Opening a match selects its repository and commit. Branch context, current-branch history and All branches are distinct scopes. Verify Graph, Review and Columns when changing shared history behavior.
 - [ ] When the branch scope changes, History waits for that scope's graph. Updates to the same scope can keep the existing rows visible.
 - [ ] History search covers the whole selected scope while the graph stays paged. A match outside the loaded graph is available in the match list and opens its commit by SHA.
+- [ ] History **Filters** (author, literal file/folder path, since/until dates, first parent only, hide merge commits) combine with each other and with the search text (AND). Active filters show as removable chips; filters alone list matching commits. Dates are YYYY-MM-DD and values starting with '-' are rejected.
+- [ ] Signature status in History is off by default. When on, only visible rows are checked, in batches; unsigned commits show no mark and a failed check shows "cannot be checked here" rather than a wrong verdict.
+- [ ] Line history ("History of this line…", or "History of lines N–M…" for a selected range) and Folder history list only commits that changed those lines or that folder, with their diffs. Opening an entry selects its commit in History. Commit notes never change the commit; an empty note removes it.
+- [ ] Diff View options (moved lines, ignore blank lines, more context, diff algorithm) change only the view. Show more context is per file and is disabled while the whole file is shown. Moved-line highlighting ignores short lines and lines replaced in place.
+- [ ] A submodule pointer diff shows the old and new commit and the added/dropped commits. When the submodule is not checked out, was added/removed, or lacks the commits, it says why instead of failing.
+
+## Blame
+
+- [ ] Blame options (ignore whitespace, moved lines off / within file / across files, use ignore-revs file) are remembered in settings. A `.git-blame-ignore-revs` file at the worktree root is used when the option is on; a configured `blame.ignoreRevsFile` that does not exist must not make Blame fail.
+- [ ] With moved-line detection a line may come from another file; "History of this line…" follows the line in that original file. Blame rejects revisions that are empty or look like options.
+- [ ] Ctrl+F finds text in the blamed file (Enter / Shift+Enter next / previous). Up/Down move the focused line, Shift+Up/Down extend the selected range, Enter opens the line's commit.
 
 ## Working changes, staging and stash
 
 - [ ] Commit Description shows a non-selectable hint while empty. Real draft text can be selected and copied while editing. Leaving the field clears the selection and preserves the draft.
 
+- [ ] Co-author chips mirror the `Co-authored-by:` lines in the Description: adding appends one trailer after a blank line (or to an existing trailer block), removing deletes only that line, other trailers stay. Recent messages asks before replacing a non-empty draft. Fixup!/squash! from History commit only staged changes and are disabled with a reason when nothing is staged or an operation is in progress. See [Changes and commits](wiki/Changes-and-commits.md).
+
 - [ ] Whole-file stage uses the version available at staging time. Staging again updates the index to the latest version. Staging a hunk uses the selected diff and checks that it can still be applied to the index.
 - [ ] Routine Changes observations fingerprint the selected file. Git mutations still use their full preconditions. A diff truncated by the byte budget is marked partial and offers whole-file actions.
+- [ ] Line selection: click toggles a line, drag extends, Shift+click selects a range across hunks. Stage block / Unstage block act on one change block of a hunk. With several files picked (Ctrl/Shift+click), right-click on a picked file opens the bulk menu; on an unpicked file it opens that file's menu.
+- [ ] The Ignore dialog previews the exact rule appended to .gitignore or info/exclude and escapes special characters. It refuses to write if the ignore file changed since the preview (then shows the current file) and refuses a symlinked ignore file. Stop tracking removes matching files from the index only; they stay on disk.
+- [ ] External tools run without a shell. Editor commands fill {file}/{line}/{column} and append the file when {file} is missing. Terminal-only diff/merge tools (vimdiff, nvimdiff, emerge) are refused; with no chosen or configured tool the user is asked to choose one. The merge tool runs without keeping .orig backups and Revqora waits until it closes.
+- [ ] Restore on a new branch creates the branch at the stash's base commit, restores the stash with its index and drops it only after it applied.
 - [ ] Apply restores a stash and keeps its entry. Pop drops it after a complete restoration. When conflicts or partial index restoration occur, report them and preserve the stash. Drop preserves a recovery checkpoint and leaves the working files alone.
 - [ ] Destructive actions show consequences before confirmation. Branch deletion outside the comparison history offers an explicit confirmation. Remote deletion checks the exact reviewed SHA.
+
+## Repository tools
+
+- [ ] Repository tools shows Fetch more history / Fetch full history only for shallow clones. The rerere toggle changes this repository's configuration only; Stage replayed resolutions automatically is offered only while rerere is on.
+- [ ] The Hooks tab (also "Git hooks…" in the palette) reads core.hooksPath, marks non-executable hooks as skipped and ignores *.sample files. It never runs a hook.
+- [ ] Git LFS locks: when the server does not support locks the dialog still lists files and explains why. Unlock tries a normal release first; force unlock needs a separate danger confirmation.
+- [ ] Export archive writes the shown revision as zip or tar.gz, chosen by the file name extension.
 
 ## Bitbucket credentials
 

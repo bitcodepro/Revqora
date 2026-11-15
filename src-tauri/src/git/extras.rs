@@ -366,7 +366,77 @@ pub fn lfs_files(repo: &Path) -> GitResult<Vec<LfsFile>> {
 }
 
 pub fn lfs_track(repo: &Path, pattern: &str, track: bool) -> GitResult<()> {
-    runner::run(repo, ["lfs", if track { "track" } else { "untrack" }, pattern.trim()])?;
+    let pattern = pattern.trim();
+    if pattern.is_empty() || pattern.starts_with('-') {
+        return Err(GitError::new("Enter a file pattern such as *.psd.").kind("invalid-argument"));
+    }
+    runner::run(repo, ["lfs", if track { "track" } else { "untrack" }, "--", pattern])?;
+    Ok(())
+}
+
+/// A file locked through Git LFS (so others do not edit a binary file at the same time).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LfsLock {
+    pub id: String,
+    pub path: String,
+    pub owner: String,
+    pub locked_at: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RawLock {
+    id: String,
+    path: String,
+    #[serde(default)]
+    owner: Option<RawOwner>,
+    #[serde(default)]
+    locked_at: String,
+}
+#[derive(serde::Deserialize)]
+struct RawOwner {
+    #[serde(default)]
+    name: String,
+}
+
+impl From<RawLock> for LfsLock {
+    fn from(r: RawLock) -> Self {
+        LfsLock { id: r.id, path: r.path, owner: r.owner.map(|o| o.name).unwrap_or_default(), locked_at: r.locked_at }
+    }
+}
+
+/// `git lfs locks --json` output: an array of locks.
+pub fn parse_lfs_locks(json: &str) -> GitResult<Vec<LfsLock>> {
+    let raw: Vec<RawLock> = serde_json::from_str(json.trim()).map_err(|e| GitError::new(format!("Unexpected Git LFS output: {e}")))?;
+    Ok(raw.into_iter().map(LfsLock::from).collect())
+}
+
+fn lfs_path(path: &str) -> GitResult<&str> {
+    if path.is_empty() || path.split('/').any(|p| p == "..") || path.contains('\n') {
+        return Err(GitError::new("Invalid file path.").kind("invalid-argument"));
+    }
+    Ok(path)
+}
+
+/// Locks on the LFS server for this repository (asks the server).
+pub fn lfs_locks(repo: &Path) -> GitResult<Vec<LfsLock>> {
+    parse_lfs_locks(&runner::run(repo, ["lfs", "locks", "--json"])?)
+}
+
+pub fn lfs_lock(repo: &Path, path: &str) -> GitResult<LfsLock> {
+    let out = runner::run(repo, ["lfs", "lock", "--json", "--", lfs_path(path)?])?;
+    let raw: RawLock = serde_json::from_str(out.trim()).map_err(|e| GitError::new(format!("Unexpected Git LFS output: {e}")))?;
+    Ok(raw.into())
+}
+
+/// Releases a lock. `force` releases someone else's lock (the server may refuse).
+pub fn lfs_unlock(repo: &Path, path: &str, force: bool) -> GitResult<()> {
+    let mut args = vec!["lfs", "unlock"];
+    if force {
+        args.push("--force");
+    }
+    args.extend(["--", lfs_path(path)?]);
+    runner::run(repo, args)?;
     Ok(())
 }
 
@@ -501,5 +571,29 @@ mod tests {
         assert_eq!(fb.as_deref(), Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
         let (_, _, fb) = parse_bisect_message("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef is the first 'bad' commit\n");
         assert_eq!(fb.as_deref(), Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
+    }
+}
+
+#[cfg(test)]
+mod lfs_lock_tests {
+    use super::*;
+
+    #[test]
+    fn lock_listings_are_parsed() {
+        let json = r#"[{"id":"7","path":"art/logo.psd","owner":{"name":"Designer"},"locked_at":"2026-01-02T03:04:05Z"},{"id":"9","path":"x.bin"}]"#;
+        let locks = parse_lfs_locks(json).unwrap();
+        assert_eq!(locks[0], LfsLock { id: "7".into(), path: "art/logo.psd".into(), owner: "Designer".into(), locked_at: "2026-01-02T03:04:05Z".into() });
+        assert_eq!((locks[1].owner.as_str(), locks[1].locked_at.as_str()), ("", ""));
+        assert!(parse_lfs_locks("[]").unwrap().is_empty());
+        assert!(parse_lfs_locks("not json").is_err());
+    }
+
+    #[test]
+    fn lock_paths_and_patterns_are_validated() {
+        assert!(lfs_path("../x").is_err());
+        assert!(lfs_path("").is_err());
+        assert_eq!(lfs_path("-odd name.bin").unwrap(), "-odd name.bin", "passed after --");
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(lfs_track(dir.path(), "--help", true).unwrap_err().kind, "invalid-argument");
     }
 }

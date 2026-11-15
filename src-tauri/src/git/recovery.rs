@@ -973,6 +973,8 @@ pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<(
             | "conflict_unresolve"
             | "conflict_validation"
             | "conflict_save"
+            | "conflict_external"
+            | "stash_branch"
     );
     let refs = matches!(command, "branch_delete" | "branch_delete_remote" | "push" | "push_ref");
     if workspace && finishes_operation(command) {
@@ -992,7 +994,7 @@ pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<(
 
 /// Commands that leave or resolve an operation in progress; they must stay available.
 fn finishes_operation(command: &str) -> bool {
-    matches!(command, "op_abort" | "op_skip" | "conflict_take" | "conflict_unresolve" | "conflict_validation" | "conflict_save")
+    matches!(command, "op_abort" | "op_skip" | "conflict_take" | "conflict_unresolve" | "conflict_validation" | "conflict_save" | "conflict_external")
 }
 pub fn automatic(root: &Path, command: &str, workspace: bool, ignored: bool) -> GitResult<()> {
     automatic_expected(root, command, workspace, ignored, None)

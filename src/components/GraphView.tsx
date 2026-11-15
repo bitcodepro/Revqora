@@ -18,7 +18,8 @@ import { useSettings } from "../lib/settings";
 import { repositoryKey } from "../lib/repositoryLibrary";
 import { actionFor, matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
-import type { GraphLaneAnchor, GraphRow, GraphSummary, RefLabel, SearchMode, Seg } from "../lib/types";
+import type { GraphLaneAnchor, GraphRow, GraphSummary, HistoryFilters, RefLabel, SearchMode, Seg } from "../lib/types";
+import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, historyListMode, jumpResets, removeFilter } from "../lib/historyFilters";
 import { WORKTREE } from "../lib/types";
 import { absoluteTime, fullTime, relativeTime, shortOid } from "../lib/format";
 import { BranchAheadBehind, Avatar, RefBadge } from "./bits";
@@ -26,6 +27,8 @@ import { branchMenu, commitMenu, runMenuShortcut, tagMenu } from "./menus";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { usePanelTitleMenu } from "./PanelWindows";
 import { pickBranchScope } from "./BranchScopePicker";
+import { signatureBadge, useSignature } from "../lib/signatureStatus";
+import { jumpStep } from "../lib/historyJump";
 
 const ROW_H = 30;
 /** Review mode: two-line rows (subject, then author, date and hash) without the graph. */
@@ -201,6 +204,7 @@ ${r.oid}`
         <div className="g-subject">
           {incomingBadge}
           {badges}
+          {!wip && <SignatureMark root={p.root} oid={r.oid} />}
           <span className="text">{r.subject}</span>
         </div>
         {!wip && (
@@ -321,6 +325,7 @@ ${r.oid}`
       <div className="g-subject">
         {incomingBadge}
         {badges}
+        <SignatureMark root={p.root} oid={r.oid} />
         <span className="text" title={r.subject}>
           {r.subject}
         </span>
@@ -460,11 +465,20 @@ export function GraphView({
   const [cursor, setCursor] = useState(0);
   const [searching, setSearching] = useState(false);
   const [filterOnly, setFilterOnly] = useState(false);
+  /** Author/path/date/topology filters combined with the search text. */
+  const [filters, setFilters] = useState<HistoryFilters>(EMPTY_HISTORY_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filterProblem = filterError(filters);
+  const filterReq = filterProblem ? null : filterRequest(filters);
+  const chips = filterChips(filters);
+  /** The current search and filters, for event handlers registered once. */
+  const narrowing = useRef({ query, onlyMatching: filterOnly, filters });
+  narrowing.current = { query, onlyMatching: filterOnly, filters };
   const searchRef = useRef<HTMLInputElement>(null);
   const panelMenu = usePanelTitleMenu("history");
   // The search the user asked for. A graph rebuild (paging, watcher, auto-fetch) re-runs it for
   // the new rows but keeps the current match and scroll position.
-  const searchScope = JSON.stringify([root, tab.branchFilter, tab.branchContext, mode, query.trim()]);
+  const searchScope = JSON.stringify([root, tab.branchFilter, tab.branchContext, mode, query.trim(), filterReq]);
   const results = useMemo(() => found?.scope === searchScope ? found.matches : [], [found, searchScope]);
   const foundRef = useRef(found);
   foundRef.current = found;
@@ -475,7 +489,18 @@ export function GraphView({
   const matchSet = useMemo(() => new Set(results.map(({ row }) => row.oid)), [results]);
   // An older hit can be opened directly by SHA. Show it in the same history
   // pane without constructing all the intervening graph lanes.
-  const filtered = results.length > 0 && (filterOnly || results[cursor]?.graphIndex == null);
+  // Active filters narrow History to the matching commits even without search text (and show
+  // "no matches" instead of the whole graph); search text alone highlights within the graph.
+  const listMode = historyListMode({
+    filtersActive: !!filterReq,
+    searchActive: !!query.trim(),
+    loaded: found?.scope === searchScope,
+    matches: results.length,
+    onlyMatching: filterOnly,
+    currentOutsideGraph: results[cursor]?.graphIndex == null,
+  });
+  const filtered = listMode === "list";
+  const noMatches = listMode === "empty";
   useEffect(() => {
     anchor.current = null;
     hoveredCommit.current = null;
@@ -595,7 +620,7 @@ export function GraphView({
   }, []);
 
   // Rows visible (or filtered list when "show only matches" is on).
-  const count = filtered ? results.length : total;
+  const count = noMatches ? 0 : filtered ? results.length : total;
   const first = Math.max(0, Math.floor(scrollTop / rowH) - 8);
   const last = Math.min(count - 1, Math.ceil((scrollTop + viewH) / rowH) + 8);
 
@@ -649,10 +674,13 @@ export function GraphView({
   useEffect(() => {
     const oid = tab.historyJump;
     if (!oid) return;
-    // An external selection takes precedence over the local search and its pending scroll.
-    if (query || filterOnly) {
+    // An external selection takes precedence over the local search, the filters and their
+    // pending scroll: the target may be excluded by them (or they may match nothing).
+    const reset = jumpResets({ query, onlyMatching: filterOnly, filters });
+    if (reset) {
       setQuery("");
       setFilterOnly(false);
+      if (reset.filters) setFilters(EMPTY_HISTORY_FILTERS);
       return;
     }
     if (!graphKey || tab.graphLoading) return;
@@ -660,7 +688,20 @@ export function GraphView({
     void api.graphFind(root, oid, graphKey).then((index) => {
       const latest = useRepos.getState().tabs[root];
       if (!current || latest?.graph?.key !== graphKey || latest.historyJump !== oid) return;
-      if (index == null && hasMoreHistory(latest)) {
+      const step = jumpStep({ found: index != null, moreHistory: hasMoreHistory(latest), scoped: !!(latest.branchFilter || latest.branchContext) });
+      if (step === "widen-scope") {
+        // The branch scope leaves the commit out (a tag on another branch): show all branches
+        // and keep the request, so the rebuilt graph selects it.
+        patch(root, { branchFilter: null, branchContext: null, viewedBranch: null });
+        void loadGraph(root);
+        return;
+      }
+      if (step === "not-found") {
+        toast.info("Commit is not in the loaded history", "It may be filtered out or older than the loaded range.");
+        patch(root, { historyJump: null });
+        return;
+      }
+      if (step === "load-more") {
         // Page toward the commit: the next, larger graph re-runs this search, so a huge
         // repository never builds its whole history for one old commit.
         void loadMoreHistory(root).then(() => {
@@ -676,7 +717,7 @@ export function GraphView({
       patch(root, { historyJump: null });
     }).catch(() => {});
     return () => { current = false; };
-  }, [root, graphKey, tab.historyJump, tab.graphLoading, tab.branchFilter, query, filterOnly, patch, scrollToIndex]);
+  }, [root, graphKey, tab.historyJump, tab.graphLoading, tab.branchFilter, query, filterOnly, filters, patch, scrollToIndex]);
 
   /** A graph key whose last row should be selected as soon as it renders (End on paged history). */
   const selectLastFor = useRef<string | null>(null);
@@ -797,6 +838,12 @@ export function GraphView({
       };
       if (r !== root) return;
       const request=++jump;
+      // Search or filters would hide the target: clear them and let the History jump select it
+      // once the full graph is shown again.
+      if (jumpResets(narrowing.current)) {
+        patch(root, { selected: oid, multi: [], historyJump: oid });
+        return;
+      }
       patch(root,{selected:oid,multi:[]});
       const local=[...cache.current.values()].find(row=>row.oid===oid);
       if(local){anchor.current=local.index;scrollToIndex(local.index,true);return;}
@@ -850,7 +897,7 @@ export function GraphView({
   // Search (debounced for quick mode).
   useEffect(() => {
     let current = true;
-    if (!query.trim() || !graphKey) {
+    if ((!query.trim() && !filterReq) || !graphKey) {
       setFound(null);
       setCursor(0);
       setSearching(false);
@@ -861,7 +908,7 @@ export function GraphView({
     const t = setTimeout(async () => {
       setSearching(true);
       try {
-        const res = await api.historySearch(root, graphKey, query, mode);
+        const res = await api.historySearch(root, graphKey, query, mode, filterReq);
         if (!current || useRepos.getState().tabs[root]?.graph?.key !== graphKey) return;
         const previous = foundRef.current;
         if (previous?.scope === searchScope) {
@@ -1097,7 +1144,7 @@ export function GraphView({
               }
             }}
           />
-          {query && (
+          {(query || filterReq) && (
             <span className="count">
               {results.length
                 ? `${cursor + 1} / ${results.length}`
@@ -1141,6 +1188,13 @@ export function GraphView({
           >
             <Filter size={13} />
           </button>
+          <button aria-label="Filters" aria-expanded={filtersOpen} aria-pressed={chips.length > 0}
+            className={`btn sm ${chips.length ? "active" : ""}`}
+            onClick={() => setFiltersOpen((v) => !v)}
+            title="Combine author, path, date and merge filters"
+          >
+            Filters{chips.length ? ` (${chips.length})` : ""}
+          </button>
           {query && (
             <button aria-label="Clear"
               className="icon-btn sm"
@@ -1151,6 +1205,30 @@ export function GraphView({
             </button>
           )}
         </div>
+        {filtersOpen && (
+          <div className="history-filters" role="group" aria-label="History filters">
+            <label>Author <input value={filters.author} placeholder="Name or email" onChange={(e) => setFilters({ ...filters, author: e.target.value })} /></label>
+            <label>Path <input value={filters.path} placeholder="File or folder" onChange={(e) => setFilters({ ...filters, path: e.target.value })} /></label>
+            <label>Since <input type="date" aria-label="Since date" value={filters.since} onChange={(e) => setFilters({ ...filters, since: e.target.value })} /></label>
+            <label>Until <input type="date" aria-label="Until date" value={filters.until} onChange={(e) => setFilters({ ...filters, until: e.target.value })} /></label>
+            <label className="check"><input type="checkbox" checked={filters.firstParent} onChange={(e) => setFilters({ ...filters, firstParent: e.target.checked })} /> First parent only</label>
+            <label className="check"><input type="checkbox" checked={filters.noMerges} onChange={(e) => setFilters({ ...filters, noMerges: e.target.checked })} /> Hide merge commits</label>
+            {filterProblem && <span className="error-text">{filterProblem}</span>}
+            <button type="button" className="btn sm" disabled={!chips.length} onClick={() => setFilters(EMPTY_HISTORY_FILTERS)}>Clear filters</button>
+          </div>
+        )}
+        {chips.length > 0 && (
+          <div className="history-filter-chips">
+            {chips.map((chip) => (
+              <span key={chip.key} className="chip">
+                {chip.label}
+                <button type="button" className="icon-btn sm" aria-label={`Remove filter ${chip.label}`} title="Remove filter" onClick={() => setFilters((f) => removeFilter(f, chip.key))}>
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <button type="button" className="btn sm" onClick={() => void workspaceCommitSearch(query, mode)}>
           <FolderSearch size={14} /> Search all repositories
         </button>
@@ -1370,6 +1448,12 @@ export function GraphView({
             <span className="loader" />
           </div>
         )}
+        {summary && total > 0 && noMatches && (
+          <div className="empty" role="status" style={{ height: "100%" }}>
+            <h3>No commits match the filters</h3>
+            <button type="button" className="btn sm" onClick={() => setFilters(EMPTY_HISTORY_FILTERS)}>Clear filters</button>
+          </div>
+        )}
         {summary && total === 0 && (
           <div className="empty" style={{ height: "100%" }}>
             <h3>No commits yet</h3>
@@ -1412,4 +1496,13 @@ function trimRowCache(cache: Map<number, GraphRow>, center: number, selected: st
     if (cache.size <= MAX_CACHED_ROWS) break;
     if (cache.get(index)?.oid !== selected) cache.delete(index);
   }
+}
+
+/** A small shield on signed commits (Settings → Show signature status in History). */
+function SignatureMark({ root, oid }: { root: string; oid: string }) {
+  const enabled = useSettings((st) => st.showSignatures);
+  const status = useSignature(root, oid, enabled && /^[0-9a-f]{40,64}$/i.test(oid));
+  const badge = enabled ? signatureBadge(status) : null;
+  if (!badge) return null;
+  return <span className={`sig-mark ${badge.tone}`} role="img" aria-label={badge.label} title={badge.label}>{badge.tone === "good" ? "✓" : "!"}</span>;
 }

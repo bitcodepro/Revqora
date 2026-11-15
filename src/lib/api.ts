@@ -1,7 +1,8 @@
 import type { BranchCleanupRequest, BranchCleanupSelection, BranchCleanupReview, BranchCleanupReport } from "./types";
 import type { RepositoryFolderScan } from "./types";
+import type { BlameOptions, HistoryFilters } from "./types";
 import type { RebaseItem, StudioReview, StudioReport, StudioComparison, ValidationReport } from "./types";
-import type { IgnoredFiles, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
+import type { ExternalTools, FolderHistoryEntry, LineHistoryEntry, IgnoredFiles, IgnoreKind, IgnorePreview, IgnoreResult, IgnoreScope, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
 import { recordError } from "./errorLog";
@@ -21,6 +22,10 @@ import type {
   BisectStatus,
   Blame,
   LfsFile,
+  LfsLock,
+  GitHooks,
+  Rerere,
+  SubmoduleLog,
   RepoExtras,
   Signature,
   SigningConfig,
@@ -163,13 +168,24 @@ export const api = {
   repositorySidebarStatus: (repo: string) => call<StatusSummary>("repository_sidebar_status", { repo }),
   repositoryChangesStatus: (repo: string, path: string | null) => call<StatusSummary>("repository_changes_status", { repo, path }),
   repoInit: (path: string, branch?: string) => call<RepoInfo>("repo_init", { path, branch }),
-  repoClone: (parent: string, url: string, name: string, opId: string,connection?:import("./types").GitConnectionOptions) => call<RepoInfo&{connectionWarning:string|null}>("repo_clone", { parent, url, name, opId,connection:connection??null }),
+  repoClone: (parent: string, url: string, name: string, opId: string,connection?:import("./types").GitConnectionOptions, options?: import("./types").CloneOptions) => call<RepoInfo&{connectionWarning:string|null}>("repo_clone", { parent, url, name, opId,connection:connection??null, options: options ?? null }),
   gitConnectionSnapshot:(repo:string)=>call<import("./types").GitConnectionSnapshot>("git_connection_snapshot",{repo}),
   gitConnectionSave:(repo:string,options:import("./types").GitConnectionOptions,expected:string)=>call<import("./types").GitConnectionSnapshot>("git_connection_save",{repo,options,expected}),
   gitConnectionTest:(repo:string,remote:string,expectedUrlFingerprint:string)=>call<string>("git_connection_test",{repo,remote,expectedUrlFingerprint}),
   gitConnectionForget: (repo: string) => call<void>("git_connection_forget", { repo }),
   repoInfo: (repo: string) => call<RepoInfo>("repo_info", { repo }),
   ignoredFiles: (repo: string) => call<IgnoredFiles>("ignored_files", { repo }),
+  lineHistory: (repo: string, path: string, start: number, end: number, rev: string | null, limit?: number) =>
+    call<LineHistoryEntry[]>("line_history", { repo, path, start, end, rev, limit: limit ?? null }),
+  folderHistory: (repo: string, folder: string, limit?: number) => call<FolderHistoryEntry[]>("folder_history", { repo, folder, limit: limit ?? null }),
+  externalTools: (repo: string) => call<ExternalTools>("external_tools", { repo }),
+  externalDifftool: (repo: string, path: string, side: "unstaged" | "staged" | "commits", from: string | null, to: string | null, tool: string | null) =>
+    call<void>("external_difftool", { repo, path, side, from, to, tool }),
+  conflictExternal: (repo: string, path: string, tool: string | null, expectedState?: string | null) => call<void>("conflict_external", { repo, path, tool, expectedState }),
+  openInEditor: (repo: string, path: string, line: number, column: number, command: string) => call<void>("open_in_editor", { repo, path, line, column, command }),
+  ignorePreview: (repo: string, path: string, kind: IgnoreKind, scope: IgnoreScope) => call<IgnorePreview>("ignore_preview", { repo, path, kind, scope }),
+  ignoreApply: (repo: string, path: string, kind: IgnoreKind, scope: IgnoreScope, token: string, untrack: boolean) =>
+    call<IgnoreResult>("ignore_apply", { repo, path, kind, scope, token, untrack }),
   nestedRepositories: (repo: string) => call<NestedRepositories>("nested_repositories", { repo }),
   stashSelection: (repo: string, path: string, selection: [number, number][], hash: string, opts: DiffOptions, message: string, expectedState: string | null) => call<PartialStashResult>("stash_selection", { repo, path, selection, hash, opts, message, expectedState }),
   remoteRenamePlan: (repo: string, trackingRef: string, newName: string) => call<RemoteRenamePlan>("remote_rename_plan", { repo, trackingRef, newName }),
@@ -198,6 +214,10 @@ export const api = {
   commit: (repo: string, message: string, opts?: CommitOptions, expectedState?: string | null, requireUnsealed?: boolean) =>
     call<string>("commit", { repo, message, opts, expectedState, requireUnsealed }),
   lastMessage: (repo: string) => call<string>("last_message", { repo }),
+  commitAuthors: (repo: string) => call<import("./types").CommitAuthor[]>("commit_authors", { repo }),
+  ownRecentMessages: (repo: string) => call<string[]>("own_recent_messages", { repo }),
+  fixupCommit: (repo: string, oid: string, opts: import("./types").FixupOptions, expectedState: string) =>
+    call<string>("fixup_commit", { repo, oid, opts, expectedState }),
 
   graphLoad: (repo: string, branch: string | { reference: string; primary: string | null } | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean, deferCount?: boolean) =>
     call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast, options: { showIncoming, deferCount } }),
@@ -208,7 +228,8 @@ export const api = {
   graphBranchMembers: (repo: string, key: string, reference: string) => call<number[]>("graph_branch_members", { repo, key, reference }),
   graphLaneAnchor: (repo: string, key: string, id: number) => call<import("./types").GraphLaneAnchor | null>("graph_lane_anchor", { repo, key, id }),
   graphResolveLane: (repo: string, key: string, anchor: import("./types").GraphLaneAnchor) => call<number | null>("graph_resolve_lane", { repo, key, anchor }),
-  historySearch: (repo: string, key: string, query: string, mode: SearchMode) => call<{ row: GraphRow; graphIndex: number | null }[]>("history_search", { repo, key, query, mode }),
+  historySearch: (repo: string, key: string, query: string, mode: SearchMode, filters: HistoryFilters | null = null) =>
+    call<{ row: GraphRow; graphIndex: number | null }[]>("history_search", { repo, key, query, mode, filters }),
   repositoryCommitSearch: (repo: string, query: string, mode: SearchMode) => call<import("./types").CommitSearchHit[]>("repository_commit_search", { repo, query, mode }),
   repositoryCommitSearchPage: (repo: string, query: string, mode: SearchMode, cursor: string | null, limit: number) => call<import("./types").CommitSearchPage>("repository_commit_search_page", { repo, query, mode, cursor, limit }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),
@@ -218,7 +239,7 @@ export const api = {
   fileHistory: (repo: string, path: string, limit?: number) => call<FileHistoryEntry[]>("file_history", { repo, path, limit }),
   fileText: (repo: string, spec: string) => call<string | null>("file_text", { repo, spec }),
   reflog: (repo: string) => call<ReflogEntry[]>("reflog", { repo }),
-  blame: (repo: string, path: string, rev: string | null) => call<Blame>("blame", { repo, path, rev }),
+  blame: (repo: string, path: string, rev: string | null, options: BlameOptions | null = null) => call<Blame>("blame", { repo, path, rev, options }),
   compare: (repo: string, from: string, to: string, threeDot: boolean) => call<Comparison>("compare", { repo, from, to, threeDot }),
   compareBranchCommits: (repo: string, from: string, to: string) => call<import("./types").BranchCommitComparison>("compare_branch_commits", { repo, from, to }),
   branchCommitPage: (repo: string, from: string, to: string, offset: number) => call<import("./types").RangeCommit[]>("branch_commit_page", { repo, from, to, offset }),
@@ -251,6 +272,9 @@ export const api = {
   undoCommit: (repo: string) => call<void>("undo_commit", { repo }),
 
   fetch: (repo: string, remote: string | null, prune: boolean, opId: string) => call<string>("fetch", { repo, remote, prune, opId }),
+  repoIsShallow: (repo: string) => call<boolean>("repo_is_shallow", { repo }),
+  /** `deepen: null` fetches the complete history (`--unshallow`). */
+  fetchMoreHistory: (repo: string, deepen: number | null, opId: string) => call<string>("fetch_more_history", { repo, deepen, opId }),
   pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string, pruneRemote?: boolean) =>
     call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState, pruneRemote }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
@@ -323,6 +347,18 @@ export const api = {
   bisectReset: (repo: string) => call<void>("bisect_reset", { repo }),
   lfsFiles: (repo: string) => call<LfsFile[]>("lfs_files", { repo }),
   lfsTrack: (repo: string, pattern: string, track: boolean) => call<void>("lfs_track", { repo, pattern, track }),
+  lfsLocks: (repo: string) => call<LfsLock[]>("lfs_locks", { repo }),
+  hooksList: (repo: string) => call<GitHooks>("hooks_list", { repo }),
+  signatureStatus: (repo: string, oids: string[]) => call<Record<string, string>>("signature_status", { repo, oids }),
+  rerereGet: (repo: string) => call<Rerere>("rerere_get", { repo }),
+  rerereSet: (repo: string, enabled: boolean, autoUpdate: boolean) => call<Rerere>("rerere_set", { repo, enabled, autoUpdate }),
+  noteGet: (repo: string, oid: string) => call<string | null>("note_get", { repo, oid }),
+  noteSet: (repo: string, oid: string, text: string) => call<void>("note_set", { repo, oid, text }),
+  archiveExport: (repo: string, rev: string, format: "zip" | "tar.gz", dest: string, prefix: string | null) => call<void>("archive_export", { repo, rev, format, dest, prefix }),
+  stashBranch: (repo: string, name: string, index: number, oid: string, expectedState?: string | null) => call<string>("stash_branch", { repo, name, index, oid, expectedState }),
+  submoduleLog: (repo: string, path: string, from: string | null, to: string | null) => call<SubmoduleLog>("submodule_log", { repo, path, from, to }),
+  lfsLock: (repo: string, path: string) => call<LfsLock>("lfs_lock", { repo, path }),
+  lfsUnlock: (repo: string, path: string, force: boolean) => call<void>("lfs_unlock", { repo, path, force }),
   lfsRun: (repo: string, action: "pull" | "fetch" | "prune" | "install", opId: string) => call<string>("lfs_run", { repo, action, opId }),
   signingGet: (repo: string) => call<SigningConfig>("signing_get", { repo }),
   signingSet: (repo: string, config: SigningConfig, global: boolean) => call<void>("signing_set", { repo, config, global }),

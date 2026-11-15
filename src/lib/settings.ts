@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { restoreWorkspaceLayouts, type HistoryMode, type WorkspaceLayout, type WorkspaceMode } from "./workspaceLayouts";
+import type { DiffAlgorithm } from "./types";
 
 export type ThemePref = "system" | "dark" | "light";
 type ColorTheme = Exclude<ThemePref, "system">;
@@ -23,6 +24,7 @@ function restoreExplorerFolderHover(saved?: ExplorerFolderHover): ExplorerFolder
   };
   return { light: restore("light"), dark: restore("dark") };
 }
+export type BlameMoves = "off" | "file" | "files";
 export type DiffMode = "unified" | "split";
 export type DateStyle = "relative" | "absolute";
 export interface PullRequestWatch {
@@ -40,6 +42,17 @@ export interface Settings {
   ignoreWhitespace: boolean;
   showWhitespace: boolean;
   contextLines: number;
+  /** Git diff algorithm; "default" = Git's own choice (`diff.algorithm`). */
+  diffAlgorithm: "default" | DiffAlgorithm;
+  ignoreBlankLines: boolean;
+  /** Check commit signatures for the visible History rows (runs gpg/ssh per commit). */
+  showSignatures: boolean;
+  highlightMovedLines: boolean;
+  /** Editor command template ({file}, {line}, {column}); empty = the system's text editor. */
+  externalEditor: string;
+  /** Git difftool / mergetool names; empty = Git's configured default. */
+  diffTool: string;
+  mergeTool: string;
   dateStyle: DateStyle;
   confirmDiscard: boolean;
   showRemoteBranchesInGraph: boolean;
@@ -67,6 +80,8 @@ export interface Settings {
   graphColumns: { author: boolean; date: boolean; hash: boolean };
   largeFileMb: number;
   conventionalCommits: boolean;
+  /** Messages Revqora committed recently, per repository root (newest first, at most 30). */
+  recentCommitMessagesByRepo: Record<string, string[]>;
   shortcuts: Record<string, string>;
   onboarded: boolean;
   syncScroll: boolean;
@@ -84,6 +99,10 @@ export interface Settings {
   /** Graph, stacked Review, or commit/file/diff columns. */
   historyMode: HistoryMode;
   skippedUpdate: string | null;
+  /** Blame options: ignore whitespace (-w), detect moved lines, use the repository's ignore-revs file. */
+  blameIgnoreWhitespace: boolean;
+  blameMoves: BlameMoves;
+  blameIgnoreRevs: boolean;
   set: (patch: Partial<Settings>) => void;
   addRecent: (path: string) => void;
   removeRecent: (path: string) => void;
@@ -104,6 +123,13 @@ export const useSettings = create<Settings>()(
       ignoreWhitespace: false,
       showWhitespace: false,
       contextLines: 3,
+      diffAlgorithm: "default",
+      ignoreBlankLines: false,
+      showSignatures: false,
+      highlightMovedLines: true,
+      externalEditor: "",
+      diffTool: "",
+      mergeTool: "",
       dateStyle: "relative",
       confirmDiscard: true,
       showRemoteBranchesInGraph: true,
@@ -138,6 +164,7 @@ export const useSettings = create<Settings>()(
       graphColumns: { author: true, date: true, hash: true },
       largeFileMb: 20,
       conventionalCommits: false,
+      recentCommitMessagesByRepo: {},
       shortcuts: {},
       onboarded: false,
       syncScroll: true,
@@ -152,6 +179,9 @@ export const useSettings = create<Settings>()(
       prWatches: {},
       historyMode: "graph",
       skippedUpdate: null,
+      blameIgnoreWhitespace: true,
+      blameMoves: "off",
+      blameIgnoreRevs: true,
       set: (patch) => set(patch),
       addRecent: (path) => set({ recent: [path, ...get().recent.filter((p) => p.toLowerCase() !== path.toLowerCase())].slice(0, 100) }),
       removeRecent: (path) => set({ recent: get().recent.filter((p) => p !== path) }),

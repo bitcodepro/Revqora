@@ -1,13 +1,17 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ScanSearch, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronUp, History, ScanSearch, Search, X } from "lucide-react";
 import type { LanguageSupport } from "@codemirror/language";
 import { api, errorMessage } from "../lib/api";
 import { useRepos } from "../lib/store";
-import { closeOverlay, openOverlay } from "../lib/ui";
+import { closeOverlay, contextMenu, openOverlay, type MenuItem } from "../lib/ui";
 import type { Blame } from "../lib/types";
 import { absoluteTime, initials, relativeTime, shortOid, avatarHue } from "../lib/format";
 import { highlightLines, languageFor, type Tok } from "../lib/languages";
 import { jumpToCommit } from "./GraphView";
+import { openInEditor } from "../lib/externalTools";
+import { lineHistoryDialog } from "./HistoryDialogs";
+import { useSettings, type BlameMoves } from "../lib/settings";
+import { findLines, scrollToRow, stepMatch } from "../lib/blameFind";
 
 const ROW = 20;
 
@@ -19,21 +23,71 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
   const [viewH, setViewH] = useState(600);
   const [hover, setHover] = useState<string | null>(null);
   const [history, setHistory] = useState<(string | null)[]>([]);
+  /** Selected line range (final line numbers), for "History of these lines". */
+  const [range, setRange] = useState<{ anchor: number; start: number; end: number } | null>(null);
+  /** Keyboard-focused line index. */
+  const [focus, setFocus] = useState<number | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [current, setCurrent] = useState(-1);
   const ref = useRef<HTMLDivElement>(null);
+  const findRef = useRef<HTMLInputElement>(null);
+  const ignoreWhitespace = useSettings((s) => s.blameIgnoreWhitespace);
+  const moves = useSettings((s) => s.blameMoves);
+  const ignoreRevs = useSettings((s) => s.blameIgnoreRevs);
+  const setSettings = useSettings((s) => s.set);
 
   useEffect(() => {
     let alive = true;
     setBlame(null);
     setErr(null);
-    api.blame(root, path, rev).then(
+    api.blame(root, path, rev, { ignoreWhitespace, moves, ignoreRevs }).then(
       (b) => alive && setBlame(b),
       (e) => alive && setErr(errorMessage(e)),
     );
+    return () => {
+      alive = false;
+    };
+  }, [root, path, rev, ignoreWhitespace, moves, ignoreRevs]);
+
+  useEffect(() => {
+    let alive = true;
     languageFor(path).then((l) => alive && setLang(l));
     return () => {
       alive = false;
     };
-  }, [root, path, rev]);
+  }, [path]);
+
+  const matches = useMemo(() => (blame ? findLines(blame.lines.map((l) => l.text), query) : []), [blame, query]);
+  const matchSet = useMemo(() => new Set(matches), [matches]);
+  const reveal = (index: number) => {
+    const el = ref.current;
+    if (el) el.scrollTop = scrollToRow(index, ROW, el.scrollTop, el.clientHeight);
+  };
+  const openFind = () => {
+    setFindOpen(true);
+    setTimeout(() => findRef.current?.select(), 0);
+  };
+  const closeFind = () => {
+    setFindOpen(false);
+    setQuery("");
+    ref.current?.focus();
+  };
+  const step = (backwards: boolean) => {
+    const from = current >= 0 && matches[current] !== undefined ? matches[current] : (focus ?? Math.floor((ref.current?.scrollTop ?? 0) / ROW) - 1);
+    const k = stepMatch(matches, from, backwards);
+    if (k < 0) return;
+    setCurrent(k);
+    setFocus(matches[k]);
+    reveal(matches[k]);
+  };
+  useEffect(() => {
+    // New search text: go to the first match at or below the visible top.
+    const top = Math.floor((ref.current?.scrollTop ?? 0) / ROW);
+    const k = stepMatch(matches, top - 1, false);
+    setCurrent(k);
+    if (k >= 0) reveal(matches[k]);
+  }, [matches]);
 
   useEffect(() => {
     const el = ref.current;
@@ -67,6 +121,46 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
     useRepos.getState().patch(root, { view: "history" });
     setTimeout(() => jumpToCommit(root, oid), 50);
   };
+  const onKey = (e: React.KeyboardEvent) => {
+    if (!blame) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      openFind();
+      return;
+    }
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+    const n = blame.lines.length;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const delta = e.key === "ArrowDown" ? 1 : -1;
+      const next = Math.max(0, Math.min(n - 1, focus === null ? Math.floor((ref.current?.scrollTop ?? 0) / ROW) : focus + delta));
+      setFocus(next);
+      const lineNo = blame.lines[next].line;
+      setRange((r) => (e.shiftKey && r ? { anchor: r.anchor, start: Math.min(r.anchor, lineNo), end: Math.max(r.anchor, lineNo) } : { anchor: lineNo, start: lineNo, end: lineNo }));
+      reveal(next);
+    } else if (e.key === "Enter" && focus !== null) {
+      const l = blame.lines[focus];
+      if (l && !/^0+$/.test(l.oid)) {
+        e.preventDefault();
+        goto(l.oid);
+      }
+    }
+  };
+  const lineMenu = (l: Blame["lines"][number]): MenuItem[] => {
+    const committed = !/^0+$/.test(l.oid);
+    const inRange = range && l.line >= range.start && l.line <= range.end && range.end > range.start;
+    const dirtyNote = rev === null ? "Line numbers are taken from the last commit; uncommitted edits above these lines can shift them." : undefined;
+    return [
+      // One line: follow it from the commit that last changed it, at its line number there (exact).
+      { label: "History of this line…", icon: <History size={14} />, disabled: !committed, hint: committed ? undefined : "not committed",
+        onClick: () => void lineHistoryDialog(root, l.origPath || path, l.origLine, l.origLine, l.oid) },
+      ...(inRange ? [{ label: `History of lines ${range.start}–${range.end}…`, icon: <History size={14} />,
+        onClick: () => void lineHistoryDialog(root, path, range.start, range.end, rev, dirtyNote) }] : []),
+      { separator: true },
+      { label: "Open commit", disabled: !committed, onClick: () => goto(l.oid) },
+      { label: "Open in editor at this line", onClick: () => void openInEditor(root, path, l.line) },
+    ];
+  };
   const dig = (prev: string) => {
     setHistory((h) => [...h, rev]);
     openOverlay({ kind: "blame", root, path, rev: prev });
@@ -90,11 +184,12 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
       rows.push(
         <div
           key={i}
-          className="blame-row"
+          className={`blame-row ${range && l.line >= range.start && l.line <= range.end ? "selected" : ""}${matchSet.has(i) ? " find-match" : ""}${matches[current] === i ? " find-current" : ""}${focus === i ? " focused" : ""}`}
+          onContextMenu={(e) => contextMenu(e, lineMenu(l))}
           style={{ top: i * ROW, background: hover === l.oid ? "var(--bg-selected)" : undefined, borderTop: startsGroup && i > 0 ? "1px solid var(--border-soft)" : undefined }}
           onMouseEnter={() => setHover(l.oid)}
         >
-          <div className="blame-gutter" title={c && !uncommitted ? `${c.summary}\n${c.author} · ${absoluteTime(c.time)}\n${l.oid}` : "Not committed yet"}>
+          <div className="blame-gutter" title={c && !uncommitted ? `${c.summary}\n${c.author} · ${absoluteTime(c.time)}\n${l.oid}${l.origPath && l.origPath !== path ? `\nFrom ${l.origPath}` : ""}` : "Not committed yet"}>
             <span className="age" style={{ opacity: 0.25 + age * 0.75 }} />
             {startsGroup && (
               <>
@@ -123,7 +218,8 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
               </>
             )}
           </div>
-          <span className="blame-ln">{l.line}</span>
+          <span className="blame-ln" role="button" tabIndex={-1} title="Click to select lines (Shift+click for a range); right-click for their history"
+            onClick={(e) => (setFocus(i), setRange((r) => (e.shiftKey && r ? { anchor: r.anchor, start: Math.min(r.anchor, l.line), end: Math.max(r.anchor, l.line) } : { anchor: l.line, start: l.line, end: l.line })))}>{l.line}</span>
           <span className="blame-code">
             {toks?.[i]?.length ? toks[i].map((t, k) => (t.cls ? <span key={k} className={t.cls}>{t.text}</span> : <Fragment key={k}>{t.text}</Fragment>)) : l.text || " "}
           </span>
@@ -133,7 +229,7 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
   }
 
   return (
-    <div className="conflict-overlay">
+    <div className="conflict-overlay" onKeyDown={onKey}>
       <div className="cf-head">
         <ScanSearch size={18} style={{ color: "var(--accent)" }} />
         <div className="cf-title">
@@ -141,6 +237,23 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
           <span className="s">{rev ? `at ${shortOid(rev)}` : "working tree"} · click a commit to open it in the graph</span>
         </div>
         <div className="spacer" />
+        <label className="blame-opt" title="Ignore whitespace changes (git blame -w)">
+          <input type="checkbox" checked={ignoreWhitespace} onChange={(e) => setSettings({ blameIgnoreWhitespace: e.target.checked })} /> Ignore whitespace
+        </label>
+        <label className="blame-opt" title="Attribute moved or copied lines to the commit that wrote them (git blame -M, or -C -C across files)">
+          Moved lines
+          <select aria-label="Detect moved lines" value={moves} onChange={(e) => setSettings({ blameMoves: e.target.value as BlameMoves })}>
+            <option value="off">Off</option>
+            <option value="file">Within file</option>
+            <option value="files">Across files</option>
+          </select>
+        </label>
+        <label className="blame-opt" title="Skip the commits listed in .git-blame-ignore-revs or blame.ignoreRevsFile">
+          <input type="checkbox" checked={ignoreRevs} onChange={(e) => setSettings({ blameIgnoreRevs: e.target.checked })} /> Use ignore-revs file
+        </label>
+        <button className="icon-btn" aria-label="Find in blame" title="Find (Ctrl+F)" onClick={openFind}>
+          <Search size={14} />
+        </button>
         {history.length > 0 && (
           <button className="btn sm" onClick={back}>
             <ArrowLeft size={13} /> Back
@@ -150,6 +263,38 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
           <X size={14} /> Close
         </button>
       </div>
+      {findOpen && blame && (
+        <div className="blame-find">
+          <Search size={13} />
+          <input
+            ref={findRef}
+            aria-label="Find text in blame"
+            placeholder="Find in file"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                step(e.shiftKey);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                closeFind();
+              }
+            }}
+          />
+          <span className="faint">{query ? (matches.length ? `${current + 1} of ${matches.length}` : "No matches") : ""}</span>
+          <button className="icon-btn sm" aria-label="Previous match" title="Previous match (Shift+Enter)" disabled={!matches.length} onClick={() => step(true)}>
+            <ChevronUp size={13} />
+          </button>
+          <button className="icon-btn sm" aria-label="Next match" title="Next match (Enter)" disabled={!matches.length} onClick={() => step(false)}>
+            <ChevronDown size={13} />
+          </button>
+          <button className="icon-btn sm" aria-label="Close find" onClick={closeFind}>
+            <X size={13} />
+          </button>
+        </div>
+      )}
       {err && <div className="empty">{err}</div>}
       {!err && !blame && (
         <div className="loading-center">
@@ -157,7 +302,7 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
         </div>
       )}
       {blame && (
-        <div ref={ref} className="blame-scroll" onScroll={(e) => setScroll((e.target as HTMLDivElement).scrollTop)} onMouseLeave={() => setHover(null)}>
+        <div ref={ref} className="blame-scroll" tabIndex={0} aria-label="Blame lines (Up/Down move, Shift extends the selection, Enter opens the commit)" onScroll={(e) => setScroll((e.target as HTMLDivElement).scrollTop)} onMouseLeave={() => setHover(null)}>
           <div style={{ position: "relative", height: blame.lines.length * ROW }}>{rows}</div>
         </div>
       )}
