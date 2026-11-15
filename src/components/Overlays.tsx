@@ -130,14 +130,14 @@ export function ToastHost() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const toggle = (id: number) => setExpanded((current) => {
     const next = new Set(current);
-    if (next.has(id)) { next.delete(id); hold(id, false); } else { next.add(id); hold(id, true); }
+    if (next.has(id)) { next.delete(id); hold(id, false, "expanded"); } else { next.add(id); hold(id, true, "expanded"); }
     return next;
   });
   return (
     <div className="toasts" role="region" aria-label="Notifications">
       {toasts.map((t) => (
         <div key={t.id} className={`toast ${t.kind} ${expanded.has(t.id) ? "expanded" : ""}`} role={t.kind === "error" ? "alert" : "status"} aria-live={t.kind === "error" ? "assertive" : "polite"} aria-atomic="true"
-          onFocus={() => hold(t.id, true)} onBlur={() => hold(t.id, false)}>
+          onFocus={() => hold(t.id, true, "focus")} onBlur={() => hold(t.id, false, "focus")}>
           <span className="ti">
             {t.kind === "success" ? <CheckCircle2 size={17} /> : t.kind === "error" ? <AlertCircle size={17} /> : t.kind === "warning" ? <TriangleAlert size={17} /> : <Info size={17} />}
           </span>
@@ -147,7 +147,7 @@ export function ToastHost() {
             {detailsNeedExpanding(t.detail) && (
               <div className="toast-detail-actions">
                 <button type="button" className="btn sm ghost" aria-expanded={expanded.has(t.id)} onClick={() => toggle(t.id)}>{expanded.has(t.id) ? "Less" : "Details"}</button>
-                <button type="button" className="btn sm ghost" onMouseEnter={() => hold(t.id, true)} onMouseLeave={() => { if (!expanded.has(t.id)) hold(t.id, false); }}
+                <button type="button" className="btn sm ghost" onMouseEnter={() => hold(t.id, true)} onMouseLeave={() => hold(t.id, false)}
                   onClick={() => void copyText(`${t.title}
 ${t.detail}`, "Details copied")}>Copy</button>
               </div>
