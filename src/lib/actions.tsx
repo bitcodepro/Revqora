@@ -11,6 +11,8 @@ import { ignoredCollisionDialog } from "../components/IgnoredCollisionDialog";
 import { useSettings } from "./settings";
 import type { GitError, OpOutcome, PullOutcome, SwitchChoice, SwitchOutcome } from "./types";
 import { shortOid } from "./format";
+// The global key handler reaches these through its `A` namespace.
+export { keyboardOwner, shortcutBlocked } from "./keyboardOwner";
 import {
   cloneDialog,
   confirmDialog,

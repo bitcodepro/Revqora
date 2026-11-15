@@ -18,7 +18,7 @@ import { Splitter } from "./Overlays";
 import { fileCopyMenu } from "./NamePathMenu";
 import { DiffView } from "./DiffView";
 import { confirmDialog } from "./dialogs";
-import { virtualRange } from "../lib/virtualRange";
+import { holdListFocus, virtualRange } from "../lib/virtualRange";
 import {authorSelectionValue,authorScope,authorPreferencesKey,loadAuthorPreferences,mergePrAuthors,matchesPrAuthor,rememberAccountAuthor,restoreAuthorPreferences,samePrAuthor,type PrAuthor,type AuthorPreferences} from "../lib/prAuthors";
 import { useSettings } from "../lib/settings";
 import { onPrRefresh } from "../lib/prRefresh";
@@ -347,7 +347,10 @@ function RequestRows<Key extends string | number>({ rows, selected, select, rese
     const old = rows.findIndex(row => row.id === selected);
     const next = e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, old + (e.key === "ArrowDown" ? 1 : -1)));
     select(rows[next].id);
-    if (ref.current) ref.current.scrollTop = Math.max(0, next * rowHeight - height / 2);
+    if (!ref.current) return;
+    // A clicked row holds focus; it is unmounted when the list scrolls away from it.
+    holdListFocus(ref.current, ref.current.ownerDocument.activeElement);
+    ref.current.scrollTop = Math.max(0, next * rowHeight - height / 2);
   };
   return <div className="pr-request-rows" ref={ref} style={{ "--pr-row-height": `${rowHeight}px` } as CSSProperties} role="listbox" aria-label="Pull requests" tabIndex={0} onKeyDown={move} onScroll={e => setTop(e.currentTarget.scrollTop)}>
     <div style={{ height: first * rowHeight }} />

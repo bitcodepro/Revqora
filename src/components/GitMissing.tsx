@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Download, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
 import { api } from "../lib/api";
 import type { GitSelection } from "../lib/types";
+import { scheduleDialogFocus } from "../lib/dialogFocus";
+import { useFocusTrap } from "../lib/useFocusTrap";
 
 const DOWNLOAD = "https://git-scm.com/downloads";
 
@@ -21,18 +23,23 @@ export function GitMissing() {
       setChecking(false);
     }
   };
-  if (!sel) return null;
-  const missing = sel.source === "none";
-  if (!missing && (!sel.tooOld || dismissedOld)) return null;
+  const missing = sel?.source === "none";
+  const shown = !!sel && (missing || (sel.tooOld && !dismissedOld));
+  const dialog = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  // The notice covers the whole window: keyboard focus starts in it and Tab stays in it.
+  useFocusTrap(dialog, shown);
+  useEffect(() => (shown ? scheduleDialogFocus(() => dialog.current) : undefined), [shown]);
+  if (!sel || !shown) return null;
   return (
     <div className="modal-backdrop" style={{ zIndex: 1000 }}>
-      <div className="modal" style={{ width: "min(520px, 100%)" }}>
+      <div className="modal" ref={dialog} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} style={{ width: "min(520px, 100%)" }}>
         <div className="modal-head">
           <div className="mi warn">
             <TriangleAlert size={18} />
           </div>
           <div>
-            <h3>{missing ? "Git is not installed" : `Git ${sel.version} is too old`}</h3>
+            <h3 id={titleId}>{missing ? "Git is not installed" : `Git ${sel.version} is too old`}</h3>
             <div className="sub">{missing ? "Revqora works with the Git installed on your computer." : `Revqora needs Git ${sel.minVersion} or newer.`}</div>
           </div>
         </div>

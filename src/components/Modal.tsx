@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from "react";
-import { scheduleDialogFocus } from "../lib/dialogFocus";
+import { focusables, scheduleDialogFocus, trappedTabTarget } from "../lib/dialogFocus";
 import { useWindowSize, WindowResizeGrip } from "./WindowResize";
 
 interface ModalProps {
@@ -96,14 +96,9 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
         onInput={() => { dirty.current = true; }}
         onKeyDown={(e) => {
           if (e.key === "Tab" && ref.current) {
-            // Wrap Tab and Shift+Tab inside the dialog.
-            const items = focusables(ref.current);
-            if (items.length) {
-              const first = items[0], last = items[items.length - 1];
-              const active = ref.current.ownerDocument.activeElement;
-              if (e.shiftKey && (active === first || active === ref.current)) { e.preventDefault(); last.focus(); return; }
-              if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); return; }
-            }
+            // Wrap Tab and Shift+Tab inside the dialog; one without controls keeps focus itself.
+            const target = trappedTabTarget(focusables(ref.current), ref.current.ownerDocument.activeElement, ref.current, e.shiftKey);
+            if (target) { e.preventDefault(); target.focus(); return; }
           }
           if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && onSubmit) {
             e.preventDefault();
@@ -124,10 +119,4 @@ export function Modal({ title, subtitle, icon, tone = "accent", wide, children, 
       </form>
     </div>
   );
-}
-
-const FOCUSABLE = "a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1']), [contenteditable=true]";
-
-function focusables(root: HTMLElement): HTMLElement[] {
-  return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(el => !el.closest("[inert]") && el.getClientRects().length > 0);
 }

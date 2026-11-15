@@ -72,6 +72,7 @@ import { bindingFor, prettyCombo, shortcutTitle } from "../lib/shortcuts";
 import { jumpToCommit } from "./GraphView";
 import { api, newOpId } from "../lib/api";
 import { useAppVersion } from "../lib/appVersion";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import { basename, plural, shortOid } from "../lib/format";
 import { AheadBehind } from "./bits";
 import { UpdateChip } from "./UpdateChip";
@@ -718,6 +719,9 @@ export function CommandPalette() {
   const [loadingBranches, setLoadingBranches] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const paletteRef = useRef<HTMLDivElement>(null);
+  // Tab stays in the palette, and closing it returns focus to where the user was.
+  useFocusTrap(paletteRef, open);
   const roots = useMemo(() => uniqueRoots([...order, ...known, ...recent]), [order, known, recent]);
   // Only what the palette lists: other repository patches (status, graph) do not re-render it.
   const tab = useRepos(s => (s.active ? s.tabs[s.active] : null));
@@ -885,7 +889,7 @@ export function CommandPalette() {
   };
   return (
     <div className="modal-backdrop" style={{ background: "transparent", backdropFilter: "none" }} onMouseDown={e => e.target === e.currentTarget && setOpen(false)}>
-      <div className="palette" role="dialog" aria-label="Command palette">
+      <div className="palette" ref={paletteRef} role="dialog" aria-modal="true" aria-label="Command palette">
         <Search size={18} className="pi" />
         <input
           ref={inputRef}

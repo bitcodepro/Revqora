@@ -60,6 +60,7 @@ import { Splitter } from "./Overlays";
 import { previewGeneration, subscribePreview } from "../lib/commitPreview";
 import { ignoreDialog } from "./IgnoreDialog";
 import { ignoreChoices } from "../lib/ignoreRules";
+import { reconcileAmend, type CommitDraft } from "../lib/amendDraft";
 import { openInDiffTool, openInEditor, resolveInMergeTool } from "../lib/externalTools";
 import { folderHistoryDialog } from "./HistoryDialogs";
 
@@ -918,7 +919,7 @@ function ConflictSummary({ root, file, onOpen }: { root: string; file: FileStatu
 
 /** Commit message drafts, with Amend: an amend draft holds the previous commit's message, so
  *  coming back without Amend would commit that message again as a new commit. */
-const drafts = new Map<string, { summary: string; body: string; amend?: boolean }>();
+const drafts = new Map<string, CommitDraft>();
 /** Messages Revqora filled in for a merge / cherry-pick, removed again when it ends. */
 const prefilledMessages = new Map<string, { summary: string; body: string }>();
 
@@ -926,12 +927,15 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const root = tab.root;
   const state = tab.info?.state;
   const kind = state?.kind ?? "none";
-  const draft = drafts.get(root) ?? { summary: "", body: "" };
+  const draft: CommitDraft = drafts.get(root) ?? { summary: "", body: "" };
   const [summary, publishSummary] = useState(draft.summary);
   const [body, publishBody] = useState(draft.body);
   const messageRef = useRef({ summary: draft.summary, body: draft.body });
   const amendRequest = useRef(0);
   const amendRef = useRef(!!draft.amend);
+  /** The commit Amend was turned on for, and the message loaded from it. */
+  const amendHead = useRef(draft.amendHead ?? null);
+  const amendMessage = useRef(draft.amendMessage ?? null);
   const submitting = useRef(false);
   const setSummary = (value: string | ((current: string) => string)) => {
     amendRequest.current++;
@@ -977,7 +981,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const layers = tab.layers?.active ? tab.layers.layers : [];
 
   useEffect(() => {
-    drafts.set(root, { summary, body, amend });
+    drafts.set(root, { summary, body, amend, amendHead: amendHead.current, amendMessage: amendMessage.current });
   }, [root, summary, body, amend]);
 
   // Prefill the message for merges / cherry-picks; drop it again once the operation ends.
@@ -1000,16 +1004,41 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, state?.message]);
 
+  // Amend refers to the commit that was HEAD when it was turned on. This form's own commit also
+  // moves HEAD, but it clears the form itself when it finishes.
+  const headOid = tab.info?.head.oid ?? null;
+  useEffect(() => {
+    if (busy) return;
+    const current: CommitDraft = { ...messageRef.current, amend: amendRef.current, amendHead: amendHead.current, amendMessage: amendMessage.current };
+    const next = reconcileAmend(current, headOid);
+    if (next === current) return;
+    amendHead.current = next.amendHead ?? null;
+    if (next.amend) {
+      drafts.set(root, next);
+      return;
+    }
+    amendRef.current = false;
+    amendMessage.current = null;
+    setAmend(false);
+    if (next.summary !== current.summary) setSummary(next.summary);
+    if (next.body !== current.body) setBody(next.body);
+    toast.info("Amend turned off", "The last commit changed, so Amend no longer refers to the commit you chose.");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root, headOid, busy]);
+
   const toggleAmend = async (v: boolean) => {
     const request = ++amendRequest.current;
     amendRef.current = v;
+    amendHead.current = v ? useRepos.getState().tabs[root]?.info?.head.oid ?? null : null;
+    amendMessage.current = null;
     setAmend(v);
     if (v && !messageRef.current.summary.trim() && !messageRef.current.body.trim()) {
       const last = await api.lastMessage(root).catch(() => "");
       if (request !== amendRequest.current || !amendRef.current || messageRef.current.summary.trim() || messageRef.current.body.trim()) return;
       const [s, ...rest] = last.split("\n");
-      setSummary(s ?? "");
-      setBody(rest.join("\n").trim());
+      amendMessage.current = { summary: s ?? "", body: rest.join("\n").trim() };
+      setSummary(amendMessage.current.summary);
+      setBody(amendMessage.current.body);
     }
   };
 
@@ -1064,6 +1093,8 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
     setBody("");
     setAmend(false);
     amendRef.current = false;
+    amendHead.current = null;
+    amendMessage.current = null;
     drafts.delete(root);
   };
 

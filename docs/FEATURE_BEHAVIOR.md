@@ -18,6 +18,7 @@ Before opening or updating a PR:
 - [ ] Explorer's Incoming and Changes filters use the last known repository status and keep the parent folders of matching repositories visible. Changes includes staged, unstaged and untracked files.
 - [ ] Closing a repository keeps its Explorer entry. Remove from Explorer closes the selected repositories and clears their saved placements and favorites while preserving their working copies.
 - [ ] Test arrow navigation, F2 and Delete in the relevant panel. Shortcut bindings and hints are discoverable and existing overrides keep working.
+- [ ] A dialog, the command palette or an open context menu takes every shortcut, keeps Tab inside it and returns focus to its opener when it closes. A tool window over the workspace (Blame, Compare, merge editor) keeps application shortcuts and blocks those for the History or Changes selection it covers (stage/unstage, close preview, Find commits).
 
 - [ ] While a transfer runs for the active repository, Fetch rotates, Pull moves down and Push moves up. The icons return to rest when the operation ends. Reduced-motion mode uses the busy color without movement.
 
@@ -29,6 +30,7 @@ Before opening or updating a PR:
 - [ ] Opening a match selects its repository and commit. Branch context, current-branch history and All branches are distinct scopes. Verify Graph, Review and Columns when changing shared history behavior.
 - [ ] When the branch scope changes, History waits for that scope's graph. Updates to the same scope can keep the existing rows visible.
 - [ ] History search covers the whole selected scope while the graph stays paged. A match outside the loaded graph is available in the match list and opens its commit by SHA.
+- [ ] End in the commit list selects the last commit with one press, loading the rest of a paged history first. Arrow, Home and End keep working in the pull request list after the clicked row scrolls out of view.
 - [ ] History **Filters** (author, literal file/folder path, since/until dates, first parent only, hide merge commits) combine with each other and with the search text (AND). Active filters show as removable chips; filters alone list matching commits. Dates are YYYY-MM-DD and values starting with '-' are rejected.
 - [ ] Signature status in History is off by default. When on, only visible rows are checked, in batches; unsigned commits show no mark and a failed check shows "cannot be checked here" rather than a wrong verdict.
 - [ ] Line history ("History of this line…", or "History of lines N–M…" for a selected range) and Folder history list only commits that changed those lines or that folder, with their diffs. Opening an entry selects its commit in History. Commit notes never change the commit; an empty note removes it.
@@ -44,6 +46,7 @@ Before opening or updating a PR:
 ## Working changes, staging and stash
 
 - [ ] Commit Description shows a non-selectable hint while empty. Real draft text can be selected and copied while editing. Leaving the field clears the selection and preserves the draft.
+- [ ] Amend stays on with its draft across refreshes, view switches and repository switches while HEAD is the commit it was turned on for. When HEAD becomes another commit (checkout, pull, a commit made elsewhere), Amend turns off with a notice: the message loaded from the old commit is cleared, typed or edited text stays. A successful commit clears the form.
 
 - [ ] Co-author chips mirror the `Co-authored-by:` lines in the Description: adding appends one trailer after a blank line (or to an existing trailer block), removing deletes only that line, other trailers stay. Recent messages asks before replacing a non-empty draft. Fixup!/squash! from History commit only staged changes and are disabled with a reason when nothing is staged or an operation is in progress. See [Changes and commits](wiki/Changes-and-commits.md).
 

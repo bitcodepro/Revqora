@@ -413,7 +413,7 @@ function MainApp() {
       const owner = target?.ownerDocument ?? document;
       const inNavigation = target?.closest?.(".repository-sidebar") || (target === owner.body && useSettings.getState().explorerOpen);
       if (matchesShortcut(e, "workspaceUndo") && inNavigation &&
-          !target.closest("input, textarea, select, [contenteditable], .cm-editor") && !owner.querySelector(".modal") && undoExplorerMove()) {
+          !target.closest("input, textarea, select, [contenteditable], .cm-editor") && !A.shortcutBlocked("workspaceUndo", A.keyboardOwner(owner)) && undoExplorerMove()) {
         e.preventDefault();
         toast.success("Explorer move undone");
         return;
@@ -422,8 +422,9 @@ function MainApp() {
       if (typing && !e.ctrlKey && !e.metaKey && !e.altKey && !/^F\d+$/.test(e.key)) return;
       const id = actionFor(e);
       if (!id) return;
-      // A dialog or the palette owns the keyboard: nothing runs behind it.
-      if (owner.querySelector(".modal, .palette")) return;
+      // A dialog, the palette or an open menu owns the keyboard: nothing runs behind it. A tool
+      // window (Blame, Compare, the merge editor) blocks only what acts on the view it covers.
+      if (A.shortcutBlocked(id, A.keyboardOwner(owner))) return;
       // Typing never starts network or repository work by a stray chord.
       if (typing && ["fetch", "pull", "push", "stash", "branch"].includes(id)) return;
       const st = useRepos.getState();

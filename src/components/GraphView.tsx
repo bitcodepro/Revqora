@@ -28,7 +28,8 @@ import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { usePanelTitleMenu } from "./PanelWindows";
 import { pickBranchScope } from "./BranchScopePicker";
 import { signatureBadge, useSignature } from "../lib/signatureStatus";
-import { jumpStep } from "../lib/historyJump";
+import { jumpStep, lastRowStep } from "../lib/historyJump";
+import { keyboardOwner, listKeysBlocked, shortcutBlocked } from "../lib/keyboardOwner";
 
 const ROW_H = 30;
 /** Review mode: two-line rows (subject, then author, date and hash) without the graph. */
@@ -105,6 +106,8 @@ interface RowProps {
 }
 
 const NO_BRANCHES: string[] = [];
+/** One function for every row, so a filtered list does not re-render all rows on each update. */
+const ignoreLane = () => {};
 
 const Row = memo(function Row(p: RowProps) {
   const squashed = useRepos((s) => s.tabs[p.root]?.squashMerged) ?? NO_BRANCHES;
@@ -748,6 +751,9 @@ export function GraphView({
     },
     [root, patch, scrollToIndex, graphKey, filtered, results],
   );
+  /** The graph and selection of the latest render, for work that finishes after it. */
+  const rendered = useRef({ graphKey, selectIndex });
+  rendered.current = { graphKey, selectIndex };
   useEffect(() => {
     if (!graphKey || selectLastFor.current !== graphKey) return;
     selectLastFor.current = null;
@@ -956,7 +962,8 @@ export function GraphView({
         matchesShortcut(e, "historyFind") &&
         useRepos.getState().active === root &&
         (view !== window || tab.view === "history") &&
-        !view.document.querySelector(".modal")
+        // The field must not take focus behind a dialog, the palette, a menu or a tool window.
+        !shortcutBlocked("historyFind", keyboardOwner(view.document))
       ) {
         e.preventDefault();
         searchRef.current?.focus();
@@ -970,7 +977,7 @@ export function GraphView({
   const navigateHoveredCommit = (e: KeyboardEvent) => {
     if (compact || tab.selected || e.defaultPrevented || actionFor(e)) return false;
     const el = scrollRef.current;
-    if (!el || el.ownerDocument.querySelector(".modal, .ctx-menu")) return false;
+    if (!el || listKeysBlocked(keyboardOwner(el.ownerDocument))) return false;
     const focused = el.ownerDocument.activeElement;
     if (focused !== el && focused?.closest("input, textarea, select, button, a[href], [contenteditable], [role=combobox]")) return false;
 
@@ -1050,12 +1057,12 @@ export function GraphView({
       const scope = { branchFilter: tab.branchFilter, branchContext: tab.branchContext, selected: tab.selected };
       void loadEntireHistory(root).then(() => {
         const latest = useRepos.getState().tabs[root];
-        if (latest && latest.branchFilter === scope.branchFilter && latest.branchContext === scope.branchContext && latest.selected === scope.selected && latest.graph) {
-          // The full history is a new graph: select once this view renders it (the
-          // selectIndex of this render still belongs to the old graph).
-          if (latest.graph.key === graphKey) void selectIndex(latest.graph.total - 1);
-          else selectLastFor.current = latest.graph.key;
-        }
+        const sameView = !!latest && latest.branchFilter === scope.branchFilter && latest.branchContext === scope.branchContext && latest.selected === scope.selected;
+        // The full history is a new graph, usually rendered before this runs: the selectIndex
+        // of the key press still belongs to the old graph, so use the one that renders it.
+        const step = lastRowStep({ sameView, loadedKey: latest?.graph?.key ?? null, renderedKey: rendered.current.graphKey ?? null });
+        if (step === "select") void rendered.current.selectIndex(latest!.graph!.total - 1);
+        else if (step === "await-render") selectLastFor.current = latest!.graph!.key;
       });
     } else if (matchesShortcut(e, "historyOpenCommit") && tab.selected === WORKTREE) {
       onEnterChanges();
@@ -1104,8 +1111,8 @@ export function GraphView({
           root={root}
           onSelect={onSelect}
           onMenu={onMenu}
-          onHover={filtered ? () => {} : setHl}
-          onPin={filtered ? () => {} : pinLane}
+          onHover={filtered ? ignoreLane : setHl}
+          onPin={filtered ? ignoreLane : pinLane}
           onRefClick={onRefClick}
           compact={compact}
           rowH={rowH}
