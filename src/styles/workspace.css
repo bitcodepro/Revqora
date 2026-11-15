@@ -77,10 +77,11 @@
 .details-meta { padding: 12px; }
 .details-meta h2 { overflow-wrap: anywhere; }
 .commit-preview { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
-.commit-preview-head { display: flex; align-items: flex-start; gap: 16px; padding: 11px 14px; border-bottom: 1px solid var(--border); background: var(--bg-elev); flex: none; min-width: 0; }
+.commit-preview-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 16px; padding: 11px 14px; border-bottom: 1px solid var(--border); background: var(--bg-elev); flex: none; min-width: 0; }
 .commit-subject { flex: 1; min-width: 0; margin: 0; font-size: var(--fs-lg); line-height: 1.5; font-weight: 600; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.commit-preview-actions { display: flex; flex: none; align-items: center; gap: 6px; }
-.commit-heading { flex: 1; min-width: 0; }
+/* In a narrow panel the buttons wrap below; the subject always keeps room to be read. */
+.commit-preview-actions { display: flex; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; margin-left: auto; }
+.commit-heading { flex: 1 1 220px; min-width: min(220px, 100%); }
 .commit-byline { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 5px; color: var(--text-faint); font-size: var(--fs-sm); }
 .commit-byline > .hash-chip { flex: none; }
 .commit-byline > span:last-child { white-space: nowrap; }
