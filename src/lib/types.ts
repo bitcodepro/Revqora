@@ -722,6 +722,19 @@ export interface WorktreeComparison {
   files: ChangedFile[];
 }
 
+export interface CommitAuthor {
+  name: string;
+  email: string;
+  commits: number;
+}
+
+export interface FixupOptions {
+  kind: "fixup" | "squash";
+  message?: string | null;
+  noVerify?: boolean;
+  sign?: boolean | null;
+}
+
 export interface CommitHelpers {
   template: string | null;
   recent: string[];

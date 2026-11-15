@@ -41,6 +41,8 @@ Before opening or updating a PR:
 
 - [ ] Commit Description shows a non-selectable hint while empty. Real draft text can be selected and copied while editing. Leaving the field clears the selection and preserves the draft.
 
+- [ ] Co-author chips mirror the `Co-authored-by:` lines in the Description: adding appends one trailer after a blank line (or to an existing trailer block), removing deletes only that line, other trailers stay. Recent messages asks before replacing a non-empty draft. Fixup!/squash! from History commit only staged changes and are disabled with a reason when nothing is staged or an operation is in progress. See [Changes and commits](wiki/Changes-and-commits.md).
+
 - [ ] Whole-file stage uses the version available at staging time. Staging again updates the index to the latest version. Staging a hunk uses the selected diff and checks that it can still be applied to the index.
 - [ ] Routine Changes observations fingerprint the selected file. Git mutations still use their full preconditions. A diff truncated by the byte budget is marked partial and offers whole-file actions.
 - [ ] Apply restores a stash and keeps its entry. Pop drops it after a complete restoration. When conflicts or partial index restoration occur, report them and preserve the stash. Drop preserves a recovery checkpoint and leaves the working files alone.

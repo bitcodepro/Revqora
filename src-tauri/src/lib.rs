@@ -833,6 +833,21 @@ async fn last_message(repo: String) -> GitResult<String> {
     blocking(move || ops::last_message(&p(&repo))).await
 }
 
+#[tauri::command]
+async fn commit_authors(repo: String) -> GitResult<Vec<ops::CommitAuthor>> {
+    blocking(move || ops::commit_authors(&p(&repo), 2000, 500)).await
+}
+
+#[tauri::command]
+async fn own_recent_messages(repo: String) -> GitResult<Vec<String>> {
+    blocking(move || ops::own_recent_messages(&p(&repo), 30)).await
+}
+
+#[tauri::command]
+async fn fixup_commit(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, opts: ops::FixupOptions) -> GitResult<String> {
+    mutating(repo.clone(), expected_state, app.clone(), "fixup_commit", None, move || ops::fixup_commit(&p(&repo), &oid, &opts)).await
+}
+
 // ───────────────────────────── history ─────────────────────────────
 
 #[derive(Default, serde::Deserialize)]
@@ -2719,6 +2734,9 @@ pub fn run() {
             discard,
             commit,
             last_message,
+            commit_authors,
+            own_recent_messages,
+            fixup_commit,
             graph_load,
             graph_commit_count,
             graph_rows,

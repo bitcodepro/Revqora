@@ -104,7 +104,7 @@ or check out anything.
 | Review layouts | Switch between Graph, Review and Columns; hide repository and branch panels, resize file/diff panes, and keep visibility and widths separately for each layout. |
 | History | Virtualized graph, ref labels, commit and branch details, search by message/author/SHA/code/path combined with author, path, date and merge filters, branch comparison, file history, blame (whitespace, moved-line and ignore-revs options, find) and revision browsing. |
 | Diff | Unified and side-by-side views, word highlighting, line wrapping or horizontal scrolling, image comparison, hunk navigation, file-tree and flat file lists. |
-| Changes and commits | Stage/unstage files, hunks and lines; discard with backups; ignored-file and nested-repository views; amend, sign-off, signed commits, templates and Conventional Commits helpers. |
+| Changes and commits | Stage/unstage files, hunks and lines; discard with backups; ignored-file and nested-repository views; amend, sign-off, signed commits, templates, Conventional Commits helpers, co-author picker, recent messages and fixup!/squash! commits. |
 | Stage layers | Keep several logical groups of staged work, inspect dependencies, reorder or combine layers, and commit a layer separately. |
 | Branch management | Create, switch, rename, compare and delete branches; inspect upstream/ahead/behind; filter protected, stale, merged, unmerged or diverged branches; review bulk cleanup. |
 | Git operations | Fetch, Pull, Push, tags, stash and partial stash, patches, cherry-pick, revert, reset and reflog. |

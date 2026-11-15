@@ -214,6 +214,10 @@ export const api = {
   commit: (repo: string, message: string, opts?: CommitOptions, expectedState?: string | null, requireUnsealed?: boolean) =>
     call<string>("commit", { repo, message, opts, expectedState, requireUnsealed }),
   lastMessage: (repo: string) => call<string>("last_message", { repo }),
+  commitAuthors: (repo: string) => call<import("./types").CommitAuthor[]>("commit_authors", { repo }),
+  ownRecentMessages: (repo: string) => call<string[]>("own_recent_messages", { repo }),
+  fixupCommit: (repo: string, oid: string, opts: import("./types").FixupOptions, expectedState: string) =>
+    call<string>("fixup_commit", { repo, oid, opts, expectedState }),
 
   graphLoad: (repo: string, branch: string | { reference: string; primary: string | null } | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean, deferCount?: boolean) =>
     call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast, options: { showIncoming, deferCount } }),
