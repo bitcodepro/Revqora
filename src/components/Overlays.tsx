@@ -129,7 +129,7 @@ export function ToastHost() {
     <div className="toasts" role="region" aria-label="Notifications">
       {toasts.map((t) => (
         <div key={t.id} className={`toast ${t.kind}`} role={t.kind === "error" ? "alert" : "status"} aria-live={t.kind === "error" ? "assertive" : "polite"} aria-atomic="true"
-          onMouseEnter={() => hold(t.id, true)} onMouseLeave={() => hold(t.id, false)} onFocus={() => hold(t.id, true)} onBlur={() => hold(t.id, false)}>
+          onFocus={() => hold(t.id, true)} onBlur={() => hold(t.id, false)}>
           <span className="ti">
             {t.kind === "success" ? <CheckCircle2 size={17} /> : t.kind === "error" ? <AlertCircle size={17} /> : t.kind === "warning" ? <TriangleAlert size={17} /> : <Info size={17} />}
           </span>
@@ -140,6 +140,8 @@ export function ToastHost() {
               <button
                 className="btn sm"
                 style={{ marginTop: 8 }}
+                onMouseEnter={() => hold(t.id, true)}
+                onMouseLeave={() => hold(t.id, false)}
                 onClick={() => {
                   dismiss(t.id);
                   t.action!.run();
@@ -149,7 +151,7 @@ export function ToastHost() {
               </button>
             )}
           </div>
-          <button className="icon-btn sm" onClick={() => dismiss(t.id)} aria-label="Dismiss">
+          <button className="icon-btn sm" onClick={() => dismiss(t.id)} aria-label="Dismiss" onMouseEnter={() => hold(t.id, true)} onMouseLeave={() => hold(t.id, false)}>
             <X size={14} />
           </button>
         </div>
