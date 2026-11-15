@@ -209,3 +209,24 @@ fn branch_from_stash_checks_untracked_files_kept_in_the_stash() {
     assert_eq!(err.kind, "stash-branch-collision", "{}", err.message);
     assert_eq!(fs::read_to_string(root.join("gen")).unwrap(), "an ignored file where the stash has a folder\n");
 }
+
+#[test]
+fn branch_from_stash_checks_files_that_the_base_would_ignore() {
+    let dir = repo();
+    let root = dir.path();
+    // The base ignores config.local, yet the stash force-added one.
+    fs::write(root.join(".gitignore"), "config.local\n").unwrap();
+    commit(root, "a.txt", "base\n");
+    fs::write(root.join("config.local"), "STASH OLD\n").unwrap();
+    runner::run(root, ["add", "-f", "config.local"]).unwrap();
+    runner::run(root, ["stash", "push", "-q", "-m", "wip"]).unwrap();
+    // Here the rule is gone and an ordinary untracked config.local holds new data.
+    fs::write(root.join(".gitignore"), "").unwrap();
+    runner::run(root, ["commit", "-q", "-am", "stop ignoring config.local"]).unwrap();
+    fs::write(root.join("config.local"), "PRIVATE NEW\n").unwrap();
+    let stash = runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim().to_string();
+    let err = misc::stash_branch(root, "rescue", 0, &stash).unwrap_err();
+    assert_eq!(err.kind, "stash-branch-collision", "{}", err.message);
+    assert_eq!(fs::read_to_string(root.join("config.local")).unwrap(), "PRIVATE NEW\n");
+    assert_eq!(runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim(), stash);
+}

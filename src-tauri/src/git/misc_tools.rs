@@ -111,7 +111,7 @@ pub fn stash_branch(repo: &Path, name: &str, index: u32, expected: &str) -> GitR
         let shown = clashes.iter().take(10).cloned().collect::<Vec<_>>().join(", ");
         let more = if clashes.len() > 10 { format!(" and {} more", clashes.len() - 10) } else { String::new() };
         return Err(GitError::new(format!(
-            "Restoring this stash would overwrite files that exist here as ignored files: {shown}{more}. Move or delete them first."
+            "Restoring this stash would overwrite untracked or ignored files that exist here: {shown}{more}. Move or delete them first."
         ))
         .kind("stash-branch-collision"));
     }
@@ -124,7 +124,9 @@ pub fn stash_branch(repo: &Path, name: &str, index: u32, expected: &str) -> GitR
 
 /// Ignored files on disk that `tree` (a commit) contains: a checkout of it would overwrite them.
 fn ignored_files_in_stash(repo: &Path, stash: &str) -> GitResult<Vec<String>> {
-    let ignored = runner::run_bytes(repo, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"])?;
+    // Every untracked file, ignored or not: the base's ignore rules can differ from the current
+    // ones, so a file Git would refuse to overwrite now may be ignored (and overwritten) there.
+    let ignored = runner::run_bytes(repo, ["ls-files", "-z", "--others"])?;
     let ignored: Vec<String> = String::from_utf8_lossy(&ignored).split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect();
     if ignored.is_empty() {
         return Ok(Vec::new());
