@@ -174,3 +174,38 @@ fn branch_from_stash_never_replaces_an_ignored_file_with_a_folder() {
     assert_eq!(fs::read_to_string(root.join("cache")).unwrap(), "precious local data\n");
     assert_eq!(runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim(), stash);
 }
+
+#[test]
+fn branch_from_stash_never_overwrites_an_ignored_file_the_stash_adds() {
+    let dir = repo();
+    let root = dir.path();
+    commit(root, "a.txt", "base\n");
+    // The stash itself adds config.local (staged); the base never had it.
+    fs::write(root.join("config.local"), "STASH OLD\n").unwrap();
+    runner::run(root, ["add", "config.local"]).unwrap();
+    runner::run(root, ["stash", "push", "-q", "-m", "wip"]).unwrap();
+    fs::write(root.join(".git/info/exclude"), "config.local\n").unwrap();
+    fs::write(root.join("config.local"), "PRIVATE NEW\n").unwrap();
+    let stash = runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim().to_string();
+    let err = misc::stash_branch(root, "rescue", 0, &stash).unwrap_err();
+    assert_eq!(err.kind, "stash-branch-collision", "{}", err.message);
+    assert_eq!(fs::read_to_string(root.join("config.local")).unwrap(), "PRIVATE NEW\n");
+    assert_eq!(runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim(), stash);
+}
+
+#[test]
+fn branch_from_stash_checks_untracked_files_kept_in_the_stash() {
+    let dir = repo();
+    let root = dir.path();
+    commit(root, "a.txt", "base\n");
+    // stash -u keeps untracked files in its third parent; one of them is a folder's content.
+    fs::create_dir_all(root.join("gen")).unwrap();
+    fs::write(root.join("gen/out.txt"), "stashed\n").unwrap();
+    runner::run(root, ["stash", "push", "-q", "-u", "-m", "wip"]).unwrap();
+    fs::write(root.join(".git/info/exclude"), "gen\n").unwrap();
+    fs::write(root.join("gen"), "an ignored file where the stash has a folder\n").unwrap();
+    let stash = runner::run(root, ["rev-parse", "stash@{0}"]).unwrap().trim().to_string();
+    let err = misc::stash_branch(root, "rescue", 0, &stash).unwrap_err();
+    assert_eq!(err.kind, "stash-branch-collision", "{}", err.message);
+    assert_eq!(fs::read_to_string(root.join("gen")).unwrap(), "an ignored file where the stash has a folder\n");
+}

@@ -106,12 +106,12 @@ pub fn stash_branch(repo: &Path, name: &str, index: u32, expected: &str) -> GitR
     super::ops::check_stash(repo, index, expected)?;
     // Checking out the stash base silently replaces ignored files that the base tracks (Git
     // refuses only for tracked and untracked ones), and checkpoints do not keep ignored files.
-    let clashes = ignored_files_in_tree(repo, &format!("{expected}^1"))?;
+    let clashes = ignored_files_in_stash(repo, expected)?;
     if !clashes.is_empty() {
         let shown = clashes.iter().take(10).cloned().collect::<Vec<_>>().join(", ");
         let more = if clashes.len() > 10 { format!(" and {} more", clashes.len() - 10) } else { String::new() };
         return Err(GitError::new(format!(
-            "The stash's base commit has files that exist here as ignored files and would be overwritten: {shown}{more}. Move or delete them first."
+            "Restoring this stash would overwrite files that exist here as ignored files: {shown}{more}. Move or delete them first."
         ))
         .kind("stash-branch-collision"));
     }
@@ -123,14 +123,25 @@ pub fn stash_branch(repo: &Path, name: &str, index: u32, expected: &str) -> GitR
 }
 
 /// Ignored files on disk that `tree` (a commit) contains: a checkout of it would overwrite them.
-fn ignored_files_in_tree(repo: &Path, commit: &str) -> GitResult<Vec<String>> {
+fn ignored_files_in_stash(repo: &Path, stash: &str) -> GitResult<Vec<String>> {
     let ignored = runner::run_bytes(repo, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"])?;
     let ignored: Vec<String> = String::from_utf8_lossy(&ignored).split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect();
     if ignored.is_empty() {
         return Ok(Vec::new());
     }
-    let tree = runner::run_bytes(repo, ["ls-tree", "-r", "-z", "--name-only", "--end-of-options", commit])?;
-    let tree: Vec<String> = String::from_utf8_lossy(&tree).split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect();
+    // Everything `git stash branch` writes: the base commit it checks out (^1), then the
+    // stash's staged (^2) and working-tree (the stash itself) versions, and its untracked
+    // files (^3, when the stash has them) — a stash can add files its base never had.
+    let mut tree: Vec<String> = Vec::new();
+    for rev in [format!("{stash}^1"), format!("{stash}^2"), stash.to_string(), format!("{stash}^3")] {
+        if !runner::exec(repo, ["rev-parse", "-q", "--verify", "--end-of-options", &format!("{rev}^{{tree}}")])?.ok() {
+            continue; // no untracked part
+        }
+        let raw = runner::run_bytes(repo, ["ls-tree", "-r", "-z", "--name-only", "--end-of-options", &rev])?;
+        tree.extend(String::from_utf8_lossy(&raw).split('\0').filter(|p| !p.is_empty()).map(str::to_string));
+    }
+    tree.sort();
+    tree.dedup();
     Ok(checkout_collisions(&tree, &ignored))
 }
 

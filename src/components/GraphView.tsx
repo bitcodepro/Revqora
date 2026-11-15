@@ -28,6 +28,7 @@ import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { usePanelTitleMenu } from "./PanelWindows";
 import { pickBranchScope } from "./BranchScopePicker";
 import { signatureBadge, useSignature } from "../lib/signatureStatus";
+import { jumpStep } from "../lib/historyJump";
 
 const ROW_H = 30;
 /** Review mode: two-line rows (subject, then author, date and hash) without the graph. */
@@ -687,7 +688,20 @@ export function GraphView({
     void api.graphFind(root, oid, graphKey).then((index) => {
       const latest = useRepos.getState().tabs[root];
       if (!current || latest?.graph?.key !== graphKey || latest.historyJump !== oid) return;
-      if (index == null && hasMoreHistory(latest)) {
+      const step = jumpStep({ found: index != null, moreHistory: hasMoreHistory(latest), scoped: !!(latest.branchFilter || latest.branchContext) });
+      if (step === "widen-scope") {
+        // The branch scope leaves the commit out (a tag on another branch): show all branches
+        // and keep the request, so the rebuilt graph selects it.
+        patch(root, { branchFilter: null, branchContext: null, viewedBranch: null });
+        void loadGraph(root);
+        return;
+      }
+      if (step === "not-found") {
+        toast.info("Commit is not in the loaded history", "It may be filtered out or older than the loaded range.");
+        patch(root, { historyJump: null });
+        return;
+      }
+      if (step === "load-more") {
         // Page toward the commit: the next, larger graph re-runs this search, so a huge
         // repository never builds its whole history for one old commit.
         void loadMoreHistory(root).then(() => {
