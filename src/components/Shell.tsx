@@ -1,4 +1,5 @@
 import {forgeAccountsDialog} from "./ForgeAccounts";
+import { OverflowToolbar } from "./ToolbarOverflow";
 import { aboutDialog } from "./AboutDialog";
 import { branchCommitCompare } from "./BranchCommitCompare";
 import { RepositoryLibraryButton, groupEditorDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
@@ -10,6 +11,7 @@ import { PanelWindowsButton, usePanelWindowMenu, usePanelWindows } from "./Panel
 import { WORKTREE } from "../lib/types";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { validationDialog } from "./ConflictValidation";
 import { useValidation, validationFresh, validationRunning } from "../lib/validation";
 import { conflictHasUnsaved, useConflictDrafts } from "../lib/conflictStudio";
@@ -56,6 +58,8 @@ import {
   ShieldCheck,
   Bot,
   Workflow,
+  ListTree,
+  Layers3,
 } from "lucide-react";
 import { useRepos, type RepoTab } from "../lib/store";
 import { resolvedTheme, useSettings } from "../lib/settings";
@@ -98,9 +102,8 @@ async function checkUpdates() {
 
 export function TopBar() {
   const { panels, toggleSidebar } = usePanelWindows();
-  const tabs = useRepos((s) => s.tabs);
-  const active = useRepos((s) => s.active);
-  const tab = active ? tabs[active] : null;
+  // Only the shown repository: patches to other open repositories do not re-render the bar.
+  const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   const theme = useSettings((s) => s.theme);
   const setS = useSettings((s) => s.set);
   const status = tab?.status;
@@ -147,8 +150,8 @@ export function TopBar() {
       { label: "New branch…", icon: <GitBranchPlus size={15}/>, onClick: () => void A.createBranch(root, null, tab.info?.head.branch ?? "HEAD") },
       { label: "Stash changes…", icon: <Archive size={15}/>, disabled: !status?.files.length, onClick: () => void A.stash(root) },
       { label: "Pop latest stash", icon: <ArchiveRestore size={15}/>, disabled: !stashCount, onClick: () => void A.stashApply(root, 0, true) },
-      { label: "Worktree manager", icon: <FolderGit2 size={15}/>, onClick: () => openWorktrees(root) },
-      { label: "Branch manager", icon: <GitBranch size={15}/>, onClick: () => openOverlay({ kind: "branches", root }) },
+      { label: "Worktree Manager", icon: <FolderGit2 size={15}/>, onClick: () => openWorktrees(root) },
+      { label: "Branch Manager", icon: <GitBranch size={15}/>, onClick: () => openOverlay({ kind: "branches", root }) },
       { label: "Repository tools", icon: <Wrench size={15}/>, onClick: () => void repoToolsDialog(root) },
       { label: "Undo history (reflog)", icon: <History size={15}/>, onClick: () => void reflogDialog(root, oid => A.resetTo(root, oid, "reflog entry")) },
       { label: "Undo Center", icon: <ShieldCheck size={15}/>, onClick: () => void recoveryDialog(root) },
@@ -157,7 +160,7 @@ export function TopBar() {
       { label: "Workflow Builder", onClick: () => openOverlay({ kind: "workflows", root }) },
       { label: "Agent Workspace", onClick: () => openOverlay({ kind: "agents", root }) },
       { label: "Open terminal here", icon: <SquareTerminal size={15}/>, onClick: () => void api.openTerminal(root) },
-      { label: "Show in Explorer", icon: <FolderOpen size={15}/>, onClick: () => void api.revealPath(root) },
+      { label: "Show in folder", icon: <FolderOpen size={15}/>, onClick: () => void api.revealPath(root) },
     ] : []),
     { separator: true },
     { label: "Panels in separate windows", children: panelWindowMenu },
@@ -166,7 +169,7 @@ export function TopBar() {
     { label: "Error log", hint: prettyCombo(bindingFor("error-log", shortcuts)), onClick: () => void errorLogDialog() },
     { label: dark ? "Light theme" : "Dark theme", icon: dark ? <Sun size={15}/> : <Moon size={15}/>, onClick: () => setS({ theme: dark ? "light" : "dark" }) },
     { label: "Accounts and API connections…", icon: <UserRound size={15}/>, onClick: () => void forgeAccountsDialog(root ?? null) },
-    { label: "Check Updates", icon: <Download size={15}/>, disabled: !canCheckUpdates(updatePhase), onClick: () => void checkUpdates() },
+    { label: "Check for updates", icon: <Download size={15}/>, disabled: !canCheckUpdates(updatePhase), onClick: () => void checkUpdates() },
     { label: "Settings…", icon: <Settings2 size={15}/>, onClick: () => void settingsDialog(root ?? null) },
   ];
 
@@ -181,11 +184,11 @@ export function TopBar() {
         <b>{overview ? "All repositories" : repositoryName}</b>
         {!overview && tab?.info && <span onContextMenu={e => { if (root && tab.info?.head.branch) contextMenu(e, namePathMenu(tab.info.head.branch, root, `refs/heads/${tab.info.head.branch}`)); }}><GitBranch size={12} />{tab.info.head.branch ?? shortOid(tab.info.head.oid ?? "")}</span>}
       </div>
-      <button className="icon-btn" title={shortcutTitle("Open repository", "open")} aria-label="Open repositories" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>
+      <button className="icon-btn" title={shortcutTitle("Open repository", "open")} aria-label="Open repository" onClick={() => A.openRepoDialog()}><Plus size={16} /></button>
       {root && tab?.info && !overview && (
-        <div className="toolbar">
-          <button className="tb-btn" aria-label="Open worktree manager" title="Worktree manager" data-shortcut="worktree-manager" onClick={() => openWorktrees(root)}><FolderGit2 size={15} />Worktrees</button>
-          <button className="tb-btn" aria-label="Open branch manager" title="Branch manager" data-shortcut="branch-manager" onClick={() => openOverlay({ kind: "branches", root })}><GitBranch size={15} />Branches</button>
+        <OverflowToolbar>
+          <button className="tb-btn" aria-label="Open worktree manager" title="Worktree Manager" data-shortcut="worktree-manager" onClick={() => openWorktrees(root)}><FolderGit2 size={15} />Worktrees</button>
+          <button className="tb-btn" aria-label="Open branch manager" title="Branch Manager" data-shortcut="branch-manager" onClick={() => openOverlay({ kind: "branches", root })}><ListTree size={15} />Branches</button>
           <button className="tb-btn" onClick={() => A.fetchAll(root)} title="Fetch all remotes" data-shortcut="fetch" aria-busy={fetching}>
             <RefreshCw size={15} className="transfer-icon" /> Fetch
           </button>
@@ -208,40 +211,40 @@ export function TopBar() {
             <ArchiveRestore size={15} /> Pop
           </button>
           <div className="tb-sep" />
-          <button className="icon-btn" title="Repository tools" data-shortcut="tools" onClick={() => repoToolsDialog(root)}>
+          <button aria-label="Repository tools" className="icon-btn" title="Repository tools" data-shortcut="tools" onClick={() => repoToolsDialog(root)}>
             <Wrench size={16} />
           </button>
-          <button className="icon-btn" title="Undo history (reflog)" data-shortcut="reflog" onClick={() => reflogDialog(root, (oid) => A.resetTo(root, oid, "reflog entry"))}>
+          <button aria-label="Undo history (reflog)" className="icon-btn" title="Undo history (reflog)" data-shortcut="reflog" onClick={() => reflogDialog(root, (oid) => A.resetTo(root, oid, "reflog entry"))}>
             <History size={16} />
           </button>
           <button type="button" className="icon-btn" title="Undo Center" data-shortcut="recovery-center" aria-label="Undo Center" onClick={() => void recoveryDialog(root)}><ShieldCheck size={16} /></button>
-        <button type="button" className="btn sm" aria-label="Branch Stacks" title="Branch Stacks" data-shortcut="branch-stacks" onClick={()=>openOverlay({kind:"stacks",root})}><GitBranch size={15}/>Stacks</button><button type="button" className="icon-btn" title="History Explorer" data-shortcut="history-explorer" aria-label="History Explorer" onClick={()=>openOverlay({kind:"historyExplorer",root})}><Search size={16}/></button><button type="button" className="btn sm" title="Workflow Builder" data-shortcut="workflow-builder" aria-label="Workflow Builder" disabled={!root} onClick={()=>root&&openOverlay({kind:"workflows",root})}><Workflow size={14}/><span>Workflows</span></button>
+        <button type="button" className="tb-btn" aria-label="Branch Stacks" title="Branch Stacks" data-shortcut="branch-stacks" onClick={()=>openOverlay({kind:"stacks",root})}><Layers3 size={15}/>Stacks</button><button type="button" className="icon-btn" title="History Explorer" data-shortcut="history-explorer" aria-label="History Explorer" onClick={()=>openOverlay({kind:"historyExplorer",root})}><Search size={16}/></button><button type="button" className="tb-btn" title="Workflow Builder" data-shortcut="workflow-builder" aria-label="Workflow Builder" disabled={!root} onClick={()=>root&&openOverlay({kind:"workflows",root})}><Workflow size={15}/><span>Workflows</span></button>
           <button type="button" className="icon-btn" title="Agent Workspace" data-shortcut="agent-workspace" aria-label="Agent Workspace" onClick={() => openOverlay({ kind: "agents", root })}><Bot size={16} /></button>
-          <button className="icon-btn" title="Open terminal here" data-shortcut="terminal" onClick={() => api.openTerminal(root)}>
+          <button aria-label="Open terminal here" className="icon-btn" title="Open terminal here" data-shortcut="terminal" onClick={() => api.openTerminal(root)}>
             <SquareTerminal size={16} />
           </button>
-        </div>
+        </OverflowToolbar>
       )}
       <div className="topbar-empty" aria-hidden="true"/>
       <div className="topbar-repository-actions" role="group" aria-label="Repository actions">
         <button type="button" className={`icon-btn ${overview ? "active" : ""}`} title="All repositories" data-shortcut="overview" aria-label="All repositories" aria-pressed={overview} onClick={toggleRepositoryOverview}><LayoutGrid size={16} /></button>
         <RepositoryLibraryButton />
-        {root && tab?.info && !overview && <button type="button" className="icon-btn" title="Show in Explorer" data-shortcut="show-folder" onClick={() => api.revealPath(root)}>
+        {root && tab?.info && !overview && <button aria-label="Show in folder" type="button" className="icon-btn" title="Show in folder" data-shortcut="show-folder" onClick={() => api.revealPath(root)}>
           <FolderOpen size={16} />
         </button>}
       </div>
       <div className="tb-sep" />
       <PanelWindowsButton hasRepository={!!tab?.info} hasCommit={hasCommit}/>
-      <button className="icon-btn" title={shortcutTitle("Command palette", "palette")} onClick={() => useUi.getState().setPalette(true)}>
+      <button aria-label={shortcutTitle("Command palette", "palette")} className="icon-btn" title={shortcutTitle("Command palette", "palette")} onClick={() => useUi.getState().setPalette(true)}>
         <Command size={16} />
       </button>
       <OperationLogButton root={root} />
       <ErrorLogButton />
-      <button className="icon-btn" title={dark ? "Light theme" : "Dark theme"} data-shortcut="theme" onClick={() => setS({ theme: dark ? "light" : "dark" })}>
+      <button aria-label={dark ? "Light theme" : "Dark theme"} className="icon-btn" title={dark ? "Light theme" : "Dark theme"} data-shortcut="theme" onClick={() => setS({ theme: dark ? "light" : "dark" })}>
         {dark ? <Sun size={16} /> : <Moon size={16} />}
       </button>
-      <button className="icon-btn" title="Accounts and API connections" data-shortcut="forge-accounts" onClick={() => forgeAccountsDialog(root ?? null)}><UserRound size={16}/></button>
-      <button className="icon-btn" title="Settings" data-shortcut="settings" onClick={() => settingsDialog(root ?? null)}>
+      <button aria-label="Accounts and API connections" className="icon-btn" title="Accounts and API connections" data-shortcut="forge-accounts" onClick={() => forgeAccountsDialog(root ?? null)}><UserRound size={16}/></button>
+      <button aria-label="Settings" className="icon-btn" title="Settings" data-shortcut="settings" onClick={() => settingsDialog(root ?? null)}>
         <Settings2 size={16} />
       </button>
     </div>
@@ -476,7 +479,7 @@ export function StatusBar() {
             ) : (
               <>
                 <FilePlus2 size={12} /> {tab.status.stagedCount} staged · {tab.status.unstagedCount} changed
-                {tab.status.conflictCount ? <span style={{ color: "var(--red)" }}> · {tab.status.conflictCount} conflicts</span> : null}
+                {tab.status.conflictCount ? <span style={{ color: "var(--red)" }}> · {plural(tab.status.conflictCount, "conflict")}</span> : null}
               </>
             )}
           </span>
@@ -535,7 +538,7 @@ export function Welcome() {
               <span className="bi"><FolderSearch size={19} /></span>
               <span>
                 <div className="bt">Import folder…</div>
-                <div className="bd">Find repositories and create Workspaces</div>
+                <div className="bd">Find repositories and organize them in folders</div>
               </span>
             </button>
             <button className="big-action" onClick={() => A.cloneRepo()}>
@@ -569,7 +572,7 @@ export function Welcome() {
                   <div className="rn">{basename(r)}</div>
                   <div className="rp">{r}</div>
                 </div>
-                <button
+                <button aria-label="Remove from list"
                   className="icon-btn sm x"
                   title="Remove from list"
                   onClick={(e) => {
@@ -624,7 +627,7 @@ function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
     { id: "error-log", label: "Error log…", group: "App", icon: <Bug size={15} />, run: () => errorLogDialog() },
     { id: "repository-library", label: "Repository library…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => repositoryLibraryDialog() },
     { id: "group-create", label: "Create group…", group: "Repository", icon: <FolderTree size={15} />, run: () => groupEditorDialog() },
-    { id: "check-updates", label: "Check Updates", group: "App", icon: <Download size={15} />, run: checkUpdates },
+    { id: "check-updates", label: "Check for updates", group: "App", icon: <Download size={15} />, run: checkUpdates },
     { id: "workspace-search", label: "Search all repositories", group: "History", icon: <FolderSearch size={15} />, run: () => workspaceCommitSearch("", "quick") },
     { id: "fetch-all", label: "Fetch all repositories", group: "Remote", icon: <Download size={15} />, run: () => fetchRepositories() },
     { id: "pull-all", label: "Pull all repositories…", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => { const roots = useRepos.getState().order; if (roots.length) void pullRepositories(roots); } },
@@ -648,14 +651,14 @@ function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
       { id: "pull", label: "Pull", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => A.pull(root) },
       { id: "push", label: "Push…", group: "Remote", icon: <ArrowUpFromLine size={15} />, run: () => A.push(root) },
       { id: "branch", label: "New branch…", group: "Branch", icon: <GitBranchPlus size={15} />, run: () => A.createBranch(root, null, tab.info?.head.branch ?? "HEAD") },
-      { id: "branch-manager", label: "Branch manager…", group: "Branch", icon: <GitBranch size={15} />, run: () => openOverlay({ kind: "branches", root }) },
+      { id: "branch-manager", label: "Branch Manager…", group: "Branch", icon: <GitBranch size={15} />, run: () => openOverlay({ kind: "branches", root }) },
       { id: "stash", label: "Stash changes…", group: "Changes", icon: <Archive size={15} />, run: () => A.stash(root) },
       { id: "pop-stash", label: "Pop latest stash", group: "Changes", icon: <ArchiveRestore size={15} />, run: () => { if (tab.refs?.stashes.length) void A.stashApply(root, 0, true); } },
       { id: "tools", label: "Repository tools (gc, maintenance)…", group: "Repository", icon: <Wrench size={15} />, run: () => repoToolsDialog(root) },
       { id: "deleted", label: "Recently deleted branches…", group: "Branch", icon: <Undo2 size={15} />, run: () => repoToolsDialog(root, "deleted") },
       { id: "patch", label: "Apply patch file…", group: "Repository", icon: <Plus size={15} />, run: () => applyPatchFile(root) },
       { id: "browse", label: "Browse files (HEAD)", group: "Repository", icon: <FolderOpen size={15} />, run: () => openOverlay({ kind: "tree", root, rev: "HEAD" }) },
-      { id: "worktree-manager", label: "Worktree manager…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => openOverlay({ kind: "worktrees", root }) },
+      { id: "worktree-manager", label: "Worktree Manager…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => openOverlay({ kind: "worktrees", root }) },
       {id:"branch-stacks",label:"Branch Stacks…",group:"Branch",icon:<GitBranch size={16}/>,run:()=>openOverlay({kind:"stacks",root})},
       { id:"history-explorer",label:"History Explorer: search changed code…",group:"Repository",icon:<Search size={16}/>,run:()=>openOverlay({kind:"historyExplorer",root}) },
       { id: "workflow-builder", label: "Workflow Builder", group: "Repository", icon: <Workflow size={16}/>, run: () => root && openOverlay({kind:"workflows",root}) },
@@ -676,7 +679,7 @@ function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
       { id: "reflog", label: "Undo history (reflog)…", group: "History", icon: <History size={15} />, run: () => reflogDialog(root, (oid) => A.resetTo(root, oid, "reflog entry")) },
       { id: "undo", label: "Undo last commit (keep changes)", group: "History", icon: <Undo2 size={15} />, run: () => A.undoLastCommit(root) },
       { id: "terminal", label: "Open terminal here", group: "Repository", icon: <SquareTerminal size={15} />, run: () => api.openTerminal(root) },
-      { id: "show-folder", label: "Show in Explorer", group: "Repository", icon: <FolderOpen size={15} />, run: () => api.revealPath(root) },
+      { id: "show-folder", label: "Show in folder", group: "Repository", icon: <FolderOpen size={15} />, run: () => api.revealPath(root) },
     );
     if (tab.view === "changes" && !useUi.getState().repositoryOverview && !tab.pendingMutations && tab.status) {
       const sel = tab.changeSel;
@@ -703,9 +706,7 @@ export function CommandPalette() {
   const open = useUi(s => s.paletteOpen);
   const setOpen = useUi(s => s.setPalette);
   const { toggleSidebar } = usePanelWindows();
-  const active = useRepos(s => s.active);
   const order = useRepos(s => s.order);
-  const tabs = useRepos(s => s.tabs);
   const groups = useLibrary(s => s.groups);
   const known = useLibrary(s => s.knownRoots);
   const names = useLibrary(s => s.repositoryNames);
@@ -717,6 +718,10 @@ export function CommandPalette() {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const roots = useMemo(() => uniqueRoots([...order, ...known, ...recent]), [order, known, recent]);
+  // Only what the palette lists: other repository patches (status, graph) do not re-render it.
+  const tab = useRepos(s => (s.active ? s.tabs[s.active] : null));
+  const rootRefs = useRepos(useShallow(s => roots.map(root => s.tabs[root]?.refs)));
+  const rootNames = useRepos(useShallow(s => roots.map(root => s.tabs[root]?.info?.name)));
   const ql = q.trim().toLowerCase();
   const shouldLoad = open && !!ql;
 
@@ -807,7 +812,24 @@ export function CommandPalette() {
     } catch (error) { toast.error(error, "Could not open branch"); }
   };
 
-  const tab = active ? tabs[active] : null;
+  const locations = useMemo(() => {
+    if (!open || !ql) return [];
+    const out: { id: string; label: string; group: string; context: string; search?: string; root: string; reference: string | null }[] = [];
+    roots.forEach((root, i) => {
+      const name = names[repositoryKey(root)] ?? rootNames[i] ?? basename(root);
+      out.push({ id: "repository:" + root, label: name, group: "Repository", context: root, root, reference: null });
+      const refs = rootRefs[i];
+      const references = refs ? [...refs.local, ...refs.remote].map(branch => branch.fullName) : branches[root] ?? [];
+      for (const reference of references) {
+        const local = reference.startsWith("refs/heads/");
+        const branch = reference.slice(local ? "refs/heads/".length : "refs/remotes/".length);
+        out.push({ id: JSON.stringify([root, reference]), label: branch, group: local ? "Branch" : "Remote branch", context: name, search: root, root, reference });
+      }
+    });
+    return out;
+    // `ql` only switches the index on; its value does not change the entries.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, !!ql, roots, rootRefs, rootNames, names, branches]);
   const filtered: Cmd[] = [];
   if (open) {
     const list = paletteActions(tab);
@@ -831,31 +853,21 @@ export function CommandPalette() {
           icon: <Folder size={15} />, run: () => revealExplorer(group.id),
         });
       }
-      for (const root of roots) {
-        const name = names[repositoryKey(root)] ?? tabs[root]?.info?.name ?? basename(root);
-        list.push({
-          id: "repository:" + root, label: name, group: "Repository", context: root,
-          icon: <FolderGit2 size={15} />, run: () => void revealRepository(root),
-        });
-        const refs = tabs[root]?.refs;
-        const references = refs ? [...refs.local, ...refs.remote].map(branch => branch.fullName) : branches[root] ?? [];
-        for (const reference of references) {
-          const local = reference.startsWith("refs/heads/");
-          const branch = reference.slice(local ? "refs/heads/".length : "refs/remotes/".length);
-          list.push({
-            id: JSON.stringify([root, reference]), label: branch, group: local ? "Branch" : "Remote branch",
-            context: name, search: root, icon: <GitBranch size={15} />, run: () => void revealBranch(root, reference),
-          });
-        }
-      }
     }
     const tokens = ql.split(/\s+/);
-    const matches = list.map(item => {
+    const rank = (item: { label: string; context?: string; search?: string }) => {
       const context = [item.label, item.context, item.search].filter(Boolean).join(" ").toLowerCase();
-      const rank = score(ql, item.label) || (tokens.every(token => context.includes(token)) ? 12 : 0);
-      return { item, rank };
-    }).filter(result => result.rank > 0).sort((a, b) => b.rank - a.rank);
-    filtered.push(...matches.slice(0, 60).map(({ item }) => item));
+      return score(ql, item.label) || (tokens.every(token => context.includes(token)) ? 12 : 0);
+    };
+    const matches: { rank: number; make: () => Cmd }[] = list.map(item => ({ rank: rank(item), make: () => item }));
+    // Repositories and branches are ranked as plain data; commands are built for the shown ones only.
+    if (ql) for (const entry of locations) {
+      const r = rank(entry);
+      if (r > 0) matches.push({ rank: r, make: () => entry.reference === null
+        ? { id: entry.id, label: entry.label, group: entry.group, context: entry.context, icon: <FolderGit2 size={15} />, run: () => void revealRepository(entry.root) }
+        : { id: entry.id, label: entry.label, group: entry.group, context: entry.context, search: entry.search, icon: <GitBranch size={15} />, run: () => void revealBranch(entry.root, entry.reference!) } });
+    }
+    filtered.push(...matches.filter(m => m.rank > 0).sort((a, b) => b.rank - a.rank).slice(0, 60).map(m => m.make()));
   }
 
   const idx = Math.max(0, filtered.findIndex(item => item.id === highlight));

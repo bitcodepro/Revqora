@@ -12,8 +12,11 @@ export interface ShortcutDef {
 export const PANEL_NAMES = {
   explorer: "Explorer", repositories: "Repositories", branches: "Branches",
   history: "Commit history", commit: "Commit preview", changes: "Changes",
-  pulls: "Pull requests", worktrees: "Worktree manager",
+  pulls: "Pull requests", worktrees: "Worktree Manager",
 };
+
+/** Default keys for staging from the keyboard (Ctrl+Shift: never typed text on any layout). */
+const COMMAND_DEFAULTS: Record<string, string> = { "stage-file": "Ctrl+Shift+A", "unstage-file": "Ctrl+Shift+U" };
 
 const unassignedCommands: [id: string, label: string, description: string][] = [
   ["operation-log", "Operation log", "Inspect the repository or application-wide operation history."],
@@ -25,13 +28,13 @@ const unassignedCommands: [id: string, label: string, description: string][] = [
   ["init", "New repository", "Initialize a Git repository in a folder."],
   ["forge-accounts", "Accounts and API connections", "Manage provider accounts, tokens and API access."],
   ["git-connections", "Git connection settings", "Choose how Git authenticates for this repository."],
-  ["check-updates", "Check Updates", "Check for a new version of Revqora now."],
+  ["check-updates", "Check for updates", "Check for a new version of Revqora now."],
   ["about", "About Revqora", "Show the app version and project information."],
   ["fetch-all", "Fetch all repositories", "Fetch remote updates for the open repositories."],
   ["pull-all", "Pull all repositories", "Review fast-forward pulls for the open repositories."],
-  ["worktree-manager", "Worktree manager", "Manage worktrees in the current repository."],
+  ["worktree-manager", "Worktree Manager", "Manage worktrees in the current repository."],
   ["worktree", "New worktree", "Open the worktree creation form."],
-  ["branch-manager", "Branch manager", "Find, inspect and clean up branches."],
+  ["branch-manager", "Branch Manager", "Find, inspect and clean up branches."],
   ["branch-stacks", "Branch Stacks", "Manage stacks of dependent branches."],
   ["deleted", "Recently deleted branches", "Review deleted branches and recovery options."],
   ["reflog", "Undo history (reflog)", "Inspect the Git reflog and recovery points."],
@@ -47,7 +50,7 @@ const unassignedCommands: [id: string, label: string, description: string][] = [
   ["workflow-builder", "Workflow Builder", "Open the workflow editor and run history."],
   ["agent-workspace", "Agent Workspace", "Open agent tasks for the current repository."],
   ["terminal", "Open terminal here", "Open a terminal in the current repository."],
-  ["show-folder", "Show in Explorer", "Reveal the current repository in the system file manager."],
+  ["show-folder", "Show in folder", "Reveal the current repository in the system file manager."],
   ["layout-graph", "Graph layout", "Show History in the Graph layout."],
   ["layout-review", "Review layout", "Show History in the Review layout."],
   ["layout-columns", "Columns layout", "Show History in the Columns layout."],
@@ -84,7 +87,7 @@ export const SHORTCUTS: ShortcutDef[] = [
     ["repo-remove-group", "Remove repositories from the current group"],
     ["repo-remove-all-groups", "Remove repositories from all groups"],
     ["repo-remove-explorer", "Remove repositories from Explorer"],
-  ].map(([id, label]) => ({ id, label, description: "Runs from the focused row in Workspaces, Groups or Repositories.", default: "", scope: "navigation" as const })),
+  ].map(([id, label]) => ({ id, label, description: "Runs from the focused row in Explorer or Repositories.", default: "", scope: "navigation" as const })),
   { id: "history", label: "Show history", description: "Open the commit history for the current repository.", default: "Ctrl+1" },
   { id: "changes", label: "Show changes", description: "Show staged and unstaged changes.", default: "Ctrl+2" },
   { id: "pulls", label: "Show pull requests", description: "Open the repository’s pull or merge requests.", default: "Ctrl+3" },
@@ -119,7 +122,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "codeCopySelection", label: "Copy selected code", description: "Copy the selected text from a diff or the working-file editor.", default: "", scope: "diff" },
   { id: "diffCopyName", label: "Copy diff file name", description: "Copy the full name of the file displayed in the focused diff.", default: "", scope: "diff" },
   ...["Stage", "Unstage", "Stash", "Discard", "Apply"].flatMap(action => [
-    { id: `diff-${action.toLowerCase()}-hunk`, label: `${action} hunk`, description: `${action} the focused block of changes in the diff.`, default: "", scope: "diff" as const },
+    { id: `diff-${action.toLowerCase()}-hunk`, label: `${action} hunk`, description: `${action} the focused block of changes in the diff.`, default: action === "Stage" ? "S" : action === "Unstage" ? "U" : "", scope: "diff" as const },
     { id: `diff-${action.toLowerCase()}-lines`, label: `${action} selected lines`, description: `${action} only the selected lines in the diff.`, default: "", scope: "diff" as const },
   ]),
   { id: "historyFind", label: "Find commits", description: "Focus the search field in History.", default: "Ctrl+F", scope: "history" },
@@ -181,7 +184,7 @@ export const SHORTCUTS: ShortcutDef[] = [
     ["reword", "Edit selected commit message"],
     ["drop", "Review dropping selected commits"],
   ].map(([id, label]) => ({ id: `commit-${id}`, label, description: "Runs from the focused commit list in History.", default: "", scope: "history" as const })),
-  ...unassignedCommands.map(([id, label, description]) => ({ id, label, description, default: "" })),
+  ...unassignedCommands.map(([id, label, description]) => ({ id, label, description, default: COMMAND_DEFAULTS[id] ?? "" })),
 ];
 
 const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta"]);
@@ -302,8 +305,12 @@ export function shortcutConflict(id: string, combo: string, overrides: Record<st
 }
 
 /** Display form, e.g. "Ctrl+Shift+↑". */
+/** On macOS, Ctrl bindings also answer to Cmd (see comboOf), so hints name the key Mac users press. */
+const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
 export function prettyCombo(c: string): string {
-  return c.replace("ArrowUp", "↑").replace("ArrowDown", "↓").replace("ArrowLeft", "←").replace("ArrowRight", "→");
+  const arrows = c.replace("ArrowUp", "↑").replace("ArrowDown", "↓").replace("ArrowLeft", "←").replace("ArrowRight", "→");
+  return IS_MAC ? arrows.replace(/\bCtrl\b/g, "⌘").replace(/\bAlt\b/g, "⌥") : arrows;
 }
 
 export function shortcutTitle(label: string, id: string): string {

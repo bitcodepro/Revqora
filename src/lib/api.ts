@@ -215,7 +215,7 @@ export const api = {
   commitGraphWrite: (repo: string, opId: string) => call<string>("commit_graph_write", { repo, opId }),
   commitDetails: (repo: string, oid: string, exact?: boolean) => call<CommitDetails>("commit_details", { repo, oid, exact }),
   verifyCommit: (repo: string, oid: string) => call<void>("verify_commit", { repo, oid }),
-  fileHistory: (repo: string, path: string) => call<FileHistoryEntry[]>("file_history", { repo, path }),
+  fileHistory: (repo: string, path: string, limit?: number) => call<FileHistoryEntry[]>("file_history", { repo, path, limit }),
   fileText: (repo: string, spec: string) => call<string | null>("file_text", { repo, spec }),
   reflog: (repo: string) => call<ReflogEntry[]>("reflog", { repo }),
   blame: (repo: string, path: string, rev: string | null) => call<Blame>("blame", { repo, path, rev }),
@@ -280,7 +280,7 @@ export const api = {
 
   conflictInfo: (repo: string, path: string) => call<ConflictInfo>("conflict_info", { repo, path }),
   conflictIndexSides: (repo: string, path: string) => call<Record<"base" | "ours" | "theirs", import("./types").IndexConflictSide | null>>("conflict_index_sides", { repo, path }),
-  conflictSave: (repo: string, path: string, content: string, stage: boolean, expectedState?: string | null) => call<void>("conflict_save", { repo, path, content, stage, expectedState }),
+  conflictSave: (repo: string, path: string, content: string, stage: boolean, expectedState?: string | null, encoding?: string | null) => call<void>("conflict_save", { repo, path, content, stage, expectedState, encoding: encoding ?? null }),
   conflictTake: (repo: string, path: string, which: "ours" | "theirs" | "base" | "delete", expectedState?: string | null) => call<void>("conflict_take", { repo, path, which, expectedState }),
   conflictMarkResolved: (repo: string, paths: string[]) => call<void>("conflict_mark_resolved", { repo, paths }),
   conflictUnresolve: (repo: string, path: string) => call<void>("conflict_unresolve", { repo, path }),
@@ -375,6 +375,8 @@ export const api = {
   unwatchRepo: (repo: string) => call<void>("unwatch_repo", { repo }),
   revealPath: (path: string) => call<void>("reveal_path", { path }),
   openPath: (path: string) => call<void>("open_path", { path }),
+  openPathAsText: (path: string) => call<void>("open_path_as_text", { path }),
+  runPath: (path: string) => call<void>("run_path", { path }),
   openTerminal: (path: string) => call<void>("open_terminal", { path }),
   startupPaths: () => call<string[]>("startup_paths"),
 };

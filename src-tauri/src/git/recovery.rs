@@ -975,10 +975,24 @@ pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<(
             | "conflict_save"
     );
     let refs = matches!(command, "branch_delete" | "branch_delete_remote" | "push" | "push_ref");
+    if workspace && finishes_operation(command) {
+        // Getting out of a merge/rebase or resolving its conflicts must never be blocked by a
+        // working tree the snapshot cannot capture (a submodule entry, a nested repository,
+        // more than the size limit). Fall back to a reference checkpoint for these.
+        return match automatic_expected(root, command, true, false, expected) {
+            Err(e) if e.kind == "checkpoint-failed" => automatic_expected(root, command, false, false, expected),
+            other => other,
+        };
+    }
     if workspace || refs {
         automatic_expected(root, command, workspace, false, expected)?;
     }
     Ok(())
+}
+
+/// Commands that leave or resolve an operation in progress; they must stay available.
+fn finishes_operation(command: &str) -> bool {
+    matches!(command, "op_abort" | "op_skip" | "conflict_take" | "conflict_unresolve" | "conflict_validation" | "conflict_save")
 }
 pub fn automatic(root: &Path, command: &str, workspace: bool, ignored: bool) -> GitResult<()> {
     automatic_expected(root, command, workspace, ignored, None)
@@ -999,6 +1013,11 @@ pub fn automatic_expected(root: &Path, command: &str, workspace: bool, ignored: 
 /// Ordinary branch/tag refspecs are unaffected. External CLI mirror operations
 /// remain outside this client's control.
 pub fn protect_transport(root: &Path, push: bool, remote: Option<&str>, explicit: Option<&str>, all: bool) -> GitResult<()> {
+    // Checked before anything else: fetch and push pass the remote name as an argument, and a
+    // leading '-' would be read as an option even when no recovery refs need protecting.
+    if remote.is_some_and(|name| name.starts_with('-')) {
+        return Err(fail("Choose a remote name that does not start with '-'."));
+    }
     let protected = runner::run(root, ["for-each-ref", "--format=%(refname)", PREFIX])?;
     if protected.trim().is_empty() {
         return Ok(());

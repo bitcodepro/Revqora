@@ -42,7 +42,7 @@ import { reviewBranchCleanup } from "./BranchCleanup";
 import { usePanelTitleMenu, usePanelWindows } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
 import { highlightBranch, jumpToCommit } from "./GraphView";
-import { promptDialog } from "./dialogs";
+import { confirmDialog, promptDialog } from "./dialogs";
 import { branchConnection, branchPairs } from "../lib/branchPresentation";
 import {sidebarBranchesKey,sidebarBranchPreferences,selectSidebarBranches} from "../lib/sidebarBranches";
 import {loadBranchPreferences,preferencesKey} from "../lib/branchManager";
@@ -86,7 +86,7 @@ function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
 }
 
 export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) {
-  const panelMenu = usePanelTitleMenu("branches", [{ label: "Branch manager", icon: <GitBranch size={14}/>, onClick: () => openOverlay({ kind: "branches", root: tab.root }) }]);
+  const panelMenu = usePanelTitleMenu("branches", [{ label: "Branch Manager", icon: <GitBranch size={14}/>, onClick: () => openOverlay({ kind: "branches", root: tab.root }) }]);
   const { panels } = usePanelWindows();
   const reveal = useUi(s => s.branchReveal);
   const { setLayout } = useWorkspaceLayout();
@@ -233,21 +233,18 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
             tabIndex={selectionAnchor.current === b.fullName || (!selectionAnchor.current && isCur) ? 0 : -1}
             className={`sb-item ${isCur ? "current" : ""} ${selectedSet.has(b.fullName) ? "branch-selected" : ""} ${viewed && (viewed === b.fullName || viewed === upstream?.fullName) ? "viewed-branch" : ""}`}
             style={{ paddingLeft: pad + 16 }}
-            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}\n${b.creator?`Created by ${b.creator.name} <${b.creator.email}> (local creation log)`:"Branch creator unknown"}${b.upstream ? `\ntracks ${b.upstream}` : ""}\nCtrl+Shift+click to toggle selection; Shift+click to select a range${isCur ? "" : "\nCtrl+click or double-click to check out"}`}
+            title={`${b.name}\n${b.subject}\n${b.author} · ${relativeTime(b.time)}\n${b.creator?`Created by ${b.creator.name} <${b.creator.email}> (local creation log)`:"Branch creator unknown"}${b.upstream ? `\ntracks ${b.upstream}` : ""}\nCtrl+click to toggle selection; Shift+click to select a range${isCur ? "" : "\nDouble-click or right-click to check out"}`}
             onMouseDown={(e) => { if (e.button === 0 && (e.ctrlKey || e.metaKey || e.shiftKey)) e.preventDefault(); }}
             onClick={(e) => {
               if (e.button !== 0) return;
               e.currentTarget.focus({ preventScroll: true });
+              // Ctrl+click toggles the selection and Shift+click selects a range, as in Explorer;
+              // checking out is in the context menu (or a double-click).
               const modifier = e.ctrlKey || e.metaKey;
-              if (modifier && !e.shiftKey) {
-                beforeDoubleClick.current = null;
-                if (!isCur && e.detail <= 1) void A.checkout(root, b.name, kind);
-                return;
-              }
-              if (e.detail <= 1) beforeDoubleClick.current = e.shiftKey ? null : {
+              if (e.detail <= 1) beforeDoubleClick.current = e.shiftKey || modifier ? null : {
                 reference: b.fullName, branchFilter: tab.branchFilter, branchContext: tab.branchContext, viewedBranch: tab.viewedBranch,
               };
-              chooseBranch(b, modifier, e.shiftKey && !modifier);
+              chooseBranch(b, modifier, e.shiftKey);
             }}
             onKeyDown={(e) => {
               if (e.target !== e.currentTarget) return;
@@ -349,7 +346,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
       <ChevronDown size={12} className="chev" />
       {icon}
       <span>{title}</span>
-      <span className="pill" style={{ height: 16, fontSize: 10 }}>
+      <span className="pill" style={{ height: 16, fontSize: "var(--fs-xs)" }}>
         {count}
       </span>
       <div className="actions" onClick={(e) => e.stopPropagation()}>
@@ -373,7 +370,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           "Branches",
           visibleLocal.length,
           <GitBranch size={12} />,
-          <button className="icon-btn sm" title="New branch" onClick={() => A.createBranch(root, null, current ?? "HEAD")}>
+          <button aria-label="New branch" className="icon-btn sm" title="New branch" onClick={() => A.createBranch(root, null, current ?? "HEAD")}>
             <Plus size={13} />
           </button>,
           collapsed.local ? [] : visibleLocal.length ? renderTree(buildTree(visibleLocal,0,branchPrefs.sort==="recent"), "local", 0, "") :
@@ -384,7 +381,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           "Remotes",
           [...remoteByName.values()].reduce((n,list)=>n+list.length,0),
           <Globe size={12} />,
-          <button className="icon-btn sm" title="Add remote" onClick={() => A.addRemote(root)}>
+          <button aria-label="Add remote" className="icon-btn sm" title="Add remote" onClick={() => A.addRemote(root)}>
             <Plus size={13} />
           </button>,
           collapsed.remotes ? [] : remoteByName.size === 0
@@ -413,7 +410,28 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
                           },
                         },
                         { separator: true },
-                        { label: `Remove ${name}…`, icon: <Trash2 size={14} />, danger: true, onClick: () => A.act(root, () => api.remoteRemove(root, name), { success: `Removed ${name}` }) },
+                        {
+                          label: `Remove ${name}…`,
+                          icon: <Trash2 size={14} />,
+                          danger: true,
+                          onClick: async () => {
+                            // Removing a remote deletes its configuration and every tracking branch.
+                            const tracking = (refs?.remote ?? []).filter((b) => b.name.startsWith(`${name}/`)).length;
+                            const local = (refs?.local ?? []).filter((b) => b.upstream?.startsWith(`${name}/`)).map((b) => b.name);
+                            const ok = await confirmDialog({
+                              title: `Remove remote ${name}?`,
+                              message: "Revqora deletes this remote from the repository configuration. Nothing changes on the server.",
+                              details: [
+                                `URL: ${info?.fetchUrl ?? "unknown"}`,
+                                `${tracking} remote-tracking ${tracking === 1 ? "branch is" : "branches are"} deleted (${name}/…)`,
+                                ...(local.length ? [`${local.length} local ${local.length === 1 ? "branch loses its" : "branches lose their"} upstream: ${local.slice(0, 5).join(", ")}${local.length > 5 ? "…" : ""}`] : []),
+                              ],
+                              confirm: "Remove remote",
+                              danger: true,
+                            });
+                            if (ok) A.act(root, () => api.remoteRemove(root, name), { success: `Removed ${name}` });
+                          },
+                        },
                       ])
                     }
                   >
@@ -488,7 +506,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           "Stashes",
           refs?.stashes.length ?? 0,
           <Archive size={12} />,
-          <button className="icon-btn sm" title="Stash changes" onClick={() => A.stash(root)}>
+          <button aria-label="Stash changes" className="icon-btn sm" title="Stash changes" onClick={() => A.stash(root)}>
             <Plus size={13} />
           </button>,
           stashes.length
@@ -525,11 +543,11 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           <Package size={12} />,
           <>
             {!!extras?.submodules.length && (
-              <button className="icon-btn sm" title="Update all (init + recursive)" onClick={() => X.updateSubmodules(root)}>
+              <button aria-label="Update all (init + recursive)" className="icon-btn sm" title="Update all (init + recursive)" onClick={() => X.updateSubmodules(root)}>
                 <RefreshCw size={12} />
               </button>
             )}
-            <button className="icon-btn sm" title="Add submodule" onClick={() => X.addSubmodule(root)}>
+            <button aria-label="Add submodule" className="icon-btn sm" title="Add submodule" onClick={() => X.addSubmodule(root)}>
               <Plus size={13} />
             </button>
           </>,
@@ -573,11 +591,11 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           extras?.worktrees.length ?? 0,
           <FolderGit2 size={12} />,
           <>
-            <button className="icon-btn sm" title="Worktree manager" onClick={() => openOverlay({ kind: "worktrees", root })}><FolderGit2 size={13} /></button>
-            <button className="icon-btn sm" title="Prune missing worktrees" onClick={() => X.pruneWorktrees(root)}>
+            <button aria-label="Worktree Manager" className="icon-btn sm" title="Worktree Manager" onClick={() => openOverlay({ kind: "worktrees", root })}><FolderGit2 size={13} /></button>
+            <button aria-label="Prune missing worktrees" className="icon-btn sm" title="Prune missing worktrees" onClick={() => X.pruneWorktrees(root)}>
               <Eraser size={12} />
             </button>
-            <button className="icon-btn sm" title="New worktree" onClick={() => X.addWorktree(root)}>
+            <button aria-label="New worktree" className="icon-btn sm" title="New worktree" onClick={() => X.addWorktree(root)}>
               <Plus size={13} />
             </button>
           </>,
@@ -619,10 +637,10 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               extras.lfs.patterns.length,
               <HardDrive size={12} />,
               <>
-                <button className="icon-btn sm" title="LFS files" onClick={() => X.lfsFilesDialog(root)}>
+                <button aria-label="LFS files" className="icon-btn sm" title="LFS files" onClick={() => X.lfsFilesDialog(root)}>
                   <Search size={12} />
                 </button>
-                <button className="icon-btn sm" title="Track a pattern" onClick={() => X.lfsTrack(root)}>
+                <button aria-label="Track a pattern" className="icon-btn sm" title="Track a pattern" onClick={() => X.lfsTrack(root)}>
                   <Plus size={13} />
                 </button>
               </>,
@@ -660,7 +678,8 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   );
 }
 
-const ROW_H = 27;
+/** Matches `.sb-item` min-height: max(28px, var(--fs) + 11px). */
+const rowHeight = (fontSize: number) => Math.max(28, fontSize + 11);
 const HEAD_H = 32;
 
 /** Renders only the visible sidebar rows (thousands of branches stay smooth). */
@@ -671,6 +690,7 @@ function VirtualRows({ rows, reveal, pinned }: {
   const [scroll, setScroll] = useState(0);
   const [viewH, setViewH] = useState(800);
   const focused = useRef<typeof reveal>(null);
+  const ROW_H = rowHeight(useSettings((st) => st.uiFontSize));
   useEffect(() => {
     const el = ref.current;
     if (!el) return;

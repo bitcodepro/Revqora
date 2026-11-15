@@ -184,8 +184,8 @@ export function WorktreeManager({root,floating=false,onClose=closeOverlay}:{root
   const action=async(run:()=>Promise<void>)=>{if(reviewing.current)return;reviewing.current=true;generation.current++;setLoading(false);try{await run();}catch(e){toast.error(e);}finally{reviewing.current=false;inflight.current=null;await refresh();}};
   const choose=(i:number)=>{const index=Math.max(0,Math.min(rows.length-1,i));setSelected(rows[index]?.path??null);const p=viewport.current;if(p&&index*ROW<p.scrollTop)p.scrollTop=index*ROW;else if(p&&(index+1)*ROW>p.scrollTop+p.clientHeight)p.scrollTop=(index+1)*ROW-p.clientHeight;};
   const {start:first,end:last}=virtualRange(rows.length,ROW,height,scroll,4);
-  return <section ref={surface} className={`conflict-overlay worktree-manager ${floating ? "" : "centered-tool-window"}`} style={{ ...(!floating ? windowSize.style : {}), ["--worktree-row-height" as string]: `${ROW}px` }} aria-label="Worktree manager">
-    <header className="cf-head" onContextMenu={panelMenu}><FolderGit2 size={18}/><b>Worktree manager</b><span className="muted">{snapshot?.worktrees.length??0} working folders</span><div className="spacer"/>
+  return <section ref={surface} className={`conflict-overlay worktree-manager ${floating ? "" : "centered-tool-window"}`} style={{ ...(!floating ? windowSize.style : {}), ["--worktree-row-height" as string]: `${ROW}px` }} aria-label="Worktree Manager">
+    <header className="cf-head" onContextMenu={panelMenu}><FolderGit2 size={18}/><b>Worktree Manager</b><span className="muted">{snapshot?.worktrees.length??0} working folders</span><div className="spacer"/>
       <button className="btn" disabled={initialLoading||pending} onClick={()=>void action(()=>worktreeCreateDialog(root))}><Plus size={14}/>New worktree</button>
       <button className="btn" disabled={initialLoading||pending} onClick={()=>void action(()=>worktreePruneDialog(root))}>Review missing entries</button>
       <button className="icon-btn" aria-label="Refresh worktrees" disabled={loading||pending} onClick={()=>void refresh()}><RefreshCw size={16} className={loading?"spin":""}/></button>

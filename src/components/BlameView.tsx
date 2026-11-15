@@ -113,7 +113,7 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
                       </span>
                       <span className="when">{relativeTime(c.time)}</span>
                       {c.previous && (
-                        <button className="icon-btn sm" title="Blame the version before this commit" onClick={() => dig(c.previous!)}>
+                        <button aria-label="Blame the version before this commit" className="icon-btn sm" title="Blame the version before this commit" onClick={() => dig(c.previous!)}>
                           <ScanSearch size={12} />
                         </button>
                       )}

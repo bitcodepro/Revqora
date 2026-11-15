@@ -40,7 +40,10 @@
   --accent-strong: #7461ff;
   --accent-soft: rgba(139, 124, 255, 0.16);
   --accent-fg: #ffffff;
-  --focus: rgba(139, 124, 255, 0.55);
+  /* Filled accent surfaces with white text (AA 4.5:1). */
+  --accent-fill: #6a58f0;
+  --accent-fill-strong: #5f4bea;
+  --focus: #8b7cff;
   --green: #3fb950;
   --green-soft: rgba(63, 185, 80, 0.15);
   --red: #f8554b;
@@ -117,16 +120,18 @@
   --accent-strong: #5640e6;
   --accent-soft: rgba(101, 80, 240, 0.1);
   --accent-fg: #ffffff;
-  --focus: rgba(101, 80, 240, 0.4);
-  --green: #1f8f3a;
+  --accent-fill: #6550f0;
+  --accent-fill-strong: #5640e6;
+  --focus: #5a45e6;
+  --green: #1a7a31;
   --green-soft: rgba(31, 143, 58, 0.1);
   --red: #d1342b;
   --red-soft: rgba(209, 52, 43, 0.09);
-  --amber: #b07800;
+  --amber: #8f6200;
   --amber-soft: rgba(176, 120, 0, 0.1);
   --blue: #1f6fe0;
   --blue-soft: rgba(31, 111, 224, 0.1);
-  --cyan: #0f8f9c;
+  --cyan: #0b7480;
   --pink: #c4378f;
   --diff-add: #e9f8ec;
   --diff-add-gutter: #d3f1da;
@@ -163,7 +168,7 @@
   --tok-keyword: #7a3fd6;
   --tok-string: #237a2e;
   --tok-number: #b35a00;
-  --tok-comment: #8a91a4;
+  --tok-comment: #6b7285;
   --tok-function: #1f5fc4;
   --tok-type: #0f7f86;
   --tok-property: #8a5a00;

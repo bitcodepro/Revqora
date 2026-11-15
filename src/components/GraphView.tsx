@@ -13,8 +13,7 @@ import {
 } from "lucide-react";
 import { api, newOpId } from "../lib/api";
 import {cachedGraphRows,rememberGraphRows,rememberGraphPosition} from "../lib/graphRowsCache";
-import * as A from "../lib/actions";
-import { CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, useRepos, type RepoTab } from "../lib/store";
+import { CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, loadMoreHistory, useRepos, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
 import { repositoryKey } from "../lib/repositoryLibrary";
 import { actionFor, matchesShortcut, shortcutTitle } from "../lib/shortcuts";
@@ -26,6 +25,7 @@ import { BranchAheadBehind, Avatar, RefBadge } from "./bits";
 import { branchMenu, commitMenu, runMenuShortcut, tagMenu } from "./menus";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { usePanelTitleMenu } from "./PanelWindows";
+import { pickBranchScope } from "./BranchScopePicker";
 
 const ROW_H = 30;
 /** Review mode: two-line rows (subject, then author, date and hash) without the graph. */
@@ -161,11 +161,7 @@ const Row = memo(function Row(p: RowProps) {
           : undefined
       }
       color={l.kind === "local" || l.kind === "head" ? r.color : undefined}
-      onClick={(e) =>
-        (e.ctrlKey || e.metaKey) && (l.kind === "local" || l.kind === "remote")
-          ? void A.checkout(p.root, l.name, l.kind)
-          : p.onRefClick(l.name)
-      }
+      onClick={() => p.onRefClick(l.name)}
       onContextMenu={(e) =>
         contextMenu(
           e,
@@ -466,8 +462,16 @@ export function GraphView({
   const [filterOnly, setFilterOnly] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const panelMenu = usePanelTitleMenu("history");
-  const searchScope = JSON.stringify([root, graphKey, tab.branchFilter, tab.branchContext, mode, query.trim()]);
+  // The search the user asked for. A graph rebuild (paging, watcher, auto-fetch) re-runs it for
+  // the new rows but keeps the current match and scroll position.
+  const searchScope = JSON.stringify([root, tab.branchFilter, tab.branchContext, mode, query.trim()]);
   const results = useMemo(() => found?.scope === searchScope ? found.matches : [], [found, searchScope]);
+  const foundRef = useRef(found);
+  foundRef.current = found;
+  const cursorRef = useRef(cursor);
+  cursorRef.current = cursor;
+  /** Set when new results only reflect a rebuilt graph: keep the view where it is. */
+  const quietResults = useRef(false);
   const matchSet = useMemo(() => new Set(results.map(({ row }) => row.oid)), [results]);
   // An older hit can be opened directly by SHA. Show it in the same history
   // pane without constructing all the intervening graph lanes.
@@ -558,6 +562,7 @@ export function GraphView({
           setHl(null);
         }
         for (const r of rows) cache.current.set(r.index, r);
+        trimRowCache(cache.current, page * PAGE + PAGE / 2, useRepos.getState().tabs[root]?.selected ?? null);
         rememberGraphRows(root,version,cache.current);
         force((n) => n + 1);
       } catch {
@@ -656,7 +661,9 @@ export function GraphView({
       const latest = useRepos.getState().tabs[root];
       if (!current || latest?.graph?.key !== graphKey || latest.historyJump !== oid) return;
       if (index == null && hasMoreHistory(latest)) {
-        void loadEntireHistory(root).then(() => {
+        // Page toward the commit: the next, larger graph re-runs this search, so a huge
+        // repository never builds its whole history for one old commit.
+        void loadMoreHistory(root).then(() => {
           const state = useRepos.getState().tabs[root];
           if (state?.graph?.key === graphKey && state.historyJump === oid && !state.graphLoading) patch(root, { historyJump: null });
         });
@@ -671,6 +678,8 @@ export function GraphView({
     return () => { current = false; };
   }, [root, graphKey, tab.historyJump, tab.graphLoading, tab.branchFilter, query, filterOnly, patch, scrollToIndex]);
 
+  /** A graph key whose last row should be selected as soon as it renders (End on paged history). */
+  const selectLastFor = useRef<string | null>(null);
   const selectIndex = useCallback(
     async (idx: number) => {
       const current = useRepos.getState().tabs[root];
@@ -698,6 +707,12 @@ export function GraphView({
     },
     [root, patch, scrollToIndex, graphKey, filtered, results],
   );
+  useEffect(() => {
+    if (!graphKey || selectLastFor.current !== graphKey) return;
+    selectLastFor.current = null;
+    const total = useRepos.getState().tabs[root]?.graph?.total ?? 0;
+    if (total) void selectIndex(total - 1);
+  }, [graphKey, selectIndex, root]);
 
   const onSelect = useCallback(
     (r: GraphRow, e: React.MouseEvent) => {
@@ -848,8 +863,17 @@ export function GraphView({
       try {
         const res = await api.historySearch(root, graphKey, query, mode);
         if (!current || useRepos.getState().tabs[root]?.graph?.key !== graphKey) return;
+        const previous = foundRef.current;
+        if (previous?.scope === searchScope) {
+          const oid = previous.matches[cursorRef.current]?.row.oid;
+          const kept = oid ? res.findIndex(({ row }) => row.oid === oid) : -1;
+          quietResults.current = kept >= 0;
+          setCursor(Math.max(0, kept));
+        } else {
+          quietResults.current = false;
+          setCursor(0);
+        }
         setFound({ scope: searchScope, matches: res });
-        setCursor(0);
       } catch (e) {
         if (current) toast.error(e, "Search failed");
       } finally {
@@ -861,6 +885,7 @@ export function GraphView({
   }, [query, mode, root, graphKey, searchScope]);
 
   useEffect(() => {
+    if (quietResults.current) { quietResults.current = false; return; }
     const match = results[cursor];
     if (match) scrollToIndex(filtered ? cursor : match.graphIndex ?? 0, true);
   }, [results, cursor, filtered, scrollToIndex]);
@@ -975,10 +1000,14 @@ export function GraphView({
     } else if (matchesShortcut(e, "historyLastCommit")) {
       e.preventDefault();
       if (filtered) { void selectIndex(count - 1); return; }
+      const scope = { branchFilter: tab.branchFilter, branchContext: tab.branchContext, selected: tab.selected };
       void loadEntireHistory(root).then(() => {
         const latest = useRepos.getState().tabs[root];
-        if (latest && latest.branchFilter === tab.branchFilter && latest.branchContext === tab.branchContext && latest.selected === tab.selected && latest.graph) {
-          void selectIndex(latest.graph.total - 1);
+        if (latest && latest.branchFilter === scope.branchFilter && latest.branchContext === scope.branchContext && latest.selected === scope.selected && latest.graph) {
+          // The full history is a new graph: select once this view renders it (the
+          // selectIndex of this render still belongs to the old graph).
+          if (latest.graph.key === graphKey) void selectIndex(latest.graph.total - 1);
+          else selectLastFor.current = latest.graph.key;
         }
       });
     } else if (matchesShortcut(e, "historyOpenCommit") && tab.selected === WORKTREE) {
@@ -1086,10 +1115,10 @@ export function GraphView({
             <option value="message">Message</option>
             <option value="author">Author</option>
             <option value="hash">Hash</option>
-            <option value="content">Code (pickaxe)</option>
+            <option value="content">Added or removed code</option>
             <option value="path">File path</option>
           </select>
-          <button
+          <button aria-label="Previous (Shift+Enter)"
             className="icon-btn sm"
             onClick={() => gotoResult(-1)}
             disabled={!results.length}
@@ -1097,7 +1126,7 @@ export function GraphView({
           >
             <ChevronUp size={14} />
           </button>
-          <button
+          <button aria-label="Next (Enter)"
             className="icon-btn sm"
             onClick={() => gotoResult(1)}
             disabled={!results.length}
@@ -1105,7 +1134,7 @@ export function GraphView({
           >
             <ChevronDown size={14} />
           </button>
-          <button
+          <button aria-label="Show only matching commits" aria-pressed={filterOnly}
             className={`icon-btn sm ${filterOnly ? "active" : ""}`}
             onClick={() => setFilterOnly((v) => !v)}
             title="Show only matching commits"
@@ -1113,7 +1142,7 @@ export function GraphView({
             <Filter size={13} />
           </button>
           {query && (
-            <button
+            <button aria-label="Clear"
               className="icon-btn sm"
               onClick={() => setQuery("")}
               title="Clear"
@@ -1138,6 +1167,8 @@ export function GraphView({
             {!!tab.refs?.local.length && <optgroup label="Local branches">{tab.refs.local.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
             {!!tab.refs?.remote.length && <optgroup label="Remote branches">{tab.refs.remote.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
           </select>
+          {!!(tab.refs?.local.length || tab.refs?.remote.length) && <button type="button" className="icon-btn sm" aria-label="Find a branch" title="Find a branch to show its history"
+            onClick={() => void pickBranchScope(tab.refs?.local ?? [], tab.refs?.remote ?? []).then(reference => { if (reference) selectHistoryScope(reference); })}><Search size={12} /></button>}
           {(fixedBranch || tab.branchContext) && <button type="button" className="icon-btn sm" aria-label="Clear branch filter" title="Return to current branch"
             onClick={() => selectHistoryScope(CURRENT_HISTORY_BRANCH)}><X size={12} /></button>}
         </div>
@@ -1268,7 +1299,7 @@ export function GraphView({
             {hiddenLanes && (
               <span
                 className="pill amber"
-                style={{ height: 15, fontSize: 9 }}
+                style={{ height: 15, fontSize: "max(10px, calc(var(--fs) - 4px))" }}
                 title="Some branches are hidden — drag the edge to widen"
               >
                 +{(summary?.maxLanes ?? 0) - lanes}
@@ -1328,7 +1359,13 @@ export function GraphView({
         data-hl={hl !== null ? hl : undefined}
         data-pinned-lane={pinned ?? undefined}
       >
-        {!summary && (
+        {!summary && !tab.graphLoading && tab.graphError ? (
+          <div className="empty" role="alert" style={{ height: "100%" }}>
+            <h3>History could not be loaded</h3>
+            <div className="mono" style={{ whiteSpace: "pre-wrap", maxWidth: 560 }}>{tab.graphError}</div>
+            <button className="btn sm" type="button" onClick={() => void useRepos.getState().refresh(root, { graph: true })}>Retry</button>
+          </div>
+        ) : !summary && (
           <div className="loading-center" style={{ height: "100%" }}>
             <span className="loader" />
           </div>
@@ -1361,4 +1398,18 @@ export function jumpToCommit(root: string, oid: string) {
   window.dispatchEvent(
     new CustomEvent("revqora:jump", { detail: { root, oid } }),
   );
+}
+
+/** Rows kept around the viewport; farther pages are read again when scrolled back to. */
+const MAX_CACHED_ROWS = 4000;
+
+/** Bounds the history row cache: long scrolling through a huge history must not grow memory
+ *  (and every menu or key handler that scans the cache) without limit. */
+function trimRowCache(cache: Map<number, GraphRow>, center: number, selected: string | null) {
+  if (cache.size <= MAX_CACHED_ROWS) return;
+  const far = [...cache.keys()].sort((a, b) => Math.abs(b - center) - Math.abs(a - center));
+  for (const index of far) {
+    if (cache.size <= MAX_CACHED_ROWS) break;
+    if (cache.get(index)?.oid !== selected) cache.delete(index);
+  }
 }

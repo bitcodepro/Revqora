@@ -261,7 +261,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    fs.renameSync(path.join(nested, ".git"), path.join(nested, "saved-git-metadata"));
    assert.equal(fs.realpathSync(git(nested, "rev-parse", "--show-toplevel")), fs.realpathSync(one));
    await nestedRow.locator(".repository-select").click();
-   await page.getByRole("alert").filter({hasText: "This saved folder is no longer a Git repository"}).waitFor();
+   await page.getByRole("alert").and(page.locator(":not(.toast)")).filter({hasText: "This saved folder is no longer a Git repository"}).waitFor();
    assert.equal(await nestedRow.locator(".repository-select").getAttribute("aria-current"), "true");
    assert.equal(await firstButton.getAttribute("aria-current"), "false");
    assert.equal(await prCenter.count(), 0);

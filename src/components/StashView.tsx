@@ -63,7 +63,7 @@ export function StashView({ root, index, oid }: { root: string; index: number; o
       <StatusIcon code={untracked ? "?" : f.status} />
       <PathLabel path={f.path} />
       <div className="row-actions">
-        <button className="icon-btn sm" title="Restore this file into the working tree" onClick={(e) => (e.stopPropagation(), restore(f.path, untracked))}>
+        <button aria-label="Restore this file into the working tree" className="icon-btn sm" title="Restore this file into the working tree" onClick={(e) => (e.stopPropagation(), restore(f.path, untracked))}>
           <RotateCcw size={13} />
         </button>
       </div>

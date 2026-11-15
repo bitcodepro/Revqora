@@ -139,7 +139,7 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await branchSearch.clear();
   await myBranches.click();
   await page.locator(".sidebar .branches-heading").click({button:"right"});
-  await page.locator(".ctx-menu").getByText("Branch manager",{exact:true}).click();
+  await page.locator(".ctx-menu").getByText("Branch Manager",{exact:true}).click();
   const manager = page.locator(".branch-manager");
   const primaryInManager = manager.locator('[data-branch-ref="refs/heads/main"]');
   await primaryInManager.waitFor();
@@ -306,7 +306,8 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await reviewRow("b").press("Delete");
   const single = dialogFor("Delete branch review-b?");
   await single.getByRole("button", { name: "Cancel", exact: true }).click();
-  const toggleSelection = (row) => row.click({ modifiers: ["Control", "Shift"] });
+  // Ctrl+click toggles one branch; Shift+click selects a range; Ctrl+Shift+click adds a range.
+  const toggleSelection = (row) => row.click({ modifiers: ["Control"] });
   await toggleSelection(reviewRow("d"));
   await sidebar.getByText("2 selected", { exact: true }).waitFor();
   assert.deepEqual(await sidebar.locator(".branch-selected").evaluateAll(rows => rows.map(row => row.dataset.branchName)), ["review-b", "review-d"]);
@@ -316,6 +317,17 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await sidebar.getByText("2 selected", { exact: true }).waitFor();
   await toggleSelection(reviewRow("c"));
   await sidebar.getByText("3 selected", { exact: true }).waitFor();
+  // Additive range: leave only b selected, with b as the anchor (Ctrl+click it off and on),
+  // then Ctrl+Shift+click d adds b..d.
+  await toggleSelection(reviewRow("c"));
+  await toggleSelection(reviewRow("d"));
+  await toggleSelection(reviewRow("b"));
+  await toggleSelection(reviewRow("b"));
+  await page.waitForFunction(() => document.querySelectorAll(".branch-selected").length === 1);
+  assert.deepEqual(await sidebar.locator(".branch-selected").evaluateAll(rows => rows.map(row => row.dataset.branchName)), ["review-b"]);
+  await reviewRow("d").click({ modifiers: ["Control", "Shift"] });
+  await sidebar.getByText("3 selected", { exact: true }).waitFor();
+  assert.deepEqual(await sidebar.locator(".branch-selected").evaluateAll(rows => rows.map(row => row.dataset.branchName)), ["review-b", "review-c", "review-d"]);
   assert.equal(git(other, "branch", "--show-current"), "review-a");
   await sidebar.getByRole("button", { name: "Delete…", exact: true }).click();
   const cleanup = dialogFor("Review branch cleanup");
@@ -330,11 +342,11 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await branchRow("main").click();
   await graph.locator(".grow.branch-member").getByText("Advance pinned history line", { exact: true }).click();
   await preview.waitFor();
-  await branchRow("target").click({ modifiers: ["Control"] });
+  await branchRow("target").dblclick();
   await waitBranch("target");
   await preview.waitFor({ state: "detached" });
   assert.equal(git(root, "branch", "--show-current"), "target");
-  await branchRow("main").click({ modifiers: ["Control"] });
+  await branchRow("main").dblclick();
   await waitBranch("main");
   assert.equal(await preview.count(), 0);
   put(root, "file.txt", "staged");

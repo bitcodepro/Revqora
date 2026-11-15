@@ -71,7 +71,8 @@ export type Overlay =
 
 interface UiState {
   toasts: Toast[];
-  menu: { x: number; y: number; items: MenuItem[]; surface: Window } | null;
+  /** `opener` is the element focused when the menu opened: focus returns there when it closes. */
+  menu: { x: number; y: number; items: MenuItem[]; surface: Window; opener: HTMLElement | null } | null;
   dialogs: Dialog[];
   busy: BusyOp[];
   repositoryOperations: RepositoryOperation[];
@@ -83,11 +84,22 @@ interface UiState {
   repositoryOverview: boolean;
   toast: (t: Omit<Toast, "id">, ttl?: number) => void;
   dismissToast: (id: number) => void;
+  /** Pauses a toast's timer while it is hovered or focused (it is read or acted on). */
+  /** Pauses a toast while any reason holds it: the pointer on its buttons, keyboard focus,
+   *  or expanded details. Releasing one reason keeps the others. */
+  holdToast: (id: number, held: boolean, reason?: ToastHold) => void;
   openMenu: (x: number, y: number, items: MenuItem[], surface?: Window) => void;
   closeMenu: () => void;
   setPalette: (open: boolean) => void;
 }
 
+export type ToastHold = "pointer" | "focus" | "expanded";
+const toastTimers = new Map<number, { life: number; timer?: ReturnType<typeof setTimeout>; holds: Set<ToastHold> }>();
+function startToastTimer(id: number, life: number) {
+  const current = toastTimers.get(id);
+  clearTimeout(current?.timer);
+  toastTimers.set(id, { life, holds: current?.holds ?? new Set(), timer: setTimeout(() => useUi.getState().dismissToast(id), life) });
+}
 let toastId = 0;
 let dialogId = 0;
 
@@ -106,11 +118,28 @@ export const useUi = create<UiState>()((set, get) => ({
   toast: (t, ttl) => {
     const id = ++toastId;
     set({ toasts: [...get().toasts.slice(-4), { ...t, id }] });
-    const life = ttl ?? (t.kind === "error" ? 9000 : 4200);
-    if (life > 0) setTimeout(() => get().dismissToast(id), life);
+    // Errors and toasts with an action stay long enough to read and use; hovering pauses them.
+    const life = ttl ?? (t.kind === "error" ? 15000 : t.action ? 12000 : 4200);
+    if (life > 0) startToastTimer(id, life);
   },
-  dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
-  openMenu: (x, y, items, surface = focusedUiSurface()) => set({ menu: { x, y, items, surface } }),
+  dismissToast: (id) => {
+    clearTimeout(toastTimers.get(id)?.timer);
+    toastTimers.delete(id);
+    set({ toasts: get().toasts.filter((t) => t.id !== id) });
+  },
+  holdToast: (id, held, reason = "pointer") => {
+    const timer = toastTimers.get(id);
+    if (!timer) return;
+    if (held) {
+      timer.holds.add(reason);
+      clearTimeout(timer.timer);
+      timer.timer = undefined;
+    } else {
+      timer.holds.delete(reason);
+      if (!timer.holds.size && !timer.timer) startToastTimer(id, Math.max(2500, timer.life / 2));
+    }
+  },
+  openMenu: (x, y, items, surface = focusedUiSurface()) => set({ menu: { x, y, items, surface, opener: get().menu?.opener ?? (surface.document.activeElement as HTMLElement | null) } }),
   closeMenu: () => set({ menu: null }),
   setPalette: (open) => set({ paletteOpen: open }),
 }));

@@ -999,8 +999,10 @@ async fn verify_commit(repo: String, oid: String) -> GitResult<()> {
 }
 
 #[tauri::command]
-async fn file_history(repo: String, path: String) -> GitResult<Vec<FileHistoryEntry>> {
-    blocking(move || gcommit::file_history(&p(&repo), &path, 500)).await
+async fn file_history(repo: String, path: String, limit: Option<usize>) -> GitResult<Vec<FileHistoryEntry>> {
+    // Pages of 500: the UI asks for more when the user loads older changes.
+    let limit = limit.unwrap_or(500).clamp(1, 1_000_000);
+    blocking(move || gcommit::file_history(&p(&repo), &path, limit)).await
 }
 
 #[tauri::command]
@@ -1458,8 +1460,19 @@ async fn conflict_index_sides(repo: String, path: String) -> GitResult<conflicts
 }
 
 #[tauri::command]
-async fn conflict_save(app: AppHandle, expected_state: Option<String>, repo: String, path: String, content: String, stage: bool) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "conflict_save", None, move || conflicts::save_resolution(&p(&repo), &path, &content, stage)).await
+async fn conflict_save(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    path: String,
+    content: String,
+    stage: bool,
+    encoding: Option<String>,
+) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "conflict_save", None, move || {
+        conflicts::save_resolution_as(&p(&repo), &path, &content, stage, encoding.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2246,9 +2259,14 @@ fn unwatch_repo(state: State<'_, AppState>, repo: String) {
 
 #[tauri::command]
 fn reveal_path(path: String) -> GitResult<()> {
+    desktop::local_path(&path)?;
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        // The path is quoted on a raw command line, so a quote in it would add arguments.
+        if path.contains('"') {
+            return Err(GitError::new("This path cannot be shown in Explorer."));
+        }
         std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{}\"", path.replace('/', "\\"))).spawn()?;
     }
     #[cfg(target_os = "macos")]
@@ -2268,11 +2286,24 @@ fn open_path(path: String) -> GitResult<()> {
     desktop::open(&path)
 }
 
+/// Opens a program or script as text, without running it.
+#[tauri::command]
+fn open_path_as_text(path: String) -> GitResult<()> {
+    desktop::open_as_text(&path)
+}
+
+/// Runs a program or script after the user confirmed it in Revqora.
+#[tauri::command]
+fn run_path(path: String) -> GitResult<()> {
+    desktop::run_confirmed(&path)
+}
+
 #[tauri::command]
 fn open_terminal(path: String) -> GitResult<()> {
     #[cfg(windows)]
     {
-        let wt = std::process::Command::new("wt.exe").args(["-d", &path]).spawn();
+        // Windows Terminal treats an unescaped ';' as a separator between commands.
+        let wt = std::process::Command::new("wt.exe").args(["-d", &path.replace(';', "\\;")]).spawn();
         if wt.is_err() {
             std::process::Command::new("cmd").args(["/C", "start", "cmd"]).current_dir(&path).spawn()?;
         }
@@ -2762,6 +2793,8 @@ pub fn run() {
             unwatch_repo,
             reveal_path,
             open_path,
+            open_path_as_text,
+            run_path,
             open_terminal,
             startup_paths,
         ])

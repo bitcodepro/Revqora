@@ -17,7 +17,7 @@ import { conflictLabel } from "../lib/format";
 import { confirmDialog } from "./dialogs";
 import { useSettings } from "../lib/settings";
 import { Splitter } from "./Overlays";
-import { conflictDraftKey, conflictDrafts, conflictInitialText, conflictOutput, normalizeConflictText, sameConflictVersions } from "../lib/conflictStudio";
+import { conflictDraftKey, conflictDrafts, conflictInitialText, conflictOutput, encodingChoices, normalizeConflictText, sameConflictVersions, saveEncoding } from "../lib/conflictStudio";
 import { ConflictValidation } from "./ConflictValidation";
 import { useValidation, validationRunning } from "../lib/validation";
 import "../styles/conflictStudio.css";
@@ -184,6 +184,14 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
   const [showValidation, setShowValidation] = useState(false);
   const [revision, setRevision] = useState(0);
   const [changedOnDisk, setChangedOnDisk] = useState(false);
+  // Encoding of the saved result; null keeps the sides' own (a CP1251 file stays CP1251).
+  const [encoding, setEncoding] = useState<string | null>(null);
+  const encodingFor = (current: ConflictInfo | null) => {
+    if (!current) return null;
+    const { encoding: chosen, needsChoice } = saveEncoding(current, encoding);
+    if (needsChoice) throw new Error(`The versions use different encodings (${encodingChoices(current).slice(0, 2).join(" and ")}). Choose the encoding to save the result in.`);
+    return chosen;
+  };
   const validation = useValidation((s) => s.reports[root]);
   const statusFiles = useRepos((s) => s.tabs[root]?.status?.files);
   const conflicts = useMemo(() => (statusFiles ?? []).filter((f) => f.conflict).map((f) => f.path), [statusFiles]);
@@ -241,6 +249,19 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
       blocked={validationRunning(validation)}
       tools={<>
         {changedOnDisk && <span className="pill red">File changed on disk · review current versions</span>}
+        {info && !info.ours.binary && !info.theirs.binary && (
+          info.encodingsDiffer ? (
+            <label className="hstack" style={{ gap: 6 }} title={`Yours: ${info.ours.encoding ?? "none"} · incoming: ${info.theirs.encoding ?? "none"}`}>
+              <span className="pill amber">Different encodings</span>
+              <select className="select sm" style={{ width: "auto" }} value={encoding ?? ""} onChange={(e) => setEncoding(e.target.value || null)} aria-label="Encoding of the result">
+                <option value="">Save as…</option>
+                {encodingChoices(info).map((name) => <option key={name} value={name}>{name}{name === info.ours.encoding ? " (yours)" : name === info.theirs.encoding ? " (incoming)" : ""}</option>)}
+              </select>
+            </label>
+          ) : (
+            <span className="pill" title="The result is saved in this encoding">{info.encoding}{info.bom ? " · BOM" : ""}</span>
+          )
+        )}
         <button className="btn sm" onClick={() => setShowValidation((v) => !v)}>Validate</button>
         <button className="btn sm ghost" disabled={validationRunning(validation)} title="Load current Git versions while retaining this draft for review" onClick={async () => {
           try {
@@ -261,14 +282,14 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
       footer={showValidation && <ConflictValidation root={root} dirty={dirty && conflicts.includes(path)} onClose={() => setShowValidation(false)} />}
       onClose={onClose}
       onSaveDraft={async (text) => {
-        await api.conflictSave(root, path, text, false, observedState.current);
+        await api.conflictSave(root, path, text, false, observedState.current, encodingFor(info));
         const fresh = await api.conflictInfo(root, path);
         observedState.current = fresh.stateToken ?? null;
         conflictDrafts.set(draftKey, { info: fresh, text: normalizeConflictText(text), token: observedState.current });
         toast.success(`Saved draft: ${path}`, "The file remains unresolved.");
       }}
       onSave={async (text) => {
-        await api.conflictSave(root, path, text, true, observedState.current);
+        await api.conflictSave(root, path, text, true, observedState.current, encodingFor(info));
         conflictDrafts.delete(draftKey);
         toast.success(`Resolved ${path}`);
         await nextFile();
@@ -471,7 +492,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
     const left = parseConflicts(text).length;
     try {
     if (!draft && left > 0) {
-      const ok = await confirmDialog({ title: "Conflict markers remain", message: `${left} conflict(s) are still unresolved in the result. Save and mark the file resolved anyway?`, confirm: "Save anyway", danger: true });
+      const ok = await confirmDialog({ title: "Conflict markers remain", message: `${left === 1 ? "1 conflict is" : `${left} conflicts are`} still unresolved in the result. Save and mark the file resolved anyway?`, confirm: "Save anyway", danger: true });
       if (!ok) return;
     }
       const output = info ? conflictOutput(text, info) : text;
@@ -545,17 +566,17 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
           </span>
         </div>
         {onNavigate && files && files.length > 0 && <div className="cf-file-nav" aria-label="Conflicted files">
-          <button className="icon-btn sm" title={shortcutTitle("Previous file", "conflictPreviousFile")} disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + files.length - 1) % files.length])}><ChevronUp size={14} /></button>
+          <button aria-label={shortcutTitle("Previous file", "conflictPreviousFile")} className="icon-btn sm" title={shortcutTitle("Previous file", "conflictPreviousFile")} disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + files.length - 1) % files.length])}><ChevronUp size={14} /></button>
           <select className="input" aria-label="Conflict file" value={path} disabled={saving || blocked} onChange={(e) => onNavigate(e.target.value)}>{!files.includes(path) && <option value={path}>{path}</option>}{files.map((file) => <option key={file} value={file}>{file}</option>)}</select>
-          <button className="icon-btn sm" title={shortcutTitle("Next file", "conflictNextFile")} disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + 1) % files.length])}><ChevronDown size={14} /></button>
+          <button aria-label={shortcutTitle("Next file", "conflictNextFile")} className="icon-btn sm" title={shortcutTitle("Next file", "conflictNextFile")} disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + 1) % files.length])}><ChevronDown size={14} /></button>
         </div>}
         {textual && (
           <div className="cf-nav">
-            <button className="icon-btn sm" onClick={() => goto(current - 1)} title={shortcutTitle("Previous conflict", "conflictPrevious")}>
+            <button aria-label={shortcutTitle("Previous conflict", "conflictPrevious")} className="icon-btn sm" onClick={() => goto(current - 1)} title={shortcutTitle("Previous conflict", "conflictPrevious")}>
               <ChevronUp size={15} />
             </button>
             <span className="cnt">{remaining ? `${Math.min(current + 1, remaining)} of ${remaining} left` : "All resolved"}</span>
-            <button className="icon-btn sm" onClick={() => goto(current + 1)} title={shortcutTitle("Next conflict", "conflictNext")}>
+            <button aria-label={shortcutTitle("Next conflict", "conflictNext")} className="icon-btn sm" onClick={() => goto(current + 1)} title={shortcutTitle("Next conflict", "conflictNext")}>
               <ChevronDown size={15} />
             </button>
           </div>
@@ -610,7 +631,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
             <h3 style={{ margin: 0 }}>{conflictLabel(info.code)}</h3>
             <div className="muted">
               {info.ours.binary || info.theirs.binary
-                ? "This is a binary file, so the sides cannot be merged line by line. Pick the version to keep."
+                ? "This is a binary file, so it cannot be merged line by line. Pick the version to keep."
                 : !info.ours.exists
                   ? `The file was deleted on ${labels.ours} but changed on ${labels.theirs}.`
                   : `The file was changed on ${labels.ours} but deleted on ${labels.theirs}.`}

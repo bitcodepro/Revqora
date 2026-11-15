@@ -1,3 +1,4 @@
+import { plural } from "./format";
 // High-level user actions: call the backend, report results, refresh state.
 import { open as openFolder } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage, isGitError, newOpId } from "./api";
@@ -118,7 +119,7 @@ export function handleOutcome(root: string, out: OpOutcome | undefined, what: st
   switch (out.status) {
     case "conflicts":
       st.patch(root, { view: "changes", changeSel: out.conflicts[0] ? { kind: "conflict", path: out.conflicts[0] } : null });
-      toast.warning(`${what}: ${out.conflicts.length} conflict(s)`, "Resolve them in the Changes view, then continue — or abort to roll everything back.");
+      toast.warning(`${what}: ${plural(out.conflicts.length, "conflict")}`, "Resolve them in the Changes view, then continue — or abort to roll everything back.");
       break;
     case "pending":
       st.patch(root, { view: "changes" });

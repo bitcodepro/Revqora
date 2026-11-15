@@ -44,7 +44,7 @@ export function ConflictValidation({ root, dirty: localDirty = false, onClose }:
     } catch (e) { toast.error(e); } finally { setStarting(false); }
   };
   return <section className="cf-validation" aria-label="Resolution validation">
-    <div className="hstack"><Terminal size={15} /><strong>Validate the resolution</strong><span className="muted">Optional · runs only when you choose Run</span><div className="spacer" />{onClose && <button className="icon-btn" title="Hide validation" onClick={onClose}><X size={14} /></button>}</div>
+    <div className="hstack"><Terminal size={15} /><strong>Validate the resolution</strong><span className="muted">Optional · runs only when you choose Run</span><div className="spacer" />{onClose && <button aria-label="Hide validation" className="icon-btn" title="Hide validation" onClick={onClose}><X size={14} /></button>}</div>
     <div className="cf-validation-command">
       <input className="input mono" aria-label="Validation command" list="validation-commands" value={command} placeholder="npm test, dotnet test, cargo test…" disabled={busy} onChange={(e) => setCommand(e.target.value)} />
       <datalist id="validation-commands">{saved.map((c) => <option key={c} value={c} />)}</datalist>

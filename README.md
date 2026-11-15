@@ -152,7 +152,7 @@ See the [Explorer and repository library guide](https://github.com/bitcodepro/Re
 - Toggle Explorer, Repositories or Branches with **Ctrl+Alt+W**, **Ctrl+Alt+R**
   or **Ctrl+Alt+B**.
 - Use **Ctrl+Shift+Enter** for focus mode and drag pane dividers to adjust widths.
-- Use **Wrap lines** for long code lines, or keep wrapping off and scroll horizontally.
+- Use **View → Wrap lines** in the diff toolbar for long code lines, or keep wrapping off and scroll horizontally.
 - Open a commit's full message with **Message**; **Close** dismisses its preview.
 - Hover a commit in Graph and press **↑ / ↓** to move the highlight. Press **Enter**
   to open the preview. With a commit selected, **↑ / ↓** change commits and
@@ -258,7 +258,7 @@ Search includes older commits within the selected scope.
 
 ### Inspect whitespace and edit a working file
 
-Toggle **Show whitespace** (¶) in the diff toolbar to see spaces as dots and tabs
+Toggle **View → Show whitespace** in the diff toolbar to see spaces as dots and tabs
 as arrows. This display setting does not ignore whitespace or change file content.
 It is saved and also applies to the built-in editor.
 
@@ -533,7 +533,7 @@ Use your actual path, or copy the ready-to-use entry from Settings. Add the VS C
 | Show me a screen in the app | `open_view` |
 | Prepare a Git or PR operation | `request_action`, then `action_status` |
 
-**Settings → General → MCP → Approval mode** controls requests from local MCP clients. **Ask my approval** is the default and opens a desktop review. **Full approve** lets fully specified actions run automatically, including deletions. **Ask before deleting** runs other actions automatically and asks before branch deletion, aborting a cherry-pick, pruning, force-pushing, or running workflow steps that can remove data. Revqora also asks when the provider may delete a PR source branch on merge. The selected mode survives a restart.
+**Settings → General → MCP → Approval mode** controls requests from local MCP clients. **Ask my approval** is the default and opens a desktop review. **Full approve** lets fully specified actions run automatically, including deletions. **Ask before deleting** runs other actions automatically and asks before branch deletion, aborting a cherry-pick, pruning, force-pushing, pushing anywhere other than the branch's own upstream, merging or approving a pull request, or running workflow steps that can remove data. The selected mode survives a restart.
 
 In a manual review, inspect the exact paths and targets in the **MCP request** dialog. An action status of `handed_off` means Revqora opened another review. Poll `action_status` for tracked actions, which report whether approval was manual or automatic. An automatic request that needs additional choices returns `action_details_required` with the required fields. Provider permissions and repository state checks apply in all modes.
 
@@ -609,7 +609,7 @@ history. Close the application before copying a portable installation.
 Settings also controls auto-fetch, themes, fonts, shortcuts and optional avatars.
 Revqora checks for updates at startup and every hour while open. Turn off
 **Check for updates every hour** in **Settings → Updates** to keep only the
-startup check. Use **Check now** in Settings or **Check Updates** in the toolbar
+startup check. Use **Check now** in Settings or **Check for updates** in the toolbar
 context menu to check manually. An available update appears
 in the status bar. Revqora verifies package checksums and source metadata before
 installation and preserves portable data.
@@ -642,6 +642,9 @@ from this list. Revqora uses single key combinations and its own shortcut scopes
 | Ctrl+Shift+F | Fetch |
 | Ctrl+Shift+↓ / Ctrl+Shift+↑ | Pull / Push |
 | Ctrl+Shift+S | Stash |
+| Ctrl+Shift+A / Ctrl+Shift+U | Stage / unstage the file selected in Changes |
+| S / U | Stage / unstage the focused hunk in a diff |
+| Ctrl+Shift+O / Ctrl+Shift+C / Ctrl+Shift+E / Ctrl+Shift+T | All repositories / compare branches / browse files / toggle theme |
 | Ctrl+Enter | Commit from the commit form |
 | F5 | Refresh |
 | F2 | Rename the focused group, branch, or repository display name |
@@ -653,6 +656,9 @@ from this list. Revqora uses single key combinations and its own shortcut scopes
 | Ctrl+, | Settings |
 | F7 / Shift+F7 | Next / previous diff change |
 | Alt+↑ / Alt+↓, Ctrl+S | Conflict editor: previous / next conflict, save |
+| ↑ / ↓, Home / End, Enter, → / ←, Esc | Move, choose, open / close submenus and close inside context menus |
+
+On macOS, Ctrl bindings also work with ⌘, and hints show ⌘.
 
 ## Build and verify
 

@@ -7,6 +7,7 @@ import path from "node:path";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
 import {withViewport} from "./ui-driver.mjs";
 import {interceptClipboard} from "./name-path-copy-smoke.mjs";
+import { hasDiffOption, setDiffOption } from "./diff-view-menu.mjs";
 
 export async function prCenterSmoke({page,check,shot,work}) {
   const root=path.join(work,"stage13-pr-center"),requests=[],token="stage13-public-fixture-token",a="a".repeat(40),b="b".repeat(40);
@@ -270,13 +271,12 @@ export async function prCenterSmoke({page,check,shot,work}) {
         await page.locator(".pr-diff .split-dl .half.add").first().waitFor();
         await page.getByTitle("Unified", {exact:true}).click();
         await page.locator(".pr-diff .dl.add").first().waitFor();
-        const wrap = page.getByRole("button", {name:"Wrap lines",exact:true});
-        await wrap.click();
-        await wrap.click();
-        const whitespace = page.getByRole("button", {name:"Show whitespace",exact:true});
-        await whitespace.click();
-        await whitespace.click();
-        if (await page.getByTitle("Show the whole file", {exact:true}).count()) throw Error("Local Git options were shown for server-selected context");
+        const prDiff = page.locator(".pr-diff");
+        await setDiffOption(prDiff, "Wrap lines");
+        await setDiffOption(prDiff, "Wrap lines");
+        await setDiffOption(prDiff, "Show whitespace");
+        await setDiffOption(prDiff, "Show whitespace");
+        if (await hasDiffOption(prDiff, "Show the whole file")) throw Error("Local Git options were shown for server-selected context");
         await shot("107-pr-file-diff");
       });
     });

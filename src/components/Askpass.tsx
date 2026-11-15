@@ -132,7 +132,7 @@ function AskpassDialog({ req, onAnswer, onAnswered }: { req: AskpassRequest; onA
             style={{ paddingRight: secret ? 36 : undefined }}
           />
           {secret && (
-            <button type="button" className="icon-btn sm" style={{ position: "absolute", right: 5 }} onClick={() => setShow((s) => !s)} title={show ? "Hide" : "Show"}>
+            <button aria-label={show ? "Hide" : "Show"} type="button" className="icon-btn sm" style={{ position: "absolute", right: 5 }} onClick={() => setShow((s) => !s)} title={show ? "Hide" : "Show"}>
               {show ? <EyeOff size={14} /> : <Eye size={14} />}
             </button>
           )}

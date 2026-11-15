@@ -203,7 +203,7 @@ export async function branchCleanupSmoke({ page, check, shot, work }) {
     const next=git(server,"-c","user.name=Peer","-c","user.email=peer@example.invalid","-c","commit.gpgsign=false","commit-tree",git(server,"rev-parse",`${previous}^{tree}`),"-p",previous,"-m","Server changed after review");
     git(server,"update-ref","refs/heads/bulk-clean-b",next,previous);
     if((await invoke("status",{repo:root})).stateToken!==before.stateToken)throw new Error("Server-only fixture changed the local repository state");
-    await run(2);await page.getByRole("alert").filter({hasText:"Preflight failed"}).waitFor();
+    await run(2);await page.getByRole("alert").and(page.locator(":not(.toast)")).filter({hasText:"Preflight failed"}).waitFor();
     if(git(root,"rev-parse","refs/heads/bulk-clean-a")!==aBefore || git(root,"rev-parse","refs/heads/bulk-clean-b")!==bBefore || git(root,"rev-parse","refs/remotes/origin/bulk-clean-b")!==trackingBefore || git(server,"rev-parse","refs/heads/bulk-clean-a")!==aBefore || git(server,"rev-parse","refs/heads/bulk-clean-b")!==next || !fs.readFileSync(path.join(root,".git/index")).equals(indexBefore))throw new Error("Failed preflight changed the reviewed local state or server tips");
     await shot("86-bulk-cleanup-stale");await close();
   });

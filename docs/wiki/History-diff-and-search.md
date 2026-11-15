@@ -20,11 +20,11 @@ Right-click the filename above the diff and choose **Copy name** to copy the ful
 
 - **Unified** combines additions and removals in one view.
 - **Side-by-side** puts old and new content next to each other.
-- **Wrap lines** fits long lines inside the visible pane.
+- **View → Wrap lines** fits long lines inside the visible pane.
 - With wrapping off, use horizontal scrolling.
 - **F7 / Shift+F7** jump between changes.
 
-Use **Find in diff (Ctrl+F)** to search the open diff. Where offered, **Show the whole file** expands its context and **Ignore whitespace** reduces whitespace noise. Turn whitespace ignoring off when checking formatting-only changes; it changes the view, not the file.
+Use **Find in diff (Ctrl+F)** to search the open diff. Where offered, **View → Show the whole file** expands its context and **View → Ignore whitespace changes** reduces whitespace noise. Turn whitespace ignoring off when checking formatting-only changes; it changes the view, not the file.
 
 Check file status and metadata as well as text: rename, binary, executable-bit and object-type changes can matter. An unavailable or partial preview is not evidence that the file did not change. Image comparisons are available for supported image files; arbitrary binary formats are not rendered as text.
 

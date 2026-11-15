@@ -352,6 +352,10 @@ export interface ConflictSide {
   binary: boolean;
   text: string;
   oid: string | null;
+  /** Detected text encoding of this version, e.g. "windows-1251". */
+  encoding: string | null;
+  bom: boolean;
+  ascii: boolean;
 }
 
 export interface IndexConflictSide {
@@ -375,6 +379,11 @@ export interface ConflictInfo {
   oursLabel: string;
   theirsLabel: string;
   eolCrlf: boolean;
+  /** Encoding the resolution is saved in by default (the sides' own). */
+  encoding: string;
+  bom: boolean;
+  /** The sides use different encodings: the user picks the result's encoding. */
+  encodingsDiffer: boolean;
 }
 
 export interface LayerFile {

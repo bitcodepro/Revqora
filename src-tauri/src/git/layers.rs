@@ -142,9 +142,37 @@ fn read_chain(repo: &Path) -> GitResult<Option<Chain>> {
 }
 
 fn write_chain(repo: &Path, base_commit: Option<&str>, layers: &[LayerRec]) -> GitResult<()> {
+    match build_chain(repo, base_commit, layers)? {
+        None => {
+            let _ = runner::exec(repo, ["update-ref", "-d", LAYER_REF]);
+        }
+        Some(tip) => {
+            runner::run(repo, ["update-ref", LAYER_REF, &tip])?;
+        }
+    }
+    Ok(())
+}
+
+/// Compare-and-swap version for the read path: only replaces the chain if `LAYER_REF` still
+/// points at `expected` (what this refresh read). Returns false when another operation changed
+/// the layers meanwhile; its write wins and the caller re-reads.
+fn write_chain_if(repo: &Path, expected: &str, base_commit: Option<&str>, layers: &[LayerRec]) -> GitResult<bool> {
+    let out = match build_chain(repo, base_commit, layers)? {
+        None => runner::exec(repo, ["update-ref", "-d", LAYER_REF, expected])?,
+        Some(tip) => runner::exec(repo, ["update-ref", LAYER_REF, &tip, expected])?,
+    };
+    Ok(out.ok())
+}
+
+fn layer_ref_oid(repo: &Path) -> GitResult<Option<String>> {
+    let out = runner::exec(repo, ["rev-parse", "--verify", "--quiet", LAYER_REF])?;
+    Ok(out.ok().then(|| out.text().trim().to_string()).filter(|s| !s.is_empty()))
+}
+
+/// Writes the layer commits and returns the new tip (None for an empty chain).
+fn build_chain(repo: &Path, base_commit: Option<&str>, layers: &[LayerRec]) -> GitResult<Option<String>> {
     if layers.is_empty() {
-        let _ = runner::exec(repo, ["update-ref", "-d", LAYER_REF]);
-        return Ok(());
+        return Ok(None);
     }
     let mut parent = base_commit.map(|s| s.to_string());
     for l in layers {
@@ -163,8 +191,7 @@ fn write_chain(repo: &Path, base_commit: Option<&str>, layers: &[LayerRec]) -> G
         let oid = runner::run_env(repo, &args, &env, None)?.trim().to_string();
         parent = Some(oid);
     }
-    runner::run(repo, ["update-ref", LAYER_REF, parent.as_deref().unwrap()])?;
-    Ok(())
+    Ok(parent)
 }
 
 fn temp_commit(repo: &Path, tree: &str) -> GitResult<String> {
@@ -273,7 +300,12 @@ fn write_resolved(repo: &Path, tree: &str, theirs: &str, files: &[(String, Strin
         runner::run_env(repo, ["read-tree", tree], &env, None)?;
         let mut info = String::new();
         for (path, content) in files {
-            let oid = runner::run_env(repo, ["hash-object", "-w", "--stdin"], &[], Some(content.as_bytes()))?.trim().to_string();
+            // Store the resolution in the layer version's own encoding (CP1251 stays CP1251).
+            let theirs_bytes = runner::exec(repo, ["cat-file", "blob", &format!("{theirs}:{path}")])?;
+            let side = super::conflicts::text_side(if theirs_bytes.ok() { &theirs_bytes.stdout } else { &[] }, None)?;
+            let (encoding, bom, _) = super::conflicts::result_encoding([&side, &super::conflicts::missing_side(), &super::conflicts::missing_side()]);
+            let bytes = super::conflicts::encode_resolution(content, &encoding, bom)?;
+            let oid = runner::run_env(repo, ["hash-object", "-w", "--stdin"], &[], Some(&bytes))?.trim().to_string();
             // Keep the file mode of the layer's version (e.g. executable scripts).
             let mode = runner::run(repo, ["ls-tree", theirs, "--", path])
                 .ok()
@@ -313,7 +345,10 @@ fn replay(repo: &Path, base_tree: &str, items: &[Item], ids: &[usize], res: &Res
 
 /// Keeps the layer chain consistent with HEAD after commits, checkouts or resets.
 fn reconcile(repo: &Path) -> GitResult<(Option<Chain>, Option<String>)> {
+    let Some(read_at) = layer_ref_oid(repo)? else { return Ok((None, None)) };
     let Some(chain) = read_chain(repo)? else { return Ok((None, None)) };
+    // A concurrent layer operation moved the ref: keep its result.
+    let raced = || -> GitResult<(Option<Chain>, Option<String>)> { Ok((read_chain(repo)?, None)) };
     let head = head_commit(repo);
     if chain.base_commit == head {
         // Layers wiped from outside (e.g. `git reset`): index went back to the base.
@@ -323,7 +358,9 @@ fn reconcile(repo: &Path) -> GitResult<(Option<Chain>, Option<String>)> {
             None => runner::run(repo, ["ls-files", "--cached"])?.trim().is_empty(),
         };
         if index_is_base && !chain.layers.is_empty() {
-            write_chain(repo, None, &[])?;
+            if !write_chain_if(repo, &read_at, None, &[])? {
+                return raced();
+            }
             return Ok((None, Some("The index was reset outside Revqora, so stage layers were cleared.".into())));
         }
         return Ok((Some(chain), None));
@@ -332,7 +369,9 @@ fn reconcile(repo: &Path) -> GitResult<(Option<Chain>, Option<String>)> {
     // Bottom layers were committed: drop them.
     if let Some(j) = chain.layers.iter().rposition(|l| l.tree == head_tree) {
         let rest: Vec<LayerRec> = chain.layers[j + 1..].to_vec();
-        write_chain(repo, head.as_deref(), &rest)?;
+        if !write_chain_if(repo, &read_at, head.as_deref(), &rest)? {
+            return raced();
+        }
         return Ok((read_chain(repo)?, None));
     }
     // HEAD moved elsewhere: try to carry the layers over.
@@ -347,11 +386,15 @@ fn reconcile(repo: &Path) -> GitResult<(Option<Chain>, Option<String>)> {
         Ok(trees) => {
             let layers: Vec<LayerRec> = chain.layers.iter().zip(trees).map(|(l, t)| LayerRec { tree: t, name: l.name.clone(), created: l.created }).collect();
             let layers = drop_empty(&head_tree, layers);
-            write_chain(repo, head.as_deref(), &layers)?;
+            if !write_chain_if(repo, &read_at, head.as_deref(), &layers)? {
+                return raced();
+            }
             Ok((read_chain(repo)?, None))
         }
         Err(_) => {
-            write_chain(repo, None, &[])?;
+            if !write_chain_if(repo, &read_at, None, &[])? {
+                return raced();
+            }
             Ok((None, Some("HEAD moved and the stage layers no longer applied cleanly, so they were merged into one staged set.".into())))
         }
     }
@@ -637,7 +680,7 @@ pub fn commit_through(repo: &Path, k: usize, message: &str, opts: &super::ops::C
     std::fs::write(&msg_file, message)?;
     let res = (|| -> GitResult<()> {
         runner::run_env(repo, ["read-tree", &tree], &env, None)?;
-        let mut args = vec!["commit".to_string(), "--cleanup=strip".into(), "-F".into(), msg_file.to_string_lossy().into_owned()];
+        let mut args = vec!["commit".to_string(), "--cleanup=whitespace".into(), "-F".into(), msg_file.to_string_lossy().into_owned()];
         if opts.no_verify {
             args.push("--no-verify".into());
         }
@@ -723,11 +766,9 @@ pub struct LayerConflict {
 fn side_at(repo: &Path, tree: &str, path: &str) -> GitResult<(super::conflicts::ConflictSide, Vec<u8>)> {
     let out = runner::exec(repo, ["cat-file", "blob", &format!("{tree}:{path}")])?;
     if !out.ok() {
-        return Ok((super::conflicts::ConflictSide { exists: false, binary: false, text: String::new(), oid: None }, Vec::new()));
+        return Ok((super::conflicts::missing_side(), Vec::new()));
     }
-    let binary = out.stdout.iter().take(8000).any(|b| *b == 0);
-    let text = if binary { String::new() } else { String::from_utf8_lossy(&out.stdout).into_owned() };
-    Ok((super::conflicts::ConflictSide { exists: true, binary, text, oid: None }, out.stdout))
+    Ok((super::conflicts::text_side(&out.stdout, None)?, out.stdout))
 }
 
 /// Dry-runs an operation with the given resolutions and returns the first unresolved conflict.
@@ -744,18 +785,19 @@ pub fn preview(repo: &Path, op: &LayerOp, res: &Resolutions) -> GitResult<Option
     let label = item_label(item, items.len());
     let mut files = Vec::new();
     for path in &stop.files {
-        let (base, base_raw) = side_at(repo, &stop.base, path)?;
-        let (ours, ours_raw) = side_at(repo, &stop.ours, path)?;
-        let (theirs, theirs_raw) = side_at(repo, &stop.theirs, path)?;
+        let (base, _) = side_at(repo, &stop.base, path)?;
+        let (ours, _) = side_at(repo, &stop.ours, path)?;
+        let (theirs, _) = side_at(repo, &stop.theirs, path)?;
         let textual = ours.exists && theirs.exists && !ours.binary && !theirs.binary && !base.binary;
-        let (merged, count) = if textual { super::conflicts::merge_file(&ours_raw, &base_raw, &theirs_raw)? } else { (String::new(), 1) };
+        let (merged, count) = if textual { super::conflicts::merge_sides(&ours, &base, &theirs)? } else { (String::new(), 1) };
+        let (encoding, bom, encodings_differ) = super::conflicts::result_encoding([&ours, &theirs, &base]);
         let code = match (base.exists, ours.exists, theirs.exists) {
             (false, true, true) => "AA",
             (true, false, true) => "DU",
             (true, true, false) => "UD",
             _ => "UU",
         };
-        let crlf = [&ours_raw, &theirs_raw].iter().any(|d| d.windows(2).any(|w| w == b"\r\n"));
+        let crlf = [&ours, &theirs].iter().any(|s| s.text.contains("\r\n"));
         files.push(super::conflicts::ConflictInfo {
             path: path.clone(),
             code: code.into(),
@@ -769,7 +811,43 @@ pub fn preview(repo: &Path, op: &LayerOp, res: &Resolutions) -> GitResult<Option
             ours_label: "other layers".into(),
             theirs_label: label.clone(),
             eol_crlf: crlf,
+            encoding,
+            bom,
+            encodings_differ,
         });
     }
     Ok(Some(LayerConflict { item, label, files }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refresh_never_overwrites_layers_changed_by_another_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.name", "T"], vec!["config", "user.email", "t@example.com"]] {
+            runner::run(repo, &args).unwrap();
+        }
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        runner::run(repo, ["add", "-A"]).unwrap();
+        runner::run(repo, ["commit", "-q", "-m", "base"]).unwrap();
+        let head = runner::run(repo, ["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        let tree = runner::run(repo, ["rev-parse", "HEAD^{tree}"]).unwrap().trim().to_string();
+        let layer = |name: &str| LayerRec { tree: tree.clone(), name: name.into(), created: 1_700_000_000 };
+        // A refresh that read an older value (here: an earlier chain tip) must not replace it,
+        // nor delete it.
+        write_chain(repo, Some(&head), &[layer("earlier")]).unwrap();
+        let stale = layer_ref_oid(repo).unwrap().unwrap();
+        write_chain(repo, Some(&head), &[layer("sealed by the user")]).unwrap();
+        let current = layer_ref_oid(repo).unwrap().unwrap();
+        assert_ne!(stale, current);
+        assert!(!write_chain_if(repo, &stale, Some(&head), &[layer("stale refresh")]).unwrap());
+        assert!(!write_chain_if(repo, &stale, None, &[]).unwrap());
+        assert_eq!(layer_ref_oid(repo).unwrap().as_deref(), Some(current.as_str()));
+        // With the value it read, the refresh may update it.
+        assert!(write_chain_if(repo, &current, None, &[]).unwrap());
+        assert_eq!(layer_ref_oid(repo).unwrap(), None);
+    }
 }

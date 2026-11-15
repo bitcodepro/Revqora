@@ -1,4 +1,5 @@
 import { repositoryFiles } from "./RepositoryFiles";
+import { openRepoFile } from "../lib/openFile";
 import { fileCopyMenu } from "./NamePathMenu";
 import { WorkingFileEditor } from "./WorkingFileEditor";
 import { useFileListNavigation } from "../lib/useFileListNavigation";
@@ -394,7 +395,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
     { separator: true },
     { label: "File history", icon: <History size={14} />, disabled: f.untracked, onClick: () => fileHistoryDialog(root, f.path) },
     { label: "Blame", icon: <ScanSearch size={14} />, disabled: f.untracked || f.worktree === "D", onClick: () => openOverlay({ kind: "blame", root, path: f.path, rev: null }) },
-    { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => api.openPath(joinPath(root, f.path)) },
+    { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void openRepoFile(joinPath(root, f.path)) },
     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(joinPath(root, f.path)) },
     ...fileCopyMenu(f.path),
   ];
@@ -457,7 +458,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
           <button className="btn sm" onClick={() => A.stagePaths(root, [sel.path])}>
             <Plus size={12} /> Stage file
           </button>
-          <button className="btn sm ghost" onClick={() => A.discardPaths(root, sel.untracked ? [] : [sel.path], sel.untracked ? [sel.path] : [])} title="Discard file">
+          <button className="btn sm ghost discard" onClick={() => A.discardPaths(root, sel.untracked ? [] : [sel.path], sel.untracked ? [sel.path] : [])} title="Discard file" aria-label="Discard file">
             <Undo2 size={13} />
           </button>
         </>
@@ -549,7 +550,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                         { label: "Take theirs (incoming)", icon: <ArrowDown size={14} />, onClick: () => A.act(root, () => api.conflictTake(root, f.path, "theirs"), { success: "Resolved with theirs" }) },
                         { label: "Mark as resolved", icon: <Check size={14} />, onClick: () => A.act(root, () => api.conflictMarkResolved(root, [f.path]), { success: "Marked resolved" }) },
                         { separator: true },
-                        { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => api.openPath(joinPath(root, f.path)) },
+                        { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void openRepoFile(joinPath(root, f.path)) },
                         ...fileCopyMenu(f.path),
                       ])
                     }
@@ -571,14 +572,14 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
             visibleUnstaged.length,
             unstaged.length > 0 && (
               <>
-                <button className="icon-btn sm" title={bulkTitle("Stash all changes")} onClick={() => A.stash(root)}>
+                <button aria-label={bulkTitle("Stash all changes")} className="icon-btn sm" title={bulkTitle("Stash all changes")} onClick={() => A.stash(root)}>
                   <Archive size={13} />
                 </button>
-                <button className="icon-btn sm" title={bulkTitle("Discard all…")} onClick={discardAll}>
-                  <Undo2 size={13} />
-                </button>
-                <button className="icon-btn sm" title={bulkTitle("Stage all into a new layer")} onClick={stageNewLayerAll}>
+                <button aria-label={bulkTitle("Stage all into a new layer")} className="icon-btn sm" title={bulkTitle("Stage all into a new layer")} onClick={stageNewLayerAll}>
                   <ListPlus size={14} />
+                </button>
+                <button aria-label={bulkTitle("Discard all…")} className="icon-btn sm discard" title={bulkTitle("Discard all…")} onClick={discardAll}>
+                  <Undo2 size={13} />
                 </button>
                 <button className="btn sm" title={bulkTitle("Stage all")} onClick={() => A.stagePaths(root, unstaged.map((f) => f.path))}>
                   <Plus size={12} /> Stage all
@@ -606,14 +607,14 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 <div className="row-actions">
                   {isNestedFile(f) ? <button className="btn sm" onClick={(e) => { e.stopPropagation(); openNestedFile(root, f); }}><FolderOpen size={13} /> Open repository</button> : <>
 
-                  <button className="icon-btn sm" title="Discard" onClick={(e) => (e.stopPropagation(), A.discardPaths(root, f.untracked ? [] : [f.path], f.untracked ? [f.path] : []))}>
-                    <Undo2 size={13} />
-                  </button>
-                  <button className="icon-btn sm" title="Stage into a new layer" onClick={(e) => (e.stopPropagation(), A.stageAsNewLayer(root, [f.path]))}>
+                  <button aria-label="Stage into a new layer" className="icon-btn sm" title="Stage into a new layer" onClick={(e) => (e.stopPropagation(), A.stageAsNewLayer(root, [f.path]))}>
                     <ListPlus size={14} />
                   </button>
-                  <button className="icon-btn sm" title="Stage" onClick={(e) => (e.stopPropagation(), A.stagePaths(root, [f.path]))}>
+                  <button aria-label="Stage" className="icon-btn sm" title="Stage" onClick={(e) => (e.stopPropagation(), A.stagePaths(root, [f.path]))}>
                     <Plus size={14} />
+                  </button>
+                  <button aria-label="Discard" className="icon-btn sm discard" title="Discard" onClick={(e) => (e.stopPropagation(), A.discardPaths(root, f.untracked ? [] : [f.path], f.untracked ? [f.path] : []))}>
+                    <Undo2 size={13} />
                   </button>
                   </>}
                 </div>
@@ -632,7 +633,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 </button>
               )}
               {layers && (
-                <button
+                <button aria-label="Layer options"
                   className="icon-btn sm"
                   title="Layer options"
                   onClick={(e) =>
@@ -670,7 +671,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 <StatusIcon code={f.index} />
                 <PathLabel path={f.path} hideDir={grouped} />
                 <div className="row-actions">
-                  <button className="icon-btn sm" title="Unstage" onClick={(e) => (e.stopPropagation(), A.unstagePaths(root, [f.path]))}>
+                  <button aria-label="Unstage" className="icon-btn sm" title="Unstage" onClick={(e) => (e.stopPropagation(), A.unstagePaths(root, [f.path]))}>
                     <Minus size={14} />
                   </button>
                 </div>
@@ -689,10 +690,10 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                     {plural(l.files.length, "file")} · {relativeTime(l.created)}
                   </span>
                   <div className="actions">
-                    <button disabled={pending} className="icon-btn sm" title="Unstage layer" onClick={() => layerAct(root, (res) => api.layerUnstage(root, l.index, res), `${l.name} unstaged`, { op: "unstage", index: l.index })}>
+                    <button aria-label="Unstage layer" disabled={pending} className="icon-btn sm" title="Unstage layer" onClick={() => layerAct(root, (res) => api.layerUnstage(root, l.index, res), `${l.name} unstaged`, { op: "unstage", index: l.index })}>
                       <Minus size={14} />
                     </button>
-                    <button className="icon-btn sm" title="More" onClick={(e) => contextMenu(e, layerMenu(root, l, layers.layers.length))}>
+                    <button aria-label="More" className="icon-btn sm" title="More" onClick={(e) => contextMenu(e, layerMenu(root, l, layers.layers.length))}>
                       <MoreHorizontal size={14} />
                     </button>
                   </div>
@@ -715,7 +716,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                       <StatusIcon code={f.status} />
                       <PathLabel path={f.path} />
                       <div className="row-actions">
-                        <button disabled={pending} className="icon-btn sm" title="Remove from layer" onClick={(e) => (e.stopPropagation(), layerAct(root, () => api.layerUnstageFiles(root, l.index, [f.path])))}>
+                        <button aria-label="Remove from layer" disabled={pending} className="icon-btn sm" title="Remove from layer" onClick={(e) => (e.stopPropagation(), layerAct(root, () => api.layerUnstageFiles(root, l.index, [f.path])))}>
                           <Minus size={14} />
                         </button>
                       </div>
@@ -733,10 +734,10 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 <div className="actions">
                   {layers.openFiles.length > 0 && (
                     <>
-                      <button disabled={pending} className="icon-btn sm" title="Seal into a layer" onClick={() => layerAct(root, () => api.layerSeal(root, null), "Layer created")}>
+                      <button aria-label="Seal into a layer" disabled={pending} className="icon-btn sm" title="Seal into a layer" onClick={() => layerAct(root, () => api.layerSeal(root, null), "Layer created")}>
                         <Layers size={14} />
                       </button>
-                      <button disabled={pending} className="icon-btn sm" title="Unstage all of this" onClick={() => layerAct(root, (res) => api.layerUnstage(root, layers.layers.length, res), undefined, { op: "unstage", index: layers.layers.length })}>
+                      <button aria-label="Unstage all of this" disabled={pending} className="icon-btn sm" title="Unstage all of this" onClick={() => layerAct(root, (res) => api.layerUnstage(root, layers.layers.length, res), undefined, { op: "unstage", index: layers.layers.length })}>
                         <Minus size={14} />
                       </button>
                     </>
@@ -759,7 +760,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                     <StatusIcon code={f.status} />
                     <PathLabel path={f.path} />
                     <div className="row-actions">
-                      <button className="icon-btn sm" title="Unstage" onClick={(e) => (e.stopPropagation(), A.unstagePaths(root, [f.path]))}>
+                      <button aria-label="Unstage" className="icon-btn sm" title="Unstage" onClick={(e) => (e.stopPropagation(), A.unstagePaths(root, [f.path]))}>
                         <Minus size={14} />
                       </button>
                     </div>
@@ -846,7 +847,9 @@ function ConflictSummary({ root, file, onOpen }: { root: string; file: FileStatu
 
 // ───────────── commit box ─────────────
 
-const drafts = new Map<string, { summary: string; body: string }>();
+/** Commit message drafts, with Amend: an amend draft holds the previous commit's message, so
+ *  coming back without Amend would commit that message again as a new commit. */
+const drafts = new Map<string, { summary: string; body: string; amend?: boolean }>();
 /** Messages Revqora filled in for a merge / cherry-pick, removed again when it ends. */
 const prefilledMessages = new Map<string, { summary: string; body: string }>();
 
@@ -859,7 +862,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const [body, publishBody] = useState(draft.body);
   const messageRef = useRef({ summary: draft.summary, body: draft.body });
   const amendRequest = useRef(0);
-  const amendRef = useRef(false);
+  const amendRef = useRef(!!draft.amend);
   const submitting = useRef(false);
   const setSummary = (value: string | ((current: string) => string)) => {
     amendRequest.current++;
@@ -874,7 +877,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
     publishBody(next);
   };
   useEffect(() => () => { amendRequest.current++; }, [root]);
-  const [amend, setAmend] = useState(false);
+  const [amend, setAmend] = useState(!!draft.amend);
   const [signOff, setSignOff] = useState(false);
   const [noVerify, setNoVerify] = useState(false);
   const [sign, setSign] = useState(false);
@@ -905,8 +908,8 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const layers = tab.layers?.active ? tab.layers.layers : [];
 
   useEffect(() => {
-    drafts.set(root, { summary, body });
-  }, [root, summary, body]);
+    drafts.set(root, { summary, body, amend });
+  }, [root, summary, body, amend]);
 
   // Prefill the message for merges / cherry-picks; drop it again once the operation ends.
   useEffect(() => {
@@ -949,6 +952,14 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const canCommit = !busy && pendingMutations === 0 && !!summary.trim() && conflicts === 0 && (stagedCount > 0 || amend || merging);
   const canContinue = !busy && pendingMutations === 0 && conflicts === 0;
   const canSubmit = !rebasing && (picking ? canContinue : canCommit);
+  /** Why Commit is disabled, shown under the button instead of a silent grey button. */
+  const blockedReason = busy || rebasing ? null
+    : conflicts > 0 ? `Resolve ${conflicts === 1 ? "1 conflict" : `${conflicts} conflicts`} first`
+    : pendingMutations > 0 ? "Waiting for staging to finish…"
+    : picking ? null
+    : !(stagedCount > 0 || amend || merging) ? "Stage files to commit"
+    : !summary.trim() ? "Enter a summary"
+    : null;
 
   const reset = () => {
     setSummary("");
@@ -1085,9 +1096,9 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
               <option key={t}>{t}</option>
             ))}
           </select>
-          <input className="input" style={{ flex: 1 }} placeholder="scope (optional)" value={ccScope} onChange={(e) => setCcScope(e.target.value)} />
+          <input className="input" style={{ flex: 1 }} aria-label="Scope" placeholder="scope (optional)" value={ccScope} onChange={(e) => setCcScope(e.target.value)} />
           <label className="check" title="Breaking change (adds !)">
-            <input type="checkbox" checked={ccBreaking} onChange={(e) => setCcBreaking(e.target.checked)} /> !
+            <input type="checkbox" aria-label="Breaking change" checked={ccBreaking} onChange={(e) => setCcBreaking(e.target.checked)} /> !
           </label>
         </div>
       )}
@@ -1095,6 +1106,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
         <input
           className="input"
           autoComplete="off"
+          aria-label={merging ? "Merge commit message" : "Summary"}
           placeholder={merging ? "Merge commit message" : conventional ? "short description" : "Summary (required)"}
           value={summary}
           onChange={(e) => setSummary(e.target.value)}
@@ -1131,7 +1143,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
           <label className="check" title="Prefix messages with feat:, fix:, docs: … (Conventional Commits)">
             <input type="checkbox" checked={conventional} onChange={(e) => useSettings.getState().set({ conventionalCommits: e.target.checked })} /> Conventional
           </label>
-          <label className="check" title={helpers?.hooks.length ? `Hooks: ${helpers.hooks.join(", ")}` : "Skip pre-commit and commit-msg hooks"}>
+          <label className={`check subtle ${noVerify ? "warn" : ""}`} title={helpers?.hooks.length ? `Hooks: ${helpers.hooks.join(", ")}` : "Skip pre-commit and commit-msg hooks"}>
             <input type="checkbox" checked={noVerify} onChange={(e) => setNoVerify(e.target.checked)} /> Skip hooks
           </label>
         </div>
@@ -1142,6 +1154,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
           <div>Resolve {plural(conflicts, "conflict")} before committing.</div>
         </div>
       )}
+      {!canSubmit && blockedReason && <div className="commit-blocked faint" role="status">{blockedReason}</div>}
       <div className="split-btn">
         <button className="btn primary" disabled={!canSubmit} aria-busy={busy} onClick={() => doCommit()} title={prettyCombo(bindingFor("commit")) || undefined}>
           {busy ? <Loader2 size={15} className="spin" aria-hidden="true" /> : merging ? <GitMerge size={15} /> : <Check size={15} />} {label}
@@ -1149,6 +1162,9 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
         <button
           className="btn primary"
           disabled={!canCommit}
+          aria-label="More commit options"
+          aria-haspopup="menu"
+          title="More commit options"
           onClick={(e) =>
             contextMenu(e, [
               { label: `${label} & push`, icon: <CloudUpload size={14} />, onClick: () => doCommit(true) },

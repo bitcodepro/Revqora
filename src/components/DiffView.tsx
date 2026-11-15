@@ -1,3 +1,4 @@
+import { useShallow } from "zustand/react/shallow";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
@@ -9,13 +10,13 @@ import {
   Columns2,
   FileDiff as FileDiffIcon,
   FileWarning,
-  Maximize2,
   Minus,
   Plus,
   Pilcrow,
   Search,
-  Space,
-  Trash2,
+  RemoveFormatting,
+  UnfoldVertical,
+  Undo2,
   WrapText,
   X,
 } from "lucide-react";
@@ -144,9 +145,14 @@ function renderCode(text: string, toks: Tok[] | undefined, spans: Span[] | undef
 }
 
 type FlatRow = { kind: "hunk"; h: number } | { kind: "line"; h: number; l: number };
+type VirtualRow = FlatRow | { kind: "pair"; h: number; a: number | null; b: number | null };
 
 export function DiffView({ diff, loading, error, mode, path, badge, actions, canStash = false, onApply, emptyText, root, images, sourceOptions = true, onComment }: Props) {
-  const s = useSettings();
+  // Only the diff settings: unrelated settings writes must not re-render every open diff.
+  const s = useSettings(useShallow((st) => ({
+    set: st.set, codeFont: st.codeFont, codeFontSize: st.codeFontSize, diffFullFile: st.diffFullFile, diffMode: st.diffMode,
+    ignoreWhitespace: st.ignoreWhitespace, showWhitespace: st.showWhitespace, wrapDiff: st.wrapDiff,
+  })));
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [anchor, setAnchor] = useState<{ h: number; l: number } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -163,7 +169,8 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   const findRef = useRef<HTMLInputElement>(null);
 
   const totalLines = diff?.hunks.reduce((a, h) => a + h.lines.length, 0) ?? 0;
-  const virtual = totalLines > VIRTUAL_THRESHOLD && !s.wrapDiff && s.diffMode === "unified";
+  // Long diffs render only the visible rows, side by side too (wrapped lines have no fixed height).
+  const virtual = totalLines > VIRTUAL_THRESHOLD && !s.wrapDiff;
   const expensive = totalLines > VIRTUAL_THRESHOLD || !!diff?.previewLimited;
   const hl = useHighlight(path, diff?.hunks, !expensive);
   const words = useMemo(() => {
@@ -254,6 +261,18 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     });
     return out;
   }, [diff, collapsed]);
+  /** The rows a virtual diff draws: unified lines, or side-by-side pairs. */
+  const vrows = useMemo<VirtualRow[]>(() => {
+    if (!virtual || !diff) return [];
+    if (s.diffMode !== "split") return flat;
+    const out: VirtualRow[] = [];
+    diff.hunks.forEach((h, hi) => {
+      out.push({ kind: "hunk", h: hi });
+      if (!collapsed.has(hi)) for (const [a, b] of splitRows(h.lines)) out.push({ kind: "pair", h: hi, a, b });
+    });
+    return out;
+  }, [virtual, diff, collapsed, flat, s.diffMode]);
+  const vrowIndex = (h: number, l: number | null) => vrows.findIndex((r) => r.h === h && (l === null ? r.kind === "hunk" : r.kind === "line" ? r.l === l : r.kind === "pair" && (r.a === l || r.b === l)));
   const wordSelection = useDiffWordSelection(contentRef, JSON.stringify([root, path, diff?.hash]), function* () {
     if (!diff) return;
     for (const row of flat) {
@@ -280,7 +299,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     if (!el) return;
     if (collapsed.has(h)) setCollapsed((c) => new Set([...c].filter((x) => x !== h)));
     if (virtual) {
-      const idx = flat.findIndex((r) => r.h === h && (l === null ? r.kind === "hunk" : r.kind === "line" && r.l === l));
+      const idx = vrowIndex(h, l);
       if (idx >= 0) el.scrollTop = Math.max(0, idx * rowH - el.clientHeight / 3);
       return;
     }
@@ -298,7 +317,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     const el = bodyRef.current;
     if (!el || !diff) return;
     const tops: number[] = virtual
-      ? diff.hunks.map((_, hi) => flat.findIndex((r) => r.kind === "hunk" && r.h === hi) * rowH)
+      ? diff.hunks.map((_, hi) => vrowIndex(hi, null) * rowH)
       : diff.hunks.map((_, hi) => el.querySelector<HTMLElement>(`[data-hunk="${hi}"]`)?.offsetTop ?? 0);
     const cur = el.scrollTop + 4;
     const idx = dir > 0 ? tops.findIndex((t) => t > cur + 8) : tops.map((t, i) => [t, i] as const).filter(([t]) => t < cur - 8).pop()?.[1] ?? -1;
@@ -386,7 +405,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
 
   const hunkHeader = (h: DiffHunk, hi: number, style?: React.CSSProperties) => (
     <div className="hunk-head" data-hunk={hi} style={style}>
-      <button
+      <button aria-label={collapsed.has(hi) ? "Expand" : "Collapse"}
         className="icon-btn sm"
         onClick={() => setCollapsed((c) => (c.has(hi) ? new Set([...c].filter((x) => x !== hi)) : new Set([...c, hi])))}
         title={collapsed.has(hi) ? "Expand" : "Collapse"}
@@ -402,8 +421,8 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
                 <Plus size={12} /> Stage hunk
               </button>
               {canStash && <button className="btn sm" disabled={busy} onClick={() => apply(hunkSelection(hi), "stash")}><Archive size={12} /> Stash hunk</button>}
-              {!loading && <button className="btn sm ghost" disabled={busy} onClick={() => apply(hunkSelection(hi), "discard")} title="Discard hunk">
-                <Trash2 size={12} />
+              {!loading && <button className="btn sm ghost discard" disabled={busy} onClick={() => apply(hunkSelection(hi), "discard")} title="Discard hunk" aria-label="Discard hunk">
+                <Undo2 size={12} />
               </button>}
             </>
           )}
@@ -465,15 +484,15 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       {actions}
       {diff && diff.hunks.length > 1 && (
         <>
-          <button className="icon-btn" title={shortcutTitle("Previous change", "diffPrevious")} onClick={() => jumpChange(-1)}>
+          <button aria-label={shortcutTitle("Previous change", "diffPrevious")} className="icon-btn" title={shortcutTitle("Previous change", "diffPrevious")} onClick={() => jumpChange(-1)}>
             <ChevronsUp size={15} />
           </button>
-          <button className="icon-btn" title={shortcutTitle("Next change", "diffNext")} onClick={() => jumpChange(1)}>
+          <button aria-label={shortcutTitle("Next change", "diffNext")} className="icon-btn" title={shortcutTitle("Next change", "diffNext")} onClick={() => jumpChange(1)}>
             <ChevronsDown size={15} />
           </button>
         </>
       )}
-      <button
+      <button aria-label={shortcutTitle("Find in diff", "diffFind")}
         className={`icon-btn ${findOpen ? "active" : ""}`}
         title={shortcutTitle("Find in diff", "diffFind")}
         onClick={() => {
@@ -484,24 +503,30 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
         <Search size={15} />
       </button>
       <div className="seg" style={{ marginLeft: 6 }}>
-        <button className={s.diffMode === "unified" ? "on" : ""} onClick={() => s.set({ diffMode: "unified" })} title="Unified">
+        <button type="button" className={s.diffMode === "unified" ? "on" : ""} aria-pressed={s.diffMode === "unified"} aria-label="Unified" onClick={() => s.set({ diffMode: "unified" })} title="Unified">
           <AlignJustify size={13} />
         </button>
-        <button className={s.diffMode === "split" ? "on" : ""} onClick={() => s.set({ diffMode: "split" })} title="Side by side">
+        <button type="button" className={s.diffMode === "split" ? "on" : ""} aria-pressed={s.diffMode === "split"} aria-label="Side by side" onClick={() => s.set({ diffMode: "split" })} title="Side by side">
           <Columns2 size={13} />
         </button>
       </div>
-      {sourceOptions && <><button className={`icon-btn ${s.diffFullFile ? "active" : ""}`} title="Show the whole file" onClick={() => s.set({ diffFullFile: !s.diffFullFile })}>
-        <Maximize2 size={14} />
+      <button type="button" className={`btn sm diff-view-menu ${s.wrapDiff || s.showWhitespace || (sourceOptions && (s.diffFullFile || s.ignoreWhitespace)) ? "active" : ""}`}
+        aria-label="Diff view options" aria-haspopup="menu" title="Line wrapping, whitespace and context"
+        onClick={(e) => {
+          const box = e.currentTarget.getBoundingClientRect();
+          // Opened below the button, right-aligned to it when there is room.
+          contextMenu({ clientX: Math.max(6, box.right - 250), clientY: box.bottom + 4, currentTarget: e.currentTarget, preventDefault: () => {} }, [
+            { label: "Wrap lines", icon: <WrapText size={14} />, checked: s.wrapDiff, onClick: () => s.set({ wrapDiff: !s.wrapDiff }) },
+            { label: "Show whitespace", icon: <Pilcrow size={14} />, checked: s.showWhitespace, onClick: () => s.set({ showWhitespace: !s.showWhitespace }) },
+            ...(sourceOptions ? [
+              { separator: true },
+              { label: "Show the whole file", icon: <UnfoldVertical size={14} />, checked: s.diffFullFile, hint: "not only the changes", onClick: () => s.set({ diffFullFile: !s.diffFullFile }) },
+              { label: "Ignore whitespace changes", icon: <RemoveFormatting size={14} />, checked: s.ignoreWhitespace, onClick: () => s.set({ ignoreWhitespace: !s.ignoreWhitespace }) },
+            ] : []),
+          ]);
+        }}>
+        View <ChevronDown size={13} />
       </button>
-      <button className={`icon-btn ${s.ignoreWhitespace ? "active" : ""}`} title="Ignore whitespace" onClick={() => s.set({ ignoreWhitespace: !s.ignoreWhitespace })}>
-        <Space size={15} />
-      </button>
-      </>}
-      <button className={`btn sm diff-wrap ${s.wrapDiff ? "active" : ""}`} title="Wrap lines" aria-pressed={s.wrapDiff} onClick={() => s.set({ wrapDiff: !s.wrapDiff })}>
-        <WrapText size={15} /> Wrap lines
-      </button>
-      <button type="button" className={`icon-btn ${s.showWhitespace?"active":""}`} title="Show whitespace" aria-label="Show whitespace" aria-pressed={s.showWhitespace} onClick={()=>s.set({showWhitespace:!s.showWhitespace})}><Pilcrow size={14}/></button>
       </div>
     </div>
   );
@@ -587,15 +612,20 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   } else if (virtual) {
     // Very long diffs: fixed-height rows, only the visible window is rendered.
     const first = Math.max(0, Math.floor(scroll / rowH) - 30);
-    const last = Math.min(flat.length - 1, Math.ceil((scroll + viewH) / rowH) + 30);
+    const last = Math.min(vrows.length - 1, Math.ceil((scroll + viewH) / rowH) + 30);
     const rows: ReactNode[] = [];
     for (let i = first; i <= last; i++) {
-      const r = flat[i];
+      const r = vrows[i];
       const style: React.CSSProperties = { position: "absolute", top: i * rowH, left: 0, right: 0, height: rowH };
-      rows.push(r.kind === "hunk" ? <Fragment key={"h" + r.h}>{hunkHeader(diff.hunks[r.h], r.h, { ...style, height: rowH })}</Fragment> : lineRow(r.h, r.l, style));
+      if (r.kind === "hunk") rows.push(<Fragment key={"h" + r.h}>{hunkHeader(diff.hunks[r.h], r.h, { ...style, height: rowH })}</Fragment>);
+      else if (r.kind === "line") rows.push(lineRow(r.h, r.l, style));
+      else {
+        const split: SplitProps = { hunk: diff.hunks[r.h], hi: r.h, toks: hl?.[r.h], words: words?.[r.h], sel, onToggle: toggle, interactive, hits: hitSet, onComment, whitespace: s.showWhitespace };
+        rows.push(<div className="split-dl" key={`p${r.h}:${r.a}:${r.b}`} style={style}><SplitHalf {...split} idx={r.a} side="l" /><SplitHalf {...split} idx={r.b} side="r" /></div>);
+      }
     }
     body = (
-      <div className="virtual-diff" style={{ height: flat.length * rowH + 20, minWidth: textWidth + 150 }}>
+      <div className={`virtual-diff ${s.diffMode === "split" ? "virtual-split" : ""}`} style={{ height: vrows.length * rowH + 20, minWidth: s.diffMode === "split" ? undefined : textWidth + 150 }}>
         {rows}
       </div>
     );
@@ -667,7 +697,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
               </button>
               {canStash && <button className="btn sm" disabled={busy} onClick={() => apply(selectedPairs(), "stash")}><Archive size={12} /> Stash lines</button>}
               {!loading && <button className="btn sm danger" disabled={busy} onClick={() => apply(selectedPairs(), "discard")}>
-                <Trash2 size={12} /> Discard lines
+                <Undo2 size={12} /> Discard lines
               </button>}
             </>
           )}
@@ -690,18 +720,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   );
 }
 
-function SplitHunk({
-  hunk,
-  hi,
-  toks,
-  words,
-  sel,
-  onToggle,
-  interactive,
-  hits,
-  onComment,
-  whitespace,
-}: {
+type SplitProps = {
   hunk: DiffHunk;
   hi: number;
   toks: (Tok[] | undefined)[] | undefined;
@@ -712,10 +731,11 @@ function SplitHunk({
   hits: Set<string>;
   onComment?: Props["onComment"];
   whitespace: boolean;
-}) {
-  // Build rows of [left index | null, right index | null].
+};
+
+/** Side-by-side rows of a hunk: [left line index | null, right line index | null]. */
+function splitRows(lines: DiffLine[]): [number | null, number | null][] {
   const rows: [number | null, number | null][] = [];
-  const lines = hunk.lines;
   let i = 0;
   while (i < lines.length) {
     const l = lines[i];
@@ -728,32 +748,39 @@ function SplitHunk({
     const adds: number[] = [];
     while (i < lines.length && lines[i].kind === "-") dels.push(i++);
     while (i < lines.length && lines[i].kind === "+") adds.push(i++);
+    if (!dels.length && !adds.length) { rows.push([i, null]); i++; continue; }
     for (let k = 0; k < Math.max(dels.length, adds.length); k++) rows.push([dels[k] ?? null, adds[k] ?? null]);
   }
-  const half = (idx: number | null, side: "l" | "r") => {
-    if (idx === null) return <div className="half empty" />;
-    const l = lines[idx];
-    const cls = l.kind === "+" ? "add" : l.kind === "-" ? "del" : "";
-    const no = side === "l" ? l.oldNo : l.newNo;
-    const k = `${hi}:${idx}`;
-    return (
-      <div
-        data-line={k}
-        className={`half ${cls} ${sel.has(k) ? "sel" : ""} ${hits.has(k) ? "search-hit" : ""}`}
-        style={sel.has(k) ? { boxShadow: "inset 3px 0 0 var(--accent)" } : undefined}
-      >
-        {onComment && no !== null ? <button className="ln review-line" title={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} aria-label={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} onClick={()=>onComment(side === "l" ? "LEFT" : "RIGHT",no)}>{no}</button> : <span className="ln" style={{ cursor: interactive && cls ? "pointer" : undefined }} onMouseDown={e=>onToggle(hi,idx,e.shiftKey)}>{no??""}</span>}
-        <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
-        <span className="code-viewport"><span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, toks?.[idx], words?.get(idx), l.kind,whitespace)}</span></span>
-      </div>
-    );
-  };
+  return rows;
+}
+
+function SplitHalf({ idx, side, hunk: { lines }, hi, toks, words, sel, onToggle, interactive, hits, onComment, whitespace }: SplitProps & { idx: number | null; side: "l" | "r" }) {
+  if (idx === null) return <div className="half empty" />;
+  const l = lines[idx];
+  const cls = l.kind === "+" ? "add" : l.kind === "-" ? "del" : "";
+  const no = side === "l" ? l.oldNo : l.newNo;
+  const k = `${hi}:${idx}`;
+  return (
+    <div
+      data-line={k}
+      className={`half ${cls} ${sel.has(k) ? "sel" : ""} ${hits.has(k) ? "search-hit" : ""}`}
+      style={sel.has(k) ? { boxShadow: "inset 3px 0 0 var(--accent)" } : undefined}
+    >
+      {onComment && no !== null ? <button className="ln review-line" title={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} aria-label={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} onClick={()=>onComment(side === "l" ? "LEFT" : "RIGHT",no)}>{no}</button> : <span className="ln" style={{ cursor: interactive && cls ? "pointer" : undefined }} onMouseDown={e=>onToggle(hi,idx,e.shiftKey)}>{no??""}</span>}
+      <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
+      <span className="code-viewport"><span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, toks?.[idx], words?.get(idx), l.kind,whitespace)}</span></span>
+    </div>
+  );
+}
+
+function SplitHunk(props: SplitProps) {
+  const rows = splitRows(props.hunk.lines);
   return (
     <div className="split-hunk">
       {rows.map(([a, b], ri) => (
         <div className="split-dl" key={ri}>
-          {half(a, "l")}
-          {half(b, "r")}
+          <SplitHalf {...props} idx={a} side="l" />
+          <SplitHalf {...props} idx={b} side="r" />
         </div>
       ))}
     </div>

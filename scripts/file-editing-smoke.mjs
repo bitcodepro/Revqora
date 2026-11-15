@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
 import {openRepository} from "./ui-readiness.mjs";
 import {interceptClipboard} from "./name-path-copy-smoke.mjs";
+import { setDiffOption } from "./diff-view-menu.mjs";
 
 export async function fileEditingSmoke({page,work,returnRoot,shot}) {
   const root=path.join(work,"keyboard-file-editor");fs.mkdirSync(root,{recursive:true});
@@ -176,8 +177,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.getByLabel("Changed files",{exact:true}).focus();await page.keyboard.press("End");await diff("prepared B");
     await page.keyboard.press("Home");await diff("alpha value");
     const raw=await page.locator(".changes .diff-body").textContent();
-    const whitespace=page.locator(".changes").getByRole("button",{name:"Show whitespace",exact:true});
-    if(await whitespace.getAttribute("aria-pressed")!=="true")await whitespace.click();
+    await setDiffOption(page.locator(".changes"),"Show whitespace",true);
     await page.locator(".changes .ws-tab").first().waitFor();assert.equal(await page.locator(".changes .diff-body").textContent(),raw,"Whitespace markers must not replace actual source text");
     await page.getByRole("button",{name:"Edit working file",exact:true}).click();
     const content=page.getByRole("textbox",{name:"Working file content",exact:true});await content.waitFor();
@@ -202,7 +202,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     if(process.platform==="win32") {
       const externalWriter=fs.openSync(file,"r+");
       try {
-        await content.press("Control+s");await page.getByRole("alert").filter({hasText:"another editor's write handle"}).waitFor();
+        await content.press("Control+s");await page.getByRole("alert").and(page.locator(":not(.toast)")).filter({hasText:"another editor's write handle"}).waitFor();
         assert.equal(fs.readFileSync(file,"utf8"),initial,"A competing writer must prevent any save");
       } finally {fs.closeSync(externalWriter);}
     }
@@ -220,7 +220,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
     await page.waitForFunction(()=>!!document.activeElement?.closest(".working-code"));
     assert((await content.innerText()).includes("draft retained"),"Cancelling Close must retain the editor draft");
     fs.writeFileSync(file,"IDE latest\n");await page.getByRole("button",{name:"Save file",exact:true}).click();
-    await page.getByRole("alert").filter({hasText:"Your draft is kept"}).waitFor();assert((await content.innerText()).includes("draft retained"));assert.equal(fs.readFileSync(file,"utf8"),"IDE latest\n");
+    await page.getByRole("alert").and(page.locator(":not(.toast)")).filter({hasText:"Your draft is kept"}).waitFor();assert((await content.innerText()).includes("draft retained"));assert.equal(fs.readFileSync(file,"utf8"),"IDE latest\n");
     await page.getByRole("button",{name:"Reload from disk",exact:true}).click();await page.getByRole("button",{name:"Discard draft",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector(".working-code .cm-content")?.textContent.includes("IDE latest"));
     await page.locator(".working-file-editor").getByRole("button",{name:"Close",exact:true}).click();
@@ -279,7 +279,7 @@ export async function fileEditingSmoke({page,work,returnRoot,shot}) {
   {
     // Restore successful-scenario preferences through normal controls.
     await changes();await page.getByTitle(prefs.fileView==="tree"?"Group by folder":"Flat list",{exact:true}).click();
-    const toggle=page.locator(".changes").getByRole("button",{name:"Show whitespace",exact:true});if((await toggle.getAttribute("aria-pressed")==="true")!==!!prefs.showWhitespace)await toggle.click();
+    await setDiffOption(page.locator(".changes"),"Show whitespace",!!prefs.showWhitespace);
     await page.getByRole("button",{name:"Close keyboard-file-editor",exact:true}).click();await openRepository(page,returnRoot);
   }
 }

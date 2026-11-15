@@ -166,9 +166,96 @@ pub(super) fn decode(bytes: &[u8], encoding: Option<&str>) -> GitResult<Option<D
     Ok(decoded(codec, bytes, false, true))
 }
 
+/// A character the target encoding cannot represent, with its 1-based line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unencodable {
+    pub ch: char,
+    pub line: usize,
+}
+
+impl Unencodable {
+    pub fn message(&self, encoding: &str) -> String {
+        format!(
+            "Line {} contains \u{201c}{}\u{201d} (U+{:04X}), which {} cannot store. Choose another encoding or change that text.",
+            self.line, self.ch, self.ch as u32, encoding
+        )
+    }
+}
+
+fn line_of(text: &str, byte: usize) -> usize {
+    text[..byte].matches('\n').count() + 1
+}
+
+/// Encodes `text` back into `label`'s encoding, the inverse of [`decode`], so a file keeps the
+/// bytes of its own encoding (CP1251 stays CP1251). With `bom`, the encoding's BOM is written
+/// first. Characters the encoding lacks are reported, never replaced.
+pub fn encode(text: &str, label: &str, bom: bool) -> GitResult<Result<Vec<u8>, Unencodable>> {
+    let codec = Codec::from_label(label)?;
+    let mut out = Vec::with_capacity(text.len() + 4);
+    if bom {
+        if let Some(mark) = codec.bom() {
+            out.extend_from_slice(mark);
+        }
+    }
+    match codec {
+        Codec::Utf32Le | Codec::Utf32Be => {
+            for ch in text.chars() {
+                let unit = ch as u32;
+                out.extend_from_slice(&if codec == Codec::Utf32Le { unit.to_le_bytes() } else { unit.to_be_bytes() });
+            }
+        }
+        Codec::Standard(encoding) if encoding == UTF_16LE || encoding == UTF_16BE => {
+            // encoding_rs only decodes UTF-16 (the Web never encodes to it), so encode here.
+            for unit in text.encode_utf16() {
+                out.extend_from_slice(&if encoding == UTF_16LE { unit.to_le_bytes() } else { unit.to_be_bytes() });
+            }
+        }
+        Codec::Standard(encoding) if encoding == UTF_8 => out.extend_from_slice(text.as_bytes()),
+        Codec::Standard(encoding) => {
+            let mut encoder = encoding.new_encoder();
+            let capacity = encoder.max_buffer_length_from_utf8_without_replacement(text.len()).unwrap_or(text.len() * 4 + 16);
+            let mut buffer = vec![0u8; capacity.max(16)];
+            let (result, read, written) = encoder.encode_from_utf8_without_replacement(text, &mut buffer, true);
+            match result {
+                encoding_rs::EncoderResult::InputEmpty => out.extend_from_slice(&buffer[..written]),
+                encoding_rs::EncoderResult::Unmappable(ch) => {
+                    let at = read - ch.len_utf8();
+                    return Ok(Err(Unencodable { ch, line: line_of(text, at) }));
+                }
+                encoding_rs::EncoderResult::OutputFull => return Err(GitError::new("Text encoding buffer was too small.")),
+            }
+        }
+    }
+    Ok(Ok(out))
+}
+
+/// Canonical name of a supported encoding label.
+pub fn canonical(label: &str) -> GitResult<&'static str> {
+    Codec::from_label(label).map(Codec::name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encodes_back_into_the_original_encoding_and_reports_what_it_cannot_store() {
+        let cp1251 = b"\xcf\xf0\xe8\xe2\xe5\xf2\r\n".to_vec();
+        let text = decode(&cp1251, Some("windows-1251")).unwrap().unwrap().content;
+        assert_eq!(encode(&text, "windows-1251", false).unwrap().unwrap(), cp1251);
+        let sample = "Initial text\r\nПривет\r\n";
+        for label in ["UTF-16LE", "UTF-16BE", "UTF-32LE", "UTF-32BE", "UTF-8", "Shift_JIS", "GBK", "windows-1252"] {
+            let source = if matches!(label, "Shift_JIS" | "GBK" | "windows-1252") { "Initial text\r\n" } else { sample };
+            for bom in [false, true] {
+                let bytes = encode(source, label, bom).unwrap().unwrap();
+                let back = decode(&bytes, Some(label)).unwrap().unwrap();
+                assert_eq!(back.content, source, "{label} bom={bom}");
+            }
+        }
+        let missing = encode("ok\nПривет 😀\n", "windows-1251", false).unwrap().unwrap_err();
+        assert_eq!(missing, Unencodable { ch: '😀', line: 2 });
+        assert!(missing.message("windows-1251").contains("Line 2"));
+    }
 
     #[test]
     fn distinguishes_wide_text_and_legacy_text_from_binary() {

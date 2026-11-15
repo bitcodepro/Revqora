@@ -45,7 +45,9 @@ export function useFileListNavigation(navigateChanges = false) {
       if (doc.activeElement?.closest(editable) || doc.querySelector(".modal-backdrop,.ctx-menu,.conflict-overlay")) return;
       const next = matchesShortcut(e, "previewNextFile") || matchesShortcut(e, "previewNextFileAlternate");
       const previous = matchesShortcut(e, "previewPreviousFile") || matchesShortcut(e, "previewPreviousFileAlternate");
-      const command = next ? "ArrowDown" : previous ? "ArrowUp" : navigateChanges ? listShortcuts.find(([id]) => matchesShortcut(e, id))?.[1] : undefined;
+      // Plain arrows/Home/End inside a focused diff scroll the diff; they do not switch files.
+      const inDiff = !!doc.activeElement?.closest(".diff, .diff-view");
+      const command = next ? "ArrowDown" : previous ? "ArrowUp" : navigateChanges && !inDiff ? listShortcuts.find(([id]) => matchesShortcut(e, id))?.[1] : undefined;
       if (command && move(command, false)) e.preventDefault();
     };
     view.addEventListener("keydown", onKey);

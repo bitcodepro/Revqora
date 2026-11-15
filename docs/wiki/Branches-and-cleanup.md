@@ -4,7 +4,7 @@
 
 ## Create and switch branches
 
-Click a branch once to open **Branch context** in History with the relevant commits highlighted. **Ctrl+click** or double-click checks out the branch. **Shift+click** selects a range and **Ctrl+Shift+click** toggles one branch in the selection. Press **F2** to rename a focused branch.
+Click a branch once to open **Branch context** in History with the relevant commits highlighted. Double-click or the context menu's **Check out** checks out the branch; **Ctrl+click** toggles it in the selection. **Shift+click** selects a range and **Ctrl+Shift+click** adds a range to the selection. Press **F2** to rename a focused branch.
 
 Right-click a branch and choose **Set as primary branch** to pin it in the branch panel, including under **My branches**. History shows its name and available tracking counts. Use **Clear primary branch** to remove the pin.
 

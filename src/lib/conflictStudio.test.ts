@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { conflictInitialText, conflictOutput, sameConflictVersions } from "./conflictStudio";
+import { conflictInitialText, conflictOutput, encodingChoices, sameConflictVersions, saveEncoding } from "./conflictStudio";
 import { validationFresh } from "./validation";
 import type { ConflictInfo, ValidationReport } from "./types";
 import { parseConflicts, resolveAll } from "./conflicts";
-const side = { exists: true, binary: false, text: "base\n", oid: "a" };
-const info: ConflictInfo = { path: "f.txt", code: "UU", base: side, ours: side, theirs: side, merged: "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> theirs\n", conflictCount: 1, working: "manual edit\n<<<<<<< ours\npart\n=======\nother\n>>>>>>> theirs\n", workingHasMarkers: true, oursLabel: "main", theirsLabel: "feature", eolCrlf: false };
+const side = { exists: true, binary: false, text: "base\n", oid: "a", encoding: "UTF-8", bom: false, ascii: true };
+const info: ConflictInfo = { path: "f.txt", code: "UU", base: side, ours: side, theirs: side, merged: "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> theirs\n", conflictCount: 1, working: "manual edit\n<<<<<<< ours\npart\n=======\nother\n>>>>>>> theirs\n", workingHasMarkers: true, oursLabel: "main", theirsLabel: "feature", eolCrlf: false, encoding: "UTF-8", bom: false, encodingsDiffer: false };
 describe("Conflict Studio buffers", () => {
   it("keeps partially edited working content even when markers remain", () => expect(conflictInitialText(info)).toBe(info.working));
   it("does not replace a marker-free result matching ours with a generated merge", () => expect(conflictInitialText({ ...info, working: side.text, workingHasMarkers: false })).toBe(side.text));
@@ -35,5 +35,19 @@ describe("validation freshness", () => {
     expect(validationFresh({ ...report, phase: "failed" }, "same")).toBe(false);
     expect(validationFresh(report, null)).toBe(false);
     expect(validationFresh(report, "same", false, "/linked-worktree")).toBe(false);
+  });
+});
+
+describe("Conflict encodings", () => {
+  const cp = { ...side, encoding: "windows-1251", ascii: false };
+  const u8 = { ...side, encoding: "UTF-8", ascii: false };
+  it("keeps the sides' own encoding when they agree", () => {
+    expect(saveEncoding({ ...info, ours: cp, theirs: cp, encoding: "windows-1251" }, null)).toEqual({ encoding: null, needsChoice: false });
+  });
+  it("asks the user to choose when the sides differ, offering both first", () => {
+    const mixed = { ...info, ours: cp, theirs: u8, encoding: "windows-1251", encodingsDiffer: true };
+    expect(saveEncoding(mixed, null).needsChoice).toBe(true);
+    expect(saveEncoding(mixed, "UTF-8")).toEqual({ encoding: "UTF-8", needsChoice: false });
+    expect(encodingChoices(mixed).slice(0, 2)).toEqual(["windows-1251", "UTF-8"]);
   });
 });

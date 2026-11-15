@@ -15,14 +15,30 @@ export interface McpActionOptions {
   stashIndex?: number; restoreIndex?: boolean;
 }
 
-export function mcpNeedsApproval(mode: McpApprovalMode, action: string, options: McpActionOptions, step?: WorkflowStep["kind"], mergeMayDelete = false, pullRebases = false) {
+/** True when a push targets the branch's own tracked upstream (remote and branch name). */
+export function pushesToTrackedUpstream(options: McpActionOptions, branch: string | null | undefined, upstream: string | null | undefined): boolean {
+  if (!branch || !upstream) return false;
+  const slash = upstream.indexOf("/");
+  if (slash <= 0) return false;
+  const [upRemote, upBranch] = [upstream.slice(0, slash), upstream.slice(slash + 1)];
+  return (options.remote ?? upRemote) === upRemote && (options.remoteBranch ?? branch) === upBranch;
+}
+
+/**
+ * Whether an agent's request needs a desktop approval. "Ask before deleting" also asks for
+ * actions that publish or decide on the user's behalf and cannot be taken back: merging a
+ * pull request, approving one, and pushing anywhere other than the branch's own upstream
+ * (an agent reading untrusted PR text must not push to, say, main on its own).
+ */
+export function mcpNeedsApproval(mode: McpApprovalMode, action: string, options: McpActionOptions, step?: WorkflowStep["kind"], pullRebases = false, pushToTrackedUpstream = true) {
   if (mode === "full") return false;
   if (mode !== "delete_only") return true;
   return action === "delete_branch" || action === "cherry_pick_abort" || action === "stash_pop" || action === "stash_drop"
     || (action === "fetch" || action === "pull") && options.prune === true
     || action === "pull" && pullRebases
-    || action === "push" && options.force === true
-    || action === "merge_pr" && mergeMayDelete
+    || action === "push" && (options.force === true || !pushToTrackedUpstream)
+    || action === "merge_pr"
+    || action === "review_pr" && options.reviewKind === "approve"
     || action === "review_workflow_step" && (!step || ["prCleanup", "prMerge", "command", "prAgent"].includes(step));
 }
 

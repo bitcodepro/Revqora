@@ -79,10 +79,12 @@ export function openWorkflowStepReview(root: string, id: string) {
 export function WorkflowBuilder({root,pull}:{root:string;pull?:PrWorkflowSeed}) {
  const [catalog,setCatalog]=useState<WorkflowCatalog|null>(null),[rows,setRows]=useState<WorkflowSummary[]>([]),[selected,setSelected]=useState<string|null>(null),[run,setRun]=useState<WorkflowRun|null>(null),[error,setError]=useState(""),[loading,setLoading]=useState(true),[acting,setActing]=useState(false);
  const [autoChecks,setAutoChecks]=useState(false);const autoConsent=useRef<string|null>(null);
+ const fastPoll=useRef(false);
  const busy=useRef(false),actionBusy=useRef(false),version=useRef(0),alive=useRef(true),selection=useRef<string|null>(null);
  const stopAutomatic=useCallback(()=>{autoConsent.current=null;version.current++;setAutoChecks(false);},[]);
- const refresh=useCallback(async()=>{if(busy.current)return;busy.current=true;const v=version.current;try{const [c,list]=await Promise.all([api.workflowCatalog(root),api.workflowRuns(root)]);const id=selection.current&&list.some(r=>r.id===selection.current)?selection.current:list[0]?.id??null;const detail=id?await api.workflowRun(root,id):null;if(alive.current&&v===version.current){setCatalog(c);setRows(list);selection.current=id;setSelected(id);setRun(detail);setError("");setLoading(false);}}catch(e){if(alive.current&&v===version.current){setError(errorMessage(e));setLoading(false);}}finally{busy.current=false;}},[root]);
- useEffect(()=>{alive.current=true;void refresh();const timer=setInterval(()=>void refresh(),1000);return()=>{alive.current=false;autoConsent.current=null;version.current++;clearInterval(timer);};},[refresh]);
+ const refresh=useCallback(async()=>{if(busy.current)return;busy.current=true;const v=version.current;try{const [c,list]=await Promise.all([api.workflowCatalog(root),api.workflowRuns(root)]);const id=selection.current&&list.some(r=>r.id===selection.current)?selection.current:list[0]?.id??null;const detail=id?await api.workflowRun(root,id):null;if(alive.current&&v===version.current){setCatalog(old=>same(old,c)?old:c);setRows(old=>same(old,list)?old:list);selection.current=id;setSelected(id);setRun(detail);fastPoll.current=!!detail&&workflowActive(detail.phase)||list.some(r=>workflowActive(r.phase));setError("");setLoading(false);}}catch(e){if(alive.current&&v===version.current){setError(errorMessage(e));setLoading(false);}}finally{busy.current=false;}},[root]);
+ // Poll every second only while a run is active; idle screens check every 10 s.
+ useEffect(()=>{alive.current=true;let timer:ReturnType<typeof setTimeout>|undefined;const tick=async()=>{await refresh();if(alive.current)timer=setTimeout(()=>void tick(),fastPoll.current||autoConsent.current?1000:10000);};void tick();return()=>{alive.current=false;autoConsent.current=null;version.current++;clearTimeout(timer);};},[refresh]);
  const select=(id:string)=>{stopAutomatic();selection.current=id;setSelected(id);setRun(null);void refresh();};
  const action=async(f:()=>Promise<unknown>)=>{if(actionBusy.current)return;actionBusy.current=true;version.current++;setActing(true);try{await f();}catch(e){toast.error(e);}finally{version.current++;actionBusy.current=false;if(alive.current){setActing(false);await refresh();}}};
  const editor=(definition:WorkflowDefinition)=>action(()=>showDialog<void>(close=><Editor root={root} catalog={catalog!} initial={definition} close={()=>close()}/>));
@@ -103,4 +105,9 @@ export function WorkflowBuilder({root,pull}:{root:string;pull?:PrWorkflowSeed}) 
    <ol className="wf-steps">{run.definition.steps.map((s,i)=>{const result=run.results[i];return <li key={i} className={i===run.cursor?"current":""}><div><b>{s.label||workflowKinds[s.kind]}</b><span className="muted">{result.phase}</span></div><p>{result.message}</p>{s.kind==="command"&&<pre className="wf-output">{s.value}</pre>}{(result.stdout||result.stderr)&&<details open={i===run.cursor}><summary>Output {result.exitCode!==null?`· exit ${result.exitCode}`:""}</summary><pre className="wf-output" aria-label={`Step ${i+1} output`}>{result.stdout}</pre>{result.stderr&&<pre className="wf-output error-text">{result.stderr}</pre>}{result.truncated&&<p className="warn-text">Run history keeps the first 8 KiB of each stream. Output was truncated.</p>}</details>}</li>;})}</ol>
   </>:<div className="agent-empty"><Workflow size={32}/><h3>Build a sequence you can review</h3><p>Save checks, branch operations, test commands, publication and PR creation in one recipe. Choose a run to follow its progress.</p></div>}</main></div>
  </section>;
+}
+
+/** Unchanged poll results keep their object, so the screen and its effects do not re-run. */
+function same<T>(a: T, b: T): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
 }
