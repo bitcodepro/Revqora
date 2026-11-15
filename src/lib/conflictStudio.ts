@@ -37,3 +37,20 @@ export function conflictHasUnsaved(root: string, conflicts?: readonly string[]) 
   const active = conflicts && new Set(conflicts);
   return retainedConflictDrafts(root).some(({ path }) => !active || active.has(path));
 }
+
+/** Encodings offered when the conflict's sides disagree, the sides' own ones first. */
+export const COMMON_ENCODINGS = ["UTF-8", "windows-1251", "windows-1252", "ISO-8859-1", "KOI8-R", "Shift_JIS", "GBK", "EUC-KR", "UTF-16LE", "UTF-16BE"];
+
+export function encodingChoices(info: ConflictInfo): string[] {
+  const own = [info.ours, info.theirs, info.base].filter((side) => side.exists && !side.binary && !side.ascii && side.encoding).map((side) => side.encoding!);
+  return [...new Set([...own, ...COMMON_ENCODINGS])];
+}
+
+/**
+ * The encoding a save uses: none chosen means the sides' own (sent as null). When the sides
+ * disagree the user must choose; until then saving is not possible.
+ */
+export function saveEncoding(info: ConflictInfo, chosen: string | null): { encoding: string | null; needsChoice: boolean } {
+  if (!info.encodingsDiffer) return { encoding: chosen, needsChoice: false };
+  return { encoding: chosen, needsChoice: !chosen };
+}

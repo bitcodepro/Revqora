@@ -1458,8 +1458,19 @@ async fn conflict_index_sides(repo: String, path: String) -> GitResult<conflicts
 }
 
 #[tauri::command]
-async fn conflict_save(app: AppHandle, expected_state: Option<String>, repo: String, path: String, content: String, stage: bool) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "conflict_save", None, move || conflicts::save_resolution(&p(&repo), &path, &content, stage)).await
+async fn conflict_save(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    path: String,
+    content: String,
+    stage: bool,
+    encoding: Option<String>,
+) -> GitResult<()> {
+    mutating(repo.clone(), expected_state, app.clone(), "conflict_save", None, move || {
+        conflicts::save_resolution_as(&p(&repo), &path, &content, stage, encoding.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2273,6 +2284,18 @@ fn open_path(path: String) -> GitResult<()> {
     desktop::open(&path)
 }
 
+/// Opens a program or script as text, without running it.
+#[tauri::command]
+fn open_path_as_text(path: String) -> GitResult<()> {
+    desktop::open_as_text(&path)
+}
+
+/// Runs a program or script after the user confirmed it in Revqora.
+#[tauri::command]
+fn run_path(path: String) -> GitResult<()> {
+    desktop::run_confirmed(&path)
+}
+
 #[tauri::command]
 fn open_terminal(path: String) -> GitResult<()> {
     #[cfg(windows)]
@@ -2768,6 +2791,8 @@ pub fn run() {
             unwatch_repo,
             reveal_path,
             open_path,
+            open_path_as_text,
+            run_path,
             open_terminal,
             startup_paths,
         ])

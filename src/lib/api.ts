@@ -280,7 +280,7 @@ export const api = {
 
   conflictInfo: (repo: string, path: string) => call<ConflictInfo>("conflict_info", { repo, path }),
   conflictIndexSides: (repo: string, path: string) => call<Record<"base" | "ours" | "theirs", import("./types").IndexConflictSide | null>>("conflict_index_sides", { repo, path }),
-  conflictSave: (repo: string, path: string, content: string, stage: boolean, expectedState?: string | null) => call<void>("conflict_save", { repo, path, content, stage, expectedState }),
+  conflictSave: (repo: string, path: string, content: string, stage: boolean, expectedState?: string | null, encoding?: string | null) => call<void>("conflict_save", { repo, path, content, stage, expectedState, encoding: encoding ?? null }),
   conflictTake: (repo: string, path: string, which: "ours" | "theirs" | "base" | "delete", expectedState?: string | null) => call<void>("conflict_take", { repo, path, which, expectedState }),
   conflictMarkResolved: (repo: string, paths: string[]) => call<void>("conflict_mark_resolved", { repo, paths }),
   conflictUnresolve: (repo: string, path: string) => call<void>("conflict_unresolve", { repo, path }),
@@ -375,6 +375,8 @@ export const api = {
   unwatchRepo: (repo: string) => call<void>("unwatch_repo", { repo }),
   revealPath: (path: string) => call<void>("reveal_path", { path }),
   openPath: (path: string) => call<void>("open_path", { path }),
+  openPathAsText: (path: string) => call<void>("open_path_as_text", { path }),
+  runPath: (path: string) => call<void>("run_path", { path }),
   openTerminal: (path: string) => call<void>("open_terminal", { path }),
   startupPaths: () => call<string[]>("startup_paths"),
 };

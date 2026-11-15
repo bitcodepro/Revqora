@@ -300,7 +300,12 @@ fn write_resolved(repo: &Path, tree: &str, theirs: &str, files: &[(String, Strin
         runner::run_env(repo, ["read-tree", tree], &env, None)?;
         let mut info = String::new();
         for (path, content) in files {
-            let oid = runner::run_env(repo, ["hash-object", "-w", "--stdin"], &[], Some(content.as_bytes()))?.trim().to_string();
+            // Store the resolution in the layer version's own encoding (CP1251 stays CP1251).
+            let theirs_bytes = runner::exec(repo, ["cat-file", "blob", &format!("{theirs}:{path}")])?;
+            let side = super::conflicts::text_side(if theirs_bytes.ok() { &theirs_bytes.stdout } else { &[] }, None)?;
+            let (encoding, bom, _) = super::conflicts::result_encoding([&side, &super::conflicts::missing_side(), &super::conflicts::missing_side()]);
+            let bytes = super::conflicts::encode_resolution(content, &encoding, bom)?;
+            let oid = runner::run_env(repo, ["hash-object", "-w", "--stdin"], &[], Some(&bytes))?.trim().to_string();
             // Keep the file mode of the layer's version (e.g. executable scripts).
             let mode = runner::run(repo, ["ls-tree", theirs, "--", path])
                 .ok()
@@ -761,11 +766,9 @@ pub struct LayerConflict {
 fn side_at(repo: &Path, tree: &str, path: &str) -> GitResult<(super::conflicts::ConflictSide, Vec<u8>)> {
     let out = runner::exec(repo, ["cat-file", "blob", &format!("{tree}:{path}")])?;
     if !out.ok() {
-        return Ok((super::conflicts::ConflictSide { exists: false, binary: false, text: String::new(), oid: None }, Vec::new()));
+        return Ok((super::conflicts::missing_side(), Vec::new()));
     }
-    let binary = super::conflicts::not_editable_text(&out.stdout);
-    let text = if binary { String::new() } else { String::from_utf8_lossy(&out.stdout).into_owned() };
-    Ok((super::conflicts::ConflictSide { exists: true, binary, text, oid: None }, out.stdout))
+    Ok((super::conflicts::text_side(&out.stdout, None)?, out.stdout))
 }
 
 /// Dry-runs an operation with the given resolutions and returns the first unresolved conflict.
@@ -782,18 +785,19 @@ pub fn preview(repo: &Path, op: &LayerOp, res: &Resolutions) -> GitResult<Option
     let label = item_label(item, items.len());
     let mut files = Vec::new();
     for path in &stop.files {
-        let (base, base_raw) = side_at(repo, &stop.base, path)?;
-        let (ours, ours_raw) = side_at(repo, &stop.ours, path)?;
-        let (theirs, theirs_raw) = side_at(repo, &stop.theirs, path)?;
+        let (base, _) = side_at(repo, &stop.base, path)?;
+        let (ours, _) = side_at(repo, &stop.ours, path)?;
+        let (theirs, _) = side_at(repo, &stop.theirs, path)?;
         let textual = ours.exists && theirs.exists && !ours.binary && !theirs.binary && !base.binary;
-        let (merged, count) = if textual { super::conflicts::merge_file(&ours_raw, &base_raw, &theirs_raw)? } else { (String::new(), 1) };
+        let (merged, count) = if textual { super::conflicts::merge_sides(&ours, &base, &theirs)? } else { (String::new(), 1) };
+        let (encoding, bom, encodings_differ) = super::conflicts::result_encoding([&ours, &theirs, &base]);
         let code = match (base.exists, ours.exists, theirs.exists) {
             (false, true, true) => "AA",
             (true, false, true) => "DU",
             (true, true, false) => "UD",
             _ => "UU",
         };
-        let crlf = [&ours_raw, &theirs_raw].iter().any(|d| d.windows(2).any(|w| w == b"\r\n"));
+        let crlf = [&ours, &theirs].iter().any(|s| s.text.contains("\r\n"));
         files.push(super::conflicts::ConflictInfo {
             path: path.clone(),
             code: code.into(),
@@ -807,6 +811,9 @@ pub fn preview(repo: &Path, op: &LayerOp, res: &Resolutions) -> GitResult<Option
             ours_label: "other layers".into(),
             theirs_label: label.clone(),
             eol_crlf: crlf,
+            encoding,
+            bom,
+            encodings_differ,
         });
     }
     Ok(Some(LayerConflict { item, label, files }))

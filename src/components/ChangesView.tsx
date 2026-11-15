@@ -1,4 +1,5 @@
 import { repositoryFiles } from "./RepositoryFiles";
+import { openRepoFile } from "../lib/openFile";
 import { fileCopyMenu } from "./NamePathMenu";
 import { WorkingFileEditor } from "./WorkingFileEditor";
 import { useFileListNavigation } from "../lib/useFileListNavigation";
@@ -394,7 +395,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
     { separator: true },
     { label: "File history", icon: <History size={14} />, disabled: f.untracked, onClick: () => fileHistoryDialog(root, f.path) },
     { label: "Blame", icon: <ScanSearch size={14} />, disabled: f.untracked || f.worktree === "D", onClick: () => openOverlay({ kind: "blame", root, path: f.path, rev: null }) },
-    { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void api.openPath(joinPath(root, f.path)).catch((e) => toast.error(e, "Could not open the file")) },
+    { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void openRepoFile(joinPath(root, f.path)) },
     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(joinPath(root, f.path)) },
     ...fileCopyMenu(f.path),
   ];
@@ -549,7 +550,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                         { label: "Take theirs (incoming)", icon: <ArrowDown size={14} />, onClick: () => A.act(root, () => api.conflictTake(root, f.path, "theirs"), { success: "Resolved with theirs" }) },
                         { label: "Mark as resolved", icon: <Check size={14} />, onClick: () => A.act(root, () => api.conflictMarkResolved(root, [f.path]), { success: "Marked resolved" }) },
                         { separator: true },
-                        { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void api.openPath(joinPath(root, f.path)).catch((e) => toast.error(e, "Could not open the file")) },
+                        { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void openRepoFile(joinPath(root, f.path)) },
                         ...fileCopyMenu(f.path),
                       ])
                     }

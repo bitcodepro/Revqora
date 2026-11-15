@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { openRepoFile } from "../lib/openFile";
 import { List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
 import * as A from "../lib/actions";
 import { api, errorMessage } from "../lib/api";
@@ -283,7 +284,7 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false }: { roo
                     },
                     { separator: true },
                     { label: "Blame at this commit", icon: <ScanSearch size={14} />, disabled: f.status === "D", onClick: () => openOverlay({ kind: "blame", root, path: f.path, rev: d.oid }) },
-                    { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void api.openPath(joinPath(root, f.path)).catch((e) => toast.error(e, "Could not open the file")) },
+                    { label: "Open file", icon: <ExternalLink size={14} />, onClick: () => void openRepoFile(joinPath(root, f.path)) },
                     { label: "Show in folder", icon: <FolderOpen size={14} />, onClick: () => api.revealPath(joinPath(root, f.path)) },
                     { separator: true },
                     ...fileCopyMenu(f.path),

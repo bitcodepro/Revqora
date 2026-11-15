@@ -40,6 +40,11 @@ pub struct ConflictSide {
     pub binary: bool,
     pub text: String,
     pub oid: Option<String>,
+    /// Detected text encoding of this version (e.g. "windows-1251", "UTF-16LE").
+    pub encoding: Option<String>,
+    pub bom: bool,
+    /// Plain ASCII without a BOM: valid in every ASCII-compatible encoding.
+    pub ascii: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,27 +64,68 @@ pub struct ConflictInfo {
     pub ours_label: String,
     pub theirs_label: String,
     pub eol_crlf: bool,
+    /// Encoding the resolution is saved in by default: the sides' own encoding.
+    pub encoding: String,
+    pub bom: bool,
+    /// The sides use different encodings; the user chooses the result's encoding.
+    pub encodings_differ: bool,
 }
 
-fn is_binary(data: &[u8]) -> bool {
-    data.iter().take(8000).any(|b| *b == 0)
+pub(crate) fn missing_side() -> ConflictSide {
+    ConflictSide { exists: false, binary: false, text: String::new(), oid: None, encoding: None, bom: false, ascii: false }
 }
 
-/// Content the line-by-line editor cannot round-trip: binary data, or text in an encoding other
-/// than UTF-8 (CP1251, Shift-JIS, ...), whose bytes a UTF-8 save would replace with U+FFFD.
-/// Such files are resolved by taking a whole side instead.
-pub(crate) fn not_editable_text(data: &[u8]) -> bool {
-    is_binary(data) || std::str::from_utf8(data).is_err()
+/// Decodes one version in its own encoding (CP1251, Shift-JIS, UTF-16, ...). Only real binary
+/// data stays undecoded; the editor works on the text and a save encodes it back.
+pub(crate) fn text_side(data: &[u8], oid: Option<String>) -> GitResult<ConflictSide> {
+    let decoded = super::text_encoding::decode(data, None)?;
+    Ok(match decoded {
+        Some(d) => ConflictSide {
+            exists: true,
+            binary: false,
+            ascii: data.is_ascii() && !d.bom,
+            text: d.content,
+            oid,
+            encoding: Some(d.encoding.to_string()),
+            bom: d.bom,
+        },
+        None => ConflictSide { exists: true, binary: true, text: String::new(), oid, encoding: None, bom: false, ascii: false },
+    })
+}
+
+/// The encoding a resolution is saved in: the sides' own (ours first). Pure-ASCII versions fit
+/// any ASCII-compatible encoding, so they never count as a difference.
+pub(crate) fn result_encoding(sides: [&ConflictSide; 3]) -> (String, bool, bool) {
+    let named: Vec<&ConflictSide> = sides.into_iter().filter(|s| s.exists && !s.binary && !s.ascii && s.encoding.is_some()).collect();
+    match named.first() {
+        Some(first) => {
+            let encoding = first.encoding.clone().unwrap_or_default();
+            let differ = named.iter().any(|s| s.encoding.as_deref() != Some(encoding.as_str()));
+            (encoding, first.bom, differ)
+        }
+        None => ("UTF-8".into(), sides.iter().any(|s| s.exists && s.bom && s.encoding.as_deref() == Some("UTF-8")), false),
+    }
+}
+
+/// Three-way merge of the decoded texts, so sides in any encoding (even UTF-16) merge by line.
+pub(crate) fn merge_sides(ours: &ConflictSide, base: &ConflictSide, theirs: &ConflictSide) -> GitResult<(String, u32)> {
+    merge_file(ours.text.as_bytes(), base.text.as_bytes(), theirs.text.as_bytes())
+}
+
+/// Encodes a resolution for saving; characters the encoding cannot store are reported.
+pub(crate) fn encode_resolution(content: &str, encoding: &str, bom: bool) -> GitResult<Vec<u8>> {
+    match super::text_encoding::encode(content, encoding, bom)? {
+        Ok(bytes) => Ok(bytes),
+        Err(missing) => Err(GitError::new(missing.message(encoding)).kind("unencodable").details(vec![missing.line.to_string(), missing.ch.to_string()])),
+    }
 }
 
 fn side(repo: &Path, oid: Option<&str>) -> GitResult<(ConflictSide, Vec<u8>)> {
     match oid {
-        None => Ok((ConflictSide { exists: false, binary: false, text: String::new(), oid: None }, Vec::new())),
+        None => Ok((missing_side(), Vec::new())),
         Some(o) => {
             let data = runner::run_bytes(repo, ["cat-file", "blob", o])?;
-            let binary = not_editable_text(&data);
-            let text = if binary { String::new() } else { String::from_utf8_lossy(&data).into_owned() };
-            Ok((ConflictSide { exists: true, binary, text, oid: Some(o.to_string()) }, data))
+            Ok((text_side(&data, Some(o.to_string()))?, data))
         }
     }
 }
@@ -179,9 +225,10 @@ pub fn index_conflict(repo: &Path, path: &str) -> GitResult<IndexConflict> {
 
 pub fn info(repo: &Path, path: &str) -> GitResult<ConflictInfo> {
     let [_, base, ours, theirs] = index_stages(repo, path)?;
-    let (base, base_raw) = side(repo, base.as_ref().map(|entry| entry.oid.as_str()))?;
-    let (ours, ours_raw) = side(repo, ours.as_ref().map(|entry| entry.oid.as_str()))?;
-    let (theirs, theirs_raw) = side(repo, theirs.as_ref().map(|entry| entry.oid.as_str()))?;
+    let (base, _) = side(repo, base.as_ref().map(|entry| entry.oid.as_str()))?;
+    let (ours, _) = side(repo, ours.as_ref().map(|entry| entry.oid.as_str()))?;
+    let (theirs, _) = side(repo, theirs.as_ref().map(|entry| entry.oid.as_str()))?;
+    let (encoding, bom, encodings_differ) = result_encoding([&ours, &theirs, &base]);
     let code = match (base.exists, ours.exists, theirs.exists) {
         (_, true, true) if !base.exists => "AA",
         (true, true, true) => "UU",
@@ -194,15 +241,20 @@ pub fn info(repo: &Path, path: &str) -> GitResult<ConflictInfo> {
     .to_string();
     let working_path = checked_path(repo, path, true)?;
     let working_raw = if std::fs::symlink_metadata(&working_path).is_ok_and(|m| m.file_type().is_symlink()) { None } else { std::fs::read(&working_path).ok() };
-    let working = working_raw.as_ref().filter(|w| !is_binary(w)).map(|w| String::from_utf8_lossy(w).into_owned());
-    let working_has_markers = working.as_deref().map(has_markers).unwrap_or(false);
-    let eol_crlf = [&ours_raw, &theirs_raw, &base_raw].iter().any(|d| d.windows(2).any(|w| w == b"\r\n"));
-
-    let (merged, conflict_count) = if ours.binary || theirs.binary || base.binary || !ours.exists || !theirs.exists {
-        (String::new(), 1)
-    } else {
-        merge_file(&ours_raw, &base_raw, &theirs_raw)?
+    // The working file (with Git's markers or the user's own edits) is read in the sides'
+    // encoding first, then detected on its own.
+    let working = match &working_raw {
+        Some(bytes) => match super::text_encoding::decode(bytes, Some(&encoding)).ok().flatten() {
+            Some(text) => Some(text.content),
+            None => super::text_encoding::decode(bytes, None)?.map(|text| text.content),
+        },
+        None => None,
     };
+    let working_has_markers = working.as_deref().map(has_markers).unwrap_or(false);
+    let eol_crlf = [&ours, &theirs, &base].iter().any(|s| s.text.contains("\r\n"));
+
+    let (merged, conflict_count) =
+        if ours.binary || theirs.binary || base.binary || !ours.exists || !theirs.exists { (String::new(), 1) } else { merge_sides(&ours, &base, &theirs)? };
     let (ours_label, theirs_label) = labels(repo);
     Ok(ConflictInfo {
         path: path.to_string(),
@@ -217,6 +269,9 @@ pub fn info(repo: &Path, path: &str) -> GitResult<ConflictInfo> {
         ours_label,
         theirs_label,
         eol_crlf,
+        encoding,
+        bom,
+        encodings_differ,
     })
 }
 
@@ -240,22 +295,37 @@ pub fn merge_file(ours: &[u8], base: &[u8], theirs: &[u8]) -> GitResult<(String,
 
 /// Writes the resolved content and marks the file as resolved.
 pub fn save_resolution(repo: &Path, path: &str, content: &str, stage: bool) -> GitResult<()> {
+    save_resolution_as(repo, path, content, stage, None)
+}
+
+/// Writes the resolution in `encoding` (default: the sides' own encoding and BOM), so a CP1251
+/// file stays CP1251. Binary sides have no text form; they are resolved by taking a side.
+pub fn save_resolution_as(repo: &Path, path: &str, content: &str, stage: bool, encoding: Option<&str>) -> GitResult<()> {
     let full = checked_path(repo, path, false)?;
-    // Text resolutions are UTF-8; refuse to write one over a side the editor could not decode.
-    if let Ok(current) = info(repo, path) {
-        if current.ours.binary || current.theirs.binary || current.base.binary {
-            return Err(GitError::new(
-                "This file is binary or not UTF-8 text, so it cannot be saved as edited text without changing its bytes. Keep one side instead.",
-            )
-            .kind("not-text"));
+    let (target, bom) = match info(repo, path) {
+        Ok(current) => {
+            if current.ours.binary || current.theirs.binary || current.base.binary {
+                return Err(GitError::new("This is a binary file; keep one side, or delete it.").kind("not-text"));
+            }
+            match encoding {
+                Some(chosen) => {
+                    let chosen = super::text_encoding::canonical(chosen)?.to_string();
+                    let bom = if chosen == current.encoding { current.bom } else { chosen.starts_with("UTF-16") || chosen.starts_with("UTF-32") };
+                    (chosen, bom)
+                }
+                None => (current.encoding, current.bom),
+            }
         }
-    }
+        // Already resolved (stages gone): keep the chosen encoding, else UTF-8.
+        Err(_) => (encoding.map(super::text_encoding::canonical).transpose()?.unwrap_or("UTF-8").to_string(), false),
+    };
+    let bytes = encode_resolution(content, &target, bom)?;
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent)?;
     }
     use std::io::Write;
     let mut temporary = super::atomic_file::new_in(full.parent().ok_or_else(|| GitError::new("Invalid conflict path."))?)?;
-    temporary.write_all(content.as_bytes())?;
+    temporary.write_all(&bytes)?;
     if let Ok(meta) = std::fs::metadata(&full) {
         temporary.as_file().set_permissions(meta.permissions())?;
     }

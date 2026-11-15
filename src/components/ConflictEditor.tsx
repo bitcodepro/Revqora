@@ -17,7 +17,7 @@ import { conflictLabel } from "../lib/format";
 import { confirmDialog } from "./dialogs";
 import { useSettings } from "../lib/settings";
 import { Splitter } from "./Overlays";
-import { conflictDraftKey, conflictDrafts, conflictInitialText, conflictOutput, normalizeConflictText, sameConflictVersions } from "../lib/conflictStudio";
+import { conflictDraftKey, conflictDrafts, conflictInitialText, conflictOutput, encodingChoices, normalizeConflictText, sameConflictVersions, saveEncoding } from "../lib/conflictStudio";
 import { ConflictValidation } from "./ConflictValidation";
 import { useValidation, validationRunning } from "../lib/validation";
 import "../styles/conflictStudio.css";
@@ -184,6 +184,14 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
   const [showValidation, setShowValidation] = useState(false);
   const [revision, setRevision] = useState(0);
   const [changedOnDisk, setChangedOnDisk] = useState(false);
+  // Encoding of the saved result; null keeps the sides' own (a CP1251 file stays CP1251).
+  const [encoding, setEncoding] = useState<string | null>(null);
+  const encodingFor = (current: ConflictInfo | null) => {
+    if (!current) return null;
+    const { encoding: chosen, needsChoice } = saveEncoding(current, encoding);
+    if (needsChoice) throw new Error(`The versions use different encodings (${encodingChoices(current).slice(0, 2).join(" and ")}). Choose the encoding to save the result in.`);
+    return chosen;
+  };
   const validation = useValidation((s) => s.reports[root]);
   const statusFiles = useRepos((s) => s.tabs[root]?.status?.files);
   const conflicts = useMemo(() => (statusFiles ?? []).filter((f) => f.conflict).map((f) => f.path), [statusFiles]);
@@ -241,6 +249,19 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
       blocked={validationRunning(validation)}
       tools={<>
         {changedOnDisk && <span className="pill red">File changed on disk · review current versions</span>}
+        {info && !info.ours.binary && !info.theirs.binary && (
+          info.encodingsDiffer ? (
+            <label className="hstack" style={{ gap: 6 }} title={`Yours: ${info.ours.encoding ?? "none"} · incoming: ${info.theirs.encoding ?? "none"}`}>
+              <span className="pill amber">Different encodings</span>
+              <select className="select sm" style={{ width: "auto" }} value={encoding ?? ""} onChange={(e) => setEncoding(e.target.value || null)} aria-label="Encoding of the result">
+                <option value="">Save as…</option>
+                {encodingChoices(info).map((name) => <option key={name} value={name}>{name}{name === info.ours.encoding ? " (yours)" : name === info.theirs.encoding ? " (incoming)" : ""}</option>)}
+              </select>
+            </label>
+          ) : (
+            <span className="pill" title="The result is saved in this encoding">{info.encoding}{info.bom ? " · BOM" : ""}</span>
+          )
+        )}
         <button className="btn sm" onClick={() => setShowValidation((v) => !v)}>Validate</button>
         <button className="btn sm ghost" disabled={validationRunning(validation)} title="Load current Git versions while retaining this draft for review" onClick={async () => {
           try {
@@ -261,14 +282,14 @@ export function ConflictEditor({ root, path, onClose }: { root: string; path: st
       footer={showValidation && <ConflictValidation root={root} dirty={dirty && conflicts.includes(path)} onClose={() => setShowValidation(false)} />}
       onClose={onClose}
       onSaveDraft={async (text) => {
-        await api.conflictSave(root, path, text, false, observedState.current);
+        await api.conflictSave(root, path, text, false, observedState.current, encodingFor(info));
         const fresh = await api.conflictInfo(root, path);
         observedState.current = fresh.stateToken ?? null;
         conflictDrafts.set(draftKey, { info: fresh, text: normalizeConflictText(text), token: observedState.current });
         toast.success(`Saved draft: ${path}`, "The file remains unresolved.");
       }}
       onSave={async (text) => {
-        await api.conflictSave(root, path, text, true, observedState.current);
+        await api.conflictSave(root, path, text, true, observedState.current, encodingFor(info));
         conflictDrafts.delete(draftKey);
         toast.success(`Resolved ${path}`);
         await nextFile();
@@ -610,7 +631,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
             <h3 style={{ margin: 0 }}>{conflictLabel(info.code)}</h3>
             <div className="muted">
               {info.ours.binary || info.theirs.binary
-                ? "This file is binary or not UTF-8 text, so the sides cannot be merged line by line without changing its bytes. Pick the version to keep."
+                ? "This is a binary file, so it cannot be merged line by line. Pick the version to keep."
                 : !info.ours.exists
                   ? `The file was deleted on ${labels.ours} but changed on ${labels.theirs}.`
                   : `The file was changed on ${labels.ours} but deleted on ${labels.theirs}.`}
