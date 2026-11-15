@@ -39,7 +39,7 @@ export function CheckIcon({ state, size = 14 }: { state: Check["state"]; size?: 
 }
 export function ChecksList({ checks }: { checks: Check[] }) {
   if (!checks.length) return <div className="faint">No CI checks reported for this commit.</div>;
-  return <div className="vstack" style={{ gap: 4 }}>{checks.map((c, i) => <div key={i} className="hstack" style={{ gap: 8 }}><CheckIcon state={c.state} /><span className="ellipsis" style={{ flex: 1 }}>{c.name}</span>{safeWebUrl(c.url) && <button className="icon-btn sm" title="Open" onClick={() => browser(c.url!)}><ExternalLink size={12} /></button>}</div>)}</div>;
+  return <div className="vstack" style={{ gap: 4 }}>{checks.map((c, i) => <div key={i} className="hstack" style={{ gap: 8 }}><CheckIcon state={c.state} /><span className="ellipsis" style={{ flex: 1 }}>{c.name}</span>{safeWebUrl(c.url) && <button aria-label="Open" className="icon-btn sm" title="Open" onClick={() => browser(c.url!)}><ExternalLink size={12} /></button>}</div>)}</div>;
 }
 export function summarizeChecks(checks: Check[]): Check["state"] | null { return !checks.length ? null : checks.some(c => c.state === "failure") ? "failure" : checks.some(c => c.state === "pending") ? "pending" : "success"; }
 

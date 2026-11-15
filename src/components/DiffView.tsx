@@ -10,13 +10,13 @@ import {
   Columns2,
   FileDiff as FileDiffIcon,
   FileWarning,
-  Maximize2,
   Minus,
   Plus,
   Pilcrow,
   Search,
-  Space,
-  Trash2,
+  RemoveFormatting,
+  UnfoldVertical,
+  Undo2,
   WrapText,
   X,
 } from "lucide-react";
@@ -405,7 +405,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
 
   const hunkHeader = (h: DiffHunk, hi: number, style?: React.CSSProperties) => (
     <div className="hunk-head" data-hunk={hi} style={style}>
-      <button
+      <button aria-label={collapsed.has(hi) ? "Expand" : "Collapse"}
         className="icon-btn sm"
         onClick={() => setCollapsed((c) => (c.has(hi) ? new Set([...c].filter((x) => x !== hi)) : new Set([...c, hi])))}
         title={collapsed.has(hi) ? "Expand" : "Collapse"}
@@ -421,8 +421,8 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
                 <Plus size={12} /> Stage hunk
               </button>
               {canStash && <button className="btn sm" disabled={busy} onClick={() => apply(hunkSelection(hi), "stash")}><Archive size={12} /> Stash hunk</button>}
-              {!loading && <button className="btn sm ghost" disabled={busy} onClick={() => apply(hunkSelection(hi), "discard")} title="Discard hunk">
-                <Trash2 size={12} />
+              {!loading && <button className="btn sm ghost discard" disabled={busy} onClick={() => apply(hunkSelection(hi), "discard")} title="Discard hunk" aria-label="Discard hunk">
+                <Undo2 size={12} />
               </button>}
             </>
           )}
@@ -484,15 +484,15 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       {actions}
       {diff && diff.hunks.length > 1 && (
         <>
-          <button className="icon-btn" title={shortcutTitle("Previous change", "diffPrevious")} onClick={() => jumpChange(-1)}>
+          <button aria-label={shortcutTitle("Previous change", "diffPrevious")} className="icon-btn" title={shortcutTitle("Previous change", "diffPrevious")} onClick={() => jumpChange(-1)}>
             <ChevronsUp size={15} />
           </button>
-          <button className="icon-btn" title={shortcutTitle("Next change", "diffNext")} onClick={() => jumpChange(1)}>
+          <button aria-label={shortcutTitle("Next change", "diffNext")} className="icon-btn" title={shortcutTitle("Next change", "diffNext")} onClick={() => jumpChange(1)}>
             <ChevronsDown size={15} />
           </button>
         </>
       )}
-      <button
+      <button aria-label={shortcutTitle("Find in diff", "diffFind")}
         className={`icon-btn ${findOpen ? "active" : ""}`}
         title={shortcutTitle("Find in diff", "diffFind")}
         onClick={() => {
@@ -503,18 +503,18 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
         <Search size={15} />
       </button>
       <div className="seg" style={{ marginLeft: 6 }}>
-        <button className={s.diffMode === "unified" ? "on" : ""} onClick={() => s.set({ diffMode: "unified" })} title="Unified">
+        <button type="button" className={s.diffMode === "unified" ? "on" : ""} aria-pressed={s.diffMode === "unified"} aria-label="Unified" onClick={() => s.set({ diffMode: "unified" })} title="Unified">
           <AlignJustify size={13} />
         </button>
-        <button className={s.diffMode === "split" ? "on" : ""} onClick={() => s.set({ diffMode: "split" })} title="Side by side">
+        <button type="button" className={s.diffMode === "split" ? "on" : ""} aria-pressed={s.diffMode === "split"} aria-label="Side by side" onClick={() => s.set({ diffMode: "split" })} title="Side by side">
           <Columns2 size={13} />
         </button>
       </div>
-      {sourceOptions && <><button className={`icon-btn ${s.diffFullFile ? "active" : ""}`} title="Show the whole file" onClick={() => s.set({ diffFullFile: !s.diffFullFile })}>
-        <Maximize2 size={14} />
+      {sourceOptions && <><button type="button" aria-label="Show the whole file" aria-pressed={s.diffFullFile} className={`icon-btn ${s.diffFullFile ? "active" : ""}`} title="Show the whole file" onClick={() => s.set({ diffFullFile: !s.diffFullFile })}>
+        <UnfoldVertical size={14} />
       </button>
-      <button className={`icon-btn ${s.ignoreWhitespace ? "active" : ""}`} title="Ignore whitespace" onClick={() => s.set({ ignoreWhitespace: !s.ignoreWhitespace })}>
-        <Space size={15} />
+      <button type="button" aria-label="Ignore whitespace" aria-pressed={s.ignoreWhitespace} className={`icon-btn ${s.ignoreWhitespace ? "active" : ""}`} title="Ignore whitespace changes" onClick={() => s.set({ ignoreWhitespace: !s.ignoreWhitespace })}>
+        <RemoveFormatting size={15} />
       </button>
       </>}
       <button className={`btn sm diff-wrap ${s.wrapDiff ? "active" : ""}`} title="Wrap lines" aria-pressed={s.wrapDiff} onClick={() => s.set({ wrapDiff: !s.wrapDiff })}>
@@ -691,7 +691,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
               </button>
               {canStash && <button className="btn sm" disabled={busy} onClick={() => apply(selectedPairs(), "stash")}><Archive size={12} /> Stash lines</button>}
               {!loading && <button className="btn sm danger" disabled={busy} onClick={() => apply(selectedPairs(), "discard")}>
-                <Trash2 size={12} /> Discard lines
+                <Undo2 size={12} /> Discard lines
               </button>}
             </>
           )}

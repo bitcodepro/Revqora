@@ -43,7 +43,7 @@ export async function namePathCopySmoke({page,root}) {
     await copy(mainBranch,"main");
     await copy(page.locator(".graph-scroll .ref.head").filter({hasText:"main"}).first(),"main");
     await page.getByRole("button",{name:"Open branch manager",exact:true}).click();
-    const manager=page.getByRole("region",{name:"Branch manager",exact:true});
+    const manager=page.getByRole("region",{name:"Branch Manager",exact:true});
     const main=manager.locator('[data-branch-ref="refs/heads/main"]');
     await copy(main,"main");
     await main.click();await copy(manager.locator(".bm-detail h3"),"main");

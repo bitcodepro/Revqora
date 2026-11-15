@@ -247,10 +247,10 @@ export function RebaseView({ root, oldest }: { root: string; oldest: string }) {
                         </button>
                       ))}
                     </div>
-                    <button className="icon-btn sm" disabled={i === 0 || busy || reviewBusy} onClick={() => move(i, i - 1)} title="Move up (older)">
+                    <button aria-label="Move up (older)" className="icon-btn sm" disabled={i === 0 || busy || reviewBusy} onClick={() => move(i, i - 1)} title="Move up (older)">
                       <ArrowUp size={13} />
                     </button>
-                    <button className="icon-btn sm" disabled={i === rows.length - 1 || busy || reviewBusy} onClick={() => move(i, i + 1)} title="Move down (newer)">
+                    <button aria-label="Move down (newer)" className="icon-btn sm" disabled={i === rows.length - 1 || busy || reviewBusy} onClick={() => move(i, i + 1)} title="Move down (newer)">
                       <ArrowDown size={13} />
                     </button>
                   </div>

@@ -492,7 +492,7 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
     const left = parseConflicts(text).length;
     try {
     if (!draft && left > 0) {
-      const ok = await confirmDialog({ title: "Conflict markers remain", message: `${left} conflict(s) are still unresolved in the result. Save and mark the file resolved anyway?`, confirm: "Save anyway", danger: true });
+      const ok = await confirmDialog({ title: "Conflict markers remain", message: `${left === 1 ? "1 conflict is" : `${left} conflicts are`} still unresolved in the result. Save and mark the file resolved anyway?`, confirm: "Save anyway", danger: true });
       if (!ok) return;
     }
       const output = info ? conflictOutput(text, info) : text;
@@ -566,17 +566,17 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
           </span>
         </div>
         {onNavigate && files && files.length > 0 && <div className="cf-file-nav" aria-label="Conflicted files">
-          <button className="icon-btn sm" title={shortcutTitle("Previous file", "conflictPreviousFile")} disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + files.length - 1) % files.length])}><ChevronUp size={14} /></button>
+          <button aria-label={shortcutTitle("Previous file", "conflictPreviousFile")} className="icon-btn sm" title={shortcutTitle("Previous file", "conflictPreviousFile")} disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + files.length - 1) % files.length])}><ChevronUp size={14} /></button>
           <select className="input" aria-label="Conflict file" value={path} disabled={saving || blocked} onChange={(e) => onNavigate(e.target.value)}>{!files.includes(path) && <option value={path}>{path}</option>}{files.map((file) => <option key={file} value={file}>{file}</option>)}</select>
-          <button className="icon-btn sm" title={shortcutTitle("Next file", "conflictNextFile")} disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + 1) % files.length])}><ChevronDown size={14} /></button>
+          <button aria-label={shortcutTitle("Next file", "conflictNextFile")} className="icon-btn sm" title={shortcutTitle("Next file", "conflictNextFile")} disabled={saving || blocked || files.length < 2} onClick={() => onNavigate(files[(files.indexOf(path) + 1) % files.length])}><ChevronDown size={14} /></button>
         </div>}
         {textual && (
           <div className="cf-nav">
-            <button className="icon-btn sm" onClick={() => goto(current - 1)} title={shortcutTitle("Previous conflict", "conflictPrevious")}>
+            <button aria-label={shortcutTitle("Previous conflict", "conflictPrevious")} className="icon-btn sm" onClick={() => goto(current - 1)} title={shortcutTitle("Previous conflict", "conflictPrevious")}>
               <ChevronUp size={15} />
             </button>
             <span className="cnt">{remaining ? `${Math.min(current + 1, remaining)} of ${remaining} left` : "All resolved"}</span>
-            <button className="icon-btn sm" onClick={() => goto(current + 1)} title={shortcutTitle("Next conflict", "conflictNext")}>
+            <button aria-label={shortcutTitle("Next conflict", "conflictNext")} className="icon-btn sm" onClick={() => goto(current + 1)} title={shortcutTitle("Next conflict", "conflictNext")}>
               <ChevronDown size={15} />
             </button>
           </div>

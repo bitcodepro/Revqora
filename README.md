@@ -609,7 +609,7 @@ history. Close the application before copying a portable installation.
 Settings also controls auto-fetch, themes, fonts, shortcuts and optional avatars.
 Revqora checks for updates at startup and every hour while open. Turn off
 **Check for updates every hour** in **Settings → Updates** to keep only the
-startup check. Use **Check now** in Settings or **Check Updates** in the toolbar
+startup check. Use **Check now** in Settings or **Check for updates** in the toolbar
 context menu to check manually. An available update appears
 in the status bar. Revqora verifies package checksums and source metadata before
 installation and preserves portable data.
@@ -642,6 +642,9 @@ from this list. Revqora uses single key combinations and its own shortcut scopes
 | Ctrl+Shift+F | Fetch |
 | Ctrl+Shift+↓ / Ctrl+Shift+↑ | Pull / Push |
 | Ctrl+Shift+S | Stash |
+| Ctrl+Shift+A / Ctrl+Shift+U | Stage / unstage the file selected in Changes |
+| S / U | Stage / unstage the focused hunk in a diff |
+| Ctrl+Shift+O / Ctrl+Shift+C / Ctrl+Shift+E / Ctrl+Shift+T | All repositories / compare branches / browse files / toggle theme |
 | Ctrl+Enter | Commit from the commit form |
 | F5 | Refresh |
 | F2 | Rename the focused group, branch, or repository display name |
@@ -653,6 +656,9 @@ from this list. Revqora uses single key combinations and its own shortcut scopes
 | Ctrl+, | Settings |
 | F7 / Shift+F7 | Next / previous diff change |
 | Alt+↑ / Alt+↓, Ctrl+S | Conflict editor: previous / next conflict, save |
+| ↑ / ↓, Home / End, Enter, → / ←, Esc | Move, choose, open / close submenus and close inside context menus |
+
+On macOS, Ctrl bindings also work with ⌘, and hints show ⌘.
 
 ## Build and verify
 

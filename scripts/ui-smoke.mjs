@@ -147,7 +147,7 @@ try {
     await preferRepositoryList(page);
   });
 
-  await check("a newer release shows the update chip and Check Updates can show it again", async () => {
+  await check("a newer release shows the update chip and Check for updates can show it again", async () => {
     const runningVersion = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("plugin:app|version"));
     const version = page.locator(".statusbar .app-version");
     await version.filter({ hasText: `Revqora v${runningVersion}` }).waitFor();
@@ -172,9 +172,9 @@ try {
     await chip.waitFor({ state: "detached" });
     const checksBeforeMenu = updateChecks;
     await page.locator(".topbar").click({ button: "right", position: { x: 3, y: 3 } });
-    await page.locator(".ctx-menu").getByText("Check Updates", { exact: true }).click();
+    await page.locator(".ctx-menu").getByText("Check for updates", { exact: true }).click();
     await chip.filter({ hasText: "Update 99.0.0" }).waitFor();
-    if (updateChecks <= checksBeforeMenu) throw new Error("Check Updates did not request the release feed");
+    if (updateChecks <= checksBeforeMenu) throw new Error("Check for updates did not request the release feed");
     await chip.click();
     await card.locator("button:has-text('Skip this version')").click();
     await chip.waitFor({ state: "detached" });
@@ -205,7 +205,7 @@ try {
     }, updateFixture);
     try {
       await page.locator(".topbar").click({ button: "right", position: { x: 3, y: 3 } });
-      await page.locator(".ctx-menu").getByText("Check Updates", { exact: true }).click();
+      await page.locator(".ctx-menu").getByText("Check for updates", { exact: true }).click();
       await chip.filter({ hasText: "Update 99.0.0" }).waitFor();
       await chip.click();
       await card.getByRole("button", { name: "Update now", exact: true }).click();
@@ -902,7 +902,7 @@ try {
     const repositoryActions = page.getByRole("group", { name: "Repository actions", exact: true });
     await repositoryActions.getByRole("button", { name: "All repositories", exact: true }).waitFor();
     await repositoryActions.getByRole("button", { name: "Repository library", exact: true }).waitFor();
-    await repositoryActions.getByTitle("Show in Explorer", { exact: true }).waitFor();
+    await repositoryActions.getByTitle("Show in folder", { exact: true }).waitFor();
     const branchesToggle = navigation.getByRole("button", { name: "Toggle branches panel", exact: true });
     await page.keyboard.press("Control+Alt+b");
     await page.waitForSelector(".branches-slot", { state: "hidden" });

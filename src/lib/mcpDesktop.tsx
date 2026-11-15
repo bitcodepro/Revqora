@@ -1,3 +1,4 @@
+import { plural } from "./format";
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, newOpId } from "./api";
@@ -331,7 +332,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     const deletionPlan = mode !== "ask" && action === "delete_branch" ? await api.branchDeletePlan(root, target!, undefined, null) : undefined;
     if (deletionPlan) {
       if (deletionPlan.stateToken !== expectedState || deletionPlan.proof.localOid !== targetOid) throw new McpToolError("stale_state", "The branch changed while preparing deletion.");
-      detail.push(`${deletionPlan.localUnmerged} commit(s) outside the comparison branch. Revqora saves a recovery checkpoint.`);
+      detail.push(`${plural(deletionPlan.localUnmerged, "commit")} outside the comparison branch. Revqora saves a recovery checkpoint.`);
       if (a.force) detail.push("Force deletion is requested for this local branch.");
     }
     let field: ApprovalField | undefined;

@@ -86,7 +86,7 @@ function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
 }
 
 export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) {
-  const panelMenu = usePanelTitleMenu("branches", [{ label: "Branch manager", icon: <GitBranch size={14}/>, onClick: () => openOverlay({ kind: "branches", root: tab.root }) }]);
+  const panelMenu = usePanelTitleMenu("branches", [{ label: "Branch Manager", icon: <GitBranch size={14}/>, onClick: () => openOverlay({ kind: "branches", root: tab.root }) }]);
   const { panels } = usePanelWindows();
   const reveal = useUi(s => s.branchReveal);
   const { setLayout } = useWorkspaceLayout();
@@ -349,7 +349,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
       <ChevronDown size={12} className="chev" />
       {icon}
       <span>{title}</span>
-      <span className="pill" style={{ height: 16, fontSize: 10 }}>
+      <span className="pill" style={{ height: 16, fontSize: "var(--fs-xs)" }}>
         {count}
       </span>
       <div className="actions" onClick={(e) => e.stopPropagation()}>
@@ -373,7 +373,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           "Branches",
           visibleLocal.length,
           <GitBranch size={12} />,
-          <button className="icon-btn sm" title="New branch" onClick={() => A.createBranch(root, null, current ?? "HEAD")}>
+          <button aria-label="New branch" className="icon-btn sm" title="New branch" onClick={() => A.createBranch(root, null, current ?? "HEAD")}>
             <Plus size={13} />
           </button>,
           collapsed.local ? [] : visibleLocal.length ? renderTree(buildTree(visibleLocal,0,branchPrefs.sort==="recent"), "local", 0, "") :
@@ -384,7 +384,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           "Remotes",
           [...remoteByName.values()].reduce((n,list)=>n+list.length,0),
           <Globe size={12} />,
-          <button className="icon-btn sm" title="Add remote" onClick={() => A.addRemote(root)}>
+          <button aria-label="Add remote" className="icon-btn sm" title="Add remote" onClick={() => A.addRemote(root)}>
             <Plus size={13} />
           </button>,
           collapsed.remotes ? [] : remoteByName.size === 0
@@ -509,7 +509,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           "Stashes",
           refs?.stashes.length ?? 0,
           <Archive size={12} />,
-          <button className="icon-btn sm" title="Stash changes" onClick={() => A.stash(root)}>
+          <button aria-label="Stash changes" className="icon-btn sm" title="Stash changes" onClick={() => A.stash(root)}>
             <Plus size={13} />
           </button>,
           stashes.length
@@ -546,11 +546,11 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           <Package size={12} />,
           <>
             {!!extras?.submodules.length && (
-              <button className="icon-btn sm" title="Update all (init + recursive)" onClick={() => X.updateSubmodules(root)}>
+              <button aria-label="Update all (init + recursive)" className="icon-btn sm" title="Update all (init + recursive)" onClick={() => X.updateSubmodules(root)}>
                 <RefreshCw size={12} />
               </button>
             )}
-            <button className="icon-btn sm" title="Add submodule" onClick={() => X.addSubmodule(root)}>
+            <button aria-label="Add submodule" className="icon-btn sm" title="Add submodule" onClick={() => X.addSubmodule(root)}>
               <Plus size={13} />
             </button>
           </>,
@@ -594,11 +594,11 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
           extras?.worktrees.length ?? 0,
           <FolderGit2 size={12} />,
           <>
-            <button className="icon-btn sm" title="Worktree manager" onClick={() => openOverlay({ kind: "worktrees", root })}><FolderGit2 size={13} /></button>
-            <button className="icon-btn sm" title="Prune missing worktrees" onClick={() => X.pruneWorktrees(root)}>
+            <button aria-label="Worktree Manager" className="icon-btn sm" title="Worktree Manager" onClick={() => openOverlay({ kind: "worktrees", root })}><FolderGit2 size={13} /></button>
+            <button aria-label="Prune missing worktrees" className="icon-btn sm" title="Prune missing worktrees" onClick={() => X.pruneWorktrees(root)}>
               <Eraser size={12} />
             </button>
-            <button className="icon-btn sm" title="New worktree" onClick={() => X.addWorktree(root)}>
+            <button aria-label="New worktree" className="icon-btn sm" title="New worktree" onClick={() => X.addWorktree(root)}>
               <Plus size={13} />
             </button>
           </>,
@@ -640,10 +640,10 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               extras.lfs.patterns.length,
               <HardDrive size={12} />,
               <>
-                <button className="icon-btn sm" title="LFS files" onClick={() => X.lfsFilesDialog(root)}>
+                <button aria-label="LFS files" className="icon-btn sm" title="LFS files" onClick={() => X.lfsFilesDialog(root)}>
                   <Search size={12} />
                 </button>
-                <button className="icon-btn sm" title="Track a pattern" onClick={() => X.lfsTrack(root)}>
+                <button aria-label="Track a pattern" className="icon-btn sm" title="Track a pattern" onClick={() => X.lfsTrack(root)}>
                   <Plus size={13} />
                 </button>
               </>,

@@ -96,7 +96,7 @@ export function CompareView({ root, from: initialFrom, to: initialTo, direct = f
           ))}
         </datalist>
         <input className="input mono" style={{ width: 220 }} list="compare-refs" value={from} onChange={(e) => setFrom(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} placeholder="base (e.g. main)" />
-        <button className="icon-btn" onClick={swap} title="Swap">
+        <button aria-label="Swap" className="icon-btn" onClick={swap} title="Swap">
           <ArrowLeftRight size={15} />
         </button>
         <input className="input mono" style={{ width: 220 }} list="compare-refs" value={to} onChange={(e) => setTo(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} placeholder="compare (e.g. feature)" />

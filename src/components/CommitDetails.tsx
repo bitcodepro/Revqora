@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { openRepoFile } from "../lib/openFile";
-import { List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
+import { Ellipsis, List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
 import * as A from "../lib/actions";
 import { api, errorMessage } from "../lib/api";
-import type { Check, CommitDetails as Details, FileDiff, Signature } from "../lib/types";
+import type { Check, CommitDetails as Details, FileDiff, GraphRow, RefLabel, Signature } from "../lib/types";
 import { CheckIcon, summarizeChecks } from "./PullRequests";
 import { toast } from "../lib/ui";
 import { absoluteTime, fullTime, joinPath, relativeTime, shortOid } from "../lib/format";
@@ -21,6 +21,7 @@ import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { useFileListNavigation } from "../lib/useFileListNavigation";
 import { usePanelTitleMenu } from "./PanelWindows";
 import { fileCopyMenu } from "./NamePathMenu";
+import { commitMenu } from "./menus";
 
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
   const fileNavigation = useFileListNavigation();
@@ -147,6 +148,12 @@ ${oid}`;
           await showDialog<void>((close) => <CommitMessageDialog subject={current.subject} body={current.body} oid={current.oid} author={current.author} onClose={() => close()} />);
           if (trigger.isConnected) trigger.focus({ preventScroll: true });
         }}><FileText size={14} /> Message</button>
+        <button type="button" className="btn sm" disabled={!current} aria-haspopup="menu" title="Commit actions: cherry-pick, revert, branch, tag, reset and more" onClick={(event) => {
+          if (!current) return;
+          const box = event.currentTarget.getBoundingClientRect();
+          const row = detailsRow(root, current);
+          contextMenu({ clientX: box.left, clientY: box.bottom + 4, currentTarget: event.currentTarget, preventDefault: () => {} }, commitMenu(root, row, [row]));
+        }}><Ellipsis size={14} /> Actions</button>
         {onClose && <button type="button" className="btn sm details-hide" title="Close commit preview" onClick={onClose}><X size={14} /> Close</button>}
       </div>
     </header>
@@ -255,7 +262,7 @@ ${oid}`;
           {compactMeta ? <details className="commit-metadata"><summary>Commit details</summary>{metadata}</details> : metadata}
           <div className="file-list-head">
             <span>{d.files.length} files</span>
-            <button
+            <button aria-label={treeView ? "Flat list" : "Group by folder"}
               className="icon-btn sm"
               style={{ marginLeft: "auto", order: 2 }}
               title={treeView ? "Flat list" : "Group by folder"}
@@ -355,4 +362,19 @@ function SignatureBadge({ sig }: { sig: Signature }) {
     default:
       return <span className="pill">Signed — cannot verify here</span>;
   }
+}
+
+/** The commit as a history row, for the same actions as its History context menu. */
+function detailsRow(root: string, d: Details): GraphRow {
+  const tab = useRepos.getState().tabs[root];
+  const refs: RefLabel[] = [
+    ...(tab?.refs?.local ?? []).filter((b) => b.oid === d.oid).map((b): RefLabel => ({ name: b.name, kind: "local", syncedRemote: null })),
+    ...(tab?.refs?.remote ?? []).filter((b) => b.oid === d.oid).map((b): RefLabel => ({ name: b.name, kind: "remote", syncedRemote: null })),
+    ...(tab?.refs?.tags ?? []).filter((t) => t.target === d.oid || t.oid === d.oid).map((t): RefLabel => ({ name: t.name, kind: "tag", syncedRemote: null })),
+  ];
+  return {
+    index: -1, oid: d.oid, parents: d.parents, author: d.author, email: d.authorEmail, authorTime: d.authorTime,
+    committer: d.committer, commitTime: d.commitTime, subject: d.subject, refs, col: 0, color: 0, laneId: 0, segs: [],
+    isHead: tab?.info?.head.oid === d.oid, isMerge: d.parents.length > 1, localOnly: !d.containedInRemote, incoming: false,
+  };
 }

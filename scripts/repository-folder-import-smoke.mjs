@@ -272,9 +272,9 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
       const child = window.__workspacePanelWindow;
       child.document.querySelector(".detached-branches .branches-heading").dispatchEvent(new child.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 12, clientY: 12 }));
     });
-    await page.waitForFunction(() => window.__workspacePanelWindow?.document.querySelector(".ctx-menu .ctx-item")?.textContent.trim() === "Branch manager");
+    await page.waitForFunction(() => window.__workspacePanelWindow?.document.querySelector(".ctx-menu .ctx-item")?.textContent.trim() === "Branch Manager");
     await page.evaluate(() => window.__workspacePanelWindow.document.querySelector(".ctx-menu .ctx-item").click());
-    const manager = page.getByRole("region", { name: "Branch manager", exact: true });
+    const manager = page.getByRole("region", { name: "Branch Manager", exact: true });
     await manager.waitFor();
     await overview.waitFor({ state: "detached" });
     await manager.getByRole("button", { name: "Close branch manager", exact: true }).click();

@@ -26,6 +26,7 @@ import { BranchAheadBehind, Avatar, RefBadge } from "./bits";
 import { branchMenu, commitMenu, runMenuShortcut, tagMenu } from "./menus";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { usePanelTitleMenu } from "./PanelWindows";
+import { pickBranchScope } from "./BranchScopePicker";
 
 const ROW_H = 30;
 /** Review mode: two-line rows (subject, then author, date and hash) without the graph. */
@@ -1119,10 +1120,10 @@ export function GraphView({
             <option value="message">Message</option>
             <option value="author">Author</option>
             <option value="hash">Hash</option>
-            <option value="content">Code (pickaxe)</option>
+            <option value="content">Added or removed code</option>
             <option value="path">File path</option>
           </select>
-          <button
+          <button aria-label="Previous (Shift+Enter)"
             className="icon-btn sm"
             onClick={() => gotoResult(-1)}
             disabled={!results.length}
@@ -1130,7 +1131,7 @@ export function GraphView({
           >
             <ChevronUp size={14} />
           </button>
-          <button
+          <button aria-label="Next (Enter)"
             className="icon-btn sm"
             onClick={() => gotoResult(1)}
             disabled={!results.length}
@@ -1138,7 +1139,7 @@ export function GraphView({
           >
             <ChevronDown size={14} />
           </button>
-          <button
+          <button aria-label="Show only matching commits" aria-pressed={filterOnly}
             className={`icon-btn sm ${filterOnly ? "active" : ""}`}
             onClick={() => setFilterOnly((v) => !v)}
             title="Show only matching commits"
@@ -1146,7 +1147,7 @@ export function GraphView({
             <Filter size={13} />
           </button>
           {query && (
-            <button
+            <button aria-label="Clear"
               className="icon-btn sm"
               onClick={() => setQuery("")}
               title="Clear"
@@ -1171,6 +1172,8 @@ export function GraphView({
             {!!tab.refs?.local.length && <optgroup label="Local branches">{tab.refs.local.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
             {!!tab.refs?.remote.length && <optgroup label="Remote branches">{tab.refs.remote.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
           </select>
+          {!!(tab.refs?.local.length || tab.refs?.remote.length) && <button type="button" className="icon-btn sm" aria-label="Find a branch" title="Find a branch to show its history"
+            onClick={() => void pickBranchScope(tab.refs?.local ?? [], tab.refs?.remote ?? []).then(reference => { if (reference) selectHistoryScope(reference); })}><Search size={12} /></button>}
           {(fixedBranch || tab.branchContext) && <button type="button" className="icon-btn sm" aria-label="Clear branch filter" title="Return to current branch"
             onClick={() => selectHistoryScope(CURRENT_HISTORY_BRANCH)}><X size={12} /></button>}
         </div>
@@ -1301,7 +1304,7 @@ export function GraphView({
             {hiddenLanes && (
               <span
                 className="pill amber"
-                style={{ height: 15, fontSize: 9 }}
+                style={{ height: 15, fontSize: "max(10px, calc(var(--fs) - 4px))" }}
                 title="Some branches are hidden — drag the edge to widen"
               >
                 +{(summary?.maxLanes ?? 0) - lanes}

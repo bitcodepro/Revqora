@@ -999,8 +999,10 @@ async fn verify_commit(repo: String, oid: String) -> GitResult<()> {
 }
 
 #[tauri::command]
-async fn file_history(repo: String, path: String) -> GitResult<Vec<FileHistoryEntry>> {
-    blocking(move || gcommit::file_history(&p(&repo), &path, 500)).await
+async fn file_history(repo: String, path: String, limit: Option<usize>) -> GitResult<Vec<FileHistoryEntry>> {
+    // Pages of 500: the UI asks for more when the user loads older changes.
+    let limit = limit.unwrap_or(500).clamp(1, 1_000_000);
+    blocking(move || gcommit::file_history(&p(&repo), &path, limit)).await
 }
 
 #[tauri::command]

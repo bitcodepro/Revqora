@@ -139,7 +139,7 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await branchSearch.clear();
   await myBranches.click();
   await page.locator(".sidebar .branches-heading").click({button:"right"});
-  await page.locator(".ctx-menu").getByText("Branch manager",{exact:true}).click();
+  await page.locator(".ctx-menu").getByText("Branch Manager",{exact:true}).click();
   const manager = page.locator(".branch-manager");
   const primaryInManager = manager.locator('[data-branch-ref="refs/heads/main"]');
   await primaryInManager.waitFor();

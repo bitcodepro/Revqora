@@ -61,7 +61,7 @@ Examples:
 
 Some commands appear only after opening a repository. Context menus on branches, commits and files provide actions for that specific item.
 
-Right-click empty space in the top bar for named toolbar actions such as **Settings**, **Pull**, **Push** and **Check Updates**.
+Right-click empty space in the top bar for named toolbar actions such as **Settings**, **Pull**, **Push** and **Check for updates**.
 
 ## Three kinds of refresh
 

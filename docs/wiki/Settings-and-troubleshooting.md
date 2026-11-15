@@ -16,7 +16,7 @@ An available update appears in the status bar. Check the release/version and fol
 
 Revqora checks at startup and, by default, every hour while open. Turn off
 **Check for updates every hour** to keep the startup check. Use **Check now**
-or right-click the toolbar and select **Check Updates** for a manual check.
+or right-click the toolbar and select **Check for updates** for a manual check.
 On Windows, the main window starts maximized. Revqora restores normal bounds
 when they match the display and uses the available work area if the monitor
 configuration changes.

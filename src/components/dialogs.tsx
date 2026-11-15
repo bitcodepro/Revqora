@@ -1,3 +1,4 @@
+import { plural } from "../lib/format";
 import {forgeAccountsDialog} from "./ForgeAccounts";
 import { aboutDialog } from "./AboutDialog";
 import { parseCloneInput, repoNameFromUrl } from "../lib/cloneInput";
@@ -254,7 +255,7 @@ function PushBody({ o, close }: { o: Parameters<typeof pushDialog>[0]; close: (v
   return (
     <Modal
       title="Push"
-      subtitle={o.upstream ? `${o.ahead} commit(s) ahead of ${o.upstream}` : "This branch has no upstream yet"}
+      subtitle={o.upstream ? `${plural(o.ahead, "commit")} ahead of ${o.upstream}` : "This branch has no upstream yet"}
       icon={<CloudUpload size={18} />}
       onClose={() => close(null)}
       onSubmit={() => close({ remote, branch: o.branch, remoteBranch, setUpstream: setUp, forceWithLease: force, tags })}
@@ -296,7 +297,7 @@ function PushBody({ o, close }: { o: Parameters<typeof pushDialog>[0]; close: (v
       {o.behind > 0 && (
         <div className="callout warn">
           <AlertTriangle size={15} />
-          <div>The remote has {o.behind} commit(s) you do not have. Pull first, or force push to overwrite them.</div>
+          <div>The remote has {plural(o.behind, "commit")} you do not have. Pull first, or force push to overwrite them.</div>
         </div>
       )}
     </Modal>
@@ -899,10 +900,19 @@ export function discardDialog(paths: string[]): Promise<boolean> {
 
 function SigningSettings({ root }: { root: string }) {
   const [cfg, setCfg] = useState<SigningConfig | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    api.signingGet(root).then(setCfg, () => {});
-  }, [root]);
-  if (!cfg) return null;
+    setLoadError(null);
+    api.signingGet(root).then(setCfg, (e) => setLoadError(errorMessage(e)));
+  }, [root, attempt]);
+  if (loadError) return (
+    <div className="field" role="alert">
+      <span className="faint">Signing settings could not be read: {loadError}</span>
+      <button type="button" className="btn sm" style={{ justifySelf: "start" }} onClick={() => setAttempt((n) => n + 1)}>Retry</button>
+    </div>
+  );
+  if (!cfg) return <div className="faint">Loading signing settings…</div>;
   const save = async (global: boolean) => {
     try {
       await api.signingSet(root, cfg, global);
@@ -1021,7 +1031,7 @@ function ShortcutSettings() {
               >
                 {capturing === sc.id ? "Press keys…" : cur ? prettyCombo(cur) : "—"}
               </button>
-              <button
+              <button aria-label={`Reset shortcut for ${sc.label}`}
                 type="button"
                 className="icon-btn sm"
                 title={`Reset shortcut for ${sc.label}`}
