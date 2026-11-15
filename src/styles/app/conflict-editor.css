@@ -1,0 +1,231 @@
+/* ───────────── conflict editor ───────────── */
+.conflict-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  animation: fadeIn 0.18s;
+}
+.cf-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  flex: none;
+}
+.cf-head .cf-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.cf-head .cf-title .p {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-head .cf-title .s {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.cf-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border-radius: var(--radius);
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+}
+.cf-nav .cnt {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-sm);
+  padding: 0 6px;
+  min-width: 92px;
+  text-align: center;
+}
+.cf-body {
+  flex: 1;
+  display: grid;
+  grid-template-rows: minmax(120px, 40%) 7px minmax(160px, 1fr);
+  min-height: 0;
+}
+.cf-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 0;
+}
+.cf-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+.cf-pane:first-child {
+  border-right: 1px solid var(--border);
+}
+.cf-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px 0 12px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border-soft);
+  font-size: var(--fs-sm);
+  flex: none;
+}
+.cf-pane-head .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex: none;
+}
+.cf-pane-head .lbl {
+  font-weight: 650;
+}
+.cf-pane-head .sub {
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.cf-editor .cm-editor {
+  height: 100%;
+}
+.cf-result {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.cf-special {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 30px;
+}
+.cf-special-card {
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+  text-align: center;
+}
+.cm-cf-ours {
+  background: var(--conflict-ours);
+}
+.cm-cf-theirs {
+  background: var(--conflict-theirs);
+}
+.cm-cf-base {
+  background: var(--conflict-base);
+}
+.cm-cf-marker {
+  background: var(--bg-elev3);
+  color: var(--text-faint) !important;
+  font-weight: 700;
+}
+.cm-cf-marker * {
+  color: var(--text-faint) !important;
+}
+.cm-cf-active {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.cm-side-hl-ours {
+  background: var(--conflict-ours-strong);
+}
+.cm-side-hl-theirs {
+  background: var(--conflict-theirs-strong);
+}
+.cf-actions {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px 0 4px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-xs);
+}
+.cf-actions button {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev2);
+  color: var(--text-dim);
+  border-radius: 5px;
+  height: 21px;
+  padding: 0 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+}
+.cf-actions button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.cf-actions button.ours:hover {
+  background: var(--conflict-ours-strong);
+}
+.cf-actions button.theirs:hover {
+  background: var(--conflict-theirs-strong);
+}
+.cf-actions .lbl {
+  color: var(--text-faint);
+  align-self: center;
+  margin-right: 4px;
+  font-weight: 700;
+}
+/* CodeMirror base look */
+.cm-editor {
+  font-size: var(--fs-code);
+  background: var(--bg) !important;
+}
+.cm-editor.cm-focused {
+  outline: none !important;
+}
+.cm-scroller {
+  font-family: var(--font-code) !important;
+  line-height: 1.6 !important;
+}
+.cm-gutters {
+  background: var(--bg-elev) !important;
+  border-right: 1px solid var(--border-soft) !important;
+  color: var(--text-faint) !important;
+}
+.cm-activeLine {
+  background: var(--bg-hover) !important;
+}
+.cm-activeLineGutter {
+  background: var(--bg-hover-strong) !important;
+  color: var(--text) !important;
+}
+.cm-content {
+  caret-color: var(--accent) !important;
+}
+.cm-cursor {
+  border-left-color: var(--accent) !important;
+  border-left-width: 2px !important;
+}
+.cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground {
+  background: var(--diff-sel) !important;
+}
+.cm-panels {
+  background: var(--bg-elev2) !important;
+  color: var(--text) !important;
+}
+.cm-searchMatch {
+  background: var(--amber-soft) !important;
+  outline: 1px solid var(--amber);
+}

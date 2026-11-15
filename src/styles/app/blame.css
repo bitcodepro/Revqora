@@ -1,0 +1,66 @@
+/* ───────────── blame ───────────── */
+.blame-scroll {
+  flex: 1;
+  overflow: auto;
+  font-family: var(--font-code);
+  font-size: var(--fs-code);
+  font-variant-ligatures: none;
+}
+.blame-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 20px;
+  display: grid;
+  grid-template-columns: 340px 52px minmax(0, 1fr);
+  align-items: center;
+  line-height: 20px;
+}
+.blame-gutter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 100%;
+  padding: 0 8px 0 0;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border-soft);
+  font-family: var(--font-ui);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.blame-gutter .age {
+  width: 3px;
+  align-self: stretch;
+  background: var(--accent);
+  flex: none;
+}
+.blame-gutter .sum {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  cursor: pointer;
+}
+.blame-gutter .sum:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.blame-gutter .when {
+  color: var(--text-faint);
+  flex: none;
+}
+.blame-ln {
+  text-align: right;
+  padding-right: 10px;
+  color: var(--text-faint);
+  font-size: calc(var(--fs-code) - 1.5px);
+  user-select: none;
+}
+.blame-code {
+  white-space: pre;
+  overflow: hidden;
+  user-select: text;
+  tab-size: 4;
+}

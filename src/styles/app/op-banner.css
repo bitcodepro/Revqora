@@ -1,0 +1,51 @@
+/* ───────────── op banner ───────────── */
+.op-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin: 10px 12px 0;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  background: linear-gradient(100deg, var(--amber-soft), transparent 75%);
+  animation: slideDown 0.25s var(--ease);
+  flex: none;
+}
+.op-banner.ok {
+  border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  background: linear-gradient(100deg, var(--green-soft), transparent 75%);
+}
+.op-banner .op-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  background: var(--amber-soft);
+  color: var(--amber);
+  flex: none;
+}
+.op-banner.ok .op-icon {
+  background: var(--green-soft);
+  color: var(--green);
+}
+.op-banner .op-title {
+  font-weight: 700;
+}
+.op-banner .op-copy {
+  min-width: 0;
+  flex: 1 1 220px;
+}
+.op-banner .op-actions {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 100%;
+  margin-left: auto;
+}
+.op-banner .op-sub {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
