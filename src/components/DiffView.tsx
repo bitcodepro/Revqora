@@ -510,17 +510,23 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
           <Columns2 size={13} />
         </button>
       </div>
-      {sourceOptions && <><button type="button" aria-label="Show the whole file" aria-pressed={s.diffFullFile} className={`icon-btn ${s.diffFullFile ? "active" : ""}`} title="Show the whole file" onClick={() => s.set({ diffFullFile: !s.diffFullFile })}>
-        <UnfoldVertical size={14} />
+      <button type="button" className={`btn sm diff-view-menu ${s.wrapDiff || s.showWhitespace || (sourceOptions && (s.diffFullFile || s.ignoreWhitespace)) ? "active" : ""}`}
+        aria-label="Diff view options" aria-haspopup="menu" title="Line wrapping, whitespace and context"
+        onClick={(e) => {
+          const box = e.currentTarget.getBoundingClientRect();
+          // Opened below the button, right-aligned to it when there is room.
+          contextMenu({ clientX: Math.max(6, box.right - 250), clientY: box.bottom + 4, currentTarget: e.currentTarget, preventDefault: () => {} }, [
+            { label: "Wrap lines", icon: <WrapText size={14} />, checked: s.wrapDiff, onClick: () => s.set({ wrapDiff: !s.wrapDiff }) },
+            { label: "Show whitespace", icon: <Pilcrow size={14} />, checked: s.showWhitespace, onClick: () => s.set({ showWhitespace: !s.showWhitespace }) },
+            ...(sourceOptions ? [
+              { separator: true },
+              { label: "Show the whole file", icon: <UnfoldVertical size={14} />, checked: s.diffFullFile, hint: "not only the changes", onClick: () => s.set({ diffFullFile: !s.diffFullFile }) },
+              { label: "Ignore whitespace changes", icon: <RemoveFormatting size={14} />, checked: s.ignoreWhitespace, onClick: () => s.set({ ignoreWhitespace: !s.ignoreWhitespace }) },
+            ] : []),
+          ]);
+        }}>
+        View <ChevronDown size={13} />
       </button>
-      <button type="button" aria-label="Ignore whitespace" aria-pressed={s.ignoreWhitespace} className={`icon-btn ${s.ignoreWhitespace ? "active" : ""}`} title="Ignore whitespace changes" onClick={() => s.set({ ignoreWhitespace: !s.ignoreWhitespace })}>
-        <RemoveFormatting size={15} />
-      </button>
-      </>}
-      <button className={`btn sm diff-wrap ${s.wrapDiff ? "active" : ""}`} title="Wrap lines" aria-pressed={s.wrapDiff} onClick={() => s.set({ wrapDiff: !s.wrapDiff })}>
-        <WrapText size={15} /> Wrap lines
-      </button>
-      <button type="button" className={`icon-btn ${s.showWhitespace?"active":""}`} title="Show whitespace" aria-label="Show whitespace" aria-pressed={s.showWhitespace} onClick={()=>s.set({showWhitespace:!s.showWhitespace})}><Pilcrow size={14}/></button>
       </div>
     </div>
   );

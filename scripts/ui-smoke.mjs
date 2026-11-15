@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { createProfile, launch, withViewport, openCommitAction, preferRepositoryList } from "./ui-driver.mjs";
 import { conflictStudioSmoke } from "./conflict-studio-smoke.mjs";
 import { mcpSmoke } from "./mcp-smoke.mjs";
+import { setDiffOption } from "./diff-view-menu.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
@@ -1356,11 +1357,11 @@ try {
     if (await overflow() < 100) throw new Error("long lines should have horizontal scroll");
     await page.locator(".diff-hscroll input").fill("180");
     await until(async () => await page.locator(".details .diff-body").evaluate((el) => el.scrollLeft) > 100, "horizontal scroll did not move");
-    await page.click(".diff-wrap");
+    await setDiffOption(page.locator(".details"), "Wrap lines", true);
     await until(async () => await overflow() <= 1, "wrapped unified diff overflowed");
     await page.click("button[title='Side by side']");
     await until(async () => await overflow() <= 1, "wrapped split diff overflowed");
-    await page.click(".diff-wrap");
+    await setDiffOption(page.locator(".details"), "Wrap lines", false);
     await page.waitForSelector(".diff-hscroll");
     const right = await page.locator(".split-dl .half.add").first().boundingBox();
     const viewport = await page.locator(".details .diff-body").boundingBox();

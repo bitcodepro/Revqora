@@ -38,7 +38,7 @@ Right-click a supported panel heading and choose **Detach**, or open it from **P
 
 Click a commit to open its preview. The changed-file list chooses which diff to display. **Message** opens the full message in a separate reader, including a long description or trailers such as `Co-authored-by`. **Close** dismisses the commit preview.
 
-Use the diff controls to choose unified or side-by-side display. Enable **Wrap lines** to fit long lines inside the pane; leave it off to use horizontal scrolling. **F7** and **Shift+F7** move between changes.
+Use the diff controls to choose unified or side-by-side display. Enable **View → Wrap lines** to fit long lines inside the pane; leave it off to use horizontal scrolling. **F7** and **Shift+F7** move between changes.
 
 Reading a commit does not check it out. Checking out a commit is a separate action and can put the working copy into detached HEAD state.
 

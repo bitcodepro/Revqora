@@ -152,7 +152,7 @@ See the [Explorer and repository library guide](https://github.com/bitcodepro/Re
 - Toggle Explorer, Repositories or Branches with **Ctrl+Alt+W**, **Ctrl+Alt+R**
   or **Ctrl+Alt+B**.
 - Use **Ctrl+Shift+Enter** for focus mode and drag pane dividers to adjust widths.
-- Use **Wrap lines** for long code lines, or keep wrapping off and scroll horizontally.
+- Use **View → Wrap lines** in the diff toolbar for long code lines, or keep wrapping off and scroll horizontally.
 - Open a commit's full message with **Message**; **Close** dismisses its preview.
 - Hover a commit in Graph and press **↑ / ↓** to move the highlight. Press **Enter**
   to open the preview. With a commit selected, **↑ / ↓** change commits and
@@ -258,7 +258,7 @@ Search includes older commits within the selected scope.
 
 ### Inspect whitespace and edit a working file
 
-Toggle **Show whitespace** (¶) in the diff toolbar to see spaces as dots and tabs
+Toggle **View → Show whitespace** in the diff toolbar to see spaces as dots and tabs
 as arrows. This display setting does not ignore whitespace or change file content.
 It is saved and also applies to the built-in editor.
 

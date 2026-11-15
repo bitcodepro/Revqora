@@ -86,6 +86,7 @@ function Menu({ x, y, items, onDone, onBack, level = 0, autoFocus = true }: { x:
               key={i}
               role={it.checked !== undefined ? "menuitemcheckbox" : "menuitem"}
               aria-checked={it.checked !== undefined ? !!it.checked : undefined}
+              aria-label={it.label}
               aria-disabled={it.disabled || undefined}
               aria-haspopup={it.children ? "menu" : undefined}
               aria-expanded={it.children ? sub?.i === i : undefined}
