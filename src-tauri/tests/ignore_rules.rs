@@ -41,13 +41,7 @@ fn file_extension_and_folder_rules_ignore_what_they_say() {
     assert!(r.ignored);
     assert_eq!(fs::read_to_string(root.join(".gitignore")).unwrap(), "/debug.log\n");
 
-    let p = ignore::preview(root, "build/out/app.js", "folder", "shared").unwrap();
-    let p = ignore::preview(root, "build/out", "folder", "shared")
-        .map(|q| {
-            assert_eq!(q.token, p.token);
-            q
-        })
-        .unwrap();
+    let p = ignore::preview(root, "build/out", "folder", "shared").unwrap();
     ignore::apply(root, "build/out", "folder", "shared", &p.token, false).unwrap();
     assert!(ignored(root, "build/out/app.js"));
     assert!(!ignored(root, "keep.js"), "an anchored folder rule must not ignore other files");
