@@ -498,6 +498,14 @@ pub fn reset(repo: &Path, target: &str, mode: &str) -> GitResult<()> {
         "keep" => "--keep",
         _ => "--mixed",
     };
+    if target.is_empty() || target.starts_with('-') {
+        return Err(GitError::new("Invalid reset target.").kind("invalid-argument"));
+    }
+    // Git writes the target's files over untracked (--hard) and ignored (--hard, --keep) files
+    // without asking, and recovery checkpoints do not keep ignored files.
+    if matches!(flag, "--hard" | "--keep") {
+        guard_untracked_tree(repo, target)?;
+    }
     runner::run(repo, ["reset", flag, target])?;
     Ok(())
 }
@@ -2058,11 +2066,33 @@ pub fn revert(repo: &Path, oid: &str, no_commit: bool) -> GitResult<OpOutcome> {
         args.push("1".into());
     }
     args.push(oid.into());
+    // A revert brings back files the commit deleted; Git writes them over ignored files.
+    let commit = runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{oid}^{{commit}}")])?;
+    let commit = commit.trim();
+    if let Ok(parent) = runner::run(repo, ["rev-parse", "-q", "--verify", "--end-of-options", &format!("{commit}^1")]) {
+        let restored = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", commit, parent.trim(), "--"])?;
+        guard_untracked_paths(repo, &restored)?;
+    }
     let out = runner::exec(repo, &args)?;
     sequence_outcome(repo, out, "git revert")
 }
 
+/// Refuses a rebase onto `upstream` that would write over untracked or ignored files: the
+/// checkout of `upstream`, then every file the replayed commits touch (ignore rules can differ
+/// between those commits, so ordinary untracked files count too).
+fn guard_rebase_files(repo: &Path, upstream: &str) -> GitResult<()> {
+    let Some(head) = head_oid(repo) else { return Ok(()) };
+    let target = runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{upstream}^{{commit}}")])?;
+    let target = target.trim();
+    let mut paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &head, target, "--"])?;
+    paths.push(0);
+    paths
+        .extend(runner::run_bytes(repo, ["log", "--format=", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &format!("{target}..{head}"), "--"])?);
+    guard_untracked_paths(repo, &paths)
+}
+
 pub fn rebase_onto(repo: &Path, upstream: &str) -> GitResult<OpOutcome> {
+    guard_rebase_files(repo, upstream)?;
     let saved = stash_staged(repo, "Rebase")?;
     let result = runner::exec(repo, ["rebase", "--autostash", upstream]).and_then(|out| sequence_outcome(repo, out, "git rebase"));
     with_saved(repo, saved, result)

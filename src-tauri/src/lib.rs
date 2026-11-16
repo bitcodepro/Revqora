@@ -1352,13 +1352,22 @@ async fn sparse_checkout_set(
     repo: String,
     cone: bool,
     entries: Vec<String>,
+    allow_ignored_loss: Option<bool>,
 ) -> GitResult<git::sparse::SparseResult> {
-    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_set", None, move || git::sparse::set(&p(&repo), cone, &entries)).await
+    let allow = allow_ignored_loss.unwrap_or(false);
+    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_set", None, move || git::sparse::set_with(&p(&repo), cone, &entries, allow)).await
 }
 
 #[tauri::command]
-async fn sparse_checkout_add(app: AppHandle, expected_state: Option<String>, repo: String, entries: Vec<String>) -> GitResult<git::sparse::SparseResult> {
-    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_add", None, move || git::sparse::add(&p(&repo), &entries)).await
+async fn sparse_checkout_add(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    entries: Vec<String>,
+    allow_ignored_loss: Option<bool>,
+) -> GitResult<git::sparse::SparseResult> {
+    let allow = allow_ignored_loss.unwrap_or(false);
+    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_add", None, move || git::sparse::add_with(&p(&repo), &entries, allow)).await
 }
 
 #[tauri::command]
@@ -1367,8 +1376,14 @@ async fn sparse_checkout_disable(app: AppHandle, expected_state: Option<String>,
 }
 
 #[tauri::command]
-async fn sparse_checkout_reapply(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<git::sparse::SparseResult> {
-    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_reapply", None, move || git::sparse::reapply(&p(&repo))).await
+async fn sparse_checkout_reapply(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    allow_ignored_loss: Option<bool>,
+) -> GitResult<git::sparse::SparseResult> {
+    let allow = allow_ignored_loss.unwrap_or(false);
+    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_reapply", None, move || git::sparse::reapply_with(&p(&repo), allow)).await
 }
 
 /// Periodic fetch in the background: never asks for credentials.

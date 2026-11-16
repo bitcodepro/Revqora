@@ -654,3 +654,76 @@ fn hidden_mode_change_follows_the_owner_execute_bit() {
     assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o645, "the user's mode was reset");
     assert!(!repo.git(&["stash", "list"]).is_empty(), "the saved changes stay in Stashes");
 }
+
+/// main: base, "add files" (secret.cfg, plain.txt), "remove" (deletes both, ignores secret.cfg).
+fn repo_with_removed_files() -> (Repo, String, String) {
+    let repo = Repo::new();
+    repo.write("base.txt", "base\n");
+    repo.commit_all("base");
+    repo.write("secret.cfg", "tracked\n");
+    repo.write("plain.txt", "tracked\n");
+    let with_files = repo.commit_all("add files");
+    fs::remove_file(repo.p().join("secret.cfg")).unwrap();
+    fs::remove_file(repo.p().join("plain.txt")).unwrap();
+    repo.write(".gitignore", "secret.cfg\n");
+    let removed = repo.commit_all("remove");
+    (repo, with_files, removed)
+}
+
+#[test]
+fn reset_never_overwrites_untracked_or_ignored_files() {
+    let (repo, with_files, removed) = repo_with_removed_files();
+    for (mode, file) in [("hard", "secret.cfg"), ("hard", "plain.txt"), ("keep", "secret.cfg")] {
+        repo.write(file, "MINE\n");
+        let e = ops::reset(repo.p(), &with_files, mode).unwrap_err();
+        assert_eq!(e.kind, "ignored-collision", "{mode} {file}: {}", e.message);
+        assert_eq!(fs::read_to_string(repo.p().join(file)).unwrap(), "MINE\n");
+        assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), removed, "{mode}: HEAD must not move");
+        fs::remove_file(repo.p().join(file)).unwrap();
+    }
+    // Soft and mixed never write files; hard works once nothing is in the way.
+    repo.write("secret.cfg", "MINE\n");
+    ops::reset(repo.p(), &with_files, "mixed").unwrap();
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "MINE\n");
+    ops::reset(repo.p(), &removed, "soft").unwrap();
+    repo.git(&["reset", "-q", "--mixed", &removed]);
+    fs::remove_file(repo.p().join("secret.cfg")).unwrap();
+    ops::reset(repo.p(), &with_files, "hard").unwrap();
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "tracked\n");
+    assert_eq!(ops::reset(repo.p(), "--hard", "mixed").unwrap_err().kind, "invalid-argument");
+}
+
+#[test]
+fn revert_never_overwrites_ignored_files() {
+    let (repo, _, removed) = repo_with_removed_files();
+    repo.write("secret.cfg", "MINE\n");
+    let e = ops::revert(repo.p(), &removed, false).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "MINE\n");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), removed);
+    fs::remove_file(repo.p().join("secret.cfg")).unwrap();
+    ops::revert(repo.p(), &removed, false).unwrap();
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "tracked\n");
+}
+
+#[test]
+fn rebase_onto_never_overwrites_ignored_files() {
+    let (repo, _, removed) = repo_with_removed_files();
+    // Upstream tracks the ignored path; the topic branch does not have it.
+    repo.git(&["switch", "-q", "-c", "up"]);
+    repo.write("secret.cfg", "upstream\n");
+    repo.git(&["add", "-f", "secret.cfg"]);
+    repo.git(&["commit", "-q", "-m", "up"]);
+    repo.git(&["switch", "-q", "-c", "topic", &removed]);
+    repo.write("topic.txt", "t\n");
+    let topic = repo.commit_all("topic");
+    repo.write("secret.cfg", "MINE\n");
+    let e = ops::rebase_onto(repo.p(), "up").unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "MINE\n");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), topic);
+    fs::remove_file(repo.p().join("secret.cfg")).unwrap();
+    ops::rebase_onto(repo.p(), "up").unwrap();
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "upstream\n");
+    assert!(repo.p().join("topic.txt").exists());
+}

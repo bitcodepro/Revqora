@@ -45,13 +45,32 @@ export function SparseTab({ root }: { root: string }) {
   if (loadError) return <div className="error-text" role="alert">{loadError}</div>;
   if (!state) return <div className="loading-center" style={{ minHeight: 120 }}><span className="loader" aria-label="Loading sparse checkout state" /></div>;
 
-  const run = async (key: string, label: string, f: () => Promise<SparseResult>) => {
+  /** Runs a change; when Git would delete ignored files, asks first and repeats with consent. */
+  const withIgnoredConsent = async (label: string, f: (allowIgnoredLoss: boolean) => Promise<SparseResult>): Promise<SparseResult | null> => {
+    try {
+      return await f(false);
+    } catch (e) {
+      if (!isGitError(e) || e.kind !== "sparse-ignored-files") throw e;
+      const ok = await confirmDialog({
+        title: `${label}: ignored files will be deleted`,
+        confirm: "Delete them and continue",
+        danger: true,
+        message:
+          "Git deletes folders that leave the working tree together with the ignored files in them (for example .env files, node_modules or build output). These files are not in the repository and cannot be restored from Undo or a checkpoint. Move the ones you need out of the repository first.",
+        details: listOf(e.details),
+      });
+      return ok ? await f(true) : null;
+    }
+  };
+
+  const run = async (key: string, label: string, f: (allowIgnoredLoss: boolean) => Promise<SparseResult>) => {
     const id = newOpId();
     setBusy(key);
     startBusy(id, label);
     setOutcome(null);
     try {
-      const r = await f();
+      const r = await withIgnoredConsent(label, f);
+      if (!r) return;
       adopt(r.state);
       if (r.leftBehind.length) {
         setOutcome({ title: "Git kept these modified files outside the sparse set in the working tree. Commit, stash or discard them, then choose Reapply.", text: r.warning, files: r.leftBehind });
@@ -95,17 +114,17 @@ export function SparseTab({ root }: { root: string }) {
 
   const enable = async () => {
     if (!(await confirmCone("Turn on sparse checkout", folders, "Turn on"))) return;
-    await run("enable", "Turn on sparse checkout", () => api.sparseCheckoutSet(root, true, folders));
+    await run("enable", "Turn on sparse checkout", (allow) => api.sparseCheckoutSet(root, true, folders, allow));
   };
   const applyFolders = async () => {
     const added = folders.filter((f) => !state.patterns.includes(f));
     const onlyAdds = state.patterns.every((f) => folders.includes(f));
     if (onlyAdds && added.length) {
-      await run("apply", "Add sparse folders", () => api.sparseCheckoutAdd(root, added));
+      await run("apply", "Add sparse folders", (allow) => api.sparseCheckoutAdd(root, added, allow));
       return;
     }
     if (!(await confirmCone("Change sparse folders", folders, "Apply"))) return;
-    await run("apply", "Change sparse folders", () => api.sparseCheckoutSet(root, true, folders));
+    await run("apply", "Change sparse folders", (allow) => api.sparseCheckoutSet(root, true, folders, allow));
   };
   const applyPatterns = async () => {
     const list = patterns.split(/\r?\n/).filter((l) => l.trim());
@@ -138,7 +157,7 @@ export function SparseTab({ root }: { root: string }) {
           : `Cone mode selects whole folders. The folders will be: ${next.join(", ") || "(top-level files only)"}.`,
         details: dropped,
       });
-      if (ok) await run("mode", "Switch to cone mode", () => api.sparseCheckoutSet(root, true, next));
+      if (ok) await run("mode", "Switch to cone mode", (allow) => api.sparseCheckoutSet(root, true, next, allow));
     }
   };
   const disable = async () => {
@@ -233,7 +252,7 @@ export function SparseTab({ root }: { root: string }) {
               <button type="button" className="btn" disabled={!!busy || !dirty} onClick={() => adopt(state)}>
                 Undo edits
               </button>
-              <button type="button" className="btn" disabled={!!busy} onClick={() => run("reapply", "Reapply sparse checkout", () => api.sparseCheckoutReapply(root))}>
+              <button type="button" className="btn" disabled={!!busy} onClick={() => run("reapply", "Reapply sparse checkout", (allow) => api.sparseCheckoutReapply(root, allow))}>
                 <RefreshCw size={14} /> Reapply
               </button>
               <button type="button" className="btn" disabled={!!busy} onClick={switchMode}>

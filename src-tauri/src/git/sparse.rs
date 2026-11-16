@@ -220,8 +220,103 @@ fn sparse_run(repo: &Path, args: &[&str], input: Option<&[u8]>, connection: Opti
     Ok(SparseResult { state: state(repo)?, left_behind, warning })
 }
 
+/// True when `dir` stays in the working tree for the cone `folders`: it is one of them, lies
+/// inside one, or is a parent of one (parents keep their own files, not their other folders).
+fn in_cone(dir: &str, folders: &[String]) -> bool {
+    let inside = |inner: &str, outer: &str| inner.strip_prefix(outer).is_some_and(|rest| rest.starts_with('/'));
+    folders.iter().any(|f| f == dir || inside(dir, f) || inside(f, dir))
+}
+
+/// The top-most folder of the folder path `dir` that the cone `folders` exclude, if any.
+fn excluded_root<'a>(dir: &'a str, folders: &[String]) -> Option<&'a str> {
+    let mut ends: Vec<usize> = dir.match_indices('/').map(|(i, _)| i).collect();
+    ends.push(dir.len());
+    ends.into_iter().map(|end| &dir[..end]).find(|d| !in_cone(d, folders))
+}
+
+/// Ignored files and folders that Git would delete when the cone becomes `folders`.
+///
+/// In cone mode Git removes every folder with tracked files outside the cone, together with
+/// the ignored files in it (`.env`, `node_modules`, build output), without a warning; recovery
+/// checkpoints do not keep ignored files. Git leaves a folder alone only when it also holds
+/// untracked files that are not ignored.
+pub fn ignored_leaving_cone(repo: &Path, folders: &[String]) -> GitResult<Vec<String>> {
+    let ignored = super::workspace_files::ignored(repo)?;
+    if ignored.truncated {
+        return Err(GitError::new("There are too many ignored files to check which ones the sparse checkout would delete. Nothing was changed.")
+            .kind("sparse-ignored-unknown"));
+    }
+    if ignored.paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ignore_case = cfg!(windows) || config_bool(repo, "core.ignorecase")?.unwrap_or(false);
+    let fold = |p: &str| if ignore_case { p.to_lowercase() } else { p.to_owned() };
+    let folders: Vec<String> = folders.iter().map(|f| fold(f)).collect();
+    // Ignored paths, by the excluded folder Git would remove them with. A file directly in an
+    // included folder (or in the root) is never touched.
+    let mut at_risk: std::collections::BTreeMap<String, Vec<&String>> = std::collections::BTreeMap::new();
+    for path in &ignored.paths {
+        let folded = fold(path);
+        let dir = if folded.ends_with('/') { folded.trim_end_matches('/') } else { folded.rsplit_once('/').map_or("", |(dir, _)| dir) };
+        if dir.is_empty() {
+            continue;
+        }
+        if let Some(root) = excluded_root(dir, &folders) {
+            at_risk.entry(root.to_owned()).or_default().push(path);
+        }
+    }
+    if at_risk.is_empty() {
+        return Ok(Vec::new());
+    }
+    let roots_with = |listing: &[u8]| -> GitResult<std::collections::BTreeSet<String>> {
+        let mut found = std::collections::BTreeSet::new();
+        for path in super::workspace_files::path_list(listing)?.split('\0').filter(|p| !p.is_empty()) {
+            let folded = fold(path);
+            for (end, _) in folded.match_indices('/') {
+                if at_risk.contains_key(&folded[..end]) {
+                    found.insert(folded[..end].to_owned());
+                }
+            }
+        }
+        Ok(found)
+    };
+    // Git removes only folders that hold tracked files, and skips those with other untracked files.
+    let tracked = roots_with(&runner::run_bytes(repo, ["ls-files", "-z"])?)?;
+    let kept = roots_with(&runner::run_bytes(repo, ["ls-files", "-z", "--others", "--exclude-standard", "--no-empty-directory"])?)?;
+    let mut out: Vec<String> =
+        at_risk.iter().filter(|(root, _)| tracked.contains(*root) && !kept.contains(*root)).flat_map(|(_, paths)| paths.iter().map(|p| (*p).clone())).collect();
+    out.sort();
+    Ok(out)
+}
+
+/// Refuses a cone change that would delete ignored files, unless the user accepted the loss.
+fn guard_ignored(repo: &Path, cone: bool, folders: &[String], allow_ignored_loss: bool) -> GitResult<()> {
+    if !cone || allow_ignored_loss {
+        return Ok(());
+    }
+    let doomed = ignored_leaving_cone(repo, folders)?;
+    if doomed.is_empty() {
+        return Ok(());
+    }
+    let plural = if doomed.len() == 1 { "" } else { "s" };
+    Err(GitError::new(format!(
+        "Git would permanently delete {} ignored file{plural} or folder{plural} in folders that leave the working tree. Nothing was changed.",
+        doomed.len()
+    ))
+    .kind("sparse-ignored-files")
+    .details(doomed))
+}
+
 /// Enables sparse checkout or replaces its folders/patterns, choosing cone or non-cone mode.
+/// Refuses when ignored files would be deleted (see `set_with`).
 pub fn set(repo: &Path, cone: bool, entries: &[String]) -> GitResult<SparseResult> {
+    set_with(repo, cone, entries, false)
+}
+
+/// `set`; `allow_ignored_loss` is the user's consent to Git deleting the ignored files in
+/// folders that leave the working tree.
+pub fn set_with(repo: &Path, cone: bool, entries: &[String], allow_ignored_loss: bool) -> GitResult<SparseResult> {
+    guard_ignored(repo, cone, &normalize_entries(cone, entries)?, allow_ignored_loss)?;
     set_with_connection(repo, cone, entries, None)
 }
 
@@ -244,6 +339,12 @@ pub fn set_with_connection(repo: &Path, cone: bool, entries: &[String], connecti
 
 /// Adds folders (cone) or patterns (non-cone) to an enabled sparse checkout.
 pub fn add(repo: &Path, entries: &[String]) -> GitResult<SparseResult> {
+    add_with(repo, entries, false)
+}
+
+/// `add`; Git cleans every excluded folder again on each change, so ignored files created in
+/// one since the last change are deleted too.
+pub fn add_with(repo: &Path, entries: &[String], allow_ignored_loss: bool) -> GitResult<SparseResult> {
     let current = state(repo)?;
     if !current.enabled {
         return Err(GitError::new("Sparse checkout is off. Turn it on first.").kind("sparse-disabled"));
@@ -252,6 +353,8 @@ pub fn add(repo: &Path, entries: &[String]) -> GitResult<SparseResult> {
     if entries.is_empty() {
         return Err(GitError::new("Enter at least one folder.").kind("invalid-sparse-path"));
     }
+    let next: Vec<String> = current.patterns.iter().chain(&entries).cloned().collect();
+    guard_ignored(repo, current.cone, &next, allow_ignored_loss)?;
     sparse_run(repo, &["add", "--stdin"], Some(&stdin_of(&entries)), None)
 }
 
@@ -262,9 +365,15 @@ pub fn disable(repo: &Path) -> GitResult<SparseResult> {
 
 /// Applies the current patterns again (e.g. after a checkout or merge brought files back).
 pub fn reapply(repo: &Path) -> GitResult<SparseResult> {
-    if !state(repo)?.enabled {
+    reapply_with(repo, false)
+}
+
+pub fn reapply_with(repo: &Path, allow_ignored_loss: bool) -> GitResult<SparseResult> {
+    let current = state(repo)?;
+    if !current.enabled {
         return Err(GitError::new("Sparse checkout is off.").kind("sparse-disabled"));
     }
+    guard_ignored(repo, current.cone, &current.patterns, allow_ignored_loss)?;
     sparse_run(repo, &["reapply"], None, None)
 }
 
@@ -279,6 +388,21 @@ mod tests {
         for bad in ["", "/", ".", "a/../b", ".git", "a//b", "a\nb"] {
             assert!(normalize_folder(bad).is_err(), "{bad:?} accepted");
         }
+    }
+
+    #[test]
+    fn cone_exclusion_finds_the_folder_git_removes() {
+        let cone = vec!["keep".to_string(), "a/b".to_string()];
+        assert_eq!(excluded_root("lib", &cone), Some("lib"));
+        assert_eq!(excluded_root("lib/node_modules", &cone), Some("lib"));
+        assert_eq!(excluded_root("a/c/deep", &cone), Some("a/c"));
+        // Inside the cone, or a parent of a cone folder.
+        for kept in ["keep", "keep/x/y", "a", "a/b", "a/b/c"] {
+            assert_eq!(excluded_root(kept, &cone), None, "{kept}");
+        }
+        // Similar names are not parents or children.
+        assert_eq!(excluded_root("keeper", &cone), Some("keeper"));
+        assert_eq!(excluded_root("a/bc", &cone), Some("a/bc"));
     }
 
     #[test]

@@ -280,10 +280,13 @@ export const api = {
   fetchMoreHistory: (repo: string, deepen: number | null, opId: string) => call<string>("fetch_more_history", { repo, deepen, opId }),
   sparseCheckoutState: (repo: string) => call<import("./types").SparseState>("sparse_checkout_state", { repo }),
   /** Enables sparse checkout or replaces its folders (cone) / patterns (non-cone). */
-  sparseCheckoutSet: (repo: string, cone: boolean, entries: string[]) => call<import("./types").SparseResult>("sparse_checkout_set", { repo, cone, entries }),
-  sparseCheckoutAdd: (repo: string, entries: string[]) => call<import("./types").SparseResult>("sparse_checkout_add", { repo, entries }),
+  /** `allowIgnoredLoss`: the user accepted that Git deletes ignored files in folders that leave (kind "sparse-ignored-files"). */
+  sparseCheckoutSet: (repo: string, cone: boolean, entries: string[], allowIgnoredLoss = false) =>
+    call<import("./types").SparseResult>("sparse_checkout_set", { repo, cone, entries, allowIgnoredLoss }),
+  sparseCheckoutAdd: (repo: string, entries: string[], allowIgnoredLoss = false) =>
+    call<import("./types").SparseResult>("sparse_checkout_add", { repo, entries, allowIgnoredLoss }),
   sparseCheckoutDisable: (repo: string) => call<import("./types").SparseResult>("sparse_checkout_disable", { repo }),
-  sparseCheckoutReapply: (repo: string) => call<import("./types").SparseResult>("sparse_checkout_reapply", { repo }),
+  sparseCheckoutReapply: (repo: string, allowIgnoredLoss = false) => call<import("./types").SparseResult>("sparse_checkout_reapply", { repo, allowIgnoredLoss }),
   pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string, pruneRemote?: boolean) =>
     call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState, pruneRemote }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
