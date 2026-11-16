@@ -1097,13 +1097,13 @@ fn ignored_files_that_cannot_be_saved_need_consent_for_that_exact_list() {
     assert_eq!(e.details, ["huge.env", "local.env", "other.env"]);
     assert!(!ran, "nothing may run before the user accepts");
     // Consent for an outdated list does not apply.
-    recovery::accept_unprotected(repo.p(), &e.details);
+    recovery::accept_unprotected(repo.p(), "reset", &e.details);
     repo.write("new.env", "appeared\n");
     let (result, _) = run_op(repo.p(), || Ok(()));
     let again = result.unwrap_err();
     assert_eq!(again.details, ["huge.env", "local.env", "new.env", "other.env"]);
     // Consent for the current list runs it once; changes are still detected.
-    recovery::accept_unprotected(repo.p(), &again.details);
+    recovery::accept_unprotected(repo.p(), "reset", &again.details);
     let (result, report) = run_op(repo.p(), || {
         fs::write(repo.p().join("local.env"), "from git\n").unwrap();
         Ok(())
@@ -1194,7 +1194,7 @@ fn a_collision_lists_every_path_and_continues_only_with_the_users_decision() {
     assert_eq!(e.kind, "ignored-collision");
     assert_eq!(e.details, ["keys.env", "keys.env", "settings.env", "settings.env"], "all pairs, not just the first");
     // A decision for part of the list does not apply.
-    recovery::accept_collisions(r.p(), &["keys.env".to_owned()], true);
+    recovery::accept_collisions(r.p(), "merge_start", &["keys.env".to_owned()], true);
     let (result, _) = merge_op(r.p());
     assert_eq!(result.unwrap_err().kind, "ignored-collision");
     assert_eq!(
@@ -1203,7 +1203,7 @@ fn a_collision_lists_every_path_and_continues_only_with_the_users_decision() {
 "
     );
     // Save a copy and continue: saved before Git runs, reported, comparable, restorable on request.
-    recovery::accept_collisions(r.p(), &local(), true);
+    recovery::accept_collisions(r.p(), "merge_start", &local(), true);
     let (result, report) = merge_op(r.p());
     result.unwrap();
     assert_eq!(
@@ -1230,13 +1230,13 @@ fn a_collision_lists_every_path_and_continues_only_with_the_users_decision() {
 fn continuing_without_a_copy_applies_once() {
     use revqora_lib::git::recovery;
     let r = collision_fixture();
-    recovery::accept_collisions(r.p(), &local(), false);
+    recovery::accept_collisions(r.p(), "merge_start", &local(), false);
     // The decision is consumed by the next operation even if that one finds nothing to decide.
     let (result, _) = run_op(r.p(), || Ok(()));
     result.unwrap();
     let (result, _) = merge_op(r.p());
     assert_eq!(result.unwrap_err().kind, "ignored-collision", "a decision applies to one operation");
-    recovery::accept_collisions(r.p(), &local(), false);
+    recovery::accept_collisions(r.p(), "merge_start", &local(), false);
     let (result, _) = merge_op(r.p());
     result.unwrap();
     assert_eq!(
@@ -1244,4 +1244,140 @@ fn continuing_without_a_copy_applies_once() {
         "versioned settings
 "
     );
+}
+
+fn huge_fixture() -> Repo {
+    let repo = ignored_fixture();
+    // Larger than a checkpoint may hold; sparse, so the test writes almost nothing.
+    fs::File::create(repo.p().join("huge.env")).unwrap().set_len(101 * 1024 * 1024).unwrap();
+    repo
+}
+
+fn unprotected_list() -> Vec<String> {
+    vec!["huge.env".to_owned(), "local.env".to_owned(), "other.env".to_owned()]
+}
+
+#[test]
+fn consent_never_survives_its_operation() {
+    use revqora_lib::git::{operations, recovery};
+    let repo = huge_fixture();
+    // Rejected before it starts (stale state): the consent is gone, not kept for later.
+    recovery::accept_unprotected(repo.p(), "reset", &unprotected_list());
+    let stale = operations::run(repo.p(), "reset", Some("not-the-current-state"), |_, _| {}, || Ok(()));
+    assert_eq!(stale.unwrap_err().kind, "stale-operation");
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable", "a rejected run uses up the consent");
+    // An unrelated operation that runs first takes it and cannot use it.
+    recovery::accept_unprotected(repo.p(), "reset", &unprotected_list());
+    let other = operations::run(repo.p(), "checkout", None, |_, _| {}, || Ok(()));
+    assert_eq!(other.unwrap_err().kind, "ignored-backup-unavailable", "consent for reset does not apply to checkout");
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable", "and is gone afterwards");
+    // A run whose backup succeeds after all also ends it.
+    recovery::accept_unprotected(repo.p(), "reset", &unprotected_list());
+    fs::remove_file(repo.p().join("huge.env")).unwrap();
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    result.unwrap();
+    fs::File::create(repo.p().join("huge.env")).unwrap().set_len(101 * 1024 * 1024).unwrap();
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable");
+}
+
+#[test]
+fn a_panicking_operation_still_reports_and_leaves_no_watch_behind() {
+    let repo = ignored_fixture();
+    let other = ignored_fixture();
+    // One worker thread runs both operations, like the reusable blocking pool.
+    let (a, b) = (repo.p().to_path_buf(), other.p().to_path_buf());
+    let (report, next) = std::thread::spawn(move || {
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_op(&a, || {
+                fs::write(a.join("local.env"), "half written\n").unwrap();
+                panic!("operation panicked");
+            })
+        }));
+        assert!(panicked.is_err());
+        let report = revqora_lib::git::recovery::take_ignored_report(&a);
+        let next = run_op(&b, || Ok(()));
+        (report, next)
+    })
+    .join()
+    .unwrap();
+    let report = report.expect("the partial write must be reported after a panic");
+    assert_eq!(report.paths, ["local.env"]);
+    next.0.unwrap();
+    assert!(next.1.is_none(), "the next operation on the worker sees no leftover watch");
+}
+
+#[test]
+fn copy_and_no_copy_decisions_stay_together_and_a_new_copy_choice_starts_clean() {
+    use revqora_lib::git::recovery;
+    let r = collision_fixture();
+    fs::File::create(r.p().join("settings.env")).unwrap().set_len(101 * 1024 * 1024).unwrap();
+    // Copy chosen, saving fails; the user then accepts running without a copy in the same flow.
+    recovery::accept_collisions(r.p(), "merge_start", &local(), true);
+    let (result, _) = merge_op(r.p());
+    let e = result.unwrap_err();
+    assert_eq!(e.kind, "ignored-backup-unavailable");
+    // A fresh Copy choice does not inherit an older no-copy consent.
+    recovery::accept_unprotected(r.p(), "merge_start", &e.details);
+    recovery::accept_collisions(r.p(), "merge_start", &local(), true);
+    let (result, _) = merge_op(r.p());
+    assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable");
+    // Both decisions sent together run it.
+    recovery::accept_collisions(r.p(), "merge_start", &local(), true);
+    recovery::accept_unprotected(r.p(), "merge_start", &e.details);
+    let (result, _) = merge_op(r.p());
+    result.unwrap();
+}
+
+/// main ignores `cache`; feature tracks a file named `cache`; locally `cache/` holds data.
+#[cfg(unix)]
+fn folder_collision(name: &std::ffi::OsStr) -> Repo {
+    let r = Repo::new();
+    r.write(".gitignore", "cache\n");
+    r.commit_all("base");
+    r.git(&["switch", "-qc", "feature"]);
+    r.write("cache", "tracked\n");
+    r.git(&["add", "-f", "cache"]);
+    r.git(&["commit", "-qm", "track cache"]);
+    r.git(&["switch", "-q", "main"]);
+    fs::create_dir_all(r.p().join("cache/sub")).unwrap();
+    let mut path = r.p().join("cache").into_os_string();
+    path.push("/");
+    path.push(name);
+    fs::write(std::path::PathBuf::from(path), b"PRECIOUS").unwrap();
+    r
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_route_never_runs_git_with_an_incomplete_copy() {
+    use revqora_lib::git::recovery;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    let flip = |r: &Repo| {
+        let (result, _) = merge_op(r.p());
+        result
+    };
+    // A name that is not valid UTF-8 cannot be saved.
+    let r = folder_collision(std::ffi::OsStr::from_bytes(b"secret-\xff"));
+    let e = flip(&r).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision");
+    let local: Vec<String> = e.details.iter().skip(1).step_by(2).cloned().collect();
+    recovery::accept_collisions(r.p(), "merge_start", &local, true);
+    let e = flip(&r).unwrap_err();
+    assert_eq!(e.kind, "ignored-backup-unavailable", "{}", e.message);
+    assert_eq!(e.details, ["cache"]);
+    assert!(r.p().join("cache").is_dir(), "Git did not run");
+    // An unreadable folder cannot be saved either.
+    let r = folder_collision(std::ffi::OsStr::new("secret"));
+    fs::set_permissions(r.p().join("cache/sub"), fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(r.p().join("cache/sub")).is_err() {
+        recovery::accept_collisions(r.p(), "merge_start", &["cache".to_owned()], true);
+        let e = flip(&r).unwrap_err();
+        assert_eq!(e.kind, "ignored-backup-unavailable", "{}", e.message);
+        assert!(r.p().join("cache/secret").is_file(), "Git did not run");
+    }
+    fs::set_permissions(r.p().join("cache/sub"), fs::Permissions::from_mode(0o755)).unwrap();
 }

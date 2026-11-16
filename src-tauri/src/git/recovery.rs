@@ -471,15 +471,12 @@ thread_local! {
     // queued operation runs on another thread, so it can never replace or take this report.
     static WATCH: std::cell::RefCell<Option<Watch>> = const { std::cell::RefCell::new(None) };
     static REPORT: std::cell::RefCell<Option<IgnoredReport>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Lists of unprotected ignored files the user accepted, per repository; used once.
-fn accepted() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<String>>> {
-    static A: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<String>>>> = std::sync::OnceLock::new();
-    A.get_or_init(Default::default)
+    // The user's decisions for the operation running on this thread (taken in `begin`).
+    static ACTIVE: std::cell::RefCell<Option<Consent>> = const { std::cell::RefCell::new(None) };
 }
 
 /// A user's decision to continue although Git may overwrite these local paths.
+#[derive(Clone)]
 struct AcceptedCollisions {
     /// Absolute, normalized paths the decision covers.
     covered: BTreeSet<String>,
@@ -488,9 +485,22 @@ struct AcceptedCollisions {
     copy: Vec<String>,
 }
 
-fn collisions() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, AcceptedCollisions>> {
-    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, AcceptedCollisions>>> = std::sync::OnceLock::new();
-    C.get_or_init(Default::default)
+/// Everything the user decided for the next run of one command in one repository. The next
+/// operation in that repository takes it, whatever that operation is, and uses it only if it is
+/// that command; it never outlives that operation.
+#[derive(Clone)]
+struct Consent {
+    command: String,
+    collisions: Option<AcceptedCollisions>,
+    /// Paths the user accepted to run without a saved copy (sorted).
+    unprotected: Option<Vec<String>>,
+}
+
+type ConsentMap = std::sync::Mutex<std::collections::HashMap<PathBuf, Consent>>;
+
+fn pending() -> &'static ConsentMap {
+    static P: std::sync::OnceLock<ConsentMap> = std::sync::OnceLock::new();
+    P.get_or_init(Default::default)
 }
 
 fn absolute_key(path: &Path) -> String {
@@ -503,29 +513,63 @@ fn absolute_key(path: &Path) -> String {
     }
 }
 
-/// The user continues the next operation in `root` although Git may overwrite `paths`
+/// The user continues the next `command` in `root` although Git may overwrite `paths`
 /// (repository-relative, as the collision listed them). With `copy`, they are saved in the
-/// operation's checkpoint first. Applies to the next operation only.
-pub fn accept_collisions(root: &Path, paths: &[String], copy: bool) {
+/// operation's checkpoint first. Replaces every earlier decision for that repository, so a
+/// new choice never inherits an older consent to run without a copy.
+pub fn accept_collisions(root: &Path, command: &str, paths: &[String], copy: bool) {
     let base = watch_key(root);
     let covered = paths.iter().map(|p| absolute_key(&base.join(p))).collect();
     let copy = if copy { paths.to_vec() } else { Vec::new() };
-    collisions().lock().unwrap_or_else(|e| e.into_inner()).insert(base, AcceptedCollisions { covered, copy });
+    let consent = Consent { command: command.to_owned(), collisions: Some(AcceptedCollisions { covered, copy }), unprotected: None };
+    pending().lock().unwrap_or_else(|e| e.into_inner()).insert(base, consent);
+}
+
+/// The user accepts that the next `command` in `root` runs although these paths could not be
+/// saved. It applies only if that operation finds exactly this list. A collision decision made
+/// for the same command just before is kept with it.
+pub fn accept_unprotected(root: &Path, command: &str, paths: &[String]) {
+    let mut paths = paths.to_vec();
+    paths.sort();
+    let mut all = pending().lock().unwrap_or_else(|e| e.into_inner());
+    let fresh = || Consent { command: command.to_owned(), collisions: None, unprotected: None };
+    let entry = all.entry(watch_key(root)).or_insert_with(fresh);
+    if entry.command != command {
+        *entry = fresh();
+    }
+    entry.unprotected = Some(paths);
+}
+
+/// Start of an operation that owns `root`: takes the user's pending decisions. They apply only
+/// if they were made for this command; either way they leave the store.
+pub fn begin(root: &Path, command: &str) {
+    let taken = pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&watch_key(root));
+    ACTIVE.with(|a| *a.borrow_mut() = taken.filter(|c| c.command == command));
+}
+
+/// Ends the operation started by `begin` on every exit path, unwinding included: reports changed
+/// ignored files and drops the watch and every decision of this operation.
+pub struct Finish(pub PathBuf);
+
+impl Drop for Finish {
+    fn drop(&mut self) {
+        finish_watch(&self.0);
+        ACTIVE.with(|a| a.borrow_mut().take());
+    }
 }
 
 /// True when the user accepted every one of `paths` (relative to `repo`, which may be a
-/// submodule of the repository the decision was made for).
+/// submodule of the repository the decision was made for) for the running operation.
 pub fn collisions_accepted(repo: &Path, paths: &[String]) -> bool {
     let base = watch_key(repo);
     let wanted: Vec<String> = paths.iter().map(|p| absolute_key(&base.join(p))).collect();
-    collisions().lock().unwrap_or_else(|e| e.into_inner()).values().any(|a| wanted.iter().all(|w| a.covered.contains(w)))
+    ACTIVE.with(|a| a.borrow().as_ref().and_then(|c| c.collisions.as_ref()).is_some_and(|c| wanted.iter().all(|w| c.covered.contains(w))))
 }
 
-/// Git's ignored-file protection flag for an operation in `repo`. Git keeps refusing to replace
+/// Git's ignored-file protection flag for the running operation. Git keeps refusing to replace
 /// ignored files unless the user decided to continue past the listed collisions.
-pub fn ignored_flag(repo: &Path) -> &'static str {
-    let decided = collisions().lock().unwrap_or_else(|e| e.into_inner()).contains_key(&watch_key(repo));
-    if decided {
+pub fn ignored_flag(_repo: &Path) -> &'static str {
+    if ACTIVE.with(|a| a.borrow().as_ref().is_some_and(|c| c.collisions.is_some())) {
         "--overwrite-ignore"
     } else {
         "--no-overwrite-ignore"
@@ -533,19 +577,32 @@ pub fn ignored_flag(repo: &Path) -> &'static str {
 }
 
 /// Files under `path` (a file, or a folder walked without following links), repository-relative.
-fn files_under(root: &Path, path: &str, out: &mut Vec<String>) {
+/// Fails rather than skip anything it cannot save: an unreadable folder or entry, a link, a
+/// special file or a name that is not valid UTF-8.
+fn files_under(root: &Path, path: &str, out: &mut Vec<String>) -> Result<(), String> {
+    let path = path.trim_end_matches('/');
     let full = root.join(path);
-    let Ok(m) = fs::symlink_metadata(&full) else { return };
-    if m.is_file() || m.file_type().is_symlink() {
-        out.push(path.trim_end_matches('/').to_owned());
-    } else if m.is_dir() {
-        if let Ok(entries) = fs::read_dir(&full) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                files_under(root, &format!("{}/{name}", path.trim_end_matches('/')), out);
-            }
-        }
+    let m = match fs::symlink_metadata(&full) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{path}: {e}")),
+    };
+    if m.file_type().is_symlink() {
+        return Err(format!("{path} is a link"));
     }
+    if m.is_file() {
+        out.push(path.to_owned());
+        return Ok(());
+    }
+    if !m.is_dir() {
+        return Err(format!("{path} is not a regular file or folder"));
+    }
+    for entry in fs::read_dir(&full).map_err(|e| format!("{path}: {e}"))? {
+        let entry = entry.map_err(|e| format!("{path}: {e}"))?;
+        let name = entry.file_name().into_string().map_err(|_| format!("{path} contains a name that is not valid UTF-8"))?;
+        files_under(root, &format!("{path}/{name}"), out)?;
+    }
+    Ok(())
 }
 
 fn watch_key(root: &Path) -> PathBuf {
@@ -612,60 +669,68 @@ fn same(before: &Watched, now: &Watched) -> bool {
         }
 }
 
-/// The user accepts that the next operation in `root` runs although these ignored files could
-/// not be copied. It applies only if the operation finds exactly this list.
-pub fn accept_unprotected(root: &Path, paths: &[String]) {
-    let mut paths = paths.to_vec();
-    paths.sort();
-    accepted().lock().unwrap_or_else(|e| e.into_inner()).insert(watch_key(root), paths);
-}
-
 /// Records the individual ignored files and copies them into the operation's checkpoint, before
 /// `command`. Returns true when that checkpoint was created (it replaces the ordinary one).
 fn watch_ignored(root: &Path, command: &str, expected: Option<&str>) -> GitResult<bool> {
     WATCH.with(|w| w.borrow_mut().take());
     REPORT.with(|r| r.borrow_mut().take());
+    let (copy, approved) = ACTIVE.with(|a| {
+        let mut a = a.borrow_mut();
+        let copy = a.as_ref().and_then(|c| c.collisions.as_ref()).map(|c| c.copy.clone()).unwrap_or_default();
+        (copy, a.as_mut().and_then(|c| c.unprotected.take()))
+    });
     let mut files = individual_ignored(root)?;
     // Paths the user asked to save before continuing past a collision (files in wholly ignored
-    // folders included).
-    let copy = collisions().lock().unwrap_or_else(|e| e.into_inner()).get(&watch_key(root)).map(|a| a.copy.clone()).unwrap_or_default();
-    for path in &copy {
-        files_under(root, path, &mut files);
+    // folders included). If they cannot be listed completely, none of them counts as saved.
+    let mut unprotected: Vec<String> = Vec::new();
+    let mut reasons: Vec<String> = Vec::new();
+    let mut listed = Vec::new();
+    match copy.iter().try_for_each(|path| files_under(root, path, &mut listed)) {
+        Ok(()) => files.extend(listed),
+        Err(reason) => {
+            unprotected.extend(copy.iter().map(|p| p.trim_end_matches('/').to_owned()));
+            reasons.push(reason);
+        }
     }
     files.sort();
     files.dedup();
+    let mut checkpoint = None;
+    if !files.is_empty() {
+        let label = format!("Before {}", command.replace('_', " "));
+        match crate::journal::suspend(|| create_with_ignored(root, command, &label, expected, &files)) {
+            Ok(summary) => checkpoint = Some(summary.id),
+            Err(e) if e.kind == "stale-operation" => return Err(e),
+            Err(e) => {
+                unprotected.extend(files.iter().cloned());
+                reasons.push(e.message.trim_end_matches('.').to_owned());
+            }
+        }
+    }
+    if !unprotected.is_empty() {
+        unprotected.sort();
+        unprotected.dedup();
+        if approved.as_deref() != Some(unprotected.as_slice()) {
+            return Err(fail(format!(
+                "{} path{} could not be saved before this operation ({}). Git may overwrite or delete them, and they could not be restored. Nothing was changed.",
+                unprotected.len(),
+                if unprotected.len() == 1 { "" } else { "s" },
+                reasons.join("; ")
+            ))
+            .kind("ignored-backup-unavailable")
+            .details(unprotected));
+        }
+    }
     if files.is_empty() {
         return Ok(false);
     }
     let watched: Vec<Watched> = files.iter().filter_map(|p| snapshot(root, p)).collect();
-    let label = format!("Before {}", command.replace('_', " "));
-    let checkpoint = match crate::journal::suspend(|| create_with_ignored(root, command, &label, expected, &files)) {
-        Ok(summary) => Some(summary.id),
-        Err(e) if e.kind == "stale-operation" => return Err(e),
-        Err(e) => {
-            let approved = accepted().lock().unwrap_or_else(|e| e.into_inner()).remove(&watch_key(root));
-            if approved.as_deref() != Some(files.as_slice()) {
-                return Err(fail(format!(
-                    "{} ignored file{} could not be saved before this operation ({}). Git may overwrite or delete them, and they could not be restored. Nothing was changed.",
-                    files.len(),
-                    if files.len() == 1 { "" } else { "s" },
-                    e.message.trim_end_matches('.')
-                ))
-                .kind("ignored-backup-unavailable")
-                .details(files));
-            }
-            None
-        }
-    };
     let created = checkpoint.is_some();
     WATCH.with(|w| *w.borrow_mut() = Some(Watch { command: command.to_owned(), checkpoint, files: watched }));
     Ok(created)
 }
 
-/// After the operation (finished or failed): records which watched ignored files changed.
+/// After the operation (finished, failed or unwinding): records which watched ignored files changed.
 pub fn finish_watch(root: &Path) {
-    // A decision about collisions applies to the operation that just ran, never to a later one.
-    collisions().lock().unwrap_or_else(|e| e.into_inner()).remove(&watch_key(root));
     let Some(watch) = WATCH.with(|w| w.borrow_mut().take()) else { return };
     let mut changes = Vec::new();
     for before in &watch.files {

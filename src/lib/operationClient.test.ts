@@ -25,6 +25,38 @@ function fixture(options: { stale?: boolean; refreshFails?: boolean } = {}) {
 }
 
 describe("repository operation client", () => {
+  it("asks before switching branches when ignored files cannot be saved", async () => {
+    const calls: string[] = [];
+    let attempts = 0;
+    setOperationHooks({
+      observed: () => "displayed", observedHead: () => ({ branch: "main", oid: "head" }), refreshed: () => {},
+      confirmUnprotected: async () => true,
+    });
+    const invoke: Invoke = async <T>(cmd: string, args?: Record<string, unknown>) => {
+      calls.push(`${cmd}${cmd.startsWith("recovery_") ? `:${String(args?.command)}` : ""}`);
+      if (cmd === "checkout" && attempts++ === 0) throw { kind: "ignored-backup-unavailable", message: "too large", details: ["huge.env"] };
+      return (cmd === "status" ? { stateToken: "t" } : "done") as T;
+    };
+    expect(await repositoryCall(invoke, "checkout", { repo: "repo", target: "feature", kind: "branch" })).toBe("done");
+    expect(calls.filter((c) => c !== "status" && c !== "repo_info")).toEqual(["checkout", "recovery_accept_unprotected:checkout", "checkout"]);
+  });
+  it("keeps the collision choice when saving fails and never lets a later copy inherit risk", async () => {
+    const sent: { cmd: string; args?: Record<string, unknown> }[] = [];
+    const errors = [
+      { kind: "ignored-collision", message: "in the way", details: ["big/x", "big"] },
+      { kind: "ignored-backup-unavailable", message: "too large", details: ["big"] },
+    ];
+    setOperationHooks({ observed: () => "displayed", refreshed: () => {}, confirmCollision: async () => "copy", confirmUnprotected: async () => true });
+    const invoke: Invoke = async <T>(cmd: string, args?: Record<string, unknown>) => {
+      if (cmd.startsWith("recovery_")) sent.push({ cmd, args });
+      if (cmd === "merge_start" && errors.length) throw errors.shift();
+      return (cmd === "status" ? { stateToken: "t" } : "done") as T;
+    };
+    await repositoryCall(invoke, "merge_start", { repo: "repo" });
+    expect(sent.map((s) => s.cmd)).toEqual(["recovery_accept_collisions", "recovery_accept_collisions", "recovery_accept_unprotected"]);
+    expect(sent[1].args).toMatchObject({ command: "merge_start", paths: ["big"], copy: true });
+    expect(sent[2].args).toMatchObject({ command: "merge_start", paths: ["big"] });
+  });
   it("passes reads through without queue preconditions", async () => {
     const f = fixture();
     await repositoryCall(f.invoke, "refs_snapshot", { repo: "repo" });

@@ -31,6 +31,41 @@ export function setOperationHooks(next: Hooks) { hooks = next; }
 
 export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
+/**
+ * Runs `call` and lets the user decide when it stops to protect local files: a collision (save a
+ * copy and continue, continue without one, or cancel) or files that could not be saved (run
+ * without a copy, or cancel). Every decision is for this command and its next run only; the
+ * backend checks the exact list again and drops the decision after that run. When saving fails
+ * after a collision decision, both decisions are sent together, so the retry keeps the choice.
+ */
+async function withConsent<T>(invoke: Invoke, repo: string, command: string, call: () => Promise<T>): Promise<T> {
+  let collision: { paths: string[]; copy: boolean } | null = null;
+  for (;;) {
+    try {
+      return await call();
+    } catch (e) {
+      const err = e as { kind?: string; message?: string; details?: string[]; declined?: boolean };
+      if (err?.kind === "ignored-collision" && hooks.confirmCollision) {
+        const details = err.details ?? [];
+        const choice = await hooks.confirmCollision(repo, err.message ?? "", details);
+        if (!choice) {
+          // The user saw the paths and cancelled; callers need not explain it again.
+          err.declined = true;
+          throw e;
+        }
+        collision = { paths: details.filter((_, i) => i % 2 === 1), copy: choice === "copy" };
+        await invoke<void>("recovery_accept_collisions", { repo, command, ...collision });
+        continue;
+      }
+      if (err?.kind !== "ignored-backup-unavailable" || !hooks.confirmUnprotected) throw e;
+      const paths = err.details ?? [];
+      if (!(await hooks.confirmUnprotected(repo, err.message ?? "", paths))) throw e;
+      if (collision) await invoke<void>("recovery_accept_collisions", { repo, command, ...collision });
+      await invoke<void>("recovery_accept_unprotected", { repo, command, paths });
+    }
+  }
+}
+
 /** Preserve the displayed precondition; never retry a rejected mutation automatically. */
 export async function repositoryCall<T>(invoke: Invoke, command: string, args?: Record<string, unknown>): Promise<T> {
   const repo = typeof args?.repo === "string" ? args.repo : null;
@@ -55,7 +90,7 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
       const sourceHead = hooks.observedHead?.(repo);
       if (sourceHead) {
         // The queued checkout observes current worktree changes and verifies this source HEAD itself.
-        const result = await invoke<T>(command, { ...args, expectedState: null, sourceHead });
+        const result = await withConsent(invoke, repo, command, () => invoke<T>(command, { ...args, expectedState: null, sourceHead }));
         refresh = !(typeof result === "object" && result && "status" in result && result.status === "review");
         return result;
       }
@@ -72,31 +107,7 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
         expectedState = current.stateToken ?? null;
       }
     }
-    // Ignored files that could not be saved: the user reviews the exact list. Accepting applies
-    // only to that list; if it changed meanwhile, the backend refuses again with the new one.
-    for (;;) {
-      try {
-        return await invoke<T>(command, { ...args, expectedState });
-      } catch (e) {
-        const err = e as { kind?: string; message?: string; details?: string[]; declined?: boolean };
-        if (err?.kind === "ignored-collision" && hooks.confirmCollision) {
-          const details = err.details ?? [];
-          const choice = await hooks.confirmCollision(repo, err.message ?? "", details);
-          if (!choice) {
-            // The user saw the paths and cancelled; callers need not explain it again.
-            err.declined = true;
-            throw e;
-          }
-          const local = details.filter((_, i) => i % 2 === 1);
-          await invoke<void>("recovery_accept_collisions", { repo, paths: local, copy: choice === "copy" });
-          continue;
-        }
-        if (err?.kind !== "ignored-backup-unavailable" || !hooks.confirmUnprotected) throw e;
-        const paths = err.details ?? [];
-        if (!(await hooks.confirmUnprotected(repo, err.message ?? "", paths))) throw e;
-        await invoke<void>("recovery_accept_unprotected", { repo, paths });
-      }
-    }
+    return await withConsent(invoke, repo, command, () => invoke<T>(command, { ...args, expectedState }));
   } finally {
     // Compound UI actions (commit then push, local then remote delete) must see
     // their own preceding mutation rather than reusing its now-stale token.
