@@ -828,3 +828,43 @@ fn keep_merges_rebase_protects_files_a_side_branch_moves_into_a_renamed_folder()
     assert_eq!(fs::read_to_string(repo.p().join("new/extra")).unwrap(), "PRECIOUS\n");
     assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), topic);
 }
+
+#[test]
+fn keep_merges_rebase_protects_files_a_recreated_merge_moves() {
+    // The topic renames old/ to new/; side adds old/extra. The original merge was made without
+    // directory-rename detection, so it kept old/extra. Re-creating it during the rebase (with
+    // normal settings) moves old/extra to new/extra, where an ignored local file is.
+    let repo = Repo::new();
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    fs::create_dir_all(repo.p().join("new")).unwrap();
+    repo.write("old/base", "base\n");
+    repo.write("new/keep", "keep\n");
+    repo.write("x", "0\n");
+    repo.write(".gitignore", "new/extra\n");
+    let base = repo.commit_all("base");
+    repo.git(&["switch", "-q", "-c", "up"]);
+    repo.write("up.txt", "up\n");
+    repo.commit_all("up");
+    repo.git(&["switch", "-q", "-c", "topic", &base]);
+    repo.write("x", "topic\n");
+    repo.git(&["mv", "old/base", "new/base"]);
+    repo.commit_all("topic x and rename");
+    repo.git(&["switch", "-q", "-c", "side", &base]);
+    repo.write("x", "side\n");
+    repo.commit_all("side x");
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    repo.write("old/extra", "side\n");
+    repo.commit_all("side extra");
+    repo.git(&["switch", "-q", "topic"]);
+    let _ = runner::run(repo.p(), ["-c", "merge.directoryRenames=false", "merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+    repo.write("x", "resolved\n");
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "--no-edit"]);
+    assert!(repo.p().join("old/extra").exists(), "the original merge must keep old/extra");
+    let topic = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+    repo.write("new/extra", "PRECIOUS\n");
+    let e = ops::rebase_onto_with(repo.p(), "up", true).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(fs::read_to_string(repo.p().join("new/extra")).unwrap(), "PRECIOUS\n");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), topic);
+}
