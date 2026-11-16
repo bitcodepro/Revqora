@@ -157,6 +157,7 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
     match a.first().map(|s| s.as_str()).unwrap_or("") {
         "credential" => a.len() == 2 && a.get(1).is_some_and(|s| s == "fill"),
         "var" => true,
+        "sparse-checkout" => a.len() == 2 && a[1] == "list",
         "symbolic-ref" => {
             let operands: Vec<_> =
                 a[1..].iter().filter(|s| !matches!(s.as_str(), "-q" | "--quiet" | "--short" | "--recurse" | "--no-recurse" | "--")).collect();

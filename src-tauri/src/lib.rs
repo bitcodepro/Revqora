@@ -1305,6 +1305,39 @@ async fn fetch_more_history(expected_state: Option<String>, app: AppHandle, repo
     .await
 }
 
+// ───────────────────────────── sparse checkout / partial clone ─────────────────────────────
+
+#[tauri::command]
+async fn sparse_checkout_state(repo: String) -> GitResult<git::sparse::SparseState> {
+    blocking(move || git::sparse::state(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn sparse_checkout_set(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    cone: bool,
+    entries: Vec<String>,
+) -> GitResult<git::sparse::SparseResult> {
+    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_set", None, move || git::sparse::set(&p(&repo), cone, &entries)).await
+}
+
+#[tauri::command]
+async fn sparse_checkout_add(app: AppHandle, expected_state: Option<String>, repo: String, entries: Vec<String>) -> GitResult<git::sparse::SparseResult> {
+    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_add", None, move || git::sparse::add(&p(&repo), &entries)).await
+}
+
+#[tauri::command]
+async fn sparse_checkout_disable(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<git::sparse::SparseResult> {
+    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_disable", None, move || git::sparse::disable(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn sparse_checkout_reapply(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<git::sparse::SparseResult> {
+    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_reapply", None, move || git::sparse::reapply(&p(&repo))).await
+}
+
 /// Periodic fetch in the background: never asks for credentials.
 #[tauri::command]
 async fn fetch_background(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<String> {
@@ -2752,6 +2785,11 @@ pub fn run() {
             repo_clone,
             repo_is_shallow,
             fetch_more_history,
+            sparse_checkout_state,
+            sparse_checkout_set,
+            sparse_checkout_add,
+            sparse_checkout_disable,
+            sparse_checkout_reapply,
             git_connection_snapshot,
             git_connection_save,
             git_connection_test,

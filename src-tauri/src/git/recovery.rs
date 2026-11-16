@@ -977,6 +977,15 @@ pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<(
             | "stash_branch"
     );
     let refs = matches!(command, "branch_delete" | "branch_delete_remote" | "push" | "push_ref");
+    if matches!(command, "sparse_checkout_set" | "sparse_checkout_add" | "sparse_checkout_disable" | "sparse_checkout_reapply") {
+        // The workspace checkpoint records the sparse patterns and local edits. Git itself keeps
+        // modified files that leave the sparse set, so a working tree the snapshot cannot
+        // capture falls back to a reference checkpoint instead of blocking the change.
+        return match automatic_expected(root, command, true, false, expected) {
+            Err(e) if e.kind == "checkpoint-failed" => automatic_expected(root, command, false, false, expected),
+            other => other,
+        };
+    }
     if workspace && finishes_operation(command) {
         // Getting out of a merge/rebase or resolving its conflicts must never be blocked by a
         // working tree the snapshot cannot capture (a submodule entry, a nested repository,
