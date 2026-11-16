@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { branchRef, gitBranchArg } from "./branchRef";
+import { branchRef, readableMergeMessage } from "./branchRef";
 
 describe("branchRef", () => {
   it("keeps a local branch named like a remote one apart from the remote-tracking branch", () => {
@@ -7,38 +7,27 @@ describe("branchRef", () => {
     expect(branchRef("remote", "origin/feature")).toBe("refs/remotes/origin/feature");
   });
 
-  it("qualifies plain and nested names", () => {
+  it("qualifies plain, nested and object-id-like names", () => {
     expect(branchRef("local", "main")).toBe("refs/heads/main");
     expect(branchRef("local", "feature/login")).toBe("refs/heads/feature/login");
+    // A branch named like a full commit id must not be passed bare: Git reads the id first.
+    const id = "a".repeat(40);
+    expect(branchRef("local", id)).toBe(`refs/heads/${id}`);
   });
 });
 
-describe("gitBranchArg", () => {
-  const refs = (local: string[], remote: string[] = [], tags: string[] = []) => ({
-    local: local.map(name => ({ name })), remote: remote.map(name => ({ name })), tags: tags.map(name => ({ name })),
+describe("readableMergeMessage", () => {
+  it("shows the short branch name Git would have used for a short argument", () => {
+    expect(readableMergeMessage("Merge branch 'refs/heads/hotfix/greeting'")).toBe("Merge branch 'hotfix/greeting'");
+    expect(readableMergeMessage("Merge branch 'refs/heads/topic' into side\n\n# Conflicts:\n#\tfile.txt\n"))
+      .toBe("Merge branch 'topic' into side\n\n# Conflicts:\n#\tfile.txt\n");
+    expect(readableMergeMessage("Merge remote-tracking branch 'refs/remotes/origin/hotfix/g'")).toBe("Merge remote-tracking branch 'origin/hotfix/g'");
   });
 
-  it("uses the short name when Git resolves it to the same branch, so merge messages stay readable", () => {
-    expect(gitBranchArg("refs/heads/hotfix/greeting", refs(["main", "hotfix/greeting"]))).toBe("hotfix/greeting");
-    expect(gitBranchArg("refs/remotes/origin/feature", refs(["main"], ["origin/feature"]))).toBe("origin/feature");
-  });
-
-  it("keeps the full ref when a local branch shadows a remote-tracking branch of the same name", () => {
-    const known = refs(["main", "origin/feature"], ["origin/feature"]);
-    expect(gitBranchArg("refs/remotes/origin/feature", known)).toBe("refs/remotes/origin/feature");
-    // The local branch itself wins Git's lookup, so its short name is still exact.
-    expect(gitBranchArg("refs/heads/origin/feature", known)).toBe("origin/feature");
-  });
-
-  it("keeps the full ref when a tag shadows the branch", () => {
-    expect(gitBranchArg("refs/heads/v1", refs(["v1"], [], ["v1"]))).toBe("refs/heads/v1");
-    expect(gitBranchArg("refs/remotes/origin/v1", refs([], ["origin/v1"], ["origin/v1"]))).toBe("refs/remotes/origin/v1");
-  });
-
-  it("leaves commit ids, other refs and unknown repositories alone", () => {
-    const id = "a".repeat(40);
-    expect(gitBranchArg(id, refs(["main"]))).toBe(id);
-    expect(gitBranchArg("refs/tags/v1", refs([], [], ["v1"]))).toBe("refs/tags/v1");
-    expect(gitBranchArg("refs/heads/main", null)).toBe("refs/heads/main");
+  it("leaves other messages and the message body alone", () => {
+    expect(readableMergeMessage("Merge commit 'abc123'")).toBe("Merge commit 'abc123'");
+    expect(readableMergeMessage("Fix 'refs/heads/x' handling")).toBe("Fix 'refs/heads/x' handling");
+    expect(readableMergeMessage("Merge branch 'main'\n\nSee 'refs/heads/main'")).toBe("Merge branch 'main'\n\nSee 'refs/heads/main'");
+    expect(readableMergeMessage("")).toBe("");
   });
 });

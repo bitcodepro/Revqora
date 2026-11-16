@@ -1,4 +1,4 @@
-import { gitBranchArg } from "./branchRef";
+import { readableMergeMessage } from "./branchRef";
 import { plural } from "./format";
 // High-level user actions: call the backend, report results, refresh state.
 import { open as openFolder } from "@tauri-apps/plugin-dialog";
@@ -480,8 +480,7 @@ export async function mergeInto(root: string, target: string, label = target) {
   const current = tab?.info?.head.branch ?? "HEAD";
   const strategy = await mergeDialog(label, current);
   if (!strategy) return;
-  // The short name keeps Git's merge message readable; it is used only when it selects the same branch.
-  const out = await act(root, () => api.mergeStart(root, gitBranchArg(target, getTab(root)?.refs), strategy, expectedState), { busy: `Merging ${label}` });
+  const out = await act(root, () => api.mergeStart(root, target, strategy, expectedState), { busy: `Merging ${label}` });
   handleOutcome(root, out, "Merge");
 }
 
@@ -492,7 +491,7 @@ export async function rebaseOnto(root: string, target: string, label = target) {
   const current = tab?.info?.head.branch ?? "HEAD";
   const ok = await confirmDialog({ title: `Rebase ${current} onto ${label}?`, message: "Your commits are replayed on top of the target. Commits get new hashes; avoid this for branches others already use.", confirm: "Rebase" });
   if (!ok) return;
-  const out = await act(root, () => api.rebaseOnto(root, gitBranchArg(target, getTab(root)?.refs), expectedState), { busy: "Rebasing" });
+  const out = await act(root, () => api.rebaseOnto(root, target, expectedState), { busy: "Rebasing" });
   handleOutcome(root, out, "Rebase");
 }
 
@@ -650,7 +649,7 @@ export async function confirmMerge(root: string, kind: "merge" | "squash", messa
   const msg = await promptDialog({
     title: kind === "merge" ? "Confirm merge" : "Commit squashed changes",
     label: "Commit message",
-    initial: (message ?? "").replace(/^#.*$/gm, "").trim(),
+    initial: readableMergeMessage(message ?? "").replace(/^#.*$/gm, "").trim(),
     multiline: true,
     confirm: kind === "merge" ? "Create merge commit" : "Commit",
   });

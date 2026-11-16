@@ -61,6 +61,7 @@ import { previewGeneration, subscribePreview } from "../lib/commitPreview";
 import { ignoreDialog } from "./IgnoreDialog";
 import { ignoreChoices } from "../lib/ignoreRules";
 import { reconcileAmend, type CommitDraft } from "../lib/amendDraft";
+import { readableMergeMessage } from "../lib/branchRef";
 import { openInDiffTool, openInEditor, resolveInMergeTool } from "../lib/externalTools";
 import { folderHistoryDialog } from "./HistoryDialogs";
 
@@ -988,7 +989,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   useEffect(() => {
     const pre = prefilledMessages.get(root);
     if ((kind === "merge" || kind === "squash" || kind === "cherry-pick" || kind === "revert") && state?.message && !summary) {
-      const clean = (kind === "cherry-pick" ? state.message : state.message.replace(/^#.*$/gm, "")).trim();
+      const clean = (kind === "cherry-pick" ? state.message : readableMergeMessage(state.message).replace(/^#.*$/gm, "")).trim();
       const [s, ...rest] = clean.split("\n");
       const next = { summary: s ?? "", body: rest.join("\n").trim() };
       prefilledMessages.set(root, next);
