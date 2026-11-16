@@ -159,6 +159,18 @@ fn go_indexes_types_receivers_and_interfaces() {
     assert!(compare_text("broken.go", Some("package x\nfunc broken("), None).is_err());
 }
 #[test]
+fn go_indexes_every_name_of_multi_name_specs() {
+    let base = "package m\ntype Point struct { X, Y int }\nvar A, B int = 1, 2\nconst (\n\tC, D = 3, 4\n)\n";
+    let found = names("multi.go", base);
+    for (name, kind) in
+        [("Point.X", "field_declaration"), ("Point.Y", "field_declaration"), ("A", "var_spec"), ("B", "var_spec"), ("C", "const_spec"), ("D", "const_spec")]
+    {
+        assert!(found.contains(&(name.into(), kind.into())), "{name} {kind} missing from {found:?}");
+    }
+    let d = states(&compare_text("multi.go", Some(base), Some(&base.replace("X, Y int", "X, Y int64"))).unwrap());
+    assert!(has(&d, "Point.Y", "changed") && has(&d, "Point.X", "changed"), "{d:?}");
+}
+#[test]
 fn java_indexes_classes_overloads_and_nested_types() {
     let base = "package app;\nclass Service {\n  private int count = 0;\n  Service() {}\n  int run(int x) { return x; }\n  int run(String x) { return 1; }\n  enum Mode { FAST, SLOW }\n  interface Hook { void call(); }\n  static class Inner { void go() {} }\n}\n";
     let found = names("Service.java", base);
@@ -200,6 +212,9 @@ fn new_languages_support_symbol_history_and_degrade_on_broken_revisions() {
             "package m\ntype P struct{}\nfunc (p P) Run() int { return 2 }\n",
             "P.Run",
         ),
+        // The second name of a Go multi-name spec has its own history.
+        ("names.go", "package m\nvar A, B int = 1, 2\n", "package m\nvar A, B int = 1, 3\n", "B"),
+        ("fields.go", "package m\ntype Pt struct { X, Y int }\n", "package m\ntype Pt struct { X, Y int64 }\n", "Pt.Y"),
         ("P.java", "class P { int run() { return 1; } }\n", "class P { int run() { return 2; } }\n", "P.run"),
     ] {
         for (body, message) in [(v1, "define"), (v2, "body only"), ("broken (", "broken")] {

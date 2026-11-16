@@ -201,7 +201,8 @@ pub fn apply(root: &Path, command: &mut Command, selected: Option<&Options>, arg
     while args.get(index).is_some_and(|s| s == "-c" || s == "--literal-pathspecs") {
         index += if args[index] == "-c" { 2 } else { 1 };
     }
-    let network = args.get(index).is_some_and(|s| matches!(s.as_str(), "fetch" | "push" | "clone" | "ls-remote"));
+    // `sparse-checkout` can fetch missing blobs from a partial clone's promisor remote.
+    let network = args.get(index).is_some_and(|s| matches!(s.as_str(), "fetch" | "push" | "clone" | "ls-remote" | "sparse-checkout"));
     if !network && !args.get(index).is_some_and(|s| s == "credential") {
         return Ok(());
     }
@@ -396,6 +397,31 @@ mod tests {
         assert!(!ssh.contains("StrictHostKeyChecking=no"));
         fs::remove_file(key).unwrap();
         assert!(runner::run(root.path(), ["status", "--porcelain"]).is_ok(), "A missing SSH key must not disable local Git operations");
+    }
+    #[test]
+    fn sparse_checkout_uses_the_saved_or_selected_ssh_transport_for_lazy_fetches() {
+        let root = root();
+        let key = root.path().join("sparse key");
+        fs::write(&key, "fixture only").unwrap();
+        let args: Vec<String> = vec!["sparse-checkout".into(), "add".into(), "--stdin".into()];
+        // Saved settings apply to later sparse commands in the repository.
+        let saved = Options { ssh: Ssh::Key, private_key: key.to_string_lossy().into(), ..Default::default() };
+        save(root.path(), saved, &snapshot(root.path()).unwrap().revision).unwrap();
+        let mut command = runner::command(root.path());
+        apply(root.path(), &mut command, None, &args).unwrap();
+        assert!(env(&command, "GIT_SSH_COMMAND").unwrap().contains("IdentitiesOnly=yes"));
+        assert_eq!(env(&command, "REVQORA_SSH_IDENTITY").as_deref(), Some(shell_path(&key.to_string_lossy()).as_str()));
+        // A selection that is not saved yet (a clone's initial folders) wins over saved settings.
+        let program = root.path().join("custom-ssh");
+        let selected = Options { ssh: Ssh::Agent, ssh_program: program.to_string_lossy().into(), ..Default::default() };
+        let mut command = runner::command(root.path());
+        apply(root.path(), &mut command, Some(&selected), &args).unwrap();
+        let ssh = env(&command, "GIT_SSH_COMMAND").unwrap();
+        assert!(ssh.contains("custom-ssh") && ssh.contains("IdentityFile=none"), "{ssh}");
+        // Local-only commands stay untouched.
+        let mut command = runner::command(root.path());
+        apply(root.path(), &mut command, None, &["status".into()]).unwrap();
+        assert!(env(&command, "GIT_SSH_COMMAND").is_none());
     }
     #[test]
     fn browser_sign_in_is_explicit_configured_and_overridden_for_unattended_fetch() {

@@ -76,16 +76,20 @@ fn grammar(path: &str) -> GitResult<(Language, &'static str)> {
 fn segment(s: &str) -> String {
     s.replace("::", ".").replace(['/', ':'], "_").split_whitespace().collect::<Vec<_>>().join(" ")
 }
-/// The declared name of a structural unit, or `None` when the node is not one.
-fn declared_name(node: Node<'_>, source: &str) -> Option<String> {
+/// The declared names of a structural unit; empty when the node is not one. Most units
+/// declare one name; Go field, var and const specs can declare several (`X, Y int`).
+fn declared_names(node: Node<'_>, source: &str) -> Vec<String> {
     let kind = node.kind();
     if kind == "impl_item" {
         // Rust: `impl Point` → `Point`; `impl fmt::Display for Point` → `Point as fmt.Display`.
-        let target = segment(text(node.child_by_field_name("type")?, source));
-        return Some(match node.child_by_field_name("trait") {
+        let Some(target) = node.child_by_field_name("type") else {
+            return Vec::new();
+        };
+        let target = segment(text(target, source));
+        return vec![match node.child_by_field_name("trait") {
             Some(t) => format!("{target} as {}", segment(text(t, source))),
             None => target,
-        });
+        }];
     }
     let candidate = (kind.ends_with("_declaration") && !matches!(kind, "parameter_declaration" | "variadic_parameter_declaration"))
         || matches!(
@@ -122,7 +126,12 @@ fn declared_name(node: Node<'_>, source: &str) -> Option<String> {
                 // Java
                 | "enum_constant"
         );
-    candidate.then(|| node.child_by_field_name("name")).flatten().map(|n| text(n, source).to_owned())
+    if !candidate {
+        return Vec::new();
+    }
+    let mut cursor = node.walk();
+    let names: Vec<String> = node.children_by_field_name("name", &mut cursor).map(|n| text(n, source).to_owned()).collect();
+    names
 }
 /// Go methods are declared at file level; qualify them by their receiver type.
 fn receiver_scope(node: Node<'_>, source: &str, scope: &str) -> String {
@@ -189,7 +198,7 @@ fn code(node: Node<'_>, source: &str, scope: &str, depth: usize, seen: &mut usiz
     let kind = node.kind();
     let mut nested_scope = scope.to_owned();
     let scope = &receiver_scope(node, source, scope);
-    if let Some(name) = declared_name(node, source) {
+    for (index, name) in declared_names(node, source).iter().enumerate() {
         let name = name.as_str();
         if name.len() > 512 || scope.len() > 1024 {
             return Err(fail("Declaration names or nesting exceed the summary limit."));
@@ -204,7 +213,10 @@ fn code(node: Node<'_>, source: &str, scope: &str, depth: usize, seen: &mut usiz
             duplicate += 1;
             key = format!("{base}#{duplicate}");
         }
-        nested_scope = key.clone();
+        // Nested declarations belong to the first name of a multi-name spec.
+        if index == 0 {
+            nested_scope = key.clone();
+        }
         let readable = scope.split('/').filter(|p| !p.is_empty()).map(|p| p.split(':').nth(1).unwrap_or(p)).collect::<Vec<_>>().join(".");
         let item = symbol(node, source, if readable.is_empty() { name.into() } else { format!("{readable}.{name}") }, out.len())?;
         out.insert(key, item);

@@ -77,21 +77,53 @@ export function changedAmong(leaving: readonly string[], changed: readonly strin
   return changed.filter((p) => set.has(p));
 }
 
-/** Non-cone patterns that select the same folders as cone mode (plus top-level files). */
+/** Escapes a literal path for a gitignore-style pattern, as Git writes cone patterns. */
+function escapePattern(path: string): string {
+  return path.replace(/[\\*?[]/g, (c) => `\\${c}`).replace(/ $/, "\\ ");
+}
+
+/** Reverses `escapePattern`. */
+function unescapePattern(pattern: string): string {
+  return pattern.replace(/\\(.)/g, "$1");
+}
+
+/**
+ * Non-cone patterns that select exactly what cone mode selects for `folders`: top-level files,
+ * everything under each folder, and the files directly inside each ancestor of a folder. This is
+ * the pattern list Git itself writes for cone mode, so the selection does not change.
+ */
 export function coneToPatterns(folders: readonly string[]): string[] {
-  return ["/*", "!/*/", ...folders.map((f) => `/${f}/`)];
+  const selected = [...new Set(folders)].filter((f) => !folders.some((other) => other !== f && f.startsWith(`${other}/`)));
+  const ancestors = new Set<string>();
+  for (const folder of selected) {
+    for (let i = folder.indexOf("/"); i > 0; i = folder.indexOf("/", i + 1)) ancestors.add(folder.slice(0, i));
+  }
+  const entries = [...new Set([...ancestors, ...selected])].sort();
+  const patterns = ["/*", "!/*/"];
+  for (const entry of entries) {
+    patterns.push(`/${escapePattern(entry)}/`);
+    // An ancestor keeps only its own files; a selected folder keeps everything below it.
+    if (!selected.includes(entry)) patterns.push(`!/${escapePattern(entry)}/*/`);
+  }
+  return patterns;
 }
 
 /** Converts non-cone patterns to cone folders where a pattern names a plain directory. */
 export function patternsToFolders(patterns: readonly string[]): { folders: string[]; dropped: string[] } {
+  const trimmed = patterns.map((raw) => raw.trim()).filter((p) => p && p !== "/*" && p !== "!/*/");
+  // Cone-style ancestor rules (`/a/` followed by `!/a/*/`) only keep a parent's own files.
+  const ancestors = new Set(trimmed.flatMap((p) => {
+    const m = /^!\/(.+)\/\*\/$/.exec(p);
+    return m ? [`/${m[1]}/`] : [];
+  }));
   const folders: string[] = [];
   const dropped: string[] = [];
-  for (const raw of patterns) {
-    const p = raw.trim();
-    if (!p || p === "/*" || p === "!/*/") continue;
-    const m = /^\/?([^*?[\]!#]+?)\/?$/.exec(p);
-    const folder = m ? normalizeFolder(m[1]).folder : null;
-    if (folder && p.endsWith("/")) {
+  for (const p of trimmed) {
+    if (ancestors.has(p) || /^!\/(.+)\/\*\/$/.test(p)) continue;
+    // A plain directory: no unescaped wildcards, negation or comment.
+    const m = /^\/?((?:\\.|[^*?[!#\\])+?)\/$/.exec(p);
+    const folder = m ? normalizeFolder(unescapePattern(m[1])).folder : null;
+    if (folder) {
       if (!folders.includes(folder)) folders.push(folder);
     } else {
       dropped.push(p);

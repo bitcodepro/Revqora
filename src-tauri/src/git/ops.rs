@@ -1216,7 +1216,8 @@ pub fn clone_with_options(
     runner::run_streaming_with_connection(parent, &args, &[(crate::git_credentials::REPO_VAR, &root.to_string_lossy())], on_line, connection)?;
     // The clone exists; a failure here must not hide it, so it becomes a clone warning.
     let sparse_warning = (options.sparse && options.sparse_folders.iter().any(|f| !f.trim().is_empty()))
-        .then(|| super::sparse::set(&root, true, &options.sparse_folders).err())
+        // The selected connection is saved below; the initial folders may already fetch blobs with it.
+        .then(|| super::sparse::set_with_connection(&root, true, &options.sparse_folders, connection).err())
         .flatten()
         .map(|e| {
             format!(

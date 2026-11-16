@@ -199,10 +199,12 @@ fn listed_paths(stderr: &str) -> Vec<String> {
 
 /// Runs a sparse-checkout subcommand. A refusal keeps Git's message and the affected files; a
 /// success reports files Git left behind.
-fn sparse_run(repo: &Path, args: &[&str], input: Option<&[u8]>) -> GitResult<SparseResult> {
+/// `connection` is a Git connection selection not saved yet; `None` uses the saved settings.
+fn sparse_run(repo: &Path, args: &[&str], input: Option<&[u8]>, connection: Option<&super::connection::Options>) -> GitResult<SparseResult> {
     let mut argv = vec!["sparse-checkout"];
     argv.extend_from_slice(args);
-    let out = runner::exec_full(repo, &argv, &[], input)?;
+    // In a partial clone this may fetch missing blobs, so it uses the chosen SSH/HTTPS transport.
+    let out = runner::exec_full_with_connection(repo, &argv, &[], input, connection)?;
     let stderr = out.stderr.trim().to_string();
     if !out.ok() {
         let files = listed_paths(&stderr);
@@ -220,19 +222,24 @@ fn sparse_run(repo: &Path, args: &[&str], input: Option<&[u8]>) -> GitResult<Spa
 
 /// Enables sparse checkout or replaces its folders/patterns, choosing cone or non-cone mode.
 pub fn set(repo: &Path, cone: bool, entries: &[String]) -> GitResult<SparseResult> {
+    set_with_connection(repo, cone, entries, None)
+}
+
+/// `set` with a Git connection selection that is not saved yet (a clone's initial folders).
+pub fn set_with_connection(repo: &Path, cone: bool, entries: &[String], connection: Option<&super::connection::Options>) -> GitResult<SparseResult> {
     let entries = normalize_entries(cone, entries)?;
     let mode = if cone { "--cone" } else { "--no-cone" };
     if runner::version_at_least(2, 35) {
-        return sparse_run(repo, &["set", mode, "--stdin"], Some(&stdin_of(&entries)));
+        return sparse_run(repo, &["set", mode, "--stdin"], Some(&stdin_of(&entries)), connection);
     }
     // Git 2.30–2.34: `set` cannot pick the mode; `init` does (it is deprecated only later).
     let current = state(repo)?;
     if !current.enabled || current.cone != cone {
         let init: &[&str] = if cone { &["init", "--cone"] } else { &["init"] };
         runner::run(repo, ["config", "core.sparseCheckoutCone", if cone { "true" } else { "false" }])?;
-        sparse_run(repo, init, None)?;
+        sparse_run(repo, init, None, connection)?;
     }
-    sparse_run(repo, &["set", "--stdin"], Some(&stdin_of(&entries)))
+    sparse_run(repo, &["set", "--stdin"], Some(&stdin_of(&entries)), connection)
 }
 
 /// Adds folders (cone) or patterns (non-cone) to an enabled sparse checkout.
@@ -245,12 +252,12 @@ pub fn add(repo: &Path, entries: &[String]) -> GitResult<SparseResult> {
     if entries.is_empty() {
         return Err(GitError::new("Enter at least one folder.").kind("invalid-sparse-path"));
     }
-    sparse_run(repo, &["add", "--stdin"], Some(&stdin_of(&entries)))
+    sparse_run(repo, &["add", "--stdin"], Some(&stdin_of(&entries)), None)
 }
 
 /// Turns sparse checkout off: every tracked file comes back to the working tree.
 pub fn disable(repo: &Path) -> GitResult<SparseResult> {
-    sparse_run(repo, &["disable"], None)
+    sparse_run(repo, &["disable"], None, None)
 }
 
 /// Applies the current patterns again (e.g. after a checkout or merge brought files back).
@@ -258,7 +265,7 @@ pub fn reapply(repo: &Path) -> GitResult<SparseResult> {
     if !state(repo)?.enabled {
         return Err(GitError::new("Sparse checkout is off.").kind("sparse-disabled"));
     }
-    sparse_run(repo, &["reapply"], None)
+    sparse_run(repo, &["reapply"], None, None)
 }
 
 #[cfg(test)]
