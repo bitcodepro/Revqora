@@ -176,7 +176,7 @@ export function tagMenu(root: string, name: string, oid: string): MenuItem[] {
   ];
 }
 
-export function commitMenu(root: string, row: GraphRow, selection: GraphRow[]): MenuItem[] {
+export function commitMenu(root: string, row: GraphRow, selection: GraphRow[], options: { publicationUnknown?: boolean } = {}): MenuItem[] {
   const tab = getTab(root);
   const current = tab?.info?.head.branch ?? "HEAD";
   const busy = (tab?.info?.state.kind ?? "none") !== "none";
@@ -282,7 +282,8 @@ export function commitMenu(root: string, row: GraphRow, selection: GraphRow[]): 
       : [{ label: "Start: this commit is good, HEAD is bad…", disabled: row.isHead || busy, onClick: () => X.bisectStart(root, row.oid) }],
   });
   if (row.isHead) items.push({ label: "Undo commit (keep changes staged)", icon: <Eraser size={I} />, disabled: busy, onClick: () => A.undoLastCommit(root) });
-  if (!row.localOnly) items.push({ label: "Already pushed — rewriting needs a force push", icon: <Info size={I} />, disabled: true });
+  if (options.publicationUnknown) items.push({ label: "May already be pushed — rewriting could need a force push", hint: "Whether this commit is on a remote could not be checked", icon: <Info size={I} />, disabled: true });
+  else if (!row.localOnly) items.push({ label: "Already pushed — rewriting needs a force push", icon: <Info size={I} />, disabled: true });
   items.push({ separator: true });
   items.push({
     label: "Copy",

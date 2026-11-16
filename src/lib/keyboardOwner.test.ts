@@ -51,6 +51,11 @@ describe("view switches under a tool window", () => {
     expect(viewSwitchUnderTool("tool", null, false)).toBe("keep-tool");
   });
 
+  it("keeps a viewer that holds an unsaved edit", () => {
+    expect(viewSwitchUnderTool("tool", "branches", false, true)).toBe("keep-tool");
+    expect(viewSwitchUnderTool("tool", "branches", false, false)).toBe("close-tool");
+  });
+
   it("covers every view shortcut", () => {
     expect([...VIEW_SWITCHES].sort()).toEqual(["changes", "history", "overview", "pulls", "reviewMode"]);
   });

@@ -36,8 +36,8 @@ describe("branch dropped on a local branch", () => {
       "Switch to feature and rebase it onto main",
       "Compare feature with main",
     ]);
-    expect(byId(actions, "merge")).toMatchObject({ branch: "main", switches: false, run: { type: "merge", source: "feature" } });
-    expect(byId(actions, "rebase")).toMatchObject({ branch: "feature", switches: true, run: { type: "rebase", onto: "main" } });
+    expect(byId(actions, "merge")).toMatchObject({ branch: "main", switches: false, run: { type: "merge", source: "refs/heads/feature", label: "feature" } });
+    expect(byId(actions, "rebase")).toMatchObject({ branch: "feature", switches: true, run: { type: "rebase", onto: "refs/heads/main", label: "main" } });
     expect(byId(actions, "compare")).toMatchObject({ branch: null, switches: false, run: { type: "compare", from: "refs/heads/main", to: "refs/heads/feature" } });
     expect(actions.every(a => !a.disabled)).toBe(true);
   });
@@ -77,7 +77,20 @@ describe("branch dropped on a local branch", () => {
   it("a remote-tracking branch can be merged but never rebased", () => {
     const actions = graphDropActions(remote("origin/other"), local("main"), repo());
     expect(labels(actions)).toEqual(["Merge origin/other into main…", "Compare origin/other with main"]);
-    expect(byId(actions, "merge").run).toEqual({ type: "merge", source: "origin/other" });
+    expect(byId(actions, "merge").run).toEqual({ type: "merge", source: "refs/remotes/origin/other", label: "origin/other" });
+  });
+
+  it("names the dragged and target refs fully when a local branch shares a remote branch's name", () => {
+    // A local branch called origin/feature and the remote-tracking origin/feature, at different commits.
+    const state = repo({ local: [...repo().local, { name: "origin/feature", oid: oid("f") }] });
+    const merge = byId(graphDropActions(remote("origin/feature"), local("main"), state), "merge");
+    expect(merge.run).toEqual({ type: "merge", source: "refs/remotes/origin/feature", label: "origin/feature" });
+    const fromLocal = byId(graphDropActions(local("origin/feature"), local("main"), state), "merge");
+    expect(fromLocal.run).toEqual({ type: "merge", source: "refs/heads/origin/feature", label: "origin/feature" });
+    const rebase = byId(graphDropActions(local("topic"), remote("origin/feature"), state), "rebase");
+    expect(rebase.run).toEqual({ type: "rebase", onto: "refs/remotes/origin/feature", label: "origin/feature" });
+    const rebaseLocal = byId(graphDropActions(local("topic"), local("origin/feature"), state), "rebase");
+    expect(rebaseLocal.run).toEqual({ type: "rebase", onto: "refs/heads/origin/feature", label: "origin/feature" });
   });
 });
 
@@ -177,7 +190,7 @@ describe("branch dropped on a commit", () => {
     const actions = graphDropActions(local("main"), commit("x", "Fix login"), repo());
     expect(labels(actions)).toEqual(["Reset main to this commit…", "Rebase main onto this commit"]);
     expect(byId(actions, "reset")).toMatchObject({ branch: "main", switches: false, run: { type: "reset", oid: oid("x"), subject: "Fix login" } });
-    expect(byId(actions, "rebase")).toMatchObject({ branch: "main", switches: false, run: { type: "rebase", onto: oid("x") } });
+    expect(byId(actions, "rebase")).toMatchObject({ branch: "main", switches: false, run: { type: "rebase", onto: oid("x"), label: "xxxxxxxx" } });
   });
 
   it("names the switch for another local branch", () => {

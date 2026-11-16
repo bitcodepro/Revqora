@@ -63,8 +63,8 @@ export async function runDropAction(root: string, action: DropAction) {
   }
   if (action.branch && current !== action.branch && (await A.checkout(root, action.branch, "local")) !== action.branch) return;
   switch (run.type) {
-    case "merge": return A.mergeInto(root, run.source);
-    case "rebase": return A.rebaseOnto(root, run.onto);
+    case "merge": return A.mergeInto(root, run.source, run.label);
+    case "rebase": return A.rebaseOnto(root, run.onto, run.label);
     case "cherry-pick": return A.cherryPick(root, run.oids);
     case "reset": return A.resetTo(root, run.oid, run.subject);
     case "push": return A.push(root);

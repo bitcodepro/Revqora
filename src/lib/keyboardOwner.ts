@@ -30,15 +30,16 @@ export const listKeysBlocked = (owner: KeyboardOwner) => owner !== null;
 /** Commands that change which workspace view is shown. */
 export const VIEW_SWITCHES = new Set(["history", "changes", "pulls", "reviewMode", "overview"]);
 
-/** Tool windows that only show something: closing them loses nothing. A rebase plan, a workflow
- *  being edited, an agent request and the merge editor hold work, so they are never closed for
- *  the user. */
+/** Tool windows that only show something: closing them loses nothing, unless they mark an
+ *  unsaved edit (`data-unsaved`, e.g. Branch Manager's protection rules). A rebase plan, a
+ *  workflow being edited, an agent request and the merge editor hold work, so they are never
+ *  closed for the user. */
 const VIEWERS = new Set(["blame", "compare", "stash", "tree", "branches", "worktrees", "stacks", "historyExplorer"]);
 
 /** What a view-switching shortcut does while a tool window covers the workspace, so the switch
  *  never happens unseen behind it: a viewer closes and the view changes; a tool holding work
  *  stays and the user is told why nothing changed. */
-export function viewSwitchUnderTool(owner: KeyboardOwner, overlayKind: string | null, mergeEditorOpen: boolean): "switch" | "close-tool" | "keep-tool" {
+export function viewSwitchUnderTool(owner: KeyboardOwner, overlayKind: string | null, mergeEditorOpen: boolean, unsavedEdit = false): "switch" | "close-tool" | "keep-tool" {
   if (owner !== "tool") return "switch";
-  return !mergeEditorOpen && overlayKind !== null && VIEWERS.has(overlayKind) ? "close-tool" : "keep-tool";
+  return !mergeEditorOpen && !unsavedEdit && overlayKind !== null && VIEWERS.has(overlayKind) ? "close-tool" : "keep-tool";
 }

@@ -44,10 +44,12 @@ export type DropActionId = "merge" | "rebase" | "fast-forward" | "pull" | "push"
 
 /** What runs once the receiving branch is checked out. */
 export type DropRun =
-  /** Merge `source` into the checked-out branch (the merge dialog still asks for the strategy). */
-  | { type: "merge"; source: string }
-  /** Rebase the checked-out branch onto `onto` (a branch name or a commit). */
-  | { type: "rebase"; onto: string }
+  /** Merge `source` into the checked-out branch (the merge dialog still asks for the strategy).
+   *  `source` is the fully qualified ref, so a local `origin/x` never stands in for the remote one;
+   *  `label` is the short name shown in dialogs. */
+  | { type: "merge"; source: string; label: string }
+  /** Rebase the checked-out branch onto `onto`: a fully qualified ref or a commit id. */
+  | { type: "rebase"; onto: string; label: string }
   | { type: "cherry-pick"; oids: string[] }
   /** Reset the checked-out branch (the reset dialog still asks for the mode). */
   | { type: "reset"; oid: string; subject: string }
@@ -154,7 +156,7 @@ export function graphDropActions(item: DragItem, target: DropTarget, repo: DropR
       action(repo, "rebase", source.name, {
         current: `Rebase ${source.name} onto this commit`,
         switching: `Switch to ${source.name} and rebase it onto this commit`,
-      }, { type: "rebase", onto: target.oid }),
+      }, { type: "rebase", onto: target.oid, label: shortOid(target.oid) }),
     ];
   }
 
@@ -187,7 +189,7 @@ export function graphDropActions(item: DragItem, target: DropTarget, repo: DropR
     actions.push(action(repo, "merge", destination.name, {
       current: `Merge ${source.name} into ${destination.name}…`,
       switching: `Switch to ${destination.name} and merge ${source.name}…`,
-    }, { type: "merge", source: source.name }, { disabled: sameCommit }));
+    }, { type: "merge", source: fullRef(item), label: source.name }, { disabled: sameCommit }));
   }
 
   if (item.scope === "local") {
@@ -200,7 +202,7 @@ export function graphDropActions(item: DragItem, target: DropTarget, repo: DropR
     actions.push(action(repo, "rebase", source.name, {
       current: `Rebase ${source.name} onto ${destination.name}`,
       switching: `Switch to ${source.name} and rebase it onto ${destination.name}`,
-    }, { type: "rebase", onto: destination.name }, { disabled: sameCommit }));
+    }, { type: "rebase", onto: fullRef(target), label: destination.name }, { disabled: sameCommit }));
   }
 
   actions.push({

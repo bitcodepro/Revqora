@@ -481,7 +481,7 @@ function MainApp() {
         e.preventDefault();
         if (VIEW_SWITCHES.has(id)) {
           // Never change the view unseen behind a tool window.
-          const under = viewSwitchUnderTool(keyboardOwner(owner), useUi.getState().overlay?.kind ?? null, !!t?.conflictPath);
+          const under = viewSwitchUnderTool(keyboardOwner(owner), useUi.getState().overlay?.kind ?? null, !!t?.conflictPath, !!owner.querySelector(".conflict-overlay[data-unsaved]"));
           if (under === "keep-tool") {
             toast.info("Close the open tool first", "It holds work in progress, so the view was not switched.");
             return;

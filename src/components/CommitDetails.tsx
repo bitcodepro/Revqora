@@ -183,8 +183,9 @@ ${oid}`;
             if (shownCommit.current !== asked || !trigger.isConnected) return;
           }
           const box = trigger.getBoundingClientRect();
-          const row = detailsRow(root, current, pushed === true);
-          contextMenu({ clientX: box.left, clientY: box.bottom + 4, currentTarget: trigger, preventDefault: () => {} }, commitMenu(root, row, [row]));
+          const row = detailsRow(root, current, pushed);
+          // Unknown is not "local only": keep the rewrite warning, worded for an unknown answer.
+          contextMenu({ clientX: box.left, clientY: box.bottom + 4, currentTarget: trigger, preventDefault: () => {} }, commitMenu(root, row, [row], { publicationUnknown: pushed !== true && pushed !== false }));
         }}>{actionsBusy ? <Loader2 size={14} className="spin" /> : <Ellipsis size={14} />} Actions</button>
         {onClose && <button type="button" className="btn sm details-hide" title="Close commit preview" onClick={onClose}><X size={14} /> Close</button>}
       </div>
@@ -402,7 +403,8 @@ function SignatureBadge({ sig }: { sig: Signature }) {
 }
 
 /** The commit as a history row, for the same actions as its History context menu. */
-function detailsRow(root: string, d: Details, pushed: boolean): GraphRow {
+/** `pushed` null means the remote-containment answer is unknown; the row is then treated as published. */
+function detailsRow(root: string, d: Details, pushed: boolean | null): GraphRow {
   const tab = useRepos.getState().tabs[root];
   const refs: RefLabel[] = [
     ...(tab?.refs?.local ?? []).filter((b) => b.oid === d.oid).map((b): RefLabel => ({ name: b.name, kind: "local", syncedRemote: null })),
@@ -412,6 +414,6 @@ function detailsRow(root: string, d: Details, pushed: boolean): GraphRow {
   return {
     index: -1, oid: d.oid, parents: d.parents, author: d.author, email: d.authorEmail, authorTime: d.authorTime,
     committer: d.committer, commitTime: d.commitTime, subject: d.subject, refs, col: 0, color: 0, laneId: 0, segs: [],
-    isHead: tab?.info?.head.oid === d.oid, isMerge: d.parents.length > 1, localOnly: !pushed, incoming: false,
+    isHead: tab?.info?.head.oid === d.oid, isMerge: d.parents.length > 1, localOnly: pushed === false, incoming: false,
   };
 }
