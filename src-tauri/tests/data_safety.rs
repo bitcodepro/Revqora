@@ -950,3 +950,43 @@ fn revert_without_commit_protects_ignored_files_behind_a_staged_rename() {
     assert_eq!(repo.git(&["diff", "--cached", "--name-status"]), staged, "the staged rename must stay as it was");
     assert!(!repo.p().join(".git/REVERT_HEAD").exists() && !repo.p().join(".git/sequencer").exists());
 }
+
+#[test]
+fn ignored_files_git_changes_unexpectedly_are_saved_reported_and_restorable() {
+    use revqora_lib::git::{operations, recovery};
+    let repo = Repo::new();
+    repo.write(".gitignore", "*.env\nnode_modules/\n");
+    repo.write("app.txt", "1\n");
+    repo.commit_all("base");
+    repo.write("local.env", "PRECIOUS\n");
+    repo.write("other.env", "untouched\n");
+    fs::create_dir_all(repo.p().join("node_modules/pkg")).unwrap();
+    repo.write("node_modules/pkg/index.js", "cache\n");
+    // Stand-in for a write no guard predicted: the operation replaces one ignored file and
+    // deletes another.
+    operations::run(
+        repo.p(),
+        "reset",
+        None,
+        |_, _| {},
+        || {
+            fs::write(repo.p().join("local.env"), "from git\n").unwrap();
+            fs::remove_file(repo.p().join("other.env")).unwrap();
+            Ok(())
+        },
+    )
+    .unwrap();
+    let report = recovery::take_ignored_report(repo.p()).expect("the change must be reported");
+    assert_eq!(report.command, "reset");
+    assert_eq!(report.paths, ["local.env", "other.env"]);
+    assert!(recovery::take_ignored_report(repo.p()).is_none(), "a report is delivered once");
+    let checkpoint = report.checkpoint.expect("the ignored files must have been saved");
+    let saved = recovery::detail(repo.p(), &checkpoint).unwrap();
+    assert!(saved.paths.iter().all(|p| !p.path.starts_with("node_modules")), "wholly ignored folders are not copied");
+    assert_eq!(recovery::restore_files(repo.p(), &checkpoint, &report.paths).unwrap(), 2);
+    assert_eq!(fs::read_to_string(repo.p().join("local.env")).unwrap(), "PRECIOUS\n");
+    assert_eq!(fs::read_to_string(repo.p().join("other.env")).unwrap(), "untouched\n");
+    // An operation that leaves ignored files alone reports nothing.
+    operations::run(repo.p(), "reset", None, |_, _| {}, || Ok(())).unwrap();
+    assert!(recovery::take_ignored_report(repo.p()).is_none());
+}

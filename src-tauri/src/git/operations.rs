@@ -201,7 +201,9 @@ pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl Fn
             }
         }
         super::recovery::before(repo, command, expected)?;
-        f()
+        let result = f();
+        super::recovery::finish_watch(repo);
+        result
     })
 }
 

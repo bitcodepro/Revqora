@@ -397,6 +397,211 @@ fn create_expected_refs(
     )
 }
 
+/// A workspace checkpoint that also keeps the given ignored files.
+fn create_with_ignored(root: &Path, command: &str, label: &str, expected: Option<&str>, paths: &[String]) -> GitResult<Summary> {
+    operations::access(
+        root,
+        true,
+        |_, _| {},
+        || {
+            let observed = match expected {
+                Some(value) => Some(value.to_owned()),
+                None => status::status(root)?.state_token,
+            };
+            create_locked(root, command, label, true, false, observed.as_deref(), Capture { references: &[], paths })
+        },
+    )
+}
+
+// ───────────── ignored-file safety net ─────────────
+//
+// Git overwrites or deletes ignored files in more ways than can be predicted path by path
+// (renames, re-created merges, conflict names, sparse cleanup). The guards in `ops` refuse the
+// cases they can preview; this net covers the rest: before an operation that writes the working
+// tree, the individual ignored files (not the content of wholly ignored folders such as
+// node_modules or build output) are kept in the checkpoint, and afterwards any that changed or
+// disappeared are reported with the checkpoint that holds their previous content.
+
+const WATCH_MAX_FILES: usize = 5_000;
+const WATCH_MAX_HASH: u64 = 100 * 1024 * 1024;
+
+/// One ignored file as it was before an operation.
+#[derive(Clone)]
+struct Watched {
+    path: String,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    sha256: Option<String>,
+}
+
+struct Watch {
+    command: String,
+    checkpoint: Option<String>,
+    files: Vec<Watched>,
+}
+
+/// Ignored files Git changed or removed during an operation.
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct IgnoredReport {
+    pub command: String,
+    /// The checkpoint holding the previous content; None when they could not be saved.
+    pub checkpoint: Option<String>,
+    pub paths: Vec<String>,
+}
+
+fn watches() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, Watch>> {
+    static W: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Watch>>> = std::sync::OnceLock::new();
+    W.get_or_init(Default::default)
+}
+
+fn reports() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, IgnoredReport>> {
+    static R: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, IgnoredReport>>> = std::sync::OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+fn watch_key(root: &Path) -> PathBuf {
+    fs::canonicalize(root).unwrap_or_else(|_| root.to_owned())
+}
+
+/// Commands that write the working tree, so Git may overwrite or delete ignored files.
+fn writes_worktree(command: &str) -> bool {
+    matches!(
+        command,
+        "reset"
+            | "op_continue"
+            | "op_abort"
+            | "op_skip"
+            | "undo_commit"
+            | "rebase_onto"
+            | "interactive_rebase"
+            | "rewrite"
+            | "cherry_pick"
+            | "cherry_pick_compared_commit"
+            | "revert"
+            | "merge_start"
+            | "pull"
+            | "checkout"
+            | "pull_request_checkout"
+            | "stash_apply"
+            | "stash_branch"
+            | "apply_patch"
+            | "apply_from_commit"
+            | "bisect_start"
+            | "bisect_mark"
+            | "bisect_reset"
+            | "sparse_checkout_set"
+            | "sparse_checkout_add"
+            | "sparse_checkout_disable"
+            | "sparse_checkout_reapply"
+    )
+}
+
+/// Ignored files outside wholly ignored folders (Git lists those folders as one `dir/` entry).
+fn individual_ignored(root: &Path) -> GitResult<Vec<String>> {
+    let raw = runner::run_bytes(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory", "-z"])?;
+    let raw = String::from_utf8(raw).map_err(|_| fail("Non-UTF-8 filenames cannot be captured safely."))?;
+    Ok(raw.split('\0').filter(|p| !p.is_empty() && !p.ends_with('/')).map(str::to_owned).collect())
+}
+
+fn snapshot(root: &Path, path: &str) -> Option<Watched> {
+    let full = source_path(root, path).ok()?;
+    let m = fs::symlink_metadata(&full).ok()?;
+    if !m.is_file() {
+        return None;
+    }
+    let sha256 = (m.len() <= WATCH_MAX_HASH).then(|| digest(&full).ok()).flatten();
+    Some(Watched { path: path.to_owned(), len: m.len(), modified: m.modified().ok(), sha256 })
+}
+
+/// Saves the individual ignored files in a checkpoint and remembers them, before `command`.
+/// Returns true when that checkpoint was created (it then replaces the ordinary one).
+fn watch_ignored(root: &Path, command: &str, expected: Option<&str>) -> GitResult<bool> {
+    let files = individual_ignored(root)?;
+    if files.is_empty() || files.len() > WATCH_MAX_FILES {
+        return Ok(false);
+    }
+    let watched: Vec<Watched> = files.iter().filter_map(|p| snapshot(root, p)).collect();
+    let label = format!("Before {}", command.replace('_', " "));
+    let saved = crate::journal::suspend(|| create_with_ignored(root, command, &label, expected, &files));
+    let (checkpoint, created) = match saved {
+        Ok(summary) => (Some(summary.id), true),
+        Err(e) if e.kind == "stale-operation" => return Err(e),
+        // Too large or not capturable: still detect changes, and keep the ordinary checkpoint.
+        Err(_) => (None, false),
+    };
+    watches().lock().unwrap_or_else(|e| e.into_inner()).insert(watch_key(root), Watch { command: command.to_owned(), checkpoint, files: watched });
+    Ok(created)
+}
+
+/// After the operation (finished or failed): reports watched ignored files that changed.
+pub fn finish_watch(root: &Path) {
+    let Some(watch) = watches().lock().unwrap_or_else(|e| e.into_inner()).remove(&watch_key(root)) else { return };
+    let mut paths = Vec::new();
+    for before in &watch.files {
+        let changed = match snapshot(root, &before.path) {
+            None => true,
+            Some(now) => {
+                now.len != before.len
+                    || match (&now.sha256, &before.sha256) {
+                        (Some(a), Some(b)) => a != b,
+                        _ => now.modified != before.modified,
+                    }
+            }
+        };
+        if changed {
+            paths.push(before.path.clone());
+        }
+    }
+    if !paths.is_empty() {
+        reports()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(watch_key(root), IgnoredReport { command: watch.command, checkpoint: watch.checkpoint, paths });
+    }
+}
+
+/// The report of the last operation in `root`, once.
+pub fn take_ignored_report(root: &Path) -> Option<IgnoredReport> {
+    reports().lock().unwrap_or_else(|e| e.into_inner()).remove(&watch_key(root))
+}
+
+/// Puts the saved content of `paths` from checkpoint `id` back in place. The current file at
+/// each path (Git's version, which stays in Git history) is replaced.
+pub fn restore_files(root: &Path, id: &str, paths: &[String]) -> GitResult<usize> {
+    let _lock = lock(root)?;
+    let root = fs::canonicalize(repo::discover(root)?)?;
+    let cp = read(&root, id)?;
+    let folder = base(&root)?.join(id);
+    let mut restored = 0;
+    for wanted in paths {
+        let Some((index, saved)) = cp.paths.iter().enumerate().find(|(_, s)| &s.path == wanted) else {
+            return Err(fail(format!("{wanted} is not in this checkpoint.")));
+        };
+        if saved.kind != "file" {
+            return Err(fail(format!("{wanted} was not a regular file in this checkpoint.")));
+        }
+        let stored = folder.join("files").join(index.to_string());
+        if Some(digest(&stored)?) != saved.sha256 {
+            return Err(fail(format!("The saved copy of {wanted} is damaged.")));
+        }
+        let destination = source_path(&root, wanted)?;
+        let parent = destination.parent().ok_or_else(|| fail("Invalid path."))?;
+        if let Ok(m) = fs::symlink_metadata(&destination) {
+            if !m.is_file() || m.file_type().is_symlink() {
+                return Err(fail(format!("{wanted} is now a folder or a link. Move it away, then restore again.")));
+            }
+        }
+        fs::create_dir_all(parent)?;
+        let mut temporary = super::atomic_file::new_in(parent)?;
+        std::io::copy(&mut File::open(&stored)?, &mut temporary)?;
+        temporary.as_file().sync_all()?;
+        super::atomic_file::replace(temporary, &destination)?;
+        restored += 1;
+    }
+    Ok(restored)
+}
+
 struct Capture<'a> {
     references: &'a [SavedRef],
     paths: &'a [String],
@@ -946,6 +1151,9 @@ fn restore_workspace_locked(root: &Path, id: &str, destination: &Path, name: &st
 }
 
 pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<()> {
+    if writes_worktree(command) && watch_ignored(root, command, expected)? {
+        return Ok(());
+    }
     let workspace = matches!(
         command,
         "reset"
