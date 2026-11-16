@@ -110,7 +110,7 @@ or check out anything.
 | Git operations | Fetch, Pull, Push, tags, stash and partial stash (including restore on a new branch), patches, cherry-pick, revert, reset and reflog. |
 | Rebase and conflicts | Rebase Studio with reorder/reword/squash/fixup/drop, previews and recovery; conflict editor with Base, Ours, Theirs and editable Result; external merge tool; rerere; selected validation commands. |
 | Recovery | Operation log, Undo Center, recovery checkpoints, deleted-branch restoration and discard backups, with operation-specific recovery limits. |
-| Worktrees and repository tools | Create/open/lock/remove/prune worktrees; submodules with pointer summaries, LFS with file locks, Git hooks, bisect, signing, fetching more history for shallow clones, repository size and Git maintenance. |
+| Worktrees and repository tools | Create/open/lock/remove/prune worktrees; submodules with pointer summaries, LFS with file locks, Git hooks, bisect, signing, fetching more history for shallow clones, sparse checkout (cone/non-cone folders, also at clone time) and partial clone status, repository size and Git maintenance. |
 | Pull Request Center | Browse, create and edit PRs/MRs; templates, changed files, discussions, inline comments, reviews, CI and supported policy-checked merge/cleanup actions. |
 | Agent Workspace | Run an installed CLI in a reviewed worktree; inspect logs and changes, stop its process tree and keep native task history across restarts. |
 | Workflow Builder | Save ordered checks, commands and reviewed Git/service steps; PR follow-up recipes connect agents, validation, publication, CI and re-review. |
@@ -566,7 +566,7 @@ MCP access is off by default. Revqora saves your choice in its portable data fol
 ### Explore changed code and dependent branches
 
 Open **History Explorer** to search literal changed code or the history of a named
-symbol/JSON subtree. Symbol history follows the current path along a pinned
+symbol/JSON subtree (C#, TypeScript/TSX, Rust, Python, Go, Java, JSON). Symbol history follows the current path along a pinned
 first-parent history; limits and unreadable revisions are reported. Use ordinary
 file history when following renames.
 
@@ -606,7 +606,8 @@ preferences. Keep your vault password and back up portable data appropriately.
 Do not delete `data` if you want to retain settings, drafts, credentials or recovery
 history. Close the application before copying a portable installation.
 
-Settings also controls auto-fetch, themes, fonts, shortcuts and optional avatars.
+Settings also controls auto-fetch, themes, fonts, shortcuts and optional avatars. Themes include
+light, dark, two high-contrast themes and your own custom themes (duplicate, edit, export, import).
 Revqora checks for updates at startup and every hour while open. Turn off
 **Check for updates every hour** in **Settings → Updates** to keep only the
 startup check. Use **Check now** in Settings or **Check for updates** in the toolbar

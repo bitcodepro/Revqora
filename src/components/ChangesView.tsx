@@ -1,10 +1,9 @@
 import { repositoryFiles } from "./RepositoryFiles";
 import { openRepoFile } from "../lib/openFile";
 import { fileCopyMenu } from "./NamePathMenu";
-import { WorkingFileEditor } from "./WorkingFileEditor";
 import { useFileListNavigation } from "../lib/useFileListNavigation";
 import {workingDiffSnapshot,rememberWorkingDiff} from "../lib/workingDiffSnapshot";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, lazy, Suspense } from "react";
 import {
   Archive,
   ArrowDown,
@@ -51,7 +50,6 @@ import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { contextMenu, endBusy, openOverlay, showDialog, startBusy, toast, updateBusy, type MenuItem } from "../lib/ui";
 import * as A from "../lib/actions";
 import type { CommitHelpers, FileDiff, FileStatus, GitError, LargeFile, LayerConflict, LayerOp, LayerView } from "../lib/types";
-import { MergeEditor } from "./ConflictEditor";
 import { conflictLabel, joinPath, plural, relativeTime } from "../lib/format";
 import { FileGroups, PathLabel, StatusIcon } from "./bits";
 import { DiffView, useDiffOpts, type LineAction } from "./DiffView";
@@ -62,8 +60,14 @@ import { Splitter } from "./Overlays";
 import { previewGeneration, subscribePreview } from "../lib/commitPreview";
 import { ignoreDialog } from "./IgnoreDialog";
 import { ignoreChoices } from "../lib/ignoreRules";
+import { reconcileAmend, type CommitDraft } from "../lib/amendDraft";
+import { readableMergeMessage } from "../lib/branchRef";
 import { openInDiffTool, openInEditor, resolveInMergeTool } from "../lib/externalTools";
 import { folderHistoryDialog } from "./HistoryDialogs";
+
+// The editors pull in the CodeMirror editing packages; load them when an editor first opens.
+const WorkingFileEditor = lazy(() => import("./WorkingFileEditor").then((m) => ({ default: m.WorkingFileEditor })));
+const MergeEditor = lazy(() => import("./ConflictEditor").then((m) => ({ default: m.MergeEditor })));
 
 const isNestedFile = (f: FileStatus) => f.untracked && f.path.endsWith("/");
 const openNestedFile = (root: string, f: FileStatus) => { void useRepos.getState().open(joinPath(root, f.path)).catch((e) => toast.error(e)); };
@@ -148,7 +152,7 @@ async function resolveLayerConflicts(root: string, op: LayerOp): Promise<Record<
       const info = conflict.files[i];
       const text = await showDialog<string | null>((close) => (
         <div style={{ position: "fixed", inset: 0, zIndex: 880, background: "var(--bg)" }}>
-          <MergeEditor
+          <Suspense fallback={null}><MergeEditor
             path={info.path}
             info={info}
             position={`${conflict!.label} · file ${i + 1} of ${conflict!.files.length}`}
@@ -159,7 +163,7 @@ async function resolveLayerConflicts(root: string, op: LayerOp): Promise<Record<
               if (which === "delete") throw new Error("Deleting a file is not supported while resolving layers.");
               close(which === "ours" ? info.ours.text : info.theirs.text);
             }}
-          />
+          /></Suspense>
         </div>
       ));
       if (text === null) return null;
@@ -854,8 +858,8 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
       {conflictSel ? (
         <ConflictSummary root={root} file={conflictSel} onOpen={() => onOpenConflict(conflictSel.path)} />
       ) : editing?.root === root ? (
-        <WorkingFileEditor key={JSON.stringify([root, editing.path])} root={root} path={editing.path} untracked={editing.untracked}
-          displayDiff={editing.diff} close={() => setEditing(null)} />
+        <Suspense fallback={<section className="working-file-editor" aria-busy="true" />}><WorkingFileEditor key={JSON.stringify([root, editing.path])} root={root} path={editing.path} untracked={editing.untracked}
+          displayDiff={editing.diff} close={() => setEditing(null)} /></Suspense>
       ) : (
         <DiffView
           diff={diff}
@@ -916,7 +920,7 @@ function ConflictSummary({ root, file, onOpen }: { root: string; file: FileStatu
 
 /** Commit message drafts, with Amend: an amend draft holds the previous commit's message, so
  *  coming back without Amend would commit that message again as a new commit. */
-const drafts = new Map<string, { summary: string; body: string; amend?: boolean }>();
+const drafts = new Map<string, CommitDraft>();
 /** Messages Revqora filled in for a merge / cherry-pick, removed again when it ends. */
 const prefilledMessages = new Map<string, { summary: string; body: string }>();
 
@@ -924,12 +928,15 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const root = tab.root;
   const state = tab.info?.state;
   const kind = state?.kind ?? "none";
-  const draft = drafts.get(root) ?? { summary: "", body: "" };
+  const draft: CommitDraft = drafts.get(root) ?? { summary: "", body: "" };
   const [summary, publishSummary] = useState(draft.summary);
   const [body, publishBody] = useState(draft.body);
   const messageRef = useRef({ summary: draft.summary, body: draft.body });
   const amendRequest = useRef(0);
   const amendRef = useRef(!!draft.amend);
+  /** The commit Amend was turned on for, and the message loaded from it. */
+  const amendHead = useRef(draft.amendHead ?? null);
+  const amendMessage = useRef(draft.amendMessage ?? null);
   const submitting = useRef(false);
   const setSummary = (value: string | ((current: string) => string)) => {
     amendRequest.current++;
@@ -975,14 +982,14 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const layers = tab.layers?.active ? tab.layers.layers : [];
 
   useEffect(() => {
-    drafts.set(root, { summary, body, amend });
+    drafts.set(root, { summary, body, amend, amendHead: amendHead.current, amendMessage: amendMessage.current });
   }, [root, summary, body, amend]);
 
   // Prefill the message for merges / cherry-picks; drop it again once the operation ends.
   useEffect(() => {
     const pre = prefilledMessages.get(root);
     if ((kind === "merge" || kind === "squash" || kind === "cherry-pick" || kind === "revert") && state?.message && !summary) {
-      const clean = (kind === "cherry-pick" ? state.message : state.message.replace(/^#.*$/gm, "")).trim();
+      const clean = (kind === "cherry-pick" ? state.message : readableMergeMessage(state.message).replace(/^#.*$/gm, "")).trim();
       const [s, ...rest] = clean.split("\n");
       const next = { summary: s ?? "", body: rest.join("\n").trim() };
       prefilledMessages.set(root, next);
@@ -998,16 +1005,41 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, state?.message]);
 
+  // Amend refers to the commit that was HEAD when it was turned on. This form's own commit also
+  // moves HEAD, but it clears the form itself when it finishes.
+  const headOid = tab.info?.head.oid ?? null;
+  useEffect(() => {
+    if (busy) return;
+    const current: CommitDraft = { ...messageRef.current, amend: amendRef.current, amendHead: amendHead.current, amendMessage: amendMessage.current };
+    const next = reconcileAmend(current, headOid);
+    if (next === current) return;
+    amendHead.current = next.amendHead ?? null;
+    if (next.amend) {
+      drafts.set(root, next);
+      return;
+    }
+    amendRef.current = false;
+    amendMessage.current = null;
+    setAmend(false);
+    if (next.summary !== current.summary) setSummary(next.summary);
+    if (next.body !== current.body) setBody(next.body);
+    toast.info("Amend turned off", "The last commit changed, so Amend no longer refers to the commit you chose.");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root, headOid, busy]);
+
   const toggleAmend = async (v: boolean) => {
     const request = ++amendRequest.current;
     amendRef.current = v;
+    amendHead.current = v ? useRepos.getState().tabs[root]?.info?.head.oid ?? null : null;
+    amendMessage.current = null;
     setAmend(v);
     if (v && !messageRef.current.summary.trim() && !messageRef.current.body.trim()) {
       const last = await api.lastMessage(root).catch(() => "");
       if (request !== amendRequest.current || !amendRef.current || messageRef.current.summary.trim() || messageRef.current.body.trim()) return;
       const [s, ...rest] = last.split("\n");
-      setSummary(s ?? "");
-      setBody(rest.join("\n").trim());
+      amendMessage.current = { summary: s ?? "", body: rest.join("\n").trim() };
+      setSummary(amendMessage.current.summary);
+      setBody(amendMessage.current.body);
     }
   };
 
@@ -1062,6 +1094,8 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
     setBody("");
     setAmend(false);
     amendRef.current = false;
+    amendHead.current = null;
+    amendMessage.current = null;
     drafts.delete(root);
   };
 

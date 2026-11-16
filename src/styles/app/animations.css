@@ -1,0 +1,164 @@
+/* ───────────── animations ───────────── */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+@keyframes rowIn {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+}
+@keyframes draw {
+  from {
+    stroke-dashoffset: var(--len, 60);
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes nodeIn {
+  from {
+    transform: scale(0);
+  }
+}
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--accent-soft);
+  }
+  70% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+@keyframes ring {
+  0% {
+    r: 6;
+    opacity: 0.7;
+  }
+  100% {
+    r: 13;
+    opacity: 0;
+  }
+}
+/* HEAD: one soft ripple when it appears, then a still halo. */
+@keyframes headHalo {
+  0% {
+    r: 6;
+    opacity: 0.8;
+  }
+  60% {
+    r: 12;
+    opacity: 0;
+  }
+  61% {
+    r: 6;
+    opacity: 0;
+  }
+  100% {
+    r: 9;
+    opacity: 0.35;
+  }
+}
+@keyframes shimmer {
+  from {
+    background-position: -200px 0;
+  }
+  to {
+    background-position: 200px 0;
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+.spin {
+  animation: spin 4s linear infinite;
+  transform-box: border-box;
+  transform-origin: center;
+}
+.tb-btn[aria-busy="true"] .transfer-icon {
+  color: var(--accent);
+  transform-box: border-box;
+  transform-origin: center;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tb-btn[data-shortcut="fetch"][aria-busy="true"] .transfer-icon {
+    animation: spin 1.1s linear infinite;
+  }
+  .tb-btn[data-shortcut="pull"][aria-busy="true"] .transfer-icon {
+    --transfer-offset: 2px;
+    animation: toolbar-transfer 0.85s ease-in-out infinite;
+  }
+  .tb-btn[data-shortcut="push"][aria-busy="true"] .transfer-icon {
+    --transfer-offset: -2px;
+    animation: toolbar-transfer 0.85s ease-in-out infinite;
+  }
+}
+@keyframes toolbar-transfer {
+  50% { transform: translateY(var(--transfer-offset)); }
+}
+.loading-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.5;
+}
+.loading-status > svg {
+  display: block;
+  flex: none;
+}
+/* A steady, unhurried turn avoids acceleration on every loop. */
+.loader {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2.5px solid var(--accent-soft);
+  border-top-color: var(--accent);
+  animation: loaderSpin 4s linear infinite, fadeIn 0.45s ease 0.2s both;
+}
+@keyframes loaderSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}

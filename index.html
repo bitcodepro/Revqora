@@ -9,9 +9,20 @@
       // Apply the saved theme before first paint to avoid a flash.
       try {
         var s = JSON.parse(localStorage.getItem("revqora.settings") || "{}");
-        var t = (s.state && s.state.theme) || "system";
-        if (t === "system") t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        var t = String((s.state && s.state.theme) || "system"), hc = false;
+        if (t.indexOf("custom:") === 0) {
+          // A custom theme starts on its base palette; its own colours follow when the app loads.
+          var list = (s.state && s.state.customThemes) || [], base = "system";
+          for (var i = 0; i < list.length; i++) if (list[i] && "custom:" + list[i].id === t) base = String(list[i].base);
+          t = base;
+        }
+        if (t === "hc-light" || t === "hc-dark") { hc = true; t = t.slice(3); }
+        if (t !== "light" && t !== "dark") {
+          t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+          hc = matchMedia("(prefers-contrast: more)").matches || matchMedia("(forced-colors: active)").matches;
+        }
         document.documentElement.dataset.theme = t;
+        if (hc) document.documentElement.dataset.contrast = "more";
       } catch (e) { document.documentElement.dataset.theme = "dark"; }
     </script>
   </head>

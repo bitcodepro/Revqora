@@ -33,7 +33,9 @@ import { showDialog, toast } from "../lib/ui";
 import { api, errorMessage } from "../lib/api";
 import { EDITOR_PRESETS, editorPresetLabel } from "../lib/externalTools";
 import type { ExternalTools } from "../lib/types";
-import { CODE_FONTS, DEFAULT_EXPLORER_FOLDER_HOVER, UI_FONTS, useSettings } from "../lib/settings";
+import { CODE_FONTS, DEFAULT_EXPLORER_FOLDER_HOVER, UI_FONTS, useSettings, type ThemePref } from "../lib/settings";
+import { BUILTIN_THEMES, customThemePref } from "../lib/themes";
+import { themeEditorDialog } from "./ThemeEditor";
 import { McpSettings } from "./McpSettings";
 import type { GitSelection, PushOptions, ReflogEntry, RemoteInfo, SigningConfig } from "../lib/types";
 import { useRepos } from "../lib/store";
@@ -546,6 +548,16 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
         <label className="check">
           <input type="checkbox" checked={advanced.shallowSubmodules} disabled={!shallow || !advanced.recurseSubmodules} onChange={(e) => setAdv({ shallowSubmodules: e.target.checked })} /> Shallow submodules (--shallow-submodules)
         </label>
+        <label className="check">
+          <input type="checkbox" checked={advanced.sparse} onChange={(e) => setAdv({ sparse: e.target.checked })} /> Sparse checkout (start with only the top-level files)
+        </label>
+        {advanced.sparse && (
+          <div className="field sparse-clone-folders">
+            <label htmlFor="clone-sparse-folders">Folders to check out</label>
+            <textarea id="clone-sparse-folders" className="input mono" rows={3} aria-label="Sparse checkout folders, one per line" value={advanced.sparseFolders} placeholder={["src", "docs/guides"].join("\n")} onChange={(e) => setAdv({ sparseFolders: e.target.value })} />
+            <small>Optional, one folder per line. Change the folders later in Repository tools &gt; Sparse checkout. A blobless partial clone is recommended with sparse checkout so files outside these folders are not downloaded.</small>
+          </div>
+        )}
         {built.error && <p role="alert" className="muted">{built.error}</p>}
       </details>
     </Modal>
@@ -742,12 +754,17 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
       <div className="section-title">Appearance</div>
       <div className="settings-grid">
         <label>Theme</label>
-        <div className="seg">
-          {(["system", "dark", "light"] as const).map((t) => (
-            <button type="button" key={t} className={s.theme === t ? "on" : ""} onClick={() => s.set({ theme: t })}>
-              {t[0].toUpperCase() + t.slice(1)}
-            </button>
-          ))}
+        <div className="hstack theme-picker">
+          <select className="select" aria-label="Theme"
+            value={s.theme === "system" || BUILTIN_THEMES.some(t => t.id === s.theme) || s.customThemes.some(t => customThemePref(t.id) === s.theme) ? s.theme : "system"}
+            onChange={(e) => s.set({ theme: e.target.value as ThemePref })}>
+            <option value="system">System</option>
+            {BUILTIN_THEMES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            {s.customThemes.length > 0 && <optgroup label="Custom themes">
+              {s.customThemes.map(t => <option key={t.id} value={customThemePref(t.id)}>{t.name}</option>)}
+            </optgroup>}
+          </select>
+          <button type="button" className="btn sm" onClick={() => void themeEditorDialog()}>Edit themes…</button>
         </div>
         <label>Explorer folder hover</label>
         <div className="folder-hover-settings">

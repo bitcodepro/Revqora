@@ -1,0 +1,168 @@
+/* ───────────── sidebar ───────────── */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+}
+.sb-repo {
+  padding: 12px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sb-repo .title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: var(--fs-lg);
+}
+.sb-head-branch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.sb-head-branch:hover {
+  border-color: var(--border-strong);
+}
+.sb-head-branch .bname {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Virtual rows/spacers move as the visible range changes. Browser scroll
+   anchoring must not fight the user's wheel position by following a row. */
+.bm-viewport, .wm-viewport, .pr-request-rows, .sb-scroll, .graph-scroll, .diff-body, .blame-scroll {
+  overflow-anchor: none;
+}
+.bm-viewport, .wm-viewport, .pr-request-rows { overscroll-behavior: contain; scrollbar-gutter: stable; }
+.branch-connection { display: inline-flex; align-items: center; flex: none; color: var(--text-faint); }
+.branch-connection.gone { color: var(--amber); }
+.sb-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 6px 12px;
+}
+.sb-section {
+  margin-top: 6px;
+}
+.sb-section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.sb-section-head:hover {
+  color: var(--text-dim);
+}
+.sb-section-head .chev {
+  transition: transform 0.18s var(--ease);
+}
+.sb-section-head.collapsed .chev {
+  transform: rotate(-90deg);
+}
+.sb-section-head .actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.sb-section-head:hover .actions {
+  opacity: 1;
+}
+.sb-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: max(28px, calc(var(--fs) + 11px));
+  padding-right: 6px;
+  border-radius: var(--radius-sm);
+  /* Same size and weight as the commit list, so the sidebar does not read smaller. */
+  font-size: var(--fs);
+  font-weight: 500;
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+  position: relative;
+  transition:
+    background 0.1s,
+    color 0.1s;
+}
+.sb-item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.sb-item.selected,
+.sb-item.viewed-branch {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+.sb-item.branch-selected { background: var(--bg-selected); color: var(--text); }
+.sb-primary-branch { flex: none; border-bottom: 1px solid var(--border-soft); }
+.sb-branch-selection { justify-content: space-between; gap: 4px; }
+.sb-branch-selection .btn { margin-left: auto; }
+.sb-item.current {
+  color: var(--text);
+  font-weight: 600;
+}
+.sb-item.current::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.sb-item .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.sb-item .meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+}
+.ab {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ab.up {
+  color: var(--green);
+}
+.ab.down {
+  color: var(--blue);
+}
+.sb-empty {
+  padding: 4px 10px 8px 28px;
+  color: var(--text-faint);
+  font-size: var(--fs);
+}

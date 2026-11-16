@@ -129,7 +129,9 @@ export function BranchManager({ root }: { root: string }) {
     if (node && i * ROW < node.scrollTop) node.scrollTop = i * ROW;
     else if (node && (i + 1) * ROW > node.scrollTop + node.clientHeight) node.scrollTop = (i + 1) * ROW - node.clientHeight;
   };
-  return <section ref={surface} className="conflict-overlay branch-manager centered-tool-window" style={{ ...windowSize.style, ["--branch-manager-row-height" as string]: `${ROW}px` }} aria-label="Branch Manager">
+  /** Protection rules edited but not saved: a view shortcut must not close the manager. */
+  const rulesDirty = rulesOpen && rules !== prefs.protections.join("\n");
+  return <section ref={surface} data-unsaved={rulesDirty || undefined} className="conflict-overlay branch-manager centered-tool-window" style={{ ...windowSize.style, ["--branch-manager-row-height" as string]: `${ROW}px` }} aria-label="Branch Manager">
     <header className="cf-head"><GitBranch size={18} /><b>Branch Manager</b><span className="muted">{snapshot?.branches.length ?? 0} branches</span><div className="spacer" />
       <button className="btn" disabled={loading || pending} onClick={() => action(() => A.createBranch(root, null, "HEAD"))}>New branch</button>
       <button className="btn" disabled={loading || pending} onClick={() => action(() => A.fetchAll(root))}>Fetch</button>

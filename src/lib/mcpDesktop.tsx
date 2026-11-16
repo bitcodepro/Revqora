@@ -15,10 +15,7 @@ import { closeOverlay, openOverlay, showDialog, useUi } from "./ui";
 import type { BranchInfo, McpApprovalMode, PrState, SearchMode, StageReview, StashInfo, StatusSummary } from "./types";
 import { Modal } from "../components/Modal";
 import { validBranchName } from "../components/dialogs";
-import { createPullRequest } from "../components/PullRequests";
-import { chooseReview } from "../components/PrReviews";
 import { mergeDialog } from "../components/PrMerge";
-import { openWorkflowStepReview } from "../components/WorkflowBuilder";
 
 type Arguments = McpActionOptions & DiffPageOptions & {
   repository?: string; oid?: string; path?: string; side?: string;
@@ -557,8 +554,8 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
           case "stash": await A.stash(root, expectedState); break;
           case "pull": await A.pull(root, pullMode, expectedState, a.prune ?? false); break;
           case "push": await A.push(root); break;
-          case "create_pr": await createPullRequest(root, null); break;
-          case "review_pr": await chooseReview(pr!, () => { void useRepos.getState().refresh(root); }); break;
+          case "create_pr": await (await import("../components/PullRequests")).createPullRequest(root, null); break;
+          case "review_pr": await (await import("../components/PrReviews")).chooseReview(pr!, () => { void useRepos.getState().refresh(root); }); break;
           case "merge_pr":
             if (pr!.forge.kind === "bitbucket") throw new Error("This PR must be merged in Bitbucket. Review it in PR Center.");
             await mergeDialog({ ...pr!, updated: () => { void useRepos.getState().refresh(root); } });
@@ -567,7 +564,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
             const current = await api.workflowRun(root, target!);
             if (current.phase !== "ready" || current.cursor !== run!.cursor) throw new Error("The workflow advanced during approval.");
             if (!await api.mcpLease(event.session)) { cancelAction(status, "session_expired"); return; }
-            await openWorkflowStepReview(root, current.id);
+            await (await import("../components/WorkflowBuilder")).openWorkflowStepReview(root, current.id);
             break;
           }
         }

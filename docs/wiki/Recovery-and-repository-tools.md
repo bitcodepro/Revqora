@@ -48,6 +48,19 @@ Open **Ctrl+N → Repository tools (gc, maintenance)…**.
 | **Reuse recorded conflict resolutions (rerere)** | Let Git replay conflict resolutions you made before; optionally **Stage replayed resolutions automatically**. |
 | **Fetch more history** / **Fetch full history** | Shown for shallow clones: add the chosen number of commits, or remove the shallow boundary. |
 | **Hooks** tab | List the hooks Git runs in this repository. |
+| **Sparse checkout** tab | Check out only chosen folders, and see whether the repository is a partial clone. See below. |
+
+### Sparse checkout and partial clone
+
+The **Sparse checkout** tab shows whether sparse checkout is on, its mode and its folders (cone mode) or patterns (non-cone mode).
+
+- **Turn on sparse checkout** uses cone mode: top-level files are always checked out, plus everything in the listed folders and the files directly inside their parent folders. Add folders by typing a path or by picking from the list of folders at HEAD; remove them with **Remove**, then **Apply folder list**. Additions only run `git sparse-checkout add`; any removal runs `git sparse-checkout set --cone`.
+- Before a change that removes files, a confirmation shows how many tracked files leave the working tree and which of them have local changes. Git keeps modified files in place and Revqora lists them with Git's own message afterwards (older Git refuses the whole change instead; the message and the files are shown). Nothing is discarded. Files that leave stay in the repository and come back when their folder is added again.
+- **Switch to non-cone mode** turns the folders into gitignore-style patterns (`/*`, `!/*/`, `/folder/`); **Switch to cone mode** keeps the patterns that name a folder and lists the ones that will be dropped. **Reapply** applies the patterns again after a checkout or merge brought files back. **Turn off** brings every tracked file back (in a partial clone Git also downloads them).
+- Every change goes through the repository operation queue, checks the displayed state, appears in the Operation log and saves a recovery checkpoint that records the previous patterns (a reference checkpoint when the working tree cannot be captured).
+- With Git older than 2.35 the mode is selected with `git sparse-checkout init` before `set`; Git 2.35+ uses `set --cone` / `--no-cone`.
+- The clone dialog's **Sparse checkout (start with only the top-level files)** runs `git clone --sparse` and then `sparse-checkout set --cone` with the optional folders. A blobless partial clone is recommended alongside it. If the folders cannot be added, the clone is kept and a warning explains how to add them.
+- The **Partial clone** section lists promisor remotes and their filter (`remote.<name>.promisor`, `remote.<name>.partialclonefilter`). Git downloads missing file contents on demand, so diffs, blame and checkout of files outside the downloaded set need the remote. Converting a partial clone to a full clone is not offered: `git fetch --refetch` needs Git 2.36+ and does not restore objects that are only reachable from local commits, stashes or other remotes, so removing the promisor configuration afterwards could leave the repository with missing objects.
 
 ### Git hooks
 

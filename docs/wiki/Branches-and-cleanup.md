@@ -60,3 +60,22 @@ Select multiple branch rows and use **Delete** or **Delete…** to open the revi
 Excluded rows remain excluded across review refreshes. Selecting a row only records intent; deletion requires fresh review and execution checks. Changed local/server tips can invalidate the whole confirmation. A partial local/remote failure is reported explicitly and stops later work as described in the result.
 
 Deleting a branch removes a reference. It does not mean deleting a repository or its current working folder. See [Undo Center](https://github.com/bitcodepro/Revqora/wiki/Recovery-and-repository-tools) for available reference recovery.
+
+## Drag and drop
+
+In History and in the Branches panel you can drag a branch (its badge on a History row, or its row in Branches) or commits (a History row; a multi-selection moves together). Press and move the pointer; a plain click never starts a drag. Only targets that offer an action are outlined, and **Esc** cancels.
+
+Dropping never starts an operation. It opens a menu at the drop point, and the item you choose runs the same action as the context menus, with the same dialogs and confirmations:
+
+| Drag | Onto | Menu |
+| --- | --- | --- |
+| Branch | Local branch | **Merge A into B…**, **Rebase A onto B** (local A only), **Compare A with B** |
+| Remote-tracking branch | The local branch that tracks it | Also **Pull B from origin/B**, and **Fast-forward B to origin/B** when B is only behind |
+| Local branch | Its upstream | **Push A to origin/A…**, **Rebase A onto origin/A**, **Compare** |
+| Local branch | Another remote-tracking branch | **Rebase A onto …**, **Compare** |
+| Commits | Local branch | **Cherry-pick N commits onto B** |
+| Local branch | Commit | **Reset A to this commit…**, **Rebase A onto this commit** |
+
+Merge, cherry-pick, reset, rebase and push act on the checked-out branch. When the receiving branch is not checked out, the item says so (**Switch to B and merge A…**), checks it out first and stops if that fails or is cancelled. An item is disabled, with the reason beside it, while a merge, rebase or cherry-pick is in progress, while HEAD is detached, when the branch to switch to is checked out in another worktree, or when both sides point to the same commit. Commits on a commit, anything on a tag, and a branch on itself offer nothing.
+
+Every one of these actions is also in the branch and commit context menus after checking out the receiving branch, so the keyboard can reach them.

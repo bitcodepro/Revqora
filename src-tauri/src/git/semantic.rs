@@ -63,8 +63,93 @@ fn grammar(path: &str) -> GitResult<(Language, &'static str)> {
         "cs" | "csx" => (tree_sitter_c_sharp::LANGUAGE.into(), "C#"),
         "ts" | "mts" | "cts" => (tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(), "TypeScript"),
         "tsx" => (tree_sitter_typescript::LANGUAGE_TSX.into(), "TSX"),
-        _ => return Err(fail("Syntax summaries support C#, TypeScript, TSX and strict JSON.")),
+        "rs" => (tree_sitter_rust::LANGUAGE.into(), "Rust"),
+        "py" | "pyi" => (tree_sitter_python::LANGUAGE.into(), "Python"),
+        "go" => (tree_sitter_go::LANGUAGE.into(), "Go"),
+        "java" => (tree_sitter_java::LANGUAGE.into(), "Java"),
+        _ => return Err(fail("Syntax summaries support C#, TypeScript, TSX, Rust, Python, Go, Java and strict JSON.")),
     })
+}
+/// Key and display segments are separated by `/`, `:` and `.`, so names built
+/// from type or path text (Rust impl targets, Go receivers) use `.` for `::`
+/// and drop whitespace runs.
+fn segment(s: &str) -> String {
+    s.replace("::", ".").replace(['/', ':'], "_").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+/// The declared names of a structural unit; empty when the node is not one. Most units
+/// declare one name; Go field, var and const specs can declare several (`X, Y int`).
+fn declared_names(node: Node<'_>, source: &str) -> Vec<String> {
+    let kind = node.kind();
+    if kind == "impl_item" {
+        // Rust: `impl Point` → `Point`; `impl fmt::Display for Point` → `Point as fmt.Display`.
+        let Some(target) = node.child_by_field_name("type") else {
+            return Vec::new();
+        };
+        let target = segment(text(target, source));
+        return vec![match node.child_by_field_name("trait") {
+            Some(t) => format!("{target} as {}", segment(text(t, source))),
+            None => target,
+        }];
+    }
+    let candidate = (kind.ends_with("_declaration") && !matches!(kind, "parameter_declaration" | "variadic_parameter_declaration"))
+        || matches!(
+            kind,
+            "method_definition"
+                | "method_signature"
+                | "variable_declarator"
+                | "public_field_definition"
+                | "property_signature"
+                // Rust
+                | "function_item"
+                | "function_signature_item"
+                | "struct_item"
+                | "enum_item"
+                | "union_item"
+                | "trait_item"
+                | "mod_item"
+                | "type_item"
+                | "const_item"
+                | "static_item"
+                | "macro_definition"
+                | "associated_type"
+                | "enum_variant"
+                // Python
+                | "function_definition"
+                | "class_definition"
+                // Go
+                | "type_spec"
+                | "type_alias"
+                | "const_spec"
+                | "var_spec"
+                | "method_elem"
+                | "method_spec"
+                // Java
+                | "enum_constant"
+        );
+    if !candidate {
+        return Vec::new();
+    }
+    let mut cursor = node.walk();
+    // Multi-name specs (`const C, D = 3, 4`) also return the anonymous comma tokens.
+    node.children_by_field_name("name", &mut cursor).filter(|n| n.is_named()).map(|n| text(n, source).to_owned()).collect()
+}
+/// Go methods are declared at file level; qualify them by their receiver type.
+fn receiver_scope(node: Node<'_>, source: &str, scope: &str) -> String {
+    if node.kind() != "method_declaration" {
+        return scope.to_owned();
+    }
+    let Some(receiver) = node.child_by_field_name("receiver") else {
+        return scope.to_owned();
+    };
+    let mut c = receiver.walk();
+    let ty = receiver.named_children(&mut c).find_map(|p| p.child_by_field_name("type"));
+    match ty {
+        Some(t) => {
+            let t = text(t, source).trim_start_matches('*');
+            format!("{scope}/receiver:{}", segment(t.split('[').next().unwrap_or(t)))
+        }
+        None => scope.to_owned(),
+    }
 }
 fn text<'a>(n: Node<'_>, source: &'a str) -> &'a str {
     &source[n.byte_range()]
@@ -111,30 +196,30 @@ fn code(node: Node<'_>, source: &str, scope: &str, depth: usize, seen: &mut usiz
         return Err(fail("Source structure exceeds the preview limit."));
     }
     let kind = node.kind();
-    let candidate = kind.ends_with("_declaration")
-        || matches!(kind, "method_definition" | "method_signature" | "variable_declarator" | "public_field_definition" | "property_signature");
     let mut nested_scope = scope.to_owned();
-    if candidate {
-        if let Some(name) = node.child_by_field_name("name") {
-            let name = text(name, source);
-            if name.len() > 512 || scope.len() > 1024 {
-                return Err(fail("Declaration names or nesting exceed the summary limit."));
-            }
-            let mut key = format!("{scope}/{kind}:{name}");
-            if let Some(parameters) = node.child_by_field_name("parameters") {
-                key.push_str(&format!(":{}", syntax_hash(parameters, source)?));
-            }
-            let base = key.clone();
-            let mut duplicate = 1;
-            while out.contains_key(&key) {
-                duplicate += 1;
-                key = format!("{base}#{duplicate}");
-            }
-            nested_scope = key.clone();
-            let readable = scope.split('/').filter(|p| !p.is_empty()).map(|p| p.split(':').nth(1).unwrap_or(p)).collect::<Vec<_>>().join(".");
-            let item = symbol(node, source, if readable.is_empty() { name.into() } else { format!("{readable}.{name}") }, out.len())?;
-            out.insert(key, item);
+    let scope = &receiver_scope(node, source, scope);
+    for (index, name) in declared_names(node, source).iter().enumerate() {
+        let name = name.as_str();
+        if name.len() > 512 || scope.len() > 1024 {
+            return Err(fail("Declaration names or nesting exceed the summary limit."));
         }
+        let mut key = format!("{scope}/{kind}:{name}");
+        if let Some(parameters) = node.child_by_field_name("parameters") {
+            key.push_str(&format!(":{}", syntax_hash(parameters, source)?));
+        }
+        let base = key.clone();
+        let mut duplicate = 1;
+        while out.contains_key(&key) {
+            duplicate += 1;
+            key = format!("{base}#{duplicate}");
+        }
+        // Nested declarations belong to the first name of a multi-name spec.
+        if index == 0 {
+            nested_scope = key.clone();
+        }
+        let readable = scope.split('/').filter(|p| !p.is_empty()).map(|p| p.split(':').nth(1).unwrap_or(p)).collect::<Vec<_>>().join(".");
+        let item = symbol(node, source, if readable.is_empty() { name.into() } else { format!("{readable}.{name}") }, out.len())?;
+        out.insert(key, item);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {

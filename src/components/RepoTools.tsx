@@ -14,14 +14,15 @@ import { act, handleOutcome, resetTo, createBranch } from "../lib/actions";
 import type { DeletedBranch, RefLogEntry, RepoSize } from "../lib/types";
 import { absoluteTime, relativeTime, shortOid } from "../lib/format";
 import { parseDepth } from "../lib/cloneOptions";
+import { SparseTab } from "./SparseCheckout";
 
 const kib = (n: number) => (n < 1024 ? `${n} KB` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} MB` : `${(n / 1024 / 1024).toFixed(2)} GB`);
 
-export function repoToolsDialog(root: string, tab: "overview" | "deleted" | "hooks" = "overview") {
+export function repoToolsDialog(root: string, tab: "overview" | "deleted" | "hooks" | "sparse" = "overview") {
   return showDialog<void>((close) => <RepoToolsBody root={root} initial={tab} close={close} />);
 }
 
-function RepoToolsBody({ root, initial, close }: { root: string; initial: "overview" | "deleted" | "hooks"; close: () => void }) {
+function RepoToolsBody({ root, initial, close }: { root: string; initial: "overview" | "deleted" | "hooks" | "sparse"; close: () => void }) {
   const [tab, setTab] = useState(initial);
   const [size, setSize] = useState<RepoSize | null>(null);
   const [deleted, setDeleted] = useState<DeletedBranch[] | null>(null);
@@ -103,6 +104,9 @@ function RepoToolsBody({ root, initial, close }: { root: string; initial: "overv
         </button>
         <button type="button" className={tab === "hooks" ? "on" : ""} onClick={() => setTab("hooks")}>
           Hooks
+        </button>
+        <button type="button" className={tab === "sparse" ? "on" : ""} onClick={() => setTab("sparse")}>
+          Sparse checkout
         </button>
         <button type="button" className={tab === "deleted" ? "on" : ""} onClick={() => setTab("deleted")}>
           Recently deleted branches {deleted?.length ? `(${deleted.length})` : ""}
@@ -190,6 +194,7 @@ function RepoToolsBody({ root, initial, close }: { root: string; initial: "overv
         </>
       )}
       {tab === "hooks" && <HooksTab root={root} />}
+      {tab === "sparse" && <SparseTab root={root} />}
       {tab === "deleted" && (
         <div style={{ maxHeight: "50vh", overflow: "auto", margin: "0 -8px" }}>
           {!deleted && <div className="loading-center">Loading…</div>}

@@ -207,6 +207,10 @@ export interface GraphSummary {
   maxLanes: number;
   headIndex: number | null;
   branchContext?: { reference: string; base: string | null; recorded: boolean; primary: string | null } | null;
+  /** Stage durations in ms (ref resolution, Git walk, layout, ...), in recording order. */
+  stages?: [string, number][];
+  /** Rows came from the recent-branch cache or an unchanged previous build. */
+  cached?: boolean;
 }
 
 export type SearchMode = "quick" | "message" | "author" | "hash" | "content" | "path";
@@ -248,7 +252,8 @@ export interface CommitDetails {
   body: string;
   files: ChangedFile[];
   diffBase: string | null;
-  containedInRemote: boolean;
+  /** null = not checked by this read; ask commitRemoteContainment for a fresh answer. */
+  containedInRemote: boolean | null;
 }
 
 export interface FileHistoryEntry {
@@ -976,4 +981,25 @@ export interface RepositoryFolderScan {
 }
 export type CloneFilter = "none" | "blob:none" | "tree:0";
 /** Optional clone arguments; see `ops::CloneOptions`. */
-export interface CloneOptions { branch: string | null; depth: number | null; noSingleBranch: boolean; filter: CloneFilter; recurseSubmodules: boolean; shallowSubmodules: boolean }
+export interface CloneOptions { branch: string | null; depth: number | null; noSingleBranch: boolean; filter: CloneFilter; recurseSubmodules: boolean; shallowSubmodules: boolean; sparse: boolean; sparseFolders: string[] }
+
+/** A remote this repository lazily fetches missing objects from (partial clone). */
+export interface PartialRemote { remote: string; filter: string | null }
+
+/** `git sparse-checkout` state of the current worktree plus partial clone remotes. */
+export interface SparseState {
+  enabled: boolean;
+  cone: boolean;
+  /** Folders in cone mode, gitignore-style patterns otherwise. */
+  patterns: string[];
+  partial: PartialRemote[];
+  /** Git 2.35+: `set --cone/--no-cone`; older Git switches mode with `init`. */
+  setSelectsMode: boolean;
+}
+
+export interface SparseResult {
+  state: SparseState;
+  /** Modified files outside the new set that Git kept in the working tree. */
+  leftBehind: string[];
+  warning: string | null;
+}

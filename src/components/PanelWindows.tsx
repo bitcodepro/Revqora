@@ -89,10 +89,14 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
     const syncTheme = () => {
       if (!doc) return;
       doc.documentElement.dataset.theme = document.documentElement.dataset.theme;
+      // High-contrast palette; custom theme colours travel with the inline style below.
+      const contrast = document.documentElement.dataset.contrast;
+      if (contrast) doc.documentElement.dataset.contrast = contrast;
+      else delete doc.documentElement.dataset.contrast;
       doc.documentElement.style.cssText = document.documentElement.style.cssText;
     };
     const theme = new MutationObserver(syncTheme);
-    theme.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "data-theme"] });
+    theme.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "data-theme", "data-contrast"] });
     const unregister = registerUiSurface(view);
     const onContext = (event: MouseEvent) => {
       if (!(event.target as HTMLElement)?.closest?.("input, textarea, .cm-editor, .selectable, .code")) event.preventDefault();

@@ -122,8 +122,11 @@ fn refs_classify_an_unavailable_repository_folder() {
 
 pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
     super::repo::require_directory(repo)?;
-    let remotes = remotes(repo)?;
-    let raw = runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"])?;
+    let mut stages = super::stage_timings::Stages::default();
+    let remotes = stages.time("remotes", || remotes(repo))?;
+    // Upstream ahead/behind (`upstream:track`) is computed inside this enumeration.
+    let raw = stages.time("enumerationWithUpstreamTrack", || runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"]))?;
+    let parse_started = std::time::Instant::now();
     let mut local = Vec::new();
     let mut remote = Vec::new();
     let mut tags = Vec::new();
@@ -191,12 +194,20 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
             });
         }
     }
+    // Includes branch creator resolution, which runs per local branch while parsing.
+    stages.add("parseAndCreators", parse_started.elapsed());
     if !remotes.is_empty() {
         // A missing object must not prevent the sidebar from listing refs.
-        let _ = count_unpublished(repo, &mut local, &remote);
+        let _ = stages.time("unpublishedComparison", || count_unpublished(repo, &mut local, &remote));
     }
     tags.sort_by_key(|t| std::cmp::Reverse(t.time));
-    Ok(RefsSnapshot { identity_email: super::repo::config_get(repo, "user.email"), local, remote, tags, stashes: stashes(repo)?, remotes })
+    let stashes = stages.time("stashes", || stashes(repo))?;
+    let identity_email = stages.time("identity", || super::repo::config_get(repo, "user.email"));
+    if super::stage_timings::enabled() {
+        let detail = format!("local={} remote={} tags={}", local.len(), remote.len(), tags.len());
+        super::stage_timings::record("refs_snapshot", repo, &stages, &detail);
+    }
+    Ok(RefsSnapshot { identity_email, local, remote, tags, stashes, remotes })
 }
 
 fn count_unpublished(repo: &Path, local: &mut [BranchInfo], remote: &[BranchInfo]) -> GitResult<()> {
@@ -324,6 +335,24 @@ pub fn squash_merged(repo: &Path) -> GitResult<Vec<String>> {
 }
 
 pub fn labels_by_oid(repo: &Path) -> GitResult<HashMap<String, Vec<RefLabel>>> {
+    Ok(graph_refs(repo)?.labels)
+}
+
+/// What one history build needs to know about refs, from a single enumeration.
+pub struct GraphRefs {
+    /// refname -> object name for branches, remote branches and tags, plus HEAD. Sorted.
+    pub snapshot: Vec<(String, String)>,
+    pub labels: HashMap<String, Vec<RefLabel>>,
+    /// Empty while HEAD is unborn.
+    pub head_oid: String,
+    /// `refs/replace/*` refname -> object name. Replacements change the walked history
+    /// without moving a branch, so history caches compare them separately.
+    pub replace: Vec<(String, String)>,
+}
+
+/// Reads refs once for both the graph's ref snapshot and its labels, so the two
+/// cannot disagree and a build does not enumerate refs or resolve HEAD twice.
+pub fn graph_refs(repo: &Path) -> GitResult<GraphRefs> {
     let raw = runner::run(
         repo,
         [
@@ -333,15 +362,30 @@ pub fn labels_by_oid(repo: &Path) -> GitResult<HashMap<String, Vec<RefLabel>>> {
             "refs/remotes",
             "refs/tags",
             "refs/bisect",
+            "refs/replace",
         ],
     )?;
-    let head_detached = runner::exec(repo, ["symbolic-ref", "-q", "HEAD"])?.code != 0;
+    let head_out = runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD"])?;
+    let head_oid = if head_out.ok() { head_out.text().trim().to_string() } else { String::new() };
+    let mut snapshot = Vec::new();
     let mut map: HashMap<String, Vec<RefLabel>> = HashMap::new();
     let mut remote_at: HashMap<String, Vec<String>> = HashMap::new();
     let mut entries = Vec::new();
+    let mut replace = Vec::new();
     for line in raw.lines() {
         let f: Vec<&str> = line.split('\x1f').collect();
-        if f.len() < 5 || !f[4].is_empty() {
+        if f.len() < 5 {
+            continue;
+        }
+        if f[0].starts_with("refs/replace/") {
+            replace.push((f[0].to_string(), f[1].to_string()));
+            continue;
+        }
+        if !f[0].starts_with("refs/bisect/") {
+            snapshot.push((f[0].to_string(), f[1].to_string()));
+        }
+        // Symbolic refs (origin/HEAD) are part of the snapshot but carry no label.
+        if !f[4].is_empty() {
             continue;
         }
         let oid = if !f[2].is_empty() { f[2] } else { f[1] };
@@ -384,11 +428,16 @@ pub fn labels_by_oid(repo: &Path) -> GitResult<HashMap<String, Vec<RefLabel>>> {
             map.entry(oid.clone()).or_default().push(RefLabel { name: name.into(), kind: "bisect".into(), synced_remote: None });
         }
     }
-    if head_detached {
-        if let Ok(h) = runner::run(repo, ["rev-parse", "-q", "--verify", "HEAD"]) {
-            map.entry(h.trim().to_string()).or_default().insert(0, RefLabel { name: "HEAD".into(), kind: "detached".into(), synced_remote: None });
-        }
+    // A branch marked as checked out proves HEAD is attached. Ask Git only otherwise
+    // (detached, unborn, or HEAD on a ref outside refs/heads).
+    let head_detached = !entries.iter().any(|(_, _, is_head)| *is_head) && runner::exec(repo, ["symbolic-ref", "-q", "HEAD"])?.code != 0;
+    if head_detached && !head_oid.is_empty() {
+        map.entry(head_oid.clone()).or_default().insert(0, RefLabel { name: "HEAD".into(), kind: "detached".into(), synced_remote: None });
     }
+    if !head_oid.is_empty() {
+        snapshot.push(("HEAD".into(), head_oid.clone()));
+    }
+    snapshot.sort();
     for v in map.values_mut() {
         let rank = |k: &str| match k {
             "head" | "detached" => 0,
@@ -398,7 +447,7 @@ pub fn labels_by_oid(repo: &Path) -> GitResult<HashMap<String, Vec<RefLabel>>> {
         };
         v.sort_by(|a, b| rank(&a.kind).cmp(&rank(&b.kind)).then(a.name.cmp(&b.name)));
     }
-    Ok(map)
+    Ok(GraphRefs { snapshot, labels: map, head_oid, replace })
 }
 
 #[derive(Debug, Clone, Serialize)]

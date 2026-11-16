@@ -1,4 +1,5 @@
 import type { CloneFilter, CloneOptions } from "./types";
+import { parseFolderList } from "./sparse";
 
 /** Raw form state of the clone dialog's Advanced section. */
 export interface CloneOptionsForm {
@@ -8,6 +9,10 @@ export interface CloneOptionsForm {
   filter: CloneFilter;
   recurseSubmodules: boolean;
   shallowSubmodules: boolean;
+  /** `--sparse`: only top-level files at first. */
+  sparse: boolean;
+  /** One folder per line, added with `sparse-checkout set --cone`. */
+  sparseFolders: string;
 }
 
 export const CLONE_FILTERS: { value: CloneFilter; label: string }[] = [
@@ -17,7 +22,7 @@ export const CLONE_FILTERS: { value: CloneFilter; label: string }[] = [
 ];
 
 export const defaultCloneOptionsForm = (): CloneOptionsForm => ({
-  branch: "", depth: "", noSingleBranch: true, filter: "none", recurseSubmodules: true, shallowSubmodules: false,
+  branch: "", depth: "", noSingleBranch: true, filter: "none", recurseSubmodules: true, shallowSubmodules: false, sparse: false, sparseFolders: "",
 });
 
 /** Quick client-side check; Git's `check-ref-format --branch` has the final say. */
@@ -46,6 +51,8 @@ export function buildCloneOptions(form: CloneOptionsForm): { options: CloneOptio
   if (bErr) return { options: null, error: bErr };
   const { depth, error } = parseDepth(form.depth);
   if (error) return { options: null, error };
+  const sparse = form.sparse ? parseFolderList(form.sparseFolders) : { folders: [], error: "" };
+  if (sparse.error) return { options: null, error: sparse.error };
   const filter: CloneFilter = CLONE_FILTERS.some((f) => f.value === form.filter) ? form.filter : "none";
   return {
     options: {
@@ -55,6 +62,8 @@ export function buildCloneOptions(form: CloneOptionsForm): { options: CloneOptio
       filter,
       recurseSubmodules: form.recurseSubmodules,
       shallowSubmodules: depth !== null && form.recurseSubmodules && form.shallowSubmodules,
+      sparse: form.sparse,
+      sparseFolders: sparse.folders,
     },
     error: "",
   };

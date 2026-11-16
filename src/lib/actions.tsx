@@ -1,3 +1,4 @@
+import { readableMergeMessage } from "./branchRef";
 import { plural } from "./format";
 // High-level user actions: call the backend, report results, refresh state.
 import { open as openFolder } from "@tauri-apps/plugin-dialog";
@@ -471,23 +472,24 @@ export async function setUpstream(root: string, branch: string) {
   await act(root, () => api.branchSetUpstream(root, branch, v.trim()), { success: `${branch} now tracks ${v.trim()}` });
 }
 
-export async function mergeInto(root: string, target: string) {
+/** `label` names the target in dialogs when `target` is a fully qualified ref or an id. */
+export async function mergeInto(root: string, target: string, label = target) {
   const expectedState = await prepareOperation(root);
   if (!expectedState) return;
   const tab = getTab(root);
   const current = tab?.info?.head.branch ?? "HEAD";
-  const strategy = await mergeDialog(target, current);
+  const strategy = await mergeDialog(label, current);
   if (!strategy) return;
-  const out = await act(root, () => api.mergeStart(root, target, strategy, expectedState), { busy: `Merging ${target}` });
+  const out = await act(root, () => api.mergeStart(root, target, strategy, expectedState), { busy: `Merging ${label}` });
   handleOutcome(root, out, "Merge");
 }
 
-export async function rebaseOnto(root: string, target: string) {
+export async function rebaseOnto(root: string, target: string, label = target) {
   const expectedState = await prepareOperation(root);
   if (!expectedState) return;
   const tab = getTab(root);
   const current = tab?.info?.head.branch ?? "HEAD";
-  const ok = await confirmDialog({ title: `Rebase ${current} onto ${target}?`, message: "Your commits are replayed on top of the target. Commits get new hashes; avoid this for branches others already use.", confirm: "Rebase" });
+  const ok = await confirmDialog({ title: `Rebase ${current} onto ${label}?`, message: "Your commits are replayed on top of the target. Commits get new hashes; avoid this for branches others already use.", confirm: "Rebase" });
   if (!ok) return;
   const out = await act(root, () => api.rebaseOnto(root, target, expectedState), { busy: "Rebasing" });
   handleOutcome(root, out, "Rebase");
@@ -647,7 +649,7 @@ export async function confirmMerge(root: string, kind: "merge" | "squash", messa
   const msg = await promptDialog({
     title: kind === "merge" ? "Confirm merge" : "Commit squashed changes",
     label: "Commit message",
-    initial: (message ?? "").replace(/^#.*$/gm, "").trim(),
+    initial: readableMergeMessage(message ?? "").replace(/^#.*$/gm, "").trim(),
     multiline: true,
     confirm: kind === "merge" ? "Create merge commit" : "Commit",
   });

@@ -42,6 +42,28 @@ fn enter_scope(key: PathBuf, write: bool) -> impl Drop {
     })
 }
 
+/// The calling thread's repository transaction and Operation log entry, for helper
+/// threads that read on its behalf.
+struct Inherited {
+    scope: Option<(PathBuf, bool)>,
+    journal: crate::journal::Shared,
+}
+
+impl Inherited {
+    fn of(repo: &Path) -> Self {
+        let key = repository_key(repo);
+        Self { scope: SCOPES.with(|s| s.borrow().iter().rev().find(|(k, _)| k == &key).cloned()), journal: crate::journal::share() }
+    }
+
+    /// Runs `f` on a helper thread as part of its parent's transaction. A helper that took
+    /// the repository gate again could wait behind a queued writer that waits for the parent.
+    /// The parent must keep its transaction until the helper is joined (`std::thread::scope`).
+    fn run<T>(&self, f: impl FnOnce() -> T) -> T {
+        let _scope = self.scope.clone().map(|(key, write)| enter_scope(key, write));
+        self.journal.enter(f)
+    }
+}
+
 fn canonical(path: &Path) -> PathBuf {
     let p =
         fs::canonicalize(path).unwrap_or_else(|_| if path.is_absolute() { path.to_owned() } else { std::env::current_dir().unwrap_or_default().join(path) });
@@ -320,8 +342,12 @@ pub(super) fn external_attribute_files(repo: &Path) -> GitResult<Vec<PathBuf>> {
 }
 
 fn hash_external_attributes(hash: &mut Sha256, repo: &Path) -> GitResult<[u8; 32]> {
+    hash_attribute_files(hash, external_attribute_files(repo)?)
+}
+
+fn hash_attribute_files(hash: &mut Sha256, files: Vec<PathBuf>) -> GitResult<[u8; 32]> {
     let mut attributes = Sha256::new();
-    for path in external_attribute_files(repo)? {
+    for path in files {
         let name = path.as_os_str().as_encoded_bytes();
         attributes.update((name.len() as u64).to_le_bytes());
         attributes.update(name);
@@ -399,19 +425,30 @@ fn submodule_fingerprint(module: &Path) -> GitResult<[u8; 32]> {
 pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus], display_path: Option<&str>) -> GitResult<StateTokens> {
     let mut hash = Sha256::new();
     hash.update(raw_status.as_bytes());
-    let gd = super::repo::git_dir(repo)?;
-    let common = repository_key(repo);
-    hash_file(&mut hash, &gd.join("HEAD"))?;
-    let config = hash_file(&mut hash, &common.join("config"))?;
-    let info_attributes = hash_file(&mut hash, &common.join("info/attributes"))?;
-    let external_attributes = hash_external_attributes(&mut hash, repo)?;
     // Cache-tree/stat extensions and packed-ref layout can change without changing
     // what the user staged. Compare semantic index entries and resolved refs instead.
     let mut index_args = vec!["ls-files", "--stage", "-v", "-z"];
     if display_path.is_some() {
         index_args.extend(["--", ":(glob)**/.gitattributes"]);
     }
-    let index = runner::run_bytes(repo, index_args)?;
+    // The Git reads below are independent of each other: run them side by side inside
+    // this transaction, then hash their results in a fixed order.
+    let parent = Inherited::of(repo);
+    let failed = || GitError::new("Background status task failed.");
+    let (gd, external_files, index, references) = std::thread::scope(|sc| {
+        let external_files = sc.spawn(|| parent.run(|| external_attribute_files(repo)));
+        let index = sc.spawn(|| parent.run(|| runner::run_bytes(repo, index_args)));
+        let references = display_path.is_none().then(|| sc.spawn(|| parent.run(|| runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"]))));
+        let gd = super::repo::git_dir(repo);
+        (gd, external_files.join(), index.join(), references.map(|task| task.join()))
+    });
+    let gd = gd?;
+    let common = repository_key(repo);
+    hash_file(&mut hash, &gd.join("HEAD"))?;
+    let config = hash_file(&mut hash, &common.join("config"))?;
+    let info_attributes = hash_file(&mut hash, &common.join("info/attributes"))?;
+    let external_attributes = hash_attribute_files(&mut hash, external_files.map_err(|_| failed())??)?;
+    let index = index.map_err(|_| failed())??;
     if display_path.is_none() {
         hash.update(&index);
     }
@@ -427,8 +464,8 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
     // Recovery pins are app metadata, not changes to the user's prepared Git
     // state. A rejected action may save a checkpoint before offering force
     // consent. Recovery itself verifies each pin independently with exact OIDs.
-    if display_path.is_none() {
-        for reference in runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"])?.lines() {
+    if let Some(references) = references {
+        for reference in references.map_err(|_| failed())??.lines() {
             if !reference.starts_with(super::recovery::PREFIX) {
                 hash.update(reference.as_bytes());
                 hash.update(b"\n");
@@ -450,7 +487,7 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
         }
         // Stash reflog entries below the tip are part of the mutation proof.
         hash_file(&mut hash, &common.join("logs/refs/stash"))?;
-        hash_file(&mut hash, &super::storage::dir(repo)?.join("squash-target"))?;
+        hash_file(&mut hash, &super::storage::dir_for(&gd)?.join("squash-target"))?;
     }
     let mut attributes = BTreeMap::new();
     // Indexed attributes may affect a sealed layer even if later layers cancel

@@ -1,4 +1,3 @@
-import { worktreeCreateDialog, worktreeRemoveDialog, worktreePruneDialog, worktreeLockDialog } from "../components/WorktreeManager";
 // Actions for submodules, worktrees, bisect and Git LFS.
 import { useEffect, useState } from "react";
 import { HardDrive, Package } from "lucide-react";
@@ -41,10 +40,12 @@ export async function addSubmodule(root: string) {
 }
 
 // ───────────── reviewed worktrees ─────────────
-export const addWorktree = (root: string) => worktreeCreateDialog(root);
-export const removeWorktree = (root: string, path: string) => worktreeRemoveDialog(root, path);
-export const pruneWorktrees = (root: string) => worktreePruneDialog(root);
-export const lockWorktree = (root: string, path: string, lock: boolean) => worktreeLockDialog(root, path, lock);
+/** The Worktree Manager and its dialogs load when first used. */
+const worktrees = () => import("../components/WorktreeManager");
+export const addWorktree = (root: string) => worktrees().then((m) => m.worktreeCreateDialog(root));
+export const removeWorktree = (root: string, path: string) => worktrees().then((m) => m.worktreeRemoveDialog(root, path));
+export const pruneWorktrees = (root: string) => worktrees().then((m) => m.worktreePruneDialog(root));
+export const lockWorktree = (root: string, path: string, lock: boolean) => worktrees().then((m) => m.worktreeLockDialog(root, path, lock));
 
 // ───────────── bisect ─────────────
 

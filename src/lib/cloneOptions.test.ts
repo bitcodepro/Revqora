@@ -4,7 +4,7 @@ import { branchError, buildCloneOptions, defaultCloneOptionsForm, parseDepth } f
 describe("clone options", () => {
   it("defaults to a full clone with submodules", () => {
     expect(buildCloneOptions(defaultCloneOptionsForm())).toEqual({
-      options: { branch: null, depth: null, noSingleBranch: false, filter: "none", recurseSubmodules: true, shallowSubmodules: false },
+      options: { branch: null, depth: null, noSingleBranch: false, filter: "none", recurseSubmodules: true, shallowSubmodules: false, sparse: false, sparseFolders: [] },
       error: "",
     });
   });
@@ -35,5 +35,11 @@ describe("clone options", () => {
   it("never passes through an unknown filter", () => {
     expect(buildCloneOptions({ ...defaultCloneOptionsForm(), filter: "sparse:oid=x" as never }).options?.filter).toBe("none");
     expect(buildCloneOptions({ ...defaultCloneOptionsForm(), filter: "tree:0" }).options?.filter).toBe("tree:0");
+  });
+  it("builds sparse clone folders", () => {
+    const form = { ...defaultCloneOptionsForm(), sparse: true, sparseFolders: ["src", "", " docs/ ", "src"].join("\n") };
+    expect(buildCloneOptions(form).options).toMatchObject({ sparse: true, sparseFolders: ["src", "docs"] });
+    expect(buildCloneOptions({ ...form, sparseFolders: "../x" }).error).not.toBe("");
+    expect(buildCloneOptions({ ...form, sparse: false }).options).toMatchObject({ sparse: false, sparseFolders: [] });
   });
 });

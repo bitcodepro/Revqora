@@ -4,13 +4,13 @@ import { Columns2, SquarePen, Ellipsis, List, FolderTree, Copy, CornerDownLeft, 
 import * as A from "../lib/actions";
 import { api, errorMessage } from "../lib/api";
 import type { Check, CommitDetails as Details, FileDiff, GraphRow, RefLabel, Signature } from "../lib/types";
-import { CheckIcon, summarizeChecks } from "./PullRequests";
+import { CheckIcon, summarizeChecks } from "./PrChecks";
 import { toast } from "../lib/ui";
 import { absoluteTime, fullTime, joinPath, relativeTime, shortOid } from "../lib/format";
 import { contextMenu, copyText, openOverlay, showDialog } from "../lib/ui";
 import { Avatar, FileGroups, PathLabel, StatusIcon } from "./bits";
 import { useRepos } from "../lib/store";
-import { detailsKey, diffKey, loadDetails, loadDiff, peekDetails, peekDiff, previewGeneration, subscribePreview } from "../lib/commitPreview";
+import { containmentKey, detailsKey, diffKey, loadContainment, loadDetails, loadDiff, peekContainment, peekDetails, peekDiff, previewGeneration, subscribePreview } from "../lib/commitPreview";
 import { useSettings } from "../lib/settings";
 import { DiffView, useDiffOpts } from "./DiffView";
 import { jumpToCommit } from "./GraphView";
@@ -114,6 +114,24 @@ ${oid}`;
     finally { if (version === signatureVersion.current) setSignatureBusy(false); }
   };
 
+  // Remote containment arrives after the header and file list. null = still unknown.
+  const containKey = d ? containmentKey(root, d.oid, remoteVersion) : null;
+  const [containResult, setContainResult] = useState<{ key: string; generation: number; value: boolean | "failed" } | null>(null);
+  const containLoaded = containResult && containResult.key === containKey && containResult.generation === generation ? containResult.value : null;
+  const containFailed = containLoaded === "failed";
+  const contained: boolean | null = !d || !containKey ? null : d.containedInRemote ?? peekContainment(containKey) ?? (typeof containLoaded === "boolean" ? containLoaded : null);
+  const [actionsBusy, setActionsBusy] = useState(false);
+  useEffect(() => {
+    if (!d || !containKey || d.containedInRemote != null || peekContainment(containKey) !== undefined) return;
+    let alive = true;
+    const current = () => alive && previewGeneration(root) === generation;
+    void loadContainment(containKey, root, d.oid).then(
+      (value) => { if (current()) setContainResult({ key: containKey, generation, value }); },
+      () => { if (current()) setContainResult({ key: containKey, generation, value: "failed" }); },
+    );
+    return () => { alive = false; };
+  }, [root, d, containKey, generation]);
+
   const selectedDiffKey = d && file ? diffKey(root, d.diffBase, d.oid, file, diffOpts) : null;
   const diff = selectedDiffKey ? peekDiff(selectedDiffKey, oid) ?? (diffResult?.key === selectedDiffKey && diffResult.generation === generation ? diffResult.value : null) : null;
   const diffErr = diffError?.key === selectedDiffKey && diffError.generation === generation ? diffError!.message : null;
@@ -152,12 +170,23 @@ ${oid}`;
           if (trigger.isConnected) trigger.focus({ preventScroll: true });
         }}><FileText size={14} /> Message</button>
         {current && <CommitNote root={root} oid={current.oid} />}
-        <button type="button" className="btn sm" disabled={!current} aria-haspopup="menu" title="Commit actions: cherry-pick, revert, branch, tag, reset and more" onClick={(event) => {
+        <button type="button" className="btn sm" disabled={!current || actionsBusy} aria-haspopup="menu" title="Commit actions: cherry-pick, revert, branch, tag, reset and more" onClick={async (event) => {
           if (!current) return;
-          const box = event.currentTarget.getBoundingClientRect();
-          const row = detailsRow(root, current);
-          contextMenu({ clientX: box.left, clientY: box.bottom + 4, currentTarget: event.currentTarget, preventDefault: () => {} }, commitMenu(root, row, [row]));
-        }}><Ellipsis size={14} /> Actions</button>
+          const trigger = event.currentTarget;
+          const asked = shownCommit.current;
+          // The menu states whether the commit is already pushed: wait for a fresh answer
+          // instead of presenting an unknown state as "local only".
+          let pushed = contained;
+          if (pushed === null && containKey && !containFailed) {
+            setActionsBusy(true);
+            try { pushed = await loadContainment(containKey, root, current.oid); } catch { pushed = null; } finally { setActionsBusy(false); }
+            if (shownCommit.current !== asked || !trigger.isConnected) return;
+          }
+          const box = trigger.getBoundingClientRect();
+          const row = detailsRow(root, current, pushed);
+          // Unknown is not "local only": keep the rewrite warning, worded for an unknown answer.
+          contextMenu({ clientX: box.left, clientY: box.bottom + 4, currentTarget: trigger, preventDefault: () => {} }, commitMenu(root, row, [row], { publicationUnknown: pushed !== true && pushed !== false }));
+        }}>{actionsBusy ? <Loader2 size={14} className="spin" /> : <Ellipsis size={14} />} Actions</button>
         {onClose && <button type="button" className="btn sm details-hide" title="Close commit preview" onClick={onClose}><X size={14} /> Close</button>}
       </div>
     </header>
@@ -235,7 +264,7 @@ ${oid}`;
             {signatureBusy && <Loader2 size={12} className="spin" />} {sig ? "Verify again" : "Verify signature"}
           </button>
         </span>
-        {hasForge && d.containedInRemote && (
+        {hasForge && contained === true && (
           <>
             <span className="k">CI</span>
             <span>
@@ -253,7 +282,10 @@ ${oid}`;
           </>
         )}
         <span className="k">Status</span>
-        <span>{d.containedInRemote ? <span className="pill green">pushed</span> : <span className="pill amber">local only</span>}</span>
+        <span>{contained === true ? <span className="pill green">pushed</span>
+          : contained === false ? <span className="pill amber">local only</span>
+          : containFailed ? <span className="pill" title="Remote branches could not be checked for this commit.">unknown</span>
+          : <span className="pill" title="Checking whether a remote branch contains this commit">checking…</span>}</span>
       </div>
     </div>
   );
@@ -371,7 +403,8 @@ function SignatureBadge({ sig }: { sig: Signature }) {
 }
 
 /** The commit as a history row, for the same actions as its History context menu. */
-function detailsRow(root: string, d: Details): GraphRow {
+/** `pushed` null means the remote-containment answer is unknown; the row is then treated as published. */
+function detailsRow(root: string, d: Details, pushed: boolean | null): GraphRow {
   const tab = useRepos.getState().tabs[root];
   const refs: RefLabel[] = [
     ...(tab?.refs?.local ?? []).filter((b) => b.oid === d.oid).map((b): RefLabel => ({ name: b.name, kind: "local", syncedRemote: null })),
@@ -381,6 +414,6 @@ function detailsRow(root: string, d: Details): GraphRow {
   return {
     index: -1, oid: d.oid, parents: d.parents, author: d.author, email: d.authorEmail, authorTime: d.authorTime,
     committer: d.committer, commitTime: d.commitTime, subject: d.subject, refs, col: 0, color: 0, laneId: 0, segs: [],
-    isHead: tab?.info?.head.oid === d.oid, isMerge: d.parents.length > 1, localOnly: !d.containedInRemote, incoming: false,
+    isHead: tab?.info?.head.oid === d.oid, isMerge: d.parents.length > 1, localOnly: pushed === false, incoming: false,
   };
 }

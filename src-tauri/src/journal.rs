@@ -568,6 +568,27 @@ pub(crate) fn suspend<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// The calling thread's operation context, for scoped helper threads that run Git
+/// commands on its behalf: their commands stay in the same Operation log entry.
+pub(crate) struct Shared(Vec<Arc<Context>>);
+
+pub(crate) fn share() -> Shared {
+    Shared(CURRENT.with(|c| c.borrow().clone()))
+}
+
+impl Shared {
+    pub(crate) fn enter<T>(&self, f: impl FnOnce() -> T) -> T {
+        struct Restore(Vec<Arc<Context>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                CURRENT.with(|c| *c.borrow_mut() = std::mem::take(&mut self.0));
+            }
+        }
+        let _restore = Restore(CURRENT.with(|c| std::mem::replace(&mut *c.borrow_mut(), self.0.clone())));
+        f()
+    }
+}
+
 pub struct Command {
     context: Arc<Context>,
     sequence: i64,

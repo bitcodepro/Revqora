@@ -18,6 +18,7 @@ Before opening or updating a PR:
 - [ ] Explorer's Incoming and Changes filters use the last known repository status and keep the parent folders of matching repositories visible. Changes includes staged, unstaged and untracked files.
 - [ ] Closing a repository keeps its Explorer entry. Remove from Explorer closes the selected repositories and clears their saved placements and favorites while preserving their working copies.
 - [ ] Test arrow navigation, F2 and Delete in the relevant panel. Shortcut bindings and hints are discoverable and existing overrides keep working.
+- [ ] A dialog, the command palette or an open context menu takes every shortcut, keeps Tab inside it and returns focus to its opener when it closes. A tool window over the workspace (Blame, Compare, merge editor) keeps application shortcuts and blocks those for the History or Changes selection it covers (stage/unstage, close preview, Find commits). A view shortcut (History, Changes, Pull Requests, review layout, overview) closes a tool window that only shows something and then switches (Branch Manager with edited, unsaved protection rules counts as holding work); a rebase plan, workflow editor, agent request or merge editor stays open and a notice says the view was not switched.
 
 - [ ] While a transfer runs for the active repository, Fetch rotates, Pull moves down and Push moves up. The icons return to rest when the operation ends. Reduced-motion mode uses the busy color without movement.
 
@@ -29,6 +30,8 @@ Before opening or updating a PR:
 - [ ] Opening a match selects its repository and commit. Branch context, current-branch history and All branches are distinct scopes. Verify Graph, Review and Columns when changing shared history behavior.
 - [ ] When the branch scope changes, History waits for that scope's graph. Updates to the same scope can keep the existing rows visible.
 - [ ] History search covers the whole selected scope while the graph stays paged. A match outside the loaded graph is available in the match list and opens its commit by SHA.
+- [ ] A selected commit shows its header and files before the pushed/local answer is known: the status reads "checking…" until it arrives and "unknown" if the read fails. CI checks appear only for a commit confirmed as pushed, and the Actions menu waits for the answer. If the answer stays unknown, the menu warns that the commit may already be pushed instead of treating it as local only.
+- [ ] End in the commit list selects the last commit with one press, loading the rest of a paged history first. Arrow, Home and End keep working in the pull request list after the clicked row scrolls out of view.
 - [ ] History **Filters** (author, literal file/folder path, since/until dates, first parent only, hide merge commits) combine with each other and with the search text (AND). Active filters show as removable chips; filters alone list matching commits. Dates are YYYY-MM-DD and values starting with '-' are rejected.
 - [ ] Signature status in History is off by default. When on, only visible rows are checked, in batches; unsigned commits show no mark and a failed check shows "cannot be checked here" rather than a wrong verdict.
 - [ ] Line history ("History of this line…", or "History of lines N–M…" for a selected range) and Folder history list only commits that changed those lines or that folder, with their diffs. Opening an entry selects its commit in History. Commit notes never change the commit; an empty note removes it.
@@ -44,6 +47,7 @@ Before opening or updating a PR:
 ## Working changes, staging and stash
 
 - [ ] Commit Description shows a non-selectable hint while empty. Real draft text can be selected and copied while editing. Leaving the field clears the selection and preserves the draft.
+- [ ] Amend stays on with its draft across refreshes, view switches and repository switches while HEAD is the commit it was turned on for. When HEAD becomes another commit (checkout, pull, a commit made elsewhere), Amend turns off with a notice: the message loaded from the old commit is cleared, typed or edited text stays. A successful commit clears the form.
 
 - [ ] Co-author chips mirror the `Co-authored-by:` lines in the Description: adding appends one trailer after a blank line (or to an existing trailer block), removing deletes only that line, other trailers stay. Recent messages asks before replacing a non-empty draft. Fixup!/squash! from History commit only staged changes and are disabled with a reason when nothing is staged or an operation is in progress. See [Changes and commits](wiki/Changes-and-commits.md).
 
@@ -59,6 +63,8 @@ Before opening or updating a PR:
 ## Repository tools
 
 - [ ] Repository tools shows Fetch more history / Fetch full history only for shallow clones. The rerere toggle changes this repository's configuration only; Stage replayed resolutions automatically is offered only while rerere is on.
+- [ ] Sparse checkout tab: shows on/off, cone or non-cone mode and the folders/patterns; turning on uses cone mode; adding folders only uses `sparse-checkout add`; removing folders or switching mode confirms first with the files that leave the working tree (cone mode) and the ones with local changes. Git's warning or refusal and the affected files are shown; local edits are never discarded. Turn off explains that every file comes back. All changes are queued, state-checked, logged and checkpointed. Status shows no deletions for sparse-excluded files.
+- [ ] Clone dialog: Sparse checkout runs `clone --sparse` plus `sparse-checkout set --cone` with the optional folders; a failure to add folders keeps the clone and shows a warning. Partial clone status lists promisor remotes and their filter; diffs and history of files whose contents are missing trigger Git's lazy fetch. No Convert to full clone action is offered.
 - [ ] The Hooks tab (also "Git hooks…" in the palette) reads core.hooksPath, marks non-executable hooks as skipped and ignores *.sample files. It never runs a hook.
 - [ ] Git LFS locks: when the server does not support locks the dialog still lists files and explains why. Unlock tries a normal release first; force unlock needs a separate danger confirmation.
 - [ ] Export archive writes the shown revision as zip or tar.gz, chosen by the file name extension.
@@ -75,3 +81,13 @@ Before opening or updating a PR:
 - [ ] Error log lists recent application errors independently of Operation log. It copies one entry or all entries, preserves diagnostic codes, redacts credentials before storage and prunes entries older than seven days.
 - [ ] Clear log deletes recorded application errors after confirmation. New errors can still be recorded and Operation log is unaffected.
 - [ ] On Windows, a briefly locked working file can be read after the lock is released. A persistent read failure reports its file and OS error and does not supply a mutation precondition.
+
+## Drag and drop in History and Branches
+
+- [ ] Dragging a branch badge, a Branches row or History commits (a multi-selection moves together) onto a branch or commit only opens a menu at the drop point; the chosen item runs the existing merge, rebase, cherry-pick, reset, push or pull action with its dialogs. An item that needs another branch says "Switch to … and …", checks it out first and stops if that fails or is cancelled. See [Branches](wiki/Branches-and-cleanup.md#drag-and-drop).
+- [ ] Only targets with at least one action show a drop indicator. A plain click, double-click, right-click, Ctrl/Shift selection and lane hover behave as without drag and drop; Esc cancels a drag and an invalid drop changes nothing. Items are disabled with a reason during an operation in progress, on detached HEAD, for a branch checked out in another worktree and when both sides are the same commit.
+
+## Themes
+
+- [ ] The Theme setting offers System, Light, Dark, High contrast light, High contrast dark and saved custom themes. System follows the OS colour scheme and uses the high-contrast variant when the OS asks for more contrast (`prefers-contrast: more` or `forced-colors: active`). Detached panel windows show the same theme, including custom colours. **Toggle dark / light theme** switches to the built-in theme of the other colour scheme, keeps high contrast and never changes a custom theme.
+- [ ] The theme editor duplicates a built-in or custom theme, previews unsaved colours at once, and saves, renames, deletes, exports and imports custom themes. Built-in themes cannot be edited. A theme file with an unknown field or colour token, or a value that is not a hex, `rgb()` or `hsl()` colour, is rejected whole with a message naming the problem; nothing from it is applied.

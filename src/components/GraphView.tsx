@@ -26,9 +26,11 @@ import { BranchAheadBehind, Avatar, RefBadge } from "./bits";
 import { branchMenu, commitMenu, runMenuShortcut, tagMenu } from "./menus";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { usePanelTitleMenu } from "./PanelWindows";
+import { useGraphDrag, type CommitDrag } from "./GraphDrop";
 import { pickBranchScope } from "./BranchScopePicker";
 import { signatureBadge, useSignature } from "../lib/signatureStatus";
-import { jumpStep } from "../lib/historyJump";
+import { jumpStep, lastRowStep } from "../lib/historyJump";
+import { keyboardOwner, listKeysBlocked, shortcutBlocked } from "../lib/keyboardOwner";
 
 const ROW_H = 30;
 /** Review mode: two-line rows (subject, then author, date and hash) without the graph. */
@@ -105,6 +107,8 @@ interface RowProps {
 }
 
 const NO_BRANCHES: string[] = [];
+/** One function for every row, so a filtered list does not re-render all rows on each update. */
+const ignoreLane = () => {};
 
 const Row = memo(function Row(p: RowProps) {
   const squashed = useRepos((s) => s.tabs[p.root]?.squashMerged) ?? NO_BRANCHES;
@@ -189,6 +193,7 @@ const Row = memo(function Row(p: RowProps) {
     return (
       <div
         className={`grow compact ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${branchStyle} ${r.incoming ? "incoming" : ""}`}
+        data-commit-oid={wip ? undefined : r.oid}
         style={{ top, height: p.rowH }}
         onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
         onContextMenu={(e) => p.onMenu(r, e)}
@@ -220,6 +225,7 @@ ${r.oid}`
     <div
       className={`grow ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${p.animDelay !== null ? "animate" : ""} ${p.pinnedLaneMember ? "lane-member" : ""} ${branchStyle} ${r.incoming ? "incoming" : ""} ${p.keyboardHighlighted ? "keyboard-highlighted" : ""}`}
       data-commit-index={wip ? undefined : r.index}
+      data-commit-oid={wip ? undefined : r.oid}
       style={{ top, height: p.rowH, ...anim, ["--pinned-lane-color" as string]: p.pinnedLaneMember ? nodeColor : undefined }}
       onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
       onContextMenu={(e) => p.onMenu(r, e)}
@@ -748,6 +754,9 @@ export function GraphView({
     },
     [root, patch, scrollToIndex, graphKey, filtered, results],
   );
+  /** The graph and selection of the latest render, for work that finishes after it. */
+  const rendered = useRef({ graphKey, selectIndex });
+  rendered.current = { graphKey, selectIndex };
   useEffect(() => {
     if (!graphKey || selectLastFor.current !== graphKey) return;
     selectLastFor.current = null;
@@ -819,6 +828,29 @@ export function GraphView({
     },
     [root, patch, filtered, results],
   );
+
+  // Drag and drop (GraphDrop.tsx). Called on pointerdown, before the mousedown that follows it
+  // changes the selection: a dragged commit takes its whole multi-selection along.
+  const dragCommits = useCallback(
+    (oid: string): CommitDrag | null => {
+      const t = useRepos.getState().tabs[root];
+      if (!t) return null;
+      const previous = { selected: t.selected, multi: t.multi };
+      // The press toggles or collapses the selection; a drag puts it back.
+      const restore = () => patch(root, previous);
+      if (previous.multi.length > 1 && previous.multi.includes(oid)) {
+        const chosen = new Set(previous.multi);
+        const visibleRows = filtered ? results.map(({ row }) => row) : [...cache.current.values()];
+        const sel = visibleRows.filter(row => chosen.has(row.oid));
+        if (sel.length !== chosen.size) return { oids: [oid] };
+        // Oldest first, the order the commit menu cherry-picks in.
+        return { oids: sel.sort((a, b) => b.index - a.index).map(row => row.oid), onStart: restore };
+      }
+      return { oids: [oid], onStart: previous.selected === oid ? restore : undefined };
+    },
+    [root, patch, filtered, results],
+  );
+  const startDrag = useGraphDrag(root, dragCommits);
 
   const onRefClick = useCallback(
     async (name: string) => {
@@ -956,7 +988,8 @@ export function GraphView({
         matchesShortcut(e, "historyFind") &&
         useRepos.getState().active === root &&
         (view !== window || tab.view === "history") &&
-        !view.document.querySelector(".modal")
+        // The field must not take focus behind a dialog, the palette, a menu or a tool window.
+        !shortcutBlocked("historyFind", keyboardOwner(view.document))
       ) {
         e.preventDefault();
         searchRef.current?.focus();
@@ -970,7 +1003,7 @@ export function GraphView({
   const navigateHoveredCommit = (e: KeyboardEvent) => {
     if (compact || tab.selected || e.defaultPrevented || actionFor(e)) return false;
     const el = scrollRef.current;
-    if (!el || el.ownerDocument.querySelector(".modal, .ctx-menu")) return false;
+    if (!el || listKeysBlocked(keyboardOwner(el.ownerDocument))) return false;
     const focused = el.ownerDocument.activeElement;
     if (focused !== el && focused?.closest("input, textarea, select, button, a[href], [contenteditable], [role=combobox]")) return false;
 
@@ -1050,12 +1083,12 @@ export function GraphView({
       const scope = { branchFilter: tab.branchFilter, branchContext: tab.branchContext, selected: tab.selected };
       void loadEntireHistory(root).then(() => {
         const latest = useRepos.getState().tabs[root];
-        if (latest && latest.branchFilter === scope.branchFilter && latest.branchContext === scope.branchContext && latest.selected === scope.selected && latest.graph) {
-          // The full history is a new graph: select once this view renders it (the
-          // selectIndex of this render still belongs to the old graph).
-          if (latest.graph.key === graphKey) void selectIndex(latest.graph.total - 1);
-          else selectLastFor.current = latest.graph.key;
-        }
+        const sameView = !!latest && latest.branchFilter === scope.branchFilter && latest.branchContext === scope.branchContext && latest.selected === scope.selected;
+        // The full history is a new graph, usually rendered before this runs: the selectIndex
+        // of the key press still belongs to the old graph, so use the one that renders it.
+        const step = lastRowStep({ sameView, loadedKey: latest?.graph?.key ?? null, renderedKey: rendered.current.graphKey ?? null });
+        if (step === "select") void rendered.current.selectIndex(latest!.graph!.total - 1);
+        else if (step === "await-render") selectLastFor.current = latest!.graph!.key;
       });
     } else if (matchesShortcut(e, "historyOpenCommit") && tab.selected === WORKTREE) {
       onEnterChanges();
@@ -1104,8 +1137,8 @@ export function GraphView({
           root={root}
           onSelect={onSelect}
           onMenu={onMenu}
-          onHover={filtered ? () => {} : setHl}
-          onPin={filtered ? () => {} : pinLane}
+          onHover={filtered ? ignoreLane : setHl}
+          onPin={filtered ? ignoreLane : pinLane}
           onRefClick={onRefClick}
           compact={compact}
           rowH={rowH}
@@ -1432,7 +1465,8 @@ export function GraphView({
           if (keyboardIndex !== null) setKeyboardCommit(null);
         }}
         onPointerLeave={() => { hoveredCommit.current = null; }}
-        onPointerDown={() => { hoveredCommit.current = null; setKeyboardCommit(null); }}
+        onPointerDown={(e) => { hoveredCommit.current = null; setKeyboardCommit(null); startDrag(e); }}
+        data-drop-root={root}
         onBlur={() => setKeyboardCommit(null)}
         data-hl={hl !== null ? hl : undefined}
         data-pinned-lane={pinned ?? undefined}

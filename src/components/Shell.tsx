@@ -62,7 +62,8 @@ import {
   Layers3,
 } from "lucide-react";
 import { useRepos, type RepoTab } from "../lib/store";
-import { resolvedTheme, useSettings } from "../lib/settings";
+import { resolvedTheme, toggledThemePref, useSettings } from "../lib/settings";
+import { themeEditorDialog } from "./ThemeEditor";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { contextMenu, endBusy, openOverlay, startBusy, toast, toggleRepositoryOverview, useUi, type MenuItem } from "../lib/ui";
 import { namePathMenu } from "./NamePathMenu";
@@ -72,6 +73,7 @@ import { bindingFor, prettyCombo, shortcutTitle } from "../lib/shortcuts";
 import { jumpToCommit } from "./GraphView";
 import { api, newOpId } from "../lib/api";
 import { useAppVersion } from "../lib/appVersion";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import { basename, plural, shortOid } from "../lib/format";
 import { AheadBehind } from "./bits";
 import { UpdateChip } from "./UpdateChip";
@@ -167,7 +169,7 @@ export function TopBar() {
     { label: "Command palette", icon: <Command size={15}/>, onClick: () => useUi.getState().setPalette(true) },
     { label: "Operation log", hint: prettyCombo(bindingFor("operation-log", shortcuts)), onClick: () => void operationLogDialog(root ?? null) },
     { label: "Error log", hint: prettyCombo(bindingFor("error-log", shortcuts)), onClick: () => void errorLogDialog() },
-    { label: dark ? "Light theme" : "Dark theme", icon: dark ? <Sun size={15}/> : <Moon size={15}/>, onClick: () => setS({ theme: dark ? "light" : "dark" }) },
+    { label: dark ? "Light theme" : "Dark theme", icon: dark ? <Sun size={15}/> : <Moon size={15}/>, onClick: () => setS({ theme: toggledThemePref() }) },
     { label: "Accounts and API connections…", icon: <UserRound size={15}/>, onClick: () => void forgeAccountsDialog(root ?? null) },
     { label: "Check for updates", icon: <Download size={15}/>, disabled: !canCheckUpdates(updatePhase), onClick: () => void checkUpdates() },
     { label: "Settings…", icon: <Settings2 size={15}/>, onClick: () => void settingsDialog(root ?? null) },
@@ -240,7 +242,7 @@ export function TopBar() {
       </button>
       <OperationLogButton root={root} />
       <ErrorLogButton />
-      <button aria-label={dark ? "Light theme" : "Dark theme"} className="icon-btn" title={dark ? "Light theme" : "Dark theme"} data-shortcut="theme" onClick={() => setS({ theme: dark ? "light" : "dark" })}>
+      <button aria-label={dark ? "Light theme" : "Dark theme"} className="icon-btn" title={dark ? "Light theme" : "Dark theme"} data-shortcut="theme" onClick={() => setS({ theme: toggledThemePref() })}>
         {dark ? <Sun size={16} /> : <Moon size={16} />}
       </button>
       <button aria-label="Accounts and API connections" className="icon-btn" title="Accounts and API connections" data-shortcut="forge-accounts" onClick={() => forgeAccountsDialog(root ?? null)}><UserRound size={16}/></button>
@@ -639,9 +641,10 @@ function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
       icon: <Moon size={15} />,
       run: () => {
         const s = useSettings.getState();
-        s.set({ theme: resolvedTheme(s.theme) === "dark" ? "light" : "dark" });
+        s.set({ theme: toggledThemePref() });
       },
     },
+    { id: "theme-editor", label: "Theme editor…", group: "App", icon: <Sun size={15} />, run: () => void themeEditorDialog() },
   ];
   if (tab) {
     const root = tab.root;
@@ -718,6 +721,9 @@ export function CommandPalette() {
   const [loadingBranches, setLoadingBranches] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const paletteRef = useRef<HTMLDivElement>(null);
+  // Tab stays in the palette, and closing it returns focus to where the user was.
+  useFocusTrap(paletteRef, open);
   const roots = useMemo(() => uniqueRoots([...order, ...known, ...recent]), [order, known, recent]);
   // Only what the palette lists: other repository patches (status, graph) do not re-render it.
   const tab = useRepos(s => (s.active ? s.tabs[s.active] : null));
@@ -842,7 +848,7 @@ export function CommandPalette() {
             list.push({ id: "checkout:" + branch.fullName, label: "Check out " + branch.name, group: "Branch action", icon: <GitBranch size={15} />,
               run: () => void A.checkout(tab.root, branch.name, kind) });
             if (kind === "local") list.push({ id: "merge:" + branch.fullName, label: "Merge " + branch.name + " into current…", group: "Branch action",
-              icon: <GitMerge size={15} />, run: () => void A.mergeInto(tab.root, branch.name) });
+              icon: <GitMerge size={15} />, run: () => void A.mergeInto(tab.root, branch.fullName, branch.name) });
           }
         }
       }
@@ -885,7 +891,7 @@ export function CommandPalette() {
   };
   return (
     <div className="modal-backdrop" style={{ background: "transparent", backdropFilter: "none" }} onMouseDown={e => e.target === e.currentTarget && setOpen(false)}>
-      <div className="palette" role="dialog" aria-label="Command palette">
+      <div className="palette" ref={paletteRef} role="dialog" aria-modal="true" aria-label="Command palette">
         <Search size={18} className="pi" />
         <input
           ref={inputRef}

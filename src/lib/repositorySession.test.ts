@@ -129,7 +129,7 @@ describe("repository session restoration", () => {
     expect(api.graphLoad).not.toHaveBeenCalled();
     expect(api.layersState).not.toHaveBeenCalled();
     useRepos.getState().activate("/background");
-    await vi.waitFor(() => expect(api.graphLoad).toHaveBeenCalledWith("/background", "HEAD", false, INITIAL_GRAPH_COMMITS, false, true, true));
+    await vi.waitFor(() => expect(api.graphLoad).toHaveBeenCalledWith("/background", "HEAD", false, INITIAL_GRAPH_COMMITS, false, true, true, expect.any(Number)));
     expect(api.graphLoad).toHaveBeenCalledTimes(1);
   });
 

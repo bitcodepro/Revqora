@@ -42,6 +42,7 @@ import { reviewBranchCleanup } from "./BranchCleanup";
 import { usePanelTitleMenu, usePanelWindows } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
 import { highlightBranch, jumpToCommit } from "./GraphView";
+import { useGraphDrag } from "./GraphDrop";
 import { confirmDialog, promptDialog } from "./dialogs";
 import { branchConnection, branchPairs } from "../lib/branchPresentation";
 import {sidebarBranchesKey,sidebarBranchPreferences,selectSidebarBranches} from "../lib/sidebarBranches";
@@ -115,6 +116,8 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   const primaryBranch = useSettings(settings => settings.primaryBranchByRepo[key]);
   const favorites = useSettings(settings => settings.branchFavoritesByRepo[key]);
   const viewBranch = (branch: BranchInfo) => showBranch(root, branch, false, !!panels.history);
+  // Branch rows are drag sources and drop targets (GraphDrop.tsx); one handler serves them all.
+  const startDrag = useGraphDrag(root);
 
   useEffect(() => {
     if (reveal?.root !== root || !refs) return;
@@ -264,28 +267,6 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               if (e.key !== "Enter" && e.key !== " ") return;
               e.preventDefault();
               chooseBranch(b, e.ctrlKey || e.metaKey, e.shiftKey);
-            }}
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData("revqora/branch", b.name);
-              e.dataTransfer.effectAllowed = "link";
-            }}
-            onDragOver={(e) => e.dataTransfer.types.includes("revqora/branch") && e.preventDefault()}
-            onDrop={(e) => {
-              const src = e.dataTransfer.getData("revqora/branch");
-              if (!src || src === b.name) return;
-              const items = isCur
-                ? [
-                    { label: `Merge ${src} into ${b.name}…`, onClick: () => A.mergeInto(root, src) },
-                    { label: `Rebase ${b.name} onto ${src}`, onClick: () => A.rebaseOnto(root, src) },
-                    { separator: true },
-                    { label: `Compare ${src} with ${b.name}`, onClick: () => openOverlay({ kind: "compare", root, from: b.name, to: src }) },
-                  ]
-                : [
-                    { label: `Compare ${src} with ${b.name}`, onClick: () => openOverlay({ kind: "compare", root, from: b.name, to: src }) },
-                    { label: `Check out ${b.name}, then merge ${src}…`, onClick: async () => (await A.checkout(root, b.name, kind)) !== undefined && A.mergeInto(root, src) },
-                  ];
-              contextMenu(e, items);
             }}
             onMouseEnter={() => highlightBranch(root, b.oid)}
             onMouseLeave={() => highlightBranch(root, null)}
@@ -450,7 +431,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   const visibleRefs = [...(pinned ? [pinned.fullName] : []), ...(branchRows as ReactElement[]).map(row => String(row.key)).filter(ref => branchesByRef.has(ref))];
 
   return (
-    <aside className="sidebar" onKeyDown={(e) => {
+    <aside className="sidebar" data-drop-root={root} onPointerDown={startDrag} onKeyDown={(e) => {
       if (e.defaultPrevented || !(e.target as Element).closest("[data-branch-ref]")) return;
       if (e.key === "Escape" && selected.length > 1) {
         e.preventDefault();

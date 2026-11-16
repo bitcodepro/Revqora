@@ -1122,11 +1122,24 @@ pub struct CloneOptions {
     pub filter: CloneFilter,
     pub recurse_submodules: bool,
     pub shallow_submodules: bool,
+    /// `--sparse`: start with only the top-level files checked out.
+    pub sparse: bool,
+    /// Folders added with `sparse-checkout set --cone` right after a sparse clone.
+    pub sparse_folders: Vec<String>,
 }
 
 impl Default for CloneOptions {
     fn default() -> Self {
-        Self { branch: None, depth: None, no_single_branch: true, filter: CloneFilter::None, recurse_submodules: true, shallow_submodules: false }
+        Self {
+            branch: None,
+            depth: None,
+            no_single_branch: true,
+            filter: CloneFilter::None,
+            recurse_submodules: true,
+            shallow_submodules: false,
+            sparse: false,
+            sparse_folders: Vec::new(),
+        }
     }
 }
 
@@ -1155,6 +1168,12 @@ pub fn clone_option_args(parent: &Path, options: &CloneOptions) -> GitResult<Vec
         CloneFilter::None => {}
         CloneFilter::BlobNone => args.push("--filter=blob:none".into()),
         CloneFilter::TreeZero => args.push("--filter=tree:0".into()),
+    }
+    if options.sparse {
+        for folder in &options.sparse_folders {
+            super::sparse::normalize_folder(folder)?;
+        }
+        args.push("--sparse".into());
     }
     if options.recurse_submodules {
         args.push("--recurse-submodules".into());
@@ -1195,6 +1214,17 @@ pub fn clone_with_options(
     // `--`: a pasted "URL" such as --upload-pack=... must never be read as an option.
     args.extend(["--".into(), url.into(), dir_name.into()]);
     runner::run_streaming_with_connection(parent, &args, &[(crate::git_credentials::REPO_VAR, &root.to_string_lossy())], on_line, connection)?;
+    // The clone exists; a failure here must not hide it, so it becomes a clone warning.
+    let sparse_warning = (options.sparse && options.sparse_folders.iter().any(|f| !f.trim().is_empty()))
+        // The selected connection is saved below; the initial folders may already fetch blobs with it.
+        .then(|| super::sparse::set_with_connection(&root, true, &options.sparse_folders, connection).err())
+        .flatten()
+        .map(|e| {
+            format!(
+                "Repository cloned with only its top-level files, but the folders could not be added: {}. Add them in Repository tools > Sparse checkout.",
+                e.message
+            )
+        });
     // An explicit default selection must replace preferences left by a previous
     // clone at this path too; otherwise Auto silently reuses its old SSH key.
     let warning = connection.and_then(|options| {
@@ -1205,6 +1235,10 @@ pub fn clone_with_options(
             )
         })
     });
+    let warning = match (sparse_warning, warning) {
+        (Some(a), Some(b)) => Some(format!("{a} {b}")),
+        (a, b) => a.or(b),
+    };
     Ok((root, warning))
 }
 

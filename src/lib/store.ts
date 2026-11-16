@@ -127,6 +127,13 @@ function emptyTab(root: string): RepoTab {
 
 const inflight = new Map<string, Promise<void>>();
 const pending = new Map<string, Parts>();
+/** The parts the running refresh of a repository is reading right now. */
+const reading = new Map<string, Parts>();
+/** When each running read started, and when each repository was last selected: a quiet check
+ *  joins only a read that started after the selection, so it reflects the repository as it is now. */
+const readingSince = new Map<string, number>();
+const activatedAt = new Map<string, number>();
+let readClock = 0;
 const squashJobs = new Map<string, { wanted: string; done: string; running: boolean }>();
 const openingQueue = repositoryQueue();
 const summaryQueue = repositoryQueue();
@@ -296,6 +303,13 @@ function merge(a: Parts | undefined, b: Parts): Parts {
   };
 }
 
+/** Whether a full read of `running` observes everything `wanted` asks for. */
+export function covers(running: Parts | undefined, wanted: Parts): boolean {
+  if (!running || running.summary || running.changesDisplay) return false;
+  if (wanted.guard && !running.guard) return false;
+  return (["info", "status", "refs", "layers", "graph"] as const).every(part => !wanted[part] || !!running[part]);
+}
+
 function persistTabs() {
   const { order, active } = useRepos.getState();
   useSettings.getState().set({ openTabs: order, activeTab: active });
@@ -368,6 +382,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     if (root) {
       openingQueue.prioritize(root);
       summaryQueue.prioritize(root);
+      activatedAt.set(root, ++readClock);
       // Ctrl+Tab through many repositories: the first switch refreshes at once, quick
       // follow-ups wait until the user settles, and only the repository still shown refreshes.
       const now = Date.now();
@@ -437,6 +452,12 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       if (tab) get().patch(root, { diffRefreshVersion: tab.diffRefreshVersion + 1 });
     }
     if (inflight.has(root)) {
+      // Selecting a repository asks for a quiet check of what is on screen. A read that
+      // is already running (or already queued) for the same parts answers it: do not
+      // repeat status, refs, layers and extras behind it. A missing history is always
+      // requested: the running read may have dropped it while the repository was hidden.
+      const fresh = (readingSince.get(root) ?? 0) > (activatedAt.get(root) ?? 0);
+      if (parts.revalidate && parts.background && !parts.graph && ((fresh && covers(reading.get(root), parts)) || covers(pending.get(root), parts))) return inflight.get(root);
       pending.set(root, merge(pending.get(root), parts));
       return inflight.get(root);
     }
@@ -444,6 +465,8 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       let todo: Parts | undefined = parts;
       while (todo) {
         const read = todo;
+        reading.set(root, read);
+        readingSince.set(root, ++readClock);
         if (read.summary) await summaryQueue.run(root, () => refreshOnce(root, read));
         else await refreshOnce(root, read);
         todo = pending.get(root);
@@ -455,6 +478,8 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       await job;
     } finally {
       inflight.delete(root);
+      reading.delete(root);
+      readingSince.delete(root);
     }
   },
 }));
@@ -590,17 +615,31 @@ async function refreshOnce(root: string, parts: Parts) {
 
 const graphRequests = new Map<string, number>();
 const graphQueues = new Map<string, Promise<void>>();
+const graphBuilds = new Map<string, number>();
+const MAX_GRAPH_BUILDS = 2;
+// Build order for the backend. Seeded by the clock so a reloaded window continues above
+// the numbers it used before.
+let graphSequence = Date.now();
 
-// The backend has one graph-row cache per repository. Serialize builds so an
-// older filter cannot finish last and replace the cache behind a newer view.
+// The backend has one graph-row cache per repository and keeps only the build of the
+// newest request, so an older filter cannot finish last and replace the cache behind a
+// newer view. A new selection therefore starts beside one obsolete build instead of
+// waiting for it. Further requests queue, and only the newest of them runs.
 export async function loadGraph(root: string, includeWorktree?: boolean, minimumCommits = INITIAL_GRAPH_COMMITS) {
   const request = (graphRequests.get(root) ?? 0) + 1;
   graphRequests.set(root, request);
   const previous = graphQueues.get(root);
   const job = (async () => {
-    if (previous) await previous.catch(() => {});
+    if (previous && (graphBuilds.get(root) ?? 0) >= MAX_GRAPH_BUILDS) await previous.catch(() => {});
     if (graphRequests.get(root) !== request) return;
-    await loadGraphOnce(root, includeWorktree, minimumCommits, () => graphRequests.get(root) === request);
+    graphBuilds.set(root, (graphBuilds.get(root) ?? 0) + 1);
+    try {
+      await loadGraphOnce(root, includeWorktree, minimumCommits, () => graphRequests.get(root) === request);
+    } finally {
+      const running = (graphBuilds.get(root) ?? 1) - 1;
+      if (running > 0) graphBuilds.set(root, running);
+      else graphBuilds.delete(root);
+    }
   })();
   graphQueues.set(root, job);
   try { await job; } finally { if (graphQueues.get(root) === job) graphQueues.delete(root); }
@@ -645,7 +684,7 @@ async function loadGraphOnce(root: string, includeWorktree: boolean | undefined,
   const limit = Math.max(tab.graphScope === scopeKey ? tab.graphLimit : INITIAL_GRAPH_COMMITS, minimumCommits);
   store.patch(root, { graphLoading: true, graphError: null });
   try {
-    const summary = await api.graphLoad(root, scope, dirty, limit, false, showIncoming, true);
+    const summary = await api.graphLoad(root, scope, dirty, limit, false, showIncoming, true, ++graphSequence);
     if (!current()) return;
     const t = useRepos.getState().tabs[root];
     if (!t) return;
@@ -653,7 +692,11 @@ async function loadGraphOnce(root: string, includeWorktree: boolean | undefined,
     if (selected === WORKTREE && !dirty) selected = null;
     const loaded = summary.total - Number(dirty);
     if (summary.commitCount == null && loaded < limit) summary.commitCount = loaded;
-    useRepos.getState().patch(root, { graph: summary, graphScope: scopeKey, graphLimit: limit, graphVersion: t.graphVersion + 1, graphLoading: false, graphHasWorktree: dirty, selected });
+    // The backend answers an identical request with the build this tab already shows:
+    // its rows and exact total stay valid, so nothing is fetched again.
+    const unchanged = !!t.graph && t.graph.key === summary.key && t.graphScope === scopeKey && t.graphHasWorktree === dirty;
+    if (unchanged && summary.commitCount == null) summary.commitCount = t.graph!.commitCount;
+    useRepos.getState().patch(root, { graph: summary, graphScope: scopeKey, graphLimit: limit, graphVersion: unchanged ? t.graphVersion : t.graphVersion + 1, graphLoading: false, graphHasWorktree: dirty, selected });
     if (summary.commitCount == null && loaded >= limit) {
       void api.graphCommitCount(root, summary.key, dirty).then(count => {
         const graph = useRepos.getState().tabs[root]?.graph;

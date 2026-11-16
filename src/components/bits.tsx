@@ -67,6 +67,8 @@ export function RefBadge({ r, color, merged, branchMark, onClick, onContextMenu 
     <span
       className={`ref ${r.kind} ${r.kind === "bisect" ? (r.name.endsWith("bad") ? "bad" : "good") : ""}${merged ? " squashed" : ""}`}
       data-branch-mark={branchMark}
+      data-ref-kind={r.kind}
+      data-ref-name={r.name}
       style={style}
       title={
         merged

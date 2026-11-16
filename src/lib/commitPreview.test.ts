@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-vi.mock("./api", () => ({ api: { commitDetails: vi.fn(), revDiff: vi.fn() } }));
-import { PreviewCache, detailsKey, diffKey, loadDetails, peekDetails, previewGeneration, subscribePreview, invalidatePreview } from "./commitPreview";
+vi.mock("./api", () => ({ api: { commitDetails: vi.fn(), commitRemoteContainment: vi.fn(), revDiff: vi.fn() } }));
+import { PreviewCache, containmentKey, detailsKey, diffKey, loadContainment, loadDetails, peekContainment, peekDetails, previewGeneration, subscribePreview, invalidatePreview } from "./commitPreview";
 import { api } from "./api";
 import type { CommitDetails, DiffOptions } from "./types";
 
@@ -65,6 +65,40 @@ describe("commit preview memory cache", () => {
     expect(own).toHaveBeenCalledTimes(1); expect(other).not.toHaveBeenCalled();
     stop(); stopOther(); invalidatePreview(root);
     expect(own).toHaveBeenCalledTimes(1); expect(previewGeneration(root)).toBe(initial + 2);
+    vi.mocked(api.commitDetails).mockClear();
+  });
+  it("opens the header and files without remote containment and keeps that answer unknown until it is read", async () => {
+    const root = "containment-test"; const oid = "c".repeat(40);
+    vi.mocked(api.commitDetails).mockClear();
+    vi.mocked(api.commitDetails).mockResolvedValue({ oid, containedInRemote: null } as CommitDetails);
+    const details = await loadDetails(detailsKey(root, oid, "refs A"), root, oid);
+    expect(api.commitDetails).toHaveBeenCalledWith(root, oid, undefined, true);
+    expect(details.containedInRemote).toBeNull();
+    const key = containmentKey(root, oid, "refs A");
+    expect(peekContainment(key)).toBeUndefined();
+    let answer!: (pushed: boolean) => void;
+    vi.mocked(api.commitRemoteContainment).mockImplementationOnce(() => new Promise(resolve => { answer = resolve; }));
+    // The status pill and a waiting action share one read.
+    const shown = loadContainment(key, root, oid); const action = loadContainment(key, root, oid);
+    await Promise.resolve();
+    expect(peekContainment(key)).toBeUndefined();
+    answer(false);
+    expect(await shown).toBe(false); expect(await action).toBe(false);
+    expect(api.commitRemoteContainment).toHaveBeenCalledTimes(1);
+    expect(api.commitRemoteContainment).toHaveBeenCalledWith(root, oid);
+    expect(peekContainment(key)).toBe(false);
+    // A fetch or push changes the remote refs: the old answer is not reused.
+    const pushedKey = containmentKey(root, oid, "refs B");
+    expect(peekContainment(pushedKey)).toBeUndefined();
+    vi.mocked(api.commitRemoteContainment).mockResolvedValueOnce(true);
+    expect(await loadContainment(pushedKey, root, oid)).toBe(true);
+    expect(peekContainment(key)).toBe(false);
+    // A refresh makes every answer of this repository unknown again; a failure is not kept.
+    invalidatePreview(root);
+    expect(peekContainment(key)).toBeUndefined(); expect(peekContainment(pushedKey)).toBeUndefined();
+    vi.mocked(api.commitRemoteContainment).mockRejectedValueOnce(new Error("git failed"));
+    await expect(loadContainment(key, root, oid)).rejects.toThrow("git failed");
+    expect(peekContainment(key)).toBeUndefined();
     vi.mocked(api.commitDetails).mockClear();
   });
   it("never caches mutable refs or abbreviated object names", async () => {

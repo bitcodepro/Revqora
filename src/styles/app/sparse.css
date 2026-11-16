@@ -1,0 +1,10 @@
+/* Repository tools > Sparse checkout */
+.sparse-section h3 { margin: 0 0 6px; font-size: 13px; }
+.sparse-folders { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; max-height: 28vh; overflow: auto; }
+.sparse-folder { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 3px 6px; border-radius: var(--radius-sm); background: var(--bg-input); }
+.sparse-pick .input { flex: 1; min-width: 0; }
+.sparse-tree { display: flex; flex-direction: column; max-height: 24vh; overflow: auto; margin: 4px 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.sparse-tree-item { text-align: left; background: none; border: 0; padding: 3px 8px; cursor: pointer; color: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sparse-tree-item:hover, .sparse-tree-item:focus-visible { background: var(--bg-hover); outline: none; }
+.sparse-git-message { margin: 0; white-space: pre-wrap; font-size: var(--fs-xs); max-height: 20vh; overflow: auto; }
+.sparse-clone-folders textarea { resize: vertical; }

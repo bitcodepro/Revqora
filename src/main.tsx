@@ -7,8 +7,10 @@ import "./styles/app.css";
 import App from "./App";
 import { restoreRepositorySession } from "./lib/restoreRepositorySession";
 import { installErrorReporting } from "./lib/errorLog";
+import { installThemeSync } from "./lib/themeApply";
 
 installErrorReporting();
+installThemeSync();
 void restoreRepositorySession();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

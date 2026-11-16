@@ -219,8 +219,9 @@ export const api = {
   fixupCommit: (repo: string, oid: string, opts: import("./types").FixupOptions, expectedState: string) =>
     call<string>("fixup_commit", { repo, oid, opts, expectedState }),
 
-  graphLoad: (repo: string, branch: string | { reference: string; primary: string | null } | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean, deferCount?: boolean) =>
-    call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast, options: { showIncoming, deferCount } }),
+  /** request: increasing number; the backend keeps only the build of the newest request per repository. */
+  graphLoad: (repo: string, branch: string | { reference: string; primary: string | null } | null, includeWorktree: boolean, limit?: number, fast?: boolean, showIncoming?: boolean, deferCount?: boolean, request?: number) =>
+    call<GraphSummary>("graph_load", { repo, branch, includeWorktree, limit, fast, options: { showIncoming, deferCount, request } }),
   graphCommitCount: (repo: string, key: string, includeWorktree: boolean) =>
     call<number | null>("graph_commit_count", { repo, key, includeWorktree }),
   graphRows: (repo: string, start: number, count: number,expectedKey?:string) => call<GraphRow[]>("graph_rows", { repo, start, count,expectedKey }),
@@ -230,11 +231,13 @@ export const api = {
   graphResolveLane: (repo: string, key: string, anchor: import("./types").GraphLaneAnchor) => call<number | null>("graph_resolve_lane", { repo, key, anchor }),
   historySearch: (repo: string, key: string, query: string, mode: SearchMode, filters: HistoryFilters | null = null) =>
     call<{ row: GraphRow; graphIndex: number | null }[]>("history_search", { repo, key, query, mode, filters }),
-  repositoryCommitSearch: (repo: string, query: string, mode: SearchMode) => call<import("./types").CommitSearchHit[]>("repository_commit_search", { repo, query, mode }),
+  repositoryCommitSearch: (repo: string, query: string, mode: SearchMode, cursor: string | null = null, limit = 30) => call<import("./types").CommitSearchPage>("repository_commit_search", { repo, query, mode, cursor, limit }),
   repositoryCommitSearchPage: (repo: string, query: string, mode: SearchMode, cursor: string | null, limit: number) => call<import("./types").CommitSearchPage>("repository_commit_search_page", { repo, query, mode, cursor, limit }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),
   commitGraphWrite: (repo: string, opId: string) => call<string>("commit_graph_write", { repo, opId }),
-  commitDetails: (repo: string, oid: string, exact?: boolean) => call<CommitDetails>("commit_details", { repo, oid, exact }),
+  /** deferContainment: header and files only; containedInRemote stays null (see commitRemoteContainment). */
+  commitDetails: (repo: string, oid: string, exact?: boolean, deferContainment?: boolean) => call<CommitDetails>("commit_details", { repo, oid, exact, deferContainment }),
+  commitRemoteContainment: (repo: string, oid: string) => call<boolean>("commit_remote_containment", { repo, oid }),
   verifyCommit: (repo: string, oid: string) => call<void>("verify_commit", { repo, oid }),
   fileHistory: (repo: string, path: string, limit?: number) => call<FileHistoryEntry[]>("file_history", { repo, path, limit }),
   fileText: (repo: string, spec: string) => call<string | null>("file_text", { repo, spec }),
@@ -275,6 +278,12 @@ export const api = {
   repoIsShallow: (repo: string) => call<boolean>("repo_is_shallow", { repo }),
   /** `deepen: null` fetches the complete history (`--unshallow`). */
   fetchMoreHistory: (repo: string, deepen: number | null, opId: string) => call<string>("fetch_more_history", { repo, deepen, opId }),
+  sparseCheckoutState: (repo: string) => call<import("./types").SparseState>("sparse_checkout_state", { repo }),
+  /** Enables sparse checkout or replaces its folders (cone) / patterns (non-cone). */
+  sparseCheckoutSet: (repo: string, cone: boolean, entries: string[]) => call<import("./types").SparseResult>("sparse_checkout_set", { repo, cone, entries }),
+  sparseCheckoutAdd: (repo: string, entries: string[]) => call<import("./types").SparseResult>("sparse_checkout_add", { repo, entries }),
+  sparseCheckoutDisable: (repo: string) => call<import("./types").SparseResult>("sparse_checkout_disable", { repo }),
+  sparseCheckoutReapply: (repo: string) => call<import("./types").SparseResult>("sparse_checkout_reapply", { repo }),
   pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string, pruneRemote?: boolean) =>
     call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState, pruneRemote }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),

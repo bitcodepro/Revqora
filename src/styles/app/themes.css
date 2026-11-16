@@ -1,0 +1,62 @@
+/* Theme picker, theme editor and the adjustments high-contrast themes need. */
+
+.theme-picker { flex-wrap: wrap; gap: 8px; }
+.theme-picker > .select { width: auto; min-width: 200px; max-width: 100%; }
+
+.theme-editor-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; margin-bottom: 10px; }
+.theme-editor-field { display: grid; gap: 4px; min-width: 190px; color: var(--text-dim); font-size: var(--fs-sm); }
+.theme-editor-field.grow { flex: 1 1 220px; }
+.theme-editor-bar > .btn { height: max(32px, calc(var(--fs) + 14px)); }
+.theme-editor-empty, .theme-editor-note { margin: 6px 0 10px; }
+.theme-editor-confirm { align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.theme-editor-confirm > span { flex: 1 1 240px; }
+
+.theme-group { margin: 0 0 12px; padding: 8px 12px 10px; border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; }
+.theme-group > legend { padding: 0 6px; color: var(--text-dim); font-size: var(--fs-sm); font-weight: 600; }
+.theme-tokens { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 6px 18px; }
+.theme-token { display: grid; grid-template-columns: minmax(0, 1fr) 22px 34px minmax(120px, 170px) 22px; align-items: center; gap: 6px; min-width: 0; }
+.theme-token-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-token.changed > .theme-token-label { font-weight: 600; }
+.theme-token-error { grid-column: 1 / -1; justify-self: end; }
+.theme-token input[type="color"] { width: 34px; height: 24px; padding: 2px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-input); cursor: pointer; }
+.theme-token .input { font-family: var(--font-code); font-size: var(--fs-xs); padding: 0 6px; }
+.theme-token .input[aria-invalid="true"], .theme-editor-field .input[aria-invalid="true"] { border-color: var(--red); }
+/* The swatch shows translucent colours over a checkerboard; the colour picker has no opacity. */
+.theme-swatch {
+  width: 22px; height: 22px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); overflow: hidden;
+  background: repeating-conic-gradient(#b0b0b0 0% 25%, #ffffff 0% 50%) 0 0 / 10px 10px;
+}
+.theme-swatch > i { display: block; width: 100%; height: 100%; }
+
+.theme-sample { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 10px; margin-bottom: 12px; }
+.theme-sample-panel, .theme-sample-code { margin: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--text); min-width: 0; overflow: hidden; }
+.theme-sample-panel { display: grid; align-content: start; background: var(--bg-elev); }
+.theme-sample-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 5px 10px; min-height: var(--row-h); }
+.theme-sample .ts-dim { color: var(--text-dim); }
+.theme-sample .ts-faint { color: var(--text-faint); }
+.theme-sample .ts-accent { color: var(--accent); text-decoration: underline; }
+.theme-sample .ts-selected { background: var(--bg-selected-strong); }
+.theme-sample .ts-chip { padding: 1px 7px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); font-size: var(--fs-xs); }
+.theme-sample .ts-button { margin-left: auto; padding: 2px 10px; border-radius: var(--radius-sm); background: var(--accent-fill); color: var(--accent-fg); font-weight: 600; }
+.theme-sample-lanes { display: block; width: 240px; max-width: 100%; height: 20px; margin: 4px 10px 8px; }
+.theme-sample-code { padding: 4px 0; font: var(--fs-code)/1.6 var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; }
+.theme-sample-code .ts-line { display: block; padding: 0 10px; }
+.theme-sample-code .ts-hunk { background: var(--diff-hunk); color: var(--text-dim); }
+.theme-sample-code .ts-add { background: var(--diff-add); box-shadow: inset 3px 0 0 var(--green); }
+.theme-sample-code .ts-del { background: var(--diff-del); box-shadow: inset 3px 0 0 var(--red); }
+.theme-sample-code .ts-add-word { background: var(--diff-add-word); }
+.theme-sample-code .ts-del-word { background: var(--diff-del-word); }
+@media (max-width: 760px) { .theme-sample { grid-template-columns: minmax(0, 1fr); } }
+
+/* High contrast (built-in or a custom theme based on one). Filled controls get a visible edge,
+   and literal white / dark text on coloured fills follows the palette instead. */
+:root[data-contrast="more"] :focus-visible { outline-width: 3px; }
+:root[data-contrast="more"] :is(.btn.primary, .btn.danger, .btn.warn) { border-color: var(--text); box-shadow: none; }
+:root[data-contrast="more"] :is(.input, .textarea, .select):focus { box-shadow: 0 0 0 2px var(--focus); }
+:root[data-theme="dark"][data-contrast="more"] :is(.btn.danger, .st-U, .sig-mark, .ref.head) { color: #000; }
+:root[data-theme="light"][data-contrast="more"] .btn.warn { color: #fff; }
+/* Windows contrast themes replace the colours; keep the edges and focus ring visible there. */
+@media (forced-colors: active) {
+  .theme-swatch, .theme-token input[type="color"] { forced-color-adjust: none; }
+  :focus-visible { outline: 3px solid Highlight; }
+}

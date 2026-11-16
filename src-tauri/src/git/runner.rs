@@ -157,6 +157,7 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
     match a.first().map(|s| s.as_str()).unwrap_or("") {
         "credential" => a.len() == 2 && a.get(1).is_some_and(|s| s == "fill"),
         "var" => true,
+        "sparse-checkout" => a.len() == 2 && a[1] == "list",
         "symbolic-ref" => {
             let operands: Vec<_> =
                 a[1..].iter().filter(|s| !matches!(s.as_str(), "-q" | "--quiet" | "--short" | "--recurse" | "--no-recurse" | "--")).collect();
@@ -189,6 +190,22 @@ where
     exec_capture(repo, args, env, input, None, None)
 }
 
+/// Like `exec_full`, with Git connection settings selected for this command (for example a
+/// clone's choice before it is saved) instead of the repository's saved settings.
+pub fn exec_full_with_connection<I, S>(
+    repo: &Path,
+    args: I,
+    env: &[(&str, &str)],
+    input: Option<&[u8]>,
+    connection: Option<&super::connection::Options>,
+) -> GitResult<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    exec_capture_mode(repo, args, env, input, None, None, false, connection)
+}
+
 /// Bound captured output while draining both pipes and reaping the Git process.
 pub fn exec_limited<I, S>(repo: &Path, args: I, limit: usize) -> GitResult<Output>
 where
@@ -199,7 +216,7 @@ where
 }
 
 pub(super) fn exec_preview(repo: &Path, args: &[String], env: &[(&str, &str)], limit: usize) -> GitResult<(Output, bool)> {
-    let mut out = exec_capture_mode(repo, args, env, None, Some(limit), None, true)?;
+    let mut out = exec_capture_mode(repo, args, env, None, Some(limit), None, true, None)?;
     let truncated = out.stdout.len() > limit;
     if truncated {
         // A cut line must never be parsed as a real changed line.
@@ -250,9 +267,10 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    exec_capture_mode(repo, args, env, input, limit, timeout, false)
+    exec_capture_mode(repo, args, env, input, limit, timeout, false, None)
 }
 
+#[allow(clippy::too_many_arguments)] // One private capture path for every variant.
 fn exec_capture_mode<I, S>(
     repo: &Path,
     args: I,
@@ -261,6 +279,7 @@ fn exec_capture_mode<I, S>(
     limit: Option<usize>,
     timeout: Option<Duration>,
     allow_truncated: bool,
+    connection: Option<&super::connection::Options>,
 ) -> GitResult<Output>
 where
     I: IntoIterator<Item = S>,
@@ -276,7 +295,7 @@ where
             let mut capture = crate::journal::command(repo, &diagnostic_args);
             let result: GitResult<Output> = (|| {
                 let mut c = command(repo);
-                super::connection::apply(repo, &mut c, None, &diagnostic_args)?;
+                super::connection::apply(repo, &mut c, connection, &diagnostic_args)?;
                 c.args(args.iter().map(|a| a.as_ref()));
                 for (k, v) in env {
                     c.env(k, v);

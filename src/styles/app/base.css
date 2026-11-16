@@ -1,0 +1,108 @@
+/* ───────────── base ───────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs);
+  /* A touch heavier than 400: thin strokes blur into the background on Windows. */
+  font-weight: 450;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+  user-select: none;
+  font-feature-settings: "cv11", "ss01";
+}
+input,
+textarea,
+select,
+button {
+  font: inherit;
+  color: inherit;
+}
+button {
+  cursor: pointer;
+}
+::selection {
+  background: var(--diff-sel);
+}
+::highlight(revqora-diff-word) {
+  background-color: var(--word-selection-bg);
+  color: var(--word-selection-text);
+}
+.diff-body .code::selection,
+.diff-body .code *::selection {
+  background-color: var(--word-selection-bg);
+  color: var(--word-selection-text);
+}
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+  cursor: pointer;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-track-piece {
+  cursor: pointer;
+}
+::-webkit-scrollbar-thumb {
+  cursor: pointer;
+  background: var(--scroll-thumb);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+  background-clip: content-box;
+  border: 3px solid transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.mono {
+  font-family: var(--font-code);
+  font-size: var(--fs-code);
+  font-variant-ligatures: none;
+}
+.muted {
+  color: var(--text-dim);
+}
+.faint {
+  color: var(--text-faint);
+}
+.spacer {
+  flex: 1;
+}
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selectable {
+  user-select: text;
+}
+.hstack {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vstack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

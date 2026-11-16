@@ -1,0 +1,72 @@
+/* ───────────── diff extras ───────────── */
+.diff-find {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev2);
+  font-family: var(--font-ui);
+  animation: slideDown 0.15s var(--ease);
+}
+.diff-find input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  user-select: text;
+}
+.diff-find .count {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+.dl.search-hit,
+.half.search-hit {
+  outline: 1px solid color-mix(in srgb, var(--amber) 55%, transparent);
+  outline-offset: -1px;
+}
+.dl.search-cur {
+  background: var(--amber-soft) !important;
+  outline: 2px solid var(--amber);
+  outline-offset: -2px;
+}
+.virtual-diff {
+  position: relative;
+  margin: 10px 12px;
+}
+.virtual-diff .hunk-head {
+  border-radius: 6px;
+}
+.diff:focus {
+  outline: none;
+}
+
+.col-resize {
+  touch-action: none;
+  position: absolute;
+  right: -3px;
+  top: 4px;
+  bottom: 4px;
+  width: 7px;
+  cursor: col-resize;
+  border-radius: 3px;
+}
+.col-resize:hover {
+  background: var(--accent-soft);
+  box-shadow: inset -1px 0 0 var(--accent);
+}
+.folder-row {
+  height: 26px;
+}
+.folder-children .file-row {
+  padding-left: 26px;
+}
+
+.cg-head.drop-on {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+  border-radius: var(--radius-sm);
+}
+.file-row[draggable="true"]:active {
+  cursor: grabbing;
+}

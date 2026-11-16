@@ -209,9 +209,14 @@ pub fn changes_status(repo: &Path, path: &str) -> GitResult<StatusSummary> {
 fn read_status(repo: &Path, display_path: Option<&str>, allow_locked_file: bool) -> GitResult<StatusSummary> {
     super::operations::read(repo, || {
         let version = super::operations::next_version(repo);
-        let raw = runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames"])?;
-        let mut status = parse(&raw);
-        let tokens = match super::operations::state_tokens(repo, &raw, &mut status.files, display_path) {
+        let mut stages = super::stage_timings::Stages::default();
+        let raw = stages.time("gitStatus", || runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames"]))?;
+        let mut status = stages.time("parse", || parse(&raw));
+        let tokens = stages.time("stateTokens", || super::operations::state_tokens(repo, &raw, &mut status.files, display_path));
+        if super::stage_timings::enabled() {
+            super::stage_timings::record("status", repo, &stages, &format!("files={} display={allow_locked_file}", status.files.len()));
+        }
+        let tokens = match tokens {
             Ok(tokens) => tokens,
             Err(error)
                 if allow_locked_file

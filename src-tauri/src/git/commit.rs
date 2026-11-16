@@ -36,7 +36,8 @@ pub struct CommitDetails {
     pub files: Vec<ChangedFile>,
     /// Revision the file diffs are computed against (first parent or the empty tree).
     pub diff_base: Option<String>,
-    pub contained_in_remote: bool,
+    /// `None` = not checked by this read. Ask `remote_containment` before relying on it.
+    pub contained_in_remote: Option<bool>,
 }
 
 /// Lists files changed between two trees with line statistics.
@@ -113,7 +114,24 @@ pub fn signature_status(repo: &Path, oids: &[String]) -> GitResult<HashMap<Strin
     Ok(raw.lines().filter_map(|l| l.split_once(' ').map(|(oid, status)| (oid.to_string(), status.trim().to_string()))).collect())
 }
 
+/// Whether any remote-tracking branch contains the commit. Walks history from every
+/// remote tip, so it is read separately from the commit header and file list.
+pub fn remote_containment(repo: &Path, oid: &str) -> GitResult<bool> {
+    if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(GitError::new("Supply the full commit hash.").kind("invalid-commit"));
+    }
+    runner::run(repo, ["for-each-ref", "--count=1", &format!("--contains={oid}"), "--format=%(refname)", "refs/remotes"]).map(|s| !s.trim().is_empty())
+}
+
+/// Commit header, file list and remote containment in one answer.
 pub fn details(repo: &Path, oid: &str) -> GitResult<CommitDetails> {
+    let mut details = header(repo, oid)?;
+    details.contained_in_remote = Some(remote_containment(repo, &details.oid).unwrap_or(false));
+    Ok(details)
+}
+
+/// Commit header and file list. Remote containment stays unknown (`None`).
+pub fn header(repo: &Path, oid: &str) -> GitResult<CommitDetails> {
     // `--end-of-options`: a value such as `--output=<file>` must never be read as an option.
     let raw =
         runner::run(repo, ["show", "--no-show-signature", "-s", "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%B", "--end-of-options", oid])?;
@@ -131,9 +149,6 @@ pub fn details(repo: &Path, oid: &str) -> GitResult<CommitDetails> {
         None => empty_tree(repo)?,
     };
     let files = changed_files(repo, &diff_base, resolved)?;
-    let contained = runner::run(repo, ["for-each-ref", "--count=1", &format!("--contains={resolved}"), "--format=%(refname)", "refs/remotes"])
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
     Ok(CommitDetails {
         oid: f.first().unwrap_or(&"").trim().to_string(),
         parents,
@@ -147,7 +162,7 @@ pub fn details(repo: &Path, oid: &str) -> GitResult<CommitDetails> {
         body,
         files,
         diff_base: base,
-        contained_in_remote: contained,
+        contained_in_remote: None,
     })
 }
 
