@@ -868,3 +868,44 @@ fn keep_merges_rebase_protects_files_a_recreated_merge_moves() {
     assert_eq!(fs::read_to_string(repo.p().join("new/extra")).unwrap(), "PRECIOUS\n");
     assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), topic);
 }
+
+#[test]
+fn revert_protects_ignored_files_where_a_later_rename_moves_the_restored_file() {
+    let repo = Repo::new();
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    repo.write(
+        "old/base", "base
+",
+    );
+    repo.write(
+        "old/extra",
+        "committed
+",
+    );
+    repo.write(
+        ".gitignore",
+        "new/extra
+",
+    );
+    repo.commit_all("base");
+    fs::remove_file(repo.p().join("old/extra")).unwrap();
+    let deletion = repo.commit_all("delete extra");
+    fs::create_dir_all(repo.p().join("new")).unwrap();
+    repo.git(&["mv", "old/base", "new/base"]);
+    repo.git(&["commit", "-q", "-m", "move"]);
+    let head = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+    repo.write(
+        "new/extra",
+        "PRECIOUS
+",
+    );
+    let e = ops::revert(repo.p(), &deletion, false).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(
+        fs::read_to_string(repo.p().join("new/extra")).unwrap(),
+        "PRECIOUS
+"
+    );
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), head);
+    assert!(!repo.p().join(".git/REVERT_HEAD").exists() && !repo.p().join(".git/sequencer").exists());
+}

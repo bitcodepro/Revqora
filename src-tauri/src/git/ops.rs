@@ -2070,8 +2070,20 @@ pub fn revert(repo: &Path, oid: &str, no_commit: bool) -> GitResult<OpOutcome> {
     let commit = runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{oid}^{{commit}}")])?;
     let commit = commit.trim();
     if let Ok(parent) = runner::run(repo, ["rev-parse", "-q", "--verify", "--end-of-options", &format!("{commit}^1")]) {
-        let restored = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", commit, parent.trim(), "--"])?;
-        guard_untracked_paths(repo, &restored)?;
+        let parent = parent.trim();
+        let mut restored = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", commit, parent, "--"])?;
+        // The revert is a merge of the parent into HEAD relative to the commit: it can write to
+        // other paths (a restored file follows a later directory rename) and does so even when
+        // it then stops on a conflict. Preview that merge and check what it writes.
+        let local = super::workspace_files::untracked(repo)?;
+        if let (Some(head), false) = (head_oid(repo), local.paths.is_empty() && !local.truncated) {
+            if !runner::version_at_least(2, 40) {
+                return Err(GitError::new("Git 2.40 or newer is required to protect untracked and ignored files during this revert.").kind("git-too-old"));
+            }
+            restored.push(0);
+            preview_merge(repo, Some(commit), &head, parent, &local.paths, &mut restored)?;
+        }
+        check_ignored_paths(repo, &local, &restored, "uncommitted")?;
     }
     let out = runner::exec(repo, &args)?;
     sequence_outcome(repo, out, "git revert")
