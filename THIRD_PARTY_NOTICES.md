@@ -248,7 +248,7 @@ SOFTWARE.
 ### tree-sitter-java-0.23.5
 
 ```text
-The MIT License (MIT)
+MIT License
 
 Copyright (c) 2017 Ayman Nadeem
 
