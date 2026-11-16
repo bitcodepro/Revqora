@@ -318,7 +318,13 @@ pub(super) fn execute_action(root: &Path, original: &Run, prepared: &Review, job
                 "branch" => {
                     runner::run(
                         root,
-                        branch_origin::RECORD_CREATION_REFLOG.into_iter().chain(["switch", "--no-overwrite-ignore", "-c", &s.value, &prepared.resolved[0]]),
+                        branch_origin::RECORD_CREATION_REFLOG.into_iter().chain([
+                            "switch",
+                            crate::git::recovery::ignored_flag(root),
+                            "-c",
+                            &s.value,
+                            &prepared.resolved[0],
+                        ]),
                     )?;
                     format!("Created and checked out {}.", s.value)
                 }

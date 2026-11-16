@@ -483,6 +483,23 @@ async fn recovery_restore_files(
     mutating(repo.clone(), expected_state, app, "recovery_restore_files", None, move || recovery::restore_files(&p(&repo), &id, &changes)).await
 }
 
+/// The user continues the next operation although Git may overwrite these local paths; with
+/// `copy`, they are saved in its checkpoint first.
+#[tauri::command]
+async fn recovery_accept_collisions(repo: String, paths: Vec<String>, copy: bool) -> GitResult<()> {
+    blocking(move || {
+        recovery::accept_collisions(&p(&repo), &paths, copy);
+        Ok(())
+    })
+    .await
+}
+
+/// Differences between a saved copy in a checkpoint and the current file.
+#[tauri::command]
+async fn recovery_compare_saved(repo: String, id: String, path: String) -> GitResult<git::diff::FileDiff> {
+    blocking(move || recovery::compare_saved(&p(&repo), &id, &path)).await
+}
+
 /// The user accepts that the next operation runs although these ignored files could not be saved.
 #[tauri::command]
 async fn recovery_accept_unprotected(repo: String, paths: Vec<String>) -> GitResult<()> {
@@ -2859,6 +2876,8 @@ pub fn run() {
             recovery_restore_stash,
             recovery_restore_files,
             recovery_accept_unprotected,
+            recovery_accept_collisions,
+            recovery_compare_saved,
             recovery_restore_workspace,
             git_version,
             update_check,

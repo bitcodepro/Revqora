@@ -408,18 +408,18 @@ pub fn checkout(repo: &Path, target: &str, kind: &str) -> GitResult<String> {
             let local = target.split_once('/').map(|(_, b)| b).unwrap_or(target);
             let exists = runner::exec(repo, ["show-ref", "--verify", "--quiet", &format!("refs/heads/{local}")])?.ok();
             if exists {
-                runner::run(repo, ["switch", "--no-overwrite-ignore", local])?;
+                runner::run(repo, ["switch", super::recovery::ignored_flag(repo), local])?;
             } else {
-                runner::run(repo, ["switch", "--no-overwrite-ignore", "-c", local, "--track", target])?;
+                runner::run(repo, ["switch", super::recovery::ignored_flag(repo), "-c", local, "--track", target])?;
             }
             Ok(local.to_string())
         }
         "commit" => {
-            runner::run(repo, ["switch", "--no-overwrite-ignore", "--detach", target])?;
+            runner::run(repo, ["switch", super::recovery::ignored_flag(repo), "--detach", target])?;
             Ok(target.to_string())
         }
         _ => {
-            runner::run(repo, ["switch", "--no-overwrite-ignore", target])?;
+            runner::run(repo, ["switch", super::recovery::ignored_flag(repo), target])?;
             Ok(target.to_string())
         }
     }
@@ -431,7 +431,7 @@ pub fn create_branch(repo: &Path, name: &str, start: Option<&str>, checkout: boo
     let qualified = start.map(|s| super::branch_origin::branch_start(repo, s)).transpose()?;
     let mut args = if checkout {
         let mut args = super::branch_origin::RECORD_CREATION_REFLOG.to_vec();
-        args.extend(["switch", "--no-overwrite-ignore", "-c", name]);
+        args.extend(["switch", super::recovery::ignored_flag(repo), "-c", name]);
         args
     } else {
         vec!["branch", "--create-reflog", name]
@@ -1363,6 +1363,8 @@ fn check_ignored_paths(repo: &Path, ignored: &super::workspace_files::IgnoredFil
         }
     };
     let ignored: std::collections::BTreeSet<_> = ignored.paths.iter().map(|p| normalize(p)).collect();
+    // Every collision, not just the first: the user decides for the whole list.
+    let mut found: Vec<(String, String)> = Vec::new();
     for path in paths.split('\0').filter(|p| !p.is_empty()) {
         let p = normalize(path);
         let prefix = format!("{p}/");
@@ -1370,12 +1372,28 @@ fn check_ignored_paths(repo: &Path, ignored: &super::workspace_files::IgnoredFil
         let descendant = ignored.range(prefix.clone()..).next().is_some_and(|i| i.starts_with(&prefix));
         if ignored.contains(&p) || ancestor || descendant {
             let Some(obstruction) = ignored_merge_obstruction(repo, path, ignore_case)? else { continue };
-            return Err(GitError::new(format!(
-                "Integration may overwrite {kind} data at {obstruction}. Your local data was preserved. Move or rename the conflicting path outside the repository, then retry. Incoming path: {path}."
-            )).kind("ignored-collision").details(vec![path.to_owned(), obstruction]));
+            if !found.iter().any(|(_, o)| *o == obstruction) {
+                found.push((path.to_owned(), obstruction));
+            }
         }
     }
-    Ok(())
+    if found.is_empty() {
+        return Ok(());
+    }
+    let local: Vec<String> = found.iter().map(|(_, o)| o.clone()).collect();
+    // The user chose to continue for exactly these paths (with a saved copy, or at their risk).
+    if super::recovery::collisions_accepted(repo, &local) {
+        return Ok(());
+    }
+    let (path, obstruction) = &found[0];
+    let others = if found.len() > 1 { format!(" and {} more", found.len() - 1) } else { String::new() };
+    // Details: incoming and local path pairs, the first pair first.
+    let details = found.iter().flat_map(|(path, obstruction)| [path.clone(), obstruction.clone()]).collect();
+    Err(GitError::new(format!(
+        "Integration may overwrite {kind} data at {obstruction}{others}. Your local data was preserved. Save a copy and continue, continue without a copy, or move the paths outside the repository and retry. Incoming path: {path}."
+    ))
+    .kind("ignored-collision")
+    .details(details))
 }
 
 /// Starts a merge but never creates the merge commit: the user reviews and confirms.
@@ -1390,7 +1408,7 @@ fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autosta
     // Branch mergeOptions are defaults, not the user's reviewed mode. In
     // particular an inherited --squash must not turn a fast-forward into staged
     // edits, and an inherited --commit must never confirm a merge for the user.
-    let mut args: Vec<&str> = vec!["merge", "--no-squash", "--no-commit", "--no-overwrite-ignore"];
+    let mut args: Vec<&str> = vec!["merge", "--no-squash", "--no-commit", super::recovery::ignored_flag(repo)];
     if autostash {
         args.push("--autostash");
     }
@@ -1950,7 +1968,7 @@ pub fn cherry_pick_compared(repo: &Path, pick: &ComparedCherryPick) -> GitResult
     }
     if current.branch.as_deref() != Some(branch) {
         guard_compared_pick_files(repo, pick)?;
-        runner::run(repo, ["switch", "--no-guess", "--no-overwrite-ignore", "--no-recurse-submodules", "--", branch])?;
+        runner::run(repo, ["switch", "--no-guess", super::recovery::ignored_flag(repo), "--no-recurse-submodules", "--", branch])?;
     }
     // Recheck the exact destination and working tree after switch hooks run.
     let head = runner::run(repo, ["symbolic-ref", "--quiet", "--no-recurse", "HEAD"])?;

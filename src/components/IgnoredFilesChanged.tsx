@@ -1,4 +1,8 @@
-import { AlertTriangle } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, FolderOpen, GitCompareArrows } from "lucide-react";
+import { DiffView } from "./DiffView";
+import { joinPath } from "../lib/format";
+import type { FileDiff } from "../lib/types";
 import { Modal } from "./Modal";
 import { recoveryDialog } from "./RecoveryCenter";
 import { confirmDialog } from "./dialogs";
@@ -39,6 +43,37 @@ export function confirmUnprotectedDialog(_root: string, message: string, paths: 
   });
 }
 
+/** Each changed file with where it is now and a comparison with its saved copy. */
+function ChangedList({ root, checkpoint, changes }: { root: string; checkpoint: string; changes: IgnoredChange[] }) {
+  return <div className="vstack">
+    {changes.map((c) => <div key={c.path} className="hstack">
+      <span className="selectable grow" style={{ overflowWrap: "anywhere" }}>{c.path}{c.exists ? "" : " (deleted)"}</span>
+      {c.exists && <button type="button" className="btn" onClick={() => void api.revealPath(joinPath(root, c.path)).catch((e) => toast.error(e))}><FolderOpen size={14} /> Show</button>}
+      <button type="button" className="btn" onClick={() => void compareSavedDialog(root, checkpoint, c.path)}><GitCompareArrows size={14} /> Compare</button>
+    </div>)}
+  </div>;
+}
+
+/** Saved copy (before the operation) against the file now. */
+export async function compareSavedDialog(root: string, checkpoint: string, path: string) {
+  let diff: FileDiff;
+  try {
+    diff = await api.recoveryCompareSaved(root, checkpoint, path);
+  } catch (e) {
+    if ((e as { kind?: string })?.kind === "identical") toast.info("No differences", `${path} matches its saved copy.`);
+    else toast.error(e, "Could not compare the saved copy");
+    return;
+  }
+  await showDialog<void>((close) => <CompareModal path={path} diff={diff} root={root} close={close} />);
+}
+
+function CompareModal({ path, diff, root, close }: { path: string; diff: FileDiff; root: string; close: () => void }) {
+  const [d] = useState(diff);
+  return <Modal title={`Saved copy → current: ${path}`} wide onClose={close} footer={<button type="button" className="btn" onClick={close}>Close</button>}>
+    <div style={{ height: "60vh", display: "flex" }}><DiffView diff={d} mode="pick" path={path} root={root} /></div>
+  </Modal>;
+}
+
 /** Shown after an operation in which Git overwrote or deleted ignored files. */
 export async function ignoredFilesChangedDialog(root: string, report: IgnoredReport) {
   const action = report.command.replace(/_/g, " ");
@@ -72,7 +107,7 @@ export async function ignoredFilesChangedDialog(root: string, report: IgnoredRep
           ? "Their previous content and permissions were saved in a recovery checkpoint before the operation; it stays available in Recovery. Restoring replaces the version Git wrote. A file you changed after the operation is left as it is."
           : "You chose to run this operation without saving them, so their previous content cannot be restored."}
       </p>
-      <div className="code-list">{report.paths.join("\n")}</div>
+      {report.checkpoint ? <ChangedList root={root} checkpoint={report.checkpoint} changes={report.changes} /> : <div className="code-list">{report.paths.join("\n")}</div>}
     </Modal>
   ));
   if (!report.checkpoint) return;

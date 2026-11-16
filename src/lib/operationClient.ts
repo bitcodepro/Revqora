@@ -21,6 +21,9 @@ interface Hooks {
   pending?: (repo: string, delta: number) => void;
   /** Asked when ignored files could not be saved before an operation; true accepts that list. */
   confirmUnprotected?: (repo: string, message: string, paths: string[]) => Promise<boolean>;
+  /** Asked when Git may overwrite local ignored or untracked paths: save a copy and continue,
+   * continue without one, or cancel (null). `details` holds incoming/local path pairs. */
+  confirmCollision?: (repo: string, message: string, details: string[]) => Promise<"copy" | "risk" | null>;
 }
 
 let hooks: Hooks = { observed: () => null, refreshed: () => {} };
@@ -75,7 +78,19 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
       try {
         return await invoke<T>(command, { ...args, expectedState });
       } catch (e) {
-        const err = e as { kind?: string; message?: string; details?: string[] };
+        const err = e as { kind?: string; message?: string; details?: string[]; declined?: boolean };
+        if (err?.kind === "ignored-collision" && hooks.confirmCollision) {
+          const details = err.details ?? [];
+          const choice = await hooks.confirmCollision(repo, err.message ?? "", details);
+          if (!choice) {
+            // The user saw the paths and cancelled; callers need not explain it again.
+            err.declined = true;
+            throw e;
+          }
+          const local = details.filter((_, i) => i % 2 === 1);
+          await invoke<void>("recovery_accept_collisions", { repo, paths: local, copy: choice === "copy" });
+          continue;
+        }
         if (err?.kind !== "ignored-backup-unavailable" || !hooks.confirmUnprotected) throw e;
         const paths = err.details ?? [];
         if (!(await hooks.confirmUnprotected(repo, err.message ?? "", paths))) throw e;

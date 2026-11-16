@@ -1137,3 +1137,111 @@ fn restore_keeps_file_permissions() {
     assert_eq!(mode("local.env"), 0o644);
     assert_eq!(fs::read_to_string(repo.p().join("run.env")).unwrap(), "#!/bin/sh\n");
 }
+
+/// main has personal ignored files; feature brings tracked files under the same names.
+fn collision_fixture() -> Repo {
+    let r = Repo::new();
+    r.write(
+        ".gitignore",
+        "*.env
+",
+    );
+    r.commit_all("base");
+    r.git(&["switch", "-qc", "feature"]);
+    r.write(
+        "keys.env",
+        "versioned keys
+",
+    );
+    r.write(
+        "settings.env",
+        "versioned settings
+",
+    );
+    r.git(&["add", "-f", "keys.env", "settings.env"]);
+    r.git(&["commit", "-qm", "add configuration"]);
+    r.git(&["switch", "-q", "main"]);
+    r.write(
+        "keys.env",
+        "personal keys
+",
+    );
+    r.write(
+        "settings.env",
+        "personal settings
+",
+    );
+    r
+}
+
+fn merge_op(repo: &Path) -> (Result<(), runner::GitError>, Report) {
+    use revqora_lib::git::{operations, ops, recovery};
+    let result = operations::run(repo, "merge_start", None, |_, _| {}, || ops::merge_start(repo, "feature", "ff-only").map(|_| ()));
+    (result, recovery::take_ignored_report(repo))
+}
+
+fn local() -> Vec<String> {
+    vec!["keys.env".to_owned(), "settings.env".to_owned()]
+}
+
+#[test]
+fn a_collision_lists_every_path_and_continues_only_with_the_users_decision() {
+    use revqora_lib::git::recovery;
+    let r = collision_fixture();
+    let read = |name: &str| fs::read_to_string(r.p().join(name)).unwrap();
+    let (result, _) = merge_op(r.p());
+    let e = result.unwrap_err();
+    assert_eq!(e.kind, "ignored-collision");
+    assert_eq!(e.details, ["keys.env", "keys.env", "settings.env", "settings.env"], "all pairs, not just the first");
+    // A decision for part of the list does not apply.
+    recovery::accept_collisions(r.p(), &["keys.env".to_owned()], true);
+    let (result, _) = merge_op(r.p());
+    assert_eq!(result.unwrap_err().kind, "ignored-collision");
+    assert_eq!(
+        read("settings.env"),
+        "personal settings
+"
+    );
+    // Save a copy and continue: saved before Git runs, reported, comparable, restorable on request.
+    recovery::accept_collisions(r.p(), &local(), true);
+    let (result, report) = merge_op(r.p());
+    result.unwrap();
+    assert_eq!(
+        read("settings.env"),
+        "versioned settings
+",
+        "the copy is never applied automatically"
+    );
+    let report = report.expect("the overwritten files must be reported");
+    assert_eq!(report.paths, local());
+    let checkpoint = report.checkpoint.clone().expect("a verified copy");
+    let diff = recovery::compare_saved(r.p(), &checkpoint, "settings.env").unwrap();
+    assert!(!diff.hunks.is_empty());
+    let outcome = recovery::restore_files(r.p(), &checkpoint, &report.changes).unwrap();
+    assert_eq!(outcome.restored, local());
+    assert_eq!(
+        read("settings.env"),
+        "personal settings
+"
+    );
+}
+
+#[test]
+fn continuing_without_a_copy_applies_once() {
+    use revqora_lib::git::recovery;
+    let r = collision_fixture();
+    recovery::accept_collisions(r.p(), &local(), false);
+    // The decision is consumed by the next operation even if that one finds nothing to decide.
+    let (result, _) = run_op(r.p(), || Ok(()));
+    result.unwrap();
+    let (result, _) = merge_op(r.p());
+    assert_eq!(result.unwrap_err().kind, "ignored-collision", "a decision applies to one operation");
+    recovery::accept_collisions(r.p(), &local(), false);
+    let (result, _) = merge_op(r.p());
+    result.unwrap();
+    assert_eq!(
+        fs::read_to_string(r.p().join("settings.env")).unwrap(),
+        "versioned settings
+"
+    );
+}

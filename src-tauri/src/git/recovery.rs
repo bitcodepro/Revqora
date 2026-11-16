@@ -479,6 +479,75 @@ fn accepted() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, Ve
     A.get_or_init(Default::default)
 }
 
+/// A user's decision to continue although Git may overwrite these local paths.
+struct AcceptedCollisions {
+    /// Absolute, normalized paths the decision covers.
+    covered: BTreeSet<String>,
+    /// Paths (relative to the repository) to copy into the checkpoint first; empty when the
+    /// user chose to continue without a copy.
+    copy: Vec<String>,
+}
+
+fn collisions() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, AcceptedCollisions>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, AcceptedCollisions>>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+fn absolute_key(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let text = text.trim_end_matches('/');
+    if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text.to_owned()
+    }
+}
+
+/// The user continues the next operation in `root` although Git may overwrite `paths`
+/// (repository-relative, as the collision listed them). With `copy`, they are saved in the
+/// operation's checkpoint first. Applies to the next operation only.
+pub fn accept_collisions(root: &Path, paths: &[String], copy: bool) {
+    let base = watch_key(root);
+    let covered = paths.iter().map(|p| absolute_key(&base.join(p))).collect();
+    let copy = if copy { paths.to_vec() } else { Vec::new() };
+    collisions().lock().unwrap_or_else(|e| e.into_inner()).insert(base, AcceptedCollisions { covered, copy });
+}
+
+/// True when the user accepted every one of `paths` (relative to `repo`, which may be a
+/// submodule of the repository the decision was made for).
+pub fn collisions_accepted(repo: &Path, paths: &[String]) -> bool {
+    let base = watch_key(repo);
+    let wanted: Vec<String> = paths.iter().map(|p| absolute_key(&base.join(p))).collect();
+    collisions().lock().unwrap_or_else(|e| e.into_inner()).values().any(|a| wanted.iter().all(|w| a.covered.contains(w)))
+}
+
+/// Git's ignored-file protection flag for an operation in `repo`. Git keeps refusing to replace
+/// ignored files unless the user decided to continue past the listed collisions.
+pub fn ignored_flag(repo: &Path) -> &'static str {
+    let decided = collisions().lock().unwrap_or_else(|e| e.into_inner()).contains_key(&watch_key(repo));
+    if decided {
+        "--overwrite-ignore"
+    } else {
+        "--no-overwrite-ignore"
+    }
+}
+
+/// Files under `path` (a file, or a folder walked without following links), repository-relative.
+fn files_under(root: &Path, path: &str, out: &mut Vec<String>) {
+    let full = root.join(path);
+    let Ok(m) = fs::symlink_metadata(&full) else { return };
+    if m.is_file() || m.file_type().is_symlink() {
+        out.push(path.trim_end_matches('/').to_owned());
+    } else if m.is_dir() {
+        if let Ok(entries) = fs::read_dir(&full) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                files_under(root, &format!("{}/{name}", path.trim_end_matches('/')), out);
+            }
+        }
+    }
+}
+
 fn watch_key(root: &Path) -> PathBuf {
     fs::canonicalize(root).unwrap_or_else(|_| root.to_owned())
 }
@@ -556,7 +625,15 @@ pub fn accept_unprotected(root: &Path, paths: &[String]) {
 fn watch_ignored(root: &Path, command: &str, expected: Option<&str>) -> GitResult<bool> {
     WATCH.with(|w| w.borrow_mut().take());
     REPORT.with(|r| r.borrow_mut().take());
-    let files = individual_ignored(root)?;
+    let mut files = individual_ignored(root)?;
+    // Paths the user asked to save before continuing past a collision (files in wholly ignored
+    // folders included).
+    let copy = collisions().lock().unwrap_or_else(|e| e.into_inner()).get(&watch_key(root)).map(|a| a.copy.clone()).unwrap_or_default();
+    for path in &copy {
+        files_under(root, path, &mut files);
+    }
+    files.sort();
+    files.dedup();
     if files.is_empty() {
         return Ok(false);
     }
@@ -587,6 +664,8 @@ fn watch_ignored(root: &Path, command: &str, expected: Option<&str>) -> GitResul
 
 /// After the operation (finished or failed): records which watched ignored files changed.
 pub fn finish_watch(root: &Path) {
+    // A decision about collisions applies to the operation that just ran, never to a later one.
+    collisions().lock().unwrap_or_else(|e| e.into_inner()).remove(&watch_key(root));
     let Some(watch) = WATCH.with(|w| w.borrow_mut().take()) else { return };
     let mut changes = Vec::new();
     for before in &watch.files {
@@ -605,6 +684,34 @@ pub fn finish_watch(root: &Path) {
 /// The report of the operation that just ran on this thread, once.
 pub fn take_ignored_report(_root: &Path) -> Option<IgnoredReport> {
     REPORT.with(|r| r.borrow_mut().take())
+}
+
+/// Differences between the saved copy of `path` in checkpoint `id` and the file now.
+pub fn compare_saved(root: &Path, id: &str, path: &str) -> GitResult<super::diff::FileDiff> {
+    let root = fs::canonicalize(repo::discover(root)?)?;
+    let cp = read(&root, id)?;
+    let Some((index, saved)) = cp.paths.iter().enumerate().find(|(_, s)| s.path == path) else {
+        return Err(fail(format!("{path} is not in this checkpoint.")));
+    };
+    if saved.kind != "file" {
+        return Err(fail(format!("{path} was not a regular file in this checkpoint.")));
+    }
+    let stored = base(&root)?.join(id).join("files").join(index.to_string());
+    if Some(digest(&stored)?) != saved.sha256 {
+        return Err(fail(format!("The saved copy of {path} is damaged.")));
+    }
+    let current = source_path(&root, path)?;
+    let now = if fs::symlink_metadata(&current).is_ok_and(|m| m.is_file()) { display_path(&current) } else { "/dev/null".to_owned() };
+    let args = strings(&["diff", "--no-index", "--no-color", "--full-index", "--", &display_path(&stored), &now]);
+    let out = runner::exec_full(&root, &args, &[], None)?;
+    if !matches!(out.code, 0 | 1) {
+        return Err(runner::to_error("compare the saved copy", &out));
+    }
+    let raw = super::diff::parse(&out.stdout);
+    let Some(first) = raw.first() else {
+        return Err(fail(format!("The saved copy of {path} and the current file are identical.")).kind("identical"));
+    };
+    Ok(super::diff::to_display(first, path, super::diff::fingerprint(&out.stdout)))
 }
 
 /// Result of putting saved ignored files back.

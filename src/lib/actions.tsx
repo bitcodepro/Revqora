@@ -8,9 +8,8 @@ import { endBusy, showDialog, startBusy, toast, useUi } from "./ui";
 import { GitMerge } from "lucide-react";
 import { Modal } from "../components/Modal";
 import { DeleteBranchDialog, type DeleteBranchOutcome } from "../components/DeleteBranchDialog";
-import { ignoredCollisionDialog } from "../components/IgnoredCollisionDialog";
 import { useSettings } from "./settings";
-import type { GitError, OpOutcome, PullOutcome, SwitchChoice, SwitchOutcome } from "./types";
+import type { OpOutcome, PullOutcome, SwitchChoice, SwitchOutcome } from "./types";
 import { shortOid } from "./format";
 import {
   cloneDialog,
@@ -237,7 +236,6 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
   const opId = newOpId();
   startBusy(opId, "Pulling");
   let diverged = false;
-  let ignoredCollision: GitError | undefined;
   let outcome: PullOutcome | undefined;
   try {
     if (target) {
@@ -251,7 +249,9 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
     outcome = await api.pull(root, mode, opId, expectedState, pruneRemote);
   } catch (e) {
     const msg = errorMessage(e).toLowerCase();
-    if (isGitError(e) && e.kind === "ignored-collision") ignoredCollision = e;
+    // The collision dialog already listed the paths; the user cancelled and nothing changed.
+    if (isGitError(e) && e.kind === "ignored-collision" && (e as { declined?: boolean }).declined) toast.info("Pull cancelled", "Your local files were kept.");
+    else if (isGitError(e) && e.kind === "ignored-collision") toast.error(e, "Pull stopped to protect local files");
     else if (isGitError(e) && e.kind === "partial-operation") toast.error(e, "Pull partially completed — review the repository and submodules");
     else if (mode === "ff-only" && (msg.includes("not possible to fast-forward") || msg.includes("diverg"))) diverged = true;
     else if (isGitError(e) && e.kind === "auth") toast.error(e, "Authentication failed — check your credentials or SSH key");
@@ -260,7 +260,6 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
     endBusy(opId);
     await useRepos.getState().refresh(root, ALL);
   }
-  if (ignoredCollision && await ignoredCollisionDialog(root, ignoredCollision)) await pull(root, mode, undefined, pruneRemote, target);
   if (outcome) {
     if (outcome.status === "upstreamGone" && outcome.upstreamGone) {
       const gone = outcome.upstreamGone;
