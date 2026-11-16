@@ -130,8 +130,8 @@ fn declared_names(node: Node<'_>, source: &str) -> Vec<String> {
         return Vec::new();
     }
     let mut cursor = node.walk();
-    let names: Vec<String> = node.children_by_field_name("name", &mut cursor).map(|n| text(n, source).to_owned()).collect();
-    names
+    // Multi-name specs (`const C, D = 3, 4`) also return the anonymous comma tokens.
+    node.children_by_field_name("name", &mut cursor).filter(|n| n.is_named()).map(|n| text(n, source).to_owned()).collect()
 }
 /// Go methods are declared at file level; qualify them by their receiver type.
 fn receiver_scope(node: Node<'_>, source: &str, scope: &str) -> String {

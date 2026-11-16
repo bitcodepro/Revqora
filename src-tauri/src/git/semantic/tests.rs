@@ -167,6 +167,7 @@ fn go_indexes_every_name_of_multi_name_specs() {
     {
         assert!(found.contains(&(name.into(), kind.into())), "{name} {kind} missing from {found:?}");
     }
+    assert!(found.iter().all(|(name, _)| name.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_')), "{found:?}");
     let d = states(&compare_text("multi.go", Some(base), Some(&base.replace("X, Y int", "X, Y int64"))).unwrap());
     assert!(has(&d, "Point.Y", "changed") && has(&d, "Point.X", "changed"), "{d:?}");
 }

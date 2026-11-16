@@ -4,7 +4,7 @@ import { api, errorMessage } from "../lib/api";
 import { basename, relativeTime, shortOid } from "../lib/format";
 import { loadGraph, useRepos } from "../lib/store";
 import type { CommitSearchHit, SearchMode } from "../lib/types";
-import { loadRepositoryMatches, prioritizeRoots, searchRepositories, WORKSPACE_SEARCH_DEBOUNCE_MS, type RepositorySearchResult } from "../lib/workspaceSearch";
+import { exclusiveLoads, loadRepositoryMatches, prioritizeRoots, searchRepositories, WORKSPACE_SEARCH_DEBOUNCE_MS, type RepositorySearchResult } from "../lib/workspaceSearch";
 import { showDialog } from "../lib/ui";
 import { Modal } from "./Modal";
 
@@ -17,6 +17,9 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
   const roots = useRepos((state) => state.order);
   // Each search (and each "Show more") belongs to one generation; older ones stop publishing.
   const generation = useRef(0);
+  // Repositories loading in the current search; "Show more" waits for them.
+  const [, setLoadsVersion] = useState(0);
+  const loads = useRef(exclusiveLoads());
   const [query, setQuery] = useState(initialQuery);
   const [mode, setMode] = useState(initialMode);
   const [results, setResults] = useState<{ key: string; repositories: Record<string, RepositorySearchResult> }>({ key: "", repositories: {} });
@@ -42,18 +45,20 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
     if (!term || !roots.length) return;
     const isCurrent = () => generation.current === current;
     setResults({ key, repositories: {} });
+    const searchLoads = exclusiveLoads(() => { if (loads.current === searchLoads) setLoadsVersion((v) => v + 1); });
+    loads.current = searchLoads;
     // Obsolete searches are not awaited: they stop before their next request and never publish.
     const timer = setTimeout(() => {
-      void searchRepositories(prioritizeRoots(roots, useRepos.getState().active), fetchPage, isCurrent, publishFor(key));
+      void searchRepositories(prioritizeRoots(roots, useRepos.getState().active), fetchPage, isCurrent, publishFor(key), undefined, searchLoads);
     }, WORKSPACE_SEARCH_DEBOUNCE_MS);
     return () => { clearTimeout(timer); if (generation.current === current) generation.current++; };
   }, [roots, term, mode, key]);
 
   const more = (root: string) => {
     const result = repositories[root];
-    if (!result?.cursor) return;
+    if (!result?.cursor || loads.current.busy(root)) return;
     const current = generation.current;
-    void loadRepositoryMatches(root, result, fetchPage, () => generation.current === current, publishFor(key));
+    void loads.current.run(root, () => loadRepositoryMatches(root, result, fetchPage, () => generation.current === current, publishFor(key)));
   };
 
   const open = (root: string, hit: CommitSearchHit) => {
@@ -95,7 +100,7 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
           </button>;
         })}
         {result.cursor && !result.error && <p className="batch-note">Showing the newest {result.hits.length} matches.{" "}
-          <button type="button" className="btn sm ghost" onClick={() => more(root)}>Show more matches</button></p>}
+          <button type="button" className="btn sm ghost" disabled={loads.current.busy(root)} onClick={() => more(root)}>{loads.current.busy(root) ? "Loading matches…" : "Show more matches"}</button></p>}
       </section>;
     })}
   </Modal>;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CommitSearchHit, CommitSearchPage } from "./types";
-import { loadRepositoryMatches, mergeHits, prioritizeRoots, searchRepositories, type RepositorySearchResult } from "./workspaceSearch";
+import { exclusiveLoads, loadRepositoryMatches, mergeHits, prioritizeRoots, searchRepositories, type RepositorySearchResult } from "./workspaceSearch";
 
 const hit = (oid: string, authorTime: number): CommitSearchHit => ({ oid, subject: oid, author: "A", authorTime, refs: "" });
 const page = (commits: CommitSearchHit[], nextCursor: string | null = null): CommitSearchPage =>
@@ -84,5 +84,43 @@ describe("workspace commit search", () => {
     await old;
     expect(stale).toEqual([]);
     expect([...pending.keys()]).toEqual(["a", "b"]);
+  });
+
+  it("refuses overlapping loads of one repository, so a late page cannot rewind newer matches", async () => {
+    const thirty = Array.from({ length: 30 }, (_, index) => hit(`a${index}`, 1000 - index));
+    const pending: Array<ReturnType<typeof deferred<CommitSearchPage>>> = [];
+    const fetchPage = () => { const d = deferred<CommitSearchPage>(); pending.push(d); return d.promise; };
+    let shown: RepositorySearchResult = { hits: thirty, cursor: "c1" };
+    const publish = (_root: string, result: RepositorySearchResult) => { shown = result; };
+    let changes = 0;
+    const loads = exclusiveLoads(() => changes++);
+    const first = loads.run("r", () => loadRepositoryMatches("r", shown, fetchPage, () => true, publish));
+    expect(loads.busy("r")).toBe(true);
+    expect(await loads.run("r", () => loadRepositoryMatches("r", shown, fetchPage, () => true, publish))).toBe(false);
+    expect(pending).toHaveLength(1);
+    pending[0].resolve(page(Array.from({ length: 30 }, (_, index) => hit(`b${index}`, 500 - index)), "c2"));
+    expect(await first).toBe(true);
+    expect(loads.busy("r")).toBe(false);
+    expect(changes).toBe(2);
+    expect(shown.hits).toHaveLength(60);
+    expect(shown.cursor).toBe("c2");
+    // The next "Show more" continues from the latest result.
+    const second = loads.run("r", () => loadRepositoryMatches("r", shown, fetchPage, () => true, publish));
+    pending[1].resolve(page(Array.from({ length: 30 }, (_, index) => hit(`c${index}`, 100 - index))));
+    await second;
+    expect(shown.hits).toHaveLength(90);
+    expect(shown.cursor).toBeNull();
+  });
+
+  it("keeps the initial search and Show more of one repository from overlapping", async () => {
+    const gate = deferred<CommitSearchPage>();
+    const loads = exclusiveLoads();
+    const search = searchRepositories(["r"], () => gate.promise, () => true, () => {}, 1, loads);
+    await Promise.resolve();
+    expect(loads.busy("r")).toBe(true);
+    expect(await loads.run("r", async () => {})).toBe(false);
+    gate.resolve(page([hit("x", 1)]));
+    await search;
+    expect(loads.busy("r")).toBe(false);
   });
 });

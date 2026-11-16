@@ -67,6 +67,33 @@ export async function loadRepositoryMatches(
 }
 
 /**
+ * Allows one load per repository at a time, so "Show more" never overlaps the initial load
+ * or another "Show more" (a late response would otherwise replace newer matches and rewind
+ * the cursor). Create one per search; `onChange` fires when a repository starts or finishes.
+ */
+export function exclusiveLoads(onChange: () => void = () => {}) {
+  const busy = new Set<string>();
+  return {
+    busy: (root: string) => busy.has(root),
+    /** Runs `task` unless `root` is already loading; returns false when it was refused. */
+    async run(root: string, task: () => Promise<unknown>): Promise<boolean> {
+      if (busy.has(root)) return false;
+      busy.add(root);
+      onChange();
+      try {
+        await task();
+      } finally {
+        busy.delete(root);
+        onChange();
+      }
+      return true;
+    },
+  };
+}
+
+export type ExclusiveLoads = ReturnType<typeof exclusiveLoads>;
+
+/**
  * Searches every repository with at most `concurrency` requests at a time, in the given
  * order (put the active repository first). A replacement search does not wait for this one:
  * once `isCurrent` is false no new request starts and no further result is published.
@@ -77,12 +104,13 @@ export async function searchRepositories(
   isCurrent: () => boolean,
   publish: (root: string, result: RepositorySearchResult) => void,
   concurrency = WORKSPACE_PARALLEL_SEARCHES,
+  loads: ExclusiveLoads = exclusiveLoads(),
 ): Promise<void> {
   let next = 0;
   const worker = async () => {
     while (isCurrent() && next < roots.length) {
       const root = roots[next++];
-      await loadRepositoryMatches(root, { hits: [], cursor: null }, fetchPage, isCurrent, publish);
+      await loads.run(root, () => loadRepositoryMatches(root, { hits: [], cursor: null }, fetchPage, isCurrent, publish));
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, roots.length)) }, worker));
