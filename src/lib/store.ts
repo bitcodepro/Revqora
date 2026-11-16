@@ -129,6 +129,11 @@ const inflight = new Map<string, Promise<void>>();
 const pending = new Map<string, Parts>();
 /** The parts the running refresh of a repository is reading right now. */
 const reading = new Map<string, Parts>();
+/** When each running read started, and when each repository was last selected: a quiet check
+ *  joins only a read that started after the selection, so it reflects the repository as it is now. */
+const readingSince = new Map<string, number>();
+const activatedAt = new Map<string, number>();
+let readClock = 0;
 const squashJobs = new Map<string, { wanted: string; done: string; running: boolean }>();
 const openingQueue = repositoryQueue();
 const summaryQueue = repositoryQueue();
@@ -377,6 +382,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     if (root) {
       openingQueue.prioritize(root);
       summaryQueue.prioritize(root);
+      activatedAt.set(root, ++readClock);
       // Ctrl+Tab through many repositories: the first switch refreshes at once, quick
       // follow-ups wait until the user settles, and only the repository still shown refreshes.
       const now = Date.now();
@@ -450,7 +456,8 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       // is already running (or already queued) for the same parts answers it: do not
       // repeat status, refs, layers and extras behind it. A missing history is always
       // requested: the running read may have dropped it while the repository was hidden.
-      if (parts.revalidate && parts.background && !parts.graph && (covers(reading.get(root), parts) || covers(pending.get(root), parts))) return inflight.get(root);
+      const fresh = (readingSince.get(root) ?? 0) > (activatedAt.get(root) ?? 0);
+      if (parts.revalidate && parts.background && !parts.graph && ((fresh && covers(reading.get(root), parts)) || covers(pending.get(root), parts))) return inflight.get(root);
       pending.set(root, merge(pending.get(root), parts));
       return inflight.get(root);
     }
@@ -459,6 +466,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       while (todo) {
         const read = todo;
         reading.set(root, read);
+        readingSince.set(root, ++readClock);
         if (read.summary) await summaryQueue.run(root, () => refreshOnce(root, read));
         else await refreshOnce(root, read);
         todo = pending.get(root);
@@ -471,6 +479,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     } finally {
       inflight.delete(root);
       reading.delete(root);
+      readingSince.delete(root);
     }
   },
 }));

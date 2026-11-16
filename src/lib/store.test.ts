@@ -161,6 +161,14 @@ describe("background repository observation", () => {
     const missingHistory=useRepos.getState().refresh(root,{...quiet,graph:true});
     release(snapshot("after-wal",3));await Promise.all([next,watcher,missingHistory]);
     expect(api.status).toHaveBeenCalledTimes(3);
+    // A read that started before the repository was selected again does not answer the
+    // selection's check: the check queues its own read.
+    vi.mocked(api.status).mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+    const older=useRepos.getState().refresh(root,quiet);
+    await vi.waitFor(()=>expect(api.status).toHaveBeenCalledTimes(4));
+    useRepos.getState().activate(root);
+    release(snapshot("after-wal",4));await older;
+    await vi.waitFor(()=>expect(api.status).toHaveBeenCalledTimes(5));
     expect(covers({info:true,status:true,refs:true,layers:true,graph:true},quiet)).toBe(true);
     expect(covers({summary:true,status:true,refs:true},{status:true})).toBe(false);
     expect(covers({changesDisplay:true,status:true},{status:true})).toBe(false);
