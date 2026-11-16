@@ -1,3 +1,4 @@
+import { branchRef } from "../lib/branchRef";
 import { renameRemoteBranch } from "./RemoteRename";
 import { namePathMenu } from "./NamePathMenu";
 import { branchCommitCompare } from "./BranchCommitCompare";
@@ -100,18 +101,18 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote",
   const reference = `refs/${kind === "local" ? "heads" : "remotes"}/${name}`;
   const items: MenuItem[] = [...namePathMenu(name, root, reference), { separator: true }];
   if (!isCurrent) items.push({ label: kind === "remote" ? `Check out as local branch` : `Check out ${name}`, shortcut: "branch-checkout", icon: <Check size={I} />, onClick: run(repo => A.checkout(repo, name, kind)) });
-  items.push({ label: "Create branch from here…", icon: <GitBranchPlus size={I} />, onClick: run(repo => A.createBranch(repo, name, name)) });
+  items.push({ label: "Create branch from here…", icon: <GitBranchPlus size={I} />, onClick: run(repo => A.createBranch(repo, reference, name)) });
   items.push({ label: "Branch details…", shortcut: "branch-details", icon: <GitBranch size={I} />, onClick: run(repo => branchCard(repo, name, reference)) });
   items.push({ label: "Branch history (reflog)…", icon: <History size={I} />, onClick: run(repo => branchReflogDialog(repo, name)) });
-  items.push({ label: "Browse files", icon: <FolderTree size={I} />, onClick: run(repo => openOverlay({ kind: "tree", root: repo, rev: name })) });
+  items.push({ label: "Browse files", icon: <FolderTree size={I} />, onClick: run(repo => openOverlay({ kind: "tree", root: repo, rev: reference })) });
   items.push({ label: "Compare branch commits…", shortcut: "branch-compare", icon: <GitCompareArrows size={I} />, onClick: run(repo => branchCommitCompare(repo, reference)) });
   items.push(primaryBranchMenuItem(root, reference), branchFavoriteMenuItem(root, reference));
   items.push({ label: "Compare with working tree", icon: <GitCompareArrows size={I} />, onClick: run(repo => openOverlay({ kind: "compare", root: repo, from: reference, to: WORKTREE })) });
   if (!isCurrent) items.push({ label: `Compare with ${current ?? "HEAD"}`, icon: <GitCompareArrows size={I} />, onClick: run(repo => openOverlay({ kind: "compare", root: repo, from: current ? `refs/heads/${current}` : "HEAD", to: reference })) });
   if (!isCurrent && current) {
     items.push({ separator: true });
-    items.push({ label: `Merge ${name} into ${current}…`, shortcut: "branch-merge", icon: <GitMerge size={I} />, onClick: run(repo => A.mergeInto(repo, name)) });
-    items.push({ label: `Rebase ${current} onto ${name}`, shortcut: "branch-rebase", icon: <GitPullRequestArrow size={I} />, onClick: run(repo => A.rebaseOnto(repo, name)) });
+    items.push({ label: `Merge ${name} into ${current}…`, shortcut: "branch-merge", icon: <GitMerge size={I} />, onClick: run(repo => A.mergeInto(repo, reference, name)) });
+    items.push({ label: `Rebase ${current} onto ${name}`, shortcut: "branch-rebase", icon: <GitPullRequestArrow size={I} />, onClick: run(repo => A.rebaseOnto(repo, reference, name)) });
   }
   items.push({ separator: true });
   if (isCurrent) items.push({ label: "Push…", icon: <CloudUpload size={I} />, onClick: run(repo => A.push(repo)) });
@@ -215,12 +216,12 @@ export function commitMenu(root: string, row: GraphRow, selection: GraphRow[], o
     if (branches.length) {
       for (const b of branches.slice(0, 3)) {
         if (b.kind === "head") continue;
-        items.push({ label: `Merge ${b.name} into ${current}…`, icon: <GitMerge size={I} />, disabled: busy, onClick: () => A.mergeInto(root, b.name) });
+        items.push({ label: `Merge ${b.name} into ${current}…`, icon: <GitMerge size={I} />, disabled: busy, onClick: () => A.mergeInto(root, branchRef(b.kind === "remote" ? "remote" : "local", b.name), b.name) });
       }
     } else {
       items.push({ label: `Merge this commit into ${current}…`, icon: <GitMerge size={I} />, disabled: busy, onClick: () => A.mergeInto(root, row.oid) });
     }
-    items.push({ label: `Rebase ${current} onto here`, icon: <GitPullRequestArrow size={I} />, disabled: busy, onClick: () => A.rebaseOnto(root, branches[0]?.name ?? row.oid) });
+    items.push({ label: `Rebase ${current} onto here`, icon: <GitPullRequestArrow size={I} />, disabled: busy, onClick: () => A.rebaseOnto(root, branches[0] ? branchRef(branches[0].kind === "remote" ? "remote" : "local", branches[0].name) : row.oid, branches[0]?.name ?? shortOid(row.oid)) });
     items.push({ label: "Cherry-pick", shortcut: "commit-pick", icon: <GitCommitHorizontal size={I} />, disabled: busy, onClick: () => A.cherryPick(root, [row.oid]) });
   }
   items.push({ label: "Compare with working tree", shortcut: "commit-compare", icon: <GitCompareArrows size={I} />, onClick: () => openOverlay({ kind: "compare", root, from: row.oid, to: WORKTREE }) });

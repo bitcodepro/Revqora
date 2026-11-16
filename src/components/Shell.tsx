@@ -848,7 +848,7 @@ export function CommandPalette() {
             list.push({ id: "checkout:" + branch.fullName, label: "Check out " + branch.name, group: "Branch action", icon: <GitBranch size={15} />,
               run: () => void A.checkout(tab.root, branch.name, kind) });
             if (kind === "local") list.push({ id: "merge:" + branch.fullName, label: "Merge " + branch.name + " into current…", group: "Branch action",
-              icon: <GitMerge size={15} />, run: () => void A.mergeInto(tab.root, branch.name) });
+              icon: <GitMerge size={15} />, run: () => void A.mergeInto(tab.root, branch.fullName, branch.name) });
           }
         }
       }

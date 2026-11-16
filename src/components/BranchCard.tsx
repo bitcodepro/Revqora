@@ -52,7 +52,7 @@ function BranchCardBody({ root, name, reference, close }: { root: string; name: 
               className="btn"
               onClick={() => {
                 close();
-                A.mergeInto(root, name);
+                A.mergeInto(root, reference, name);
               }}
             >
               <GitMerge size={14} /> Merge into {tab.info.head.branch}
