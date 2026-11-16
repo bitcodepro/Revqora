@@ -791,3 +791,40 @@ fn rebase_onto_protects_ignored_files_at_directory_rename_destinations() {
     assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), topic);
     assert!(!repo.p().join(".git/rebase-merge").exists() && !repo.p().join(".git/rebase-apply").exists());
 }
+
+#[test]
+fn keep_merges_rebase_protects_files_a_side_branch_moves_into_a_renamed_folder() {
+    // Upstream moves old/ to new/. On the topic, topic and side both change x (side conflicts
+    // with topic's version), side then adds old/extra, and topic merges side. The ordered
+    // preview stops at side's conflict, but --rebase-merges replays side on its own first.
+    let repo = Repo::new();
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    fs::create_dir_all(repo.p().join("new")).unwrap();
+    repo.write("old/base", "base\n");
+    repo.write("new/keep", "keep\n");
+    repo.write("x", "0\n");
+    repo.write(".gitignore", "new/extra\n");
+    let base = repo.commit_all("base");
+    repo.git(&["switch", "-q", "-c", "up"]);
+    repo.git(&["mv", "old/base", "new/base"]);
+    repo.git(&["commit", "-q", "-m", "move"]);
+    repo.git(&["switch", "-q", "-c", "topic", &base]);
+    repo.write("x", "topic\n");
+    repo.commit_all("topic x");
+    repo.git(&["switch", "-q", "-c", "side", &base]);
+    repo.write("x", "side\n");
+    repo.commit_all("side x");
+    repo.write("old/extra", "side\n");
+    repo.commit_all("side extra");
+    repo.git(&["switch", "-q", "topic"]);
+    let _ = runner::run(repo.p(), ["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+    repo.write("x", "resolved\n");
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "--no-edit"]);
+    let topic = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+    repo.write("new/extra", "PRECIOUS\n");
+    let e = ops::rebase_onto_with(repo.p(), "up", true).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(fs::read_to_string(repo.p().join("new/extra")).unwrap(), "PRECIOUS\n");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), topic);
+}

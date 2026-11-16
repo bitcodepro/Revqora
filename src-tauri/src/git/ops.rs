@@ -2094,17 +2094,27 @@ fn guard_rebase_files(repo: &Path, upstream: &str, keep_merges: bool) -> GitResu
     }
     let mut paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &head, target, "--"])?;
     paths.push(0);
-    paths
-        .extend(runner::run_bytes(repo, ["log", "--format=", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &format!("{target}..{head}"), "--"])?);
+    paths.extend(runner::run_bytes(
+        repo,
+        ["log", "--format=", "--name-only", "-m", "--no-renames", "--diff-filter=ACMRT", "-z", &format!("{target}..{head}"), "--"],
+    )?);
     paths.push(0);
     paths.extend(rebase_replay_writes(repo, target, &head, keep_merges, &untracked.paths)?);
     check_ignored_paths(repo, &untracked, &paths, "uncommitted")
 }
 
-/// Paths a rebase of `head` onto `target` writes, from replaying each commit with
-/// `git merge-tree` (no working tree or index is touched). Stops at the first conflicting
-/// step, as the rebase does; that step's writes, conflict files and Git's generated
-/// `path~label` names (matched against `local` untracked paths) are included.
+/// Paths a rebase of `head` onto `target` may write, previewed with `git merge-tree` (no
+/// working tree or index is touched). Two previews, both kept:
+/// - the replay in order, each commit on the result of the previous one, up to the first
+///   conflicting step (where the rebase stops);
+/// - every commit, merges included, applied on its own directly to `target`, conflicts or not.
+///   With `--rebase-merges` Git replays each side branch separately, so a commit after a
+///   conflict in the ordered preview can still run first; applying each commit to `target`
+///   catches what upstream's renames do to its files (a file added in a folder upstream moved
+///   is written to the new folder).
+///
+/// Each step's changed paths, conflict files and Git's generated `path~label` names (matched
+/// against the `local` untracked paths) are included.
 fn rebase_replay_writes(repo: &Path, target: &str, head: &str, keep_merges: bool, local: &[String]) -> GitResult<Vec<u8>> {
     if !runner::version_at_least(2, 40) {
         return Err(GitError::new("Git 2.40 or newer is required to protect untracked and ignored files during this rebase.").kind("git-too-old"));
@@ -2115,9 +2125,11 @@ fn rebase_replay_writes(repo: &Path, target: &str, head: &str, keep_merges: bool
     }
     list.push(format!("{target}..{head}"));
     let commits = runner::run(repo, &list)?;
-    let mut tree = runner::run(repo, ["rev-parse", "--verify", &format!("{target}^{{tree}}")])?.trim().to_owned();
+    let start = runner::run(repo, ["rev-parse", "--verify", &format!("{target}^{{tree}}")])?.trim().to_owned();
     let mut out: Vec<u8> = Vec::new();
     let mut empty: Option<String> = None;
+    let mut tree = start.clone();
+    let mut ordered = true;
     for commit in commits.split_whitespace() {
         let parents = runner::run(repo, ["rev-list", "--parents", "-n", "1", commit])?;
         let base = match parents.split_whitespace().nth(1) {
@@ -2131,38 +2143,46 @@ fn rebase_replay_writes(repo: &Path, target: &str, head: &str, keep_merges: bool
                 }
             },
         };
-        let preview = runner::exec(
-            repo,
-            ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", &format!("--merge-base={base}"), &tree, &format!("{commit}^{{tree}}")],
-        )?;
-        if !matches!(preview.code, 0 | 1) {
-            return Err(runner::to_error("preview the rebase to protect untracked and ignored files", &preview));
+        if ordered {
+            let (next, conflicted) = preview_pick(repo, &base, &tree, commit, local, &mut out)?;
+            tree = next;
+            ordered = !conflicted;
         }
-        let listing = super::workspace_files::path_list(&preview.stdout)?;
-        let mut fields = listing.split('\0');
-        let next = fields.next().unwrap_or_default().trim().to_owned();
-        if !matches!(next.len(), 40 | 64) || !next.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(GitError::new("Git returned an invalid rebase preview tree."));
-        }
-        out.extend(runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "-z", &tree, &next, "--"])?);
-        out.push(0);
-        let conflicts: Vec<&str> = fields.filter(|p| !p.is_empty()).collect();
-        for path in &conflicts {
-            out.extend_from_slice(path.as_bytes());
-            out.push(0);
-            // File/folder conflicts are written beside the path as `path~<label>`.
-            let prefix = format!("{path}~");
-            for name in local.iter().filter(|l| l.to_lowercase().starts_with(&prefix.to_lowercase())) {
-                out.extend_from_slice(name.trim_end_matches('/').as_bytes());
-                out.push(0);
-            }
-        }
-        tree = next;
-        if preview.code == 1 || !conflicts.is_empty() {
-            break;
-        }
+        preview_pick(repo, &base, &start, commit, local, &mut out)?;
     }
     Ok(out)
+}
+
+/// Previews applying `commit` (relative to `base`) on `tree`; appends the paths it writes to
+/// `out` and returns the resulting tree and whether it conflicted.
+fn preview_pick(repo: &Path, base: &str, tree: &str, commit: &str, local: &[String], out: &mut Vec<u8>) -> GitResult<(String, bool)> {
+    let preview = runner::exec(
+        repo,
+        ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", &format!("--merge-base={base}"), tree, &format!("{commit}^{{tree}}")],
+    )?;
+    if !matches!(preview.code, 0 | 1) {
+        return Err(runner::to_error("preview the rebase to protect untracked and ignored files", &preview));
+    }
+    let listing = super::workspace_files::path_list(&preview.stdout)?;
+    let mut fields = listing.split('\0');
+    let next = fields.next().unwrap_or_default().trim().to_owned();
+    if !matches!(next.len(), 40 | 64) || !next.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(GitError::new("Git returned an invalid rebase preview tree."));
+    }
+    out.extend(runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "-z", tree, &next, "--"])?);
+    out.push(0);
+    let conflicts: Vec<&str> = fields.filter(|p| !p.is_empty()).collect();
+    for path in &conflicts {
+        out.extend_from_slice(path.as_bytes());
+        out.push(0);
+        // File/folder conflicts are written beside the path as `path~<label>`.
+        let prefix = format!("{path}~").to_lowercase();
+        for name in local.iter().filter(|l| l.to_lowercase().starts_with(&prefix)) {
+            out.extend_from_slice(name.trim_end_matches('/').as_bytes());
+            out.push(0);
+        }
+    }
+    Ok((next, preview.code == 1 || !conflicts.is_empty()))
 }
 
 /// Merge commits a rebase onto `upstream` would replay. A plain rebase drops them and leaves

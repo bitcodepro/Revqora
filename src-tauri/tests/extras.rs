@@ -179,3 +179,27 @@ fn bisect_never_overwrites_ignored_files() {
     assert_eq!(fs::read_to_string(r.join("secret.cfg")).unwrap(), "MINE\n");
     assert_eq!(extras::bisect_mark(&r, "bad", Some("--foo")).unwrap_err().kind, "invalid-argument");
 }
+
+#[test]
+fn bisect_protects_files_that_only_a_merge_added() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = repo(tmp.path(), "bm");
+    let base = commit(&r, "app.txt", "0\n", "base");
+    runner::run(&r, ["switch", "-q", "-c", "side"]).unwrap();
+    commit(&r, "side.txt", "s\n", "side");
+    runner::run(&r, ["switch", "-q", "-"]).unwrap();
+    commit(&r, "app.txt", "1\n", "main");
+    // The merge resolution adds secret.cfg; a later commit deletes and ignores it.
+    runner::run(&r, ["merge", "-q", "--no-commit", "--no-ff", "side"]).unwrap();
+    fs::write(r.join("secret.cfg"), "TRACKED\n").unwrap();
+    runner::run(&r, ["add", "secret.cfg"]).unwrap();
+    runner::run(&r, ["commit", "-q", "-m", "merge"]).unwrap();
+    runner::run(&r, ["rm", "-q", "secret.cfg"]).unwrap();
+    commit(&r, ".gitignore", "secret.cfg\n", "drop");
+    commit(&r, "app.txt", "2\n", "tip");
+    fs::write(r.join("secret.cfg"), "MINE\n").unwrap();
+    let e = extras::bisect_start(&r, "HEAD", &base).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(fs::read_to_string(r.join("secret.cfg")).unwrap(), "MINE\n");
+    assert!(!extras::bisect_status(&r).unwrap().active);
+}

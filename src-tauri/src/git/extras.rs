@@ -305,7 +305,10 @@ fn guard_bisect_files(repo: &Path, bad: &str, goods: &[String]) -> GitResult<()>
         paths.extend(runner::run_bytes(repo, ["ls-tree", "-r", "-z", "--name-only", good.as_str()])?);
         paths.push(0);
     }
-    let mut args: Vec<String> = ["log", "--format=", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", bad].iter().map(|s| s.to_string()).collect();
+    // `-m`: a merge can bring a file neither parent's own commits added (a merge resolution);
+    // compared with each parent, every file a checkout of it writes is listed.
+    let mut args: Vec<String> =
+        ["log", "--format=", "--name-only", "-m", "--no-renames", "--diff-filter=ACMRT", "-z", bad].iter().map(|s| s.to_string()).collect();
     args.extend(goods.iter().map(|g| format!("^{g}")));
     args.push("--".into());
     paths.extend(runner::run_bytes(repo, &args)?);
