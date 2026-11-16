@@ -2080,8 +2080,23 @@ pub fn revert(repo: &Path, oid: &str, no_commit: bool) -> GitResult<OpOutcome> {
             if !runner::version_at_least(2, 40) {
                 return Err(GitError::new("Git 2.40 or newer is required to protect untracked and ignored files during this revert.").kind("git-too-old"));
             }
+            // With --no-commit Git applies the revert to the index, which may differ from HEAD
+            // (a staged rename, say). Preview against the index as a tree; an unmerged index
+            // cannot be written and is refused.
+            let ours = if no_commit {
+                let tree = runner::exec(repo, ["write-tree"])?;
+                if !tree.ok() {
+                    return Err(GitError::new(
+                        "The staged changes cannot be checked for untracked and ignored files (unresolved conflicts?). Resolve them first.",
+                    )
+                    .kind("index-unmerged"));
+                }
+                tree.text().trim().to_owned()
+            } else {
+                head
+            };
             restored.push(0);
-            preview_merge(repo, Some(commit), &head, parent, &local.paths, &mut restored)?;
+            preview_merge(repo, Some(commit), &ours, parent, &local.paths, &mut restored)?;
         }
         check_ignored_paths(repo, &local, &restored, "uncommitted")?;
     }

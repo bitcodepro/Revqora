@@ -909,3 +909,44 @@ fn revert_protects_ignored_files_where_a_later_rename_moves_the_restored_file() 
     assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), head);
     assert!(!repo.p().join(".git/REVERT_HEAD").exists() && !repo.p().join(".git/sequencer").exists());
 }
+
+#[test]
+fn revert_without_commit_protects_ignored_files_behind_a_staged_rename() {
+    let repo = Repo::new();
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    repo.write(
+        "old/base", "base
+",
+    );
+    repo.write(
+        "old/extra",
+        "committed
+",
+    );
+    repo.write(
+        ".gitignore",
+        "new/extra
+",
+    );
+    repo.commit_all("base");
+    fs::remove_file(repo.p().join("old/extra")).unwrap();
+    let deletion = repo.commit_all("delete extra");
+    repo.git(&["mv", "old", "new"]);
+    let head = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+    let staged = repo.git(&["diff", "--cached", "--name-status"]);
+    repo.write(
+        "new/extra",
+        "PRECIOUS
+",
+    );
+    let e = ops::revert(repo.p(), &deletion, true).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(
+        fs::read_to_string(repo.p().join("new/extra")).unwrap(),
+        "PRECIOUS
+"
+    );
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), head);
+    assert_eq!(repo.git(&["diff", "--cached", "--name-status"]), staged, "the staged rename must stay as it was");
+    assert!(!repo.p().join(".git/REVERT_HEAD").exists() && !repo.p().join(".git/sequencer").exists());
+}
