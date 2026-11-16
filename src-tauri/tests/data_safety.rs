@@ -1097,13 +1097,13 @@ fn ignored_files_that_cannot_be_saved_need_consent_for_that_exact_list() {
     assert_eq!(e.details, ["huge.env", "local.env", "other.env"]);
     assert!(!ran, "nothing may run before the user accepts");
     // Consent for an outdated list does not apply.
-    recovery::accept_unprotected(repo.p(), "reset", &e.details);
+    carry(recovery::accept_unprotected(repo.p(), "reset", &e.details, None));
     repo.write("new.env", "appeared\n");
     let (result, _) = run_op(repo.p(), || Ok(()));
     let again = result.unwrap_err();
     assert_eq!(again.details, ["huge.env", "local.env", "new.env", "other.env"]);
     // Consent for the current list runs it once; changes are still detected.
-    recovery::accept_unprotected(repo.p(), "reset", &again.details);
+    carry(recovery::accept_unprotected(repo.p(), "reset", &again.details, None));
     let (result, report) = run_op(repo.p(), || {
         fs::write(repo.p().join("local.env"), "from git\n").unwrap();
         Ok(())
@@ -1194,7 +1194,7 @@ fn a_collision_lists_every_path_and_continues_only_with_the_users_decision() {
     assert_eq!(e.kind, "ignored-collision");
     assert_eq!(e.details, ["keys.env", "keys.env", "settings.env", "settings.env"], "all pairs, not just the first");
     // A decision for part of the list does not apply.
-    recovery::accept_collisions(r.p(), "merge_start", &["keys.env".to_owned()], true);
+    carry(recovery::accept_collisions(r.p(), "merge_start", &["keys.env".to_owned()], true));
     let (result, _) = merge_op(r.p());
     assert_eq!(result.unwrap_err().kind, "ignored-collision");
     assert_eq!(
@@ -1203,7 +1203,7 @@ fn a_collision_lists_every_path_and_continues_only_with_the_users_decision() {
 "
     );
     // Save a copy and continue: saved before Git runs, reported, comparable, restorable on request.
-    recovery::accept_collisions(r.p(), "merge_start", &local(), true);
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local(), true));
     let (result, report) = merge_op(r.p());
     result.unwrap();
     assert_eq!(
@@ -1230,13 +1230,13 @@ fn a_collision_lists_every_path_and_continues_only_with_the_users_decision() {
 fn continuing_without_a_copy_applies_once() {
     use revqora_lib::git::recovery;
     let r = collision_fixture();
-    recovery::accept_collisions(r.p(), "merge_start", &local(), false);
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local(), false));
     // The decision is consumed by the next operation even if that one finds nothing to decide.
     let (result, _) = run_op(r.p(), || Ok(()));
     result.unwrap();
     let (result, _) = merge_op(r.p());
     assert_eq!(result.unwrap_err().kind, "ignored-collision", "a decision applies to one operation");
-    recovery::accept_collisions(r.p(), "merge_start", &local(), false);
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local(), false));
     let (result, _) = merge_op(r.p());
     result.unwrap();
     assert_eq!(
@@ -1257,30 +1257,60 @@ fn unprotected_list() -> Vec<String> {
     vec!["huge.env".to_owned(), "local.env".to_owned(), "other.env".to_owned()]
 }
 
+/// The request that runs next carries `token` (as the client's retry does).
+fn carry(token: String) {
+    revqora_lib::git::recovery::set_request_consent(Some(token));
+}
+
 #[test]
 fn consent_never_survives_its_operation() {
     use revqora_lib::git::{operations, recovery};
     let repo = huge_fixture();
     // Rejected before it starts (stale state): the consent is gone, not kept for later.
-    recovery::accept_unprotected(repo.p(), "reset", &unprotected_list());
+    let token = recovery::accept_unprotected(repo.p(), "reset", &unprotected_list(), None);
+    carry(token.clone());
     let stale = operations::run(repo.p(), "reset", Some("not-the-current-state"), |_, _| {}, || Ok(()));
     assert_eq!(stale.unwrap_err().kind, "stale-operation");
+    carry(token);
     let (result, _) = run_op(repo.p(), || Ok(()));
     assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable", "a rejected run uses up the consent");
-    // An unrelated operation that runs first takes it and cannot use it.
-    recovery::accept_unprotected(repo.p(), "reset", &unprotected_list());
+    // Consent for reset does not apply to another command carrying it.
+    carry(recovery::accept_unprotected(repo.p(), "reset", &unprotected_list(), None));
     let other = operations::run(repo.p(), "checkout", None, |_, _| {}, || Ok(()));
-    assert_eq!(other.unwrap_err().kind, "ignored-backup-unavailable", "consent for reset does not apply to checkout");
-    let (result, _) = run_op(repo.p(), || Ok(()));
-    assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable", "and is gone afterwards");
+    assert_eq!(other.unwrap_err().kind, "ignored-backup-unavailable");
     // A run whose backup succeeds after all also ends it.
-    recovery::accept_unprotected(repo.p(), "reset", &unprotected_list());
+    let token = recovery::accept_unprotected(repo.p(), "reset", &unprotected_list(), None);
     fs::remove_file(repo.p().join("huge.env")).unwrap();
+    carry(token.clone());
     let (result, _) = run_op(repo.p(), || Ok(()));
     result.unwrap();
     fs::File::create(repo.p().join("huge.env")).unwrap().set_len(101 * 1024 * 1024).unwrap();
+    carry(token);
     let (result, _) = run_op(repo.p(), || Ok(()));
     assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable");
+}
+
+#[test]
+fn another_request_of_the_same_command_never_uses_the_consent() {
+    use revqora_lib::git::recovery;
+    use std::sync::{Arc, Barrier};
+    let repo = huge_fixture();
+    // Request A was approved; request B (same command, other target) runs first, on its own thread.
+    let token = recovery::accept_unprotected(repo.p(), "reset", &unprotected_list(), None);
+    let path = Arc::new(repo.p().to_path_buf());
+    let done = Arc::new(Barrier::new(2));
+    let (pb, db) = (path.clone(), done.clone());
+    let b = std::thread::spawn(move || {
+        let out = run_op(&pb, || Ok(()));
+        db.wait();
+        out.0
+    });
+    done.wait();
+    assert_eq!(b.join().unwrap().unwrap_err().kind, "ignored-backup-unavailable", "B asks for its own decision");
+    // A's retry still has its approval.
+    carry(token);
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    result.unwrap();
 }
 
 #[test]
@@ -1315,30 +1345,39 @@ fn copy_and_no_copy_decisions_stay_together_and_a_new_copy_choice_starts_clean()
     let r = collision_fixture();
     fs::File::create(r.p().join("settings.env")).unwrap().set_len(101 * 1024 * 1024).unwrap();
     // Copy chosen, saving fails; the user then accepts running without a copy in the same flow.
-    recovery::accept_collisions(r.p(), "merge_start", &local(), true);
+    let copy = recovery::accept_collisions(r.p(), "merge_start", &local(), true);
+    carry(copy.clone());
     let (result, _) = merge_op(r.p());
     let e = result.unwrap_err();
     assert_eq!(e.kind, "ignored-backup-unavailable");
     // A fresh Copy choice does not inherit an older no-copy consent.
-    recovery::accept_unprotected(r.p(), "merge_start", &e.details);
-    recovery::accept_collisions(r.p(), "merge_start", &local(), true);
+    let _older = recovery::accept_unprotected(r.p(), "merge_start", &e.details, None);
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local(), true));
     let (result, _) = merge_op(r.p());
     assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable");
-    // Both decisions sent together run it.
-    recovery::accept_collisions(r.p(), "merge_start", &local(), true);
-    recovery::accept_unprotected(r.p(), "merge_start", &e.details);
+    // Both decisions of one request, chained under one token, run it.
+    let copy = recovery::accept_collisions(r.p(), "merge_start", &local(), true);
+    carry(recovery::accept_unprotected(r.p(), "merge_start", &e.details, Some(&copy)));
     let (result, _) = merge_op(r.p());
     result.unwrap();
 }
 
 /// main ignores `cache`; feature tracks a file named `cache`; locally `cache/` holds data.
+/// Fails only if the file system refuses the local file name.
 #[cfg(unix)]
-fn folder_collision(name: &std::ffi::OsStr) -> Repo {
+fn folder_collision(name: &std::ffi::OsStr) -> std::io::Result<Repo> {
     let r = Repo::new();
-    r.write(".gitignore", "cache\n");
+    r.write(
+        ".gitignore",
+        "cache
+",
+    );
     r.commit_all("base");
     r.git(&["switch", "-qc", "feature"]);
-    r.write("cache", "tracked\n");
+    r.write(
+        "cache", "tracked
+",
+    );
     r.git(&["add", "-f", "cache"]);
     r.git(&["commit", "-qm", "track cache"]);
     r.git(&["switch", "-q", "main"]);
@@ -1346,37 +1385,53 @@ fn folder_collision(name: &std::ffi::OsStr) -> Repo {
     let mut path = r.p().join("cache").into_os_string();
     path.push("/");
     path.push(name);
-    fs::write(std::path::PathBuf::from(path), b"PRECIOUS").unwrap();
-    r
+    fs::write(std::path::PathBuf::from(path), b"PRECIOUS")?;
+    Ok(r)
+}
+
+/// Accepts "save a copy" for the collision and returns the next attempt's error.
+#[cfg(unix)]
+fn copy_attempt(r: &Repo) -> runner::GitError {
+    use revqora_lib::git::recovery;
+    let e = merge_op(r.p()).0.unwrap_err();
+    assert_eq!(e.kind, "ignored-collision");
+    let local: Vec<String> = e.details.iter().skip(1).step_by(2).cloned().collect();
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local, true));
+    merge_op(r.p()).0.unwrap_err()
 }
 
 #[cfg(unix)]
 #[test]
-fn copy_route_never_runs_git_with_an_incomplete_copy() {
-    use revqora_lib::git::recovery;
+fn copy_route_refuses_a_name_that_cannot_be_saved() {
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::PermissionsExt;
-    let flip = |r: &Repo| {
-        let (result, _) = merge_op(r.p());
-        result
+    let r = match folder_collision(std::ffi::OsStr::from_bytes(b"secret-\xff")) {
+        Ok(r) => r,
+        // macOS (APFS) itself rejects such names, so no such file can exist there.
+        Err(e) if e.raw_os_error() == Some(92) && cfg!(target_os = "macos") => {
+            eprintln!("skipped: this file system rejects non-UTF-8 names ({e})");
+            return;
+        }
+        Err(e) => panic!("creating the fixture failed: {e}"),
     };
-    // A name that is not valid UTF-8 cannot be saved.
-    let r = folder_collision(std::ffi::OsStr::from_bytes(b"secret-\xff"));
-    let e = flip(&r).unwrap_err();
-    assert_eq!(e.kind, "ignored-collision");
-    let local: Vec<String> = e.details.iter().skip(1).step_by(2).cloned().collect();
-    recovery::accept_collisions(r.p(), "merge_start", &local, true);
-    let e = flip(&r).unwrap_err();
+    let e = copy_attempt(&r);
     assert_eq!(e.kind, "ignored-backup-unavailable", "{}", e.message);
     assert_eq!(e.details, ["cache"]);
     assert!(r.p().join("cache").is_dir(), "Git did not run");
-    // An unreadable folder cannot be saved either.
-    let r = folder_collision(std::ffi::OsStr::new("secret"));
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_route_refuses_an_unreadable_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = folder_collision(std::ffi::OsStr::new("secret")).unwrap();
     fs::set_permissions(r.p().join("cache/sub"), fs::Permissions::from_mode(0o000)).unwrap();
-    if fs::read_dir(r.p().join("cache/sub")).is_err() {
-        recovery::accept_collisions(r.p(), "merge_start", &["cache".to_owned()], true);
-        let e = flip(&r).unwrap_err();
+    if fs::read_dir(r.p().join("cache/sub")).is_ok() {
+        // Running as root: permissions do not stop reading, so there is nothing to test.
+        eprintln!("skipped: permissions are not enforced for this user");
+    } else {
+        let e = copy_attempt(&r);
         assert_eq!(e.kind, "ignored-backup-unavailable", "{}", e.message);
+        assert_eq!(e.details, ["cache"]);
         assert!(r.p().join("cache/secret").is_file(), "Git did not run");
     }
     fs::set_permissions(r.p().join("cache/sub"), fs::Permissions::from_mode(0o755)).unwrap();

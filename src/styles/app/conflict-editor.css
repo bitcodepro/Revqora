@@ -11,9 +11,11 @@
 .cf-head {
   display: flex;
   align-items: center;
+  /* Wrapping controls must push the body down, whatever order the style sheets load in. */
+  flex-wrap: wrap;
   gap: 10px;
-  height: 52px;
-  padding: 0 12px 0 16px;
+  min-height: 52px;
+  padding: 8px 12px 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
   flex: none;

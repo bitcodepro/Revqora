@@ -53,9 +53,26 @@ describe("repository operation client", () => {
       return (cmd === "status" ? { stateToken: "t" } : "done") as T;
     };
     await repositoryCall(invoke, "merge_start", { repo: "repo" });
-    expect(sent.map((s) => s.cmd)).toEqual(["recovery_accept_collisions", "recovery_accept_collisions", "recovery_accept_unprotected"]);
-    expect(sent[1].args).toMatchObject({ command: "merge_start", paths: ["big"], copy: true });
-    expect(sent[2].args).toMatchObject({ command: "merge_start", paths: ["big"] });
+    expect(sent.map((s) => s.cmd)).toEqual(["recovery_accept_collisions", "recovery_accept_unprotected"]);
+    expect(sent[0].args).toMatchObject({ command: "merge_start", paths: ["big"], copy: true });
+    expect(sent[1].args).toMatchObject({ command: "merge_start", paths: ["big"], token: "done" });
+  });
+  it("sends the decision only with the request it was made for", async () => {
+    // Two resets to different targets; only A stops and is approved.
+    const runs: { target: unknown; consent: unknown }[] = [];
+    let stopped = false;
+    setOperationHooks({ observed: () => "displayed", refreshed: () => {}, confirmUnprotected: async () => true });
+    const invoke: Invoke = async <T>(cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "recovery_accept_unprotected") return "token-a" as T;
+      if (cmd === "reset") {
+        runs.push({ target: args?.target, consent: args?.recoveryConsent });
+        if (args?.target === "A" && !stopped) { stopped = true; throw { kind: "ignored-backup-unavailable", message: "too large", details: ["huge.env"] }; }
+      }
+      return (cmd === "status" ? { stateToken: "t" } : "done") as T;
+    };
+    await Promise.all([repositoryCall(invoke, "reset", { repo: "repo", target: "A" }), repositoryCall(invoke, "reset", { repo: "repo", target: "B" })]);
+    expect(runs.filter((r) => r.target === "B").every((r) => r.consent === undefined)).toBe(true);
+    expect(runs.filter((r) => r.target === "A").map((r) => r.consent)).toEqual([undefined, "token-a"]);
   });
   it("passes reads through without queue preconditions", async () => {
     const f = fixture();

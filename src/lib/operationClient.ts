@@ -35,14 +35,15 @@ export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Pro
  * Runs `call` and lets the user decide when it stops to protect local files: a collision (save a
  * copy and continue, continue without one, or cancel) or files that could not be saved (run
  * without a copy, or cancel). Every decision is for this command and its next run only; the
- * backend checks the exact list again and drops the decision after that run. When saving fails
- * after a collision decision, both decisions are sent together, so the retry keeps the choice.
+ * backend checks the exact list again. Decisions travel as a one-shot token on the retry, so no
+ * other request (even the same command) can use them; a no-copy answer keeps the collision choice.
  */
-async function withConsent<T>(invoke: Invoke, repo: string, command: string, call: () => Promise<T>): Promise<T> {
-  let collision: { paths: string[]; copy: boolean } | null = null;
+async function withConsent<T>(invoke: Invoke, repo: string, command: string, call: (consent?: string) => Promise<T>): Promise<T> {
+  // One-shot token of this request's decisions; only the retry that carries it may use them.
+  let consent: string | undefined;
   for (;;) {
     try {
-      return await call();
+      return await call(consent);
     } catch (e) {
       const err = e as { kind?: string; message?: string; details?: string[]; declined?: boolean };
       if (err?.kind === "ignored-collision" && hooks.confirmCollision) {
@@ -53,15 +54,14 @@ async function withConsent<T>(invoke: Invoke, repo: string, command: string, cal
           err.declined = true;
           throw e;
         }
-        collision = { paths: details.filter((_, i) => i % 2 === 1), copy: choice === "copy" };
-        await invoke<void>("recovery_accept_collisions", { repo, command, ...collision });
+        consent = await invoke<string>("recovery_accept_collisions", { repo, command, paths: details.filter((_, i) => i % 2 === 1), copy: choice === "copy" });
         continue;
       }
       if (err?.kind !== "ignored-backup-unavailable" || !hooks.confirmUnprotected) throw e;
       const paths = err.details ?? [];
       if (!(await hooks.confirmUnprotected(repo, err.message ?? "", paths))) throw e;
-      if (collision) await invoke<void>("recovery_accept_collisions", { repo, command, ...collision });
-      await invoke<void>("recovery_accept_unprotected", { repo, command, paths });
+      // Kept together with this request's collision choice, under a new token.
+      consent = await invoke<string>("recovery_accept_unprotected", { repo, command, paths, token: consent ?? null });
     }
   }
 }
@@ -90,7 +90,7 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
       const sourceHead = hooks.observedHead?.(repo);
       if (sourceHead) {
         // The queued checkout observes current worktree changes and verifies this source HEAD itself.
-        const result = await withConsent(invoke, repo, command, () => invoke<T>(command, { ...args, expectedState: null, sourceHead }));
+        const result = await withConsent(invoke, repo, command, (consent) => invoke<T>(command, { ...args, expectedState: null, sourceHead, recoveryConsent: consent }));
         refresh = !(typeof result === "object" && result && "status" in result && result.status === "review");
         return result;
       }
@@ -107,7 +107,7 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
         expectedState = current.stateToken ?? null;
       }
     }
-    return await withConsent(invoke, repo, command, () => invoke<T>(command, { ...args, expectedState }));
+    return await withConsent(invoke, repo, command, (consent) => invoke<T>(command, { ...args, expectedState, recoveryConsent: consent }));
   } finally {
     // Compound UI actions (commit then push, local then remote delete) must see
     // their own preceding mutation rather than reusing its now-stale token.

@@ -1,11 +1,13 @@
 /* ───────────── overlays ───────────── */
 .ctx-menu {
   max-height: calc(100dvh - 12px);
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   position: fixed;
   z-index: 1000;
   min-width: 220px;
-  max-width: 340px;
+  /* Long labels (drag-and-drop actions name branches) fit; never wider than the window. */
+  max-width: min(520px, calc(100vw - 12px));
   padding: 5px;
   border-radius: 10px;
   background: var(--bg-elev2);
@@ -25,6 +27,11 @@
   color: var(--text);
   white-space: nowrap;
   position: relative;
+}
+.ctx-item .ctx-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .ctx-item .ic {
   width: 16px;

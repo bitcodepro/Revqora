@@ -473,6 +473,8 @@ thread_local! {
     static REPORT: std::cell::RefCell<Option<IgnoredReport>> = const { std::cell::RefCell::new(None) };
     // The user's decisions for the operation running on this thread (taken in `begin`).
     static ACTIVE: std::cell::RefCell<Option<Consent>> = const { std::cell::RefCell::new(None) };
+    // The consent token the request running on this thread carries (set by the command).
+    static REQUEST: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 /// A user's decision to continue although Git may overwrite these local paths.
@@ -485,22 +487,36 @@ struct AcceptedCollisions {
     copy: Vec<String>,
 }
 
-/// Everything the user decided for the next run of one command in one repository. The next
-/// operation in that repository takes it, whatever that operation is, and uses it only if it is
-/// that command; it never outlives that operation.
+/// Everything the user decided for one request: the retry that carries its one-shot token. Any
+/// other request, even the same command in the same repository, never sees it.
 #[derive(Clone)]
 struct Consent {
+    repo: PathBuf,
     command: String,
     collisions: Option<AcceptedCollisions>,
     /// Paths the user accepted to run without a saved copy (sorted).
     unprotected: Option<Vec<String>>,
 }
 
-type ConsentMap = std::sync::Mutex<std::collections::HashMap<PathBuf, Consent>>;
+/// Pending decisions by token, oldest first. A token whose request never arrives is dropped
+/// once newer ones push it out; it can never be used by another request.
+type ConsentList = std::sync::Mutex<Vec<(String, Consent)>>;
+const MAX_PENDING: usize = 32;
 
-fn pending() -> &'static ConsentMap {
-    static P: std::sync::OnceLock<ConsentMap> = std::sync::OnceLock::new();
+fn pending() -> &'static ConsentList {
+    static P: std::sync::OnceLock<ConsentList> = std::sync::OnceLock::new();
     P.get_or_init(Default::default)
+}
+
+fn new_token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    let mut h2 = std::collections::hash_map::RandomState::new().build_hasher();
+    h2.write_u64(h.finish());
+    format!("{:016x}{:016x}", h.finish(), h2.finish())
 }
 
 fn absolute_key(path: &Path) -> String {
@@ -513,38 +529,57 @@ fn absolute_key(path: &Path) -> String {
     }
 }
 
-/// The user continues the next `command` in `root` although Git may overwrite `paths`
-/// (repository-relative, as the collision listed them). With `copy`, they are saved in the
-/// operation's checkpoint first. Replaces every earlier decision for that repository, so a
-/// new choice never inherits an older consent to run without a copy.
-pub fn accept_collisions(root: &Path, command: &str, paths: &[String], copy: bool) {
+fn store(token: Option<&str>, update: impl FnOnce(Option<Consent>) -> Consent) -> String {
+    let mut all = pending().lock().unwrap_or_else(|e| e.into_inner());
+    let previous = token.and_then(|t| all.iter().position(|(k, _)| k == t)).map(|i| all.remove(i).1);
+    let token = new_token();
+    all.push((token.clone(), update(previous)));
+    if all.len() > MAX_PENDING {
+        all.remove(0);
+    }
+    token
+}
+
+/// The user continues `command` in `root` although Git may overwrite `paths` (repository-
+/// relative, as the collision listed them). With `copy`, they are saved in the operation's
+/// checkpoint first. Returns the one-shot token the retry must carry. A new decision never
+/// inherits an older consent to run without a copy.
+pub fn accept_collisions(root: &Path, command: &str, paths: &[String], copy: bool) -> String {
     let base = watch_key(root);
     let covered = paths.iter().map(|p| absolute_key(&base.join(p))).collect();
     let copy = if copy { paths.to_vec() } else { Vec::new() };
-    let consent = Consent { command: command.to_owned(), collisions: Some(AcceptedCollisions { covered, copy }), unprotected: None };
-    pending().lock().unwrap_or_else(|e| e.into_inner()).insert(base, consent);
+    store(None, |_| Consent { repo: base, command: command.to_owned(), collisions: Some(AcceptedCollisions { covered, copy }), unprotected: None })
 }
 
-/// The user accepts that the next `command` in `root` runs although these paths could not be
-/// saved. It applies only if that operation finds exactly this list. A collision decision made
-/// for the same command just before is kept with it.
-pub fn accept_unprotected(root: &Path, command: &str, paths: &[String]) {
+/// The user accepts that `command` in `root` runs although these paths could not be saved. It
+/// applies only if that run finds exactly this list. With the token of the collision decision
+/// of the same request, both decisions stay together under the returned new token.
+pub fn accept_unprotected(root: &Path, command: &str, paths: &[String], token: Option<&str>) -> String {
     let mut paths = paths.to_vec();
     paths.sort();
-    let mut all = pending().lock().unwrap_or_else(|e| e.into_inner());
-    let fresh = || Consent { command: command.to_owned(), collisions: None, unprotected: None };
-    let entry = all.entry(watch_key(root)).or_insert_with(fresh);
-    if entry.command != command {
-        *entry = fresh();
-    }
-    entry.unprotected = Some(paths);
+    let base = watch_key(root);
+    store(token, |previous| {
+        let collisions = previous.filter(|c| c.repo == base && c.command == command).and_then(|c| c.collisions);
+        Consent { repo: base, command: command.to_owned(), collisions, unprotected: Some(paths) }
+    })
 }
 
-/// Start of an operation that owns `root`: takes the user's pending decisions. They apply only
-/// if they were made for this command; either way they leave the store.
+/// The consent token of the request about to run on this thread (None: it carries none).
+pub fn set_request_consent(token: Option<String>) {
+    REQUEST.with(|r| *r.borrow_mut() = token);
+}
+
+/// Start of an operation that owns `root`: takes the decisions of the token its request carries.
+/// They apply only if they were made for this repository and command; either way the token is
+/// used up.
 pub fn begin(root: &Path, command: &str) {
-    let taken = pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&watch_key(root));
-    ACTIVE.with(|a| *a.borrow_mut() = taken.filter(|c| c.command == command));
+    let token = REQUEST.with(|r| r.borrow_mut().take());
+    let taken = token.and_then(|t| {
+        let mut all = pending().lock().unwrap_or_else(|e| e.into_inner());
+        all.iter().position(|(k, _)| *k == t).map(|i| all.remove(i).1)
+    });
+    let base = watch_key(root);
+    ACTIVE.with(|a| *a.borrow_mut() = taken.filter(|c| c.command == command && c.repo == base));
 }
 
 /// Ends the operation started by `begin` on every exit path, unwinding included: reports changed
