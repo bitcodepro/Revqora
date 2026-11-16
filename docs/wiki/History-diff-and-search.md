@@ -77,10 +77,10 @@ This is case-sensitive text search in added/deleted lines across available local
 
 Select **Symbol body / JSON subtree** and supply the complete source-file path.
 
-- TypeScript/C#: enter a declaration name, such as `refreshToken` or `Service.Run`.
+- TypeScript/C#/Rust/Python/Go/Java: enter a declaration name, such as `refreshToken` or `Service.Run`. Members are qualified by their enclosing types and modules (`net.Point.new` for a Rust inherent impl, `Point as Display.fmt` for a trait impl, `Point.Area` for a Go method on `*Point`); the bare last name also matches.
 - JSON: enter a JSON pointer such as `/ports`.
 - For JSON, `$` selects the whole document; `/` means a property whose name is empty.
 
-This mode compares bodies/subtrees in C#, TypeScript/TSX and JSON, including changes that did not touch a function's name line. It scans first-parent file revisions in pages of 25 and pins the starting HEAD. Use ordinary File history for renames; this mode follows the current path.
+This mode compares bodies/subtrees in C#, TypeScript/TSX, Rust (`.rs`), Python (`.py`, `.pyi`), Go (`.go`), Java (`.java`) and JSON, including changes that did not touch a function's name line. It scans first-parent file revisions in pages of 25 and pins the starting HEAD. Use ordinary File history for renames; this mode follows the current path.
 
 **Related:** [Review layouts](https://github.com/bitcodepro/Revqora/wiki/Interface-and-navigation) · [Rebase and commit operations](https://github.com/bitcodepro/Revqora/wiki/Merge-rebase-and-conflicts) · [PR file previews](https://github.com/bitcodepro/Revqora/wiki/Pull-Request-Center)

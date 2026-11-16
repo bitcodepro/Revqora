@@ -566,7 +566,7 @@ MCP access is off by default. Revqora saves your choice in its portable data fol
 ### Explore changed code and dependent branches
 
 Open **History Explorer** to search literal changed code or the history of a named
-symbol/JSON subtree. Symbol history follows the current path along a pinned
+symbol/JSON subtree (C#, TypeScript/TSX, Rust, Python, Go, Java, JSON). Symbol history follows the current path along a pinned
 first-parent history; limits and unreadable revisions are reported. Use ordinary
 file history when following renames.
 
