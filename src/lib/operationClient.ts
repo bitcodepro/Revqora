@@ -19,6 +19,8 @@ interface Hooks {
   observedHead?: (repo: string) => { branch: string | null; oid: string | null } | null;
   refreshed: (repo: string, status: StatusSummary, info: RepoInfo) => void;
   pending?: (repo: string, delta: number) => void;
+  /** Asked when ignored files could not be saved before an operation; true accepts that list. */
+  confirmUnprotected?: (repo: string, message: string, paths: string[]) => Promise<boolean>;
 }
 
 let hooks: Hooks = { observed: () => null, refreshed: () => {} };
@@ -67,7 +69,19 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
         expectedState = current.stateToken ?? null;
       }
     }
-    return await invoke<T>(command, { ...args, expectedState });
+    // Ignored files that could not be saved: the user reviews the exact list. Accepting applies
+    // only to that list; if it changed meanwhile, the backend refuses again with the new one.
+    for (;;) {
+      try {
+        return await invoke<T>(command, { ...args, expectedState });
+      } catch (e) {
+        const err = e as { kind?: string; message?: string; details?: string[] };
+        if (err?.kind !== "ignored-backup-unavailable" || !hooks.confirmUnprotected) throw e;
+        const paths = err.details ?? [];
+        if (!(await hooks.confirmUnprotected(repo, err.message ?? "", paths))) throw e;
+        await invoke<void>("recovery_accept_unprotected", { repo, paths });
+      }
+    }
   } finally {
     // Compound UI actions (commit then push, local then remote delete) must see
     // their own preceding mutation rather than reusing its now-stale token.

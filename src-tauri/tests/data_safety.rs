@@ -951,9 +951,7 @@ fn revert_without_commit_protects_ignored_files_behind_a_staged_rename() {
     assert!(!repo.p().join(".git/REVERT_HEAD").exists() && !repo.p().join(".git/sequencer").exists());
 }
 
-#[test]
-fn ignored_files_git_changes_unexpectedly_are_saved_reported_and_restorable() {
-    use revqora_lib::git::{operations, recovery};
+fn ignored_fixture() -> Repo {
     let repo = Repo::new();
     repo.write(".gitignore", "*.env\nnode_modules/\n");
     repo.write("app.txt", "1\n");
@@ -962,31 +960,180 @@ fn ignored_files_git_changes_unexpectedly_are_saved_reported_and_restorable() {
     repo.write("other.env", "untouched\n");
     fs::create_dir_all(repo.p().join("node_modules/pkg")).unwrap();
     repo.write("node_modules/pkg/index.js", "cache\n");
-    // Stand-in for a write no guard predicted: the operation replaces one ignored file and
-    // deletes another.
-    operations::run(
-        repo.p(),
-        "reset",
-        None,
-        |_, _| {},
-        || {
-            fs::write(repo.p().join("local.env"), "from git\n").unwrap();
-            fs::remove_file(repo.p().join("other.env")).unwrap();
-            Ok(())
-        },
-    )
-    .unwrap();
-    let report = recovery::take_ignored_report(repo.p()).expect("the change must be reported");
+    repo
+}
+
+type Report = Option<revqora_lib::git::recovery::IgnoredReport>;
+
+/// Runs `f` as the queued operation `reset` and returns its own ignored-file report.
+fn run_op(repo: &Path, f: impl FnOnce() -> Result<(), runner::GitError>) -> (Result<(), runner::GitError>, Report) {
+    use revqora_lib::git::{operations, recovery};
+    let result = operations::run(repo, "reset", None, |_, _| {}, f);
+    (result, recovery::take_ignored_report(repo))
+}
+
+#[test]
+fn ignored_files_git_changes_unexpectedly_are_saved_reported_and_restorable() {
+    use revqora_lib::git::recovery;
+    let repo = ignored_fixture();
+    // Stand-in for a write no guard predicted: one ignored file replaced, one deleted.
+    let (result, report) = run_op(repo.p(), || {
+        fs::write(repo.p().join("local.env"), "from git\n").unwrap();
+        fs::remove_file(repo.p().join("other.env")).unwrap();
+        Ok(())
+    });
+    result.unwrap();
+    let report = report.expect("the change must be reported");
     assert_eq!(report.command, "reset");
     assert_eq!(report.paths, ["local.env", "other.env"]);
     assert!(recovery::take_ignored_report(repo.p()).is_none(), "a report is delivered once");
-    let checkpoint = report.checkpoint.expect("the ignored files must have been saved");
+    let checkpoint = report.checkpoint.clone().expect("the ignored files must have been saved");
+    // Restore uses only what is on disk (as after a restart): the checkpoint is listed in Recovery.
+    assert!(recovery::list(repo.p()).unwrap().checkpoints.iter().any(|c| c.id == checkpoint));
     let saved = recovery::detail(repo.p(), &checkpoint).unwrap();
     assert!(saved.paths.iter().all(|p| !p.path.starts_with("node_modules")), "wholly ignored folders are not copied");
-    assert_eq!(recovery::restore_files(repo.p(), &checkpoint, &report.paths).unwrap(), 2);
+    let outcome = recovery::restore_files(repo.p(), &checkpoint, &report.changes).unwrap();
+    assert_eq!(outcome.restored, ["local.env", "other.env"]);
+    assert!(outcome.changed_since.is_empty() && outcome.failed.is_none());
     assert_eq!(fs::read_to_string(repo.p().join("local.env")).unwrap(), "PRECIOUS\n");
     assert_eq!(fs::read_to_string(repo.p().join("other.env")).unwrap(), "untouched\n");
     // An operation that leaves ignored files alone reports nothing.
-    operations::run(repo.p(), "reset", None, |_, _| {}, || Ok(())).unwrap();
-    assert!(recovery::take_ignored_report(repo.p()).is_none());
+    let (result, report) = run_op(repo.p(), || Ok(()));
+    result.unwrap();
+    assert!(report.is_none());
+}
+
+#[test]
+fn restore_never_replaces_a_file_changed_after_the_operation() {
+    use revqora_lib::git::recovery;
+    let repo = ignored_fixture();
+    let (_, report) = run_op(repo.p(), || {
+        fs::write(repo.p().join("local.env"), "from git\n").unwrap();
+        fs::write(repo.p().join("other.env"), "from git\n").unwrap();
+        Ok(())
+    });
+    let report = report.unwrap();
+    // The user edits one file while the dialog is open.
+    repo.write("other.env", "edited later\n");
+    let outcome = recovery::restore_files(repo.p(), report.checkpoint.as_deref().unwrap(), &report.changes).unwrap();
+    assert_eq!(outcome.restored, ["local.env"]);
+    assert_eq!(outcome.changed_since, ["other.env"]);
+    assert_eq!(fs::read_to_string(repo.p().join("other.env")).unwrap(), "edited later\n");
+    assert_eq!(fs::read_to_string(repo.p().join("local.env")).unwrap(), "PRECIOUS\n");
+}
+
+#[test]
+fn a_failed_operation_that_wrote_ignored_files_is_still_reported() {
+    let repo = ignored_fixture();
+    let (result, report) = run_op(repo.p(), || {
+        fs::write(repo.p().join("local.env"), "half written\n").unwrap();
+        Err(runner::GitError::new("git failed midway"))
+    });
+    assert!(result.is_err());
+    let report = report.expect("a failure after a partial write must still be reported");
+    assert_eq!(report.paths, ["local.env"]);
+    assert!(report.checkpoint.is_some());
+}
+
+#[test]
+fn each_queued_operation_keeps_its_own_report() {
+    use std::sync::{Arc, Barrier};
+    let repo = ignored_fixture();
+    repo.write("b.env", "B\n");
+    let path = Arc::new(repo.p().to_path_buf());
+    let a_done = Arc::new(Barrier::new(2));
+    let b_done = Arc::new(Barrier::new(2));
+    let (pa, a1, b1) = (path.clone(), a_done.clone(), b_done.clone());
+    // A finishes its operation, then B runs and takes its report before A takes A's.
+    let a = std::thread::spawn(move || {
+        let result = revqora_lib::git::operations::run(
+            &pa,
+            "reset",
+            None,
+            |_, _| {},
+            || {
+                fs::write(pa.join("local.env"), "A\n").unwrap();
+                Ok(())
+            },
+        );
+        a1.wait();
+        b1.wait();
+        (result, revqora_lib::git::recovery::take_ignored_report(&pa))
+    });
+    let (pb, a2, b2) = (path.clone(), a_done.clone(), b_done.clone());
+    let b = std::thread::spawn(move || {
+        a2.wait();
+        let out = run_op(&pb, || {
+            fs::write(pb.join("b.env"), "changed by B\n").unwrap();
+            Ok(())
+        });
+        b2.wait();
+        out
+    });
+    let (ra, report_a) = a.join().unwrap();
+    let (rb, report_b) = b.join().unwrap();
+    ra.unwrap();
+    rb.unwrap();
+    let report_a = report_a.expect("report of the first operation");
+    let report_b = report_b.expect("report of the second operation");
+    assert_eq!(report_a.paths, ["local.env"]);
+    assert_eq!(report_b.paths, ["b.env"]);
+    assert_ne!(report_a.checkpoint, report_b.checkpoint);
+}
+
+#[test]
+fn ignored_files_that_cannot_be_saved_need_consent_for_that_exact_list() {
+    use revqora_lib::git::recovery;
+    let repo = ignored_fixture();
+    // Larger than a checkpoint may hold; sparse, so the test writes almost nothing.
+    fs::File::create(repo.p().join("huge.env")).unwrap().set_len(101 * 1024 * 1024).unwrap();
+    let mut ran = false;
+    let (result, _) = run_op(repo.p(), || {
+        ran = true;
+        Ok(())
+    });
+    let e = result.unwrap_err();
+    assert_eq!(e.kind, "ignored-backup-unavailable", "{}", e.message);
+    assert_eq!(e.details, ["huge.env", "local.env", "other.env"]);
+    assert!(!ran, "nothing may run before the user accepts");
+    // Consent for an outdated list does not apply.
+    recovery::accept_unprotected(repo.p(), &e.details);
+    repo.write("new.env", "appeared\n");
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    let again = result.unwrap_err();
+    assert_eq!(again.details, ["huge.env", "local.env", "new.env", "other.env"]);
+    // Consent for the current list runs it once; changes are still detected.
+    recovery::accept_unprotected(repo.p(), &again.details);
+    let (result, report) = run_op(repo.p(), || {
+        fs::write(repo.p().join("local.env"), "from git\n").unwrap();
+        Ok(())
+    });
+    result.unwrap();
+    let report = report.expect("changes must still be reported without a copy");
+    assert_eq!(report.paths, ["local.env"]);
+    assert!(report.checkpoint.is_none());
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable", "consent is used once");
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_keeps_file_permissions() {
+    use revqora_lib::git::recovery;
+    use std::os::unix::fs::PermissionsExt;
+    let repo = ignored_fixture();
+    repo.write("run.env", "#!/bin/sh\n");
+    fs::set_permissions(repo.p().join("run.env"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(repo.p().join("local.env"), fs::Permissions::from_mode(0o644)).unwrap();
+    let (_, report) = run_op(repo.p(), || {
+        fs::write(repo.p().join("run.env"), "x\n").unwrap();
+        fs::write(repo.p().join("local.env"), "x\n").unwrap();
+        Ok(())
+    });
+    let report = report.unwrap();
+    recovery::restore_files(repo.p(), report.checkpoint.as_deref().unwrap(), &report.changes).unwrap();
+    let mode = |name: &str| fs::metadata(repo.p().join(name)).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode("run.env"), 0o755);
+    assert_eq!(mode("local.env"), 0o644);
+    assert_eq!(fs::read_to_string(repo.p().join("run.env")).unwrap(), "#!/bin/sh\n");
 }

@@ -147,8 +147,11 @@ export const api = {
   recoveryDelete: (repo: string, id: string) => call<void>("recovery_delete", { repo, id }),
   recoveryRestoreBranch: (repo: string, id: string, reference: number | null, name: string) => call<void>("recovery_restore_branch", { repo, id, reference, name }),
   recoveryRestoreStash: (repo: string, id: string, reference: number) => call<void>("recovery_restore_stash", { repo, id, reference }),
-  /** Puts saved files from a checkpoint back in place (ignored files Git overwrote). */
-  recoveryRestoreFiles: (repo: string, id: string, paths: string[]) => call<number>("recovery_restore_files", { repo, id, paths }),
+  /** Puts saved ignored files back in place; files changed since the operation are left alone. */
+  recoveryRestoreFiles: (repo: string, id: string, changes: import("../components/IgnoredFilesChanged").IgnoredChange[]) =>
+    call<import("../components/IgnoredFilesChanged").RestoreOutcome>("recovery_restore_files", { repo, id, changes }),
+  /** Accepts that the next operation runs although exactly these ignored files could not be saved. */
+  recoveryAcceptUnprotected: (repo: string, paths: string[]) => call<void>("recovery_accept_unprotected", { repo, paths }),
   recoveryRestoreWorkspace: (repo: string, id: string, destination: string, name: string) => call<string>("recovery_restore_workspace", { repo, id, destination, name }),
   operationLogHealth: () => call<OperationLogHealth>("operation_log_health"),
   operationLogList: (filter: OperationLogFilter) => call<OperationLogPage>("operation_log_list", { filter }),

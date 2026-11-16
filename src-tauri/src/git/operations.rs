@@ -200,8 +200,8 @@ pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl Fn
                 return Err(GitError::new(format!("Finish or abort the current {} operation first.", state.kind)).kind("operation-in-progress"));
             }
         }
-        super::recovery::before(repo, command, expected)?;
-        let result = f();
+        // The watch is finished on every path, so it never outlives this operation.
+        let result = super::recovery::before(repo, command, expected).and_then(|()| f());
         super::recovery::finish_watch(repo);
         result
     })

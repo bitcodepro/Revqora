@@ -473,8 +473,24 @@ async fn recovery_restore_branch(
     mutating(repo.clone(), expected_state, app, "recovery_restore_branch", None, move || recovery::restore_branch(&p(&repo), &id, reference, &name)).await
 }
 #[tauri::command]
-async fn recovery_restore_files(app: AppHandle, expected_state: Option<String>, repo: String, id: String, paths: Vec<String>) -> GitResult<usize> {
-    mutating(repo.clone(), expected_state, app, "recovery_restore_files", None, move || recovery::restore_files(&p(&repo), &id, &paths)).await
+async fn recovery_restore_files(
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    id: String,
+    changes: Vec<recovery::IgnoredChange>,
+) -> GitResult<recovery::RestoreOutcome> {
+    mutating(repo.clone(), expected_state, app, "recovery_restore_files", None, move || recovery::restore_files(&p(&repo), &id, &changes)).await
+}
+
+/// The user accepts that the next operation runs although these ignored files could not be saved.
+#[tauri::command]
+async fn recovery_accept_unprotected(repo: String, paths: Vec<String>) -> GitResult<()> {
+    blocking(move || {
+        recovery::accept_unprotected(&p(&repo), &paths);
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2842,6 +2858,7 @@ pub fn run() {
             recovery_restore_branch,
             recovery_restore_stash,
             recovery_restore_files,
+            recovery_accept_unprotected,
             recovery_restore_workspace,
             git_version,
             update_check,
