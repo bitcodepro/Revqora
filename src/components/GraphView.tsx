@@ -33,6 +33,8 @@ import { jumpStep, lastRowStep } from "../lib/historyJump";
 import { keyboardOwner, listKeysBlocked, shortcutBlocked } from "../lib/keyboardOwner";
 
 const ROW_H = 30;
+/** Ctrl/Cmd/Shift selection acts on press; a plain press may start a drag, so it opens the commit on click. */
+const modified = (e: React.MouseEvent) => e.ctrlKey || e.metaKey || e.shiftKey;
 /** Review mode: two-line rows (subject, then author, date and hash) without the graph. */
 const COMPACT_ROW_H = 46;
 const LANE_W = 15;
@@ -195,7 +197,8 @@ const Row = memo(function Row(p: RowProps) {
         className={`grow compact ${p.selected ? "selected" : ""} ${p.multi ? "multi" : ""} ${p.match ? "match" : ""} ${p.dim ? "dim" : ""} ${wip ? "wip" : ""} ${branchStyle} ${r.incoming ? "incoming" : ""}`}
         data-commit-oid={wip ? undefined : r.oid}
         style={{ top, height: p.rowH }}
-        onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
+        onMouseDown={(e) => e.button === 0 && modified(e) && p.onSelect(r, e)}
+        onClick={(e) => e.button === 0 && !modified(e) && p.onSelect(r, e)}
         onContextMenu={(e) => p.onMenu(r, e)}
         onDoubleClick={() => !wip && copyText(r.oid, "Hash copied")}
         title={
@@ -227,7 +230,8 @@ ${r.oid}`
       data-commit-index={wip ? undefined : r.index}
       data-commit-oid={wip ? undefined : r.oid}
       style={{ top, height: p.rowH, ...anim, ["--pinned-lane-color" as string]: p.pinnedLaneMember ? nodeColor : undefined }}
-      onMouseDown={(e) => e.button === 0 && p.onSelect(r, e)}
+      onMouseDown={(e) => e.button === 0 && modified(e) && p.onSelect(r, e)}
+        onClick={(e) => e.button === 0 && !modified(e) && p.onSelect(r, e)}
       onContextMenu={(e) => p.onMenu(r, e)}
       onDoubleClick={() => !wip && copyText(r.oid, "Hash copied")}
     >
@@ -236,6 +240,7 @@ ${r.oid}`
         onMouseEnter={() => p.onHover(r.laneId)}
         onMouseLeave={() => p.onHover(null)}
         onMouseDown={(e) => { if (e.button === 0) e.stopPropagation(); }}
+        onClick={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}
       >
         <svg width={p.width} height={p.rowH}>
@@ -829,8 +834,8 @@ export function GraphView({
     [root, patch, filtered, results],
   );
 
-  // Drag and drop (GraphDrop.tsx). Called on pointerdown, before the mousedown that follows it
-  // changes the selection: a dragged commit takes its whole multi-selection along.
+  // Drag and drop (GraphDrop.tsx). Called on pointerdown. A plain press selects only on click
+  // (never after a drag), so a dragged commit takes its whole multi-selection along.
   const dragCommits = useCallback(
     (oid: string): CommitDrag | null => {
       const t = useRepos.getState().tabs[root];

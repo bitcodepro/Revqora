@@ -91,6 +91,7 @@ Before opening or updating a PR:
 ## Drag and drop in History and Branches
 
 - [ ] Dragging a branch badge, a Branches row or History commits (a multi-selection moves together) onto a branch or commit only opens a menu at the drop point; the chosen item runs the existing merge, rebase, cherry-pick, reset, push or pull action with its dialogs. An item that needs another branch says "Switch to … and …", checks it out first and stops if that fails or is cancelled. See [Branches](wiki/Branches-and-cleanup.md#drag-and-drop).
+- [ ] Pressing a History row or branch badge and holding (or dragging) does not open the commit; a plain click opens it. Ctrl/Cmd/Shift selection acts on press; clicking the lane column selects nothing.
 - [ ] Only targets with at least one action show a drop indicator. A plain click, double-click, right-click, Ctrl/Shift selection and lane hover behave as without drag and drop; Esc cancels a drag and an invalid drop changes nothing. Items are disabled with a reason during an operation in progress, on detached HEAD, for a branch checked out in another worktree and when both sides are the same commit.
 
 ## Themes
