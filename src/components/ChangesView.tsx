@@ -53,7 +53,7 @@ import type { CommitHelpers, FileDiff, FileStatus, GitError, LargeFile, LayerCon
 import { conflictLabel, joinPath, plural, relativeTime } from "../lib/format";
 import { FileGroups, PathLabel, StatusIcon } from "./bits";
 import { DiffView, useDiffOpts, type LineAction } from "./DiffView";
-import { confirmDialog, identityDialog, promptDialog } from "./dialogs";
+import { confirmDialog, identityDialog, promptDialog, validBranchName } from "./dialogs";
 import { Modal } from "./Modal";
 import { fileHistoryDialog } from "./FileHistory";
 import { Splitter } from "./Overlays";
@@ -1131,7 +1131,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   };
 
   /** Commit with the large-file check and readable hook failures. */
-  const commitChecked = async (skipHooks: boolean, id: string): Promise<boolean> => {
+  const commitChecked = async (skipHooks: boolean, id: string, detachedOk = false): Promise<boolean> => {
     const finalMessage = conventional && ccType ? `${ccType}${ccScope.trim() ? `(${ccScope.trim()})` : ""}${ccBreaking ? "!" : ""}: ${message}` : message;
     const current = useRepos.getState().tabs[root];
     const head = current?.info?.head, status = current?.status;
@@ -1140,6 +1140,25 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
     if (!expectedState) {
       toast.warning("Refresh before committing", "Review the staged files after the repository status has loaded.");
       return false;
+    }
+    // A commit made with no branch checked out is easy to lose: nothing points to it after a switch.
+    if (head?.detached && kind === "none" && !detachedOk) {
+      updateBusy(id, "Waiting for your choice", true);
+      const choice = await detachedCommitDialog(head.oid);
+      if (choice === "cancel") return false;
+      if (choice === "branch") {
+        const name = await promptDialog({ title: "Create a branch for this commit", label: "Branch name", confirm: "Create branch and commit", validate: validBranchName, help: "The branch starts at the current commit and is checked out; your staged files stay staged." });
+        if (!name) return false;
+        try {
+          await api.branchCreate(root, name.trim(), null, true, expectedState);
+          await useRepos.getState().refresh(root);
+        } catch (e) {
+          toast.error(e, "Could not create the branch");
+          return false;
+        }
+        return commitChecked(skipHooks, id);
+      }
+      detachedOk = true;
     }
     if (!amend || stagedCount > 0) {
       updateBusy(id, "Checking staged files", true);
@@ -1161,7 +1180,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
             for (const pt of patterns) await api.lfsTrack(root, pt, true);
             await api.stage(root, [...big.map((f) => f.path), ".gitattributes"]);
             toast.success("Moved to Git LFS", patterns.join(", "));
-            return commitChecked(skipHooks, id);
+            return commitChecked(skipHooks, id, detachedOk);
           } catch (e) {
             toast.error(e, "Could not set up Git LFS");
             return false;
@@ -1181,7 +1200,7 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
     } catch (e) {
       if (isGitError(e) && e.kind === "identity") {
         updateBusy(id, "Waiting for Git identity", true);
-        if (await identityDialog(root)) return commitChecked(skipHooks, id);
+        if (await identityDialog(root)) return commitChecked(skipHooks, id, detachedOk);
         return false;
       }
       if (isGitError(e) && e.kind === "stale-operation") {
@@ -1191,8 +1210,8 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
       if (!skipHooks && helpers?.hooks.some((h) => h === "pre-commit" || h === "commit-msg" || h === "prepare-commit-msg")) {
         updateBusy(id, "Waiting for hook review", true);
         const choice = await hookFailedDialog(e, helpers.hooks);
-        if (choice === "retry") return commitChecked(false, id);
-        if (choice === "skip") return commitChecked(true, id);
+        if (choice === "retry") return commitChecked(false, id, detachedOk);
+        if (choice === "skip") return commitChecked(true, id, detachedOk);
         return false;
       }
       toast.error(e, "Commit failed");
@@ -1331,6 +1350,33 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
       </div>
     </div>
   );
+}
+
+function detachedCommitDialog(oid: string | null): Promise<"branch" | "commit" | "cancel"> {
+  return showDialog((close) => (
+    <Modal
+      title="No branch is checked out"
+      subtitle={oid ? `HEAD is detached at ${oid.slice(0, 8)}.` : "HEAD is detached."}
+      icon={<Info size={18} />}
+      tone="warn"
+      onClose={() => close("cancel")}
+      footer={
+        <>
+          <button type="button" className="btn" onClick={() => close("cancel")}>
+            Cancel
+          </button>
+          <button type="button" className="btn" onClick={() => close("commit")}>
+            Commit without a branch
+          </button>
+          <button type="button" className="btn primary" onClick={() => close("branch")}>
+            Create a branch…
+          </button>
+        </>
+      }
+    >
+      <p className="muted">No branch will point to this commit. After you switch to a branch it disappears from History and Git may delete it later; until then it can be found in the Reflog. Create a branch to keep it.</p>
+    </Modal>
+  ));
 }
 
 function largeFilesDialog(files: LargeFile[], limitMb: number): Promise<"lfs" | "commit" | "cancel"> {

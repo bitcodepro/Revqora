@@ -253,7 +253,14 @@ fn cone_changes_never_delete_ignored_files_without_consent() {
     let e = sparse::set(&repo, true, &folders(&["app"])).unwrap_err();
     assert_eq!(e.details, ["lib/.env", "lib/node_modules/"]);
     // With consent the change runs; what the guard announced is exactly what Git removed.
-    sparse::set_with(&repo, true, &folders(&["app"]), true).unwrap();
+    // A file that appears after the review is not covered by the consent.
+    let reviewed = e.details.clone();
+    fs::write(repo.join("lib/new.env"), "appeared later\n").unwrap();
+    let again = sparse::set_with(&repo, true, &folders(&["app"]), Some(&reviewed)).unwrap_err();
+    assert_eq!(again.kind, "sparse-ignored-files");
+    assert_eq!(again.details, ["lib/.env", "lib/new.env", "lib/node_modules/"]);
+    assert!(repo.join("lib/new.env").exists() && repo.join("lib/a.txt").exists());
+    sparse::set_with(&repo, true, &folders(&["app"]), Some(&again.details)).unwrap();
     assert!(!repo.join("lib").exists());
     assert!(repo.join("docs/local.env").exists() && repo.join("docs/notes.txt").exists());
     assert!(repo.join("build/out.bin").exists() && repo.join("app/.env").exists());

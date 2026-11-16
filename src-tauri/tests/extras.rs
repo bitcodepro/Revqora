@@ -151,3 +151,31 @@ fn lfs_tracking_and_signing_settings() {
     let head = runner::run(&r, ["rev-parse", "HEAD"]).unwrap();
     assert_eq!(extras::signature(&r, head.trim()).unwrap().status, "N");
 }
+
+#[test]
+fn bisect_never_overwrites_ignored_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = repo(tmp.path(), "bi");
+    commit(&r, "secret.cfg", "tracked\n", "c0");
+    let good = commit(&r, "app.txt", "ok\n", "c1");
+    runner::run(&r, ["rm", "-q", "secret.cfg"]).unwrap();
+    commit(&r, ".gitignore", "secret.cfg\n", "ignore");
+    for i in 2..6 {
+        commit(&r, "app.txt", &format!("v{i}\n"), &format!("c{i}"));
+    }
+    fs::write(r.join("secret.cfg"), "MINE\n").unwrap();
+    let e = extras::bisect_start(&r, "HEAD", &good).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert!(!extras::bisect_status(&r).unwrap().active);
+    assert_eq!(fs::read_to_string(r.join("secret.cfg")).unwrap(), "MINE\n");
+    assert_eq!(extras::bisect_start(&r, "--all", &good).unwrap_err().kind, "invalid-argument");
+    // Started without the file, then the file appears: the next step refuses too.
+    fs::remove_file(r.join("secret.cfg")).unwrap();
+    let st = extras::bisect_start(&r, "HEAD", &good).unwrap();
+    assert!(st.active);
+    fs::write(r.join("secret.cfg"), "MINE\n").unwrap();
+    let verdict = if fs::read_to_string(r.join("app.txt")).unwrap().starts_with("ok") { "good" } else { "bad" };
+    assert_eq!(extras::bisect_mark(&r, verdict, None).unwrap_err().kind, "ignored-collision");
+    assert_eq!(fs::read_to_string(r.join("secret.cfg")).unwrap(), "MINE\n");
+    assert_eq!(extras::bisect_mark(&r, "bad", Some("--foo")).unwrap_err().kind, "invalid-argument");
+}

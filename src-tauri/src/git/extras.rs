@@ -282,9 +282,42 @@ fn bisect_run(repo: &Path, args: &[&str]) -> GitResult<BisectStatus> {
     bisect_status(repo)
 }
 
+/// The full commit id of `rev`; refuses option-like or unknown revisions.
+fn bisect_commit(repo: &Path, rev: &str) -> GitResult<String> {
+    let rev = rev.trim();
+    if rev.is_empty() || rev.starts_with('-') {
+        return Err(GitError::new("Invalid commit for bisect.").kind("invalid-argument"));
+    }
+    let out = runner::exec(repo, ["rev-parse", "-q", "--verify", "--end-of-options", &format!("{rev}^{{commit}}")])?;
+    if !out.ok() {
+        return Err(GitError::new(format!("{rev} is not a commit.")).kind("invalid-argument"));
+    }
+    Ok(out.text().trim().to_string())
+}
+
+/// Bisect checks out commits between `goods` and `bad` and finally returns to the branch; Git
+/// writes them over ignored files (and deletes those files again on the next step), and
+/// recovery checkpoints do not keep ignored files. Refuses when any of those commits has a file
+/// where an untracked or ignored one is.
+fn guard_bisect_files(repo: &Path, bad: &str, goods: &[String]) -> GitResult<()> {
+    let mut paths: Vec<u8> = Vec::new();
+    for good in goods {
+        paths.extend(runner::run_bytes(repo, ["ls-tree", "-r", "-z", "--name-only", good.as_str()])?);
+        paths.push(0);
+    }
+    let mut args: Vec<String> = ["log", "--format=", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", bad].iter().map(|s| s.to_string()).collect();
+    args.extend(goods.iter().map(|g| format!("^{g}")));
+    args.push("--".into());
+    paths.extend(runner::run_bytes(repo, &args)?);
+    super::ops::guard_untracked_paths(repo, &paths)
+}
+
 /// Starts bisecting between a known bad and a known good commit.
 pub fn bisect_start(repo: &Path, bad: &str, good: &str) -> GitResult<BisectStatus> {
-    bisect_run(repo, &["bisect", "start", bad, good])
+    let bad = bisect_commit(repo, bad)?;
+    let good = bisect_commit(repo, good)?;
+    guard_bisect_files(repo, &bad, std::slice::from_ref(&good))?;
+    bisect_run(repo, &["bisect", "start", &bad, &good])
 }
 
 /// Marks a commit (default: the checked-out one) as "good", "bad" or "skip".
@@ -293,8 +326,15 @@ pub fn bisect_mark(repo: &Path, verdict: &str, rev: Option<&str>) -> GitResult<B
         "good" | "bad" | "skip" => verdict,
         _ => return Err(GitError::new("Verdict must be good, bad or skip.")),
     };
+    let rev = rev.map(|r| bisect_commit(repo, r)).transpose()?;
+    // Files created since the start (or since the last step) can be in the way of the next step.
+    let status = bisect_status(repo)?;
+    if let Some(bad) = status.bad.as_deref().map(|b| bisect_commit(repo, b)).transpose()? {
+        let goods = status.good.iter().map(|g| bisect_commit(repo, g)).collect::<GitResult<Vec<_>>>()?;
+        guard_bisect_files(repo, &bad, &goods)?;
+    }
     let mut args = vec!["bisect", v];
-    if let Some(r) = rev {
+    if let Some(r) = rev.as_deref() {
         args.push(r);
     }
     bisect_run(repo, &args)

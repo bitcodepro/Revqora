@@ -289,18 +289,27 @@ pub fn ignored_leaving_cone(repo: &Path, folders: &[String]) -> GitResult<Vec<St
     Ok(out)
 }
 
-/// Refuses a cone change that would delete ignored files, unless the user accepted the loss.
-fn guard_ignored(repo: &Path, cone: bool, folders: &[String], allow_ignored_loss: bool) -> GitResult<()> {
-    if !cone || allow_ignored_loss {
+/// Refuses a cone change that would delete ignored files, unless the user reviewed and accepted
+/// exactly these files (`reviewed`). The check runs inside the queued mutation, so a file that
+/// appeared while the confirmation was open is reported again instead of being deleted.
+fn guard_ignored(repo: &Path, cone: bool, folders: &[String], reviewed: Option<&[String]>) -> GitResult<()> {
+    if !cone {
         return Ok(());
     }
     let doomed = ignored_leaving_cone(repo, folders)?;
     if doomed.is_empty() {
         return Ok(());
     }
+    if let Some(reviewed) = reviewed {
+        let reviewed: std::collections::HashSet<&str> = reviewed.iter().map(String::as_str).collect();
+        if doomed.iter().all(|p| reviewed.contains(p.as_str())) {
+            return Ok(());
+        }
+    }
     let plural = if doomed.len() == 1 { "" } else { "s" };
+    let changed = if reviewed.is_some() { " The list changed since you reviewed it." } else { "" };
     Err(GitError::new(format!(
-        "Git would permanently delete {} ignored file{plural} or folder{plural} in folders that leave the working tree. Nothing was changed.",
+        "Git would permanently delete {} ignored file{plural} or folder{plural} in folders that leave the working tree.{changed} Nothing was changed.",
         doomed.len()
     ))
     .kind("sparse-ignored-files")
@@ -310,13 +319,13 @@ fn guard_ignored(repo: &Path, cone: bool, folders: &[String], allow_ignored_loss
 /// Enables sparse checkout or replaces its folders/patterns, choosing cone or non-cone mode.
 /// Refuses when ignored files would be deleted (see `set_with`).
 pub fn set(repo: &Path, cone: bool, entries: &[String]) -> GitResult<SparseResult> {
-    set_with(repo, cone, entries, false)
+    set_with(repo, cone, entries, None)
 }
 
-/// `set`; `allow_ignored_loss` is the user's consent to Git deleting the ignored files in
-/// folders that leave the working tree.
-pub fn set_with(repo: &Path, cone: bool, entries: &[String], allow_ignored_loss: bool) -> GitResult<SparseResult> {
-    guard_ignored(repo, cone, &normalize_entries(cone, entries)?, allow_ignored_loss)?;
+/// `set`; `reviewed` is the list of ignored files the user agreed Git may delete in folders
+/// that leave the working tree. Any other file still refuses the change.
+pub fn set_with(repo: &Path, cone: bool, entries: &[String], reviewed: Option<&[String]>) -> GitResult<SparseResult> {
+    guard_ignored(repo, cone, &normalize_entries(cone, entries)?, reviewed)?;
     set_with_connection(repo, cone, entries, None)
 }
 
@@ -339,12 +348,12 @@ pub fn set_with_connection(repo: &Path, cone: bool, entries: &[String], connecti
 
 /// Adds folders (cone) or patterns (non-cone) to an enabled sparse checkout.
 pub fn add(repo: &Path, entries: &[String]) -> GitResult<SparseResult> {
-    add_with(repo, entries, false)
+    add_with(repo, entries, None)
 }
 
 /// `add`; Git cleans every excluded folder again on each change, so ignored files created in
 /// one since the last change are deleted too.
-pub fn add_with(repo: &Path, entries: &[String], allow_ignored_loss: bool) -> GitResult<SparseResult> {
+pub fn add_with(repo: &Path, entries: &[String], reviewed: Option<&[String]>) -> GitResult<SparseResult> {
     let current = state(repo)?;
     if !current.enabled {
         return Err(GitError::new("Sparse checkout is off. Turn it on first.").kind("sparse-disabled"));
@@ -354,7 +363,7 @@ pub fn add_with(repo: &Path, entries: &[String], allow_ignored_loss: bool) -> Gi
         return Err(GitError::new("Enter at least one folder.").kind("invalid-sparse-path"));
     }
     let next: Vec<String> = current.patterns.iter().chain(&entries).cloned().collect();
-    guard_ignored(repo, current.cone, &next, allow_ignored_loss)?;
+    guard_ignored(repo, current.cone, &next, reviewed)?;
     sparse_run(repo, &["add", "--stdin"], Some(&stdin_of(&entries)), None)
 }
 
@@ -365,15 +374,15 @@ pub fn disable(repo: &Path) -> GitResult<SparseResult> {
 
 /// Applies the current patterns again (e.g. after a checkout or merge brought files back).
 pub fn reapply(repo: &Path) -> GitResult<SparseResult> {
-    reapply_with(repo, false)
+    reapply_with(repo, None)
 }
 
-pub fn reapply_with(repo: &Path, allow_ignored_loss: bool) -> GitResult<SparseResult> {
+pub fn reapply_with(repo: &Path, reviewed: Option<&[String]>) -> GitResult<SparseResult> {
     let current = state(repo)?;
     if !current.enabled {
         return Err(GitError::new("Sparse checkout is off.").kind("sparse-disabled"));
     }
-    guard_ignored(repo, current.cone, &current.patterns, allow_ignored_loss)?;
+    guard_ignored(repo, current.cone, &current.patterns, reviewed)?;
     sparse_run(repo, &["reapply"], None, None)
 }
 

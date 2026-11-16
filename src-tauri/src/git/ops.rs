@@ -2077,24 +2077,116 @@ pub fn revert(repo: &Path, oid: &str, no_commit: bool) -> GitResult<OpOutcome> {
     sequence_outcome(repo, out, "git revert")
 }
 
-/// Refuses a rebase onto `upstream` that would write over untracked or ignored files: the
-/// checkout of `upstream`, then every file the replayed commits touch (ignore rules can differ
-/// between those commits, so ordinary untracked files count too).
-fn guard_rebase_files(repo: &Path, upstream: &str) -> GitResult<()> {
+/// Refuses a rebase onto `upstream` that would write over untracked or ignored files (ignore
+/// rules can differ between the replayed commits, so ordinary untracked files count too).
+///
+/// Checked: the checkout of `upstream`, every file the replayed commits touch, and every file
+/// a replay previewed with `git merge-tree` writes. The preview matters because Git's merge
+/// can write to paths no commit names, such as a file moved by a directory rename upstream,
+/// and it writes them even when the step then stops with a conflict.
+fn guard_rebase_files(repo: &Path, upstream: &str, keep_merges: bool) -> GitResult<()> {
     let Some(head) = head_oid(repo) else { return Ok(()) };
     let target = runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{upstream}^{{commit}}")])?;
     let target = target.trim();
+    let untracked = super::workspace_files::untracked(repo)?;
+    if untracked.paths.is_empty() && !untracked.truncated {
+        return Ok(());
+    }
     let mut paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &head, target, "--"])?;
     paths.push(0);
     paths
         .extend(runner::run_bytes(repo, ["log", "--format=", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &format!("{target}..{head}"), "--"])?);
-    guard_untracked_paths(repo, &paths)
+    paths.push(0);
+    paths.extend(rebase_replay_writes(repo, target, &head, keep_merges, &untracked.paths)?);
+    check_ignored_paths(repo, &untracked, &paths, "uncommitted")
+}
+
+/// Paths a rebase of `head` onto `target` writes, from replaying each commit with
+/// `git merge-tree` (no working tree or index is touched). Stops at the first conflicting
+/// step, as the rebase does; that step's writes, conflict files and Git's generated
+/// `path~label` names (matched against `local` untracked paths) are included.
+fn rebase_replay_writes(repo: &Path, target: &str, head: &str, keep_merges: bool, local: &[String]) -> GitResult<Vec<u8>> {
+    if !runner::version_at_least(2, 40) {
+        return Err(GitError::new("Git 2.40 or newer is required to protect untracked and ignored files during this rebase.").kind("git-too-old"));
+    }
+    let mut list = vec!["rev-list".to_string(), "--reverse".into(), "--topo-order".into()];
+    if !keep_merges {
+        list.push("--no-merges".into());
+    }
+    list.push(format!("{target}..{head}"));
+    let commits = runner::run(repo, &list)?;
+    let mut tree = runner::run(repo, ["rev-parse", "--verify", &format!("{target}^{{tree}}")])?.trim().to_owned();
+    let mut out: Vec<u8> = Vec::new();
+    let mut empty: Option<String> = None;
+    for commit in commits.split_whitespace() {
+        let parents = runner::run(repo, ["rev-list", "--parents", "-n", "1", commit])?;
+        let base = match parents.split_whitespace().nth(1) {
+            Some(parent) => format!("{parent}^{{tree}}"),
+            None => match &empty {
+                Some(e) => e.clone(),
+                None => {
+                    let e = runner::run_env(repo, ["hash-object", "-t", "tree", "-w", "--stdin"], &[], Some(&[]))?.trim().to_owned();
+                    empty = Some(e.clone());
+                    e
+                }
+            },
+        };
+        let preview = runner::exec(
+            repo,
+            ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", &format!("--merge-base={base}"), &tree, &format!("{commit}^{{tree}}")],
+        )?;
+        if !matches!(preview.code, 0 | 1) {
+            return Err(runner::to_error("preview the rebase to protect untracked and ignored files", &preview));
+        }
+        let listing = super::workspace_files::path_list(&preview.stdout)?;
+        let mut fields = listing.split('\0');
+        let next = fields.next().unwrap_or_default().trim().to_owned();
+        if !matches!(next.len(), 40 | 64) || !next.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(GitError::new("Git returned an invalid rebase preview tree."));
+        }
+        out.extend(runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "-z", &tree, &next, "--"])?);
+        out.push(0);
+        let conflicts: Vec<&str> = fields.filter(|p| !p.is_empty()).collect();
+        for path in &conflicts {
+            out.extend_from_slice(path.as_bytes());
+            out.push(0);
+            // File/folder conflicts are written beside the path as `path~<label>`.
+            let prefix = format!("{path}~");
+            for name in local.iter().filter(|l| l.to_lowercase().starts_with(&prefix.to_lowercase())) {
+                out.extend_from_slice(name.trim_end_matches('/').as_bytes());
+                out.push(0);
+            }
+        }
+        tree = next;
+        if preview.code == 1 || !conflicts.is_empty() {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Merge commits a rebase onto `upstream` would replay. A plain rebase drops them and leaves
+/// their commits in one straight line.
+pub fn rebase_merge_count(repo: &Path, upstream: &str) -> GitResult<u32> {
+    let target = runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{upstream}^{{commit}}")])?;
+    let count = runner::run(repo, ["rev-list", "--count", "--merges", &format!("{}..HEAD", target.trim())])?;
+    Ok(count.trim().parse().unwrap_or(0))
 }
 
 pub fn rebase_onto(repo: &Path, upstream: &str) -> GitResult<OpOutcome> {
-    guard_rebase_files(repo, upstream)?;
+    rebase_onto_with(repo, upstream, false)
+}
+
+/// `keep_merges` re-creates the branch's merge commits (`--rebase-merges`) instead of dropping them.
+pub fn rebase_onto_with(repo: &Path, upstream: &str, keep_merges: bool) -> GitResult<OpOutcome> {
+    guard_rebase_files(repo, upstream, keep_merges)?;
     let saved = stash_staged(repo, "Rebase")?;
-    let result = runner::exec(repo, ["rebase", "--autostash", upstream]).and_then(|out| sequence_outcome(repo, out, "git rebase"));
+    let mut args = vec!["rebase", "--autostash"];
+    if keep_merges {
+        args.push("--rebase-merges");
+    }
+    args.push(upstream);
+    let result = runner::exec(repo, &args).and_then(|out| sequence_outcome(repo, out, "git rebase"));
     with_saved(repo, saved, result)
 }
 

@@ -21,6 +21,7 @@ import {
   mergeDialog,
   promptDialog,
   pushDialog,
+  rebaseMergesDialog,
   resetDialog,
   stashDialog,
   tagDialog,
@@ -489,9 +490,24 @@ export async function rebaseOnto(root: string, target: string, label = target) {
   if (!expectedState) return;
   const tab = getTab(root);
   const current = tab?.info?.head.branch ?? "HEAD";
-  const ok = await confirmDialog({ title: `Rebase ${current} onto ${label}?`, message: "Your commits are replayed on top of the target. Commits get new hashes; avoid this for branches others already use.", confirm: "Rebase" });
-  if (!ok) return;
-  const out = await act(root, () => api.rebaseOnto(root, target, expectedState), { busy: "Rebasing" });
+  // A plain rebase drops merge commits; ask what to do when the branch has some.
+  let merges: number;
+  try {
+    merges = await api.rebaseMergeCount(root, target);
+  } catch (e) {
+    toast.error(e, "Could not inspect the commits to rebase");
+    return;
+  }
+  let keepMerges = false;
+  if (merges > 0) {
+    const choice = await rebaseMergesDialog(current, label, merges);
+    if (!choice) return;
+    keepMerges = choice === "keep";
+  } else {
+    const ok = await confirmDialog({ title: `Rebase ${current} onto ${label}?`, message: "Your commits are replayed on top of the target. Commits get new hashes; avoid this for branches others already use.", confirm: "Rebase" });
+    if (!ok) return;
+  }
+  const out = await act(root, () => api.rebaseOnto(root, target, expectedState, keepMerges), { busy: "Rebasing" });
   handleOutcome(root, out, "Rebase");
 }
 

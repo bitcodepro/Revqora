@@ -727,3 +727,67 @@ fn rebase_onto_never_overwrites_ignored_files() {
     assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "upstream\n");
     assert!(repo.p().join("topic.txt").exists());
 }
+
+#[test]
+fn rebase_onto_keeps_merge_commits_only_when_asked() {
+    let build = || {
+        let repo = Repo::new();
+        repo.write("base.txt", "base\n");
+        repo.commit_all("base");
+        repo.git(&["switch", "-q", "-c", "up"]);
+        repo.write("up.txt", "up\n");
+        repo.commit_all("up");
+        repo.git(&["switch", "-q", "-c", "topic", "main"]);
+        repo.write("topic.txt", "t\n");
+        repo.commit_all("topic");
+        repo.git(&["switch", "-q", "-c", "side", "main"]);
+        repo.write("side.txt", "s\n");
+        repo.commit_all("side");
+        repo.git(&["switch", "-q", "topic"]);
+        repo.git(&["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+        repo
+    };
+    let merges = |repo: &Repo| repo.git(&["rev-list", "--count", "--merges", "up..HEAD"]).trim().to_string();
+
+    let repo = build();
+    assert_eq!(ops::rebase_merge_count(repo.p(), "up").unwrap(), 1);
+    assert_eq!(ops::rebase_merge_count(repo.p(), "topic").unwrap(), 0);
+    assert!(ops::rebase_merge_count(repo.p(), "--all").is_err());
+    ops::rebase_onto_with(repo.p(), "up", true).unwrap();
+    assert_eq!(merges(&repo), "1", "the merge commit must be re-created");
+    assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "merge side");
+    for file in ["up.txt", "topic.txt", "side.txt"] {
+        assert!(repo.p().join(file).exists(), "{file}");
+    }
+
+    let repo = build();
+    ops::rebase_onto_with(repo.p(), "up", false).unwrap();
+    assert_eq!(merges(&repo), "0", "a plain rebase flattens");
+    assert_eq!(repo.git(&["rev-list", "--count", "up..HEAD"]).trim(), "2");
+}
+
+#[test]
+fn rebase_onto_protects_ignored_files_at_directory_rename_destinations() {
+    // Upstream moves old/ to new/; the topic adds old/extra, which Git's directory-rename
+    // detection writes to new/extra, where an ignored local file is.
+    let repo = Repo::new();
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    fs::create_dir_all(repo.p().join("new")).unwrap();
+    repo.write("old/base", "base\n");
+    repo.write("new/keep", "keep\n");
+    repo.write(".gitignore", "new/extra\n");
+    repo.commit_all("base");
+    repo.git(&["switch", "-q", "-c", "up"]);
+    repo.git(&["mv", "old/base", "new/base"]);
+    repo.git(&["commit", "-q", "-m", "move"]);
+    repo.git(&["switch", "-q", "-c", "topic", "main"]);
+    repo.write("old/extra", "topic\n");
+    let topic = repo.commit_all("topic");
+    repo.write("new/extra", "PRECIOUS\n");
+    let e = ops::rebase_onto(repo.p(), "up").unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert!(e.details.iter().any(|d| d == "new/extra"), "{:?}", e.details);
+    assert_eq!(fs::read_to_string(repo.p().join("new/extra")).unwrap(), "PRECIOUS\n");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), topic);
+    assert!(!repo.p().join(".git/rebase-merge").exists() && !repo.p().join(".git/rebase-apply").exists());
+}

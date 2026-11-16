@@ -45,25 +45,37 @@ export function SparseTab({ root }: { root: string }) {
   if (loadError) return <div className="error-text" role="alert">{loadError}</div>;
   if (!state) return <div className="loading-center" style={{ minHeight: 120 }}><span className="loader" aria-label="Loading sparse checkout state" /></div>;
 
-  /** Runs a change; when Git would delete ignored files, asks first and repeats with consent. */
-  const withIgnoredConsent = async (label: string, f: (allowIgnoredLoss: boolean) => Promise<SparseResult>): Promise<SparseResult | null> => {
-    try {
-      return await f(false);
-    } catch (e) {
-      if (!isGitError(e) || e.kind !== "sparse-ignored-files") throw e;
-      const ok = await confirmDialog({
-        title: `${label}: ignored files will be deleted`,
-        confirm: "Delete them and continue",
-        danger: true,
-        message:
-          "Git deletes folders that leave the working tree together with the ignored files in them (for example .env files, node_modules or build output). These files are not in the repository and cannot be restored from Undo or a checkpoint. Move the ones you need out of the repository first.",
-        details: listOf(e.details),
-      });
-      return ok ? await f(true) : null;
+  /** Runs a change; when Git would delete ignored files, asks first and repeats with the reviewed
+   * list. If the list changed meanwhile, the backend refuses again and the new list is shown. */
+  const withIgnoredConsent = async (label: string, f: (reviewed: string[] | null) => Promise<SparseResult>): Promise<SparseResult | null> => {
+    let reviewed: string[] | null = null;
+    for (;;) {
+      try {
+        return await f(reviewed);
+      } catch (e) {
+        if (!isGitError(e) || e.kind !== "sparse-ignored-files") throw e;
+        if (!(await confirmIgnoredLoss(label, e.message, e.details))) return null;
+        reviewed = e.details;
+      }
     }
   };
 
-  const run = async (key: string, label: string, f: (allowIgnoredLoss: boolean) => Promise<SparseResult>) => {
+  /** Lists every file Git would delete (not shortened): the consent covers exactly this list. */
+  const confirmIgnoredLoss = (label: string, why: string, files: string[]) =>
+    confirmDialog({
+        title: `${label}: ignored files will be deleted`,
+        confirm: "Delete them and continue",
+        danger: true,
+        message: (
+          <>
+            {why} Git deletes folders that leave the working tree together with the ignored files in them (for example .env files, node_modules or build output). These files are not in
+            the repository and cannot be restored from Undo or a checkpoint. Move the ones you need out of the repository first.
+          </>
+        ),
+        details: files,
+      });
+
+  const run = async (key: string, label: string, f: (reviewed: string[] | null) => Promise<SparseResult>) => {
     const id = newOpId();
     setBusy(key);
     startBusy(id, label);

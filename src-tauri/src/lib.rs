@@ -1352,10 +1352,13 @@ async fn sparse_checkout_set(
     repo: String,
     cone: bool,
     entries: Vec<String>,
-    allow_ignored_loss: Option<bool>,
+    reviewed_ignored: Option<Vec<String>>,
 ) -> GitResult<git::sparse::SparseResult> {
-    let allow = allow_ignored_loss.unwrap_or(false);
-    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_set", None, move || git::sparse::set_with(&p(&repo), cone, &entries, allow)).await
+    let reviewed = reviewed_ignored;
+    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_set", None, move || {
+        git::sparse::set_with(&p(&repo), cone, &entries, reviewed.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1364,10 +1367,11 @@ async fn sparse_checkout_add(
     expected_state: Option<String>,
     repo: String,
     entries: Vec<String>,
-    allow_ignored_loss: Option<bool>,
+    reviewed_ignored: Option<Vec<String>>,
 ) -> GitResult<git::sparse::SparseResult> {
-    let allow = allow_ignored_loss.unwrap_or(false);
-    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_add", None, move || git::sparse::add_with(&p(&repo), &entries, allow)).await
+    let reviewed = reviewed_ignored;
+    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_add", None, move || git::sparse::add_with(&p(&repo), &entries, reviewed.as_deref()))
+        .await
 }
 
 #[tauri::command]
@@ -1380,10 +1384,11 @@ async fn sparse_checkout_reapply(
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
-    allow_ignored_loss: Option<bool>,
+    reviewed_ignored: Option<Vec<String>>,
 ) -> GitResult<git::sparse::SparseResult> {
-    let allow = allow_ignored_loss.unwrap_or(false);
-    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_reapply", None, move || git::sparse::reapply_with(&p(&repo), allow)).await
+    let reviewed = reviewed_ignored;
+    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_reapply", None, move || git::sparse::reapply_with(&p(&repo), reviewed.as_deref()))
+        .await
 }
 
 /// Periodic fetch in the background: never asks for credentials.
@@ -1521,8 +1526,14 @@ async fn revert(app: AppHandle, expected_state: Option<String>, repo: String, oi
 }
 
 #[tauri::command]
-async fn rebase_onto(app: AppHandle, expected_state: Option<String>, repo: String, upstream: String) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "rebase_onto", None, move || ops::rebase_onto(&p(&repo), &upstream)).await
+async fn rebase_onto(app: AppHandle, expected_state: Option<String>, repo: String, upstream: String, keep_merges: Option<bool>) -> GitResult<OpOutcome> {
+    let keep = keep_merges.unwrap_or(false);
+    mutating(repo.clone(), expected_state, app.clone(), "rebase_onto", None, move || ops::rebase_onto_with(&p(&repo), &upstream, keep)).await
+}
+
+#[tauri::command]
+async fn rebase_merge_count(repo: String, upstream: String) -> GitResult<u32> {
+    blocking(move || ops::rebase_merge_count(&p(&repo), &upstream)).await
 }
 
 #[tauri::command]
@@ -2919,6 +2930,7 @@ pub fn run() {
             cherry_pick_compared_commit,
             revert,
             rebase_onto,
+            rebase_merge_count,
             rewrite,
             rebase_plan,
             rebase_studio_review,
