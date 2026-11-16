@@ -195,6 +195,10 @@ pub struct GraphCache {
     show_incoming: bool,
     lane_anchors: Arc<LaneAnchors>,
     previous_anchors: Option<(String, Arc<LaneAnchors>)>,
+    /// Replace refs, shallow boundary and grafts: they change the walk without moving a ref.
+    environment: u64,
+    /// Durations of this build's stages (ref resolution, Git walk, decorations, lane layout).
+    pub stages: super::stage_timings::Stages,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -523,6 +527,10 @@ pub struct GraphSummary {
     pub max_lanes: u16,
     pub head_index: Option<usize>,
     pub branch_context: Option<BranchContext>,
+    /// Stage durations of the returned build, plus `exactCount` when counted in this call.
+    pub stages: super::stage_timings::Stages,
+    /// The rows came from the recent-branch cache or an unchanged previous build.
+    pub cached: bool,
 }
 
 /// Loads commit metadata. `fast` skips `--date-order` (which needs a full history walk before
@@ -666,7 +674,7 @@ pub fn build_with_incoming(
 }
 
 pub fn build_for_view(repo: &Path, scope: ViewScope<'_>, include_worktree: bool, limit: usize, fast: bool, prev: Option<&GraphCache>) -> GitResult<GraphCache> {
-    match build_view(repo, scope, include_worktree, limit, fast, prev, false)? {
+    match build_view(repo, scope, include_worktree, limit, fast, prev, prev, false, &mut None)? {
         Some(cache) => Ok(cache),
         None => Err(GitError::new("History build returned no rows.")),
     }
@@ -683,14 +691,122 @@ pub fn refresh_for_view(
     fast: bool,
     prev: Option<&Arc<GraphCache>>,
 ) -> GitResult<Arc<GraphCache>> {
-    match (build_view(repo, scope, include_worktree, limit, fast, prev.map(Arc::as_ref), true)?, prev) {
-        (Some(cache), _) => Ok(Arc::new(cache)),
-        (None, Some(prev)) => Ok(Arc::clone(prev)),
+    refresh_for_view_timed(repo, scope, include_worktree, limit, fast, prev, prev).map(|refresh| refresh.cache)
+}
+
+pub struct Refresh {
+    pub cache: Arc<GraphCache>,
+    /// Stages of this call. For an unchanged build only ref resolution and the checks ran.
+    pub stages: super::stage_timings::Stages,
+    /// `prev` was returned unchanged (no new walk or layout).
+    pub unchanged: bool,
+}
+
+/// `refresh_for_view` with this call's stage durations. `prev` is the build to reuse or
+/// return unchanged (the displayed graph, or a recent build of the requested scope);
+/// `displayed` is the graph whose rows may still be on screen, for lane continuity.
+pub fn refresh_for_view_timed(
+    repo: &Path,
+    scope: ViewScope<'_>,
+    include_worktree: bool,
+    limit: usize,
+    fast: bool,
+    prev: Option<&Arc<GraphCache>>,
+    displayed: Option<&Arc<GraphCache>>,
+) -> GitResult<Refresh> {
+    let mut reuse_stages = None;
+    match (build_view(repo, scope, include_worktree, limit, fast, prev.map(Arc::as_ref), displayed.map(Arc::as_ref), true, &mut reuse_stages)?, prev) {
+        (Some(cache), _) => {
+            let stages = cache.stages.clone();
+            Ok(Refresh { cache: Arc::new(cache), stages, unchanged: false })
+        }
+        (None, Some(prev)) => Ok(Refresh { cache: Arc::clone(prev), stages: reuse_stages.unwrap_or_default(), unchanged: true }),
         (None, None) => Err(GitError::new("History build returned no rows.")),
     }
 }
 
+/// Builds kept per repository so returning to a recently visited branch skips the walk.
+pub const RECENT_GRAPHS_PER_REPOSITORY: usize = 6;
+/// Total rows kept across all repositories (each row also keeps its commit metadata).
+pub const RECENT_GRAPH_ROWS: usize = 200_000;
+
+/// Bounded cache of recent history builds, keyed by repository and requested scope.
+/// An entry is only a candidate: `refresh_for_view_timed` returns it unchanged only when
+/// refs, labels, HEAD, tips, replace refs, shallow state and display options all still match;
+/// otherwise it reuses what it can and builds a new graph with a new key.
+#[derive(Default)]
+pub struct RecentGraphs {
+    entries: parking_lot::Mutex<VecDeque<(String, Arc<GraphCache>)>>,
+}
+
+impl RecentGraphs {
+    /// The newest build of this repository made for the same scope, window and display options.
+    pub fn find(&self, repo: &str, scope: &ViewScope<'_>, include_worktree: bool, limit: usize) -> Option<Arc<GraphCache>> {
+        let entries = self.entries.lock();
+        entries.iter().rev().find(|(root, cache)| root == repo && cache.serves(scope, include_worktree, limit)).map(|(_, cache)| Arc::clone(cache))
+    }
+
+    pub fn remember(&self, repo: &str, cache: &Arc<GraphCache>) {
+        if cache.source == "fast" {
+            return;
+        }
+        let mut entries = self.entries.lock();
+        // One entry per scope: the newer build replaces the older one.
+        entries.retain(|(root, item)| root != repo || !item.same_request(cache));
+        entries.push_back((repo.to_owned(), Arc::clone(cache)));
+        while entries.iter().filter(|(root, _)| root == repo).count() > RECENT_GRAPHS_PER_REPOSITORY {
+            let oldest = entries.iter().position(|(root, _)| root == repo).expect("counted above");
+            entries.remove(oldest);
+        }
+        // Evict the oldest builds first; the newest one stays even when it alone exceeds the bound.
+        while entries.len() > 1 && entries.iter().map(|(_, item)| item.rows.len()).sum::<usize>() > RECENT_GRAPH_ROWS {
+            entries.pop_front();
+        }
+    }
+
+    pub fn forget(&self, repo: &str) {
+        self.entries.lock().retain(|(root, _)| root != repo);
+    }
+
+    pub fn clear(&self) {
+        self.entries.lock().clear();
+    }
+
+    /// (builds, rows) currently kept.
+    pub fn usage(&self) -> (usize, usize) {
+        let entries = self.entries.lock();
+        (entries.len(), entries.iter().map(|(_, item)| item.rows.len()).sum())
+    }
+}
+
+impl GraphCache {
+    /// Whether this build was made for the requested scope and options. A branch-context
+    /// request matches by branch and primary; the build itself re-checks the resolved context.
+    fn serves(&self, scope: &ViewScope<'_>, include_worktree: bool, limit: usize) -> bool {
+        let context = match (&self.branch_context, scope.context) {
+            (None, None) => true,
+            (Some(built), Some(request)) => built.reference == request.reference && (built.primary.is_none() || built.primary == request.primary),
+            _ => false,
+        };
+        self.source != "fast"
+            && context
+            && self.filter.as_deref() == scope.branch.filter(|branch| !branch.is_empty())
+            && self.include_worktree == include_worktree
+            && self.show_incoming == scope.show_incoming
+            && self.limit == limit
+    }
+
+    fn same_request(&self, other: &GraphCache) -> bool {
+        self.filter == other.filter
+            && self.branch_context.as_ref().map(|c| (&c.reference, &c.primary)) == other.branch_context.as_ref().map(|c| (&c.reference, &c.primary))
+            && self.include_worktree == other.include_worktree
+            && self.show_incoming == other.show_incoming
+            && self.limit == other.limit
+    }
+}
+
 /// `Ok(None)` (only with `keep_identical`): the result would equal `prev` exactly.
+#[allow(clippy::too_many_arguments)]
 fn build_view(
     repo: &Path,
     scope: ViewScope<'_>,
@@ -698,12 +814,21 @@ fn build_view(
     limit: usize,
     fast: bool,
     prev: Option<&GraphCache>,
+    displayed: Option<&GraphCache>,
     keep_identical: bool,
+    reuse_stages: &mut Option<super::stage_timings::Stages>,
 ) -> GitResult<Option<GraphCache>> {
-    let refs::GraphRefs { snapshot: refs, labels, head_oid } = refs::graph_refs(repo)?;
+    let started = Instant::now();
+    let mut stages = super::stage_timings::Stages::default();
+    let refs_started = Instant::now();
+    let refs::GraphRefs { snapshot: refs, labels, head_oid, replace } = refs::graph_refs(repo)?;
+    let environment = history_environment(repo, &replace)?;
     let branch_context = scope.context.map(|request| BranchContext::resolve(repo, &refs, request)).transpose()?;
+    stages.add("refResolution", refs_started.elapsed());
     let filter = scope.branch.filter(|b| !b.is_empty()).map(str::to_owned);
     let scoped_tip = filter.as_ref().and_then(|reference| refs.iter().find(|(name, _)| name == reference));
+    // A replace ref, a changed shallow boundary or grafts change the walk without moving a ref.
+    let prev = prev.filter(|p| p.environment == environment);
     let reusable = prev.filter(|p| !fast && p.filter == filter && p.branch_context == branch_context && p.limit == limit && p.source != "fast");
     let reused = reusable.and_then(|p| {
         if let Some(context) = &branch_context {
@@ -720,14 +845,16 @@ fn build_view(
     // larger window with the same ref snapshot reuses them instead of walking history again.
     let stable_refs = prev.filter(|p| p.refs == refs);
     // The history walk dominates; fetch remote info in parallel with it.
-    let (commits, incoming, local, has_remotes) = std::thread::scope(|sc| {
+    let walk_started = Instant::now();
+    let (commits, incoming, (local, has_remotes, local_time)) = std::thread::scope(|sc| {
         let local = sc.spawn(|| {
+            let started = Instant::now();
             let has_remotes = !runner::run(repo, ["remote"]).unwrap_or_default().trim().is_empty();
             let local = match stable_refs.filter(|p| p.has_remotes == has_remotes) {
                 Some(p) => Arc::clone(&p.local_commits),
                 None => Arc::new(if has_remotes { local_only(repo) } else { HashMap::new() }),
             };
-            (local, has_remotes)
+            (local, has_remotes, started.elapsed())
         });
         let incoming = sc.spawn(|| match filter.as_deref().filter(|_| scope.show_incoming && branch_context.is_none()) {
             Some(scope) => incoming_history(repo, scope, &refs, limit, fast, reusable.and_then(|p| p.incoming.as_ref())),
@@ -746,10 +873,16 @@ fn build_view(
             // Use the same local tip as the incoming range even if a ref moves during this build.
             (None, None) => load_commits(repo, scoped_tip.map(|(_, oid)| oid.as_str()).or(scope.branch), limit, fast),
         };
+        let commits = commits.map(|commits| (commits, walk_started.elapsed()));
         let join_err = || GitError::new("Background history task failed.");
-        let (local, has_remotes) = local.join().map_err(|_| join_err())?;
-        GitResult::Ok((commits?, incoming.join().map_err(|_| join_err())??, local, has_remotes))
+        let local = local.join().map_err(|_| join_err())?;
+        GitResult::Ok((commits?, incoming.join().map_err(|_| join_err())??, local))
     })?;
+    let (commits, walk_time) = commits;
+    // The walk and the local-only read run side by side; the sum exceeds wall time.
+    stages.add("gitWalk", walk_time);
+    stages.add("localOnly", local_time);
+    stages.add("walkStage", walk_started.elapsed());
 
     // Every input of the rows is unchanged: keep the previous build and its key.
     let same_incoming = |p: &GraphCache| p.incoming.as_ref().map(|h| (&h.base, &h.tip)) == incoming.as_ref().map(|h| (&h.base, &h.tip));
@@ -764,9 +897,12 @@ fn build_view(
                 && same_incoming(p)
         })
     {
+        stages.add("build", started.elapsed());
+        *reuse_stages = Some(stages);
         return Ok(None);
     }
 
+    let layout_started = Instant::now();
     let upstream_commits = incoming.as_ref().map_or(&[][..], |history| history.commits.as_slice());
     let local_limit = limit.saturating_sub(upstream_commits.len()).min(commits.len());
     let shown = upstream_commits.iter().chain(&commits[..local_limit]);
@@ -783,7 +919,10 @@ fn build_view(
         order.push((c.oid.clone(), parents));
     }
     let (lay, max_lanes, lane_anchors) = layout(&order);
+    stages.add("laneLayout", layout_started.elapsed());
 
+    // Rows carry the ref labels (decorations) and local-only marks.
+    let rows_started = Instant::now();
     let mut rows = Vec::with_capacity(order.len());
     let mut offset = 0;
     if include_worktree {
@@ -837,6 +976,8 @@ fn build_view(
         });
     }
     let index = rows.iter().map(|r| (r.oid.clone(), r.index)).collect();
+    stages.add("decorationsAndRows", rows_started.elapsed());
+    stages.add("build", started.elapsed());
     // Row count, HEAD and first commit can all stay unchanged across different
     // filters, ref labels or lane layouts. Readers must identify this exact build.
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -844,7 +985,7 @@ fn build_view(
     let key = format!("graph-{}", BUILDS.fetch_add(1, Ordering::Relaxed));
     let source = if fast { "fast" } else { reused.as_ref().map(|(_, s)| *s).unwrap_or("full") }.to_string();
     // Rows from the previous build can still be displayed until the first new page arrives.
-    let previous_anchors = prev.map(|cache| (cache.key.clone(), Arc::clone(&cache.lane_anchors)));
+    let previous_anchors = displayed.map(|cache| (cache.key.clone(), Arc::clone(&cache.lane_anchors)));
     Ok(Some(GraphCache {
         head_oid,
         key,
@@ -865,7 +1006,25 @@ fn build_view(
         show_incoming: scope.show_incoming,
         lane_anchors: Arc::new(lane_anchors),
         previous_anchors,
+        environment,
+        stages,
     }))
+}
+
+/// Fingerprint of what changes the walked history without moving a branch, tag or HEAD:
+/// replace refs, the shallow boundary and grafts.
+fn history_environment(repo: &Path, replace: &[(String, String)]) -> GitResult<u64> {
+    let mut hasher = DefaultHasher::new();
+    replace.hash(&mut hasher);
+    let common = super::operations::repository_key(repo);
+    for path in [common.join("shallow"), common.join("info/grafts")] {
+        match std::fs::read(path) {
+            Ok(bytes) => Some(bytes).hash(&mut hasher),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None::<Vec<u8>>.hash(&mut hasher),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(hasher.finish())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
@@ -914,11 +1073,6 @@ const MCP_SEARCH_CACHED_BATCHES: usize = 4;
 
 fn filter_search_rows(mode: SearchMode) -> bool {
     matches!(mode, SearchMode::Quick | SearchMode::Hash)
-}
-
-fn repository_search_head(repo: &Path) -> GitResult<Option<String>> {
-    let head = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "HEAD"])?;
-    Ok(head.ok().then(|| head.text().trim().to_owned()))
 }
 
 fn repository_search_rows(
@@ -978,20 +1132,49 @@ fn repository_search_hit(fields: &[&str], q: &str, mode: SearchMode) -> Option<C
 }
 
 /// Search independently of the graph cache, including repositories whose History tab was never opened.
+/// The first page of `search_repository_workspace_page` (30 shown plus one to detect truncation).
 pub fn search_repository(repo: &Path, query: &str, mode: SearchMode) -> GitResult<Vec<CommitSearchHit>> {
-    let limit = REPOSITORY_SEARCH_PAGE + 1; // The workspace shows 30 and uses one extra row to detect truncation.
-    let query = query.trim();
-    if query.is_empty() {
+    if query.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let head = repository_search_head(repo)?;
-    let include_body = mode == SearchMode::Quick;
-    let raw =
-        repository_search_rows(repo, query, mode, 0, if filter_search_rows(mode) { REPOSITORY_SEARCH_SCAN } else { limit }, head.as_deref(), include_body)?;
-    let q = query.to_lowercase();
-    let fields: Vec<_> = raw.split_terminator('\0').collect();
-    Ok(repository_search_records(&fields, include_body).filter_map(|row| repository_search_hit(row, &q, mode)).take(limit).collect())
+    Ok(search_repository_workspace_page(repo, query, mode, None, REPOSITORY_SEARCH_PAGE + 1)?.commits)
 }
+
+/// Workspace ("Search all repositories") page. It shares records, matching rules, full
+/// message bodies, cursors and the batch cache with `search_repository_page` (MCP), but one
+/// call scans up to 150,000 records in All/Hash mode and asks Git for just `limit + 1`
+/// matches in the modes Git filters itself, so the first answer stays one Git walk.
+pub fn search_repository_workspace_page(repo: &Path, query: &str, mode: SearchMode, cursor: Option<&str>, limit: usize) -> GitResult<CommitSearchPage> {
+    if !(1..=100).contains(&limit) {
+        return Err(GitError::new("Choose a search limit from 1 to 100.").kind("invalid-arguments"));
+    }
+    if query.trim().is_empty() {
+        let diagnostics = CommitSearchTimings { queue_ms: 0, git_ms: 0, refs_ms: 0, log_ms: 0, cache_hit: false };
+        return Ok(CommitSearchPage { commits: Vec::new(), next_cursor: None, has_more: false, diagnostics });
+    }
+    let queued = Instant::now();
+    super::operations::read(repo, || {
+        search_repository_page_locked(
+            repo,
+            query,
+            mode,
+            cursor,
+            limit,
+            queued.elapsed().as_millis(),
+            SearchScan { filtered: REPOSITORY_SEARCH_SCAN, matches: limit },
+        )
+    })
+}
+
+/// Records read by one Git call: `filtered` when Revqora filters rows (All, Hash),
+/// `matches` when Git filters them (message, author, pickaxe, path).
+#[derive(Clone, Copy)]
+struct SearchScan {
+    filtered: usize,
+    matches: usize,
+}
+
+const MCP_SCAN: SearchScan = SearchScan { filtered: MCP_SEARCH_SCAN, matches: MCP_SEARCH_MATCH_BATCH };
 
 fn repository_search_records<'a>(fields: &'a [&'a str], include_body: bool) -> impl Iterator<Item = &'a [&'a str]> {
     fields.chunks_exact(if include_body { 7 } else { 6 })
@@ -1021,7 +1204,7 @@ pub fn search_repository_page(repo: &Path, query: &str, mode: SearchMode, cursor
         return Err(GitError::new("Choose a search limit from 1 to 100.").kind("invalid-arguments"));
     }
     let queued = Instant::now();
-    super::operations::read(repo, || search_repository_page_locked(repo, query, mode, cursor, limit, queued.elapsed().as_millis()))
+    super::operations::read(repo, || search_repository_page_locked(repo, query, mode, cursor, limit, queued.elapsed().as_millis(), MCP_SCAN))
 }
 
 struct SearchBatch {
@@ -1091,6 +1274,7 @@ fn search_repository_page_locked(
     cursor: Option<&str>,
     limit: usize,
     queue_ms: u128,
+    scan: SearchScan,
 ) -> GitResult<CommitSearchPage> {
     let query = query.trim();
     let refs_started = Instant::now();
@@ -1113,7 +1297,7 @@ fn search_repository_page_locked(
         return Ok(batch.page(offset, limit, diagnostics));
     }
 
-    let scan = if filter_search_rows(mode) { MCP_SEARCH_SCAN } else { MCP_SEARCH_MATCH_BATCH };
+    let scan = if filter_search_rows(mode) { scan.filtered } else { scan.matches };
     let log_started = Instant::now();
     let include_body = mode == SearchMode::Quick;
     let raw = repository_search_rows(repo, query, mode, offset, scan + 1, head.as_deref(), include_body)?;

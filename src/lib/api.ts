@@ -231,7 +231,7 @@ export const api = {
   graphResolveLane: (repo: string, key: string, anchor: import("./types").GraphLaneAnchor) => call<number | null>("graph_resolve_lane", { repo, key, anchor }),
   historySearch: (repo: string, key: string, query: string, mode: SearchMode, filters: HistoryFilters | null = null) =>
     call<{ row: GraphRow; graphIndex: number | null }[]>("history_search", { repo, key, query, mode, filters }),
-  repositoryCommitSearch: (repo: string, query: string, mode: SearchMode) => call<import("./types").CommitSearchHit[]>("repository_commit_search", { repo, query, mode }),
+  repositoryCommitSearch: (repo: string, query: string, mode: SearchMode, cursor: string | null = null, limit = 30) => call<import("./types").CommitSearchPage>("repository_commit_search", { repo, query, mode, cursor, limit }),
   repositoryCommitSearchPage: (repo: string, query: string, mode: SearchMode, cursor: string | null, limit: number) => call<import("./types").CommitSearchPage>("repository_commit_search_page", { repo, query, mode, cursor, limit }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),
   commitGraphWrite: (repo: string, opId: string) => call<string>("commit_graph_write", { repo, opId }),

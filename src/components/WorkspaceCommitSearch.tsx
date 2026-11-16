@@ -1,30 +1,25 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FolderSearch, Search } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { basename, relativeTime, shortOid } from "../lib/format";
 import { loadGraph, useRepos } from "../lib/store";
 import type { CommitSearchHit, SearchMode } from "../lib/types";
+import { loadRepositoryMatches, prioritizeRoots, searchRepositories, WORKSPACE_SEARCH_DEBOUNCE_MS, type RepositorySearchResult } from "../lib/workspaceSearch";
 import { showDialog } from "../lib/ui";
 import { Modal } from "./Modal";
 
-const VISIBLE_LIMIT = 30;
-const PARALLEL_SEARCHES = 2;
-let pendingSearch: Promise<void> = Promise.resolve();
 
 export function workspaceCommitSearch(query: string, mode: SearchMode) {
   return showDialog<void>((close) => <WorkspaceCommitSearch initialQuery={query} initialMode={mode} close={close} />);
 }
 
-interface SearchResult {
-  hits: CommitSearchHit[];
-  error?: string;
-}
-
 function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQuery: string; initialMode: SearchMode; close: () => void }) {
   const roots = useRepos((state) => state.order);
+  // Each search (and each "Show more") belongs to one generation; older ones stop publishing.
+  const generation = useRef(0);
   const [query, setQuery] = useState(initialQuery);
   const [mode, setMode] = useState(initialMode);
-  const [results, setResults] = useState<{ key: string; repositories: Record<string, SearchResult> }>({ key: "", repositories: {} });
+  const [results, setResults] = useState<{ key: string; repositories: Record<string, RepositorySearchResult> }>({ key: "", repositories: {} });
   const term = query.trim();
   const pattern = term ? new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "iu") : null;
   const highlight = (value: string, field: SearchMode) => {
@@ -37,28 +32,29 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
   const matches = roots.some((root) => repositories[root]?.hits.length);
   const errors = roots.some((root) => repositories[root]?.error);
 
+  const fetchPage = (root: string, cursor: string | null) =>
+    api.repositoryCommitSearch(root, term, mode, cursor).catch((error: unknown) => { throw new Error(errorMessage(error)); });
+  const publishFor = (searchKey: string) => (root: string, result: RepositorySearchResult) =>
+    setResults((previous) => previous.key === searchKey ? { key: searchKey, repositories: { ...previous.repositories, [root]: result } } : previous);
+
   useEffect(() => {
+    const current = ++generation.current;
     if (!term || !roots.length) return;
-    let current = true;
+    const isCurrent = () => generation.current === current;
     setResults({ key, repositories: {} });
+    // Obsolete searches are not awaited: they stop before their next request and never publish.
     const timer = setTimeout(() => {
-      pendingSearch = pendingSearch.then(async () => {
-        let next = 0;
-        const search = async () => {
-          while (current && next < roots.length) {
-            const root = roots[next++];
-            const result = await api.repositoryCommitSearch(root, term, mode).then(
-              (hits): SearchResult => ({ hits: [...hits].sort((a, b) => b.authorTime - a.authorTime) }),
-              (error): SearchResult => ({ hits: [], error: errorMessage(error) }),
-            );
-            if (current) setResults((previous) => ({ key, repositories: { ...(previous.key === key ? previous.repositories : {}), [root]: result } }));
-          }
-        };
-        await Promise.all(Array.from({ length: PARALLEL_SEARCHES }, search));
-      });
-    }, 320);
-    return () => { current = false; clearTimeout(timer); };
+      void searchRepositories(prioritizeRoots(roots, useRepos.getState().active), fetchPage, isCurrent, publishFor(key));
+    }, WORKSPACE_SEARCH_DEBOUNCE_MS);
+    return () => { clearTimeout(timer); if (generation.current === current) generation.current++; };
   }, [roots, term, mode, key]);
+
+  const more = (root: string) => {
+    const result = repositories[root];
+    if (!result?.cursor) return;
+    const current = generation.current;
+    void loadRepositoryMatches(root, result, fetchPage, () => generation.current === current, publishFor(key));
+  };
 
   const open = (root: string, hit: CommitSearchHit) => {
     const state = useRepos.getState();
@@ -86,7 +82,7 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
       return <section className="workspace-search-group" key={root}>
         <h4 title={root}>{useRepos.getState().tabs[root]?.info?.name ?? basename(root)}</h4>
         {result.error && <p className="batch-note amber" role="alert">{result.error}</p>}
-        {result.hits.slice(0, VISIBLE_LIMIT).map((hit) => {
+        {result.hits.map((hit) => {
           const matchingHash = (mode === "quick" || mode === "hash") && hit.oid.startsWith(term.toLowerCase());
           const hash = shortOid(hit.oid, matchingHash ? Math.max(8, term.length) : 8);
           return <button type="button" className="workspace-search-hit" key={hit.oid} onClick={() => open(root, hit)}>
@@ -98,7 +94,8 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
             </span>
           </button>;
         })}
-        {result.hits.length > VISIBLE_LIMIT && <p className="batch-note">Showing the first {VISIBLE_LIMIT} matches. Refine your search to narrow the results.</p>}
+        {result.cursor && !result.error && <p className="batch-note">Showing the newest {result.hits.length} matches.{" "}
+          <button type="button" className="btn sm ghost" onClick={() => more(root)}>Show more matches</button></p>}
       </section>;
     })}
   </Modal>;

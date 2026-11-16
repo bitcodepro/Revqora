@@ -207,6 +207,10 @@ export interface GraphSummary {
   maxLanes: number;
   headIndex: number | null;
   branchContext?: { reference: string; base: string | null; recorded: boolean; primary: string | null } | null;
+  /** Stage durations in ms (ref resolution, Git walk, layout, ...), in recording order. */
+  stages?: [string, number][];
+  /** Rows came from the recent-branch cache or an unchanged previous build. */
+  cached?: boolean;
 }
 
 export type SearchMode = "quick" | "message" | "author" | "hash" | "content" | "path";

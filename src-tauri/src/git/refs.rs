@@ -122,8 +122,11 @@ fn refs_classify_an_unavailable_repository_folder() {
 
 pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
     super::repo::require_directory(repo)?;
-    let remotes = remotes(repo)?;
-    let raw = runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"])?;
+    let mut stages = super::stage_timings::Stages::default();
+    let remotes = stages.time("remotes", || remotes(repo))?;
+    // Upstream ahead/behind (`upstream:track`) is computed inside this enumeration.
+    let raw = stages.time("enumerationWithUpstreamTrack", || runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"]))?;
+    let parse_started = std::time::Instant::now();
     let mut local = Vec::new();
     let mut remote = Vec::new();
     let mut tags = Vec::new();
@@ -191,12 +194,20 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
             });
         }
     }
+    // Includes branch creator resolution, which runs per local branch while parsing.
+    stages.add("parseAndCreators", parse_started.elapsed());
     if !remotes.is_empty() {
         // A missing object must not prevent the sidebar from listing refs.
-        let _ = count_unpublished(repo, &mut local, &remote);
+        let _ = stages.time("unpublishedComparison", || count_unpublished(repo, &mut local, &remote));
     }
     tags.sort_by_key(|t| std::cmp::Reverse(t.time));
-    Ok(RefsSnapshot { identity_email: super::repo::config_get(repo, "user.email"), local, remote, tags, stashes: stashes(repo)?, remotes })
+    let stashes = stages.time("stashes", || stashes(repo))?;
+    let identity_email = stages.time("identity", || super::repo::config_get(repo, "user.email"));
+    if super::stage_timings::enabled() {
+        let detail = format!("local={} remote={} tags={}", local.len(), remote.len(), tags.len());
+        super::stage_timings::record("refs_snapshot", repo, &stages, &detail);
+    }
+    Ok(RefsSnapshot { identity_email, local, remote, tags, stashes, remotes })
 }
 
 fn count_unpublished(repo: &Path, local: &mut [BranchInfo], remote: &[BranchInfo]) -> GitResult<()> {
@@ -334,6 +345,9 @@ pub struct GraphRefs {
     pub labels: HashMap<String, Vec<RefLabel>>,
     /// Empty while HEAD is unborn.
     pub head_oid: String,
+    /// `refs/replace/*` refname -> object name. Replacements change the walked history
+    /// without moving a branch, so history caches compare them separately.
+    pub replace: Vec<(String, String)>,
 }
 
 /// Reads refs once for both the graph's ref snapshot and its labels, so the two
@@ -348,6 +362,7 @@ pub fn graph_refs(repo: &Path) -> GitResult<GraphRefs> {
             "refs/remotes",
             "refs/tags",
             "refs/bisect",
+            "refs/replace",
         ],
     )?;
     let head_out = runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD"])?;
@@ -356,9 +371,14 @@ pub fn graph_refs(repo: &Path) -> GitResult<GraphRefs> {
     let mut map: HashMap<String, Vec<RefLabel>> = HashMap::new();
     let mut remote_at: HashMap<String, Vec<String>> = HashMap::new();
     let mut entries = Vec::new();
+    let mut replace = Vec::new();
     for line in raw.lines() {
         let f: Vec<&str> = line.split('\x1f').collect();
         if f.len() < 5 {
+            continue;
+        }
+        if f[0].starts_with("refs/replace/") {
+            replace.push((f[0].to_string(), f[1].to_string()));
             continue;
         }
         if !f[0].starts_with("refs/bisect/") {
@@ -427,7 +447,7 @@ pub fn graph_refs(repo: &Path) -> GitResult<GraphRefs> {
         };
         v.sort_by(|a, b| rank(&a.kind).cmp(&rank(&b.kind)).then(a.name.cmp(&b.name)));
     }
-    Ok(GraphRefs { snapshot, labels: map, head_oid })
+    Ok(GraphRefs { snapshot, labels: map, head_oid, replace })
 }
 
 #[derive(Debug, Clone, Serialize)]

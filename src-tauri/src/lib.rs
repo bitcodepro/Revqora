@@ -272,6 +272,8 @@ use git::watcher::{self, RepoWatcher};
 #[derive(Default)]
 struct AppState {
     graphs: Mutex<HashMap<String, Arc<GraphCache>>>,
+    /// Recent builds per repository, so returning to a branch can skip the walk.
+    recent_graphs: Arc<graph::RecentGraphs>,
     graph_order: graph::BuildOrder,
     watchers: Mutex<HashMap<String, RepoWatcher>>,
     folder_scans: git::repository_import::FolderScans,
@@ -497,6 +499,7 @@ fn git_selection() -> Option<git::locate::GitSelection> {
 async fn git_configure(state: State<'_, AppState>) -> GitResult<git::locate::GitSelection> {
     let sel = blocking(|| Ok(git::locate::configure())).await?;
     state.graphs.lock().clear();
+    state.recent_graphs.clear();
     Ok(sel)
 }
 
@@ -876,24 +879,31 @@ async fn graph_load(
     if options.request.is_some_and(|request| !state.graph_order.begin(&repo, request)) {
         return Err(graph::BuildOrder::superseded());
     }
-    let prev = state.graphs.lock().get(&repo).cloned();
-    let (cache, commit_count) = blocking(move || {
+    let displayed = state.graphs.lock().get(&repo).cloned();
+    let recent = Arc::clone(&state.recent_graphs);
+    let (cache, commit_count, stages, cached) = blocking(move || {
         let (branch, context) = match &branch {
             Some(graph::HistorySelection::Reference(reference)) => (Some(reference.as_str()), None),
             Some(graph::HistorySelection::Context(context)) => (None, Some(context)),
             None => (None, None),
         };
         let path = p(&repo);
-        let cache = graph::refresh_for_view(
-            &path,
-            graph::ViewScope { branch, show_incoming: options.show_incoming, context },
-            include_worktree,
-            limit.unwrap_or(150_000),
-            fast,
-            prev.as_ref(),
-        )?;
-        let count = if options.defer_count { None } else { cache.commit_count(&path, include_worktree) };
-        Ok((cache, count))
+        let scope = graph::ViewScope { branch, show_incoming: options.show_incoming, context };
+        let limit = limit.unwrap_or(150_000);
+        // Returning to a recently visited branch: start from its last build instead of the
+        // displayed graph. The build still checks refs, tips and options before reusing it.
+        let prev = if fast { None } else { recent.find(&repo, &scope, include_worktree, limit) }.or_else(|| displayed.clone());
+        let refresh = graph::refresh_for_view_timed(&path, scope, include_worktree, limit, fast, prev.as_ref(), displayed.as_ref())?;
+        let (cache, mut stages) = (refresh.cache, refresh.stages);
+        let cached = refresh.unchanged;
+        recent.remember(&repo, &cache);
+        let count = if options.defer_count { None } else { stages.time("exactCount", || cache.commit_count(&path, include_worktree)) };
+        if git::stage_timings::enabled() {
+            let (builds, rows) = recent.usage();
+            let detail = format!("source={} rows={} cached={cached} recentBuilds={builds} recentRows={rows}", cache.source, cache.rows.len());
+            git::stage_timings::record("graph_load", &path, &stages, &detail);
+        }
+        Ok((cache, count, stages, cached))
     })
     .await?;
     let head_index = cache.rows.iter().position(|r| r.is_head);
@@ -905,6 +915,8 @@ async fn graph_load(
         max_lanes: cache.max_lanes,
         head_index,
         branch_context: cache.branch_context.clone(),
+        stages,
+        cached,
     };
     let mut graphs = state.graphs.lock();
     // An obsolete build must not replace the graph of a selection made after it started.
@@ -919,7 +931,14 @@ async fn graph_load(
 async fn graph_commit_count(state: State<'_, AppState>, repo: String, key: String, include_worktree: bool) -> GitResult<Option<usize>> {
     let cache = state.graphs.lock().get(&repo).filter(|cache| cache.key == key).cloned();
     let Some(cache) = cache else { return Ok(None) };
-    blocking(move || Ok(cache.commit_count(&p(&repo), include_worktree))).await
+    blocking(move || {
+        let path = p(&repo);
+        let mut stages = git::stage_timings::Stages::default();
+        let count = stages.time("exactCount", || cache.commit_count(&path, include_worktree));
+        git::stage_timings::record("graph_commit_count", &path, &stages, &format!("rows={}", cache.rows.len()));
+        Ok(count)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -980,9 +999,23 @@ async fn history_search(
     blocking(move || graph::search_history_filtered(&p(&repo), &cache, &query, mode, &filters.unwrap_or_default())).await
 }
 
+/// "Search all repositories": one page per call, following `nextCursor` for more.
 #[tauri::command]
-async fn repository_commit_search(repo: String, query: String, mode: SearchMode) -> GitResult<Vec<graph::CommitSearchHit>> {
-    blocking(move || graph::search_repository(&p(&repo), &query, mode)).await
+async fn repository_commit_search(
+    repo: String,
+    query: String,
+    mode: SearchMode,
+    cursor: Option<String>,
+    limit: Option<u32>,
+) -> GitResult<graph::CommitSearchPage> {
+    let queued = std::time::Instant::now();
+    blocking(move || {
+        let worker_queue = queued.elapsed().as_millis();
+        let mut page = graph::search_repository_workspace_page(&p(&repo), &query, mode, cursor.as_deref(), limit.unwrap_or(30) as usize)?;
+        page.diagnostics.queue_ms += worker_queue;
+        Ok(page)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2468,6 +2501,7 @@ async fn watch_repo(app: AppHandle, state: State<'_, AppState>, repo: String, re
 fn unwatch_repo(state: State<'_, AppState>, repo: String) {
     state.watchers.lock().remove(&repo);
     state.graphs.lock().remove(&repo);
+    state.recent_graphs.forget(&repo);
 }
 
 #[tauri::command]
