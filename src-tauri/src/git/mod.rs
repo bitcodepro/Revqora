@@ -33,6 +33,7 @@ pub mod refs;
 pub mod repo;
 pub mod repository_import;
 pub mod runner;
+pub mod sparse;
 pub mod status;
 pub mod storage;
 pub mod submodule_log;

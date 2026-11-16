@@ -548,6 +548,16 @@ function CloneBody({ close }: { close: (v: { url: string; parent: string; name: 
         <label className="check">
           <input type="checkbox" checked={advanced.shallowSubmodules} disabled={!shallow || !advanced.recurseSubmodules} onChange={(e) => setAdv({ shallowSubmodules: e.target.checked })} /> Shallow submodules (--shallow-submodules)
         </label>
+        <label className="check">
+          <input type="checkbox" checked={advanced.sparse} onChange={(e) => setAdv({ sparse: e.target.checked })} /> Sparse checkout (start with only the top-level files)
+        </label>
+        {advanced.sparse && (
+          <div className="field sparse-clone-folders">
+            <label htmlFor="clone-sparse-folders">Folders to check out</label>
+            <textarea id="clone-sparse-folders" className="input mono" rows={3} aria-label="Sparse checkout folders, one per line" value={advanced.sparseFolders} placeholder={["src", "docs/guides"].join("\n")} onChange={(e) => setAdv({ sparseFolders: e.target.value })} />
+            <small>Optional, one folder per line. Change the folders later in Repository tools &gt; Sparse checkout. A blobless partial clone is recommended with sparse checkout so files outside these folders are not downloaded.</small>
+          </div>
+        )}
         {built.error && <p role="alert" className="muted">{built.error}</p>}
       </details>
     </Modal>

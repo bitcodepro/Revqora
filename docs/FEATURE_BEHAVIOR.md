@@ -63,6 +63,8 @@ Before opening or updating a PR:
 ## Repository tools
 
 - [ ] Repository tools shows Fetch more history / Fetch full history only for shallow clones. The rerere toggle changes this repository's configuration only; Stage replayed resolutions automatically is offered only while rerere is on.
+- [ ] Sparse checkout tab: shows on/off, cone or non-cone mode and the folders/patterns; turning on uses cone mode; adding folders only uses `sparse-checkout add`; removing folders or switching mode confirms first with the files that leave the working tree (cone mode) and the ones with local changes. Git's warning or refusal and the affected files are shown; local edits are never discarded. Turn off explains that every file comes back. All changes are queued, state-checked, logged and checkpointed. Status shows no deletions for sparse-excluded files.
+- [ ] Clone dialog: Sparse checkout runs `clone --sparse` plus `sparse-checkout set --cone` with the optional folders; a failure to add folders keeps the clone and shows a warning. Partial clone status lists promisor remotes and their filter; diffs and history of files whose contents are missing trigger Git's lazy fetch. No Convert to full clone action is offered.
 - [ ] The Hooks tab (also "Git hooks…" in the palette) reads core.hooksPath, marks non-executable hooks as skipped and ignores *.sample files. It never runs a hook.
 - [ ] Git LFS locks: when the server does not support locks the dialog still lists files and explains why. Unlock tries a normal release first; force unlock needs a separate danger confirmation.
 - [ ] Export archive writes the shown revision as zip or tar.gz, chosen by the file name extension.
