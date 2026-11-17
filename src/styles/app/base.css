@@ -50,6 +50,9 @@ button {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
+/* A file list shows its position with the selected file row; a frame around the whole list
+   while Up/Down move through files is only noise. */
+[data-file-list]:focus-visible { outline: none; }
 ::-webkit-scrollbar {
   width: 11px;
   height: 11px;
