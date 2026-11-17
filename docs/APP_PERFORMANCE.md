@@ -165,7 +165,7 @@ Now `fetch`, `push` and `ls-remote` inside a writing operation run in a *network
 - A state token read during the network wait may describe the refs before the update. An action prepared from it is refused as stale afterwards instead of applied.
 - An automatic fetch skips the round when another writer is running or queued (`repository-busy`) instead of queueing in front of the user's action.
 
-`src-tauri/tests/repository_concurrency.rs` covers this with a local remote whose upload-pack and receive-pack first sleep: reads during Fetch, Pull, Push and Auto-fetch; FIFO order of waiting writers; stale tokens; exclusive local steps; panic recovery; nested and parallel network sections; timed-out automatic fetches; and an automatic fetch racing a Pull. Turning the downgrade off makes the read tests fail with "reads waited for the network".
+`src-tauri/tests/repository_concurrency.rs` covers this with a local remote whose upload-pack and receive-pack first sleep: reads during Fetch, Pull, Push and Auto-fetch; FIFO order of waiting writers; stale tokens; exclusive local steps; panic recovery; nested and parallel network sections; timed-out automatic fetches; an automatic fetch racing a Pull; and a stress run in which readers, a writer (fetch, commit, push) and automatic fetch overlap for 12 seconds and must all finish. Turning the downgrade off makes the read tests fail with "reads waited for the network".
 
 ## Repeat the baseline
 

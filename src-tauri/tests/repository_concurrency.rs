@@ -438,3 +438,96 @@ fn runner_recognizes_network_commands() {
     assert!(!runner::is_network(&["-c", "remote.origin.url=fetch", "config", "--get", "x"]));
     assert!(!runner::is_network(&["clone", "x"]));
 }
+
+/// Many readers (status, refs, history) run while writers fetch, commit, push and fetch in the
+/// background against a slow remote. Nothing may deadlock: a writer that waits for readers to
+/// leave after its network section must never be waited for by those readers.
+#[test]
+fn mixed_reads_writes_and_network_waits_never_deadlock() {
+    let f = fixture();
+    git(&f.work, &["config", "remote.origin.uploadpack", "sleep 1; git-upload-pack"]);
+    git(&f.work, &["config", "remote.origin.receivepack", "sleep 1; git-receive-pack"]);
+    let stop = Arc::new(AtomicBool::new(false));
+    let (done, finished) = std::sync::mpsc::channel::<String>();
+    let mut workers = vec![];
+    for reader in 0..4 {
+        let (path, stop, done) = (f.work.clone(), stop.clone(), done.clone());
+        workers.push(std::thread::spawn(move || {
+            let mut rounds = 0;
+            while !stop.load(Ordering::SeqCst) {
+                status::status(&path).expect("status");
+                revqora_lib::git::refs::snapshot(&path).expect("refs");
+                revqora_lib::git::repo::head(&path).expect("head");
+                revqora_lib::git::graph::load_commits(&path, None, 50, false).expect("history");
+                rounds += 1;
+            }
+            done.send(format!("reader {reader}: {rounds} rounds")).unwrap();
+        }));
+    }
+    {
+        let (path, stop, done) = (f.work.clone(), stop.clone(), done.clone());
+        workers.push(std::thread::spawn(move || {
+            let mut rounds = 0;
+            while !stop.load(Ordering::SeqCst) {
+                operations::run(&path, "fetch", None, |_, _| {}, || ops::fetch(&path, None, true, |_| {}).map(drop)).expect("fetch");
+                operations::run(
+                    &path,
+                    "commit",
+                    None,
+                    |_, _| {},
+                    || {
+                        std::fs::write(path.join(format!("stress-{rounds}.txt")), "x").unwrap();
+                        runner::run(&path, ["add", "-A"])?;
+                        runner::run(&path, ["commit", "-qm", "stress"]).map(drop)
+                    },
+                )
+                .expect("commit");
+                let push = ops::PushOptions {
+                    remote: Some("origin".into()),
+                    branch: Some("main".into()),
+                    remote_branch: Some("main".into()),
+                    set_upstream: false,
+                    force_with_lease: false,
+                    tags: false,
+                };
+                operations::run(&path, "push", None, |_, _| {}, || ops::push(&path, &push, |_| {}).map(drop)).expect("push");
+                rounds += 1;
+                // Leave gaps, as a user does, so automatic fetch also gets turns.
+                std::thread::sleep(Duration::from_millis(700));
+            }
+            done.send(format!("writer: {rounds} rounds")).unwrap();
+        }));
+    }
+    {
+        let (path, stop, done) = (f.work.clone(), stop.clone(), done.clone());
+        workers.push(std::thread::spawn(move || {
+            let (mut fetched, mut skipped) = (0, 0);
+            while !stop.load(Ordering::SeqCst) {
+                // As the app does: automatic fetch skips while another writer is active.
+                if operations::writer_active(&path) {
+                    skipped += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                operations::run(&path, "fetch_background", None, |_, _| {}, || ops::fetch_background(&path)).expect("background fetch");
+                fetched += 1;
+            }
+            done.send(format!("background fetch: {fetched} fetched, {skipped} skipped")).unwrap();
+        }));
+    }
+    std::thread::sleep(Duration::from_secs(12));
+    stop.store(true, Ordering::SeqCst);
+    for _ in 0..workers.len() {
+        match finished.recv_timeout(Duration::from_secs(90)) {
+            Ok(report) => eprintln!("{report}"),
+            Err(_) => panic!("a reader or writer did not finish: the repository lock deadlocked"),
+        }
+    }
+    for w in workers {
+        w.join().unwrap();
+    }
+    assert!(!operations::writer_active(&f.work) && !operations::network_active(&f.work));
+    assert_eq!(git(&f.work, &["rev-parse", "HEAD"]), git(&f.remote, &["rev-parse", "main"]));
+    assert_eq!(git(&f.work, &["rev-parse", "origin/main"]), git(&f.remote, &["rev-parse", "main"]));
+    no_lock_files(&f.work.join(".git"));
+}
