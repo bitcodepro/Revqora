@@ -355,6 +355,10 @@ fn bitbucket_connection_proof_detects_external_git_helper_token_changes() {
     let first = context_from(&m, &root).unwrap().unwrap().info;
     assert_eq!(first, context_from(&m, &root).unwrap().unwrap().info);
     fs::write(&credentials, "username=alice\npassword=second-fixture-token\n").unwrap();
+    // API requests reuse a Git credential briefly (GCM takes seconds per lookup); the
+    // change shows once that answer expires, simulated here by forgetting it.
+    assert_eq!(first, context_from(&m, &root).unwrap().unwrap().info);
+    forge::forget_cached_tokens();
     let second = context_from(&m, &root).unwrap().unwrap().info;
     assert_eq!(m.snapshot().unwrap().revision, before);
     assert_ne!(first.connection_revision, second.connection_revision);

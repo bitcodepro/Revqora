@@ -1014,7 +1014,7 @@ fn context_from(manager: &Manager, root: &Path) -> GitResult<Option<Context>> {
         let mut proof = format!("{}\0{}\0{}\0{}", revision, repo, c.git_url, c.info.remote);
         if c.info.kind == "bitbucket" {
             if c.credential.is_none() {
-                c.credential = Some(forge::token(root, &c.git_url)?);
+                c.credential = Some(forge::cached_token(root, &c.git_url)?);
             }
             proof.push_str(&credential_stamp(c.credential.as_ref().unwrap())?);
         }

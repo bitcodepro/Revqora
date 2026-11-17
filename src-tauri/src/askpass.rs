@@ -275,6 +275,10 @@ pub fn respond(id: u64, value: Option<String>) -> bool {
 
 pub fn respond_with_storage(id: u64, value: Option<String>, remember: bool, email: Option<String>) -> bool {
     let Some(server) = SERVER.get() else { return false };
+    if value.is_some() {
+        // A newly typed credential replaces what API requests remembered from Git.
+        crate::git::forge::forget_cached_tokens();
+    }
     let tx = server.pending.lock().remove(&id);
     match tx {
         Some(pending) => pending.answer.send(value.map(|value| PromptAnswer { value: zeroize::Zeroizing::new(value), remember, email })).is_ok(),

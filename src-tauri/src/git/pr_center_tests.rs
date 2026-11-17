@@ -355,6 +355,8 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
         let rendered = v.diff.unwrap();
         if short_ids {
             wrong_resolution.store(true, std::sync::atomic::Ordering::SeqCst);
+            // Resolved IDs are remembered; ask the server again to see its wrong answer.
+            forget_resolved_commits();
             let error = detail(repo, 7, &connection).err().expect("A different resolved commit must be rejected");
             assert!(error.message.contains("different commit"));
             wrong_resolution.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -380,6 +382,7 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
                     .unwrap();
             assert_eq!(again.detail.pull.title, "Updated twice");
             fail_after_save.store(true, std::sync::atomic::Ordering::SeqCst);
+            ASK_EVERY_COMMIT.with(|c| c.set(true));
             // Save succeeds before commit resolution fails: keep the uncertain
             // write guard rather than reporting an ordinary retryable error.
             let writes = h.seen.lock().iter().filter(|r| r.method == "PUT").count();
@@ -392,6 +395,7 @@ fn real_provider_contracts_preserve_git_state_and_reject_stale_edits_and_connect
             );
             assert_eq!(h.seen.lock().iter().filter(|r| r.method == "PUT").count(), writes + 1);
             fail_after_save.store(false, std::sync::atomic::Ordering::SeqCst);
+            ASK_EVERY_COMMIT.with(|c| c.set(false));
             wrong_resolution.store(false, std::sync::atomic::Ordering::SeqCst);
             let open_metadata = state.lock().clone();
             {

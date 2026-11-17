@@ -422,6 +422,40 @@ pub(super) fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::
     Ok(super::forge_accounts::Credential { username, token: pass, mode: "bearer".into() })
 }
 
+/// How long a Git credential answer is reused (see [`cached_token`]).
+const CREDENTIAL_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+type CachedCredentials = std::collections::HashMap<(std::path::PathBuf, String), (std::time::Instant, super::forge_accounts::Credential)>;
+
+fn credential_cache() -> &'static parking_lot::Mutex<CachedCredentials> {
+    static CACHE: std::sync::OnceLock<parking_lot::Mutex<CachedCredentials>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// [`token`] for API requests. `git credential fill` through Git Credential Manager takes
+/// 1–2 s on Windows, and every PR request needs the credential (it is part of the
+/// connection revision), so opening one Bitbucket PR spent most of its time here. An
+/// answer is reused for a minute per repository and remote URL; a 401 forgets it. No lock
+/// is held while Git runs.
+pub(super) fn cached_token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
+    let key = (repo.to_path_buf(), url.to_owned());
+    if let Some((at, credential)) = credential_cache().lock().get(&key) {
+        if at.elapsed() < CREDENTIAL_TTL {
+            return Ok(credential.clone());
+        }
+    }
+    let credential = token(repo, url)?;
+    let mut cache = credential_cache().lock();
+    cache.retain(|_, (at, _)| at.elapsed() < CREDENTIAL_TTL);
+    cache.insert(key, (std::time::Instant::now(), credential.clone()));
+    Ok(credential)
+}
+
+/// Drops remembered Git credentials (after a rejected token or a new sign-in).
+pub fn forget_cached_tokens() {
+    credential_cache().lock().clear();
+}
+
 pub(crate) fn base64(input: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
@@ -523,12 +557,17 @@ fn authorized<T>(repo: &Path, f: &ForgeInfo, send: impl Fn(&super::forge_account
     }
     let credential = match context.credential {
         Some(c) => c,
-        None => token(repo, &context.git_url)?,
+        None => cached_token(repo, &context.git_url)?,
     };
     if context.profile.is_some() {
         return send(&credential);
     }
-    send_with_git_credential(&f.kind, credential, send)
+    let result = send_with_git_credential(&f.kind, credential, send);
+    if matches!(&result, Err(e) if e.details.iter().any(|d| d.starts_with("forge_http_status=") && d.ends_with(":401"))) {
+        // A revoked or replaced Git token must not be reused from the cache.
+        forget_cached_tokens();
+    }
+    result
 }
 
 fn send_with_git_credential<T>(
@@ -1284,6 +1323,28 @@ fi
         std::fs::write(repo.join("normal-lookup"), "").unwrap();
         assert_eq!(token(repo, url).unwrap().token, "normal-fixture");
         assert_eq!(std::fs::read(repo.join(".git/config")).unwrap(), config);
+    }
+
+    #[test]
+    fn api_requests_reuse_a_git_credential_until_it_is_forgotten() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path();
+        runner::run(repo, ["init", "-q"]).unwrap();
+        runner::run(repo, ["config", "credential.helper", ""]).unwrap();
+        // Each lookup appends to a file, so the test counts helper runs.
+        let helper = "!f() { echo x >> lookups; printf '%s
+' 'username=alice' 'password=cached-fixture'; }; f";
+        runner::run(repo, ["config", "--add", "credential.helper", helper]).unwrap();
+        let url = "https://credential-cache.invalid/team/repo.git";
+        let lookups = || std::fs::read_to_string(repo.join("lookups")).map(|s| s.lines().count()).unwrap_or(0);
+        assert_eq!(cached_token(repo, url).unwrap().token, "cached-fixture");
+        let first = lookups();
+        assert!(first >= 1);
+        assert_eq!(cached_token(repo, url).unwrap().token, "cached-fixture");
+        assert_eq!(lookups(), first, "a repeated API request must not start the credential helper again");
+        forget_cached_tokens();
+        cached_token(repo, url).unwrap();
+        assert!(lookups() > first, "a forgotten credential is read from Git again");
     }
 
     #[test]
