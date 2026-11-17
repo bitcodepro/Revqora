@@ -484,7 +484,7 @@
   .explorer-filters .repository-updates > span { display: none; }
 }
 .explorer-branch-status { display: flex; align-items: center; gap: 6px; padding: 4px 8px 7px; margin-inline-start: calc(var(--tree-depth) * var(--explorer-indent) + var(--explorer-toggle-size)); color: var(--text-faint); }
-.explorer-branch-current { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.explorer-branch-current { flex: none; color: var(--accent); inline-size: 13px; block-size: 13px; }
 .explorer-tree { --explorer-indent: 12px; --explorer-toggle-size: 22px; }
 .explorer-tree > .repository-item {
   position: relative;
@@ -500,8 +500,7 @@
 .explorer-tree > .library-tree-row:hover:not(.explorer-focused, .batch-selected, .workspace-drop-active) { background-color: var(--explorer-folder-hover); }
 .explorer-tree > .library-tree-row.explorer-focused:not(.batch-selected, .workspace-drop-active) { background-color: var(--bg-hover-strong); }
 .explorer-tree > :is(.explorer-repository, .explorer-branch).active:not(.batch-selected, .workspace-drop-active) { background-color: var(--bg-explorer-current); --text-faint: var(--text-faint-on-current, var(--text-dim)); }
-.explorer-tree > .explorer-repository.active::before,
-.explorer-tree > .explorer-branch.head::before {
+.explorer-tree > .explorer-repository.active::before {
   content: "";
   position: absolute;
   inset-block: 7px;
@@ -511,8 +510,10 @@
   background: var(--accent);
   pointer-events: none;
 }
-/* The checked-out branch keeps its bar beside its own indentation. */
-.explorer-tree > .explorer-branch.head::before { inset-inline-start: calc(var(--indent) + 3px); }
+/* The checked-out branch: bold name, accent branch icon and a check. The bar stays reserved for the
+   active repository; the background marks the branch History shows. */
+.explorer-tree .explorer-branch.head .repository-label { font-weight: 600; color: var(--text); }
+.explorer-tree .explorer-branch.head .repository-select > .explorer-branch-icon { color: var(--accent); }
 .explorer-tree > .library-tree-row .repository-label { font-weight: 600; }
 .repository-item .repository-select { touch-action: none; user-select: none; }
 .repository-item.batch-selected { background: var(--bg-selected); box-shadow: inset 2px 0 var(--accent); }

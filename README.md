@@ -136,8 +136,9 @@ the **Favorites**, **Incoming** (repositories with commits to pull) and **Change
 own branches. Filters combine. **Fetch all** and **Pull all** appear in the
 unfiltered flat panel and apply to open repositories.
 
-In Explorer the checked-out branch of each repository has an accent bar. Selecting
-a repository highlights its checked-out branch, or the branch you opened last.
+In Explorer the accent bar marks the active repository. The checked-out branch of
+each repository has a bold name, an accent icon and a check. The highlighted row is
+the branch History shows: the checked-out branch, or the branch you opened.
 
 Drag a group by its row to nest or reorder it. Drag a repository onto a group
 to move it there. Use **Ctrl** or **Shift** to select several items and right-click
