@@ -24,7 +24,7 @@ import { fileCopyMenu } from "./NamePathMenu";
 import { commitMenu } from "./menus";
 import { openInDiffTool, openInEditor } from "../lib/externalTools";
 import { folderHistoryDialog } from "./HistoryDialogs";
-import { CommitNote } from "./CommitNote";
+import { CommitNote, prefetchNote } from "./CommitNote";
 
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
   const fileNavigation = useFileListNavigation();
@@ -92,6 +92,7 @@ ${oid}`;
     // Skip transient selections while holding an arrow key or rapidly clicking.
     const timer = window.setTimeout(() => {
       if (!current()) return;
+      prefetchNote(root, oid);
       void loadDetails(detailKey, root, oid).then(
         (value) => { if (current()) setDetailResult({ key: detailKey, generation, value }); },
         (e) => { if (current()) setDetailError({ key: detailKey, generation, message: errorMessage(e) }); },

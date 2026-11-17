@@ -579,9 +579,34 @@ fn read_commits(repo: &Path, args: &[String]) -> GitResult<Vec<CommitMeta>> {
 
 /// Whether git's commit-graph cache exists for the repository.
 pub fn has_commit_graph(repo: &Path) -> bool {
-    let Ok(dir) = runner::run(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]) else { return false };
-    let info = Path::new(dir.trim()).join("objects").join("info");
+    let Some(dir) = common_dir(repo) else { return false };
+    let info = dir.join("objects").join("info");
     info.join("commit-graph").is_file() || info.join("commit-graphs").join("commit-graph-chain").is_file()
+}
+
+/// The repository's common Git directory. Remembered per path (it does not change while
+/// the folder stays a repository), so callers on hot paths do not spawn Git for it.
+pub fn common_dir(repo: &Path) -> Option<std::path::PathBuf> {
+    static DIRS: std::sync::OnceLock<parking_lot::Mutex<HashMap<std::path::PathBuf, std::path::PathBuf>>> = std::sync::OnceLock::new();
+    let dirs = DIRS.get_or_init(Default::default);
+    if let Some(dir) = dirs.lock().get(repo).filter(|dir| dir.is_dir()) {
+        return Some(dir.clone());
+    }
+    // Git's own rule: a `commondir` file in the Git directory points at the shared one.
+    let git_dir = super::repo::git_dir(repo).ok()?;
+    let dir = match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(text) if !text.trim().is_empty() => {
+            let target = super::repo::normalize(std::path::PathBuf::from(text.trim()));
+            if target.is_absolute() {
+                target
+            } else {
+                git_dir.join(target)
+            }
+        }
+        _ => git_dir,
+    };
+    dirs.lock().insert(repo.to_path_buf(), dir.clone());
+    Some(dir)
 }
 
 /// Writes git's commit-graph cache (speeds up ordering and reachability queries).
@@ -846,19 +871,25 @@ fn build_view(
     let stable_refs = prev.filter(|p| p.refs == refs);
     // The history walk dominates; fetch remote info in parallel with it.
     let walk_started = Instant::now();
+    // Helpers join the caller's repository transaction, if any (see `Inherited`).
+    let parent = super::operations::Inherited::of(repo);
     let (commits, incoming, (local, has_remotes, local_time)) = std::thread::scope(|sc| {
         let local = sc.spawn(|| {
-            let started = Instant::now();
-            let has_remotes = !runner::run(repo, ["remote"]).unwrap_or_default().trim().is_empty();
-            let local = match stable_refs.filter(|p| p.has_remotes == has_remotes) {
-                Some(p) => Arc::clone(&p.local_commits),
-                None => Arc::new(if has_remotes { local_only(repo) } else { HashMap::new() }),
-            };
-            (local, has_remotes, started.elapsed())
+            parent.run(|| {
+                let started = Instant::now();
+                let has_remotes = !super::config_cache::run(repo, &["remote"]).unwrap_or_default().trim().is_empty();
+                let local = match stable_refs.filter(|p| p.has_remotes == has_remotes) {
+                    Some(p) => Arc::clone(&p.local_commits),
+                    None => Arc::new(if has_remotes { local_only(repo) } else { HashMap::new() }),
+                };
+                (local, has_remotes, started.elapsed())
+            })
         });
-        let incoming = sc.spawn(|| match filter.as_deref().filter(|_| scope.show_incoming && branch_context.is_none()) {
-            Some(scope) => incoming_history(repo, scope, &refs, limit, fast, reusable.and_then(|p| p.incoming.as_ref())),
-            None => Ok(None),
+        let incoming = sc.spawn(|| {
+            parent.run(|| match filter.as_deref().filter(|_| scope.show_incoming && branch_context.is_none()) {
+                Some(scope) => incoming_history(repo, scope, &refs, limit, fast, reusable.and_then(|p| p.incoming.as_ref())),
+                None => Ok(None),
+            })
         });
         let commits = match (&reused, &branch_context) {
             (Some((c, _)), _) => Ok(c.clone()),

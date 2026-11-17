@@ -97,14 +97,28 @@ pub fn normalize(p: PathBuf) -> PathBuf {
 }
 
 pub fn git_dir(repo: &Path) -> GitResult<PathBuf> {
+    // Remembered per folder (checked to still exist): hot paths ask for it on every refresh.
+    static DIRS: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<PathBuf, PathBuf>>> = std::sync::OnceLock::new();
+    let dirs = DIRS.get_or_init(Default::default);
+    if let Some(dir) = dirs.lock().get(repo).filter(|dir| dir.join("HEAD").is_file()) {
+        return Ok(dir.clone());
+    }
     let s = runner::run(repo, ["rev-parse", "--absolute-git-dir"])?;
-    Ok(normalize(PathBuf::from(s.trim())))
+    let dir = normalize(PathBuf::from(s.trim()));
+    dirs.lock().insert(repo.to_path_buf(), dir.clone());
+    Ok(dir)
 }
 
 pub fn head(repo: &Path) -> GitResult<HeadInfo> {
-    let sym = runner::exec(repo, ["symbolic-ref", "-q", "--short", "HEAD"])?;
+    // Both reads are independent: run them side by side.
+    let parent = super::operations::Inherited::of(repo);
+    let (sym, oid_out) = std::thread::scope(|scope| {
+        let oid = scope.spawn(|| parent.run(|| runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD^{commit}"])));
+        let sym = runner::exec(repo, ["symbolic-ref", "-q", "--short", "HEAD"]);
+        (sym, oid.join().unwrap_or_else(|_| Err(GitError::new("Resolve HEAD failed."))))
+    });
+    let (sym, oid_out) = (sym?, oid_out?);
     let branch = if sym.ok() { Some(sym.text().trim().to_string()) } else { None };
-    let oid_out = runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD^{commit}"])?;
     let oid = if oid_out.ok() { Some(oid_out.text().trim().to_string()) } else { None };
     Ok(HeadInfo { detached: branch.is_none() && oid.is_some(), unborn: oid.is_none(), branch, oid })
 }
@@ -273,7 +287,7 @@ pub fn init(path: &Path, initial_branch: &str) -> GitResult<RepoInfo> {
 
 /// Reads a git config value (any scope) or None.
 pub fn config_get(repo: &Path, key: &str) -> Option<String> {
-    runner::exec(repo, ["config", "--get", key]).ok().filter(|o| o.ok()).map(|o| o.text().trim().to_string())
+    super::config_cache::exec(repo, &["config", "--get", key]).ok().filter(|o| o.ok()).map(|o| o.text().trim().to_string())
 }
 
 pub fn config_set(repo: &Path, key: &str, value: &str, global: bool) -> GitResult<()> {

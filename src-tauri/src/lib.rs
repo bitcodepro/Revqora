@@ -350,6 +350,10 @@ where
             log.finish(&result);
         }
         emit(if result.is_ok() { "finished" } else { "failed" }, 0);
+        if result.is_ok() && matches!(command, "fetch" | "fetch_background" | "fetch_more_history" | "pull" | "pull_request_checkout") {
+            // New commits arrived: extend Git's commit-graph in the background.
+            git::optimize::schedule(&p(&repo), true);
+        }
         let _ = app.emit("operation-log-changed", ());
         let _ = app.emit("recovery-changed", ());
         result
@@ -906,6 +910,8 @@ async fn graph_load(
         Ok((cache, count, stages, cached))
     })
     .await?;
+    // Keep Git's commit-graph and packed refs fresh in the background (quiet, idempotent).
+    git::optimize::schedule(&p(&key), false);
     let head_index = cache.rows.iter().position(|r| r.is_head);
     let summary = GraphSummary {
         head_oid: cache.head_oid.clone(),
@@ -1138,7 +1144,8 @@ async fn repository_branch_names(repo: String) -> GitResult<Vec<String>> {
 /// Branches already squash- or rebase-merged into HEAD.
 #[tauri::command]
 async fn squash_merged(repo: String) -> GitResult<Vec<String>> {
-    blocking(move || refs::squash_merged(&p(&repo))).await
+    // An optional badge computed in the background: yield the CPU to foreground reads.
+    blocking(move || git::runner::in_background(|| refs::squash_merged(&p(&repo)))).await
 }
 
 #[tauri::command]
@@ -1890,7 +1897,8 @@ async fn repo_extras(repo: String) -> GitResult<RepoExtras> {
             let subs = sc.spawn(|| extras::submodules(&r).unwrap_or_default());
             let wts = sc.spawn(|| extras::worktrees(&r).unwrap_or_default());
             let lfs = sc.spawn(|| if extras::repo_uses_lfs(&r) { extras::lfs_status(&r).ok() } else { None });
-            let bisect = extras::bisect_status(&r).ok().filter(|b| b.active);
+            // Only an active bisect is shown; skip its Git reads otherwise.
+            let bisect = if extras::bisect_active(&r) { extras::bisect_status(&r).ok().filter(|b| b.active) } else { None };
             Ok(RepoExtras { submodules: subs.join().unwrap_or_default(), worktrees: wts.join().unwrap_or_default(), lfs: lfs.join().unwrap_or(None), bisect })
         })
     })

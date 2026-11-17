@@ -75,6 +75,27 @@ A global search page now costs about as much as the old single call, slightly mo
 6. **Keep repository switching cheap.** Measure cached activation separately from background refresh. Publish cached sidebar and branch data immediately and deduplicate pending status, refs and graph reads. Limit background hydration so switching to a repository does not compete with a sweep of inactive repositories. Keep full status and its state token on paths that guard mutations. For refs, measure enumeration, upstream comparisons and branch creator resolution before changing their schedule. Verify that My Branches, Primary Branch and outgoing/incoming indicators still update after changes made outside Revqora.
    *Status: partly done. Selecting a repository while a full read of the same parts is running or queued joins that read instead of queueing another status, refs, layers and extras pass. Change notifications, explicit refreshes and a missing history still get their own read. Status and repository reads use fewer or parallel Git processes (see above). Separate measurements of cached activation, refs stages and the hydration limit are open.*
 
+## Speed-up of November 2026 (fewer Git processes, Git's own caches)
+
+Starting Git for Windows costs about 60 ms per process on the measurement machine, before it does any work, and several processes started at once slow each other down. Most of this follow-up therefore removes Git processes from the paths the user waits for, and lets Git use its own acceleration data:
+
+- **Background housekeeping** (`git/optimize.rs`). When history loads (at most every 10 minutes per repository, 8 seconds after the trigger) and after a fetch or pull, an incremental commit-graph with changed-path filters is written, and more than 100 loose refs are packed. Git processes for it run at below-normal priority. Measured with direct Git on the fixture below: the first 200 rows of all branches took 773 ms before and 178 ms with packed refs plus commit-graph; `rev-list --count` 744 → 133 ms; a path search 2,285 → 1,162 ms; `for-each-ref --no-merged` 618 → 215 ms; listing all refs 321 → 110 ms.
+- **Configuration answers are remembered** (`git/config_cache.rs`): `remote -v`, `var GIT_ATTR_GLOBAL`/`GIT_ATTR_SYSTEM`, `config --get` (identity) and `remote`. An answer is reused only while every configuration file Git reports with `--show-origin` (plus the default global locations, `config.worktree` and HEAD) keeps its size and modification time, and any writing Git command started by Revqora clears them. The Git directory and the common directory are remembered per folder.
+- **Ref metadata is remembered per ref target** (`refs::enumerate`). Subjects, authors, dates and ahead/behind counts depend only on the ref's target, its symbolic target, its upstream and the upstream's target. A refresh lists names and targets, and reads metadata only for refs that changed (by name, up to 100) or all of them. A test compares the result with a full `for-each-ref` after every kind of ref change.
+- **Batched and parallel reads.** Squash-merge detection uses one `for-each-ref --no-merged=HEAD` and one `merge-tree --stdin` instead of up to 160 processes (older Git keeps the per-branch fallback). The branch card uses one `rev-list --left-right --count` and one range `log`, side by side with the other reads (8 processes in a row before). Refs snapshot reads (remotes, refs, stashes, identity), the graph's ref list and HEAD, and HEAD's branch and commit run in parallel. An idle bisect no longer starts 2 processes per extras refresh. The commit note is requested together with the commit header, and `notes show` / `commit-graph write` no longer take the repository's write lock.
+
+Measured through the app on a `scripts/make-big-repo.py` fixture (60,000 commits, 679 local branches, 1,500 extra loose tags, no commit-graph, no packed refs) with `scripts/perf-probe.mjs` and a click probe. Both builds were optimized dev builds with the same frontend, alternated three times on fresh copies of the fixture. "After" was measured once on the fresh copy and once after the app had stayed open for 25 seconds (housekeeping done). Another Rust build was running on the machine, so the ranges are wide.
+
+| Through the app (median, range) | Before | After, first open | After, housekeeping done |
+| --- | ---: | ---: | ---: |
+| `refs_snapshot` | 1,240 ms (1,016–1,504) | 699 ms (591–752) | 497 ms (446–539) |
+| Full `graph_load` of 60,639 rows | 3,100 ms (2,257–3,625) | 3,187 ms (2,582–3,260) | 2,665 ms (2,138–2,792) |
+| Click a commit, header and files shown | 1,006 ms (961–1,023) | — | 444 ms (440–467) |
+| Click the next commit | 490 ms (425–659) | — | 329 ms (292–367) |
+| `status` | 604 ms (504–724) | 577 ms (541–631) | 527 ms (485–535) |
+
+Launch to the first visible rows varied with WebView2 startup by more than the change (3.2–4.0 s for both builds), so it is not reported as a gain. A first run without the 8-second delay showed that housekeeping competing with the first full history load more than doubled it; the delay and the lower priority removed that.
+
 ## Repeat the baseline
 
 - Use the same Windows build, the same fixture and one new portable profile per launch. Run startup and navigation separately from search sweeps. Record first visible graph rows, branch highlight, commit header, first diff, first search hit and complete results. Capture at least 20 samples per interaction on a real repository before setting a p95 target.

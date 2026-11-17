@@ -384,7 +384,8 @@ fn precondition_reads_on_helper_threads_stay_in_the_operation_entry() {
     assert_eq!(detail.entry.status, "succeeded");
     let commands: Vec<&str> = detail.steps.iter().filter_map(|step| step.args.first().map(String::as_str)).collect();
     // The state token is read by parallel helpers; the log still shows every Git process.
-    for expected in ["status", "ls-files", "for-each-ref", "rev-parse", "add"] {
+    // (The Git directory is remembered per folder, so no `rev-parse` runs for it here.)
+    for expected in ["status", "ls-files", "for-each-ref", "add"] {
         assert!(commands.contains(&expected), "{expected} is missing from {commands:?}");
     }
     assert_eq!(commands.first(), Some(&"status"));
