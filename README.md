@@ -106,10 +106,11 @@ or check out anything.
 | Diff | Unified and side-by-side views, word highlighting, line wrapping or horizontal scrolling, image comparison, hunk navigation, moved-line highlighting, diff algorithm and context options, external diff tool and editor, file-tree and flat file lists. |
 | Changes and commits | Stage/unstage files, hunks, blocks and line ranges; act on several selected files; add ignore rules from the file menu; discard with backups; ignored-file and nested-repository views; amend, sign-off, signed commits, templates, Conventional Commits helpers, co-author picker, recent messages and fixup!/squash! commits. |
 | Stage layers | Keep several logical groups of staged work, inspect dependencies, reorder or combine layers, and commit a layer separately. |
-| Branch management | Create, switch, rename, compare and delete branches; inspect upstream/ahead/behind; filter protected, stale, merged, unmerged or diverged branches; review bulk cleanup. |
+| Branch management | Create, switch, rename, compare and delete branches; inspect upstream/ahead/behind; filter protected, stale, merged, unmerged or diverged branches; review bulk cleanup; drag a branch or commits onto another branch or commit to merge, rebase, cherry-pick, reset, push or pull from a menu. |
 | Git operations | Fetch, Pull, Push, tags, stash and partial stash (including restore on a new branch), patches, cherry-pick, revert, reset and reflog. |
 | Rebase and conflicts | Rebase Studio with reorder/reword/squash/fixup/drop, previews and recovery; conflict editor with Base, Ours, Theirs and editable Result; external merge tool; rerere; selected validation commands. |
-| Recovery | Operation log, Undo Center, recovery checkpoints, deleted-branch restoration and discard backups, with operation-specific recovery limits. |
+| Recovery and safety | Operation log, Undo Center, recovery checkpoints, deleted-branch restoration and discard backups, with operation-specific recovery limits. Reset, revert, rebase, merge, pull, cherry-pick, stash and switch refuse to overwrite untracked or ignored files; sparse checkout lists ignored files it would delete and asks first; Rebase onto can keep merge commits; committing on a detached HEAD warns first. |
+| Speed | Large histories stay fast: Revqora keeps Git's commit-graph and packed refs up to date in the background, caches configuration and branch details, and runs independent reads in parallel. |
 | Worktrees and repository tools | Create/open/lock/remove/prune worktrees; submodules with pointer summaries, LFS with file locks, Git hooks, bisect, signing, fetching more history for shallow clones, sparse checkout (cone/non-cone folders, also at clone time) and partial clone status, repository size and Git maintenance. |
 | Pull Request Center | Browse, create and edit PRs/MRs; templates, changed files, discussions, inline comments, reviews, CI and supported policy-checked merge/cleanup actions. |
 | Agent Workspace | Run an installed CLI in a reviewed worktree; inspect logs and changes, stop its process tree and keep native task history across restarts. |
@@ -129,9 +130,14 @@ the top level. Use **Import folder…** to recreate the folder hierarchy in Expl
 
 Open the optional **Repositories** panel for a flat list. Select a group in Explorer
 to show all of its repositories, including those in subgroups. Select **All
-repositories** in Explorer to clear the filter. Search, favorites and incoming
-commit filters help narrow either view. **Fetch all** and **Pull all**
-appear in the unfiltered flat panel and apply to open repositories.
+repositories** in Explorer to clear the filter. Both views have a search box and
+the **Favorites**, **Incoming** (repositories with commits to pull) and **Changes**
+(repositories with uncommitted work) filters; Explorer also has **Mine** for your
+own branches. Filters combine. **Fetch all** and **Pull all** appear in the
+unfiltered flat panel and apply to open repositories.
+
+In Explorer the checked-out branch of each repository has an accent bar. Selecting
+a repository highlights its checked-out branch, or the branch you opened last.
 
 Drag a group by its row to nest or reorder it. Drag a repository onto a group
 to move it there. Use **Ctrl** or **Shift** to select several items and right-click
@@ -576,6 +582,15 @@ layer is rebased. If conflicts interrupt the operation, resolve/continue or abor
 it, then record the result in the stack manager. Link or retarget PRs explicitly;
 publication, force pushes and deletion are not automatic. A merged bottom layer
 can be retired only after the merge and updated local base are verified.
+
+### Keep large repositories fast
+
+Revqora maintains each repository in the background, without changing refs, the
+index or your files. After history loads (at most every 10 minutes) and after a
+successful fetch or pull, it updates Git's commit-graph and packs refs when there
+are more than 100 loose ones. It skips shallow clones and respects `gc.auto=0`,
+`gc.packRefs=false`, `gc.writeCommitGraph=false` and `core.commitGraph=false`.
+Set the environment variable `REVQORA_NO_AUTO_OPTIMIZE` to turn it off.
 
 ### Recover from a mistake
 
