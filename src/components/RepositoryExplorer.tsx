@@ -338,7 +338,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
           return <ExplorerBranchRow key={entry.id} id={entry.id} root={entry.root} branch={entry.branch} refs={entry.refs} upstream={entry.upstream}
             depth={depth} primary={primaryBranches[key] === reference} favorite={branchFavorites[key]?.includes(reference) ?? false}
             focused={focusedId === entry.id} selected={selection.includes(entry.id)}
-            viewed={entry.root === active && !overview && tabs[entry.root]?.viewedBranch === reference}
+            viewed={entry.root === active && !overview && (tabs[entry.root]?.viewedBranch ? tabs[entry.root]?.viewedBranch === reference : entry.branch.isHead)}
             historyDetached={!!panels.history} withRepository={run => branchNavigation(entry.root, run)}
             onSelect={(event, activate) => select(event, entry, activate)}/>;
         }

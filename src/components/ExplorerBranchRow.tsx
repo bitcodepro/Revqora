@@ -46,7 +46,7 @@ export function ExplorerBranchRow({ id, root, branch, upstream, refs, depth, pri
   return <div role="treeitem" aria-level={depth + 1} aria-label={name} aria-selected={selected}
     data-explorer-entry={id} data-explorer-branch={fullName} data-branch-ref={fullName}
     style={{ "--tree-depth": Math.min(depth, 12) } as CSSProperties}
-    className={["repository-item", "explorer-branch", focused && "explorer-focused", selected && "batch-selected", viewed && "active"].filter(Boolean).join(" ")}
+    className={["repository-item", "explorer-branch", focused && "explorer-focused", selected && "batch-selected", viewed && "active", isHead && "head"].filter(Boolean).join(" ")}
     onContextMenu={event => contextMenu(event, menu())}>
     <span className="library-tree-spacer" aria-hidden="true"/>
     <button type="button" className="repository-select" aria-current={viewed} title={title}

@@ -500,7 +500,8 @@
 .explorer-tree > .library-tree-row:hover:not(.explorer-focused, .batch-selected, .workspace-drop-active) { background-color: var(--explorer-folder-hover); }
 .explorer-tree > .library-tree-row.explorer-focused:not(.batch-selected, .workspace-drop-active) { background-color: var(--bg-hover-strong); }
 .explorer-tree > :is(.explorer-repository, .explorer-branch).active:not(.batch-selected, .workspace-drop-active) { background-color: var(--bg-explorer-current); --text-faint: var(--text-faint-on-current, var(--text-dim)); }
-.explorer-tree > .explorer-repository.active::before {
+.explorer-tree > .explorer-repository.active::before,
+.explorer-tree > .explorer-branch.head::before {
   content: "";
   position: absolute;
   inset-block: 7px;
@@ -510,6 +511,8 @@
   background: var(--accent);
   pointer-events: none;
 }
+/* The checked-out branch keeps its bar beside its own indentation. */
+.explorer-tree > .explorer-branch.head::before { inset-inline-start: calc(var(--indent) + 3px); }
 .explorer-tree > .library-tree-row .repository-label { font-weight: 600; }
 .repository-item .repository-select { touch-action: none; user-select: none; }
 .repository-item.batch-selected { background: var(--bg-selected); box-shadow: inset 2px 0 var(--accent); }
