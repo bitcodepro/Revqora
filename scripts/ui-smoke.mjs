@@ -1447,10 +1447,13 @@ try {
         window.__queueTest = { expected: status.stateToken, commit: settle(invoke("commit", { repo: root, expectedState: status.stateToken, message: "Queue test commit", opts: {} })) };
       }, repo);
       await until(() => fs.existsSync(started), "commit hook did not start", 15000);
+      // Automatic fetch never waits behind the user's operation: it is skipped until the next interval.
+      const background = await page.evaluate((root) => window.__TAURI_INTERNALS__.invoke("fetch_background", { repo: root }).then(() => ({ ok: true }), (error) => ({ ok: false, error })), repo);
+      if (background.ok || background.error?.kind !== "repository-busy") throw new Error(`background fetch was not skipped during the commit: ${JSON.stringify(background)}`);
       await page.evaluate((root) => {
         const invoke = window.__TAURI_INTERNALS__.invoke;
         const settle = (p) => p.then((value) => ({ ok: true, value }), (error) => ({ ok: false, error }));
-        window.__queueTest.fetch = settle(invoke("fetch_background", { repo: root }));
+        window.__queueTest.fetch = settle(invoke("fetch", { repo: root, remote: null, prune: false, opId: "ui-queue-test-fetch" }));
         window.__queueTest.reset = settle(invoke("reset", { repo: root, expectedState: window.__queueTest.expected, target: "HEAD~1", mode: "hard" }));
       }, repo);
       await page.waitForSelector(".repository-queue:has-text('2 queued')");

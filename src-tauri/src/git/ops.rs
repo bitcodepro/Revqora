@@ -578,7 +578,7 @@ fn prune_args(repo: &Path, remote: Option<&str>, requested: bool) -> GitResult<V
 fn remotes_of(repo: &Path, remote: Option<&str>) -> GitResult<Vec<String>> {
     Ok(match remote {
         Some(r) => vec![r.to_string()],
-        None => runner::run(repo, ["remote"])?.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
+        None => super::config_cache::run(repo, &["remote"])?.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
     })
 }
 
@@ -590,7 +590,7 @@ fn prune_tracking_separately(repo: &Path, remote: Option<&str>, env: &[(&str, &s
         if pull_can_prune(repo, &r)? {
             continue;
         }
-        let specs = runner::exec(repo, ["config", "--get-all", &format!("remote.{r}.fetch")])?;
+        let specs = super::config_cache::exec(repo, &["config", "--get-all", &format!("remote.{r}.fetch")])?;
         let tracking: Vec<String> = specs
             .text()
             .lines()
@@ -654,12 +654,13 @@ pub fn fetch_background(repo: &Path) -> GitResult<String> {
     fetch_background_with_deadline(repo, std::time::Duration::from_secs(30))
 }
 
-fn fetch_background_with_deadline(repo: &Path, timeout: std::time::Duration) -> GitResult<String> {
+/// [`fetch_background`] with its time limit (tests use a short one).
+pub fn fetch_background_with_deadline(repo: &Path, timeout: std::time::Duration) -> GitResult<String> {
     super::recovery::protect_transport(repo, false, None, None, true)?;
     let ssh_configured = std::env::var_os("GIT_SSH_COMMAND").is_some()
         || std::env::var_os("GIT_SSH").is_some()
         || super::connection::managed_ssh(repo)?
-        || runner::run(repo, ["config", "--get", "core.sshCommand"]).map(|s| !s.trim().is_empty()).unwrap_or(false);
+        || super::config_cache::run(repo, &["config", "--get", "core.sshCommand"]).map(|s| !s.trim().is_empty()).unwrap_or(false);
     let mut args: Vec<String> = ["fetch", "--all"].map(String::from).to_vec();
     args.extend(prune_args(repo, None, true)?);
     args.extend(["--tags", "--quiet", "--no-write-fetch-head", "--no-auto-maintenance"].map(String::from));
@@ -755,7 +756,7 @@ impl From<OpOutcome> for PullOutcome {
 }
 
 fn pull_can_prune(repo: &Path, remote: &str) -> GitResult<bool> {
-    let specs = runner::exec(repo, ["config", "--get-all", &format!("remote.{remote}.fetch")])?;
+    let specs = super::config_cache::exec(repo, &["config", "--get-all", &format!("remote.{remote}.fetch")])?;
     if !specs.ok() && specs.code != 1 {
         return Err(runner::to_error("git config remote fetch", &specs));
     }
@@ -866,7 +867,7 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
     };
     // Parse before fetching/merging, including Git's yes/on/1 spellings.
     // Invalid configuration must fail before a partially completed pull.
-    let recurse = runner::exec(repo, ["config", "--bool", "--get", "submodule.recurse"])?;
+    let recurse = super::config_cache::exec(repo, &["config", "--bool", "--get", "submodule.recurse"])?;
     if !recurse.ok() && recurse.code != 1 {
         return Err(runner::to_error("git config submodule.recurse", &recurse));
     }
@@ -1802,7 +1803,7 @@ fn worktree_differs_from_index(repo: &Path, path: &str) -> GitResult<bool> {
 }
 
 fn git_bool(repo: &Path, key: &str, default: bool) -> bool {
-    runner::run(repo, ["config", "--bool", "--get", key]).map(|v| v.trim() == "true").unwrap_or(default)
+    super::config_cache::run(repo, &["config", "--bool", "--get", key]).map(|v| v.trim() == "true").unwrap_or(default)
 }
 
 #[cfg(unix)]

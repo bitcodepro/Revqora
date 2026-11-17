@@ -93,11 +93,11 @@ export async function prCenterSmoke({page,check,shot,work}) {
       const oldTitle=pulls.get(2).title, freshTitle="Updated while the background list was held";
       pulls.get(3).state="closed";
       holdList={started,response};
-      const watch=()=>page.getByRole("button",{name:"Watch PR",exact:true});
+      const watch=async()=>{await page.getByRole("button",{name:"More pull request actions",exact:true}).click();await page.getByRole("menuitemcheckbox",{name:/^(Watch this PR|Stop watching this PR)$/}).click();};
       const row=n=>page.locator(`[data-pr-number="${n}"]`);
       try{
-        await Promise.all([watch().click(),request]);
-        if(await watch().getAttribute("aria-pressed")!=="true")throw Error("The selected PR was not marked as watched");
+        await Promise.all([watch(),request]);
+        if(!await page.locator(".pr-title-line").getByLabel("Watched PR",{exact:true}).count())throw Error("The selected PR was not marked as watched");
         const historyStart=performance.now();
         await page.getByRole("button",{name:"History",exact:true}).click();
         await page.locator(".graph-scroll .grow").first().waitFor();
@@ -130,8 +130,8 @@ export async function prCenterSmoke({page,check,shot,work}) {
         if(stale?.title!==oldTitle||stale.hasThird)throw Error("The delayed background poll did not deliver the older list");
         if(!await row(2).getByText(freshTitle,{exact:true}).isVisible()||!await row(3).isVisible())throw Error("An older background poll replaced the fresh PR list");
       }finally{clearTimeout(timeout);holdList=null;release();pulls.get(2).title=oldTitle;pulls.get(3).state="open";}
-      if(await watch().getAttribute("aria-pressed")!=="true")throw Error("The watch was lost during navigation");
-      await watch().click();
+      if(!await page.locator(".pr-title-line").getByLabel("Watched PR",{exact:true}).count())throw Error("The watch was lost during navigation");
+      await watch();
       await interceptClipboard(page);
       try {
         const expected=`${url}/team/repo/pull/2`;
@@ -153,7 +153,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
       await invoke("plugin:event|emit",{event:"open-paths",payload:[second,local]});
       await page.locator(".repository-select").filter({hasText:"stage13-local-only"}).click();
       await page.getByText("No remote configured",{exact:true}).waitFor();
-      const watchMine=page.getByRole("button",{name:"Watch my PRs",exact:true});
+      const watchMine=page.getByRole("button",{name:"My PR alerts",exact:true});
       await watchMine.click();
       await page.locator(".repository-select").filter({hasText:"stage13-pr-center"}).click();
       await detail(1);
@@ -226,8 +226,8 @@ export async function prCenterSmoke({page,check,shot,work}) {
       await button("Cancel").click();await button("Discard edits").click();
     });
     await check("edit PR saves title, multiline description and destination without modifying the source",async()=>{
-      await page.getByRole("button",{name:"Edit PR",exact:true}).click();if(!await page.getByLabel("PR source branch",{exact:true}).isDisabled())throw Error("Edit source must be immutable");await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Edited PR title");await page.getByRole("textbox",{name:"PR description",exact:true}).fill("Edited description\n"+"Readable long message. ".repeat(100));await page.getByLabel("PR target branch",{exact:true}).fill("develop");await button("Save pull request").click();await page.waitForSelector("[data-pr-editor]",{state:"detached"});await page.getByRole("heading",{name:"Edited PR title",exact:true}).waitFor();if(pulls.get(100).base.ref!=="develop")throw Error("Retarget was not saved");await shot("106-pr-description");
-      await page.getByRole("button",{name:"Edit PR",exact:true}).click();
+      await page.getByRole("button",{name:"More pull request actions",exact:true}).click();await page.getByRole("menuitem",{name:"Edit PR",exact:true}).click();if(!await page.getByLabel("PR source branch",{exact:true}).isDisabled())throw Error("Edit source must be immutable");await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Edited PR title");await page.getByRole("textbox",{name:"PR description",exact:true}).fill("Edited description\n"+"Readable long message. ".repeat(100));await page.getByLabel("PR target branch",{exact:true}).fill("develop");await button("Save pull request").click();await page.waitForSelector("[data-pr-editor]",{state:"detached"});await page.getByRole("heading",{name:"Edited PR title",exact:true}).waitFor();if(pulls.get(100).base.ref!=="develop")throw Error("Retarget was not saved");await shot("106-pr-description");
+      await page.getByRole("button",{name:"More pull request actions",exact:true}).click();await page.getByRole("menuitem",{name:"Edit PR",exact:true}).click();
       await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Edit saved despite a lost response");
       loseEditResponse=true;await button("Save pull request").click();
       await page.locator(".modal").getByRole("alert").filter({hasText:/server may have saved/i}).waitFor();
@@ -235,7 +235,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
       if(pulls.get(100).title!=="Edit saved despite a lost response")throw Error("Lost edit fixture did not save");
       await button("Cancel").click();await button("Discard edits").click();
       await reconnect(100);
-      await page.getByRole("button",{name:"Edit PR",exact:true}).click();
+      await page.getByRole("button",{name:"More pull request actions",exact:true}).click();await page.getByRole("menuitem",{name:"Edit PR",exact:true}).click();
       if(!await button("Save pull request").isDisabled())throw Error("Reopening an edit lost its pending write");
       await button("Reload server version").click();
       await page.waitForFunction(()=>document.querySelector('[aria-label="PR title"]')?.value==="Edit saved despite a lost response");
@@ -245,7 +245,7 @@ export async function prCenterSmoke({page,check,shot,work}) {
       if(requests.filter(r=>r.method==="PATCH").length!==before)throw Error("Checking the result resent an edit");
     });
     await check("stale PR edits retain typed text and send no write before an explicit refresh",async()=>{
-      await page.getByRole("button",{name:"Edit PR",exact:true}).click();await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Preserved stale draft");pulls.get(100).updated_at="changed-by-reviewer";const before=requests.filter(r=>r.method==="PATCH").length;await button("Save pull request").click();await page.locator(".modal").getByRole("alert").filter({hasText:/pull request changed/i}).waitFor();if(await page.getByRole("textbox",{name:"PR title",exact:true}).inputValue()!=="Preserved stale draft"||requests.filter(r=>r.method==="PATCH").length!==before)throw Error("Stale edit was sent or draft was lost");await button("Cancel").click();await button("Discard edits").click();await page.waitForSelector("[data-pr-editor]",{state:"detached"});await page.getByRole("button",{name:"Reload request",exact:true}).click();await detail(100);
+      await page.getByRole("button",{name:"More pull request actions",exact:true}).click();await page.getByRole("menuitem",{name:"Edit PR",exact:true}).click();await page.getByRole("textbox",{name:"PR title",exact:true}).fill("Preserved stale draft");pulls.get(100).updated_at="changed-by-reviewer";const before=requests.filter(r=>r.method==="PATCH").length;await button("Save pull request").click();await page.locator(".modal").getByRole("alert").filter({hasText:/pull request changed/i}).waitFor();if(await page.getByRole("textbox",{name:"PR title",exact:true}).inputValue()!=="Preserved stale draft"||requests.filter(r=>r.method==="PATCH").length!==before)throw Error("Stale edit was sent or draft was lost");await button("Cancel").click();await button("Discard edits").click();await page.waitForSelector("[data-pr-editor]",{state:"detached"});await page.getByRole("button",{name:"Reload request",exact:true}).click();await detail(100);
     });
     await check("PR file snapshots show rename, binary, mode changes and long lines in unified and split views",async()=>{
       await page.getByRole("button",{name:"Files (4)",exact:true}).click();

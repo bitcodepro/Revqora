@@ -1,5 +1,5 @@
 import {useCallback,useEffect,useRef,useState} from "react";
-import {CheckCircle2,ExternalLink,GitMerge,Loader2,RefreshCw,Trash2} from "lucide-react";
+import {CheckCircle2,ExternalLink,GitMerge,Loader2} from "lucide-react";
 import {api,errorMessage,isGitError} from "../lib/api";
 import type {ForgeInfo,PrDetail,PrMergePlan,PrCleanupReview,PrCleanupResult} from "../lib/types";
 import {Modal} from "./Modal";
@@ -14,11 +14,22 @@ import {recoveryDialog} from "./RecoveryCenter";
 type Context={root:string;forge:ForgeInfo;detail:PrDetail;updated:()=>void};
 const open=(url:string)=>{const u=safeWebUrl(url);if(u)void api.openPath(u);};
 function Readiness({plan:p}:{plan:PrMergePlan}){return <div className="pr-merge-readiness"><div className="pr-merge-snapshot"><b>{p.actor}</b><span>Source <code>{shortOid(p.sourceSha)}</code> → target <code>{shortOid(p.targetSha)}</code></span></div>{p.queueState&&<div className="callout">Merge queue / scheduling: {p.queueState}</div>}{p.blockers.map((b,i)=><div key={i} className="callout warn">{b}</div>)}{p.rules.length>0&&<div className="pr-merge-rules">{p.rules.map((r,i)=><div key={i}><b>{r.label}</b><span>{r.state}</span><small className="faint">{r.required?"Required":"Advisory"}</small></div>)}</div>}<div className="pr-merge-checks" aria-label="Merge CI checks">{p.checks.map((c,i)=><div key={i}><span className={`pill check-${c.state}`}>{c.state}</span><span className="ellipsis" title={c.name}>{c.name}</span>{c.url&&safeWebUrl(c.url)&&<button aria-label={`Open ${c.name}`} type="button" className="icon-btn sm" title={`Open ${c.name}`} onClick={()=>open(c.url!)}><ExternalLink size={13}/></button>}</div>)}</div>{p.notices.map((n,i)=><p key={i} className="faint pr-merge-notice">{n}</p>)}</div>;}
-export function PrMergePanel(context:Context&{refreshToken:number}){
- const {root,forge,detail,updated,refreshToken}=context,[plan,setPlan]=useState<PrMergePlan|null>(null),[error,setError]=useState(""),[loading,setLoading]=useState(false),generation=useRef(0),active=useRef(false);
- const load=useCallback(async()=>{if(active.current)return;active.current=true;const id=++generation.current;setLoading(true);try{const p=await api.prMergePlan(root,detail.pull.number,forge.connectionRevision!,detail.revision);if(id===generation.current){setPlan(p);setError("");}}catch(e){if(id===generation.current){setPlan(null);setError(errorMessage(e));}}finally{if(id===generation.current){active.current=false;setLoading(false);}}},[root,forge.connectionRevision,detail.revision,detail.pull.number,refreshToken]);
- useEffect(()=>{active.current=false;setPlan(null);void load();const refresh=()=>{if(document.visibilityState!=="hidden")void load();};const timer=setInterval(refresh,10000);window.addEventListener("focus",refresh);return()=>{generation.current++;active.current=false;clearInterval(timer);window.removeEventListener("focus",refresh);};},[load]);
- return <section className="pr-merge-panel" aria-label="Merge readiness" aria-busy={loading}><header><GitMerge size={16}/><b>Checks, policies and merge</b><div className="spacer"/><button className="icon-btn" aria-label="Refresh merge readiness" disabled={loading} onClick={()=>void load()}><RefreshCw size={14}/></button>{detail.pull.state==="open"&&<button className="btn primary sm" disabled={!plan||loading} onClick={()=>void showDialog<void>(close=><MergeDialog {...context} initial={plan!} close={()=>close()}/>)}>Review merge…</button>}{detail.pull.state==="merged"&&<button className="btn sm" onClick={()=>void cleanupDialog(context)}><Trash2 size={13}/>Review source cleanup…</button>}</header>{error&&<div className="callout warn" role="alert">{error}<button className="btn sm" onClick={updated}>Reload PR context</button></div>}{loading&&!plan&&<p className="loading-status" role="status"><Loader2 className="spin" size={14}/>Loading checks and protections…</p>}{plan&&<Readiness plan={plan}/>}</section>;
+/** Checks, policies and blockers of the open PR. RequestDetail loads the plan (it also feeds the status strip). */
+export function PrMergePanel({plan,error,loading,updated}:{plan:PrMergePlan|null;error:string;loading:boolean;updated:()=>void}){
+ return <section className="pr-merge-panel" aria-label="Merge readiness" aria-busy={loading}><header><GitMerge size={16}/><b>Checks, policies and merge</b></header>{error&&<div className="callout warn" role="alert">{error}<button className="btn sm" onClick={updated}>Reload PR context</button></div>}{loading&&!plan&&<p className="loading-status" role="status"><Loader2 className="spin" size={14}/>Loading checks and protections…</p>}{plan&&<Readiness plan={plan}/>}</section>;
+}
+/**
+ * Loads the merge plan of a PR. While `poll` is set (an open PR with its Overview shown) it is
+ * refreshed every 10 seconds and on focus while the window is visible; other sections keep the
+ * last plan, so the status strip does not ask the server several times a minute in the background.
+ */
+export function useMergePlan(root:string,forge:ForgeInfo,detail:PrDetail,refreshToken:number,enabled:boolean,poll=true){
+ const [plan,setPlan]=useState<PrMergePlan|null>(null),[error,setError]=useState(""),[loading,setLoading]=useState(false),generation=useRef(0),active=useRef(false);
+ const load=useCallback(async()=>{if(!enabled||active.current)return;active.current=true;const id=++generation.current;setLoading(true);try{const p=await api.prMergePlan(root,detail.pull.number,forge.connectionRevision!,detail.revision);if(id===generation.current){setPlan(p);setError("");}}catch(e){if(id===generation.current){setPlan(null);setError(errorMessage(e));}}finally{if(id===generation.current){active.current=false;setLoading(false);}}},[enabled,root,forge.connectionRevision,detail.revision,detail.pull.number,refreshToken]);
+ // A new revision or refresh keeps the shown plan until the new one arrives.
+ useEffect(()=>{active.current=false;if(!enabled){setPlan(null);return;}void load();return()=>{generation.current++;active.current=false;};},[load,enabled]);
+ useEffect(()=>{if(!enabled||!poll)return;const refresh=()=>{if(document.visibilityState!=="hidden")void load();};const timer=setInterval(refresh,10000);window.addEventListener("focus",refresh);return()=>{clearInterval(timer);window.removeEventListener("focus",refresh);};},[load,enabled,poll]);
+ return {plan,error,loading};
 }
 export async function mergeDialog(context:Context){try{const p=await api.prMergePlan(context.root,context.detail.pull.number,context.forge.connectionRevision!,context.detail.revision);await showDialog<void>(close=><MergeDialog {...context} initial={p} close={()=>close()}/>);}catch(e){toast.error(e,"Could not prepare merge");}}
 function MergeDialog({root,forge,detail:initialDetail,initial,updated,close}:Context&{initial:PrMergePlan;close:()=>void}){

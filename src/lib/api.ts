@@ -6,6 +6,13 @@ import type { ExternalTools, FolderHistoryEntry, LineHistoryEntry, IgnoredFiles,
 import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
 import { recordError } from "./errorLog";
+import { cachedPrRead, forgetPrReads, PR_READ_TTL } from "./prCache";
+
+/** A PR write changes what remembered reads would show: forget them before and after. */
+function prWrite<T>(write: Promise<T>): Promise<T> {
+  forgetPrReads();
+  return write.finally(forgetPrReads);
+}
 import type { DeletionPlan, DeletionProof, DeletionResult, RemoteBranchTarget, RemoteDeletionReview, OperationLogDetail, OperationLogFilter, OperationLogPage, OperationLogHealth, RecoveryCatalog, RecoveryCheckpoint, RecoverySummary } from "./types";
 import type {
   Check,
@@ -411,22 +418,22 @@ export const api = {
   pullRequests: (repo: string) => call<{ forge: ForgeInfo; items: PullRequest[] }>("pull_requests", { repo }),
   prPage: (repo: string, state: import("./types").PrState, cursor: string | null = null) => call<import("./types").PrPage>("pr_page", { repo, state, cursor }),
   prMergePlan: (repo: string, number: number, expectedConnection: string, expectedRevision: string) => call<import("./types").PrMergePlan>("pr_merge_plan", { repo, number, expectedConnection, expectedRevision }),
-  prMergeSubmit: (repo: string, number: number, expectedConnection: string, expectedRevision: string, input: import("./types").PrMergeInput) => call<import("./types").PrMergeResult>("pr_merge_submit", { repo, number, expectedConnection, expectedRevision, input }),
+  prMergeSubmit: (repo: string, number: number, expectedConnection: string, expectedRevision: string, input: import("./types").PrMergeInput) => prWrite(call<import("./types").PrMergeResult>("pr_merge_submit", { repo, number, expectedConnection, expectedRevision, input })),
   prCleanupPlan: (repo: string, number: number, expectedConnection: string, expectedRevision: string, input: import("./types").PrCleanupInput) => call<import("./types").PrCleanupReview>("pr_cleanup_plan", { repo, number, expectedConnection, expectedRevision, input }),
-  prCleanupSubmit: (repo: string, number: number, expectedConnection: string, expectedRevision: string, input: import("./types").PrCleanupInput) => call<import("./types").PrCleanupResult>("pr_cleanup_submit", { repo, number, expectedConnection, expectedRevision, input }),
-  prReviewCapabilities: (repo: string, number: number, expectedConnection: string, expectedRevision: string) => call<import("./types").PrReviewCapabilities>("pr_review_capabilities", { repo, number, expectedConnection, expectedRevision }),
-  prReviewPage: (repo: string, number: number, expectedConnection: string, expectedRevision: string, feed: string, cursor: string | null = null) => call<import("./types").PrReviewPage>("pr_review_page", { repo, number, expectedConnection, expectedRevision, feed, cursor }),
+  prCleanupSubmit: (repo: string, number: number, expectedConnection: string, expectedRevision: string, input: import("./types").PrCleanupInput) => prWrite(call<import("./types").PrCleanupResult>("pr_cleanup_submit", { repo, number, expectedConnection, expectedRevision, input })),
+  prReviewCapabilities: (repo: string, number: number, expectedConnection: string, expectedRevision: string) => cachedPrRead(["caps", repo, number, expectedConnection, expectedRevision], PR_READ_TTL.discussions, () => call<import("./types").PrReviewCapabilities>("pr_review_capabilities", { repo, number, expectedConnection, expectedRevision })),
+  prReviewPage: (repo: string, number: number, expectedConnection: string, expectedRevision: string, feed: string, cursor: string | null = null) => cachedPrRead(["reviews", repo, number, expectedConnection, expectedRevision, feed, cursor], PR_READ_TTL.inFlight, () => call<import("./types").PrReviewPage>("pr_review_page", { repo, number, expectedConnection, expectedRevision, feed, cursor })),
   prReviewThread: (repo: string, number: number, expectedConnection: string, expectedRevision: string, thread: string) => call<import("./types").PrThread>("pr_review_thread", { repo, number, expectedConnection, expectedRevision, thread }),
-  prReviewAct: (repo: string, number: number, expectedConnection: string, expectedRevision: string, action: import("./types").PrReviewAction) => call<void>("pr_review_act", { repo, number, expectedConnection, expectedRevision, action }),
-  prDetail: (repo: string, number: number, expectedConnection: string) => call<import("./types").PrDetail>("pr_detail", { repo, number, expectedConnection }),
-  prChecks: (repo: string, number: number, expectedConnection: string, expectedRevision?: string) => call<{ revision: string; checks: Check[] }>("pr_checks", { repo, number, expectedConnection, expectedRevision }),
-  prCreate: (repo: string, title: string, body: string, head: string, base: string, draft: boolean, expectedConnection: string) => call<PullRequest>("pr_create", { repo, title, body, head, base, draft, expectedConnection }),
-  prEdit: (repo: string, number: number, expectedConnection: string, expectedRevision: string, edit: import("./types").PrEdit) => call<import("./types").PrEditResult>("pr_edit", { repo, number, expectedConnection, expectedRevision, edit }),
+  prReviewAct: (repo: string, number: number, expectedConnection: string, expectedRevision: string, action: import("./types").PrReviewAction) => prWrite(call<void>("pr_review_act", { repo, number, expectedConnection, expectedRevision, action })),
+  prDetail: (repo: string, number: number, expectedConnection: string) => cachedPrRead(["detail", repo, number, expectedConnection], PR_READ_TTL.inFlight, () => call<import("./types").PrDetail>("pr_detail", { repo, number, expectedConnection })),
+  prChecks: (repo: string, number: number, expectedConnection: string, expectedRevision?: string) => cachedPrRead(["checks", repo, number, expectedConnection, expectedRevision], PR_READ_TTL.changing, () => call<{ revision: string; checks: Check[] }>("pr_checks", { repo, number, expectedConnection, expectedRevision })),
+  prCreate: (repo: string, title: string, body: string, head: string, base: string, draft: boolean, expectedConnection: string) => prWrite(call<PullRequest>("pr_create", { repo, title, body, head, base, draft, expectedConnection })),
+  prEdit: (repo: string, number: number, expectedConnection: string, expectedRevision: string, edit: import("./types").PrEdit) => prWrite(call<import("./types").PrEditResult>("pr_edit", { repo, number, expectedConnection, expectedRevision, edit })),
   prTemplates: (repo: string, expectedConnection: string) => call<import("./types").PrTemplates>("pr_templates", { repo, expectedConnection }),
-  prFiles: (repo: string, number: number, expectedConnection: string, expectedRevision?: string, offset = 0) => call<import("./types").PrFiles>("pr_files", { repo, number, expectedConnection, expectedRevision, offset }),
-  prFile: (repo: string, number: number, expectedConnection: string, expectedRevision: string, fileId: string) => call<import("./types").PrFileView>("pr_file", { repo, number, expectedConnection, expectedRevision, fileId }),
+  prFiles: (repo: string, number: number, expectedConnection: string, expectedRevision?: string, offset = 0) => cachedPrRead(["files", repo, number, expectedConnection, expectedRevision, offset], expectedRevision ? PR_READ_TTL.pinned : PR_READ_TTL.inFlight, () => call<import("./types").PrFiles>("pr_files", { repo, number, expectedConnection, expectedRevision, offset })),
+  prFile: (repo: string, number: number, expectedConnection: string, expectedRevision: string, fileId: string) => cachedPrRead(["file", repo, number, expectedConnection, expectedRevision, fileId], PR_READ_TTL.pinned, () => call<import("./types").PrFileView>("pr_file", { repo, number, expectedConnection, expectedRevision, fileId })),
   pullRequestCreate: (repo: string, title: string, body: string, head: string, base: string, draft: boolean, expectedConnection: string) =>
-    call<PullRequest>("pull_request_create", { repo, title, body, head, base, draft, expectedConnection }),
+    prWrite(call<PullRequest>("pull_request_create", { repo, title, body, head, base, draft, expectedConnection })),
   pullRequestCheckout: (repo: string, number: number, expectedConnection: string,expectedHead:string) => call<string>("pull_request_checkout", { repo, number, expectedConnection,expectedHead }),
   commitChecks: (repo: string, sha: string) => call<Check[]>("commit_checks", { repo, sha }),
   watchRepo: (repo: string, restart = false) => call<void>("watch_repo", { repo, restart }),

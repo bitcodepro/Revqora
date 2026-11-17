@@ -42,6 +42,71 @@ pub struct PullRequest {
     pub state: String,
     pub created: String,
     pub head_sha: String,
+    /// Review state the provider includes in its list answer at no extra cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signals: Option<PrSignals>,
+}
+
+/// What a PR list row can show without another request. A missing field means the
+/// provider does not report it in lists.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrSignals {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comments: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approvals: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes_requested: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflicts: Option<bool>,
+}
+
+impl PrSignals {
+    fn known(self) -> Option<Self> {
+        (self != Self::default()).then_some(self)
+    }
+}
+
+fn count_where(v: &Value, list: &str, keep: impl Fn(&Value) -> bool) -> Option<u64> {
+    v.pointer(list).and_then(Value::as_array).map(|items| items.iter().filter(|item| keep(item)).count() as u64)
+}
+
+fn signals(kind: &str, v: &Value) -> Option<PrSignals> {
+    let number = |ptr: &str| v.pointer(ptr).and_then(Value::as_u64);
+    match kind {
+        "github" => PrSignals {
+            comments: number("/comments").zip(number("/review_comments")).map(|(a, b)| a + b),
+            conflicts: v.get("mergeable_state").and_then(Value::as_str).map(|state| state == "dirty"),
+            ..Default::default()
+        },
+        "gitlab" => PrSignals { comments: number("/user_notes_count"), conflicts: v.get("has_conflicts").and_then(Value::as_bool), ..Default::default() },
+        "bitbucket" => {
+            let state = |participant: &Value| participant.get("state").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
+            PrSignals {
+                comments: number("/comment_count"),
+                approvals: count_where(v, "/participants", |x| x.get("approved").and_then(Value::as_bool) == Some(true) || state(x) == "approved"),
+                changes_requested: count_where(v, "/participants", |x| state(x) == "changes_requested"),
+                conflicts: None,
+            }
+        }
+        "bitbucket-server" => PrSignals {
+            comments: number("/properties/commentCount"),
+            approvals: count_where(v, "/reviewers", |x| x.get("status").and_then(Value::as_str) == Some("APPROVED")),
+            changes_requested: count_where(v, "/reviewers", |x| x.get("status").and_then(Value::as_str) == Some("NEEDS_WORK")),
+            conflicts: v.pointer("/properties/mergeResult/outcome").and_then(Value::as_str).map(|outcome| outcome == "CONFLICTED"),
+        },
+        _ => {
+            let vote = |x: &Value| x.get("vote").and_then(Value::as_i64).unwrap_or(0);
+            PrSignals {
+                comments: None,
+                approvals: count_where(v, "/reviewers", |x| vote(x) >= 5),
+                changes_requested: count_where(v, "/reviewers", |x| vote(x) <= -5),
+                conflicts: v.get("mergeStatus").and_then(Value::as_str).map(|status| status == "conflicts"),
+            }
+        }
+    }
+    .known()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -365,10 +430,6 @@ pub fn forge_for(url: &str, remote: &str) -> Option<ForgeInfo> {
     }
 }
 
-fn is_bitbucket(f: &ForgeInfo) -> bool {
-    f.kind.starts_with("bitbucket")
-}
-
 /// Let Git apply this repository's URL/account matching, including useHttpPath.
 /// Never override its storage scope or cache credentials by host in Revqora.
 pub(super) fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
@@ -420,6 +481,81 @@ pub(super) fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::
         }
     }
     Ok(super::forge_accounts::Credential { username, token: pass, mode: "bearer".into() })
+}
+
+/// How long a Git credential answer is reused (see [`cached_token`]).
+const CREDENTIAL_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+type CredentialKey = (std::path::PathBuf, String);
+
+/// Git credential answers reused by API requests (see [`cached_token`]).
+#[derive(Default)]
+struct CredentialCache {
+    /// Bumped by every invalidation. A lookup that was running when it changed may have
+    /// read the credential that was just forgotten, so its answer is not cached.
+    generation: u64,
+    entries: std::collections::HashMap<CredentialKey, (std::time::Instant, super::forge_accounts::Credential)>,
+}
+
+fn credential_cache() -> &'static parking_lot::Mutex<CredentialCache> {
+    static CACHE: std::sync::OnceLock<parking_lot::Mutex<CredentialCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Lookups started for one request when each is invalidated while Git runs. The last
+/// answer is then used for that request only and not cached.
+const CREDENTIAL_ATTEMPTS: usize = 3;
+
+/// [`token`] for API requests. `git credential fill` through Git Credential Manager takes
+/// 1–2 s on Windows, and every PR request needs the credential (it is part of the
+/// connection revision), so opening one Bitbucket PR spent most of its time here. An
+/// answer is reused for a minute per repository and remote URL; a 401, a new sign-in or
+/// Forget saved tokens invalidates it. No lock is held while Git runs.
+pub(super) fn cached_token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
+    cached_in(credential_cache(), (repo.to_path_buf(), url.to_owned()), || token(repo, url))
+}
+
+fn cached_in(
+    cache: &parking_lot::Mutex<CredentialCache>,
+    key: CredentialKey,
+    lookup: impl Fn() -> GitResult<super::forge_accounts::Credential>,
+) -> GitResult<super::forge_accounts::Credential> {
+    let mut attempt = 0;
+    loop {
+        let generation = {
+            let saved = cache.lock();
+            if let Some((at, credential)) = saved.entries.get(&key) {
+                if at.elapsed() < CREDENTIAL_TTL {
+                    return Ok(credential.clone());
+                }
+            }
+            saved.generation
+        };
+        let credential = lookup()?;
+        attempt += 1;
+        let mut saved = cache.lock();
+        if saved.generation == generation {
+            saved.entries.retain(|_, (at, _)| at.elapsed() < CREDENTIAL_TTL);
+            saved.entries.insert(key, (std::time::Instant::now(), credential.clone()));
+            return Ok(credential);
+        }
+        drop(saved);
+        if attempt == CREDENTIAL_ATTEMPTS {
+            return Ok(credential);
+        }
+    }
+}
+
+fn invalidate(cache: &parking_lot::Mutex<CredentialCache>) {
+    let mut cache = cache.lock();
+    cache.generation = cache.generation.wrapping_add(1);
+    cache.entries.clear();
+}
+
+/// Drops remembered Git credentials (after a rejected token, a new sign-in or Forget saved
+/// tokens). Lookups still running when this is called are not cached.
+pub fn forget_cached_tokens() {
+    invalidate(credential_cache());
 }
 
 pub(crate) fn base64(input: &[u8]) -> String {
@@ -523,12 +659,17 @@ fn authorized<T>(repo: &Path, f: &ForgeInfo, send: impl Fn(&super::forge_account
     }
     let credential = match context.credential {
         Some(c) => c,
-        None => token(repo, &context.git_url)?,
+        None => cached_token(repo, &context.git_url)?,
     };
     if context.profile.is_some() {
         return send(&credential);
     }
-    send_with_git_credential(&f.kind, credential, send)
+    let result = send_with_git_credential(&f.kind, credential, send);
+    if matches!(&result, Err(e) if e.details.iter().any(|d| d.starts_with("forge_http_status=") && d.ends_with(":401"))) {
+        // A revoked or replaced Git token must not be reused from the cache.
+        forget_cached_tokens();
+    }
+    result
 }
 
 fn send_with_git_credential<T>(
@@ -617,6 +758,7 @@ pub(super) fn gh_pr(v: &Value) -> PullRequest {
         state: s(v, "state"),
         created: s(v, "created_at"),
         head_sha: v.get("head").map(|h| s(h, "sha")).unwrap_or_default(),
+        signals: signals("github", v),
     }
 }
 
@@ -634,6 +776,7 @@ pub(super) fn gl_mr(v: &Value) -> PullRequest {
         state: s(v, "state"),
         created: s(v, "created_at"),
         head_sha: s(v, "sha"),
+        signals: signals("gitlab", v),
     }
 }
 
@@ -655,6 +798,7 @@ pub fn bb_pr(v: &Value) -> PullRequest {
         state: s(v, "state").to_lowercase(),
         created: s(v, "created_on"),
         head_sha: p(v, "/source/commit/hash"),
+        signals: signals("bitbucket", v),
     }
 }
 
@@ -672,6 +816,7 @@ pub fn bbs_pr(v: &Value) -> PullRequest {
         state: s(v, "state").to_lowercase(),
         created: v.get("createdDate").and_then(|d| d.as_i64()).map(iso_from_millis).unwrap_or_default(),
         head_sha: p(v, "/fromRef/latestCommit"),
+        signals: signals("bitbucket-server", v),
     }
 }
 
@@ -715,6 +860,7 @@ pub(super) fn azure_pr(v: &Value, f: &ForgeInfo) -> PullRequest {
         state: s(v, "status"),
         created: s(v, "creationDate"),
         head_sha: p(v, "/lastMergeSourceCommit/commitId"),
+        signals: signals("azure", v),
     }
 }
 
@@ -926,39 +1072,13 @@ pub fn checks(repo: &Path, sha: &str) -> GitResult<Vec<Check>> {
     checks_for(repo, &f, sha)
 }
 
+/// The CI checks of a commit, read the same way as for a merge review (every page, the
+/// newest status per check). Before, commit details showed only the first page.
 pub(super) fn checks_for(repo: &Path, f: &ForgeInfo, sha: &str) -> GitResult<Vec<Check>> {
     if !matches!(sha.len(), 40 | 64) || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(GitError::new("Choose a complete commit ID for CI checks."));
     }
-    let mut out = Vec::new();
-    if f.kind == "azure" {
-        let v = request(repo, f, "GET", &format!("{}/commits/{}/statuses?api-version=7.1", azure_repo(f), enc(sha)), None)?;
-        for st in v.get("value").and_then(Value::as_array).cloned().unwrap_or_default() {
-            out.push(Check {
-                name: st.pointer("/context/name").and_then(Value::as_str).unwrap_or("Status").into(),
-                state: norm_state(&s(&st, "state")),
-                url: Some(s(&st, "targetUrl")).filter(|s| !s.is_empty()),
-            });
-        }
-    } else if f.kind == "github" {
-        let runs = request(repo, f, "GET", &format!("/repos/{}/commits/{sha}/check-runs?per_page=100", project_path(&f.project)), None)?;
-        for r in runs.get("check_runs").and_then(|a| a.as_array()).cloned().unwrap_or_default() {
-            let st = if s(&r, "status") == "completed" { norm_state(&s(&r, "conclusion")) } else { "pending".into() };
-            out.push(Check { name: s(&r, "name"), state: st, url: Some(s(&r, "html_url")).filter(|u| !u.is_empty()) });
-        }
-        let status = request(repo, f, "GET", &format!("/repos/{}/commits/{sha}/status", project_path(&f.project)), None)?;
-        for st in status.get("statuses").and_then(|a| a.as_array()).cloned().unwrap_or_default() {
-            out.push(Check { name: s(&st, "context"), state: norm_state(&s(&st, "state")), url: Some(s(&st, "target_url")).filter(|u| !u.is_empty()) });
-        }
-    } else if is_bitbucket(f) {
-        out = bitbucket_statuses(f, sha, |path| request(repo, f, "GET", path, None))?;
-    } else {
-        let v = request(repo, f, "GET", &format!("/projects/{}/repository/commits/{sha}/statuses", enc(&f.project)), None)?;
-        for st in v.as_array().cloned().unwrap_or_default() {
-            out.push(Check { name: s(&st, "name"), state: norm_state(&s(&st, "status")), url: Some(s(&st, "target_url")).filter(|u| !u.is_empty()) });
-        }
-    }
-    Ok(out)
+    super::pr_merge::checks::for_commit(repo, f, sha)
 }
 
 /// Every page of a commit's Bitbucket build statuses. Both APIs paginate (Cloud: `next` URL,
@@ -998,6 +1118,36 @@ pub fn bitbucket_statuses(f: &ForgeInfo, sha: &str, mut get: impl FnMut(&str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_rows_carry_only_the_review_signals_each_provider_reports() {
+        let json = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+        let bb = bb_pr(&json(
+            r#"{"id":1,"comment_count":3,"participants":[{"approved":true,"state":"approved"},{"approved":false,"state":"changes_requested"},{"approved":false,"state":null}]}"#,
+        ));
+        assert_eq!(bb.signals, Some(PrSignals { comments: Some(3), approvals: Some(1), changes_requested: Some(1), conflicts: None }));
+        let gl = gl_mr(&json(r#"{"iid":1,"user_notes_count":2,"has_conflicts":true}"#));
+        assert_eq!(gl.signals, Some(PrSignals { comments: Some(2), conflicts: Some(true), ..Default::default() }));
+        let bbs = bbs_pr(&json(
+            r#"{"id":1,"reviewers":[{"status":"APPROVED"},{"status":"NEEDS_WORK"},{"status":"UNAPPROVED"}],"properties":{"commentCount":4,"mergeResult":{"outcome":"CLEAN"}}}"#,
+        ));
+        assert_eq!(bbs.signals, Some(PrSignals { comments: Some(4), approvals: Some(1), changes_requested: Some(1), conflicts: Some(false) }));
+        let f = ForgeInfo {
+            kind: "azure".into(),
+            host: String::new(),
+            project: "p/r".into(),
+            remote: "origin".into(),
+            web_url: String::new(),
+            api: String::new(),
+            connection_revision: None,
+            account_login: None,
+            account_id: None,
+        };
+        let az = azure_pr(&json(r#"{"pullRequestId":1,"mergeStatus":"conflicts","reviewers":[{"vote":10},{"vote":5},{"vote":-10},{"vote":0}]}"#), &f);
+        assert_eq!(az.signals, Some(PrSignals { approvals: Some(2), changes_requested: Some(1), conflicts: Some(true), ..Default::default() }));
+        // GitHub lists no counts: the row stays without signals instead of showing zeros.
+        assert_eq!(gh_pr(&json(r#"{"number":1}"#)).signals, None);
+    }
 
     #[test]
     fn azure_git_credentials_try_entra_bearer_only_after_a_rejected_pat() {
@@ -1284,6 +1434,83 @@ fi
         std::fs::write(repo.join("normal-lookup"), "").unwrap();
         assert_eq!(token(repo, url).unwrap().token, "normal-fixture");
         assert_eq!(std::fs::read(repo.join(".git/config")).unwrap(), config);
+    }
+
+    fn fixture_credential(token: &str) -> crate::git::forge_accounts::Credential {
+        crate::git::forge_accounts::Credential { username: "alice".into(), token: token.into(), mode: "bearer".into() }
+    }
+
+    #[test]
+    fn a_credential_read_before_it_was_forgotten_is_not_cached_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        let cache = parking_lot::Mutex::new(CredentialCache::default());
+        let key = (std::path::PathBuf::from("fixture-repo"), "https://example.invalid/team/repo.git".to_owned());
+        let lookups = AtomicUsize::new(0);
+        let (started_tx, started) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let counter = &lookups;
+        // The first lookup reads the old token, then waits while the token is forgotten.
+        let lookup = move || {
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(fixture_credential("old-token"))
+            } else {
+                Ok(fixture_credential("new-token"))
+            }
+        };
+        std::thread::scope(|scope| {
+            let request = scope.spawn(|| cached_in(&cache, key.clone(), lookup));
+            started.recv().unwrap();
+            invalidate(&cache);
+            release.send(()).unwrap();
+            let answer = request.join().unwrap().unwrap();
+            assert_eq!(answer.token, "new-token", "a lookup that overlapped the reset is read again");
+        });
+        assert_eq!(lookups.load(Ordering::SeqCst), 2);
+        let saved = cache.lock().entries.get(&key).map(|(_, credential)| credential.token.clone());
+        assert_eq!(saved.as_deref(), Some("new-token"), "the forgotten token must not be cached again");
+        let again = cached_in(&cache, key, || panic!("the fresh answer is reused")).unwrap();
+        assert_eq!(again.token, "new-token");
+    }
+
+    #[test]
+    fn a_lookup_invalidated_on_every_attempt_is_used_once_and_not_cached() {
+        let cache = parking_lot::Mutex::new(CredentialCache::default());
+        let key = (std::path::PathBuf::from("fixture-repo"), "https://example.invalid/team/repo.git".to_owned());
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let answer = cached_in(&cache, key.clone(), || {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            invalidate(&cache);
+            Ok(fixture_credential("changing-token"))
+        })
+        .unwrap();
+        assert_eq!(answer.token, "changing-token");
+        assert_eq!(attempts.into_inner(), CREDENTIAL_ATTEMPTS);
+        assert!(cache.lock().entries.is_empty());
+    }
+
+    #[test]
+    fn api_requests_reuse_a_git_credential_until_it_is_forgotten() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path();
+        runner::run(repo, ["init", "-q"]).unwrap();
+        runner::run(repo, ["config", "credential.helper", ""]).unwrap();
+        // Each lookup appends to a file, so the test counts helper runs.
+        let helper = "!f() { echo x >> lookups; printf '%s
+' 'username=alice' 'password=cached-fixture'; }; f";
+        runner::run(repo, ["config", "--add", "credential.helper", helper]).unwrap();
+        let url = "https://credential-cache.invalid/team/repo.git";
+        let lookups = || std::fs::read_to_string(repo.join("lookups")).map(|s| s.lines().count()).unwrap_or(0);
+        assert_eq!(cached_token(repo, url).unwrap().token, "cached-fixture");
+        let first = lookups();
+        assert!(first >= 1);
+        assert_eq!(cached_token(repo, url).unwrap().token, "cached-fixture");
+        assert_eq!(lookups(), first, "a repeated API request must not start the credential helper again");
+        forget_cached_tokens();
+        cached_token(repo, url).unwrap();
+        assert!(lookups() > first, "a forgotten credential is read from Git again");
     }
 
     #[test]

@@ -17,13 +17,23 @@ Git may successfully use an SSH key while the PR API has no usable token. A brow
 ## Add an API account
 
 1. Open **Accounts and API connections**.
-2. Choose **Add API account**.
-3. Select the provider.
-4. Enter its web **Server URL**, including the organization/installation prefix when applicable.
-5. Enter the provider access token and any required account/email field.
-6. Choose **Verify and save account**.
-7. In the repository connection section, select the intended **Remote** and **API account**.
-8. Choose **Use for PR and checks**.
+2. Choose **Add API account**. The form replaces the account list until you save or cancel it.
+3. **Service**: choose the provider. The selected remote preselects it. The server is shown as a summary; use **Change server** for GitHub Enterprise or a self-hosted GitLab (include its installation prefix). Azure DevOps always asks for the organization URL.
+4. **How do you sign in?**: choose one method. Each method lists only the fields it needs:
+
+   | Provider | Methods | Fields |
+   | --- | --- | --- |
+   | GitHub, GitLab | Personal access token | Token |
+   | Azure DevOps | Personal access token (PAT) or Microsoft Entra access token | Token |
+   | Bitbucket Cloud | API token + Atlassian email | Email and token |
+   | | Access token (repository, project, workspace or OAuth) | Token |
+   | | Git token of the selected remote | Nothing; the Atlassian email is optional (enter it when the Git token is an API token) |
+
+5. Fill the fields marked **required**. **Create a token** opens the provider's token page when it has one. While something is missing, the form says what next to the disabled save button.
+6. **Options** are optional: use the account for this repository's PRs and checks (on by default), read the Bitbucket profile, keep the token after restarting (needs an unlocked vault).
+7. Choose **Verify and save account** (Bitbucket without profile reading: **Save token connection**).
+
+To change the account of a repository later, select the intended **Remote** and **API account** in the repository connection section and choose **Use for PR and checks**.
 
 The token needs access to the relevant repositories and API operations. Obtain it through the provider's current account/organization procedures. Server permissions, organization authorization and branch policies still apply.
 
@@ -42,6 +52,11 @@ The Add API account form manages GitHub, GitLab, Azure and Bitbucket Cloud accou
 ## Save tokens across restarts
 
 For HTTPS Git operations, Revqora first uses the configured credential helper.
+Once Revqora holds a token for a repository (remembered, or typed in this session),
+Fetch, Pull and Push in Automatic mode ask Revqora for it before the configured
+helpers, so Git Credential Manager no longer starts for every request; it is still
+asked for hosts Revqora has no token for. A configuration that resets the helper
+list with an empty `credential.helper` keeps Git's own order.
 On Windows, if Revqora prompts for a token, **Remember in Revqora on this Windows
 account** stores Git-approved credentials under `data/git-credentials`, encrypted
 for that Windows user. In the Bitbucket prompt, enter the token to sign in to Git.
@@ -52,8 +67,8 @@ token. If a remembered token expires, sign in again or reconnect the API account
 
 To persist an API account token in Revqora's separate vault:
 
-1. Create or unlock the **Portable token vault** with your vault password.
-2. Enable **Save token in the encrypted vault** while saving the account.
+1. Under **Portable token vault** (optional), choose **Set up vault…** and enter a vault password twice, or unlock an existing vault with its password. The password fields appear only then.
+2. Enable **Keep after restarting (encrypted vault)** in the account form's options.
 3. After restarting, unlock the vault again.
 
 The encrypted store is under `data/accounts` beside the executable. The vault password is not saved. **Lock tokens and clear sessions** clears active credentials. Forgetting saved tokens requires reconnecting accounts; it does not delete remote repositories.

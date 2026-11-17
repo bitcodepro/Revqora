@@ -10,7 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Columns3, FilePlus2, GitCommitHorizontal, GitGraph, GitPullRequest, Maximize2, Minimize2, RefreshCw, Rows3 } from "lucide-react";
-import { retryRepositoryWatch, useRepos, type RepoTab } from "./lib/store";
+import { rememberOperationRefresh, retryRepositoryWatch, useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, toggledThemePref, useSettings } from "./lib/settings";
 import { applyTheme } from "./lib/themeApply";
 import { closeOverlay, openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
@@ -368,7 +368,8 @@ function MainApp() {
       if (e.payload.phase === "finished" || e.payload.phase === "failed") {
         // Shared refs can change in another worktree. Refresh all open views.
         for (const root of useRepos.getState().order) {
-          if (root === e.payload.repo || useRepos.getState().tabs[root]?.info?.commonDir === e.payload.repositoryKey) void useRepos.getState().refresh(root);
+          if (root === e.payload.repo) rememberOperationRefresh(e.payload.id, useRepos.getState().refresh(root));
+          else if (useRepos.getState().tabs[root]?.info?.commonDir === e.payload.repositoryKey) void useRepos.getState().refresh(root);
         }
       }
     }));

@@ -36,6 +36,11 @@ impl Store {
         Self(dir.join(format!("{:x}.bin", Sha256::digest(repo.as_os_str().as_encoded_bytes()))))
     }
 
+    /// Whether a token file exists (without decrypting it).
+    pub fn exists(&self) -> bool {
+        fs::metadata(&self.0).is_ok_and(|m| m.is_file() && m.len() > 0)
+    }
+
     pub fn read(&self) -> io::Result<Vec<Token>> {
         let file = match File::open(&self.0) {
             Ok(file) => file,

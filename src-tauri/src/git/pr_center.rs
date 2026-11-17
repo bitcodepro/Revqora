@@ -184,7 +184,8 @@ pub fn page(repo: &Path, state: &str, cursor: Option<&str>) -> GitResult<Page> {
             format!("{}?state={}&order_by=updated_at&sort=desc&per_page={PAGE}&page={page}", endpoint(&f), if state == "open" { "opened" } else { state })
         }
         "bitbucket" => format!(
-            "{}?{}sort=-updated_on&pagelen={PAGE}&page={page}",
+            // `+values.participants` adds approvals to the default fields (no extra request).
+            "{}?{}sort=-updated_on&pagelen={PAGE}&page={page}&fields=%2Bvalues.participants",
             endpoint(&f),
             match state {
                 "open" => "state=OPEN&",
@@ -329,10 +330,12 @@ fn detail_value(f: &ForgeInfo, v: &Value) -> GitResult<Detail> {
         }
         _ => (text(v, "/description"), text(v, "/creationDate"), text(v, "/lastMergeTargetCommit/commitId"), String::new(), None),
     };
+    // Comment and approval counts change without changing what a write was reviewed against.
+    let reviewed = PullRequest { signals: None, ..pull.clone() };
     let revision = hash(
         serde_json::to_vec(&json!([
             f.connection_revision,
-            pull,
+            reviewed,
             body,
             updated,
             base_sha,
@@ -387,6 +390,32 @@ fn bitbucket_project(f: &ForgeInfo, metadata: &Value, side: &str) -> GitResult<S
     Ok(project)
 }
 
+type ResolvedCommits = std::collections::HashMap<(String, String, String), String>;
+
+fn resolved_commits() -> &'static parking_lot::Mutex<ResolvedCommits> {
+    static RESOLVED: std::sync::OnceLock<parking_lot::Mutex<ResolvedCommits>> = std::sync::OnceLock::new();
+    RESOLVED.get_or_init(Default::default)
+}
+
+#[cfg(test)]
+pub(super) fn forget_resolved_commits() {
+    resolved_commits().lock().clear();
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Lets a test make every resolution ask the server (failure paths after a save).
+    pub(super) static ASK_EVERY_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn remembered_commit(key: &(String, String, String)) -> Option<String> {
+    #[cfg(test)]
+    if ASK_EVERY_COMMIT.with(|c| c.get()) {
+        return None;
+    }
+    resolved_commits().lock().get(key).cloned()
+}
+
 fn resolve_bitbucket_oid(repo: &Path, f: &ForgeInfo, short: &str, project: impl FnOnce() -> GitResult<String>) -> GitResult<String> {
     if oid(short) {
         return Ok(short.into());
@@ -395,11 +424,22 @@ fn resolve_bitbucket_oid(repo: &Path, f: &ForgeInfo, short: &str, project: impl 
         return Err(fail("Bitbucket omitted a valid PR commit ID. Refresh the request details."));
     }
     let project = project()?;
+    // A commit ID never changes, so each short ID is asked once per session. Bitbucket
+    // shortens both PR commits, which cost two extra requests on every PR read.
+    let key = (f.api.clone(), project.clone(), short.to_ascii_lowercase());
+    if let Some(full) = remembered_commit(&key) {
+        return Ok(full);
+    }
     let commit = forge::request(repo, f, "GET", &format!("/repositories/{}/commit/{}", forge::project_path(&project), short), None)?;
     let full = text(&commit, "/hash");
     if !oid(&full) || !full.to_ascii_lowercase().starts_with(&short.to_ascii_lowercase()) {
         return Err(fail("Bitbucket returned a different commit while resolving the PR revision. Refresh the request."));
     }
+    let mut resolved = resolved_commits().lock();
+    if resolved.len() >= 4096 {
+        resolved.clear();
+    }
+    resolved.insert(key, full.clone());
     Ok(full)
 }
 pub fn detail(repo: &Path, n: u64, connection: &str) -> GitResult<Detail> {

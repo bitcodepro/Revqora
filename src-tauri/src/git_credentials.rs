@@ -154,6 +154,21 @@ pub(crate) fn forget(repo: &Path) -> std::io::Result<()> {
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
+/// Whether Revqora's helper may answer for `repo`: a credential typed in this session or a
+/// remembered token. Cheap: it neither decrypts nor contacts the helper.
+pub(crate) fn remembers(repo: &Path) -> bool {
+    let Some(root) = root(repo) else { return false };
+    let typed = CACHE.lock().entries.iter().any(|entry| entry.key.root == root);
+    typed || remembered_on_disk(&root)
+}
+#[cfg(windows)]
+fn remembered_on_disk(root: &Path) -> bool {
+    remembered::Store::for_repo(root).is_ok_and(|store| store.exists())
+}
+#[cfg(not(windows))]
+fn remembered_on_disk(_root: &Path) -> bool {
+    false
+}
 pub fn epoch() -> u64 {
     CACHE.lock().epoch
 }

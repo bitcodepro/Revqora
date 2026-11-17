@@ -196,6 +196,51 @@ fn shell_path(value: &str) -> String {
         value.into()
     }
 }
+/// When Revqora holds a credential for this repository, ask its helper before the configured
+/// ones. Git asks helpers in order, and Git Credential Manager (a .NET process) takes about
+/// 1.3 s per request even when it has nothing for the host; it used to run first on every
+/// fetch, pull and push. The configured helpers follow, in their order, for anything Revqora
+/// does not answer and for `store`/`erase`. Configurations that reset the helper list with
+/// an empty value keep Git's own order.
+fn helpers_first(root: &Path, command: &mut Command) {
+    if !crate::git_credentials::remembers(root) {
+        return;
+    }
+    let Some((_, revqora)) = crate::askpass::env().iter().find(|(key, _)| key == crate::git_credentials::HELPER_VAR) else { return };
+    let Ok(out) = super::config_cache::exec(root, &["config", "--show-scope", "-z", "--get-regexp", r"^credential\..*helper$"]) else { return };
+    if !out.ok() && out.code != 1 {
+        return;
+    }
+    if let Some(order) = helper_order(&out.text(), revqora) {
+        for entry in order {
+            command.args(["-c", &entry]);
+        }
+    }
+}
+
+/// `-c` values that put `revqora` first and then replay the configured helpers from
+/// `git config --show-scope -z --get-regexp` output, or None to keep Git's order.
+fn helper_order(listing: &str, revqora: &str) -> Option<Vec<String>> {
+    let mut order = vec!["credential.helper=".to_owned(), format!("credential.helper={revqora}")];
+    let mut fields = listing.split('\0');
+    while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
+        // Command-line entries are Revqora's own (the runner adds its helper to every command).
+        if scope == "command" {
+            continue;
+        }
+        let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
+        let lower = key.to_ascii_lowercase();
+        if !(lower == "credential.helper" || lower.starts_with("credential.") && lower.ends_with(".helper")) {
+            continue;
+        }
+        if value.is_empty() {
+            return None;
+        }
+        order.push(format!("{key}={value}"));
+    }
+    Some(order)
+}
+
 pub fn apply(root: &Path, command: &mut Command, selected: Option<&Options>, args: &[String]) -> GitResult<()> {
     let mut index = 0;
     while args.get(index).is_some_and(|s| s == "-c" || s == "--literal-pathspecs") {
@@ -238,6 +283,7 @@ pub fn apply(root: &Path, command: &mut Command, selected: Option<&Options>, arg
         // Git validates access on the transport request. GCM's profile probe
         // can reject an otherwise valid Bitbucket repository token.
         command.args(["-c", "credential.https://bitbucket.org.bitbucketValidateStoredCredentials=false"]);
+        helpers_first(root, command);
     }
     if options.https == Https::Token {
         command.args(["-c", "credential.helper="]);
@@ -305,6 +351,28 @@ pub fn apply(root: &Path, command: &mut Command, selected: Option<&Options>, arg
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revqora_helper_goes_first_and_configured_helpers_keep_their_order() {
+        let listing = "system\0credential.helper\nmanager\0command\0credential.helper\n!revqora\0global\0credential.https://dev.azure.com.helper\nazure\0global\0credential.https://github.com.username\nme\0";
+        assert_eq!(
+            helper_order(listing, "!revqora").unwrap(),
+            ["credential.helper=", "credential.helper=!revqora", "credential.helper=manager", "credential.https://dev.azure.com.helper=azure"]
+        );
+        assert_eq!(helper_order("", "!r").unwrap(), ["credential.helper=", "credential.helper=!r"]);
+        // A configured reset changes which helpers apply: keep Git's own order.
+        assert!(helper_order("system\0credential.helper\nmanager\0local\0credential.helper\n\0", "!r").is_none());
+    }
+
+    #[test]
+    fn helper_listing_matches_git_output() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::runner::run(dir.path(), ["init", "-q"]).unwrap();
+        super::super::runner::run(dir.path(), ["config", "credential.https://example.invalid.helper", "store --file=x"]).unwrap();
+        let out = super::super::runner::exec(dir.path(), ["config", "--show-scope", "-z", "--get-regexp", r"^credential\..*helper$"]).unwrap();
+        let order = helper_order(&out.text(), "!r").unwrap();
+        assert!(order.contains(&"credential.https://example.invalid.helper=store --file=x".to_owned()), "{order:?}");
+    }
     use crate::git::{ops, runner};
     fn root() -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();

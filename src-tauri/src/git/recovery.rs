@@ -91,7 +91,7 @@ fn git(root: &Path, args: &[String], input: Option<&[u8]>) -> GitResult<String> 
 /// Let Git normalize true/yes/on/1 (and valueless keys), and fail closed on
 /// malformed configuration rather than silently capturing a different layout.
 fn config_bool(root: &Path, key: &str) -> GitResult<bool> {
-    let out = runner::exec(root, ["config", "--bool", "--get", key])?;
+    let out = super::config_cache::exec(root, &["config", "--bool", "--get", key])?;
     if out.ok() {
         return Ok(out.text().trim() == "true");
     }
@@ -1549,18 +1549,18 @@ pub fn protect_transport(root: &Path, push: bool, remote: Option<&str>, explicit
     if explicit.is_some_and(unsafe_spec) {
         return Err(reject());
     }
-    let config = |key: &str| runner::run(root, ["config", "--get", key]).unwrap_or_default().trim().to_owned();
+    let config = |key: &str| super::config_cache::run(root, &["config", "--get", key]).unwrap_or_default().trim().to_owned();
     let names = if let Some(remote) = remote {
         vec![remote.to_owned()]
     } else if all {
-        runner::run(root, ["remote"])?.lines().map(str::to_owned).collect()
+        super::config_cache::run(root, &["remote"])?.lines().map(str::to_owned).collect()
     } else {
         let head = repo::head(root)?.branch.unwrap_or_default();
         let mut candidates = Vec::new();
         if push {
             candidates.extend([config(&format!("branch.{head}.pushRemote")), config("remote.pushDefault")]);
         }
-        let remotes: Vec<_> = runner::run(root, ["remote"])?.lines().map(str::to_owned).collect();
+        let remotes: Vec<_> = super::config_cache::run(root, &["remote"])?.lines().map(str::to_owned).collect();
         let fallback = if remotes.len() == 1 { remotes[0].clone() } else { "origin".into() };
         candidates.extend([config(&format!("branch.{head}.remote")), fallback]);
         vec![candidates.into_iter().find(|s| !s.is_empty()).unwrap()]
@@ -1569,11 +1569,12 @@ pub fn protect_transport(root: &Path, push: bool, remote: Option<&str>, explicit
         if name.starts_with('-') {
             return Err(reject());
         }
-        if push && runner::run(root, ["config", "--bool", "--get", &format!("remote.{name}.mirror")]).unwrap_or_default().trim() == "true" {
+        if push && super::config_cache::run(root, &["config", "--bool", "--get", &format!("remote.{name}.mirror")]).unwrap_or_default().trim() == "true" {
             return Err(reject());
         }
         if !push || explicit.is_none() {
-            let values = runner::run(root, ["config", "--get-all", &format!("remote.{name}.{}", if push { "push" } else { "fetch" })]).unwrap_or_default();
+            let values =
+                super::config_cache::run(root, &["config", "--get-all", &format!("remote.{name}.{}", if push { "push" } else { "fetch" })]).unwrap_or_default();
             if values.lines().any(unsafe_spec) {
                 return Err(reject());
             }

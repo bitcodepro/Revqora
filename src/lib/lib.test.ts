@@ -143,4 +143,24 @@ describe("background fetch", () => {
     await failing("/repo"); // missing or expired credentials: no more attempts
     expect(calls).toBe(1);
   });
+
+  it("treats a busy repository as a skipped round, not a failure", async () => {
+    let calls = 0, refreshed = 0;
+    const failed: unknown[] = [];
+    const quietFetch = createAutoFetch({
+      fetch: async () => {
+        calls++;
+        if (calls === 1) throw { message: "Another operation is running", kind: "repository-busy", stderr: "", code: null, details: [] };
+      },
+      refresh: async () => { refreshed++; },
+      busy: () => false,
+      failed: (_root, e) => failed.push(e),
+    });
+    await quietFetch("/repo");
+    expect(failed).toEqual([]);
+    expect(refreshed).toBe(0);
+    await quietFetch("/repo"); // the next interval tries again
+    expect(calls).toBe(2);
+    expect(refreshed).toBe(1);
+  });
 });
