@@ -7,13 +7,13 @@ import { useNavigationSelection } from "../lib/navigationSelection";
 import { useRepositoryDrag } from "../lib/explorerMoves";
 import { activateRepository as activate, matchesGroupShortcut, renameRepositoryOnKey, repositoryMenu, RepositoryNavigationRow } from "./RepositoryNavigationRow";
 import { useSettings } from "../lib/settings";
-import { ArrowDown, ArrowDownToLine, Check, CircleAlert, FolderGit2, FolderSearch, GitBranch, Pencil, Plus, RefreshCw, Search, Star, X } from "lucide-react";
+import { ArrowDown, ArrowDownToLine, ArrowUp, Check, CircleAlert, FolderGit2, FolderSearch, GitBranch, Pencil, Plus, RefreshCw, Search, Star, X } from "lucide-react";
 import { api, errorMessage, newOpId } from "../lib/api";
 import * as A from "../lib/actions";
 import { basename, relativeTime } from "../lib/format";
 import { pullBlockReason, runRepositoryBatch, type BatchResult } from "../lib/repositoryBatch";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
+import { repositoryOutgoing, repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
 import { contextMenu, endBusy, showDialog, startBusy, toast, toggleRepositoryOverview, useUi } from "../lib/ui";
 import { AheadBehind } from "./bits";
 import { Modal } from "./Modal";
@@ -160,6 +160,7 @@ export function RepositorySidebar() {
   const [updatesOnly, setUpdatesOnly] = useState(false);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [changesOnly, setChangesOnly] = useState(false);
+  const [outgoingOnly, setOutgoingOnly] = useState(false);
   const library = useLibrary();
   const groupId = library.activeGroupId;
   const actionsCollapsed = useSettings(s => s.repositoryActionsCollapsed);
@@ -175,12 +176,13 @@ export function RepositorySidebar() {
   const groupKeys = groupFilter && new Set(groupRepositoryRoots(library.groups, groupFilter.id).map(repositoryKey));
   const candidates = uniqueRoots([...order, ...library.knownRoots]).filter(root => !groupKeys || groupKeys.has(repositoryKey(root)));
   const count = candidates.filter(root => (repositorySidebarStatus(tabs[root])?.behind ?? 0) > 0).length;
+  const outgoingCount = candidates.filter(root => repositoryOutgoing(tabs[root]) > 0).length;
   const favorite = new Set(library.favorites.map(repositoryKey));
   const displayName = (root: string) => library.repositoryNames[repositoryKey(root)] ?? tabs[root]?.info?.name ?? basename(root);
   const search = query.trim().toLowerCase();
   const filterUpdates = updatesOnly;
   const visible = candidates.filter(root => `${root} ${displayName(root)}`.toLowerCase().includes(search)
-    && (!filterUpdates || !!repositorySidebarStatus(tabs[root])?.behind) && (!favoritesOnly || favorite.has(repositoryKey(root)))
+    && (!filterUpdates || !!repositorySidebarStatus(tabs[root])?.behind) && (!outgoingOnly || repositoryOutgoing(tabs[root]) > 0) && (!favoritesOnly || favorite.has(repositoryKey(root)))
     && (!changesOnly || !!repositorySidebarStatus(tabs[root])?.files.length));
   const selected = visible.filter(root => selection.includes(root));
   const groupIdsByRoot = new Map<string, string[]>();
@@ -202,13 +204,15 @@ export function RepositorySidebar() {
       <header onContextMenu={panelMenu}><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{candidates.length}</span><div className="spacer" /><button aria-label="Hide repositories" className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
       <div className="repository-filter input-wrap"><Search size={13} /><input className="input sm" placeholder="Find repository…" aria-label="Find repository" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupId ?? ""} onChange={event => library.selectGroup(event.target.value || null)}><option value="">All repositories</option>{groups.map(({ entry, depth }) => <option key={entry.id} value={entry.id}>{"　".repeat(depth)}{entry.name}</option>)}</select>}
-      {!search && !filterUpdates && !favoritesOnly && !changesOnly && !groupFilter && <BulkRemoteButtons roots={order} />}
+      {!search && !filterUpdates && !outgoingOnly && !favoritesOnly && !changesOnly && !groupFilter && <BulkRemoteButtons roots={order} />}
       {/* The same status filters as Explorer; they combine with the search and each other. */}
       <div className="explorer-filters repository-sidebar-filters">
         <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-label="Favorites" aria-pressed={favoritesOnly}
           title="Show favorite repositories" onClick={() => setFavoritesOnly(!favoritesOnly)}><Star size={13} /><span>Favorites</span></button>
         <button type="button" className={`repository-updates ${updatesOnly ? "active" : ""}`} aria-label="Incoming" aria-pressed={updatesOnly}
           title={`${count} repositories with incoming commits`} onClick={() => setUpdatesOnly(!updatesOnly)}><ArrowDown size={13} /><span>Incoming</span></button>
+        <button type="button" className={`repository-updates ${outgoingOnly ? "active" : ""}`} aria-label="Outgoing" aria-pressed={outgoingOnly}
+          title={`${outgoingCount} repositories with commits to push`} onClick={() => setOutgoingOnly(!outgoingOnly)}><ArrowUp size={13} /><span>Outgoing</span></button>
         <button type="button" className={`repository-updates ${changesOnly ? "active" : ""}`} aria-label="Changes" aria-pressed={changesOnly}
           title="Show repositories with uncommitted changes" onClick={() => setChangesOnly(!changesOnly)}><Pencil size={13} /><span>Changes</span></button>
       </div>

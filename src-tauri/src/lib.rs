@@ -1620,6 +1620,13 @@ async fn sparse_checkout_reapply(
 /// Periodic fetch in the background: never asks for credentials.
 #[tauri::command]
 async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<String> {
+    // Optional work never queues in front of (or behind) the user's own operation: it would
+    // delay that operation by a whole network round trip. The next interval tries again.
+    if git::operations::writer_active(&p(&repo)) {
+        return Err(
+            GitError::new("Another operation is running in this repository. Automatic fetch will try again at the next interval.").kind("repository-busy")
+        );
+    }
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_background", None, move || ops::fetch_background(&p(&repo))).await
 }
 

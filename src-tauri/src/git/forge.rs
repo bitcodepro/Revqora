@@ -42,6 +42,71 @@ pub struct PullRequest {
     pub state: String,
     pub created: String,
     pub head_sha: String,
+    /// Review state the provider includes in its list answer at no extra cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signals: Option<PrSignals>,
+}
+
+/// What a PR list row can show without another request. A missing field means the
+/// provider does not report it in lists.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrSignals {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comments: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approvals: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes_requested: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflicts: Option<bool>,
+}
+
+impl PrSignals {
+    fn known(self) -> Option<Self> {
+        (self != Self::default()).then_some(self)
+    }
+}
+
+fn count_where(v: &Value, list: &str, keep: impl Fn(&Value) -> bool) -> Option<u64> {
+    v.pointer(list).and_then(Value::as_array).map(|items| items.iter().filter(|item| keep(item)).count() as u64)
+}
+
+fn signals(kind: &str, v: &Value) -> Option<PrSignals> {
+    let number = |ptr: &str| v.pointer(ptr).and_then(Value::as_u64);
+    match kind {
+        "github" => PrSignals {
+            comments: number("/comments").zip(number("/review_comments")).map(|(a, b)| a + b),
+            conflicts: v.get("mergeable_state").and_then(Value::as_str).map(|state| state == "dirty"),
+            ..Default::default()
+        },
+        "gitlab" => PrSignals { comments: number("/user_notes_count"), conflicts: v.get("has_conflicts").and_then(Value::as_bool), ..Default::default() },
+        "bitbucket" => {
+            let state = |participant: &Value| participant.get("state").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
+            PrSignals {
+                comments: number("/comment_count"),
+                approvals: count_where(v, "/participants", |x| x.get("approved").and_then(Value::as_bool) == Some(true) || state(x) == "approved"),
+                changes_requested: count_where(v, "/participants", |x| state(x) == "changes_requested"),
+                conflicts: None,
+            }
+        }
+        "bitbucket-server" => PrSignals {
+            comments: number("/properties/commentCount"),
+            approvals: count_where(v, "/reviewers", |x| x.get("status").and_then(Value::as_str) == Some("APPROVED")),
+            changes_requested: count_where(v, "/reviewers", |x| x.get("status").and_then(Value::as_str) == Some("NEEDS_WORK")),
+            conflicts: v.pointer("/properties/mergeResult/outcome").and_then(Value::as_str).map(|outcome| outcome == "CONFLICTED"),
+        },
+        _ => {
+            let vote = |x: &Value| x.get("vote").and_then(Value::as_i64).unwrap_or(0);
+            PrSignals {
+                comments: None,
+                approvals: count_where(v, "/reviewers", |x| vote(x) >= 5),
+                changes_requested: count_where(v, "/reviewers", |x| vote(x) <= -5),
+                conflicts: v.get("mergeStatus").and_then(Value::as_str).map(|status| status == "conflicts"),
+            }
+        }
+    }
+    .known()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -365,10 +430,6 @@ pub fn forge_for(url: &str, remote: &str) -> Option<ForgeInfo> {
     }
 }
 
-fn is_bitbucket(f: &ForgeInfo) -> bool {
-    f.kind.starts_with("bitbucket")
-}
-
 /// Let Git apply this repository's URL/account matching, including useHttpPath.
 /// Never override its storage scope or cache credentials by host in Revqora.
 pub(super) fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
@@ -656,6 +717,7 @@ pub(super) fn gh_pr(v: &Value) -> PullRequest {
         state: s(v, "state"),
         created: s(v, "created_at"),
         head_sha: v.get("head").map(|h| s(h, "sha")).unwrap_or_default(),
+        signals: signals("github", v),
     }
 }
 
@@ -673,6 +735,7 @@ pub(super) fn gl_mr(v: &Value) -> PullRequest {
         state: s(v, "state"),
         created: s(v, "created_at"),
         head_sha: s(v, "sha"),
+        signals: signals("gitlab", v),
     }
 }
 
@@ -694,6 +757,7 @@ pub fn bb_pr(v: &Value) -> PullRequest {
         state: s(v, "state").to_lowercase(),
         created: s(v, "created_on"),
         head_sha: p(v, "/source/commit/hash"),
+        signals: signals("bitbucket", v),
     }
 }
 
@@ -711,6 +775,7 @@ pub fn bbs_pr(v: &Value) -> PullRequest {
         state: s(v, "state").to_lowercase(),
         created: v.get("createdDate").and_then(|d| d.as_i64()).map(iso_from_millis).unwrap_or_default(),
         head_sha: p(v, "/fromRef/latestCommit"),
+        signals: signals("bitbucket-server", v),
     }
 }
 
@@ -754,6 +819,7 @@ pub(super) fn azure_pr(v: &Value, f: &ForgeInfo) -> PullRequest {
         state: s(v, "status"),
         created: s(v, "creationDate"),
         head_sha: p(v, "/lastMergeSourceCommit/commitId"),
+        signals: signals("azure", v),
     }
 }
 
@@ -965,39 +1031,13 @@ pub fn checks(repo: &Path, sha: &str) -> GitResult<Vec<Check>> {
     checks_for(repo, &f, sha)
 }
 
+/// The CI checks of a commit, read the same way as for a merge review (every page, the
+/// newest status per check). Before, commit details showed only the first page.
 pub(super) fn checks_for(repo: &Path, f: &ForgeInfo, sha: &str) -> GitResult<Vec<Check>> {
     if !matches!(sha.len(), 40 | 64) || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(GitError::new("Choose a complete commit ID for CI checks."));
     }
-    let mut out = Vec::new();
-    if f.kind == "azure" {
-        let v = request(repo, f, "GET", &format!("{}/commits/{}/statuses?api-version=7.1", azure_repo(f), enc(sha)), None)?;
-        for st in v.get("value").and_then(Value::as_array).cloned().unwrap_or_default() {
-            out.push(Check {
-                name: st.pointer("/context/name").and_then(Value::as_str).unwrap_or("Status").into(),
-                state: norm_state(&s(&st, "state")),
-                url: Some(s(&st, "targetUrl")).filter(|s| !s.is_empty()),
-            });
-        }
-    } else if f.kind == "github" {
-        let runs = request(repo, f, "GET", &format!("/repos/{}/commits/{sha}/check-runs?per_page=100", project_path(&f.project)), None)?;
-        for r in runs.get("check_runs").and_then(|a| a.as_array()).cloned().unwrap_or_default() {
-            let st = if s(&r, "status") == "completed" { norm_state(&s(&r, "conclusion")) } else { "pending".into() };
-            out.push(Check { name: s(&r, "name"), state: st, url: Some(s(&r, "html_url")).filter(|u| !u.is_empty()) });
-        }
-        let status = request(repo, f, "GET", &format!("/repos/{}/commits/{sha}/status", project_path(&f.project)), None)?;
-        for st in status.get("statuses").and_then(|a| a.as_array()).cloned().unwrap_or_default() {
-            out.push(Check { name: s(&st, "context"), state: norm_state(&s(&st, "state")), url: Some(s(&st, "target_url")).filter(|u| !u.is_empty()) });
-        }
-    } else if is_bitbucket(f) {
-        out = bitbucket_statuses(f, sha, |path| request(repo, f, "GET", path, None))?;
-    } else {
-        let v = request(repo, f, "GET", &format!("/projects/{}/repository/commits/{sha}/statuses", enc(&f.project)), None)?;
-        for st in v.as_array().cloned().unwrap_or_default() {
-            out.push(Check { name: s(&st, "name"), state: norm_state(&s(&st, "status")), url: Some(s(&st, "target_url")).filter(|u| !u.is_empty()) });
-        }
-    }
-    Ok(out)
+    super::pr_merge::checks::for_commit(repo, f, sha)
 }
 
 /// Every page of a commit's Bitbucket build statuses. Both APIs paginate (Cloud: `next` URL,
@@ -1037,6 +1077,36 @@ pub fn bitbucket_statuses(f: &ForgeInfo, sha: &str, mut get: impl FnMut(&str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_rows_carry_only_the_review_signals_each_provider_reports() {
+        let json = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+        let bb = bb_pr(&json(
+            r#"{"id":1,"comment_count":3,"participants":[{"approved":true,"state":"approved"},{"approved":false,"state":"changes_requested"},{"approved":false,"state":null}]}"#,
+        ));
+        assert_eq!(bb.signals, Some(PrSignals { comments: Some(3), approvals: Some(1), changes_requested: Some(1), conflicts: None }));
+        let gl = gl_mr(&json(r#"{"iid":1,"user_notes_count":2,"has_conflicts":true}"#));
+        assert_eq!(gl.signals, Some(PrSignals { comments: Some(2), conflicts: Some(true), ..Default::default() }));
+        let bbs = bbs_pr(&json(
+            r#"{"id":1,"reviewers":[{"status":"APPROVED"},{"status":"NEEDS_WORK"},{"status":"UNAPPROVED"}],"properties":{"commentCount":4,"mergeResult":{"outcome":"CLEAN"}}}"#,
+        ));
+        assert_eq!(bbs.signals, Some(PrSignals { comments: Some(4), approvals: Some(1), changes_requested: Some(1), conflicts: Some(false) }));
+        let f = ForgeInfo {
+            kind: "azure".into(),
+            host: String::new(),
+            project: "p/r".into(),
+            remote: "origin".into(),
+            web_url: String::new(),
+            api: String::new(),
+            connection_revision: None,
+            account_login: None,
+            account_id: None,
+        };
+        let az = azure_pr(&json(r#"{"pullRequestId":1,"mergeStatus":"conflicts","reviewers":[{"vote":10},{"vote":5},{"vote":-10},{"vote":0}]}"#), &f);
+        assert_eq!(az.signals, Some(PrSignals { approvals: Some(2), changes_requested: Some(1), conflicts: Some(true), ..Default::default() }));
+        // GitHub lists no counts: the row stays without signals instead of showing zeros.
+        assert_eq!(gh_pr(&json(r#"{"number":1}"#)).signals, None);
+    }
 
     #[test]
     fn azure_git_credentials_try_entra_bearer_only_after_a_rejected_pat() {

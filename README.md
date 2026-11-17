@@ -131,8 +131,9 @@ the top level. Use **Import folder…** to recreate the folder hierarchy in Expl
 Open the optional **Repositories** panel for a flat list. Select a group in Explorer
 to show all of its repositories, including those in subgroups. Select **All
 repositories** in Explorer to clear the filter. Both views have a search box and
-the **Favorites**, **Incoming** (repositories with commits to pull) and **Changes**
-(repositories with uncommitted work) filters; Explorer also has **Mine** for your
+the **Favorites**, **Incoming** (repositories with commits to pull), **Outgoing**
+(repositories with commits to push) and **Changes** (repositories with uncommitted
+work) filters; Explorer also has **Mine** for your
 own branches. Filters combine. **Fetch all** and **Pull all** appear in the
 unfiltered flat panel and apply to open repositories.
 
@@ -339,14 +340,21 @@ See [Conflict Studio](https://github.com/bitcodepro/Revqora/blob/main/docs/CONFL
 1. Open **Accounts and API connections** through the command palette. Add an
    account and connect it to the repository's hosting service. Git transport
    credentials and SSH settings remain separate from API account selection.
-2. Open **Pull Requests** (**Ctrl+3**), select a request and inspect **Overview**,
+2. Open **Pull Requests** (**Ctrl+3**) and select a request. The status strip under
+   its title shows CI checks, approvals, merge blockers and unresolved discussions,
+   with the next step on the right (**Merge…**, or **Delete source branch…** after a
+   merge). List rows show comments, approvals and conflicts when the service reports
+   them, and the CI result of requests you opened. Then inspect **Overview**,
    **Files** or **Discussions**. Creating a PR requires a published source branch.
 3. Read file changes, add inline comments from diff line numbers, reply to threads
-   and submit an available review action. Closing an editor keeps its local draft.
+   and choose **Review ▾ → Comment, Approve or Request changes**. Closing an editor
+   keeps its local draft. **Edit PR**, **PR workflow…**, **Open in browser**, copying
+   the link and watching the PR are in the **⋯** menu; **⟳** refreshes everything shown
+   for the PR.
 4. Inspect CI and server requirements. Review the exact source, destination and
    method before merging or requesting a supported merge queue.
-5. After the server confirms a merge, use **Source cleanup…** if you want to review
-   deletion of the source branch. Cleanup is separate from merging.
+5. After the server confirms a merge, use **Delete source branch…** if you want to
+   review deletion of the source branch. Cleanup is separate from merging.
 
 Switch **This repository** to **All repositories** to browse PRs across open
 repositories in the current workspace. The list and detail pane work the same
@@ -362,8 +370,8 @@ are isolated by repository and account. Search and author filters combine. The
 selector collects authors from loaded pages and continues through a few older
 pages when no match is found; **Load more requests** includes further history.
 
-Click the bell next to a PR title to watch that request, or enable **My PRs** in
-the PR Center header to watch your open requests across repositories in the
+Choose **⋯ → Watch this PR** to watch one request (a bell then appears next to its
+title), or turn on **My PR alerts** in the PR Center header to watch your open requests across repositories in the
 current workspace. The setting follows you when you switch repositories. Revqora checks watched
 requests while you work in other views and shows in-app notifications for new
 approvals, requests for changes, and comments from other authors. The first
@@ -385,7 +393,8 @@ server before another send. See the provider details in the
 ### Connect Bitbucket Cloud with a token
 
 Open **Accounts and API connections** (the user icon in the toolbar), then
-**Add API account**. The selected remote preselects the provider. For
+**Add API account**. The selected remote preselects the provider. The form
+asks for one sign-in method and shows only its fields. For
 **Bitbucket Cloud API tokens**, choose **API token + Atlassian email**, enter
 your email and token, then **Save token connection**. **Read Bitbucket profile**
 is optional and off by default: leave it off to use repository/PR scopes without

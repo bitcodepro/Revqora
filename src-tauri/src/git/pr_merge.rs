@@ -7,7 +7,7 @@ use super::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
-mod checks;
+pub(super) mod checks;
 mod cleanup;
 mod providers;
 pub use cleanup::{cleanup_act, cleanup_plan, CleanupInput, CleanupResult, CleanupReview};
@@ -98,7 +98,22 @@ pub fn verified_checks(repo: &Path, n: u64, connection: &str, revision: &str) ->
 }
 fn prepare(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Prepared> {
     let (f, d, v) = scoped(repo, n, connection, revision)?;
-    let (actor, actor_id) = providers::actor(repo, &f)?;
+    // The identity read is independent of the provider's readiness reads: run it alongside.
+    let parent = super::operations::Inherited::of(repo);
+    std::thread::scope(|scope| {
+        let identity = scope.spawn(|| parent.run(|| providers::actor(repo, &f)));
+        let readiness = readiness(repo, &f, &d, &v);
+        let (actor, actor_id) = identity.join().unwrap_or_else(|_| Err(error("Could not verify the merge identity.")))?;
+        let (mut p, raw) = readiness?;
+        p.actor = actor;
+        p.actor_id = actor_id;
+        Ok::<_, GitError>((p, raw))
+    })
+    .and_then(|(p, raw)| finish(repo, n, connection, revision, p, raw))
+}
+
+fn readiness(repo: &Path, f: &ForgeInfo, d: &Detail, v: &Value) -> GitResult<(Plan, Value)> {
+    let (actor, actor_id) = (String::new(), String::new());
     let mut p = Plan {
         revision: String::new(),
         detail_revision: d.revision.clone(),
@@ -125,11 +140,15 @@ fn prepare(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<P
         p.block("Mark this draft ready for review on the server before merging.");
     }
     // Closed PRs still expose completion state, without needing protected-branch read scopes.
-    let raw = if d.pull.state == "open" { providers::inspect(repo, &f, &d, &v, &mut p)? } else { Value::Null };
+    let raw = if d.pull.state == "open" { providers::inspect(repo, f, d, v, &mut p)? } else { Value::Null };
     if p.source_branch_may_be_deleted {
         p.notices.push("The provider may delete the source branch after merging.".into());
     }
     p.notices.push("The server enforces its current permissions and policies. Revqora never requests a policy bypass. Target branches can advance during a server request.".into());
+    Ok((p, raw))
+}
+
+fn finish(repo: &Path, n: u64, connection: &str, revision: &str, mut p: Plan, raw: Value) -> GitResult<Prepared> {
     scoped(repo, n, connection, revision)?;
     p.revision = hash(serde_json::to_vec(&json!([&p, &raw])).map_err(|_| error("Could not fingerprint merge review."))?);
     Ok(Prepared { plan: p, raw })

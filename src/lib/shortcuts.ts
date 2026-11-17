@@ -97,6 +97,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "explorer-favorites", label: "Toggle Favorites in Explorer", description: "Show favorite folders, repositories and branches.", default: "", scope: "navigation" },
   { id: "explorer-my-branches", label: "Toggle My branches in Explorer", description: "Show branches you created and each repository’s primary branch.", default: "", scope: "navigation" },
   { id: "explorer-incoming", label: "Toggle Incoming in Explorer", description: "Show repositories with incoming commits.", default: "", scope: "navigation" },
+  { id: "explorer-outgoing", label: "Toggle Outgoing in Explorer", description: "Show repositories with commits to push.", default: "", scope: "navigation" },
   { id: "explorer-changes", label: "Toggle Changes in Explorer", description: "Show repositories with uncommitted changes.", default: "", scope: "navigation" },
   { id: "repositoriesPanel", label: "Toggle repositories panel", description: "Show or hide the repository sidebar.", default: "Ctrl+Alt+R" },
   { id: "branchesPanel", label: "Toggle branches panel", description: "Show or hide the branches sidebar.", default: "Ctrl+Alt+B" },

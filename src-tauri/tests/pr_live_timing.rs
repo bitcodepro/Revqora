@@ -19,7 +19,7 @@ fn live_pr_center_timings() {
         let mut page = None;
         time("page(all)", &mut || match pr_center::page(&repo, "all", None) {
             Ok(p) => {
-                let s = format!("{} items", p.items.len());
+                let s = format!("{} items, first {:?}", p.items.len(), p.items.first().map(|p| &p.signals));
                 page = Some(p);
                 s
             }

@@ -787,10 +787,25 @@ pub(super) fn request_content(
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
         _ => false,
     });
-    // Reuse Bitbucket read connections, including the TLS session. Credentials
-    // remain on individual requests, and writes keep their own transport.
-    static BITBUCKET_READS: OnceLock<ureq::Agent> = OnceLock::new();
-    let agent = if kind == "bitbucket" && method == "GET" && !local { BITBUCKET_READS.get_or_init(|| api_agent(false)).clone() } else { api_agent(local) };
+    // Reuse read connections of every provider, including the TLS session (a new
+    // connection costs 100–300 ms). Credentials remain on individual requests, and writes
+    // keep their own transport: ureq retries only idempotent requests on a reused socket.
+    static READS: OnceLock<ureq::Agent> = OnceLock::new();
+    let agent = if method == "GET" && !local {
+        READS
+            .get_or_init(|| {
+                ureq::AgentBuilder::new()
+                    .try_proxy_from_env(true)
+                    .redirects(0)
+                    .timeout(Duration::from_secs(20))
+                    .user_agent("Revqora")
+                    .max_idle_connections_per_host(6)
+                    .build()
+            })
+            .clone()
+    } else {
+        api_agent(local)
+    };
     let mut req = agent.request(method, &target);
     if kind == "gitlab" && c.mode != "bearer" {
         req = req.set("PRIVATE-TOKEN", &c.token);

@@ -4,7 +4,7 @@ vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), h
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() }, toast: { warning: vi.fn() } }));
 import { api } from "./api";
-import { covers, CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, useRepos, type RepoTab } from "./store";
+import { covers, CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, repositoryOutgoing, useRepos, type RepoTab } from "./store";
 import { previewGeneration } from "./commitPreview";
 import { repositoryCall, type Invoke } from "./operationClient";
 import type { RepoInfo, StatusSummary } from "./types";
@@ -301,5 +301,25 @@ describe("background repository observation", () => {
     expect(useRepos.getState().tabs[root].info?.head.branch).toBe("topic");
     await expect(repositoryCall(invoke, "commit", { repo: root, message: "Reviewed topic" })).resolves.toBe("committed");
     expect(calls.filter(c => c === "commit")).toHaveLength(1);
+  });
+});
+
+describe("repositoryOutgoing", () => {
+  const tab = (status: Partial<StatusSummary> | null, unpublished?: number) => ({
+    status: status && { branch: "feature", oid: "a", upstream: null, ahead: 0, behind: 0, files: [], stagedCount: 0, unstagedCount: 0, conflictCount: 0, ...status },
+    refs: { local: [{ name: "feature", unpublished }] },
+  }) as unknown as RepoTab;
+  it("counts commits ahead of the upstream", () => {
+    expect(repositoryOutgoing(tab({ upstream: "origin/feature", ahead: 3 }, 9))).toBe(3);
+    expect(repositoryOutgoing(tab({ upstream: "origin/feature", ahead: 0 }))).toBe(0);
+  });
+  it("counts unpublished commits of a branch without an upstream", () => {
+    expect(repositoryOutgoing(tab({}, 2))).toBe(2);
+    expect(repositoryOutgoing(tab({}))).toBe(0);
+  });
+  it("ignores a detached HEAD and an unknown status", () => {
+    expect(repositoryOutgoing(tab({ branch: null, ahead: 4 }))).toBe(0);
+    expect(repositoryOutgoing(tab(null))).toBe(0);
+    expect(repositoryOutgoing(undefined)).toBe(0);
   });
 });

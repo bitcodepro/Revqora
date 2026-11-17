@@ -210,9 +210,19 @@ fn read_status(repo: &Path, display_path: Option<&str>, allow_locked_file: bool)
     super::operations::read(repo, || {
         let version = super::operations::next_version(repo);
         let mut stages = super::stage_timings::Stages::default();
-        let raw = stages.time("gitStatus", || runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames"]))?;
+        // The state-token reads (index, refs, attribute files) start alongside `git status`.
+        let parent = super::operations::Inherited::of(repo);
+        let (raw, reads) = stages.time("gitStatus", || {
+            std::thread::scope(|scope| {
+                let reads = scope.spawn(|| parent.run(|| super::operations::state_reads(repo, display_path)));
+                let raw = runner::run(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames"]);
+                (raw, reads.join())
+            })
+        });
+        let raw = raw?;
+        let reads = reads.map_err(|_| GitError::new("Background status task failed."))?;
         let mut status = stages.time("parse", || parse(&raw));
-        let tokens = stages.time("stateTokens", || super::operations::state_tokens(repo, &raw, &mut status.files, display_path));
+        let tokens = stages.time("stateTokens", || super::operations::state_tokens_from(repo, &raw, &mut status.files, display_path, reads));
         if super::stage_timings::enabled() {
             super::stage_timings::record("status", repo, &stages, &format!("files={} display={allow_locked_file}", status.files.len()));
         }

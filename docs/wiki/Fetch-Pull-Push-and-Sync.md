@@ -61,4 +61,6 @@ For a *new unpublished branch*, publish it with Push. For a *merged and deleted 
 
 Auto-fetch updates known remote history at the configured interval. It does not automatically Pull, Push, commit or refresh PR discussions. **F5** refreshes the local view; use PR-specific refresh buttons for API data.
 
+A slow or unresponsive remote does not freeze the repository. While Fetch, Pull, Push or Auto-fetch waits on the server, History, Changes and diffs keep loading. Other actions that change the repository (commit, checkout, another Pull) wait their turn and run in the order you started them. Auto-fetch never queues in front of you: when another operation is running, it skips that round quietly and tries again at the next interval. It gives up after 30 seconds without leaving Git lock files behind.
+
 **Related:** [Branches](https://github.com/bitcodepro/Revqora/wiki/Branches-and-cleanup) · [Authentication](https://github.com/bitcodepro/Revqora/wiki/Accounts-and-providers) · [Troubleshooting](https://github.com/bitcodepro/Revqora/wiki/Settings-and-troubleshooting)

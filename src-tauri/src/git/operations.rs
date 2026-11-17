@@ -1,6 +1,14 @@
 //! In-process repository transactions. Linked worktrees share one FIFO writer queue.
 //! External Git/IDE processes do not take this lock: optimistic state checks and Git's
 //! own lock files remain necessary. This is deliberately not a recovery/checkpoint store.
+//!
+//! Locking model:
+//! - Writers take a FIFO ticket, then the exclusive lock: one writer at a time, in order.
+//! - Readers take the shared lock.
+//! - While a writer waits on a remote (`fetch`, `push`, `ls-remote`; see [`network`]) it
+//!   keeps its ticket but holds the lock shared. Reads (status, history, diffs) run instead of
+//!   waiting for the network; other writers still wait for their turn. The writer takes the
+//!   exclusive lock back before its next local step.
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -27,6 +35,9 @@ struct Gate {
     changed: Condvar,
     access: RwLock<()>,
     version: AtomicU64,
+    /// Network sections of the current writer (see [`network`]): while non-zero, the writer
+    /// holds `access` shared instead of exclusive.
+    network: Mutex<usize>,
 }
 
 thread_local! {
@@ -152,6 +163,73 @@ pub fn access<T>(repo: &Path, write: bool, mut phase: impl FnMut(&str, usize), f
 
 pub fn read<T>(repo: &Path, f: impl FnOnce() -> GitResult<T>) -> GitResult<T> {
     access(repo, false, |_, _| {}, f)
+}
+
+/// Runs `f`, a Git command that waits on a remote, without blocking reads of the repository.
+///
+/// Inside a write transaction, the exclusive lock is downgraded to shared for the duration of
+/// `f` and taken back afterwards (also when `f` panics). The writer keeps its FIFO ticket, so
+/// no other writer can start in between: Git's ref updates at the end of a fetch or push never
+/// interleave with a commit, checkout or another fetch from this app. Reads that run meanwhile
+/// may see remote-tracking refs before or after the update; a state token taken then no longer
+/// matches afterwards, so an action prepared from it is refused as stale instead of applied.
+///
+/// Outside a write transaction (a read scope, or no transaction) `f` runs unchanged.
+///
+/// Helper threads that join the writer (see [`Inherited`]) share the downgrade: while any of
+/// them is in a network section, none of them may change the repository locally.
+pub fn network<T>(repo: &Path, f: impl FnOnce() -> T) -> T {
+    let key = repository_key(repo);
+    let writer = SCOPES.with(|s| s.borrow().iter().rev().find(|(k, _)| k == &key).map(|(_, write)| *write));
+    if writer != Some(true) {
+        return f();
+    }
+    use parking_lot::lock_api::{RawRwLock as _, RawRwLockDowngrade as _};
+    let gate = gate(&key);
+    {
+        let mut sections = gate.network.lock();
+        if *sections == 0 {
+            // SAFETY: a write scope exists only inside `access(.., write = true)` (or a helper
+            // the writer joins before leaving it), which holds `gate.access` exclusively.
+            unsafe { gate.access.raw().downgrade() };
+        }
+        *sections += 1;
+    }
+    let _exclusive_again = DropGuard::new(gate.as_ref(), |gate| {
+        let mut sections = gate.network.lock();
+        *sections -= 1;
+        if *sections == 0 {
+            // SAFETY: the shared lock taken by `downgrade` above is still held. The writer's
+            // ticket keeps other writers out; readers finish and new ones wait.
+            unsafe {
+                gate.access.raw().unlock_shared();
+                gate.access.raw().lock_exclusive();
+            }
+        }
+    });
+    f()
+}
+
+/// [`network`] when `enabled`, otherwise `f()`.
+pub fn network_when<T>(repo: &Path, enabled: bool, f: impl FnOnce() -> T) -> T {
+    if enabled {
+        network(repo, f)
+    } else {
+        f()
+    }
+}
+
+/// Whether a writer holds or waits for this repository (diagnostics and optional work that
+/// should not queue in front of the user).
+pub fn writer_active(repo: &Path) -> bool {
+    let gate = gate(&repository_key(repo));
+    let tickets = gate.tickets.lock();
+    tickets.next != tickets.serving
+}
+
+/// Whether a writer of this repository is currently waiting on a remote (see [`network`]).
+pub fn network_active(repo: &Path) -> bool {
+    *gate(&repository_key(repo)).network.lock() > 0
 }
 
 /// Bind editor data to the state it loaded, rather than an older UI cache.
@@ -425,9 +503,16 @@ fn submodule_fingerprint(module: &Path) -> GitResult<[u8; 32]> {
 
 /// No write-tree, index refresh or snapshots. Hash changed files and Git attributes,
 /// not the entire worktree. The display context never substitutes for the full guard.
-pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus], display_path: Option<&str>) -> GitResult<StateTokens> {
-    let mut hash = Sha256::new();
-    hash.update(raw_status.as_bytes());
+/// The Git reads behind a state token. They do not depend on `git status` output, so a
+/// status read starts them alongside `git status` (three processes in about the time of one).
+pub struct StateReads {
+    gd: GitResult<PathBuf>,
+    external_files: GitResult<Vec<PathBuf>>,
+    index: GitResult<Vec<u8>>,
+    references: Option<GitResult<String>>,
+}
+
+pub fn state_reads(repo: &Path, display_path: Option<&str>) -> StateReads {
     // Cache-tree/stat extensions and packed-ref layout can change without changing
     // what the user staged. Compare semantic index entries and resolved refs instead.
     let mut index_args = vec!["ls-files", "--stage", "-v", "-z"];
@@ -438,20 +523,41 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
     // this transaction, then hash their results in a fixed order.
     let parent = Inherited::of(repo);
     let failed = || GitError::new("Background status task failed.");
-    let (gd, external_files, index, references) = std::thread::scope(|sc| {
+    std::thread::scope(|sc| {
         let external_files = sc.spawn(|| parent.run(|| external_attribute_files(repo)));
         let index = sc.spawn(|| parent.run(|| runner::run_bytes(repo, index_args)));
         let references = display_path.is_none().then(|| sc.spawn(|| parent.run(|| runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"]))));
         let gd = super::repo::git_dir(repo);
-        (gd, external_files.join(), index.join(), references.map(|task| task.join()))
-    });
+        StateReads {
+            gd,
+            external_files: external_files.join().unwrap_or_else(|_| Err(failed())),
+            index: index.join().unwrap_or_else(|_| Err(failed())),
+            references: references.map(|task| task.join().unwrap_or_else(|_| Err(failed()))),
+        }
+    })
+}
+
+pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus], display_path: Option<&str>) -> GitResult<StateTokens> {
+    state_tokens_from(repo, raw_status, files, display_path, state_reads(repo, display_path))
+}
+
+pub fn state_tokens_from(
+    repo: &Path,
+    raw_status: &str,
+    files: &mut [super::status::FileStatus],
+    display_path: Option<&str>,
+    reads: StateReads,
+) -> GitResult<StateTokens> {
+    let mut hash = Sha256::new();
+    hash.update(raw_status.as_bytes());
+    let StateReads { gd, external_files, index, references } = reads;
     let gd = gd?;
     let common = repository_key(repo);
     hash_file(&mut hash, &gd.join("HEAD"))?;
     let config = hash_file(&mut hash, &common.join("config"))?;
     let info_attributes = hash_file(&mut hash, &common.join("info/attributes"))?;
-    let external_attributes = hash_attribute_files(&mut hash, external_files.map_err(|_| failed())??)?;
-    let index = index.map_err(|_| failed())??;
+    let external_attributes = hash_attribute_files(&mut hash, external_files?)?;
+    let index = index?;
     if display_path.is_none() {
         hash.update(&index);
     }
@@ -468,7 +574,7 @@ pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::F
     // state. A rejected action may save a checkpoint before offering force
     // consent. Recovery itself verifies each pin independently with exact OIDs.
     if let Some(references) = references {
-        for reference in references.map_err(|_| failed())??.lines() {
+        for reference in references?.lines() {
             if !reference.starts_with(super::recovery::PREFIX) {
                 hash.update(reference.as_bytes());
                 hash.update(b"\n");

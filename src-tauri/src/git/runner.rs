@@ -215,6 +215,45 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
     }
 }
 
+/// Commands that wait on a remote. Inside a write transaction they run with the repository
+/// lock shared (see `operations::network`), so reads are not blocked by the network.
+pub fn is_network<S: AsRef<OsStr>>(args: &[S]) -> bool {
+    let mut start = 0;
+    while args.get(start).is_some_and(|v| v.as_ref() == "-c") && args.get(start + 1).is_some() {
+        start += 2;
+    }
+    if args.get(start).is_some_and(|v| v.as_ref() == "--literal-pathspecs") {
+        start += 1;
+    }
+    args.get(start).is_some_and(|v| matches!(v.as_ref().to_str(), Some("fetch" | "push" | "ls-remote")))
+}
+
+/// Writing commands that never change Git configuration or which branch HEAD names. Their end
+/// keeps remembered configuration answers: a pull runs about twenty of them, and each clear
+/// cost several `config`/`var` processes (70–100 ms each on Windows) on the next read.
+/// Anything not listed here (config, remote, branch, checkout, switch, rebase, submodule,
+/// worktree, clone, init, ...) still clears.
+pub fn keeps_configuration<S: AsRef<OsStr>>(args: &[S]) -> bool {
+    let a: Vec<String> = args.iter().map(|s| s.as_ref().to_string_lossy().into_owned()).collect();
+    let mut start = 0;
+    while a.get(start).is_some_and(|v| v == "-c") && a.get(start + 1).is_some() {
+        start += 2;
+    }
+    if a.get(start).is_some_and(|v| v == "--literal-pathspecs") {
+        start += 1;
+    }
+    let a = &a[start..];
+    let has = |flag: &str| a.iter().any(|x| x == flag);
+    match a.first().map(|s| s.as_str()).unwrap_or("") {
+        "fetch" => !has("--set-upstream"),
+        "push" => !has("-u") && !has("--set-upstream"),
+        "maintenance" => a.get(1).is_some_and(|s| s == "run"),
+        "update-ref" | "merge" | "commit" | "reset" | "update-index" | "read-tree" | "add" | "rm" | "apply" | "pack-refs" | "gc" | "tag" | "cherry-pick"
+        | "revert" | "stash" | "reflog" | "notes" | "prune" | "repack" | "checkout-index" => true,
+        _ => false,
+    }
+}
+
 pub fn exec_full<I, S>(repo: &Path, args: I, env: &[(&str, &str)], input: Option<&[u8]>) -> GitResult<Output>
 where
     I: IntoIterator<Item = S>,
@@ -322,15 +361,16 @@ where
     let writes = !is_read_only(&args);
     // Any writing command may change configuration (remote, config, submodule, ...): drop
     // remembered configuration answers afterwards instead of trusting file timestamps alone.
-    let _forget = writes.then(|| ClearConfigCache);
+    let _forget = (writes && !keeps_configuration(&args)).then(|| ClearConfigCache);
     super::operations::access(
         repo,
         writes,
         |_, _| {},
         || {
+            let network = is_network(&args);
             let diagnostic_args: Vec<String> = args.iter().map(|a| a.as_ref().to_string_lossy().into_owned()).collect();
             let mut capture = crate::journal::command(repo, &diagnostic_args);
-            let result: GitResult<Output> = (|| {
+            let result: GitResult<Output> = super::operations::network_when(repo, network, || {
                 let mut c = command(repo);
                 super::connection::apply(repo, &mut c, connection, &diagnostic_args)?;
                 c.args(args.iter().map(|a| a.as_ref()));
@@ -397,7 +437,7 @@ where
                 }
                 let stderr = String::from_utf8_lossy(&stderr).into_owned();
                 Ok(Output { stdout, stderr, code: status.code().unwrap_or(-1) })
-            })();
+            });
             if let Some(trace) = capture.as_mut() {
                 match &result {
                     Ok(out) => trace.finish(Some(out.code), &out.stdout, &out.stderr),
@@ -514,14 +554,14 @@ pub fn run_streaming_with_connection<F>(
 where
     F: FnMut(&str),
 {
-    let _forget = (!is_read_only(args)).then(|| ClearConfigCache);
+    let _forget = (!is_read_only(args) && !keeps_configuration(args)).then(|| ClearConfigCache);
     super::operations::access(
         repo,
         !is_read_only(args),
         |_, _| {},
         || {
             let mut capture = crate::journal::command(repo, args);
-            let result: GitResult<String> = (|| {
+            let result: GitResult<String> = super::operations::network_when(repo, is_network(args), || {
                 let mut c = command(repo);
                 super::connection::apply(repo, &mut c, connection, args)?;
                 c.args(args);
@@ -581,7 +621,7 @@ where
                     let out = Output { stdout: stdout.into_bytes(), stderr: filtered, code: out.code };
                     Err(fail(format!("git {}", args.first().cloned().unwrap_or_default()), &out))
                 }
-            })();
+            });
             if let (Some(trace), Err(e)) = (capture.as_mut(), &result) {
                 trace.finish(e.code, &[], &e.message);
             }

@@ -20,10 +20,13 @@ const EMPTY: Record<string, RepositoryRequests> = {};
 export function useAllPullRequests(state: PrState, mine: boolean) {
   const known = useLibrary(s => s.knownRoots);
   const opened = useRepos(s => s.order);
-  const roots = useMemo(() => uniqueRoots([...opened, ...known]), [opened, known]);
+  // Library edits that keep the same repositories must not restart the scan.
+  const rootsKey = JSON.stringify(uniqueRoots([...opened, ...known]));
+  const roots = useMemo(() => JSON.parse(rootsKey) as string[], [rootsKey]);
   const [generation, setGeneration] = useState(0);
   const refresh = useCallback(async () => { setGeneration(n => n + 1); }, []);
-  const scan = useMemo(() => ({ roots, state, mine, generation }), [roots, state, mine, generation]);
+  // "Mine" filters the scanned rows, so switching it does not load every repository again.
+  const scan = useMemo(() => ({ roots, state, generation }), [roots, state, generation]);
   const [result, setResult] = useState<{ scan: typeof scan; groups: typeof EMPTY; finished: boolean }>();
   const scans = useRef(Promise.resolve());
   useEffect(() => {
@@ -44,19 +47,12 @@ export function useAllPullRequests(state: PrState, mine: boolean) {
     async function worker() {
       while (current && index < scan.roots.length) {
         const root = scan.roots[index++];
-        let hasIdentity = true;
         try {
           if (!await api.forgeKind(root) || !current) continue;
-          await visitPrPages(cursor => api.prPage(root, scan.state, cursor), () => current && hasIdentity, page => {
+          await visitPrPages(cursor => api.prPage(root, scan.state, cursor), () => current, page => {
             const scope = authorScope(page.forge, page.viewer);
             const author = viewerAuthor(page.viewer) ?? loadAuthorPreferences(root, scope, page.forge).mine;
-            hasIdentity = !scan.mine || !!author;
-            const items = hasIdentity ? page.items.filter(p => !scan.mine || matchesPrAuthor(p, author)) : [];
-            update(root, old => ({
-              forge: page.forge, scope, author,
-              items: hasIdentity ? appendPullRequests(old.scope === scope ? old.items : [], items) : [],
-              notice: hasIdentity ? undefined : "Set My PR author in this repository to include its pull requests.",
-            }));
+            update(root, old => ({ forge: page.forge, scope, author, items: appendPullRequests(old.scope === scope ? old.items : [], page.items) }));
           }, null, Infinity);
         } catch (error) {
           update(root, old => ({ ...old, notice: errorMessage(error) }));
@@ -81,5 +77,13 @@ export function useAllPullRequests(state: PrState, mine: boolean) {
       };
     });
   }, []);
-  return { groups: result?.scan === scan ? result.groups : EMPTY, finished: result?.scan === scan && result.finished, refresh, update };
+  const scanned = result?.scan === scan ? result.groups : EMPTY;
+  const groups = useMemo(() => mine ? mineOnly(scanned) : scanned, [scanned, mine]);
+  return { groups, finished: result?.scan === scan && result.finished, refresh, update };
+}
+
+function mineOnly(groups: Record<string, RepositoryRequests>): Record<string, RepositoryRequests> {
+  return Object.fromEntries(Object.entries(groups).map(([root, group]) => [root, group.notice || !group.forge ? group
+    : group.author ? { ...group, items: group.items.filter(p => matchesPrAuthor(p, group.author)) }
+    : { ...group, items: [], notice: "Set My PR author in this repository to include its pull requests." }]));
 }

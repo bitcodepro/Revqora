@@ -22,6 +22,8 @@ export function createAutoFetch(deps: AutoFetchDeps) {
       await deps.fetch(root);
       await deps.refresh(root);
     } catch (e) {
+      // The repository was busy with another operation: not a failure, try at the next interval.
+      if (isGitError(e) && e.kind === "repository-busy") return;
       deps.failed?.(root, e);
       if (isGitError(e) && e.kind === "auth") disabled.add(root);
     } finally {

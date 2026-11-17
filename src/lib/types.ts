@@ -782,7 +782,10 @@ export interface PullRequest {
   state: string;
   created: string;
   headSha: string;
+  /** Review state the provider reports in lists; a missing field is not reported. */
+  signals?: PrSignals;
 }
+export interface PrSignals { comments?: number; approvals?: number; changesRequested?: number; conflicts?: boolean }
 
 export type PrState = "open" | "closed" | "merged" | "all";
 export interface PrPage { forge: ForgeInfo; items: PullRequest[]; nextCursor: string | null; viewer?: {id:string;login:string}|null }

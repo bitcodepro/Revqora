@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
-import { ArrowDown, ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Loader2, Pencil, Search, Star, Trash2, Unlink, UserRound, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Loader2, Pencil, Search, Star, Trash2, Unlink, UserRound, X } from "lucide-react";
 import { defaultGroupRoots, explorerRepositoryKey, orderExplorerSiblings, repositoryKey, uniqueRoots, useLibrary, type RepositoryGroup, type RepositoryPlacement } from "../lib/repositoryLibrary";
 import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
 import { findExplorerDrop, useLibraryPointerDrag } from "../lib/libraryDrag";
@@ -10,7 +10,7 @@ import { selectExplorerBranches } from "../lib/explorerBranches";
 import type { BranchInfo, RefsSnapshot } from "../lib/types";
 import { basename } from "../lib/format";
 import { useSettings } from "../lib/settings";
-import { repositorySidebarStatus, useRepos } from "../lib/store";
+import { repositoryOutgoing, repositorySidebarStatus, useRepos } from "../lib/store";
 import { contextMenu, toast, useUi, type MenuItem } from "../lib/ui";
 import { bindingFor, matchesShortcut, prettyCombo } from "../lib/shortcuts";
 import { useNavigationSelection } from "../lib/navigationSelection";
@@ -93,6 +93,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   useEffect(() => setWidth(layout.workspacesWidth), [layout.workspacesWidth]);
   const [query, setQuery] = useState("");
   const [incomingOnly, setIncomingOnly] = useState(false);
+  const [outgoingOnly, setOutgoingOnly] = useState(false);
   const [changesOnly, setChangesOnly] = useState(false);
   const [collapsedFavorites, setCollapsedFavorites] = useState<Set<string>>(() => new Set());
   const [expandedRepositories, setExpandedRepositories] = useState<Set<string>>(() => new Set());
@@ -108,6 +109,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const canonical = new Map(paths.map(root => [repositoryKey(root), root]));
   const favoriteKeys = new Set(favorites.map(repositoryKey));
   const incoming = new Set(paths.filter(root => !!repositorySidebarStatus(tabs[root])?.behind));
+  const outgoing = new Set(paths.filter(root => repositoryOutgoing(tabs[root]) > 0));
   const hasChanges = (root: string) => !!repositorySidebarStatus(tabs[root])?.files.length;
   const label = (root: string) => names[repositoryKey(root)] ?? tabs[root]?.info?.name ?? basename(root);
   const repositoryEntry = (path: string, parentId: string | null): Extract<ExplorerEntry, { kind: "repository" }> => {
@@ -120,8 +122,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   ];
   const search = query.trim().toLocaleLowerCase();
   const branchFilter = !!search || favoritesOnly || myBranchesOnly;
-  const statusFiltered = incomingOnly || changesOnly;
-  const matchesStatus = (root: string) => (!incomingOnly || incoming.has(root)) && (!changesOnly || hasChanges(root));
+  const statusFiltered = incomingOnly || outgoingOnly || changesOnly;
+  const matchesStatus = (root: string) => (!incomingOnly || incoming.has(root)) && (!outgoingOnly || outgoing.has(root)) && (!changesOnly || hasChanges(root));
   const needsBranches = (entry: typeof repositories[number]) => matchesStatus(entry.root) &&
     (expandedRepositories.has(repositoryKey(entry.root)) || myBranchesOnly || !!search ||
       favoritesOnly && !!branchFavorites[repositoryKey(entry.root)]?.length);
@@ -219,6 +221,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     if (!reveal) return;
     setQuery("");
     setIncomingOnly(false);
+    setOutgoingOnly(false);
     setChangesOnly(false);
     useSettings.getState().set({ explorerMyBranchesOnly: false });
     clearSelection();
@@ -300,6 +303,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
       { shortcut: "explorer-favorites", onClick: toggleFavorites },
       { shortcut: "explorer-my-branches", onClick: toggleMyBranches },
       { shortcut: "explorer-incoming", onClick: () => setIncomingOnly(on => !on) },
+      { shortcut: "explorer-outgoing", onClick: () => setOutgoingOnly(on => !on) },
       { shortcut: "explorer-changes", onClick: () => setChangesOnly(on => !on) },
     ]);
   }} onContextMenu={event => {
@@ -319,6 +323,9 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
       <button type="button" className={`repository-updates ${incomingOnly ? "active" : ""}`} aria-label="Incoming" aria-pressed={incomingOnly}
         data-shortcut="explorer-incoming" title={`${incoming.size} repositories with incoming commits`}
         onClick={() => setIncomingOnly(on => !on)}><ArrowDown size={13}/><span>Incoming</span></button>
+      <button type="button" className={`repository-updates ${outgoingOnly ? "active" : ""}`} aria-label="Outgoing" aria-pressed={outgoingOnly}
+        data-shortcut="explorer-outgoing" title={`${outgoing.size} repositories with commits to push`}
+        onClick={() => setOutgoingOnly(on => !on)}><ArrowUp size={13}/><span>Outgoing</span></button>
       <button type="button" className={`repository-updates ${changesOnly ? "active" : ""}`} aria-label="Changes" aria-pressed={changesOnly}
         data-shortcut="explorer-changes" title="Show repositories with uncommitted changes"
         onClick={() => setChangesOnly(on => !on)}><Pencil size={13}/><span>Changes</span></button>

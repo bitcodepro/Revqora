@@ -166,6 +166,10 @@ select[size="1"]:not([multiple]) {
 .input-wrap > .input {
   padding-left: 30px;
 }
+/* Password fields with their own Show/Hide button do not need WebView2's reveal button too. */
+.input-wrap > input::-ms-reveal {
+  display: none;
+}
 .seg {
   display: inline-flex;
   padding: 2px;

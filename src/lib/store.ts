@@ -725,6 +725,35 @@ export function getTab(root: string): RepoTab | undefined {
   return useRepos.getState().tabs[root];
 }
 
+// Full refreshes started by a repository operation's "finished"/"failed" event, by operation id.
+const operationRefreshes = new Map<string, Promise<void>>();
+export function rememberOperationRefresh(id: string, refresh: Promise<void>) {
+  operationRefreshes.set(id, refresh);
+  const oldest = operationRefreshes.keys().next().value;
+  if (operationRefreshes.size > 50 && oldest !== undefined) operationRefreshes.delete(oldest);
+}
+/**
+ * After a remote operation returns: wait for the full refresh its completion event already
+ * started (it began after the operation ended) instead of queuing a second full refresh with
+ * history, refs and squash annotations behind it. Without that event, refresh now.
+ */
+export function refreshAfterOperation(root: string, id: string): Promise<void> {
+  const started = operationRefreshes.get(id);
+  operationRefreshes.delete(id);
+  return started ?? useRepos.getState().refresh(root, ALL);
+}
+
 export function repositorySidebarStatus(tab: RepoTab | undefined) {
   return tab?.sidebarStatus ?? tab?.status ?? null;
+}
+
+/**
+ * Commits of the current branch that Push would send: ahead of its upstream, or, for a branch
+ * without an upstream, commits absent from every fetched remote branch (when branches are loaded).
+ */
+export function repositoryOutgoing(tab: RepoTab | undefined): number {
+  const status = repositorySidebarStatus(tab);
+  if (!status?.branch) return 0;
+  if (status.upstream) return status.ahead;
+  return tab?.refs?.local.find(branch => branch.name === status.branch)?.unpublished ?? 0;
 }

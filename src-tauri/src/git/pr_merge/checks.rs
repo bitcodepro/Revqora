@@ -135,7 +135,12 @@ fn paged(repo: &Path, f: &ForgeInfo, path: impl Fn(usize) -> String, pointer: &s
     Err(error("CI data exceeds the complete-preview limit. Open the server; no merge was enabled."))
 }
 pub(super) fn load(repo: &Path, f: &ForgeInfo, d: &Detail) -> GitResult<Vec<forge::Check>> {
-    let sha = &d.pull.head_sha;
+    for_commit(repo, f, &d.pull.head_sha)
+}
+
+/// Every CI check of a commit: all pages, newest result per check where the provider keeps
+/// history. Commit details and PR checks use this too, so they agree with the merge review.
+pub(in crate::git) fn for_commit(repo: &Path, f: &ForgeInfo, sha: &str) -> GitResult<Vec<forge::Check>> {
     if !oid(sha) {
         return Err(error("A complete source SHA is required for CI."));
     }
@@ -143,7 +148,15 @@ pub(super) fn load(repo: &Path, f: &ForgeInfo, d: &Detail) -> GitResult<Vec<forg
     match f.kind.as_str() {
         "github" => {
             let base = format!("/repos/{}/commits/{sha}", forge::project_path(&f.project));
-            for r in paged(repo, f, |p| format!("{base}/check-runs?filter=latest&per_page=100&page={p}"), "/check_runs")? {
+            // Check runs and commit statuses are separate APIs: read them side by side.
+            let parent = crate::git::operations::Inherited::of(repo);
+            let (runs, statuses) = std::thread::scope(|scope| {
+                let statuses = scope.spawn(|| parent.run(|| paged(repo, f, |p| format!("{base}/status?per_page=100&page={p}"), "/statuses")));
+                let runs = paged(repo, f, |p| format!("{base}/check-runs?filter=latest&per_page=100&page={p}"), "/check_runs");
+                (runs, statuses.join().unwrap_or_else(|_| Err(error("A CI read failed."))))
+            });
+            let (runs, statuses) = (runs?, statuses?);
+            for r in runs {
                 out.push(check(
                     text(&r, "/name"),
                     if text(&r, "/status") == "completed" { r["conclusion"].as_str().unwrap_or("") } else { "pending" },
@@ -151,7 +164,7 @@ pub(super) fn load(repo: &Path, f: &ForgeInfo, d: &Detail) -> GitResult<Vec<forg
                 ));
             }
             // Combined status is already reduced to the newest status per context by GitHub.
-            for r in paged(repo, f, |p| format!("{base}/status?per_page=100&page={p}"), "/statuses")? {
+            for r in statuses {
                 out.push(check(text(&r, "/context"), &text(&r, "/state"), text(&r, "/target_url")));
             }
         }

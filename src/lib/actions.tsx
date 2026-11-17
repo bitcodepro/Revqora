@@ -3,7 +3,7 @@ import { plural } from "./format";
 // High-level user actions: call the backend, report results, refresh state.
 import { open as openFolder } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage, isGitError, newOpId } from "./api";
-import { ALL, getTab, useRepos, type Parts } from "./store";
+import { ALL, getTab, refreshAfterOperation, useRepos, type Parts } from "./store";
 import { endBusy, showDialog, startBusy, toast, useUi } from "./ui";
 import { GitMerge } from "lucide-react";
 import { Modal } from "../components/Modal";
@@ -106,7 +106,7 @@ async function remote<T>(root: string, label: string, fn: (opId: string) => Prom
     return undefined;
   } finally {
     endBusy(opId);
-    await useRepos.getState().refresh(root, ALL);
+    await refreshAfterOperation(root, opId);
   }
 }
 
@@ -258,7 +258,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
     else toast.error(e, "Pull failed");
   } finally {
     endBusy(opId);
-    await useRepos.getState().refresh(root, ALL);
+    await refreshAfterOperation(root, opId);
   }
   if (outcome) {
     if (outcome.status === "upstreamGone" && outcome.upstreamGone) {

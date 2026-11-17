@@ -11,18 +11,20 @@ Before opening or updating a PR:
 ## Explorer, Repositories and Branches
 
 - [ ] Explorer shows folders, repositories and branches. Only folders and repositories can move in the tree. Moving a repository keeps its branches with it and changes only the app's organization.
+- [ ] Pull request detail: the status strip under the title shows CI checks, approvals or requested changes, merge blockers and discussions, and one next-step button (Merge… / Merge on Bitbucket for an open request, Delete source branch… after a merge). Bitbucket Cloud CI checks load only on request. Review ▾ offers Comment, Approve and Request changes with unavailable actions disabled. The ⋯ menu holds Edit PR, PR workflow…, Open in browser, Copy URL and Watch this PR. One ⟳ reloads details, checks, files and discussions. List rows show comments, approvals, requested changes and conflicts the provider lists, plus the CI result of requests opened in this session.
 - [ ] Explorer highlights the active repository after switches from any panel or shortcut. Keyboard focus and multi-selection are independent. History, Changes, Branches and repository-scoped Pull Requests follow the active repository.
-- [ ] Repositories has the same Favorites, Incoming and Changes filters as Explorer. They combine with the search and with each other, and use the last known repository status.
+- [ ] Repositories has the same Favorites, Incoming, Outgoing and Changes filters as Explorer. They combine with the search and with each other, and use the last known repository status.
 - [ ] Repositories remains available as a flat panel. Clicking a repository highlights its entire row in both themes, even after the pointer leaves. Ctrl/Shift selection has its own styling. Escape clears the multi-selection.
 - [ ] Branches remains available as a separate panel. Both surfaces share branch actions. A single click opens branch context while keeping the current checkout. Primary appears first and survives My branches. Favorites can show a branch with its repository and parent folders.
 - [ ] In Explorer the accent bar marks only the active repository. The checked-out branch of every repository has a bold name, an accent branch icon and a check. In the active repository the row background marks the branch History shows: the open branch context, or the checked-out branch when none is open, so selecting any repository highlights its current branch the same way.
 - [ ] Branch rows show ↑/↓ against their upstream. With a configured remote and no upstream, ↑ counts commits absent from the fetched remote branches.
-- [ ] Explorer's Incoming and Changes filters use the last known repository status and keep the parent folders of matching repositories visible. Changes includes staged, unstaged and untracked files.
+- [ ] Explorer's Incoming, Outgoing and Changes filters use the last known repository status and keep the parent folders of matching repositories visible. Changes includes staged, unstaged and untracked files. Outgoing shows repositories whose current branch is ahead of its upstream, or, without an upstream, has commits absent from fetched remote branches.
 - [ ] Closing a repository keeps its Explorer entry. Remove from Explorer closes the selected repositories and clears their saved placements and favorites while preserving their working copies.
 - [ ] Test arrow navigation, F2 and Delete in the relevant panel. Shortcut bindings and hints are discoverable and existing overrides keep working.
 - [ ] A dialog, the command palette or an open context menu takes every shortcut, keeps Tab inside it and returns focus to its opener when it closes. A tool window over the workspace (Blame, Compare, merge editor) keeps application shortcuts and blocks those for the History or Changes selection it covers (stage/unstage, close preview, Find commits). A view shortcut (History, Changes, Pull Requests, review layout, overview) closes a tool window that only shows something and then switches (Branch Manager with edited, unsaved protection rules counts as holding work); a rebase plan, workflow editor, agent request or merge editor stays open and a notice says the view was not switched.
 
 - [ ] While a transfer runs for the active repository, Fetch rotates, Pull moves down and Push moves up. The icons return to rest when the operation ends. Reduced-motion mode uses the busy color without movement.
+- [ ] While Fetch, Pull, Push or an automatic fetch waits on the remote, History, Changes, diffs and status of that repository keep loading. Other writing actions of the repository wait in order until the transfer ends; Pull's local steps (merge or rebase, checks) block reads again. An automatic fetch that finds another operation running or queued skips that round without an error and tries at the next interval. See `src-tauri/tests/repository_concurrency.rs`.
 
 ## History and cross-repository search
 
@@ -80,6 +82,7 @@ Before opening or updating a PR:
 
 ## Bitbucket credentials
 
+- [ ] Add API account replaces the account list with a three-step form: service (server as a summary with Change server; Azure always asks for the organization URL), one sign-in method, and only that method's fields marked required. Optional settings are grouped under Options. While input is missing, the save button is disabled and the form names what is missing. Vault password fields appear only to set up (Set up vault…), unlock or change the vault.
 - [ ] The Bitbucket Git prompt accepts a token by itself. With Remember enabled, it offers an optional email for Basic authentication in Pull Requests. Closing the email field submits a token-only sign-in.
 
 ## MCP and portable updates

@@ -118,6 +118,55 @@ The first request after the app starts still waits once for Git Credential Manag
 REVQORA_LIVE_PR_REPO=<path> cargo test --test pr_live_timing -- --ignored --nocapture
 ```
 
+Further changes in the same pass:
+
+- **One HTTP agent for every API read.** All provider `GET`s share one keep-alive connection pool (`forge_accounts::READS`), so a PR does not pay a new TLS handshake for each of its reads.
+- **Merge readiness reads run side by side.** GitHub's repository, branch rules, GraphQL readiness, check runs and commit statuses are fetched in parallel, together with the merge identity (about six sequential round trips before).
+- **PR reads are shared in the UI** (`src/lib/prCache.ts`). Identical reads in flight share one request. Review capabilities are reused for 30 s, CI checks for 15 s and files of one PR revision for 5 min. Discussion pages are always asked again, so a PR changed on the server is reported when Discussions opens. Every PR write, account change and explicit refresh forgets them.
+- **Refreshing keeps the screen.** **Refresh pull requests** and **⟳** keep the list and the open PR visible while the new data loads. Reopening a list shows its last first page at once, then replaces it. When a background list poll sees a new push or state for the open PR, the detail reloads.
+- **Merge readiness polls only where it is shown**: an open PR with **Overview** visible. Other sections keep the last result.
+- **All repositories** filters **My pull requests** from the scanned rows, so switching the filter or editing repository groups does not rescan every repository.
+- **GitHub mergeability**: `UNKNOWN` (GitHub has not finished its background check after a push) is reported as "still checking", not as a conflict.
+
+## Fetch, Pull and Push (November 2026)
+
+`src-tauri/tests/remote_ops_timing.rs` times the app's operations against a local remote, so the network does not hide Revqora's own work (400 remote branches, 40 untracked files, debug test build). Set `REVQORA_TIMING_DETAIL=1` to list every Git process in start order.
+
+```
+cargo test --test remote_ops_timing -- --ignored --nocapture
+```
+
+| Operation | Plain Git | Before | After |
+| --- | ---: | ---: | ---: |
+| Fetch all | 0.45 s, 4 processes | 1.2 s, 11 | 0.9 s, 8 |
+| Background fetch | — | 1.3 s, 11 | 0.65 s, 5 |
+| Pull (one new commit) | — | 7.4 s, 74 | 5.5 s, 61 |
+| Push (one new commit) | 0.76 s, 7 | 3.1 s, 31 | 2.3 s, 25 |
+
+Each Git process costs 70–100 ms on Windows, so the changes remove processes:
+
+- **Configuration answers survive writes that cannot change configuration** (`runner::keeps_configuration`). Every writing command used to clear the configuration cache, so a pull re-read `config --list`, `var GIT_ATTR_*` and remote settings after each `update-ref`, `fetch` or `merge`.
+- **Remote and refspec reads use the configuration cache** in fetch pruning, the transport protection and pull.
+- **A status read starts its index, ref and attribute reads alongside `git status`** instead of after it.
+- **One refresh after an operation.** Fetch, Pull and Push now wait for the refresh the operation's completion event started, instead of queuing a second full refresh with history, refs and squash annotations behind it.
+- **Revqora's credential helper is asked first** when it holds a token for the repository (see [Accounts](wiki/Accounts-and-providers.md)). Git Credential Manager took about 1.3 s per request when it had nothing for the host, on every network command and before Revqora's helper.
+
+Pull and Push still create a recovery checkpoint and verify the working copy several times (about seven status reads per pull); those are data-safety checks and stay.
+
+### Waiting on the remote no longer blocks reads
+
+Every writing operation holds a repository lock so two app actions cannot change the same repository at once. It used to hold the lock exclusively for the whole operation, including the time Git waited on the server. A slow remote therefore froze History, Changes and status for that repository, up to the 30-second limit of an automatic fetch.
+
+Now `fetch`, `push` and `ls-remote` inside a writing operation run in a *network section* (`operations::network`, applied by the runner):
+
+- The writer keeps its FIFO turn, so no other writer can start before it finishes. Git's ref updates at the end of a fetch or push never interleave with a commit, checkout or another fetch from the app.
+- The lock is downgraded to shared while Git waits, so reads run.
+- The writer takes the lock exclusively again before its next local step (Pull's merge or rebase and checks), also when a step panics.
+- A state token read during the network wait may describe the refs before the update. An action prepared from it is refused as stale afterwards instead of applied.
+- An automatic fetch skips the round when another writer is running or queued (`repository-busy`) instead of queueing in front of the user's action.
+
+`src-tauri/tests/repository_concurrency.rs` covers this with a local remote whose upload-pack and receive-pack first sleep: reads during Fetch, Pull, Push and Auto-fetch; FIFO order of waiting writers; stale tokens; exclusive local steps; panic recovery; nested and parallel network sections; timed-out automatic fetches; and an automatic fetch racing a Pull. Turning the downgrade off makes the read tests fail with "reads waited for the network".
+
 ## Repeat the baseline
 
 - Use the same Windows build, the same fixture and one new portable profile per launch. Run startup and navigation separately from search sweeps. Record first visible graph rows, branch highlight, commit header, first diff, first search hit and complete results. Capture at least 20 samples per interaction on a real repository before setting a p95 target.

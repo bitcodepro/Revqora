@@ -92,12 +92,14 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await page.waitForFunction(repositoryIsActive,{expected:root,windows:process.platform==="win32"});assert.equal(git(root,"rev-parse","HEAD"),head);
       await page.getByTitle("Accounts and API connections",{exact:true}).click();await page.waitForSelector(".fa-workspace[aria-busy=false]");
       await modal().getByText("origin · Git credentials (automatic)",{exact:true}).waitFor();
-      await modal().getByLabel("Vault password",{exact:true}).fill(password);await modal().getByLabel("Confirm vault password",{exact:true}).fill(password);await button("Create vault").click();await page.waitForSelector(".fa-workspace[aria-busy=false]");
-      await button("Add API account").click();await modal().getByLabel("API provider",{exact:true}).selectOption("bitbucket");await modal().getByLabel("API server URL",{exact:true}).fill(url);
+      await button("Set up vault…").click();await modal().getByLabel("Vault password",{exact:true}).fill(password);await modal().getByLabel("Confirm vault password",{exact:true}).fill(password);await button("Create vault").click();await page.waitForSelector(".fa-workspace[aria-busy=false]");
+      await button("Add API account").click();await modal().getByRole("radio",{name:"Bitbucket Cloud",exact:true}).click();await button("Change server").click();await modal().getByLabel("API server URL",{exact:true}).fill(url);
       assert.equal(await modal().getByLabel("Read Bitbucket profile",{exact:true}).isChecked(),false);
-      await modal().getByLabel("Use existing Git token",{exact:true}).check();assert.equal(await modal().getByLabel("API access token",{exact:true}).count(),0);
-      await modal().getByLabel("Bitbucket token type",{exact:true}).selectOption("basic");
+      // An API token needs the email; the reused Git token takes it only optionally.
+      assert.equal(await modal().getByRole("radio",{name:"API token + Atlassian email",exact:true}).isChecked(),true);
       assert.equal(await button("Save token connection").isEnabled(),false);
+      await modal().getByRole("radio",{name:"Git token of origin",exact:true}).check();assert.equal(await modal().getByLabel("API access token",{exact:true}).count(),0);
+      assert.equal(await button("Save token connection").isEnabled(),true);
       await modal().getByLabel("Atlassian email",{exact:true}).fill(email);
       await modal().getByLabel("Save API token in encrypted vault",{exact:true}).check();await button("Save token connection").click();await page.waitForSelector(".fa-card");await page.waitForSelector(".fa-workspace[aria-busy=false]");
       const snapshot=await invoke("forge_accounts_snapshot"),account=snapshot.accounts[0];assert.equal(account.identityVerified,false);assert.equal(account.storage,"encrypted");assert.equal(account.authUsername,email);assert(!JSON.stringify(snapshot).includes(token));
@@ -161,7 +163,7 @@ export async function bitbucketTokenSmoke({exe,work,check,out}) {
       await page.getByRole("button",{name:"Files",exact:true}).click();
       await detailPanel.getByRole("alert").filter({hasText:"read:repository:bitbucket"}).waitFor();
       denyPrFiles=false;
-      await prButton("Reload PR files").click();
+      await prButton("Reload request").click();
       await page.locator('[data-pr-file="file.txt"]').waitFor();await page.getByText("after",{exact:true}).first().waitFor();
       const result=await invoke("pr_page",{repo:root,state:"open",cursor:null}),connection=result.forge.connectionRevision;
       const detail=await invoke("pr_detail",{repo:root,number:7,expectedConnection:connection});

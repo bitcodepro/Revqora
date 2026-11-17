@@ -26,14 +26,27 @@ fn route(f: &ForgeInfo, n: u64, s: &str) -> String {
 fn gh(repo: &Path, f: &ForgeInfo, d: &Detail, p: &mut Plan) -> GitResult<Value> {
     let project = forge::project_path(&f.project);
     let parts = f.project.split_once('/').ok_or_else(|| error("Invalid GitHub repository."))?;
-    let r = forge::request(repo, f, "GET", &format!("/repos/{project}"), None)?;
+    // The repository, its rules, the GraphQL readiness and CI are independent: read them
+    // side by side (about 4 sequential round trips before). Helpers join the caller's
+    // repository transaction, as a merge submission prepares its plan inside one.
+    let parent = crate::git::operations::Inherited::of(repo);
+    let (r, rules, g, checks) = std::thread::scope(|scope| {
+        let rules = scope.spawn(|| {
+            parent.run(|| forge::request(repo, f, "GET", &format!("/repos/{project}/rules/branches/{}?per_page=100", forge::enc(&d.pull.base)), None))
+        });
+        let g = scope.spawn(|| parent.run(|| forge::graphql(repo,f,"query RevqoraMergeReadiness($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id headRefOid baseRefOid mergeable mergeStateStatus reviewDecision mergeQueueEntry{id state position} baseRef{branchProtectionRule{requiresApprovingReviews requiredApprovingReviewCount requiresCodeOwnerReviews requiresStatusChecks requiresStrictStatusChecks requiresConversationResolution requiresCommitSignatures requiresLinearHistory}}}}}",json!({"owner":parts.0,"name":parts.1,"number":d.pull.number}))));
+        let checks = scope.spawn(|| parent.run(|| checks::load(repo, f, d)));
+        let r = forge::request(repo, f, "GET", &format!("/repos/{project}"), None);
+        let joined = |h: std::thread::ScopedJoinHandle<'_, GitResult<Value>>| h.join().unwrap_or_else(|_| Err(error("A merge readiness read failed.")));
+        let checks = checks.join().unwrap_or_else(|_| Err(error("A merge readiness read failed.")));
+        (r, joined(rules), joined(g), checks)
+    });
+    let (r, rules, g) = (r?, rules?, g?);
     p.source_branch_may_be_deleted = r.get("delete_branch_on_merge").and_then(Value::as_bool).unwrap_or(true);
-    let rules = forge::request(repo, f, "GET", &format!("/repos/{project}/rules/branches/{}?per_page=100", forge::enc(&d.pull.base)), None)?;
     let rule_rows = rows(&rules, "")?;
     if rule_rows.len() >= 100 {
         return Err(error("Branch rules may be truncated. Use GitHub to inspect and merge."));
     }
-    let g=forge::graphql(repo,f,"query RevqoraMergeReadiness($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id headRefOid baseRefOid mergeable mergeStateStatus reviewDecision mergeQueueEntry{id state position} baseRef{branchProtectionRule{requiresApprovingReviews requiredApprovingReviewCount requiresCodeOwnerReviews requiresStatusChecks requiresStrictStatusChecks requiresConversationResolution requiresCommitSignatures requiresLinearHistory}}}}}",json!({"owner":parts.0,"name":parts.1,"number":d.pull.number}))?;
     let pr = &g["repository"]["pullRequest"];
     if text(pr, "/headRefOid") != d.pull.head_sha || text(pr, "/baseRefOid") != d.base_sha || text(pr, "/id").is_empty() {
         return Err(stale());
@@ -46,8 +59,14 @@ fn gh(repo: &Path, f: &ForgeInfo, d: &Detail, p: &mut Plan) -> GitResult<Value> 
     let review = text(pr, "/reviewDecision");
     p.rule("Server merge state", format!("{mergeable} / {state}"), true);
     p.rule("Required reviews", if review.is_empty() { "No review decision reported".into() } else { review.clone() }, true);
-    if mergeable != "MERGEABLE" {
-        p.block("GitHub has not confirmed a conflict-free merge.");
+    // GitHub computes mergeability in the background after a push; UNKNOWN is not a conflict.
+    match mergeable.as_str() {
+        "MERGEABLE" => {}
+        "CONFLICTING" => p.block("This branch has merge conflicts with the target branch. Resolve them before merging."),
+        "UNKNOWN" => {
+            p.block("GitHub is still checking this PR for merge conflicts. The check usually finishes within seconds; merge readiness refreshes on its own.")
+        }
+        _ => p.block("GitHub has not confirmed a conflict-free merge."),
     }
     if matches!(review.as_str(), "CHANGES_REQUESTED" | "REVIEW_REQUIRED") {
         p.block("Required reviews are not satisfied.");
@@ -113,7 +132,7 @@ fn gh(repo: &Path, f: &ForgeInfo, d: &Detail, p: &mut Plan) -> GitResult<Value> 
             }
         }
     }
-    p.checks = checks::load(repo, f, d)?;
+    p.checks = checks?;
     checks::caution(p);
     Ok(json!({"repositoryId":r.get("id"),"rules":rules,"pull":pr}))
 }

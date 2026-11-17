@@ -26,9 +26,11 @@ export async function forgeAccountsSmoke({page,check,shot,work,profile,restart})
   const open=async()=>{await page.getByTitle("Accounts and API connections",{exact:true}).click();await page.waitForSelector(".fa-workspace[aria-busy=false]");};
   const ready=()=>page.waitForSelector(".fa-workspace[aria-busy=false]");
   const button=name=>modal().getByRole("button",{name,exact:true});
+  // The server address is a summary with Change server until it is edited.
+  const serverBox=async()=>{await modal().locator(".fa-add").waitFor();const box=modal().getByRole("textbox",{name:"API server URL",exact:true});if(!await box.isVisible())await button("Change server").click();return box;};
   const card=login=>modal().locator(".fa-card").filter({has:page.getByText(login,{exact:true})});
   const add=async(token,login,persist=false)=>{
-    await button("Add API account").click();await modal().getByRole("textbox",{name:"API server URL",exact:true}).fill(url);await modal().getByLabel("API access token",{exact:true}).fill(token);
+    await button("Add API account").click();await (await serverBox()).fill(url);await modal().getByLabel("API access token",{exact:true}).fill(token);
     if(persist)await modal().getByRole("checkbox",{name:"Save API token in encrypted vault",exact:true}).check();await button("Verify and save account").click();await card(login).waitFor();await ready();
   };
   const select=async id=>{await modal().getByRole("combobox",{name:"Repository API account",exact:true}).selectOption(id);await button("Use for PR and checks").click();await ready();};
@@ -42,7 +44,7 @@ export async function forgeAccountsSmoke({page,check,shot,work,profile,restart})
       const local=await page.evaluate(()=>JSON.stringify({...localStorage}));if(local.includes(tokens[0])||JSON.stringify(snapshot).includes(tokens[0])||fs.readFileSync(storageFile,"utf8").includes(tokens[0]))throw Error("Session token leaked into public settings");await shot("100-api-accounts");
     });
     await check("two accounts on one host route PR requests through the explicitly selected API identity",async()=>{
-      await button("Add API account").click();await modal().getByRole("textbox",{name:"API server URL",exact:true}).fill(url);await modal().getByLabel("API access token",{exact:true}).fill(tokens[1]);await modal().getByRole("checkbox",{name:"Use token for this repository",exact:true}).uncheck();await button("Verify and save account").click();await card("second-user").waitFor();await ready();
+      await button("Add API account").click();await (await serverBox()).fill(url);await modal().getByLabel("API access token",{exact:true}).fill(tokens[1]);await modal().getByRole("checkbox",{name:"Use token for this repository",exact:true}).uncheck();await button("Verify and save account").click();await card("second-user").waitFor();await ready();
       if((await invoke("forge_connections",{repo:root})).remotes.find(r=>r.name==="origin")?.accountId!==(await account("first-user")).id)throw Error("Adding an unselected token silently changed the repository account");
       await select((await account("second-user")).id);const r=await invoke("pull_requests",{repo:root});if(r.forge.accountLogin!=="second-user"||r.items[0]?.author!=="second-user")throw Error("Second account was replaced by the host's first token");
       await select((await account("first-user")).id);const first=await invoke("pull_requests",{repo:root});if(first.items[0]?.author!=="first-user")throw Error("Switching API accounts reused a cached host token");await shot("101-api-connection");
@@ -56,7 +58,7 @@ export async function forgeAccountsSmoke({page,check,shot,work,profile,restart})
       await button("Refresh API accounts").click();await ready();for(const [login,token] of [["first-user",tokens[0]],["second-user",tokens[1]]]){await card(login).getByRole("button",{name:"Reconnect",exact:true}).click();await modal().getByLabel("API access token",{exact:true}).fill(token);await button("Verify and save account").click();await ready();}await select((await account("first-user")).id);
     });
     await check("encrypted portable tokens lock without falling back to another identity and unlock only with the vault password",async()=>{
-      await modal().getByLabel("Vault password",{exact:true}).fill(vaultPassword);await modal().getByLabel("Confirm vault password",{exact:true}).fill(vaultPassword);await button("Create vault").click();await ready();
+      await button("Set up vault…").click();await modal().getByLabel("Vault password",{exact:true}).fill(vaultPassword);await modal().getByLabel("Confirm vault password",{exact:true}).fill(vaultPassword);await button("Create vault").click();await ready();
       await card("first-user").getByRole("button",{name:"Reconnect",exact:true}).click();await modal().getByLabel("API access token",{exact:true}).fill(tokens[0]);await modal().getByRole("checkbox",{name:"Save API token in encrypted vault",exact:true}).check();await button("Verify and save account").click();await ready();
       const disk=fs.readFileSync(storageFile,"utf8");if(tokens.some(t=>disk.includes(t))||disk.includes(vaultPassword)||!disk.includes("ciphertext"))throw Error("Portable vault contains plaintext secret material");
       await button("Lock tokens and clear sessions").click();await ready();const count=requests.length;let locked=false;try{await invoke("pull_requests",{repo:root});}catch{locked=true;}if(!locked||requests.length!==count)throw Error("Locked account fell back to Git or another account");
@@ -66,8 +68,8 @@ export async function forgeAccountsSmoke({page,check,shot,work,profile,restart})
     await check("reconnect refuses a different user and rejected tokens or redirects never become saved accounts",async()=>{
       await card("first-user").getByRole("button",{name:"Reconnect",exact:true}).click();await modal().getByLabel("API access token",{exact:true}).fill(tokens[1]);await button("Verify and save account").click();await modal().getByRole("alert").filter({hasText:/different account/}).waitFor();await ready();await button("Cancel account").click();
       if((await invoke("pull_requests",{repo:root})).items[0]?.author!=="first-user")throw Error("Failed reconnect replaced the original account");
-      await button("Add API account").click();await modal().getByRole("textbox",{name:"API server URL",exact:true}).fill(url);const rejected="rejected-secret-token";await modal().getByLabel("API access token",{exact:true}).fill(rejected);await button("Verify and save account").click();await modal().getByRole("alert").waitFor();await ready();if((await modal().innerText()).includes(rejected))throw Error("Server's echoed token leaked into UI error");
-      await modal().getByRole("textbox",{name:"API server URL",exact:true}).fill(`${url}/redirect`);await modal().getByLabel("API access token",{exact:true}).fill(tokens[0]);await button("Verify and save account").click();await modal().getByRole("alert").waitFor();await ready();if(requests.some(r=>r.destination)||(await invoke("forge_accounts_snapshot")).accounts.length!==2)throw Error("Redirect forwarded credentials or saved a false identity");await button("Cancel account").click();
+      await button("Add API account").click();await (await serverBox()).fill(url);const rejected="rejected-secret-token";await modal().getByLabel("API access token",{exact:true}).fill(rejected);await button("Verify and save account").click();await modal().getByRole("alert").waitFor();await ready();if((await modal().innerText()).includes(rejected))throw Error("Server's echoed token leaked into UI error");
+      await (await serverBox()).fill(`${url}/redirect`);await modal().getByLabel("API access token",{exact:true}).fill(tokens[0]);await button("Verify and save account").click();await modal().getByRole("alert").waitFor();await ready();if(requests.some(r=>r.destination)||(await invoke("forge_accounts_snapshot")).accounts.length!==2)throw Error("Redirect forwarded credentials or saved a false identity");await button("Cancel account").click();
     });
     await check("real app restart retains encrypted metadata and remote selection but restores neither vault keys nor session tokens",async()=>{
       await button("Close").click();page=await restart();page.setDefaultTimeout(60000);
@@ -85,7 +87,12 @@ export async function forgeAccountsSmoke({page,check,shot,work,profile,restart})
       if(git("rev-parse","HEAD")!==head||!index.equals(fs.readFileSync(path.join(root,".git/index")))||fs.readFileSync(path.join(root,"file.txt"),"utf8")!=="local edit must stay\n")throw Error("Account management changed Git HEAD, files or staging");await shot("104-api-account-reselection");
       // Provider discovery and token entry do not require contacting Bitbucket.
       git("remote","set-url","origin","https://bitbucket.org/example/token-ui.git");await button("Refresh API accounts").click();await ready();await button("Add API account").click();
-      if(await modal().getByRole("combobox",{name:"API provider",exact:true}).inputValue()!=="bitbucket"||await modal().getByRole("combobox",{name:"Bitbucket token type",exact:true}).inputValue()!=="basic"||await modal().getByRole("textbox",{name:"API server URL",exact:true}).inputValue()!=="https://bitbucket.org")throw Error("Bitbucket remote did not preselect the email/API-token form");
+      if(!await modal().getByRole("radio",{name:"Bitbucket Cloud",exact:true}).isChecked()||!await modal().getByRole("radio",{name:"API token + Atlassian email",exact:true}).isChecked()||!await modal().locator(".fa-summary code").filter({hasText:"https://bitbucket.org"}).isVisible())throw Error("Bitbucket remote did not preselect the email/API-token form");
+      // Only the chosen method's fields are shown, and the form says what is missing.
+      if(await modal().getByLabel("Vault password",{exact:true}).count()||!await button("Save token connection").isDisabled())throw Error("The account form showed unrelated fields or allowed saving without input");
+      await modal().getByRole("status").filter({hasText:"Enter your Atlassian email."}).waitFor();
+      await modal().getByRole("radio",{name:"Access token",exact:true}).check();if(await modal().getByLabel("Atlassian email",{exact:true}).count())throw Error("Access tokens asked for an email");await modal().getByRole("status").filter({hasText:"Paste the token."}).waitFor();
+      await modal().getByRole("radio",{name:"API token + Atlassian email",exact:true}).check();
       await modal().getByRole("textbox",{name:"Atlassian email",exact:true}).fill("fixture@example.invalid");await modal().getByLabel("API access token",{exact:true}).fill("not-sent-fixture-token");await shot("bitbucket-token-entry");await button("Cancel account").click();
       git("remote","set-url","origin",`${url}/team/repo.git`);await button("Close").click();
     });
