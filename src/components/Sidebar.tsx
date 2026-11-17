@@ -295,8 +295,8 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               {primaryBranch === b.fullName && <Flag size={12} className="branch-primary-mark" role="img" aria-label="Primary branch"/>}
               {kind === "local" && <span className={`branch-connection ${connection.kind}`} role="img" aria-label={connection.title} title={connection.title}>{connection.kind === "gone" ? <CloudOff size={13} /> : connection.kind === "paired" ? <Cloud size={13} /> : <HardDrive size={13} />}</span>}
               {kind === "local" && tab.squashMerged.includes(b.name) && (
-                <span className="pill amber" title={`Changes appear integrated in ${current ?? "the current branch"}. Original commit SHAs can still be outside it; review unique history before deletion.`}>
-                  integrated
+                <span className="pill amber" title={`Merged into ${current ?? "the current branch"}: its changes are already there (squash or rebase merge). Its original commits are not, so review unique history before deletion.`}>
+                  merged
                 </span>
               )}
               <BranchAheadBehind branch={b}/>
