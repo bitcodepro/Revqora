@@ -1344,20 +1344,20 @@ fn copy_and_no_copy_decisions_stay_together_and_a_new_copy_choice_starts_clean()
     use revqora_lib::git::recovery;
     let r = collision_fixture();
     fs::File::create(r.p().join("settings.env")).unwrap().set_len(101 * 1024 * 1024).unwrap();
-    // Copy chosen, saving fails; the user then accepts running without a copy in the same flow.
-    let copy = recovery::accept_collisions(r.p(), "merge_start", &local(), true);
-    carry(copy.clone());
+    // Copy chosen; the attempt uses up its token and fails to save.
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local(), true));
     let (result, _) = merge_op(r.p());
     let e = result.unwrap_err();
     assert_eq!(e.kind, "ignored-backup-unavailable");
-    // A fresh Copy choice does not inherit an older no-copy consent.
+    // A no-copy consent alone, or an older one, does not carry the collision choice.
+    carry(recovery::accept_unprotected(r.p(), "merge_start", &e.details, None));
+    let (result, _) = merge_op(r.p());
+    assert_eq!(result.unwrap_err().kind, "ignored-collision");
     let _older = recovery::accept_unprotected(r.p(), "merge_start", &e.details, None);
     carry(recovery::accept_collisions(r.p(), "merge_start", &local(), true));
-    let (result, _) = merge_op(r.p());
-    assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable");
-    // Both decisions of one request, chained under one token, run it.
-    let copy = recovery::accept_collisions(r.p(), "merge_start", &local(), true);
-    carry(recovery::accept_unprotected(r.p(), "merge_start", &e.details, Some(&copy)));
+    assert_eq!(merge_op(r.p()).0.unwrap_err().kind, "ignored-backup-unavailable", "a new Copy choice starts clean");
+    // The client's answer repeats the same request's choice: one new token for both, and it runs.
+    carry(recovery::accept_unprotected(r.p(), "merge_start", &e.details, Some((local().as_slice(), true))));
     let (result, _) = merge_op(r.p());
     result.unwrap();
 }

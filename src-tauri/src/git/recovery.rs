@@ -529,11 +529,10 @@ fn absolute_key(path: &Path) -> String {
     }
 }
 
-fn store(token: Option<&str>, update: impl FnOnce(Option<Consent>) -> Consent) -> String {
+fn store(consent: Consent) -> String {
     let mut all = pending().lock().unwrap_or_else(|e| e.into_inner());
-    let previous = token.and_then(|t| all.iter().position(|(k, _)| k == t)).map(|i| all.remove(i).1);
     let token = new_token();
-    all.push((token.clone(), update(previous)));
+    all.push((token.clone(), consent));
     if all.len() > MAX_PENDING {
         all.remove(0);
     }
@@ -545,23 +544,26 @@ fn store(token: Option<&str>, update: impl FnOnce(Option<Consent>) -> Consent) -
 /// checkpoint first. Returns the one-shot token the retry must carry. A new decision never
 /// inherits an older consent to run without a copy.
 pub fn accept_collisions(root: &Path, command: &str, paths: &[String], copy: bool) -> String {
-    let base = watch_key(root);
+    let repo = watch_key(root);
+    let collisions = Some(collision_decision(&repo, paths, copy));
+    store(Consent { repo, command: command.to_owned(), collisions, unprotected: None })
+}
+
+fn collision_decision(base: &Path, paths: &[String], copy: bool) -> AcceptedCollisions {
     let covered = paths.iter().map(|p| absolute_key(&base.join(p))).collect();
-    let copy = if copy { paths.to_vec() } else { Vec::new() };
-    store(None, |_| Consent { repo: base, command: command.to_owned(), collisions: Some(AcceptedCollisions { covered, copy }), unprotected: None })
+    AcceptedCollisions { covered, copy: if copy { paths.to_vec() } else { Vec::new() } }
 }
 
 /// The user accepts that `command` in `root` runs although these paths could not be saved. It
-/// applies only if that run finds exactly this list. With the token of the collision decision
-/// of the same request, both decisions stay together under the returned new token.
-pub fn accept_unprotected(root: &Path, command: &str, paths: &[String], token: Option<&str>) -> String {
+/// applies only if that run finds exactly this list. `collision` repeats the collision decision
+/// the same request made earlier (its token was used up by the attempt that failed to save), so
+/// the returned new token carries both decisions.
+pub fn accept_unprotected(root: &Path, command: &str, paths: &[String], collision: Option<(&[String], bool)>) -> String {
     let mut paths = paths.to_vec();
     paths.sort();
-    let base = watch_key(root);
-    store(token, |previous| {
-        let collisions = previous.filter(|c| c.repo == base && c.command == command).and_then(|c| c.collisions);
-        Consent { repo: base, command: command.to_owned(), collisions, unprotected: Some(paths) }
-    })
+    let repo = watch_key(root);
+    let collisions = collision.map(|(local, copy)| collision_decision(&repo, local, copy));
+    store(Consent { repo, command: command.to_owned(), collisions, unprotected: Some(paths) })
 }
 
 /// The consent token of the request about to run on this thread (None: it carries none).

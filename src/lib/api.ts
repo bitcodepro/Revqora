@@ -151,7 +151,7 @@ export const api = {
   recoveryRestoreFiles: (repo: string, id: string, changes: import("../components/IgnoredFilesChanged").IgnoredChange[]) =>
     call<import("../components/IgnoredFilesChanged").RestoreOutcome>("recovery_restore_files", { repo, id, changes }),
   /** Accepts that the next operation runs although exactly these ignored files could not be saved. */
-  recoveryAcceptUnprotected: (repo: string, command: string, paths: string[], token: string | null = null) => call<string>("recovery_accept_unprotected", { repo, command, paths, token }),
+  recoveryAcceptUnprotected: (repo: string, command: string, paths: string[], collision: { paths: string[]; copy: boolean } | null = null) => call<string>("recovery_accept_unprotected", { repo, command, paths, collision }),
   recoveryCompareSaved: (repo: string, id: string, path: string) => call<FileDiff>("recovery_compare_saved", { repo, id, path }),
   recoveryRestoreWorkspace: (repo: string, id: string, destination: string, name: string) => call<string>("recovery_restore_workspace", { repo, id, destination, name }),
   operationLogHealth: () => call<OperationLogHealth>("operation_log_health"),

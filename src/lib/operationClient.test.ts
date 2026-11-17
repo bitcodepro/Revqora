@@ -55,7 +55,7 @@ describe("repository operation client", () => {
     await repositoryCall(invoke, "merge_start", { repo: "repo" });
     expect(sent.map((s) => s.cmd)).toEqual(["recovery_accept_collisions", "recovery_accept_unprotected"]);
     expect(sent[0].args).toMatchObject({ command: "merge_start", paths: ["big"], copy: true });
-    expect(sent[1].args).toMatchObject({ command: "merge_start", paths: ["big"], token: "done" });
+    expect(sent[1].args).toMatchObject({ command: "merge_start", paths: ["big"], collision: { paths: ["big"], copy: true } });
   });
   it("sends the decision only with the request it was made for", async () => {
     // Two resets to different targets; only A stops and is approved.

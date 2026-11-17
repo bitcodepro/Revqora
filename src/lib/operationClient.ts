@@ -41,6 +41,9 @@ export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Pro
 async function withConsent<T>(invoke: Invoke, repo: string, command: string, call: (consent?: string) => Promise<T>): Promise<T> {
   // One-shot token of this request's decisions; only the retry that carries it may use them.
   let consent: string | undefined;
+  // This request's collision decision. Its token is used up by the attempt that runs, so a later
+  // no-copy answer sends the decision again and gets one new token for both.
+  let collision: { paths: string[]; copy: boolean } | null = null;
   for (;;) {
     try {
       return await call(consent);
@@ -54,14 +57,15 @@ async function withConsent<T>(invoke: Invoke, repo: string, command: string, cal
           err.declined = true;
           throw e;
         }
-        consent = await invoke<string>("recovery_accept_collisions", { repo, command, paths: details.filter((_, i) => i % 2 === 1), copy: choice === "copy" });
+        collision = { paths: details.filter((_, i) => i % 2 === 1), copy: choice === "copy" };
+        consent = await invoke<string>("recovery_accept_collisions", { repo, command, ...collision });
         continue;
       }
       if (err?.kind !== "ignored-backup-unavailable" || !hooks.confirmUnprotected) throw e;
       const paths = err.details ?? [];
       if (!(await hooks.confirmUnprotected(repo, err.message ?? "", paths))) throw e;
       // Kept together with this request's collision choice, under a new token.
-      consent = await invoke<string>("recovery_accept_unprotected", { repo, command, paths, token: consent ?? null });
+      consent = await invoke<string>("recovery_accept_unprotected", { repo, command, paths, collision });
     }
   }
 }

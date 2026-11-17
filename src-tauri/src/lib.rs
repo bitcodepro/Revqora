@@ -537,8 +537,15 @@ async fn recovery_compare_saved(repo: String, id: String, path: String) -> GitRe
 
 /// The user accepts that the next operation runs although these ignored files could not be saved.
 #[tauri::command]
-async fn recovery_accept_unprotected(repo: String, command: String, paths: Vec<String>, token: Option<String>) -> GitResult<String> {
-    blocking(move || Ok(recovery::accept_unprotected(&p(&repo), &command, &paths, token.as_deref()))).await
+async fn recovery_accept_unprotected(repo: String, command: String, paths: Vec<String>, collision: Option<CollisionChoice>) -> GitResult<String> {
+    blocking(move || Ok(recovery::accept_unprotected(&p(&repo), &command, &paths, collision.as_ref().map(|c| (c.paths.as_slice(), c.copy))))).await
+}
+
+/// A collision decision the client repeats with a no-copy answer for the same request.
+#[derive(serde::Deserialize)]
+struct CollisionChoice {
+    paths: Vec<String>,
+    copy: bool,
 }
 
 #[tauri::command]
