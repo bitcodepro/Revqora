@@ -96,6 +96,28 @@ Measured through the app on a `scripts/make-big-repo.py` fixture (60,000 commits
 
 Launch to the first visible rows varied with WebView2 startup by more than the change (3.2–4.0 s for both builds), so it is not reported as a gain. A first run without the 8-second delay showed that housekeeping competing with the first full history load more than doubled it; the delay and the lower priority removed that.
 
+## Pull requests over Git credentials (November 2026)
+
+Without an API account, Revqora reads the token from Git (`git credential fill`). With Git Credential Manager on Windows that took about 1.9 s per lookup, and every PR request did one, because the token is part of the connection revision. Bitbucket also returns shortened commit IDs, so each PR read asked for both full IDs again.
+
+- **The Git credential is reused for 60 s** per repository and remote URL (`forge::cached_token`). A 401, a newly typed Git credential and **Forget saved Git tokens** drop it. A token changed outside Revqora shows as a changed connection once the minute has passed.
+- **Resolved Bitbucket commit IDs are remembered** for the session (`pr_center::resolve_bitbucket_oid`).
+
+Measured on a Bitbucket Cloud test repository with `src-tauri/tests/pr_live_timing.rs` (debug build, warm second round):
+
+| Request | Before | After |
+| --- | ---: | ---: |
+| PR list (`page`) | 4.0–4.9 s | 0.47 s |
+| Open a PR (`detail`) | 8.7–9.0 s | 0.46 s |
+| CI checks | 10.6–11.2 s | 0.74 s |
+| Changed files | 8.5–21.9 s | 0.47 s |
+
+The first request after the app starts still waits once for Git Credential Manager. Run the probe against another repository with:
+
+```
+REVQORA_LIVE_PR_REPO=<path> cargo test --test pr_live_timing -- --ignored --nocapture
+```
+
 ## Repeat the baseline
 
 - Use the same Windows build, the same fixture and one new portable profile per launch. Run startup and navigation separately from search sweeps. Record first visible graph rows, branch highlight, commit header, first diff, first search hit and complete results. Capture at least 20 samples per interaction on a real repository before setting a p95 target.
