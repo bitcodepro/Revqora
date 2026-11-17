@@ -99,7 +99,7 @@ pub fn normalize(p: PathBuf) -> PathBuf {
 /// What `repo/.git` currently is: a directory, a `gitdir:` file (linked worktree or
 /// submodule; its text names the Git directory) or nothing. A worktree moved away and
 /// another one added at the same path changes this even though the old Git directory exists.
-fn dot_git_identity(repo: &Path) -> Option<String> {
+pub fn dot_git_identity(repo: &Path) -> Option<String> {
     let dot = repo.join(".git");
     let meta = std::fs::metadata(&dot).ok()?;
     if meta.is_dir() {

@@ -164,7 +164,12 @@ fn a_reused_worktree_path_maps_to_its_new_repository() {
     let temp = tempfile::tempdir().unwrap();
     let slot = temp.path().join("slot");
     let moved = temp.path().join("moved");
+    a.git(&["config", "user.email", "a@example.com"]);
+    b.git(&["config", "user.email", "b@example.com"]);
     a.git(&["worktree", "add", "-q", "-b", "wa", slot.to_str().unwrap()]);
+    let email = || revqora_lib::git::config_cache::run(&slot, &["config", "--get", "user.email"]).unwrap().trim().to_string();
+    assert_eq!(email(), "a@example.com");
+    assert_eq!(email(), "a@example.com");
     let first = repo::git_dir(&slot).unwrap();
     let canon = |p: std::path::PathBuf| std::fs::canonicalize(p).unwrap();
     assert_eq!(canon(graph::common_dir(&slot).unwrap()), canon(repo::git_dir(&a.root).unwrap()));
@@ -175,4 +180,44 @@ fn a_reused_worktree_path_maps_to_its_new_repository() {
     let b_dir = canon(repo::git_dir(&b.root).unwrap());
     assert!(canon(repo::git_dir(&slot).unwrap()).starts_with(&b_dir), "the cached Git directory still pointed at repository A");
     assert_eq!(canon(graph::common_dir(&slot).unwrap()), b_dir);
+    assert_eq!(email(), "b@example.com", "the configuration cache still answered for repository A");
+}
+
+#[test]
+fn replacement_refs_refresh_cached_ahead_behind_counts() {
+    let origin = Repo::new();
+    let temp = tempfile::tempdir().unwrap();
+    let clone = temp.path().join("clone");
+    git_in(temp.path(), &["clone", "-q", origin.root.to_str().unwrap(), "clone"]);
+    for args in [["config", "user.name", "Test"], ["config", "user.email", "test@example.com"], ["config", "commit.gpgsign", "false"]] {
+        git_in(&clone, &args);
+    }
+    origin.commit_on("main", "o1.txt", "o1\n");
+    origin.commit_on("main", "o2.txt", "o2\n");
+    git_in(&clone, &["commit", "--allow-empty", "-qm", "l1"]);
+    git_in(&clone, &["commit", "--allow-empty", "-qm", "l2"]);
+    git_in(&clone, &["fetch", "-q", "origin"]);
+    let counts = || {
+        let main = refs::snapshot(&clone).unwrap().local.into_iter().find(|b| b.name == "main").unwrap();
+        (main.ahead, main.behind)
+    };
+    let expected = || {
+        let out = git_in(&clone, &["rev-list", "--left-right", "--count", "main...origin/main"]);
+        let mut it = out.split_whitespace().map(|n| n.parse::<u32>().unwrap());
+        (it.next().unwrap(), it.next().unwrap())
+    };
+    assert_eq!(counts(), (2, 2));
+    let tips = git_in(&clone, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes"]);
+    // Add: graft main onto the upstream tip.
+    git_in(&clone, &["replace", "--graft", "main", "origin/main"]);
+    assert_ne!(expected(), (2, 2));
+    assert_eq!(counts(), expected(), "adding a replacement must refresh the counts");
+    // Change: graft onto the upstream tip's parent instead.
+    git_in(&clone, &["replace", "-f", "--graft", "main", "origin/main~1"]);
+    assert_eq!(counts(), expected(), "changing a replacement must refresh the counts");
+    // Remove.
+    let main = git_in(&clone, &["rev-parse", "main"]);
+    git_in(&clone, &["replace", "-d", &main]);
+    assert_eq!(counts(), (2, 2), "removing a replacement must refresh the counts");
+    assert_eq!(git_in(&clone, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes"]), tips);
 }

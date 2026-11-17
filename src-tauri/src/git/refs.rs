@@ -134,13 +134,34 @@ struct MetaKey {
 /// Per repository and history boundary: `MetaKey` → the 13 `FMT` fields of that ref.
 type MetaCache = HashMap<(std::path::PathBuf, HistoryBoundary), HashMap<MetaKey, Vec<String>>>;
 
-/// What, besides the two tips, decides ahead/behind counts: the shallow boundary and grafts.
-/// Deepening a shallow clone (`fetch --unshallow`) keeps every tip but changes the counts.
-type HistoryBoundary = Vec<Option<(std::time::SystemTime, u64)>>;
+/// What, besides the two tips, decides ahead/behind counts: the shallow boundary, grafts and
+/// replacement refs (`git replace --graft`). Deepening a shallow clone or adding a
+/// replacement keeps every listed tip but changes the counts.
+type HistoryBoundary = Vec<(std::path::PathBuf, Option<(std::time::SystemTime, u64)>)>;
 
 fn history_boundary(repo: &Path) -> HistoryBoundary {
     let Some(common) = super::graph::common_dir(repo) else { return Vec::new() };
-    ["shallow", "info/grafts"].iter().map(|name| std::fs::metadata(common.join(name)).ok().and_then(|m| Some((m.modified().ok()?, m.len())))).collect()
+    // Replacement refs may be loose files or lines in packed-refs: watch both.
+    let mut files = vec![common.join("shallow"), common.join("info").join("grafts"), common.join("packed-refs")];
+    let mut stack = vec![common.join("refs").join("replace")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(entry.path()),
+                Ok(t) if t.is_file() => files.push(entry.path()),
+                _ => {}
+            }
+        }
+    }
+    files.sort();
+    files
+        .into_iter()
+        .map(|file| {
+            let stamp = std::fs::metadata(&file).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
+            (file, stamp)
+        })
+        .collect()
 }
 
 fn meta_cache() -> &'static parking_lot::Mutex<MetaCache> {

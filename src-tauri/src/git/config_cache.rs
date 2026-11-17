@@ -22,6 +22,9 @@ struct RepoEntry {
     files: Vec<PathBuf>,
     /// Their size and modification time when `files` was learned.
     stamp: Stamp,
+    /// What `repo/.git` was (see `repo::dot_git_identity`): a reused worktree path is
+    /// another repository even when every watched file is unchanged.
+    identity: Option<String>,
     results: HashMap<Vec<String>, Output>,
 }
 
@@ -68,13 +71,26 @@ fn config_files(repo: &Path) -> Option<Vec<PathBuf>> {
     let raw = String::from_utf8_lossy(&raw);
     let mut fields = raw.split('\0');
     while let Some(origin) = fields.next() {
-        if fields.next().is_none() {
-            break;
+        let Some(entry) = fields.next() else { break };
+        let Some(file) = origin.strip_prefix("file:") else { continue };
+        let path = PathBuf::from(file);
+        let source = if path.is_absolute() { path } else { repo.join(path) };
+        // Include targets are watched even while missing or empty: Git reports no origin for
+        // them until they contribute a value, yet creating or filling one changes answers.
+        // Nested includes appear here once their parent file is read.
+        let (name, value) = entry.split_once('\n').unwrap_or((entry, ""));
+        let name = name.to_ascii_lowercase();
+        if (name == "include.path" || (name.starts_with("includeif.") && name.ends_with(".path"))) && !value.is_empty() {
+            let target = match value.strip_prefix("~/") {
+                Some(rest) => home.as_ref().map(|h| h.join(rest)),
+                None => {
+                    let target = PathBuf::from(value);
+                    Some(if target.is_absolute() { target } else { source.parent().unwrap_or(repo).join(target) })
+                }
+            };
+            files.extend(target);
         }
-        if let Some(file) = origin.strip_prefix("file:") {
-            let path = PathBuf::from(file);
-            files.push(if path.is_absolute() { path } else { repo.join(path) });
-        }
+        files.push(source);
     }
     files.sort();
     files.dedup();
@@ -103,20 +119,25 @@ pub fn exec(repo: &Path, args: &[&str]) -> GitResult<Output> {
 /// No lock is held while Git runs: a caller inside a repository transaction must never wait
 /// for another thread that waits for that repository's gate.
 fn learn(repo: &Path) -> Option<(Vec<PathBuf>, Stamp)> {
-    if let Some(entry) = entries().lock().get(repo).filter(|e| stamp(&e.files) == e.stamp) {
+    if let Some(entry) = entries().lock().get(repo).filter(|e| valid(repo, e)) {
         return Some((entry.files.clone(), entry.stamp.clone()));
     }
+    let identity = super::repo::dot_git_identity(repo);
     let files = config_files(repo)?;
     let stamp = stamp(&files);
-    entries().lock().insert(repo.to_path_buf(), RepoEntry { files: files.clone(), stamp: stamp.clone(), results: HashMap::new() });
+    entries().lock().insert(repo.to_path_buf(), RepoEntry { files: files.clone(), stamp: stamp.clone(), identity, results: HashMap::new() });
     Some((files, stamp))
+}
+
+fn valid(repo: &Path, entry: &RepoEntry) -> bool {
+    stamp(&entry.files) == entry.stamp && super::repo::dot_git_identity(repo) == entry.identity
 }
 
 fn fresh(repo: &Path, key: &[String]) -> Option<Output> {
     let map = entries().lock();
     let entry = map.get(repo)?;
     let out = entry.results.get(key)?;
-    (stamp(&entry.files) == entry.stamp).then(|| out.clone())
+    valid(repo, entry).then(|| out.clone())
 }
 
 /// `run` over [`exec`]: fails on a non-zero exit.
@@ -184,5 +205,24 @@ mod tests {
             }
         }
         assert_eq!(judged, Some(true), "a configuration read must stay cached for the next identical read");
+    }
+
+    #[test]
+    fn a_missing_or_empty_include_is_watched() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "include.path", "../later.cfg"]);
+        git(&root, &["config", "--add", "include.path", "../empty.cfg"]);
+        std::fs::write(root.join("empty.cfg"), "# nothing yet\n").unwrap();
+        let read = |key: &str| exec(&root, &["config", "--get", key]).unwrap().text().trim().to_string();
+        assert_eq!(read("revqora.later"), "");
+        assert_eq!(read("revqora.later"), "");
+        std::fs::write(root.join("later.cfg"), "[revqora]\n	later = created\n").unwrap();
+        assert_eq!(read("revqora.later"), "created");
+        assert_eq!(read("revqora.empty"), "");
+        std::fs::write(root.join("empty.cfg"), "[revqora]\n	empty = filled\n").unwrap();
+        assert_eq!(read("revqora.empty"), "filled");
     }
 }
