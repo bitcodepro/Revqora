@@ -12,6 +12,7 @@ Before opening or updating a PR:
 
 - [ ] Explorer shows folders, repositories and branches. Only folders and repositories can move in the tree. Moving a repository keeps its branches with it and changes only the app's organization.
 - [ ] Explorer highlights the active repository after switches from any panel or shortcut. Keyboard focus and multi-selection are independent. History, Changes, Branches and repository-scoped Pull Requests follow the active repository.
+- [ ] Repositories has the same Favorites, Incoming and Changes filters as Explorer. They combine with the search and with each other, and use the last known repository status.
 - [ ] Repositories remains available as a flat panel. Clicking a repository highlights its entire row in both themes, even after the pointer leaves. Ctrl/Shift selection has its own styling. Escape clears the multi-selection.
 - [ ] Branches remains available as a separate panel. Both surfaces share branch actions. A single click opens branch context while keeping the current checkout. Primary appears first and survives My branches. Favorites can show a branch with its repository and parent folders.
 - [ ] In Explorer the checked-out branch of every repository has an accent bar. In the active repository the open branch context is highlighted; without one, the checked-out branch is highlighted, so selecting any repository highlights its current branch the same way.
