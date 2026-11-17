@@ -718,12 +718,16 @@ async fn git_connection_test(repo: String, remote: String, expected_url_fingerpr
 #[tauri::command]
 async fn git_connection_forget(repo: String) -> GitResult<()> {
     blocking(move || {
-        git::forge::forget_cached_tokens();
         #[cfg(windows)]
-        crate::git_credentials::forget(&p(&repo)).map_err(|_| GitError::new("Could not remove Revqora's saved Git tokens."))?;
+        let removed = crate::git_credentials::forget(&p(&repo)).map_err(|_| GitError::new("Could not remove Revqora's saved Git tokens."));
         #[cfg(not(windows))]
-        let _ = repo;
-        Ok(())
+        let removed: GitResult<()> = {
+            let _ = repo;
+            Ok(())
+        };
+        // After the saved tokens are gone: an API lookup that read them meanwhile is not cached.
+        git::forge::forget_cached_tokens();
+        removed
     })
     .await
 }

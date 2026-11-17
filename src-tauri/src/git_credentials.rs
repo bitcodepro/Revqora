@@ -158,13 +158,15 @@ fn now() -> u64 {
 /// remembered token. Cheap: it neither decrypts nor contacts the helper.
 pub(crate) fn remembers(repo: &Path) -> bool {
     let Some(root) = root(repo) else { return false };
-    if CACHE.lock().entries.iter().any(|entry| entry.key.root == root) {
-        return true;
-    }
-    #[cfg(windows)]
-    if remembered::Store::for_repo(&root).is_ok_and(|store| store.exists()) {
-        return true;
-    }
+    let typed = CACHE.lock().entries.iter().any(|entry| entry.key.root == root);
+    typed || remembered_on_disk(&root)
+}
+#[cfg(windows)]
+fn remembered_on_disk(root: &Path) -> bool {
+    remembered::Store::for_repo(root).is_ok_and(|store| store.exists())
+}
+#[cfg(not(windows))]
+fn remembered_on_disk(_root: &Path) -> bool {
     false
 }
 pub fn epoch() -> u64 {

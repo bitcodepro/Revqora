@@ -7,7 +7,7 @@ import { uniqueRoots, useLibrary } from "./repositoryLibrary";
 import { useRepos } from "./store";
 import type { ForgeInfo, PrState, PullRequest } from "./types";
 
-type RepositoryRequests = {
+export type RepositoryRequests = {
   forge: ForgeInfo | null;
   scope: string;
   author: PrAuthor | null;
@@ -82,8 +82,11 @@ export function useAllPullRequests(state: PrState, mine: boolean) {
   return { groups, finished: result?.scan === scan && result.finished, refresh, update };
 }
 
-function mineOnly(groups: Record<string, RepositoryRequests>): Record<string, RepositoryRequests> {
-  return Object.fromEntries(Object.entries(groups).map(([root, group]) => [root, group.notice || !group.forge ? group
+const AUTHOR_NOTICE = "Set My PR author in this repository to include its pull requests.";
+
+/** "My PR" rows. A page error keeps the rows loaded before it, so they are filtered too. */
+export function mineOnly(groups: Record<string, RepositoryRequests>): Record<string, RepositoryRequests> {
+  return Object.fromEntries(Object.entries(groups).map(([root, group]) => [root, !group.forge ? group
     : group.author ? { ...group, items: group.items.filter(p => matchesPrAuthor(p, group.author)) }
-    : { ...group, items: [], notice: "Set My PR author in this repository to include its pull requests." }]));
+    : { ...group, items: [], notice: group.notice ? `${group.notice} ${AUTHOR_NOTICE}` : AUTHOR_NOTICE }]));
 }

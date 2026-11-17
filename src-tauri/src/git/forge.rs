@@ -486,35 +486,76 @@ pub(super) fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::
 /// How long a Git credential answer is reused (see [`cached_token`]).
 const CREDENTIAL_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
-type CachedCredentials = std::collections::HashMap<(std::path::PathBuf, String), (std::time::Instant, super::forge_accounts::Credential)>;
+type CredentialKey = (std::path::PathBuf, String);
 
-fn credential_cache() -> &'static parking_lot::Mutex<CachedCredentials> {
-    static CACHE: std::sync::OnceLock<parking_lot::Mutex<CachedCredentials>> = std::sync::OnceLock::new();
+/// Git credential answers reused by API requests (see [`cached_token`]).
+#[derive(Default)]
+struct CredentialCache {
+    /// Bumped by every invalidation. A lookup that was running when it changed may have
+    /// read the credential that was just forgotten, so its answer is not cached.
+    generation: u64,
+    entries: std::collections::HashMap<CredentialKey, (std::time::Instant, super::forge_accounts::Credential)>,
+}
+
+fn credential_cache() -> &'static parking_lot::Mutex<CredentialCache> {
+    static CACHE: std::sync::OnceLock<parking_lot::Mutex<CredentialCache>> = std::sync::OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
+
+/// Lookups started for one request when each is invalidated while Git runs. The last
+/// answer is then used for that request only and not cached.
+const CREDENTIAL_ATTEMPTS: usize = 3;
 
 /// [`token`] for API requests. `git credential fill` through Git Credential Manager takes
 /// 1–2 s on Windows, and every PR request needs the credential (it is part of the
 /// connection revision), so opening one Bitbucket PR spent most of its time here. An
-/// answer is reused for a minute per repository and remote URL; a 401 forgets it. No lock
-/// is held while Git runs.
+/// answer is reused for a minute per repository and remote URL; a 401, a new sign-in or
+/// Forget saved tokens invalidates it. No lock is held while Git runs.
 pub(super) fn cached_token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
-    let key = (repo.to_path_buf(), url.to_owned());
-    if let Some((at, credential)) = credential_cache().lock().get(&key) {
-        if at.elapsed() < CREDENTIAL_TTL {
-            return Ok(credential.clone());
-        }
-    }
-    let credential = token(repo, url)?;
-    let mut cache = credential_cache().lock();
-    cache.retain(|_, (at, _)| at.elapsed() < CREDENTIAL_TTL);
-    cache.insert(key, (std::time::Instant::now(), credential.clone()));
-    Ok(credential)
+    cached_in(credential_cache(), (repo.to_path_buf(), url.to_owned()), || token(repo, url))
 }
 
-/// Drops remembered Git credentials (after a rejected token or a new sign-in).
+fn cached_in(
+    cache: &parking_lot::Mutex<CredentialCache>,
+    key: CredentialKey,
+    lookup: impl Fn() -> GitResult<super::forge_accounts::Credential>,
+) -> GitResult<super::forge_accounts::Credential> {
+    let mut attempt = 0;
+    loop {
+        let generation = {
+            let saved = cache.lock();
+            if let Some((at, credential)) = saved.entries.get(&key) {
+                if at.elapsed() < CREDENTIAL_TTL {
+                    return Ok(credential.clone());
+                }
+            }
+            saved.generation
+        };
+        let credential = lookup()?;
+        attempt += 1;
+        let mut saved = cache.lock();
+        if saved.generation == generation {
+            saved.entries.retain(|_, (at, _)| at.elapsed() < CREDENTIAL_TTL);
+            saved.entries.insert(key, (std::time::Instant::now(), credential.clone()));
+            return Ok(credential);
+        }
+        drop(saved);
+        if attempt == CREDENTIAL_ATTEMPTS {
+            return Ok(credential);
+        }
+    }
+}
+
+fn invalidate(cache: &parking_lot::Mutex<CredentialCache>) {
+    let mut cache = cache.lock();
+    cache.generation = cache.generation.wrapping_add(1);
+    cache.entries.clear();
+}
+
+/// Drops remembered Git credentials (after a rejected token, a new sign-in or Forget saved
+/// tokens). Lookups still running when this is called are not cached.
 pub fn forget_cached_tokens() {
-    credential_cache().lock().clear();
+    invalidate(credential_cache());
 }
 
 pub(crate) fn base64(input: &[u8]) -> String {
@@ -1393,6 +1434,61 @@ fi
         std::fs::write(repo.join("normal-lookup"), "").unwrap();
         assert_eq!(token(repo, url).unwrap().token, "normal-fixture");
         assert_eq!(std::fs::read(repo.join(".git/config")).unwrap(), config);
+    }
+
+    fn fixture_credential(token: &str) -> crate::git::forge_accounts::Credential {
+        crate::git::forge_accounts::Credential { username: "alice".into(), token: token.into(), mode: "bearer".into() }
+    }
+
+    #[test]
+    fn a_credential_read_before_it_was_forgotten_is_not_cached_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        let cache = parking_lot::Mutex::new(CredentialCache::default());
+        let key = (std::path::PathBuf::from("fixture-repo"), "https://example.invalid/team/repo.git".to_owned());
+        let lookups = AtomicUsize::new(0);
+        let (started_tx, started) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let counter = &lookups;
+        // The first lookup reads the old token, then waits while the token is forgotten.
+        let lookup = move || {
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(fixture_credential("old-token"))
+            } else {
+                Ok(fixture_credential("new-token"))
+            }
+        };
+        std::thread::scope(|scope| {
+            let request = scope.spawn(|| cached_in(&cache, key.clone(), lookup));
+            started.recv().unwrap();
+            invalidate(&cache);
+            release.send(()).unwrap();
+            let answer = request.join().unwrap().unwrap();
+            assert_eq!(answer.token, "new-token", "a lookup that overlapped the reset is read again");
+        });
+        assert_eq!(lookups.load(Ordering::SeqCst), 2);
+        let saved = cache.lock().entries.get(&key).map(|(_, credential)| credential.token.clone());
+        assert_eq!(saved.as_deref(), Some("new-token"), "the forgotten token must not be cached again");
+        let again = cached_in(&cache, key, || panic!("the fresh answer is reused")).unwrap();
+        assert_eq!(again.token, "new-token");
+    }
+
+    #[test]
+    fn a_lookup_invalidated_on_every_attempt_is_used_once_and_not_cached() {
+        let cache = parking_lot::Mutex::new(CredentialCache::default());
+        let key = (std::path::PathBuf::from("fixture-repo"), "https://example.invalid/team/repo.git".to_owned());
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let answer = cached_in(&cache, key.clone(), || {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            invalidate(&cache);
+            Ok(fixture_credential("changing-token"))
+        })
+        .unwrap();
+        assert_eq!(answer.token, "changing-token");
+        assert_eq!(attempts.into_inner(), CREDENTIAL_ATTEMPTS);
+        assert!(cache.lock().entries.is_empty());
     }
 
     #[test]
