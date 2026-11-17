@@ -1499,7 +1499,15 @@ try {
     if (await page.locator(".commit-box .summary-wrap input").inputValue()) throw new Error("commit message from the aborted merge was left behind");
     await page.evaluate(() => (document.documentElement.dataset.theme = "dark"));
     await page.click(".view-tab:has-text('History')");
-    await page.locator(".grow", { hasText: "Merge branch 'hotfix/greeting'" }).first().click();
+    // The previous scenario ends with Refresh: its graph reload can replace and shift the rows
+    // between Playwright's hit test and the press, so the press lands on another row. Press
+    // until the merge commit is the one shown.
+    const merge = page.locator(".grow", { hasText: "Merge branch 'hotfix/greeting'" }).first();
+    await until(async () => {
+      if (await page.locator(".details .commit-subject", { hasText: "Merge branch 'hotfix/greeting'" }).count()) return true;
+      if (!(await merge.evaluate((el) => el.classList.contains("selected")))) await merge.click();
+      return false;
+    }, "the merge commit preview did not open", 30000);
     await page.waitForSelector(".details .file-row");
     await page.waitForSelector(".diff .dl.add");
     await page.waitForTimeout(600);
