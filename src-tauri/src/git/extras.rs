@@ -252,6 +252,11 @@ pub fn parse_bisect_message(text: &str) -> (Option<u32>, Option<u32>, Option<Str
     (remaining, steps, first_bad)
 }
 
+/// Whether a bisect session is in progress (no Git process needed).
+pub fn bisect_active(repo: &Path) -> bool {
+    repo::git_dir(repo).map(|gd| gd.join("BISECT_LOG").exists()).unwrap_or(true)
+}
+
 pub fn bisect_status(repo: &Path) -> GitResult<BisectStatus> {
     let gd = repo::git_dir(repo)?;
     let active = gd.join("BISECT_LOG").exists();

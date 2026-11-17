@@ -38,7 +38,7 @@ Open **Ctrl+N → Repository tools (gc, maintenance)…**.
 | Tool | Purpose |
 | --- | --- |
 | Size / packed / loose object information | Understand Git object storage. |
-| **Write commit-graph** | Build Git's acceleration data for history queries. |
+| **Write commit-graph** | Build Git's acceleration data for history queries now. Revqora also keeps it current on its own (see below). |
 | **Run gc** / **Repack** | Git object maintenance. |
 | **Prune unreachable** | Remove unreachable objects according to the operation's Git behavior; recovery availability can be affected. |
 | Schedule/stop background maintenance | Manage Git maintenance registration. |
@@ -49,6 +49,15 @@ Open **Ctrl+N → Repository tools (gc, maintenance)…**.
 | **Fetch more history** / **Fetch full history** | Shown for shallow clones: add the chosen number of commits, or remove the shallow boundary. |
 | **Hooks** tab | List the hooks Git runs in this repository. |
 | **Sparse checkout** tab | Check out only chosen folders, and see whether the repository is a partial clone. See below. |
+
+### Automatic speed housekeeping
+
+When history loads (at most once every 10 minutes per repository) and after every fetch or pull, Revqora quietly refreshes Git's own speed caches in the background. These are the same caches that `git gc --auto` and `git fetch` write:
+
+- **Commit-graph** with changed-path filters. History pages, commit counts, ancestry checks and path searches no longer have to read every commit. It is written incrementally (`git commit-graph write --reachable --changed-paths --split`), so later updates add only new commits.
+- **Packed refs**. With more than 100 loose refs, `git pack-refs --all` collects them into one file, so every branch and tag listing reads one file instead of thousands.
+
+No branch, tag, the index or the working tree changes. Shallow clones are skipped. Revqora respects the matching Git settings: it writes nothing with `gc.auto=0`, no packed refs with `gc.packRefs=false`, and no commit-graph with `gc.writeCommitGraph=false` or `core.commitGraph=false`.
 
 ### Sparse checkout and partial clone
 

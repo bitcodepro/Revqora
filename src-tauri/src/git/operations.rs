@@ -44,13 +44,13 @@ fn enter_scope(key: PathBuf, write: bool) -> impl Drop {
 
 /// The calling thread's repository transaction and Operation log entry, for helper
 /// threads that read on its behalf.
-struct Inherited {
+pub struct Inherited {
     scope: Option<(PathBuf, bool)>,
     journal: crate::journal::Shared,
 }
 
 impl Inherited {
-    fn of(repo: &Path) -> Self {
+    pub fn of(repo: &Path) -> Self {
         let key = repository_key(repo);
         Self { scope: SCOPES.with(|s| s.borrow().iter().rev().find(|(k, _)| k == &key).cloned()), journal: crate::journal::share() }
     }
@@ -58,7 +58,7 @@ impl Inherited {
     /// Runs `f` on a helper thread as part of its parent's transaction. A helper that took
     /// the repository gate again could wait behind a queued writer that waits for the parent.
     /// The parent must keep its transaction until the helper is joined (`std::thread::scope`).
-    fn run<T>(&self, f: impl FnOnce() -> T) -> T {
+    pub fn run<T>(&self, f: impl FnOnce() -> T) -> T {
         let _scope = self.scope.clone().map(|(key, write)| enter_scope(key, write));
         self.journal.enter(f)
     }
@@ -311,7 +311,7 @@ pub(super) fn external_attribute_files(repo: &Path) -> GitResult<Vec<PathBuf>> {
         // Git resolves configured paths, ~/ and its platform-specific defaults.
         // Query only these variables: `var -l` also exposes arbitrary config.
         for name in ["GIT_ATTR_GLOBAL", "GIT_ATTR_SYSTEM"] {
-            let out = runner::exec(repo, ["var", name])?;
+            let out = super::config_cache::exec(repo, &["var", name])?;
             if out.ok() {
                 let value = out.text();
                 let value = value.strip_suffix('\n').unwrap_or(&value).trim_end_matches('\r');
@@ -323,7 +323,7 @@ pub(super) fn external_attribute_files(repo: &Path) -> GitResult<Vec<PathBuf>> {
             }
         }
     } else {
-        let out = runner::exec(repo, ["config", "--null", "--path", "--get", "core.attributesFile"])?;
+        let out = super::config_cache::exec(repo, &["config", "--null", "--path", "--get", "core.attributesFile"])?;
         if out.ok() {
             let path = out.text();
             let path = path.trim_end_matches('\0');

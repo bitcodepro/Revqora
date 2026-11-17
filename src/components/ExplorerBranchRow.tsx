@@ -1,4 +1,4 @@
-import { Cloud, Flag, GitBranch, Star } from "lucide-react";
+import { Check, Cloud, Flag, GitBranch, Star } from "lucide-react";
 import type { CSSProperties, MouseEvent } from "react";
 import * as A from "../lib/actions";
 import { relativeTime } from "../lib/format";
@@ -46,7 +46,7 @@ export function ExplorerBranchRow({ id, root, branch, upstream, refs, depth, pri
   return <div role="treeitem" aria-level={depth + 1} aria-label={name} aria-selected={selected}
     data-explorer-entry={id} data-explorer-branch={fullName} data-branch-ref={fullName}
     style={{ "--tree-depth": Math.min(depth, 12) } as CSSProperties}
-    className={["repository-item", "explorer-branch", focused && "explorer-focused", selected && "batch-selected", viewed && "active"].filter(Boolean).join(" ")}
+    className={["repository-item", "explorer-branch", focused && "explorer-focused", selected && "batch-selected", viewed && "active", isHead && "head"].filter(Boolean).join(" ")}
     onContextMenu={event => contextMenu(event, menu())}>
     <span className="library-tree-spacer" aria-hidden="true"/>
     <button type="button" className="repository-select" aria-current={viewed} title={title}
@@ -59,9 +59,9 @@ export function ExplorerBranchRow({ id, root, branch, upstream, refs, depth, pri
           if (!event.repeat) (matchesShortcut(event, "renameItem") ? rename : deleteItem)();
         } else runMenuShortcut(event, menu(), "branch-");
       }}>
-      {kind === "local" ? <GitBranch size={14}/> : <Cloud size={14}/>}
+      {kind === "local" ? <GitBranch size={14} className="explorer-branch-icon"/> : <Cloud size={14} className="explorer-branch-icon"/>}
       <span className="repository-label">{name}</span>
-      {isHead && <span className="explorer-branch-current" aria-label="Checked out" title="Checked out"/>}
+      {isHead && <Check className="explorer-branch-current" strokeWidth={3} role="img" aria-label="Checked out"><title>Checked out</title></Check>}
       {primary && <Flag size={12} className="branch-primary-mark" role="img" aria-label="Primary branch"/>}
       <BranchAheadBehind branch={branch}/>
     </button>

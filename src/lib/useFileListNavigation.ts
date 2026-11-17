@@ -53,5 +53,5 @@ export function useFileListNavigation(navigateChanges = false) {
     view.addEventListener("keydown", onKey);
     return () => view.removeEventListener("keydown", onKey);
   }, [doc, move, navigateChanges]);
-  return { ref: attach, onKeyDown, onClickCapture, tabIndex: 0, "aria-description": "Use Up/Down to preview files; Home/End jump to the first/last visible file." };
+  return { ref: attach, onKeyDown, onClickCapture, tabIndex: 0, "data-file-list": "", "aria-description": "Use Up/Down to preview files; Home/End jump to the first/last visible file." };
 }

@@ -96,15 +96,49 @@ pub fn normalize(p: PathBuf) -> PathBuf {
     }
 }
 
+/// What `repo/.git` currently is: a directory, a `gitdir:` file (linked worktree or
+/// submodule; its text names the Git directory) or nothing. A worktree moved away and
+/// another one added at the same path changes this even though the old Git directory exists.
+pub fn dot_git_identity(repo: &Path) -> Option<String> {
+    let dot = repo.join(".git");
+    let meta = std::fs::metadata(&dot).ok()?;
+    if meta.is_dir() {
+        return Some(String::new());
+    }
+    std::fs::read_to_string(&dot).ok()
+}
+
 pub fn git_dir(repo: &Path) -> GitResult<PathBuf> {
+    // Remembered per folder while `repo/.git` stays the same and the Git directory still
+    // exists: hot paths ask for it on every refresh.
+    type Remembered = (Option<String>, PathBuf);
+    static DIRS: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<PathBuf, Remembered>>> = std::sync::OnceLock::new();
+    let dirs = DIRS.get_or_init(Default::default);
+    let identity = dot_git_identity(repo);
+    // Without `.git` in the folder itself Git searches parent folders: do not remember that.
+    if identity.is_some() {
+        if let Some((_, dir)) = dirs.lock().get(repo).filter(|(known, dir)| known == &identity && dir.join("HEAD").is_file()) {
+            return Ok(dir.clone());
+        }
+    }
     let s = runner::run(repo, ["rev-parse", "--absolute-git-dir"])?;
-    Ok(normalize(PathBuf::from(s.trim())))
+    let dir = normalize(PathBuf::from(s.trim()));
+    if identity.is_some() && dot_git_identity(repo) == identity {
+        dirs.lock().insert(repo.to_path_buf(), (identity, dir.clone()));
+    }
+    Ok(dir)
 }
 
 pub fn head(repo: &Path) -> GitResult<HeadInfo> {
-    let sym = runner::exec(repo, ["symbolic-ref", "-q", "--short", "HEAD"])?;
+    // Both reads are independent: run them side by side.
+    let parent = super::operations::Inherited::of(repo);
+    let (sym, oid_out) = std::thread::scope(|scope| {
+        let oid = scope.spawn(|| parent.run(|| runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD^{commit}"])));
+        let sym = runner::exec(repo, ["symbolic-ref", "-q", "--short", "HEAD"]);
+        (sym, oid.join().unwrap_or_else(|_| Err(GitError::new("Resolve HEAD failed."))))
+    });
+    let (sym, oid_out) = (sym?, oid_out?);
     let branch = if sym.ok() { Some(sym.text().trim().to_string()) } else { None };
-    let oid_out = runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD^{commit}"])?;
     let oid = if oid_out.ok() { Some(oid_out.text().trim().to_string()) } else { None };
     Ok(HeadInfo { detached: branch.is_none() && oid.is_some(), unborn: oid.is_none(), branch, oid })
 }
@@ -273,7 +307,7 @@ pub fn init(path: &Path, initial_branch: &str) -> GitResult<RepoInfo> {
 
 /// Reads a git config value (any scope) or None.
 pub fn config_get(repo: &Path, key: &str) -> Option<String> {
-    runner::exec(repo, ["config", "--get", key]).ok().filter(|o| o.ok()).map(|o| o.text().trim().to_string())
+    super::config_cache::exec(repo, &["config", "--get", key]).ok().filter(|o| o.ok()).map(|o| o.text().trim().to_string())
 }
 
 pub fn config_set(repo: &Path, key: &str, value: &str, global: bool) -> GitResult<()> {

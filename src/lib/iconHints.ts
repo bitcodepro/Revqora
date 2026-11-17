@@ -2,7 +2,7 @@ import { shortcutTitle } from "./shortcuts";
 
 const controls = "button, [role=button], [role=tab], select, [data-tooltip], [data-shortcut], svg[aria-label], span[aria-label]";
 const targets = `${controls}, [title]`;
-const hoverDelay = 3000;
+const hoverDelay = 2000;
 
 /** One tooltip per window. Delegate so dynamically mounted icons behave the same as the toolbar. */
 export function installIconHints(doc: Document): () => void {

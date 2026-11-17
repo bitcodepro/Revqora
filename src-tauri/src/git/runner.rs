@@ -116,9 +116,29 @@ pub fn command(repo: &Path) -> Command {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        c.creation_flags(CREATE_NO_WINDOW);
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        let priority = if BACKGROUND.with(std::cell::Cell::get) { BELOW_NORMAL_PRIORITY_CLASS } else { 0 };
+        c.creation_flags(CREATE_NO_WINDOW | priority);
     }
     c
+}
+
+thread_local! {
+    static BACKGROUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` with every Git process it starts on this thread at below-normal CPU
+/// priority (Windows), so optional background work yields to what the user waits for.
+pub fn in_background<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        // Pool threads are reused: restore the flag even if `f` panics.
+        fn drop(&mut self) {
+            BACKGROUND.with(|b| b.set(self.0));
+        }
+    }
+    let _restore = Restore(BACKGROUND.with(|b| b.replace(true)));
+    f()
 }
 
 fn describe(args: &[&OsStr]) -> String {
@@ -128,6 +148,15 @@ fn describe(args: &[&OsStr]) -> String {
         s.push_str(&a.to_string_lossy());
     }
     s
+}
+
+/// Clears remembered configuration answers when a writing command ends (even on error).
+struct ClearConfigCache;
+
+impl Drop for ClearConfigCache {
+    fn drop(&mut self) {
+        super::config_cache::clear();
+    }
 }
 
 /// Runs git and returns the raw output regardless of exit code.
@@ -170,9 +199,13 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
         // Immutable object creation is safe concurrently; it does not modify refs,
         // the index or the working tree. An enclosing mutation still holds its gate.
         "hash-object" | "commit-tree" | "merge-tree" | "mktree" => true,
+        // Git's commit-graph cache is written under its own lock and changes no ref,
+        // the index or the working tree (fetch and `gc --auto` write it concurrently too).
+        "commit-graph" => a.get(1).is_some_and(|s| s == "write" || s == "verify"),
         "merge-file" => has("-p") || has("--stdout"),
         "remote" => a.len() == 1 || (a.len() == 2 && a[1] == "-v") || a.get(1).is_some_and(|s| s == "get-url"),
         "stash" => a.get(1).map(|s| s == "list").unwrap_or(false),
+        "notes" => matches!(a.get(1).map(|s| s.as_str()), Some("show" | "list")),
         "worktree" => a.get(1).map(|s| s == "list").unwrap_or(false),
         "submodule" => a.get(1).map(|s| s == "status").unwrap_or(false),
         "lfs" => matches!(a.get(1).map(|s| s.as_str()), Some("version" | "ls-files" | "track")) && a.len() == 2,
@@ -286,9 +319,13 @@ where
     S: AsRef<OsStr>,
 {
     let args: Vec<S> = args.into_iter().collect();
+    let writes = !is_read_only(&args);
+    // Any writing command may change configuration (remote, config, submodule, ...): drop
+    // remembered configuration answers afterwards instead of trusting file timestamps alone.
+    let _forget = writes.then(|| ClearConfigCache);
     super::operations::access(
         repo,
-        !is_read_only(&args),
+        writes,
         |_, _| {},
         || {
             let diagnostic_args: Vec<String> = args.iter().map(|a| a.as_ref().to_string_lossy().into_owned()).collect();
@@ -477,6 +514,7 @@ pub fn run_streaming_with_connection<F>(
 where
     F: FnMut(&str),
 {
+    let _forget = (!is_read_only(args)).then(|| ClearConfigCache);
     super::operations::access(
         repo,
         !is_read_only(args),
@@ -615,6 +653,10 @@ mod tests {
     #[test]
     fn classifies_read_only_commands() {
         assert!(is_read_only(&["status", "--porcelain=v2"]));
+        assert!(is_read_only(&["notes", "show", "HEAD"]));
+        assert!(!is_read_only(&["notes", "add", "-m", "x", "HEAD"]));
+        assert!(is_read_only(&["commit-graph", "write", "--reachable"]));
+        assert!(!is_read_only(&["pack-refs", "--all"]));
         assert!(is_read_only(&["--literal-pathspecs", "log", "--", "file"]));
         assert!(is_read_only(&["--literal-pathspecs", "-c", "core.quotePath=false", "ls-tree", "HEAD"]));
         assert!(!is_read_only(&["-c", "advice.detachedHead=false", "--literal-pathspecs", "reset", "--hard"]));

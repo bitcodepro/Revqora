@@ -120,12 +120,175 @@ fn refs_classify_an_unavailable_repository_folder() {
     assert_eq!(super::repo::discover(&path).unwrap_err().kind, "repository-folder-unavailable");
 }
 
+/// Ref identity that determines every metadata field except `%(HEAD)`: the ref's
+/// target, its symbolic target, and its upstream with the upstream's target.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct MetaKey {
+    refname: String,
+    oid: String,
+    symref: String,
+    upstream: String,
+    upstream_oid: String,
+}
+
+/// Per repository and history boundary: `MetaKey` → the 13 `FMT` fields of that ref.
+type MetaCache = HashMap<(std::path::PathBuf, HistoryBoundary), HashMap<MetaKey, Vec<String>>>;
+
+/// What, besides the two tips, decides ahead/behind counts: the shallow boundary, grafts and
+/// replacement refs (`git replace --graft`). Deepening a shallow clone or adding a
+/// replacement keeps every listed tip but changes the counts.
+type HistoryBoundary = Vec<(std::path::PathBuf, Option<(std::time::SystemTime, u64)>)>;
+
+fn history_boundary(repo: &Path) -> HistoryBoundary {
+    let Some(common) = super::graph::common_dir(repo) else { return Vec::new() };
+    // Replacement refs may be loose files or lines in packed-refs: watch both.
+    let mut files = vec![common.join("shallow"), common.join("info").join("grafts"), common.join("packed-refs")];
+    let mut stack = vec![common.join("refs").join("replace")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(entry.path()),
+                Ok(t) if t.is_file() => files.push(entry.path()),
+                _ => {}
+            }
+        }
+    }
+    files.sort();
+    files
+        .into_iter()
+        .map(|file| {
+            let stamp = std::fs::metadata(&file).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
+            (file, stamp)
+        })
+        .collect()
+}
+
+fn meta_cache() -> &'static parking_lot::Mutex<MetaCache> {
+    static CACHE: std::sync::OnceLock<parking_lot::Mutex<MetaCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Above this many changed refs one full enumeration is cheaper than naming them.
+const META_NAMED_LIMIT: usize = 100;
+
+/// `for-each-ref FMT refs/heads refs/remotes refs/tags`, in the same record format.
+/// Subjects, authors, dates and ahead/behind counts need each ref's objects; they are
+/// remembered per ref target and upstream target, so a refresh with unchanged refs runs
+/// only a names-and-targets listing, and a few changed refs are read by name.
+fn enumerate(repo: &Path) -> GitResult<String> {
+    let cheap = runner::run(
+        repo,
+        ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)%00%(upstream)%00%(HEAD)%00", "refs/heads", "refs/remotes", "refs/tags"],
+    )?;
+    let fields: Vec<&str> = cheap.split_terminator('\0').map(|f| f.trim_start_matches('\n')).collect();
+    let (rows, tail) = fields.as_chunks::<5>();
+    if tail.iter().any(|s| !s.trim().is_empty()) {
+        return runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"]);
+    }
+    let targets: HashMap<&str, &str> = rows.iter().map(|r| (r[0], r[1])).collect();
+    let keys: Vec<(MetaKey, bool)> = rows
+        .iter()
+        .map(|r| {
+            let upstream_oid = targets.get(r[3]).copied().unwrap_or_default().to_string();
+            (MetaKey { refname: r[0].to_string(), oid: r[1].to_string(), symref: r[2].to_string(), upstream: r[3].to_string(), upstream_oid }, r[4] == "*")
+        })
+        .collect();
+    let key = (repo.to_path_buf(), history_boundary(repo));
+    let missing: Vec<&MetaKey> = {
+        let mut cache = meta_cache().lock();
+        // Counts learned under another boundary of this repository are stale.
+        cache.retain(|(root, boundary), _| root != &key.0 || boundary == &key.1);
+        let known = cache.get(&key);
+        // An upstream outside the listing has no target here to key on: always re-read.
+        let unkeyed = |k: &MetaKey| !k.upstream.is_empty() && !targets.contains_key(k.upstream.as_str());
+        keys.iter().map(|(k, _)| k).filter(|k| unkeyed(k) || !known.is_some_and(|m| m.contains_key(*k))).collect()
+    };
+    if !missing.is_empty() {
+        let mut args: Vec<String> = vec!["for-each-ref".into(), FMT.into()];
+        if missing.len() <= META_NAMED_LIMIT && missing.len() < keys.len() {
+            args.extend(missing.iter().map(|k| k.refname.clone()));
+        } else {
+            args.extend(["refs/heads".into(), "refs/remotes".into(), "refs/tags".into()]);
+        }
+        let raw = runner::run(repo, &args)?;
+        let fields: Vec<&str> = raw.split_terminator('\0').collect();
+        let (records, tail) = fields.as_chunks::<13>();
+        if tail.iter().any(|s| !s.trim_matches('\n').is_empty()) {
+            return Err(super::runner::GitError::new("Invalid reference metadata record."));
+        }
+        let mut cache = meta_cache().lock();
+        if cache.len() > 32 {
+            cache.clear();
+        }
+        let map = cache.entry(key.clone()).or_default();
+        // Keep only the current refs plus what was just read.
+        let current: HashSet<&MetaKey> = keys.iter().map(|(k, _)| k).collect();
+        map.retain(|k, _| current.contains(k));
+        let by_name: HashMap<&str, &MetaKey> = keys.iter().map(|(k, _)| (k.refname.as_str(), k)).collect();
+        for record in records {
+            let refname = record[0].trim_start_matches('\n');
+            // Store under the key this listing saw; a ref that moved in between stays missing
+            // and falls back to a full read below.
+            if let Some(k) = by_name.get(refname).filter(|k| k.oid == record[1] && k.symref == record[9] && k.upstream == record[11]) {
+                let mut fields: Vec<String> = record.iter().map(|f| f.to_string()).collect();
+                fields[0] = refname.to_string();
+                map.insert((*k).clone(), fields);
+            }
+        }
+    }
+    // Assemble under the lock; a ref that moved during this call falls back to a full read
+    // after the lock is released (no lock is ever held while Git runs).
+    let assembled = {
+        let cache = meta_cache().lock();
+        cache.get(&key).and_then(|map| {
+            let mut out = String::new();
+            for (k, is_head) in &keys {
+                for (i, field) in map.get(k)?.iter().enumerate() {
+                    out.push_str(match (i, is_head) {
+                        (5, true) => "*",
+                        (5, false) => " ",
+                        _ => field,
+                    });
+                    out.push('\0');
+                }
+                out.push('\n');
+            }
+            Some(out)
+        })
+    };
+    match assembled {
+        Some(out) => Ok(out),
+        None => runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"]),
+    }
+}
+
 pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
     super::repo::require_directory(repo)?;
     let mut stages = super::stage_timings::Stages::default();
-    let remotes = stages.time("remotes", || remotes(repo))?;
-    // Upstream ahead/behind (`upstream:track`) is computed inside this enumeration.
-    let raw = stages.time("enumerationWithUpstreamTrack", || runner::run(repo, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"]))?;
+    // Independent reads run side by side; each is timed on its own thread.
+    fn timed<T>(f: impl FnOnce() -> T) -> (T, std::time::Duration) {
+        let started = std::time::Instant::now();
+        (f(), started.elapsed())
+    }
+    fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, (GitResult<T>, std::time::Duration)>) -> (GitResult<T>, std::time::Duration) {
+        handle.join().unwrap_or_else(|_| (Err(super::runner::GitError::new("Reference read failed.")), std::time::Duration::ZERO))
+    }
+    // Helpers join the caller's repository transaction (see `Inherited`).
+    let parent = super::operations::Inherited::of(repo);
+    let (remotes, raw, stashes, identity_email) = std::thread::scope(|scope| {
+        let remotes = scope.spawn(|| parent.run(|| timed(|| remotes(repo))));
+        let stashes = scope.spawn(|| parent.run(|| timed(|| stashes(repo))));
+        let identity = scope.spawn(|| parent.run(|| timed(|| Ok(super::repo::config_get(repo, "user.email")))));
+        // Upstream ahead/behind (`upstream:track`) is computed inside this enumeration.
+        let raw = timed(|| enumerate(repo));
+        (joined(remotes), raw, joined(stashes), joined(identity))
+    });
+    stages.add("remotes", remotes.1);
+    stages.add("enumerationWithUpstreamTrack", raw.1);
+    stages.add("stashes", stashes.1);
+    stages.add("identity", identity_email.1);
+    let (remotes, raw, stashes, identity_email) = (remotes.0?, raw.0?, stashes.0?, identity_email.0.ok().flatten());
     let parse_started = std::time::Instant::now();
     let mut local = Vec::new();
     let mut remote = Vec::new();
@@ -201,8 +364,6 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
         let _ = stages.time("unpublishedComparison", || count_unpublished(repo, &mut local, &remote));
     }
     tags.sort_by_key(|t| std::cmp::Reverse(t.time));
-    let stashes = stages.time("stashes", || stashes(repo))?;
-    let identity_email = stages.time("identity", || super::repo::config_get(repo, "user.email"));
     if super::stage_timings::enabled() {
         let detail = format!("local={} remote={} tags={}", local.len(), remote.len(), tags.len());
         super::stage_timings::record("refs_snapshot", repo, &stages, &detail);
@@ -283,7 +444,7 @@ pub fn stashes(repo: &Path) -> GitResult<Vec<StashInfo>> {
 }
 
 pub fn remotes(repo: &Path) -> GitResult<Vec<RemoteInfo>> {
-    let raw = runner::run(repo, ["remote", "-v"])?;
+    let raw = super::config_cache::run(repo, &["remote", "-v"])?;
     let mut map: Vec<RemoteInfo> = Vec::new();
     for l in raw.lines() {
         let mut it = l.split_whitespace();
@@ -315,23 +476,88 @@ pub fn squash_merged(repo: &Path) -> GitResult<Vec<String>> {
     let Ok(head_tree) = runner::run(repo, ["rev-parse", "HEAD^{tree}"]) else { return Ok(Vec::new()) };
     let head_tree = head_tree.trim().to_string();
     let head_ref = runner::run(repo, ["symbolic-ref", "-q", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_default();
-    let raw = runner::run(repo, ["for-each-ref", "--format=%(refname:short)%1f%(refname)%1f%(symref)", "refs/heads", "refs/remotes"])?;
+    // Ancestors of HEAD are ordinary merges the graph already shows; `--no-merged` drops
+    // them in the same walk instead of one `merge-base` process per branch.
+    let raw = runner::run(
+        repo,
+        ["for-each-ref", "--no-merged=HEAD", "--format=%(refname:short)%1f%(refname)%1f%(symref)%1f%(objectname)", "refs/heads", "refs/remotes"],
+    )?;
+    let candidates: Vec<(String, String)> = raw
+        .lines()
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split('\x1f').collect();
+            (f.len() == 4 && f[2].is_empty() && f[1] != head_ref).then(|| (f[0].to_string(), f[3].to_string()))
+        })
+        .take(80)
+        .collect();
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    // One process per candidate; a candidate Git refuses to merge (unrelated history) is skipped.
+    let one_by_one = || -> GitResult<Vec<String>> {
+        let mut out = Vec::new();
+        for (name, oid) in &candidates {
+            let merged = runner::exec(repo, ["merge-tree", "--write-tree", "HEAD", oid])?;
+            if merged.code == 0 && merged.text().lines().next().map(str::trim) == Some(head_tree.as_str()) {
+                out.push(name.clone());
+            }
+        }
+        Ok(out)
+    };
+    if super::locate::version() < (2, 40, 0) {
+        // `merge-tree --stdin` needs Git 2.40.
+        return one_by_one();
+    }
+    // One `merge-tree --stdin` process merges every candidate into HEAD.
+    let head = runner::run(repo, ["rev-parse", "--verify", "HEAD^{commit}"])?.trim().to_string();
+    let input: String = candidates
+        .iter()
+        .map(|(_, oid)| {
+            format!(
+                "{head} {oid}
+"
+            )
+        })
+        .collect();
+    let out = runner::exec_full(repo, ["merge-tree", "--write-tree", "--name-only", "--no-messages", "--stdin"], &[], Some(input.as_bytes()))?;
+    if !out.ok() {
+        // The batch stops at the first candidate Git refuses (for example an orphan branch
+        // such as gh-pages: "refusing to merge unrelated histories"). Merge them one by one
+        // so that branch is skipped and the others keep their answers.
+        return one_by_one();
+    }
+    Ok(squash_results(&out.text(), &head_tree, &candidates))
+}
+
+/// Parses `merge-tree --stdin --name-only --no-messages`: per merge `clean NUL tree NUL
+/// (conflicted path NUL)* NUL`. A branch is squash-merged when its clean merge into HEAD
+/// leaves HEAD's tree unchanged.
+fn squash_results(raw: &str, head_tree: &str, candidates: &[(String, String)]) -> Vec<String> {
+    let mut fields = raw.split('\0');
     let mut out = Vec::new();
-    for line in raw.lines().take(80) {
-        let f: Vec<&str> = line.split('').collect();
-        if f.len() < 3 || !f[2].is_empty() || f[1] == head_ref {
-            continue;
+    for (name, _) in candidates {
+        let (Some(clean), Some(tree)) = (fields.next(), fields.next()) else { break };
+        let mut conflicted = false;
+        for path in fields.by_ref() {
+            if path.is_empty() {
+                break;
+            }
+            conflicted = true;
         }
-        // Ancestors are ordinary merges; the graph already shows those.
-        if runner::exec(repo, ["merge-base", "--is-ancestor", f[1], "HEAD"])?.code == 0 {
-            continue;
-        }
-        let merged = runner::exec(repo, ["merge-tree", "--write-tree", "HEAD", f[1]])?;
-        if merged.code == 0 && merged.text().lines().next().map(str::trim) == Some(head_tree.as_str()) {
-            out.push(f[0].to_string());
+        if clean == "1" && !conflicted && tree == head_tree {
+            out.push(name.clone());
         }
     }
-    Ok(out)
+    out
+}
+
+#[test]
+fn squash_results_parse_clean_and_conflicted_merges() {
+    let candidates = vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string()), ("c".to_string(), "3".to_string())];
+    let raw = concat!("1\0T\0\0", "0\0X\0f\0g\0\0", "1\0Y\0\0");
+    assert_eq!(squash_results(raw, "T", &candidates), vec!["a".to_string()]);
+    let raw = concat!("1\0T\0\0", "0\0T\0f\0\0", "1\0T\0\0");
+    assert_eq!(squash_results(raw, "T", &candidates), vec!["a".to_string(), "c".to_string()]);
 }
 
 pub fn labels_by_oid(repo: &Path) -> GitResult<HashMap<String, Vec<RefLabel>>> {
@@ -353,7 +579,19 @@ pub struct GraphRefs {
 /// Reads refs once for both the graph's ref snapshot and its labels, so the two
 /// cannot disagree and a build does not enumerate refs or resolve HEAD twice.
 pub fn graph_refs(repo: &Path) -> GitResult<GraphRefs> {
-    let raw = runner::run(
+    // HEAD is resolved in parallel with the enumeration (two processes, one wait).
+    let parent = super::operations::Inherited::of(repo);
+    let (raw, head_out) = std::thread::scope(|scope| {
+        let head = scope.spawn(|| parent.run(|| runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD"])));
+        let raw = graph_ref_list(repo);
+        (raw, head.join().unwrap_or_else(|_| Err(super::runner::GitError::new("Resolve HEAD failed."))))
+    });
+    let (raw, head_out) = (raw?, head_out?);
+    graph_refs_from(repo, &raw, head_out)
+}
+
+fn graph_ref_list(repo: &Path) -> GitResult<String> {
+    runner::run(
         repo,
         [
             "for-each-ref",
@@ -364,8 +602,10 @@ pub fn graph_refs(repo: &Path) -> GitResult<GraphRefs> {
             "refs/bisect",
             "refs/replace",
         ],
-    )?;
-    let head_out = runner::exec(repo, ["rev-parse", "-q", "--verify", "HEAD"])?;
+    )
+}
+
+fn graph_refs_from(repo: &Path, raw: &str, head_out: runner::Output) -> GitResult<GraphRefs> {
     let head_oid = if head_out.ok() { head_out.text().trim().to_string() } else { String::new() };
     let mut snapshot = Vec::new();
     let mut map: HashMap<String, Vec<RefLabel>> = HashMap::new();
@@ -471,30 +711,68 @@ pub struct BranchDetails {
 
 /// Where a branch started (fork point against `base`), how far it went and whether it is merged.
 pub fn branch_details(repo: &Path, name: &str, base: &str) -> GitResult<BranchDetails> {
-    let tip = runner::run(repo, ["rev-parse", "--verify", &format!("{name}^{{commit}}")])?.trim().to_string();
-    let mb = runner::exec(repo, ["merge-base", base, name])?;
-    let fork_point = if mb.ok() { Some(mb.text().trim().to_string()).filter(|s| !s.is_empty()) } else { None };
-    let count = |range: &str| -> u32 { runner::run(repo, ["rev-list", "--count", range]).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0) };
-    let ahead = count(&format!("{base}..{name}"));
-    let behind = count(&format!("{name}..{base}"));
     let meta = |rev: &str| -> Option<(i64, String)> {
         runner::run(repo, ["log", "-1", "--format=%at%x1f%s", rev]).ok().and_then(|s| {
             let (t, subj) = s.trim().split_once('\x1f')?;
             Some((t.parse().ok()?, subj.to_string()))
         })
     };
-    let (fork_time, fork_subject) = match fork_point.as_deref().and_then(meta) {
-        Some((t, s)) => (Some(t), Some(s)),
-        None => (None, None),
-    };
-    let first = runner::run(repo, ["rev-list", "--reverse", &format!("{base}..{name}")]).ok().and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
+    let range = format!("{base}..{name}");
+    // Independent reads run side by side: one wait instead of eight in a row.
+    let parent = super::operations::Inherited::of(repo);
+    let (tip, fork, counts, range_log) = std::thread::scope(|scope| {
+        let tip = scope.spawn(|| {
+            parent.run(|| {
+                let tip = runner::run(repo, ["rev-parse", "--verify", &format!("{name}^{{commit}}")]).map(|s| s.trim().to_string());
+                let last = tip.as_ref().ok().and_then(|tip| meta(tip));
+                (tip, last)
+            })
+        });
+        let fork = scope.spawn(|| {
+            parent.run(|| {
+                let mb = runner::exec(repo, ["merge-base", base, name]).map(|mb| {
+                    if mb.ok() {
+                        Some(mb.text().trim().to_string()).filter(|s| !s.is_empty())
+                    } else {
+                        None
+                    }
+                });
+                let meta = mb.as_ref().ok().and_then(|p| p.as_deref()).and_then(meta);
+                (mb, meta)
+            })
+        });
+        // `--left-right --count base...name` prints "behind<TAB>ahead" in one walk.
+        let counts = scope.spawn(|| parent.run(|| runner::run(repo, ["rev-list", "--left-right", "--count", &format!("{base}...{name}")])));
+        // Oldest commit of the branch and its authors from one walk of `base..name`.
+        let range_log = runner::run(repo, ["log", "--format=%H%x1f%an", &range]);
+        let failed = || super::runner::GitError::new("Branch details read failed.");
+        (
+            tip.join().unwrap_or_else(|_| (Err(failed()), None)),
+            fork.join().unwrap_or_else(|_| (Err(failed()), None)),
+            counts.join().unwrap_or_else(|_| Err(failed())),
+            range_log,
+        )
+    });
+    let (tip, last) = tip;
+    let tip = tip?;
+    let (fork_point, fork_meta) = fork;
+    let fork_point = fork_point?;
+    let (fork_time, fork_subject) = fork_meta.map(|(t, s)| (Some(t), Some(s))).unwrap_or((None, None));
+    let (behind, ahead) = counts
+        .ok()
+        .and_then(|s| {
+            let (left, right) = s.trim().split_once(char::is_whitespace)?;
+            Some((left.trim().parse().ok()?, right.trim().parse().ok()?))
+        })
+        .unwrap_or((0, 0));
+    let range_log = range_log.unwrap_or_default();
+    let first = range_log.lines().last().and_then(|l| l.split('\x1f').next()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let (first_time, first_subject) = match first.as_deref().and_then(meta) {
         Some((t, s)) => (Some(t), Some(s)),
         None => (None, None),
     };
-    let (last_time, last_subject) = meta(&tip).unwrap_or((0, String::new()));
-    let mut authors: Vec<String> =
-        runner::run(repo, ["log", "--format=%an", &format!("{base}..{name}")]).unwrap_or_default().lines().map(|s| s.to_string()).collect();
+    let (last_time, last_subject) = last.unwrap_or((0, String::new()));
+    let mut authors: Vec<String> = range_log.lines().filter_map(|l| l.split_once('\x1f').map(|(_, a)| a.to_string())).collect();
     authors.sort();
     authors.dedup();
     Ok(BranchDetails {
@@ -513,4 +791,50 @@ pub fn branch_details(repo: &Path, name: &str, base: &str) -> GitResult<BranchDe
         authors,
         merged: ahead == 0,
     })
+}
+
+#[cfg(test)]
+mod enumerate_tests {
+    use super::*;
+
+    fn git(root: &Path, args: &[&str]) {
+        let out = runner::exec(root, args).unwrap();
+        assert!(out.ok(), "{args:?}: {}", out.stderr);
+    }
+
+    fn full(root: &Path) -> String {
+        runner::run(root, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"]).unwrap()
+    }
+
+    #[test]
+    fn cached_enumeration_matches_a_full_read_after_every_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "user.name", "T"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(root, &["branch", "topic"]);
+        git(root, &["tag", "-a", "v1", "-m", "release"]);
+        git(root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(root, &["remote", "add", "origin", "https://example.invalid/r.git"]);
+        git(root, &["config", "branch.main.remote", "origin"]);
+        git(root, &["config", "branch.main.merge", "refs/heads/main"]);
+        let steps: Vec<Vec<&str>> = vec![
+            vec!["commit", "-q", "--allow-empty", "-m", "two"],     // main moves: ahead 1
+            vec!["update-ref", "refs/remotes/origin/main", "HEAD"], // upstream moves only
+            vec!["switch", "-q", "topic"],                          // HEAD flag moves only
+            vec!["commit", "-q", "--allow-empty", "-m", "three"],   // another branch moves
+            vec!["config", "branch.topic.remote", "origin"],        // upstream config only
+            vec!["config", "branch.topic.merge", "refs/heads/main"],
+            vec!["update-ref", "-d", "refs/remotes/origin/main"], // upstream gone
+            vec!["tag", "-f", "-a", "v1", "-m", "moved"],         // tag re-pointed
+        ];
+        assert_eq!(enumerate(root).unwrap(), full(root));
+        for step in steps {
+            git(root, &step);
+            assert_eq!(enumerate(root).unwrap(), full(root), "after {step:?}");
+            assert_eq!(enumerate(root).unwrap(), full(root), "cached after {step:?}");
+        }
+    }
 }
