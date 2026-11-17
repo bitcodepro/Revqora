@@ -322,7 +322,7 @@ where
     let writes = !is_read_only(&args);
     // Any writing command may change configuration (remote, config, submodule, ...): drop
     // remembered configuration answers afterwards instead of trusting file timestamps alone.
-    let _forget = writes.then_some(ClearConfigCache);
+    let _forget = writes.then(|| ClearConfigCache);
     super::operations::access(
         repo,
         writes,
@@ -514,7 +514,7 @@ pub fn run_streaming_with_connection<F>(
 where
     F: FnMut(&str),
 {
-    let _forget = (!is_read_only(args)).then_some(ClearConfigCache);
+    let _forget = (!is_read_only(args)).then(|| ClearConfigCache);
     super::operations::access(
         repo,
         !is_read_only(args),

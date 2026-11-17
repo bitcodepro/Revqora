@@ -96,16 +96,36 @@ pub fn normalize(p: PathBuf) -> PathBuf {
     }
 }
 
+/// What `repo/.git` currently is: a directory, a `gitdir:` file (linked worktree or
+/// submodule; its text names the Git directory) or nothing. A worktree moved away and
+/// another one added at the same path changes this even though the old Git directory exists.
+fn dot_git_identity(repo: &Path) -> Option<String> {
+    let dot = repo.join(".git");
+    let meta = std::fs::metadata(&dot).ok()?;
+    if meta.is_dir() {
+        return Some(String::new());
+    }
+    std::fs::read_to_string(&dot).ok()
+}
+
 pub fn git_dir(repo: &Path) -> GitResult<PathBuf> {
-    // Remembered per folder (checked to still exist): hot paths ask for it on every refresh.
-    static DIRS: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<PathBuf, PathBuf>>> = std::sync::OnceLock::new();
+    // Remembered per folder while `repo/.git` stays the same and the Git directory still
+    // exists: hot paths ask for it on every refresh.
+    type Remembered = (Option<String>, PathBuf);
+    static DIRS: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<PathBuf, Remembered>>> = std::sync::OnceLock::new();
     let dirs = DIRS.get_or_init(Default::default);
-    if let Some(dir) = dirs.lock().get(repo).filter(|dir| dir.join("HEAD").is_file()) {
-        return Ok(dir.clone());
+    let identity = dot_git_identity(repo);
+    // Without `.git` in the folder itself Git searches parent folders: do not remember that.
+    if identity.is_some() {
+        if let Some((_, dir)) = dirs.lock().get(repo).filter(|(known, dir)| known == &identity && dir.join("HEAD").is_file()) {
+            return Ok(dir.clone());
+        }
     }
     let s = runner::run(repo, ["rev-parse", "--absolute-git-dir"])?;
     let dir = normalize(PathBuf::from(s.trim()));
-    dirs.lock().insert(repo.to_path_buf(), dir.clone());
+    if identity.is_some() && dot_git_identity(repo) == identity {
+        dirs.lock().insert(repo.to_path_buf(), (identity, dir.clone()));
+    }
     Ok(dir)
 }
 

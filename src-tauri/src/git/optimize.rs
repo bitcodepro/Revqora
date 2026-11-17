@@ -30,7 +30,7 @@ struct Slot {
     running: bool,
     checked: Option<Instant>,
     /// Ref fingerprint at the last commit-graph write.
-    graph_refs: Option<(usize, Option<SystemTime>, usize)>,
+    graph_refs: Option<Fingerprint>,
 }
 
 fn slots() -> &'static Mutex<HashMap<PathBuf, Slot>> {
@@ -79,13 +79,7 @@ pub struct Plan {
 
 /// Decides what to refresh. `fingerprint` is the current ref fingerprint, `previous`
 /// the one at the last commit-graph write in this process.
-pub fn plan(
-    config: &str,
-    loose_refs: usize,
-    has_graph: bool,
-    fingerprint: (usize, Option<SystemTime>, usize),
-    previous: Option<(usize, Option<SystemTime>, usize)>,
-) -> Plan {
+pub fn plan(config: &str, loose_refs: usize, has_graph: bool, fingerprint: Fingerprint, previous: Option<Fingerprint>) -> Plan {
     let mut values: HashMap<String, String> = HashMap::new();
     for line in config.lines() {
         let (key, value) = line.split_once(' ').unwrap_or((line, "true"));
@@ -100,7 +94,7 @@ pub fn plan(
 }
 
 /// Runs the plan now. Returns the ref fingerprint after a commit-graph write.
-pub fn run(repo: &Path, previous: Option<(usize, Option<SystemTime>, usize)>) -> Option<(usize, Option<SystemTime>, usize)> {
+pub fn run(repo: &Path, previous: Option<Fingerprint>) -> Option<Fingerprint> {
     let common = super::graph::common_dir(repo)?;
     if common.join("shallow").exists() {
         return None; // Git does not use a commit-graph in shallow repositories.
@@ -142,10 +136,37 @@ fn count_loose_refs(dir: &Path, stop: usize) -> usize {
     count
 }
 
-/// Cheap change detector for the ref set: loose ref count, packed-refs mtime and size.
-fn ref_fingerprint(common: &Path) -> (usize, Option<SystemTime>, usize) {
+/// Ref fingerprint: a hash of every loose ref file (path, size, modification time) and HEAD,
+/// plus packed-refs modification time and size. Advancing an existing ref rewrites its file,
+/// so a new commit on a branch changes the fingerprint even when no ref is added.
+pub type Fingerprint = (u64, Option<SystemTime>, usize);
+
+fn ref_fingerprint(common: &Path) -> Fingerprint {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut files = Vec::new();
+    let mut stack = vec![common.join("refs")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(entry.path()),
+                Ok(t) if t.is_file() => files.push(entry.path()),
+                _ => {}
+            }
+        }
+    }
+    files.push(common.join("HEAD"));
+    files.sort();
+    for file in &files {
+        file.hash(&mut hasher);
+        if let Ok(meta) = std::fs::metadata(file) {
+            meta.len().hash(&mut hasher);
+            meta.modified().ok().hash(&mut hasher);
+        }
+    }
     let packed = std::fs::metadata(common.join("packed-refs")).ok();
-    (count_loose_refs(&common.join("refs"), usize::MAX), packed.as_ref().and_then(|m| m.modified().ok()), packed.map(|m| m.len() as usize).unwrap_or(0))
+    (hasher.finish(), packed.as_ref().and_then(|m| m.modified().ok()), packed.map(|m| m.len() as usize).unwrap_or(0))
 }
 
 #[cfg(test)]

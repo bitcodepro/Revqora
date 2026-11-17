@@ -586,12 +586,9 @@ pub fn has_commit_graph(repo: &Path) -> bool {
 
 /// The repository's common Git directory. Remembered per path (it does not change while
 /// the folder stays a repository), so callers on hot paths do not spawn Git for it.
+/// Read fresh each time (one small file): a cached answer could outlive a worktree that was
+/// moved and replaced by another repository's worktree at the same path.
 pub fn common_dir(repo: &Path) -> Option<std::path::PathBuf> {
-    static DIRS: std::sync::OnceLock<parking_lot::Mutex<HashMap<std::path::PathBuf, std::path::PathBuf>>> = std::sync::OnceLock::new();
-    let dirs = DIRS.get_or_init(Default::default);
-    if let Some(dir) = dirs.lock().get(repo).filter(|dir| dir.is_dir()) {
-        return Some(dir.clone());
-    }
     // Git's own rule: a `commondir` file in the Git directory points at the shared one.
     let git_dir = super::repo::git_dir(repo).ok()?;
     let dir = match std::fs::read_to_string(git_dir.join("commondir")) {
@@ -605,7 +602,6 @@ pub fn common_dir(repo: &Path) -> Option<std::path::PathBuf> {
         }
         _ => git_dir,
     };
-    dirs.lock().insert(repo.to_path_buf(), dir.clone());
     Some(dir)
 }
 

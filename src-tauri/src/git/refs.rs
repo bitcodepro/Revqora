@@ -131,8 +131,17 @@ struct MetaKey {
     upstream_oid: String,
 }
 
-/// Per repository: `MetaKey` → the 13 `FMT` fields of that ref.
-type MetaCache = HashMap<std::path::PathBuf, HashMap<MetaKey, Vec<String>>>;
+/// Per repository and history boundary: `MetaKey` → the 13 `FMT` fields of that ref.
+type MetaCache = HashMap<(std::path::PathBuf, HistoryBoundary), HashMap<MetaKey, Vec<String>>>;
+
+/// What, besides the two tips, decides ahead/behind counts: the shallow boundary and grafts.
+/// Deepening a shallow clone (`fetch --unshallow`) keeps every tip but changes the counts.
+type HistoryBoundary = Vec<Option<(std::time::SystemTime, u64)>>;
+
+fn history_boundary(repo: &Path) -> HistoryBoundary {
+    let Some(common) = super::graph::common_dir(repo) else { return Vec::new() };
+    ["shallow", "info/grafts"].iter().map(|name| std::fs::metadata(common.join(name)).ok().and_then(|m| Some((m.modified().ok()?, m.len())))).collect()
+}
 
 fn meta_cache() -> &'static parking_lot::Mutex<MetaCache> {
     static CACHE: std::sync::OnceLock<parking_lot::Mutex<MetaCache>> = std::sync::OnceLock::new();
@@ -164,9 +173,11 @@ fn enumerate(repo: &Path) -> GitResult<String> {
             (MetaKey { refname: r[0].to_string(), oid: r[1].to_string(), symref: r[2].to_string(), upstream: r[3].to_string(), upstream_oid }, r[4] == "*")
         })
         .collect();
-    let key = repo.to_path_buf();
+    let key = (repo.to_path_buf(), history_boundary(repo));
     let missing: Vec<&MetaKey> = {
-        let cache = meta_cache().lock();
+        let mut cache = meta_cache().lock();
+        // Counts learned under another boundary of this repository are stale.
+        cache.retain(|(root, boundary), _| root != &key.0 || boundary == &key.1);
         let known = cache.get(&key);
         // An upstream outside the listing has no target here to key on: always re-read.
         let unkeyed = |k: &MetaKey| !k.upstream.is_empty() && !targets.contains_key(k.upstream.as_str());
@@ -461,8 +472,8 @@ pub fn squash_merged(repo: &Path) -> GitResult<Vec<String>> {
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
-    if super::locate::version() < (2, 40, 0) {
-        // `merge-tree --stdin` needs Git 2.40: merge one candidate per process.
+    // One process per candidate; a candidate Git refuses to merge (unrelated history) is skipped.
+    let one_by_one = || -> GitResult<Vec<String>> {
         let mut out = Vec::new();
         for (name, oid) in &candidates {
             let merged = runner::exec(repo, ["merge-tree", "--write-tree", "HEAD", oid])?;
@@ -470,7 +481,11 @@ pub fn squash_merged(repo: &Path) -> GitResult<Vec<String>> {
                 out.push(name.clone());
             }
         }
-        return Ok(out);
+        Ok(out)
+    };
+    if super::locate::version() < (2, 40, 0) {
+        // `merge-tree --stdin` needs Git 2.40.
+        return one_by_one();
     }
     // One `merge-tree --stdin` process merges every candidate into HEAD.
     let head = runner::run(repo, ["rev-parse", "--verify", "HEAD^{commit}"])?.trim().to_string();
@@ -485,7 +500,10 @@ pub fn squash_merged(repo: &Path) -> GitResult<Vec<String>> {
         .collect();
     let out = runner::exec_full(repo, ["merge-tree", "--write-tree", "--name-only", "--no-messages", "--stdin"], &[], Some(input.as_bytes()))?;
     if !out.ok() {
-        return Err(runner::to_error("git merge-tree", &out));
+        // The batch stops at the first candidate Git refuses (for example an orphan branch
+        // such as gh-pages: "refusing to merge unrelated histories"). Merge them one by one
+        // so that branch is skipped and the others keep their answers.
+        return one_by_one();
     }
     Ok(squash_results(&out.text(), &head_tree, &candidates))
 }

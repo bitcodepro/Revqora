@@ -130,8 +130,12 @@ pub fn run(repo: &Path, args: &[&str]) -> GitResult<String> {
 
 /// Forgets remembered answers (after Revqora itself changes configuration).
 pub fn clear() {
+    CLEARS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     entries().lock().clear();
 }
+
+/// How many times the cache was cleared (tests tell their own read from a parallel write).
+static CLEARS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(test)]
 mod tests {
@@ -158,5 +162,27 @@ mod tests {
         assert_eq!(run(root, &["config", "--get", "revqora.included"]).unwrap().trim(), "one");
         std::fs::write(root.join("extra.cfg"), "[revqora]\n\tincluded = two, longer\n").unwrap();
         assert_eq!(run(root, &["config", "--get", "revqora.included"]).unwrap().trim(), "two, longer");
+    }
+
+    #[test]
+    fn a_repeated_read_is_answered_from_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q"]);
+        let key = vec!["config".to_string(), "--get".to_string(), "revqora.cached".to_string()];
+        // Writes in parallel tests clear the shared cache. Judge only an attempt no other clear
+        // overlapped: a read that clears its own entry (an eager guard) never keeps an answer.
+        let clears = || CLEARS.load(std::sync::atomic::Ordering::SeqCst);
+        let mut judged = None;
+        for _ in 0..200 {
+            let before = clears();
+            exec(root, &["config", "--get", "revqora.cached"]).unwrap();
+            let cached = fresh(root, &key).is_some();
+            if clears() == before {
+                judged = Some(cached);
+                break;
+            }
+        }
+        assert_eq!(judged, Some(true), "a configuration read must stay cached for the next identical read");
     }
 }

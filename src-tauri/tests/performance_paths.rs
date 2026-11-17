@@ -99,4 +99,80 @@ fn background_housekeeping_packs_refs_and_writes_commit_graph_without_moving_ref
     // Same refs: the next pass has nothing to write.
     assert!(optimize::run(&r.root, written).is_none());
     r.git(&["commit-graph", "verify"]);
+    // Advancing an existing branch adds no ref but still needs a graph refresh.
+    r.git(&["commit", "--allow-empty", "-q", "-m", "advance"]);
+    let advanced = optimize::run(&r.root, written);
+    assert!(advanced.is_some(), "a new commit on an existing branch must refresh the commit-graph");
+    assert!(optimize::run(&r.root, advanced).is_none());
+    // The branch is a loose ref now: moving it again keeps the ref count and packed-refs.
+    r.git(&["commit", "--allow-empty", "-q", "-m", "advance again"]);
+    assert!(optimize::run(&r.root, advanced).is_some(), "moving a loose ref must refresh the commit-graph");
+}
+
+#[test]
+fn deepening_a_shallow_clone_refreshes_cached_ahead_behind_counts() {
+    let origin = Repo::new();
+    origin.commit_on("main", "b.txt", "two\n");
+    let temp = tempfile::tempdir().unwrap();
+    let clone = temp.path().join("clone");
+    let url = format!("file://{}", origin.root.display().to_string().replace('\\', "/"));
+    git_in(temp.path(), &["clone", "-q", "--depth", "1", &url, "clone"]);
+    for args in [["config", "user.name", "Test"], ["config", "user.email", "test@example.com"], ["config", "commit.gpgsign", "false"]] {
+        git_in(&clone, &args);
+    }
+    git_in(&clone, &["commit", "--allow-empty", "-qm", "local"]);
+    origin.commit_on("main", "c.txt", "three\n");
+    git_in(&clone, &["fetch", "-q", "--depth", "1", "origin"]);
+    let counts = |root: &Path| {
+        let main = refs::snapshot(root).unwrap().local.into_iter().find(|b| b.name == "main").unwrap();
+        (main.ahead, main.behind)
+    };
+    let expected = |root: &Path| {
+        let out = git_in(root, &["rev-list", "--left-right", "--count", "main...origin/main"]);
+        let mut it = out.split_whitespace().map(|n| n.parse::<u32>().unwrap());
+        (it.next().unwrap(), it.next().unwrap())
+    };
+    assert_eq!(counts(&clone), expected(&clone));
+    let tips = git_in(&clone, &["for-each-ref", "--format=%(refname) %(objectname)"]);
+    git_in(&clone, &["fetch", "-q", "--unshallow", "origin"]);
+    assert_eq!(git_in(&clone, &["for-each-ref", "--format=%(refname) %(objectname)"]), tips, "the tips must not move");
+    assert_eq!(counts(&clone), expected(&clone), "cached counts must follow the deeper history");
+}
+
+#[test]
+fn an_orphan_branch_does_not_hide_squash_merged_branches() {
+    let r = Repo::new();
+    r.git(&["branch", "squashed"]);
+    r.commit_on("squashed", "s.txt", "squash me\n");
+    r.git(&["switch", "-q", "main"]);
+    r.git(&["merge", "-q", "--squash", "squashed"]);
+    r.git(&["commit", "-qm", "squash"]);
+    r.git(&["switch", "-q", "--orphan", "gh-pages"]);
+    r.git(&["rm", "-rfq", "--ignore-unmatch", "."]);
+    r.write("index.html", "site\n");
+    r.git(&["add", "index.html"]);
+    r.git(&["commit", "-qm", "pages"]);
+    r.git(&["switch", "-q", "main"]);
+    assert_eq!(refs::squash_merged(&r.root).unwrap(), vec!["squashed".to_string()]);
+}
+
+#[test]
+fn a_reused_worktree_path_maps_to_its_new_repository() {
+    use revqora_lib::git::{graph, repo};
+    let a = Repo::new();
+    let b = Repo::new();
+    let temp = tempfile::tempdir().unwrap();
+    let slot = temp.path().join("slot");
+    let moved = temp.path().join("moved");
+    a.git(&["worktree", "add", "-q", "-b", "wa", slot.to_str().unwrap()]);
+    let first = repo::git_dir(&slot).unwrap();
+    let canon = |p: std::path::PathBuf| std::fs::canonicalize(p).unwrap();
+    assert_eq!(canon(graph::common_dir(&slot).unwrap()), canon(repo::git_dir(&a.root).unwrap()));
+    a.git(&["worktree", "move", slot.to_str().unwrap(), moved.to_str().unwrap()]);
+    b.git(&["worktree", "add", "-q", "-b", "wb", slot.to_str().unwrap()]);
+    // Repository A's worktree Git directory still exists, but the folder is B's now.
+    assert!(first.join("HEAD").is_file());
+    let b_dir = canon(repo::git_dir(&b.root).unwrap());
+    assert!(canon(repo::git_dir(&slot).unwrap()).starts_with(&b_dir), "the cached Git directory still pointed at repository A");
+    assert_eq!(canon(graph::common_dir(&slot).unwrap()), b_dir);
 }
