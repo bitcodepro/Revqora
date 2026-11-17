@@ -408,18 +408,18 @@ pub fn checkout(repo: &Path, target: &str, kind: &str) -> GitResult<String> {
             let local = target.split_once('/').map(|(_, b)| b).unwrap_or(target);
             let exists = runner::exec(repo, ["show-ref", "--verify", "--quiet", &format!("refs/heads/{local}")])?.ok();
             if exists {
-                runner::run(repo, ["switch", "--no-overwrite-ignore", local])?;
+                runner::run(repo, ["switch", super::recovery::ignored_flag(repo), local])?;
             } else {
-                runner::run(repo, ["switch", "--no-overwrite-ignore", "-c", local, "--track", target])?;
+                runner::run(repo, ["switch", super::recovery::ignored_flag(repo), "-c", local, "--track", target])?;
             }
             Ok(local.to_string())
         }
         "commit" => {
-            runner::run(repo, ["switch", "--no-overwrite-ignore", "--detach", target])?;
+            runner::run(repo, ["switch", super::recovery::ignored_flag(repo), "--detach", target])?;
             Ok(target.to_string())
         }
         _ => {
-            runner::run(repo, ["switch", "--no-overwrite-ignore", target])?;
+            runner::run(repo, ["switch", super::recovery::ignored_flag(repo), target])?;
             Ok(target.to_string())
         }
     }
@@ -431,7 +431,7 @@ pub fn create_branch(repo: &Path, name: &str, start: Option<&str>, checkout: boo
     let qualified = start.map(|s| super::branch_origin::branch_start(repo, s)).transpose()?;
     let mut args = if checkout {
         let mut args = super::branch_origin::RECORD_CREATION_REFLOG.to_vec();
-        args.extend(["switch", "--no-overwrite-ignore", "-c", name]);
+        args.extend(["switch", super::recovery::ignored_flag(repo), "-c", name]);
         args
     } else {
         vec!["branch", "--create-reflog", name]
@@ -498,6 +498,14 @@ pub fn reset(repo: &Path, target: &str, mode: &str) -> GitResult<()> {
         "keep" => "--keep",
         _ => "--mixed",
     };
+    if target.is_empty() || target.starts_with('-') {
+        return Err(GitError::new("Invalid reset target.").kind("invalid-argument"));
+    }
+    // Git writes the target's files over untracked (--hard) and ignored (--hard, --keep) files
+    // without asking, and recovery checkpoints do not keep ignored files.
+    if matches!(flag, "--hard" | "--keep") {
+        guard_untracked_tree(repo, target)?;
+    }
     runner::run(repo, ["reset", flag, target])?;
     Ok(())
 }
@@ -1355,6 +1363,8 @@ fn check_ignored_paths(repo: &Path, ignored: &super::workspace_files::IgnoredFil
         }
     };
     let ignored: std::collections::BTreeSet<_> = ignored.paths.iter().map(|p| normalize(p)).collect();
+    // Every collision, not just the first: the user decides for the whole list.
+    let mut found: Vec<(String, String)> = Vec::new();
     for path in paths.split('\0').filter(|p| !p.is_empty()) {
         let p = normalize(path);
         let prefix = format!("{p}/");
@@ -1362,12 +1372,28 @@ fn check_ignored_paths(repo: &Path, ignored: &super::workspace_files::IgnoredFil
         let descendant = ignored.range(prefix.clone()..).next().is_some_and(|i| i.starts_with(&prefix));
         if ignored.contains(&p) || ancestor || descendant {
             let Some(obstruction) = ignored_merge_obstruction(repo, path, ignore_case)? else { continue };
-            return Err(GitError::new(format!(
-                "Integration may overwrite {kind} data at {obstruction}. Your local data was preserved. Move or rename the conflicting path outside the repository, then retry. Incoming path: {path}."
-            )).kind("ignored-collision").details(vec![path.to_owned(), obstruction]));
+            if !found.iter().any(|(_, o)| *o == obstruction) {
+                found.push((path.to_owned(), obstruction));
+            }
         }
     }
-    Ok(())
+    if found.is_empty() {
+        return Ok(());
+    }
+    let local: Vec<String> = found.iter().map(|(_, o)| o.clone()).collect();
+    // The user chose to continue for exactly these paths (with a saved copy, or at their risk).
+    if super::recovery::collisions_accepted(repo, &local) {
+        return Ok(());
+    }
+    let (path, obstruction) = &found[0];
+    let others = if found.len() > 1 { format!(" and {} more", found.len() - 1) } else { String::new() };
+    // Details: incoming and local path pairs, the first pair first.
+    let details = found.iter().flat_map(|(path, obstruction)| [path.clone(), obstruction.clone()]).collect();
+    Err(GitError::new(format!(
+        "Integration may overwrite {kind} data at {obstruction}{others}. Your local data was preserved. Save a copy and continue, continue without a copy, or move the paths outside the repository and retry. Incoming path: {path}."
+    ))
+    .kind("ignored-collision")
+    .details(details))
 }
 
 /// Starts a merge but never creates the merge commit: the user reviews and confirms.
@@ -1382,7 +1408,7 @@ fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autosta
     // Branch mergeOptions are defaults, not the user's reviewed mode. In
     // particular an inherited --squash must not turn a fast-forward into staged
     // edits, and an inherited --commit must never confirm a merge for the user.
-    let mut args: Vec<&str> = vec!["merge", "--no-squash", "--no-commit", "--no-overwrite-ignore"];
+    let mut args: Vec<&str> = vec!["merge", "--no-squash", "--no-commit", super::recovery::ignored_flag(repo)];
     if autostash {
         args.push("--autostash");
     }
@@ -1942,7 +1968,7 @@ pub fn cherry_pick_compared(repo: &Path, pick: &ComparedCherryPick) -> GitResult
     }
     if current.branch.as_deref() != Some(branch) {
         guard_compared_pick_files(repo, pick)?;
-        runner::run(repo, ["switch", "--no-guess", "--no-overwrite-ignore", "--no-recurse-submodules", "--", branch])?;
+        runner::run(repo, ["switch", "--no-guess", super::recovery::ignored_flag(repo), "--no-recurse-submodules", "--", branch])?;
     }
     // Recheck the exact destination and working tree after switch hooks run.
     let head = runner::run(repo, ["symbolic-ref", "--quiet", "--no-recurse", "HEAD"])?;
@@ -2058,13 +2084,216 @@ pub fn revert(repo: &Path, oid: &str, no_commit: bool) -> GitResult<OpOutcome> {
         args.push("1".into());
     }
     args.push(oid.into());
+    // A revert brings back files the commit deleted; Git writes them over ignored files.
+    let commit = runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{oid}^{{commit}}")])?;
+    let commit = commit.trim();
+    if let Ok(parent) = runner::run(repo, ["rev-parse", "-q", "--verify", "--end-of-options", &format!("{commit}^1")]) {
+        let parent = parent.trim();
+        let mut restored = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", commit, parent, "--"])?;
+        // The revert is a merge of the parent into HEAD relative to the commit: it can write to
+        // other paths (a restored file follows a later directory rename) and does so even when
+        // it then stops on a conflict. Preview that merge and check what it writes.
+        let local = super::workspace_files::untracked(repo)?;
+        if let (Some(head), false) = (head_oid(repo), local.paths.is_empty() && !local.truncated) {
+            if !runner::version_at_least(2, 40) {
+                return Err(GitError::new("Git 2.40 or newer is required to protect untracked and ignored files during this revert.").kind("git-too-old"));
+            }
+            // With --no-commit Git applies the revert to the index, which may differ from HEAD
+            // (a staged rename, say). Preview against the index as a tree; an unmerged index
+            // cannot be written and is refused.
+            let ours = if no_commit {
+                let tree = runner::exec(repo, ["write-tree"])?;
+                if !tree.ok() {
+                    return Err(GitError::new(
+                        "The staged changes cannot be checked for untracked and ignored files (unresolved conflicts?). Resolve them first.",
+                    )
+                    .kind("index-unmerged"));
+                }
+                tree.text().trim().to_owned()
+            } else {
+                head
+            };
+            restored.push(0);
+            preview_merge(repo, Some(commit), &ours, parent, &local.paths, &mut restored)?;
+        }
+        check_ignored_paths(repo, &local, &restored, "uncommitted")?;
+    }
     let out = runner::exec(repo, &args)?;
     sequence_outcome(repo, out, "git revert")
 }
 
+/// Refuses a rebase onto `upstream` that would write over untracked or ignored files (ignore
+/// rules can differ between the replayed commits, so ordinary untracked files count too).
+///
+/// Checked: the checkout of `upstream`, every file the replayed commits touch, and every file
+/// a replay previewed with `git merge-tree` writes. The preview matters because Git's merge
+/// can write to paths no commit names, such as a file moved by a directory rename upstream,
+/// and it writes them even when the step then stops with a conflict.
+fn guard_rebase_files(repo: &Path, upstream: &str, keep_merges: bool) -> GitResult<()> {
+    let Some(head) = head_oid(repo) else { return Ok(()) };
+    let target = runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{upstream}^{{commit}}")])?;
+    let target = target.trim();
+    let untracked = super::workspace_files::untracked(repo)?;
+    if untracked.paths.is_empty() && !untracked.truncated {
+        return Ok(());
+    }
+    let mut paths = runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", &head, target, "--"])?;
+    paths.push(0);
+    paths.extend(runner::run_bytes(
+        repo,
+        ["log", "--format=", "--name-only", "-m", "--no-renames", "--diff-filter=ACMRT", "-z", &format!("{target}..{head}"), "--"],
+    )?);
+    paths.push(0);
+    paths.extend(rebase_replay_writes(repo, target, &head, keep_merges, &untracked.paths)?);
+    check_ignored_paths(repo, &untracked, &paths, "uncommitted")
+}
+
+/// Paths a rebase of `head` onto `target` may write, previewed with `git merge-tree` and
+/// throw-away commits (`git commit-tree`, never referenced; no working tree, index or ref is
+/// touched). The preview follows the rebase's own topology:
+/// - plain rebase: the commits (merges dropped) are replayed in order, each on the previous
+///   result;
+/// - `--rebase-merges`: each commit is replayed on the preview of its own first parent (or on
+///   `target` when that parent is outside the range), and each merge is re-created by merging
+///   the previewed parents with a real merge base, as Git does. So renames made on one replayed
+///   branch also move the files another branch brings in through the re-created merge.
+///
+/// A conflicting step does not end the preview: the user may resolve and continue, so the
+/// conflicted result is used for the following steps. In addition every commit is previewed on
+/// its own directly on `target`. Each step's changed paths, conflict files and Git's
+/// generated `path~label` names (matched against the `local` untracked paths) are included.
+fn rebase_replay_writes(repo: &Path, target: &str, head: &str, keep_merges: bool, local: &[String]) -> GitResult<Vec<u8>> {
+    if !runner::version_at_least(2, 40) {
+        return Err(GitError::new("Git 2.40 or newer is required to protect untracked and ignored files during this rebase.").kind("git-too-old"));
+    }
+    let mut list = vec!["rev-list".to_string(), "--reverse".into(), "--topo-order".into(), "--parents".into()];
+    if !keep_merges {
+        list.push("--no-merges".into());
+    }
+    list.push(format!("{target}..{head}"));
+    let listing = runner::run(repo, &list)?;
+    let mut out: Vec<u8> = Vec::new();
+    // Original commit -> its previewed replacement.
+    let mut replayed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut previous = target.to_owned();
+    let mut empty: Option<String> = None;
+    for line in listing.lines() {
+        let mut ids = line.split_whitespace();
+        let Some(commit) = ids.next() else { continue };
+        let parents: Vec<&str> = ids.collect();
+        let new_parent = |parent: Option<&str>| parent.and_then(|p| replayed.get(p).cloned()).unwrap_or_else(|| target.to_owned());
+        let next = if keep_merges && parents.len() > 1 {
+            if parents.len() > 2 {
+                return Err(GitError::new(
+                    "This branch has an octopus merge; its rebase cannot be checked for untracked and ignored files. Keep merges is not available for it.",
+                )
+                .kind("rebase-preview-unsupported"));
+            }
+            let first = new_parent(Some(parents[0]));
+            // A merged-in parent outside the range stays as it is.
+            let second = replayed.get(parents[1]).cloned().unwrap_or_else(|| parents[1].to_owned());
+            let tree = preview_merge(repo, None, &first, &second, local, &mut out)?;
+            preview_commit(repo, &tree, &[&first, &second])?
+        } else {
+            let onto = if keep_merges { new_parent(parents.first().copied()) } else { previous.clone() };
+            let base = match parents.first() {
+                Some(parent) => parent.to_string(),
+                None => match &empty {
+                    Some(e) => e.clone(),
+                    None => {
+                        let e = runner::run_env(repo, ["hash-object", "-t", "tree", "-w", "--stdin"], &[], Some(&[]))?.trim().to_owned();
+                        empty = Some(e.clone());
+                        e
+                    }
+                },
+            };
+            let tree = preview_merge(repo, Some(&base), &onto, commit, local, &mut out)?;
+            // Also on its own on the target, for steps the topology above may not reach alike.
+            preview_merge(repo, Some(&base), target, commit, local, &mut out)?;
+            preview_commit(repo, &tree, &[&onto])?
+        };
+        replayed.insert(commit.to_owned(), next.clone());
+        previous = next;
+    }
+    Ok(out)
+}
+
+/// A throw-away commit with `tree` and `parents`, so later steps can find real merge bases.
+fn preview_commit(repo: &Path, tree: &str, parents: &[&str]) -> GitResult<String> {
+    let mut args = vec!["commit-tree".to_string(), tree.to_owned()];
+    for parent in parents {
+        args.push("-p".into());
+        args.push((*parent).to_owned());
+    }
+    args.extend(["-m".into(), "rebase preview".into()]);
+    let identity = [
+        ("GIT_AUTHOR_NAME", "Revqora"),
+        ("GIT_AUTHOR_EMAIL", "preview@revqora.invalid"),
+        ("GIT_COMMITTER_NAME", "Revqora"),
+        ("GIT_COMMITTER_EMAIL", "preview@revqora.invalid"),
+        ("GIT_AUTHOR_DATE", "1700000000 +0000"),
+        ("GIT_COMMITTER_DATE", "1700000000 +0000"),
+    ];
+    Ok(runner::run_env(repo, &args, &identity, None)?.trim().to_owned())
+}
+
+/// Previews merging `theirs` into `ours` (commits; with `base`, relative to it as a cherry-pick
+/// does, otherwise from their real merge base). Appends the paths written to `out` and returns
+/// the resulting tree, conflicted or not.
+fn preview_merge(repo: &Path, base: Option<&str>, ours: &str, theirs: &str, local: &[String], out: &mut Vec<u8>) -> GitResult<String> {
+    let mut args = vec!["merge-tree".to_string(), "--write-tree".into(), "--name-only".into(), "--no-messages".into(), "-z".into()];
+    if let Some(base) = base {
+        args.push(format!("--merge-base={base}"));
+    }
+    args.push(ours.to_owned());
+    args.push(theirs.to_owned());
+    let preview = runner::exec(repo, &args)?;
+    if !matches!(preview.code, 0 | 1) {
+        return Err(runner::to_error("preview the rebase to protect untracked and ignored files", &preview));
+    }
+    let listing = super::workspace_files::path_list(&preview.stdout)?;
+    let mut fields = listing.split('\0');
+    let next = fields.next().unwrap_or_default().trim().to_owned();
+    if !matches!(next.len(), 40 | 64) || !next.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(GitError::new("Git returned an invalid rebase preview tree."));
+    }
+    out.extend(runner::run_bytes(repo, ["diff", "--name-only", "--no-renames", "-z", &format!("{ours}^{{tree}}"), &next, "--"])?);
+    out.push(0);
+    for path in fields.filter(|p| !p.is_empty()) {
+        out.extend_from_slice(path.as_bytes());
+        out.push(0);
+        // File/folder conflicts are written beside the path as `path~<label>`.
+        let prefix = format!("{path}~").to_lowercase();
+        for name in local.iter().filter(|l| l.to_lowercase().starts_with(&prefix)) {
+            out.extend_from_slice(name.trim_end_matches('/').as_bytes());
+            out.push(0);
+        }
+    }
+    Ok(next)
+}
+
+/// Merge commits a rebase onto `upstream` would replay. A plain rebase drops them and leaves
+/// their commits in one straight line.
+pub fn rebase_merge_count(repo: &Path, upstream: &str) -> GitResult<u32> {
+    let target = runner::run(repo, ["rev-parse", "--verify", "--end-of-options", &format!("{upstream}^{{commit}}")])?;
+    let count = runner::run(repo, ["rev-list", "--count", "--merges", &format!("{}..HEAD", target.trim())])?;
+    Ok(count.trim().parse().unwrap_or(0))
+}
+
 pub fn rebase_onto(repo: &Path, upstream: &str) -> GitResult<OpOutcome> {
+    rebase_onto_with(repo, upstream, false)
+}
+
+/// `keep_merges` re-creates the branch's merge commits (`--rebase-merges`) instead of dropping them.
+pub fn rebase_onto_with(repo: &Path, upstream: &str, keep_merges: bool) -> GitResult<OpOutcome> {
+    guard_rebase_files(repo, upstream, keep_merges)?;
     let saved = stash_staged(repo, "Rebase")?;
-    let result = runner::exec(repo, ["rebase", "--autostash", upstream]).and_then(|out| sequence_outcome(repo, out, "git rebase"));
+    let mut args = vec!["rebase", "--autostash"];
+    if keep_merges {
+        args.push("--rebase-merges");
+    }
+    args.push(upstream);
+    let result = runner::exec(repo, &args).and_then(|out| sequence_outcome(repo, out, "git rebase"));
     with_saved(repo, saved, result)
 }
 

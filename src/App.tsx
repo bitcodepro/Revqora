@@ -1,4 +1,5 @@
 import { ActivityIndicator } from "./components/ActivityIndicator";
+import type { IgnoredReport } from "./components/IgnoredFilesChanged";
 import { createStartupBarrier, type StartupPhase } from "./lib/startupReady";
 import { restoreRepositorySession } from "./lib/restoreRepositorySession";
 import { undoExplorerMove } from "./lib/explorerMoves";
@@ -359,6 +360,7 @@ function MainApp() {
         window.dispatchEvent(new CustomEvent("revqora:worktree", { detail: { repo } }));
       }),
     );
+    unsubs.push(listen<{ repo: string; report: IgnoredReport }>("ignored-files-changed", (e) => { void import("./components/IgnoredFilesChanged").then((m) => m.ignoredFilesChangedDialog(e.payload.repo, e.payload.report)); }));
     unsubs.push(listen<{ opId: string; line: string }>("op-progress", (e) => updateBusy(e.payload.opId, e.payload.line)));
     unsubs.push(listen<RepositoryOperation>("repository-operation", (e) => {
       updateRepositoryOperation(e.payload);

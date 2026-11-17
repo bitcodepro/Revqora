@@ -110,7 +110,7 @@ function Menu({ x, y, items, onDone, onBack, level = 0, autoFocus = true }: { x:
               }}
             >
               <span className="ic">{it.checked ? <CheckCircle2 size={14} /> : it.icon}</span>
-              <span>{it.label}</span>
+              <span className="ctx-label" title={it.label}>{it.label}</span>
               {it.children ? <ChevronRight size={14} className="hint" /> : hint && <span className="hint">{hint}</span>}
             </div>
           );

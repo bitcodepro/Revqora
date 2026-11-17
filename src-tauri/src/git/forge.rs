@@ -893,7 +893,7 @@ fn fetch_pr_branch(repo: &Path, remote: &str, source: &str, number: u64, expecte
         } else {
             runner::run(repo, ["branch", "--", &local, expected_head])?;
         }
-        runner::run(repo, ["switch", "--no-overwrite-ignore", "--", &local])?;
+        runner::run(repo, ["switch", super::recovery::ignored_flag(repo), "--", &local])?;
         Ok(local)
     })();
     // Remove only this operation's private pin, using its observed object ID.

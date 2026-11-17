@@ -242,6 +242,54 @@ function MergeBody({ target, current, close }: { target: string; current: string
   );
 }
 
+// ───────────── rebase with merge commits ─────────────
+
+/** Asked before a rebase whose commits include merges: keep them or flatten the history. */
+export function rebaseMergesDialog(current: string, target: string, merges: number): Promise<"keep" | "flatten" | null> {
+  return showDialog((close) => <RebaseMergesBody current={current} target={target} merges={merges} close={close} />);
+}
+
+function RebaseMergesBody({ current, target, merges, close }: { current: string; target: string; merges: number; close: (v: "keep" | "flatten" | null) => void }) {
+  const [s, setS] = useState<"keep" | "flatten">("keep");
+  const opts: { v: "keep" | "flatten"; t: string; d: string }[] = [
+    { v: "keep", t: "Keep merge commits", d: "Merges are created again on top of the target, so the branch keeps its shape (git rebase --rebase-merges). Conflicts you resolved in a merge may need to be resolved again." },
+    { v: "flatten", t: "Flatten into a straight line", d: "Merge commits are dropped and their commits are replayed one after another. This is what a plain git rebase does." },
+  ];
+  return (
+    <Modal
+      title={`Rebase ${current} onto ${target}?`}
+      icon={<Info size={18} />}
+      onClose={() => close(null)}
+      onSubmit={() => close(s)}
+      footer={
+        <>
+          <button type="button" className="btn" onClick={() => close(null)}>
+            Cancel
+          </button>
+          <button type="submit" className="btn primary">
+            Rebase
+          </button>
+        </>
+      }
+    >
+      <div className="muted">
+        Your commits are replayed on top of the target and get new hashes; avoid this for branches others already use. The commits to replay include {merges} merge commit{merges === 1 ? "" : "s"}.
+      </div>
+      <div className="radio-cards" role="radiogroup" aria-label="Merge commits">
+        {opts.map((o) => (
+          <label key={o.v} className={`radio-card ${s === o.v ? "on" : ""}`}>
+            <input type="radio" name="rebase-merges" checked={s === o.v} onChange={() => setS(o.v)} />
+            <div>
+              <div className="rt">{o.t}</div>
+              <div className="rd">{o.d}</div>
+            </div>
+          </label>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
 // ───────────── push ─────────────
 
 export function pushDialog(o: { branch: string; remotes: RemoteInfo[]; upstream: string | null; ahead: number; behind: number }): Promise<PushOptions | null> {

@@ -223,3 +223,55 @@ fn partial_clone_diff_fetches_missing_blobs_lazily() {
     assert!(listed.lines().any(|l| l == format!("?{lib}")));
     assert_no_phantom_deletions(&root);
 }
+
+#[test]
+fn cone_changes_never_delete_ignored_files_without_consent() {
+    let t = tmp();
+    let repo = seed(t.path());
+    fs::write(repo.join(".gitignore"), "*.env\nnode_modules/\nbuild/\n").unwrap();
+    git(&repo, &["add", ".gitignore"]);
+    git(&repo, &["commit", "-q", "-m", "ignore"]);
+    let precious = |repo: &Path| {
+        for path in ["lib/.env", "lib/node_modules/pkg/index.js", "docs/local.env", "build/out.bin", "app/.env"] {
+            let full = repo.join(path);
+            fs::create_dir_all(full.parent().unwrap()).unwrap();
+            fs::write(full, "precious\n").unwrap();
+        }
+    };
+    precious(&repo);
+    // Keeping `app`: `lib` and `docs` leave with their ignored files; `build` has no tracked
+    // files and `app/.env` stays in the cone, so Git does not touch those.
+    let e = sparse::set(&repo, true, &folders(&["app"])).unwrap_err();
+    assert_eq!(e.kind, "sparse-ignored-files");
+    assert_eq!(e.details, ["docs/local.env", "lib/.env", "lib/node_modules/"]);
+    assert!(!sparse::state(&repo).unwrap().enabled, "a refused change must not turn sparse checkout on");
+    for path in ["lib/.env", "lib/node_modules/pkg/index.js", "docs/local.env", "lib/a.txt"] {
+        assert!(repo.join(path).exists(), "{path} must survive a refused change");
+    }
+    // A folder that also holds an ordinary untracked file is left alone by Git: no warning for it.
+    fs::write(repo.join("docs/notes.txt"), "untracked\n").unwrap();
+    let e = sparse::set(&repo, true, &folders(&["app"])).unwrap_err();
+    assert_eq!(e.details, ["lib/.env", "lib/node_modules/"]);
+    // With consent the change runs; what the guard announced is exactly what Git removed.
+    // A file that appears after the review is not covered by the consent.
+    let reviewed = e.details.clone();
+    fs::write(repo.join("lib/new.env"), "appeared later\n").unwrap();
+    let again = sparse::set_with(&repo, true, &folders(&["app"]), Some(&reviewed)).unwrap_err();
+    assert_eq!(again.kind, "sparse-ignored-files");
+    assert_eq!(again.details, ["lib/.env", "lib/new.env", "lib/node_modules/"]);
+    assert!(repo.join("lib/new.env").exists() && repo.join("lib/a.txt").exists());
+    sparse::set_with(&repo, true, &folders(&["app"]), Some(&again.details)).unwrap();
+    assert!(!repo.join("lib").exists());
+    assert!(repo.join("docs/local.env").exists() && repo.join("docs/notes.txt").exists());
+    assert!(repo.join("build/out.bin").exists() && repo.join("app/.env").exists());
+    // Ignored files created later in an excluded folder are deleted by add and reapply too.
+    fs::create_dir_all(repo.join("lib")).unwrap();
+    fs::write(repo.join("lib/.env"), "again\n").unwrap();
+    fs::remove_file(repo.join("docs/notes.txt")).unwrap();
+    assert_eq!(sparse::reapply(&repo).unwrap_err().details, ["docs/local.env", "lib/.env"]);
+    assert_eq!(sparse::add(&repo, &folders(&["docs"])).unwrap_err().details, ["lib/.env"]);
+    assert_eq!(fs::read_to_string(repo.join("lib/.env")).unwrap(), "again\n");
+    // Non-cone mode removes tracked files one by one and keeps ignored ones: nothing to confirm.
+    sparse::set(&repo, false, &folders(&["/app/"])).unwrap();
+    assert_eq!(fs::read_to_string(repo.join("lib/.env")).unwrap(), "again\n");
+}

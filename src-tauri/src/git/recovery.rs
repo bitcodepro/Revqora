@@ -397,6 +397,502 @@ fn create_expected_refs(
     )
 }
 
+/// A workspace checkpoint that also keeps the given ignored files.
+fn create_with_ignored(root: &Path, command: &str, label: &str, expected: Option<&str>, paths: &[String]) -> GitResult<Summary> {
+    operations::access(
+        root,
+        true,
+        |_, _| {},
+        || {
+            let observed = match expected {
+                Some(value) => Some(value.to_owned()),
+                None => status::status(root)?.state_token,
+            };
+            create_locked(root, command, label, true, false, observed.as_deref(), Capture { references: &[], paths })
+        },
+    )
+}
+
+// ───────────── ignored-file safety net ─────────────
+//
+// Git overwrites or deletes ignored files in more ways than can be predicted path by path
+// (renames, re-created merges, conflict names, sparse cleanup). The guards in `ops` refuse the
+// cases they can preview; this net covers the rest. Before an operation that writes the working
+// tree, the individual ignored files (not the content of wholly ignored folders such as
+// node_modules or build output) are recorded (size, hash) and copied into the operation's
+// checkpoint, which lives on disk and stays listed in Recovery. If the copy cannot be made, the
+// operation is refused until the user accepts exactly that list of unprotected files. After the
+// operation (finished or failed), files that changed or disappeared are reported to that
+// operation only.
+
+const WATCH_MAX_HASH: u64 = 100 * 1024 * 1024;
+
+/// One ignored file as it was at a point in time.
+#[derive(Clone, PartialEq)]
+struct Watched {
+    path: String,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    sha256: Option<String>,
+}
+
+struct Watch {
+    command: String,
+    checkpoint: Option<String>,
+    files: Vec<Watched>,
+}
+
+/// An ignored file Git changed, and what it looked like right after the operation.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IgnoredChange {
+    pub path: String,
+    /// False when Git deleted it.
+    pub exists: bool,
+    /// Content hash after the operation (None when deleted or too large to hash).
+    pub sha256: Option<String>,
+    pub len: u64,
+}
+
+/// Ignored files Git changed or removed during one operation.
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct IgnoredReport {
+    pub command: String,
+    /// The checkpoint holding the previous content; None when the user accepted running without one.
+    pub checkpoint: Option<String>,
+    pub paths: Vec<String>,
+    pub changes: Vec<IgnoredChange>,
+}
+
+thread_local! {
+    // An operation runs start to finish on one thread (`operations::run` inside the command's
+    // blocking task), and the command takes its report on that thread before returning. A
+    // queued operation runs on another thread, so it can never replace or take this report.
+    static WATCH: std::cell::RefCell<Option<Watch>> = const { std::cell::RefCell::new(None) };
+    static REPORT: std::cell::RefCell<Option<IgnoredReport>> = const { std::cell::RefCell::new(None) };
+    // The user's decisions for the operation running on this thread (taken in `begin`).
+    static ACTIVE: std::cell::RefCell<Option<Consent>> = const { std::cell::RefCell::new(None) };
+    // The consent token the request running on this thread carries (set by the command).
+    static REQUEST: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A user's decision to continue although Git may overwrite these local paths.
+#[derive(Clone)]
+struct AcceptedCollisions {
+    /// Absolute, normalized paths the decision covers.
+    covered: BTreeSet<String>,
+    /// Paths (relative to the repository) to copy into the checkpoint first; empty when the
+    /// user chose to continue without a copy.
+    copy: Vec<String>,
+}
+
+/// Everything the user decided for one request: the retry that carries its one-shot token. Any
+/// other request, even the same command in the same repository, never sees it.
+#[derive(Clone)]
+struct Consent {
+    repo: PathBuf,
+    command: String,
+    collisions: Option<AcceptedCollisions>,
+    /// Paths the user accepted to run without a saved copy (sorted).
+    unprotected: Option<Vec<String>>,
+}
+
+/// Pending decisions by token, oldest first. A token whose request never arrives is dropped
+/// once newer ones push it out; it can never be used by another request.
+type ConsentList = std::sync::Mutex<Vec<(String, Consent)>>;
+const MAX_PENDING: usize = 32;
+
+fn pending() -> &'static ConsentList {
+    static P: std::sync::OnceLock<ConsentList> = std::sync::OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
+fn new_token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    let mut h2 = std::collections::hash_map::RandomState::new().build_hasher();
+    h2.write_u64(h.finish());
+    format!("{:016x}{:016x}", h.finish(), h2.finish())
+}
+
+fn absolute_key(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let text = text.trim_end_matches('/');
+    if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text.to_owned()
+    }
+}
+
+fn store(consent: Consent) -> String {
+    let mut all = pending().lock().unwrap_or_else(|e| e.into_inner());
+    let token = new_token();
+    all.push((token.clone(), consent));
+    if all.len() > MAX_PENDING {
+        all.remove(0);
+    }
+    token
+}
+
+/// The user continues `command` in `root` although Git may overwrite `paths` (repository-
+/// relative, as the collision listed them). With `copy`, they are saved in the operation's
+/// checkpoint first. Returns the one-shot token the retry must carry. A new decision never
+/// inherits an older consent to run without a copy.
+pub fn accept_collisions(root: &Path, command: &str, paths: &[String], copy: bool) -> String {
+    let repo = watch_key(root);
+    let collisions = Some(collision_decision(&repo, paths, copy));
+    store(Consent { repo, command: command.to_owned(), collisions, unprotected: None })
+}
+
+fn collision_decision(base: &Path, paths: &[String], copy: bool) -> AcceptedCollisions {
+    let covered = paths.iter().map(|p| absolute_key(&base.join(p))).collect();
+    AcceptedCollisions { covered, copy: if copy { paths.to_vec() } else { Vec::new() } }
+}
+
+/// The user accepts that `command` in `root` runs although these paths could not be saved. It
+/// applies only if that run finds exactly this list. `collision` repeats the collision decision
+/// the same request made earlier (its token was used up by the attempt that failed to save), so
+/// the returned new token carries both decisions.
+pub fn accept_unprotected(root: &Path, command: &str, paths: &[String], collision: Option<(&[String], bool)>) -> String {
+    let mut paths = paths.to_vec();
+    paths.sort();
+    let repo = watch_key(root);
+    let collisions = collision.map(|(local, copy)| collision_decision(&repo, local, copy));
+    store(Consent { repo, command: command.to_owned(), collisions, unprotected: Some(paths) })
+}
+
+/// The consent token of the request about to run on this thread (None: it carries none).
+pub fn set_request_consent(token: Option<String>) {
+    REQUEST.with(|r| *r.borrow_mut() = token);
+}
+
+/// Start of an operation that owns `root`: takes the decisions of the token its request carries.
+/// They apply only if they were made for this repository and command; either way the token is
+/// used up.
+pub fn begin(root: &Path, command: &str) {
+    let token = REQUEST.with(|r| r.borrow_mut().take());
+    let taken = token.and_then(|t| {
+        let mut all = pending().lock().unwrap_or_else(|e| e.into_inner());
+        all.iter().position(|(k, _)| *k == t).map(|i| all.remove(i).1)
+    });
+    let base = watch_key(root);
+    ACTIVE.with(|a| *a.borrow_mut() = taken.filter(|c| c.command == command && c.repo == base));
+}
+
+/// Ends the operation started by `begin` on every exit path, unwinding included: reports changed
+/// ignored files and drops the watch and every decision of this operation.
+pub struct Finish(pub PathBuf);
+
+impl Drop for Finish {
+    fn drop(&mut self) {
+        finish_watch(&self.0);
+        ACTIVE.with(|a| a.borrow_mut().take());
+    }
+}
+
+/// True when the user accepted every one of `paths` (relative to `repo`, which may be a
+/// submodule of the repository the decision was made for) for the running operation.
+pub fn collisions_accepted(repo: &Path, paths: &[String]) -> bool {
+    let base = watch_key(repo);
+    let wanted: Vec<String> = paths.iter().map(|p| absolute_key(&base.join(p))).collect();
+    ACTIVE.with(|a| a.borrow().as_ref().and_then(|c| c.collisions.as_ref()).is_some_and(|c| wanted.iter().all(|w| c.covered.contains(w))))
+}
+
+/// Git's ignored-file protection flag for the running operation. Git keeps refusing to replace
+/// ignored files unless the user decided to continue past the listed collisions.
+pub fn ignored_flag(_repo: &Path) -> &'static str {
+    if ACTIVE.with(|a| a.borrow().as_ref().is_some_and(|c| c.collisions.is_some())) {
+        "--overwrite-ignore"
+    } else {
+        "--no-overwrite-ignore"
+    }
+}
+
+/// Files under `path` (a file, or a folder walked without following links), repository-relative.
+/// Fails rather than skip anything it cannot save: an unreadable folder or entry, a link, a
+/// special file or a name that is not valid UTF-8.
+fn files_under(root: &Path, path: &str, out: &mut Vec<String>) -> Result<(), String> {
+    let path = path.trim_end_matches('/');
+    let full = root.join(path);
+    let m = match fs::symlink_metadata(&full) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{path}: {e}")),
+    };
+    if m.file_type().is_symlink() {
+        return Err(format!("{path} is a link"));
+    }
+    if m.is_file() {
+        out.push(path.to_owned());
+        return Ok(());
+    }
+    if !m.is_dir() {
+        return Err(format!("{path} is not a regular file or folder"));
+    }
+    for entry in fs::read_dir(&full).map_err(|e| format!("{path}: {e}"))? {
+        let entry = entry.map_err(|e| format!("{path}: {e}"))?;
+        let name = entry.file_name().into_string().map_err(|_| format!("{path} contains a name that is not valid UTF-8"))?;
+        files_under(root, &format!("{path}/{name}"), out)?;
+    }
+    Ok(())
+}
+
+fn watch_key(root: &Path) -> PathBuf {
+    fs::canonicalize(root).unwrap_or_else(|_| root.to_owned())
+}
+
+/// Commands that write the working tree, so Git may overwrite or delete ignored files.
+fn writes_worktree(command: &str) -> bool {
+    matches!(
+        command,
+        "reset"
+            | "op_continue"
+            | "op_abort"
+            | "op_skip"
+            | "undo_commit"
+            | "rebase_onto"
+            | "interactive_rebase"
+            | "rewrite"
+            | "cherry_pick"
+            | "cherry_pick_compared_commit"
+            | "revert"
+            | "merge_start"
+            | "pull"
+            | "checkout"
+            | "pull_request_checkout"
+            | "stash_apply"
+            | "stash_branch"
+            | "apply_patch"
+            | "apply_from_commit"
+            | "bisect_start"
+            | "bisect_mark"
+            | "bisect_reset"
+            | "sparse_checkout_set"
+            | "sparse_checkout_add"
+            | "sparse_checkout_disable"
+            | "sparse_checkout_reapply"
+    )
+}
+
+/// Ignored files outside wholly ignored folders (Git lists those folders as one `dir/` entry).
+fn individual_ignored(root: &Path) -> GitResult<Vec<String>> {
+    let raw = runner::run_bytes(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory", "-z"])?;
+    let raw = String::from_utf8(raw).map_err(|_| fail("Non-UTF-8 filenames cannot be captured safely."))?;
+    let mut files: Vec<String> = raw.split('\0').filter(|p| !p.is_empty() && !p.ends_with('/')).map(str::to_owned).collect();
+    files.sort();
+    Ok(files)
+}
+
+fn snapshot(root: &Path, path: &str) -> Option<Watched> {
+    let full = source_path(root, path).ok()?;
+    let m = fs::symlink_metadata(&full).ok()?;
+    if !m.is_file() {
+        return None;
+    }
+    let sha256 = (m.len() <= WATCH_MAX_HASH).then(|| digest(&full).ok()).flatten();
+    Some(Watched { path: path.to_owned(), len: m.len(), modified: m.modified().ok(), sha256 })
+}
+
+fn same(before: &Watched, now: &Watched) -> bool {
+    now.len == before.len
+        && match (&now.sha256, &before.sha256) {
+            (Some(a), Some(b)) => a == b,
+            _ => now.modified == before.modified,
+        }
+}
+
+/// Records the individual ignored files and copies them into the operation's checkpoint, before
+/// `command`. Returns true when that checkpoint was created (it replaces the ordinary one).
+fn watch_ignored(root: &Path, command: &str, expected: Option<&str>) -> GitResult<bool> {
+    WATCH.with(|w| w.borrow_mut().take());
+    REPORT.with(|r| r.borrow_mut().take());
+    let (copy, approved) = ACTIVE.with(|a| {
+        let mut a = a.borrow_mut();
+        let copy = a.as_ref().and_then(|c| c.collisions.as_ref()).map(|c| c.copy.clone()).unwrap_or_default();
+        (copy, a.as_mut().and_then(|c| c.unprotected.take()))
+    });
+    let mut files = individual_ignored(root)?;
+    // Paths the user asked to save before continuing past a collision (files in wholly ignored
+    // folders included). If they cannot be listed completely, none of them counts as saved.
+    let mut unprotected: Vec<String> = Vec::new();
+    let mut reasons: Vec<String> = Vec::new();
+    let mut listed = Vec::new();
+    match copy.iter().try_for_each(|path| files_under(root, path, &mut listed)) {
+        Ok(()) => files.extend(listed),
+        Err(reason) => {
+            unprotected.extend(copy.iter().map(|p| p.trim_end_matches('/').to_owned()));
+            reasons.push(reason);
+        }
+    }
+    files.sort();
+    files.dedup();
+    let mut checkpoint = None;
+    if !files.is_empty() {
+        let label = format!("Before {}", command.replace('_', " "));
+        match crate::journal::suspend(|| create_with_ignored(root, command, &label, expected, &files)) {
+            Ok(summary) => checkpoint = Some(summary.id),
+            Err(e) if e.kind == "stale-operation" => return Err(e),
+            Err(e) => {
+                unprotected.extend(files.iter().cloned());
+                reasons.push(e.message.trim_end_matches('.').to_owned());
+            }
+        }
+    }
+    if !unprotected.is_empty() {
+        unprotected.sort();
+        unprotected.dedup();
+        if approved.as_deref() != Some(unprotected.as_slice()) {
+            return Err(fail(format!(
+                "{} path{} could not be saved before this operation ({}). Git may overwrite or delete them, and they could not be restored. Nothing was changed.",
+                unprotected.len(),
+                if unprotected.len() == 1 { "" } else { "s" },
+                reasons.join("; ")
+            ))
+            .kind("ignored-backup-unavailable")
+            .details(unprotected));
+        }
+    }
+    if files.is_empty() {
+        return Ok(false);
+    }
+    let watched: Vec<Watched> = files.iter().filter_map(|p| snapshot(root, p)).collect();
+    let created = checkpoint.is_some();
+    WATCH.with(|w| *w.borrow_mut() = Some(Watch { command: command.to_owned(), checkpoint, files: watched }));
+    Ok(created)
+}
+
+/// After the operation (finished, failed or unwinding): records which watched ignored files changed.
+pub fn finish_watch(root: &Path) {
+    let Some(watch) = WATCH.with(|w| w.borrow_mut().take()) else { return };
+    let mut changes = Vec::new();
+    for before in &watch.files {
+        match snapshot(root, &before.path) {
+            Some(now) if same(before, &now) => {}
+            Some(now) => changes.push(IgnoredChange { path: now.path, exists: true, sha256: now.sha256, len: now.len }),
+            None => changes.push(IgnoredChange { path: before.path.clone(), exists: false, sha256: None, len: 0 }),
+        }
+    }
+    if !changes.is_empty() {
+        let paths = changes.iter().map(|c| c.path.clone()).collect();
+        REPORT.with(|r| *r.borrow_mut() = Some(IgnoredReport { command: watch.command, checkpoint: watch.checkpoint, paths, changes }));
+    }
+}
+
+/// The report of the operation that just ran on this thread, once.
+pub fn take_ignored_report(_root: &Path) -> Option<IgnoredReport> {
+    REPORT.with(|r| r.borrow_mut().take())
+}
+
+/// Differences between the saved copy of `path` in checkpoint `id` and the file now.
+pub fn compare_saved(root: &Path, id: &str, path: &str) -> GitResult<super::diff::FileDiff> {
+    let root = fs::canonicalize(repo::discover(root)?)?;
+    let cp = read(&root, id)?;
+    let Some((index, saved)) = cp.paths.iter().enumerate().find(|(_, s)| s.path == path) else {
+        return Err(fail(format!("{path} is not in this checkpoint.")));
+    };
+    if saved.kind != "file" {
+        return Err(fail(format!("{path} was not a regular file in this checkpoint.")));
+    }
+    let stored = base(&root)?.join(id).join("files").join(index.to_string());
+    if Some(digest(&stored)?) != saved.sha256 {
+        return Err(fail(format!("The saved copy of {path} is damaged.")));
+    }
+    let current = source_path(&root, path)?;
+    let now = if fs::symlink_metadata(&current).is_ok_and(|m| m.is_file()) { display_path(&current) } else { "/dev/null".to_owned() };
+    let args = strings(&["diff", "--no-index", "--no-color", "--full-index", "--", &display_path(&stored), &now]);
+    let out = runner::exec_full(&root, &args, &[], None)?;
+    if !matches!(out.code, 0 | 1) {
+        return Err(runner::to_error("compare the saved copy", &out));
+    }
+    let raw = super::diff::parse(&out.stdout);
+    let Some(first) = raw.first() else {
+        return Err(fail(format!("The saved copy of {path} and the current file are identical.")).kind("identical"));
+    };
+    Ok(super::diff::to_display(first, path, super::diff::fingerprint(&out.stdout)))
+}
+
+/// Result of putting saved ignored files back.
+#[derive(Clone, Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreOutcome {
+    pub restored: Vec<String>,
+    /// Changed since the operation (by the user or another program): left as they are.
+    pub changed_since: Vec<String>,
+    /// The file whose write failed, and why; files after it were not attempted.
+    pub failed: Option<(String, String)>,
+    pub not_attempted: Vec<String>,
+}
+
+/// Puts the saved content and permissions of `changes` from checkpoint `id` back in place. A file
+/// that no longer looks as it did right after the operation is left alone and listed.
+pub fn restore_files(root: &Path, id: &str, changes: &[IgnoredChange]) -> GitResult<RestoreOutcome> {
+    let _lock = lock(root)?;
+    let root = fs::canonicalize(repo::discover(root)?)?;
+    let cp = read(&root, id)?;
+    let folder = base(&root)?.join(id);
+    // Preflight everything before writing anything.
+    let mut plan = Vec::new();
+    for change in changes {
+        let Some((index, saved)) = cp.paths.iter().enumerate().find(|(_, s)| s.path == change.path) else {
+            return Err(fail(format!("{} is not in this checkpoint.", change.path)));
+        };
+        if saved.kind != "file" {
+            return Err(fail(format!("{} was not a regular file in this checkpoint.", change.path)));
+        }
+        let stored = folder.join("files").join(index.to_string());
+        if Some(digest(&stored)?) != saved.sha256 {
+            return Err(fail(format!("The saved copy of {} is damaged. Nothing was restored.", change.path)));
+        }
+        let destination = source_path(&root, &change.path)?;
+        plan.push((change, saved, stored, destination));
+    }
+    let mut outcome = RestoreOutcome::default();
+    let mut rest = plan.into_iter();
+    for (change, saved, stored, destination) in rest.by_ref() {
+        let now = snapshot(&root, &change.path);
+        let unchanged = match &now {
+            None => !change.exists && fs::symlink_metadata(&destination).is_err(),
+            Some(n) => change.exists && n.len == change.len && n.sha256 == change.sha256 && n.sha256.is_some(),
+        };
+        if !unchanged {
+            outcome.changed_since.push(change.path.clone());
+            continue;
+        }
+        let write = || -> GitResult<()> {
+            let parent = destination.parent().ok_or_else(|| fail("Invalid path."))?;
+            fs::create_dir_all(parent)?;
+            let mut temporary = super::atomic_file::new_in(parent)?;
+            std::io::copy(&mut File::open(&stored)?, &mut temporary)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if saved.mode != 0 {
+                    temporary.as_file().set_permissions(fs::Permissions::from_mode(saved.mode))?;
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = saved;
+            temporary.as_file().sync_all()?;
+            super::atomic_file::replace(temporary, &destination)?;
+            Ok(())
+        };
+        match write() {
+            Ok(()) => outcome.restored.push(change.path.clone()),
+            Err(e) => {
+                outcome.failed = Some((change.path.clone(), e.message));
+                break;
+            }
+        }
+    }
+    outcome.not_attempted = rest.map(|(change, ..)| change.path.clone()).collect();
+    Ok(outcome)
+}
+
 struct Capture<'a> {
     references: &'a [SavedRef],
     paths: &'a [String],
@@ -946,6 +1442,9 @@ fn restore_workspace_locked(root: &Path, id: &str, destination: &Path, name: &st
 }
 
 pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<()> {
+    if writes_worktree(command) && watch_ignored(root, command, expected)? {
+        return Ok(());
+    }
     let workspace = matches!(
         command,
         "reset"

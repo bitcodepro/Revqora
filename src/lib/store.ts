@@ -499,6 +499,8 @@ setOperationHooks({
     return status?.stateToken ?? null;
   },
   observedHead: (root) => useRepos.getState().tabs[root]?.info?.head ?? null,
+  confirmUnprotected: (root, message, paths) => import("../components/IgnoredFilesChanged").then((m) => m.confirmUnprotectedDialog(root, message, paths)),
+  confirmCollision: (root, message, details) => import("../components/IgnoredCollisionDialog").then((m) => m.collisionDecisionDialog(root, message, details)),
   refreshed: (root, status, info) => {
     if (useRepos.getState().tabs[root]) useRepos.getState().patch(root, { status, info });
   },

@@ -6,7 +6,7 @@ export const MUTATING_COMMANDS = new Set([
   "pr_merge_submit", "pr_cleanup_submit", "rebase_studio_start", "rebase_studio_capture",
   "stash_selection", "remote_rename_plan", "remote_branch_rename",
   "branch_cleanup_execute", "branch_delete_reviewed", "branch_delete_remote_reviewed",
-  "recovery_create", "recovery_delete", "recovery_restore_branch", "recovery_restore_stash", "recovery_restore_workspace",
+  "recovery_create", "recovery_delete", "recovery_restore_branch", "recovery_restore_stash", "recovery_restore_files", "recovery_restore_workspace",
   "identity_set", "apply_selection", "stage", "unstage", "discard", "commit", "commit_graph_write", "checkout", "branch_create", "branch_rename", "branch_delete", "branch_delete_remote", "branch_delete_refresh", "branch_set_upstream", "tag_create", "tag_delete", "reset", "undo_commit", "fetch", "fetch_background", "fetch_more_history", "pull", "push", "push_ref", "remote_add", "remote_remove", "remote_set_url", "merge_start", "op_abort", "op_continue", "op_skip", "cherry_pick", "revert", "rebase_onto", "interactive_rebase", "rewrite", "conflict_save", "conflict_external", "conflict_take", "conflict_mark_resolved", "conflict_unresolve", "stash_save", "stash_apply", "stash_drop", "layer_seal", "layer_unstage", "layer_discard", "layer_merge_down", "layer_move", "layer_rename", "layers_flatten", "layer_preview", "layer_unstage_files", "layer_commit", "submodule_update", "submodule_add", "submodule_sync", "worktree_add", "worktree_remove", "worktree_lock", "worktree_prune", "bisect_start", "bisect_mark", "bisect_reset", "lfs_track", "lfs_run", "lfs_lock", "lfs_unlock", "ignore_apply", "rerere_set", "note_set", "stash_branch", "signing_set", "maintenance_run", "restore_branch", "apply_patch", "checkout_file", "apply_from_commit", "stash_restore_file", "pull_request_checkout", "fixup_commit",
   "sparse_checkout_set", "sparse_checkout_add", "sparse_checkout_disable", "sparse_checkout_reapply",
 ]);
@@ -19,12 +19,56 @@ interface Hooks {
   observedHead?: (repo: string) => { branch: string | null; oid: string | null } | null;
   refreshed: (repo: string, status: StatusSummary, info: RepoInfo) => void;
   pending?: (repo: string, delta: number) => void;
+  /** Asked when ignored files could not be saved before an operation; true accepts that list. */
+  confirmUnprotected?: (repo: string, message: string, paths: string[]) => Promise<boolean>;
+  /** Asked when Git may overwrite local ignored or untracked paths: save a copy and continue,
+   * continue without one, or cancel (null). `details` holds incoming/local path pairs. */
+  confirmCollision?: (repo: string, message: string, details: string[]) => Promise<"copy" | "risk" | null>;
 }
 
 let hooks: Hooks = { observed: () => null, refreshed: () => {} };
 export function setOperationHooks(next: Hooks) { hooks = next; }
 
 export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+
+/**
+ * Runs `call` and lets the user decide when it stops to protect local files: a collision (save a
+ * copy and continue, continue without one, or cancel) or files that could not be saved (run
+ * without a copy, or cancel). Every decision is for this command and its next run only; the
+ * backend checks the exact list again. Decisions travel as a one-shot token on the retry, so no
+ * other request (even the same command) can use them; a no-copy answer keeps the collision choice.
+ */
+async function withConsent<T>(invoke: Invoke, repo: string, command: string, call: (consent?: string) => Promise<T>): Promise<T> {
+  // One-shot token of this request's decisions; only the retry that carries it may use them.
+  let consent: string | undefined;
+  // This request's collision decision. Its token is used up by the attempt that runs, so a later
+  // no-copy answer sends the decision again and gets one new token for both.
+  let collision: { paths: string[]; copy: boolean } | null = null;
+  for (;;) {
+    try {
+      return await call(consent);
+    } catch (e) {
+      const err = e as { kind?: string; message?: string; details?: string[]; declined?: boolean };
+      if (err?.kind === "ignored-collision" && hooks.confirmCollision) {
+        const details = err.details ?? [];
+        const choice = await hooks.confirmCollision(repo, err.message ?? "", details);
+        if (!choice) {
+          // The user saw the paths and cancelled; callers need not explain it again.
+          err.declined = true;
+          throw e;
+        }
+        collision = { paths: details.filter((_, i) => i % 2 === 1), copy: choice === "copy" };
+        consent = await invoke<string>("recovery_accept_collisions", { repo, command, ...collision });
+        continue;
+      }
+      if (err?.kind !== "ignored-backup-unavailable" || !hooks.confirmUnprotected) throw e;
+      const paths = err.details ?? [];
+      if (!(await hooks.confirmUnprotected(repo, err.message ?? "", paths))) throw e;
+      // Kept together with this request's collision choice, under a new token.
+      consent = await invoke<string>("recovery_accept_unprotected", { repo, command, paths, collision });
+    }
+  }
+}
 
 /** Preserve the displayed precondition; never retry a rejected mutation automatically. */
 export async function repositoryCall<T>(invoke: Invoke, command: string, args?: Record<string, unknown>): Promise<T> {
@@ -50,7 +94,7 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
       const sourceHead = hooks.observedHead?.(repo);
       if (sourceHead) {
         // The queued checkout observes current worktree changes and verifies this source HEAD itself.
-        const result = await invoke<T>(command, { ...args, expectedState: null, sourceHead });
+        const result = await withConsent(invoke, repo, command, (consent) => invoke<T>(command, { ...args, expectedState: null, sourceHead, recoveryConsent: consent }));
         refresh = !(typeof result === "object" && result && "status" in result && result.status === "review");
         return result;
       }
@@ -67,7 +111,7 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
         expectedState = current.stateToken ?? null;
       }
     }
-    return await invoke<T>(command, { ...args, expectedState });
+    return await withConsent(invoke, repo, command, (consent) => invoke<T>(command, { ...args, expectedState, recoveryConsent: consent }));
   } finally {
     // Compound UI actions (commit then push, local then remote delete) must see
     // their own preceding mutation rather than reusing its now-stale token.

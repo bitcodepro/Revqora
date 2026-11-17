@@ -654,3 +654,785 @@ fn hidden_mode_change_follows_the_owner_execute_bit() {
     assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o645, "the user's mode was reset");
     assert!(!repo.git(&["stash", "list"]).is_empty(), "the saved changes stay in Stashes");
 }
+
+/// main: base, "add files" (secret.cfg, plain.txt), "remove" (deletes both, ignores secret.cfg).
+fn repo_with_removed_files() -> (Repo, String, String) {
+    let repo = Repo::new();
+    repo.write("base.txt", "base\n");
+    repo.commit_all("base");
+    repo.write("secret.cfg", "tracked\n");
+    repo.write("plain.txt", "tracked\n");
+    let with_files = repo.commit_all("add files");
+    fs::remove_file(repo.p().join("secret.cfg")).unwrap();
+    fs::remove_file(repo.p().join("plain.txt")).unwrap();
+    repo.write(".gitignore", "secret.cfg\n");
+    let removed = repo.commit_all("remove");
+    (repo, with_files, removed)
+}
+
+#[test]
+fn reset_never_overwrites_untracked_or_ignored_files() {
+    let (repo, with_files, removed) = repo_with_removed_files();
+    for (mode, file) in [("hard", "secret.cfg"), ("hard", "plain.txt"), ("keep", "secret.cfg")] {
+        repo.write(file, "MINE\n");
+        let e = ops::reset(repo.p(), &with_files, mode).unwrap_err();
+        assert_eq!(e.kind, "ignored-collision", "{mode} {file}: {}", e.message);
+        assert_eq!(fs::read_to_string(repo.p().join(file)).unwrap(), "MINE\n");
+        assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), removed, "{mode}: HEAD must not move");
+        fs::remove_file(repo.p().join(file)).unwrap();
+    }
+    // Soft and mixed never write files; hard works once nothing is in the way.
+    repo.write("secret.cfg", "MINE\n");
+    ops::reset(repo.p(), &with_files, "mixed").unwrap();
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "MINE\n");
+    ops::reset(repo.p(), &removed, "soft").unwrap();
+    repo.git(&["reset", "-q", "--mixed", &removed]);
+    fs::remove_file(repo.p().join("secret.cfg")).unwrap();
+    ops::reset(repo.p(), &with_files, "hard").unwrap();
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "tracked\n");
+    assert_eq!(ops::reset(repo.p(), "--hard", "mixed").unwrap_err().kind, "invalid-argument");
+}
+
+#[test]
+fn revert_never_overwrites_ignored_files() {
+    let (repo, _, removed) = repo_with_removed_files();
+    repo.write("secret.cfg", "MINE\n");
+    let e = ops::revert(repo.p(), &removed, false).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "MINE\n");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), removed);
+    fs::remove_file(repo.p().join("secret.cfg")).unwrap();
+    ops::revert(repo.p(), &removed, false).unwrap();
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "tracked\n");
+}
+
+#[test]
+fn rebase_onto_never_overwrites_ignored_files() {
+    let (repo, _, removed) = repo_with_removed_files();
+    // Upstream tracks the ignored path; the topic branch does not have it.
+    repo.git(&["switch", "-q", "-c", "up"]);
+    repo.write("secret.cfg", "upstream\n");
+    repo.git(&["add", "-f", "secret.cfg"]);
+    repo.git(&["commit", "-q", "-m", "up"]);
+    repo.git(&["switch", "-q", "-c", "topic", &removed]);
+    repo.write("topic.txt", "t\n");
+    let topic = repo.commit_all("topic");
+    repo.write("secret.cfg", "MINE\n");
+    let e = ops::rebase_onto(repo.p(), "up").unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "MINE\n");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), topic);
+    fs::remove_file(repo.p().join("secret.cfg")).unwrap();
+    ops::rebase_onto(repo.p(), "up").unwrap();
+    assert_eq!(fs::read_to_string(repo.p().join("secret.cfg")).unwrap(), "upstream\n");
+    assert!(repo.p().join("topic.txt").exists());
+}
+
+#[test]
+fn rebase_onto_keeps_merge_commits_only_when_asked() {
+    let build = || {
+        let repo = Repo::new();
+        repo.write("base.txt", "base\n");
+        repo.commit_all("base");
+        repo.git(&["switch", "-q", "-c", "up"]);
+        repo.write("up.txt", "up\n");
+        repo.commit_all("up");
+        repo.git(&["switch", "-q", "-c", "topic", "main"]);
+        repo.write("topic.txt", "t\n");
+        repo.commit_all("topic");
+        repo.git(&["switch", "-q", "-c", "side", "main"]);
+        repo.write("side.txt", "s\n");
+        repo.commit_all("side");
+        repo.git(&["switch", "-q", "topic"]);
+        repo.git(&["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+        repo
+    };
+    let merges = |repo: &Repo| repo.git(&["rev-list", "--count", "--merges", "up..HEAD"]).trim().to_string();
+
+    let repo = build();
+    assert_eq!(ops::rebase_merge_count(repo.p(), "up").unwrap(), 1);
+    assert_eq!(ops::rebase_merge_count(repo.p(), "topic").unwrap(), 0);
+    assert!(ops::rebase_merge_count(repo.p(), "--all").is_err());
+    ops::rebase_onto_with(repo.p(), "up", true).unwrap();
+    assert_eq!(merges(&repo), "1", "the merge commit must be re-created");
+    assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "merge side");
+    for file in ["up.txt", "topic.txt", "side.txt"] {
+        assert!(repo.p().join(file).exists(), "{file}");
+    }
+
+    let repo = build();
+    ops::rebase_onto_with(repo.p(), "up", false).unwrap();
+    assert_eq!(merges(&repo), "0", "a plain rebase flattens");
+    assert_eq!(repo.git(&["rev-list", "--count", "up..HEAD"]).trim(), "2");
+}
+
+#[test]
+fn rebase_onto_protects_ignored_files_at_directory_rename_destinations() {
+    // Upstream moves old/ to new/; the topic adds old/extra, which Git's directory-rename
+    // detection writes to new/extra, where an ignored local file is.
+    let repo = Repo::new();
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    fs::create_dir_all(repo.p().join("new")).unwrap();
+    repo.write("old/base", "base\n");
+    repo.write("new/keep", "keep\n");
+    repo.write(".gitignore", "new/extra\n");
+    repo.commit_all("base");
+    repo.git(&["switch", "-q", "-c", "up"]);
+    repo.git(&["mv", "old/base", "new/base"]);
+    repo.git(&["commit", "-q", "-m", "move"]);
+    repo.git(&["switch", "-q", "-c", "topic", "main"]);
+    repo.write("old/extra", "topic\n");
+    let topic = repo.commit_all("topic");
+    repo.write("new/extra", "PRECIOUS\n");
+    let e = ops::rebase_onto(repo.p(), "up").unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert!(e.details.iter().any(|d| d == "new/extra"), "{:?}", e.details);
+    assert_eq!(fs::read_to_string(repo.p().join("new/extra")).unwrap(), "PRECIOUS\n");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), topic);
+    assert!(!repo.p().join(".git/rebase-merge").exists() && !repo.p().join(".git/rebase-apply").exists());
+}
+
+#[test]
+fn keep_merges_rebase_protects_files_a_side_branch_moves_into_a_renamed_folder() {
+    // Upstream moves old/ to new/. On the topic, topic and side both change x (side conflicts
+    // with topic's version), side then adds old/extra, and topic merges side. The ordered
+    // preview stops at side's conflict, but --rebase-merges replays side on its own first.
+    let repo = Repo::new();
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    fs::create_dir_all(repo.p().join("new")).unwrap();
+    repo.write("old/base", "base\n");
+    repo.write("new/keep", "keep\n");
+    repo.write("x", "0\n");
+    repo.write(".gitignore", "new/extra\n");
+    let base = repo.commit_all("base");
+    repo.git(&["switch", "-q", "-c", "up"]);
+    repo.git(&["mv", "old/base", "new/base"]);
+    repo.git(&["commit", "-q", "-m", "move"]);
+    repo.git(&["switch", "-q", "-c", "topic", &base]);
+    repo.write("x", "topic\n");
+    repo.commit_all("topic x");
+    repo.git(&["switch", "-q", "-c", "side", &base]);
+    repo.write("x", "side\n");
+    repo.commit_all("side x");
+    repo.write("old/extra", "side\n");
+    repo.commit_all("side extra");
+    repo.git(&["switch", "-q", "topic"]);
+    let _ = runner::run(repo.p(), ["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+    repo.write("x", "resolved\n");
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "--no-edit"]);
+    let topic = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+    repo.write("new/extra", "PRECIOUS\n");
+    let e = ops::rebase_onto_with(repo.p(), "up", true).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(fs::read_to_string(repo.p().join("new/extra")).unwrap(), "PRECIOUS\n");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), topic);
+}
+
+#[test]
+fn keep_merges_rebase_protects_files_a_recreated_merge_moves() {
+    // The topic renames old/ to new/; side adds old/extra. The original merge was made without
+    // directory-rename detection, so it kept old/extra. Re-creating it during the rebase (with
+    // normal settings) moves old/extra to new/extra, where an ignored local file is.
+    let repo = Repo::new();
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    fs::create_dir_all(repo.p().join("new")).unwrap();
+    repo.write("old/base", "base\n");
+    repo.write("new/keep", "keep\n");
+    repo.write("x", "0\n");
+    repo.write(".gitignore", "new/extra\n");
+    let base = repo.commit_all("base");
+    repo.git(&["switch", "-q", "-c", "up"]);
+    repo.write("up.txt", "up\n");
+    repo.commit_all("up");
+    repo.git(&["switch", "-q", "-c", "topic", &base]);
+    repo.write("x", "topic\n");
+    repo.git(&["mv", "old/base", "new/base"]);
+    repo.commit_all("topic x and rename");
+    repo.git(&["switch", "-q", "-c", "side", &base]);
+    repo.write("x", "side\n");
+    repo.commit_all("side x");
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    repo.write("old/extra", "side\n");
+    repo.commit_all("side extra");
+    repo.git(&["switch", "-q", "topic"]);
+    let _ = runner::run(repo.p(), ["-c", "merge.directoryRenames=false", "merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+    repo.write("x", "resolved\n");
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "--no-edit"]);
+    assert!(repo.p().join("old/extra").exists(), "the original merge must keep old/extra");
+    let topic = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+    repo.write("new/extra", "PRECIOUS\n");
+    let e = ops::rebase_onto_with(repo.p(), "up", true).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(fs::read_to_string(repo.p().join("new/extra")).unwrap(), "PRECIOUS\n");
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), topic);
+}
+
+#[test]
+fn revert_protects_ignored_files_where_a_later_rename_moves_the_restored_file() {
+    let repo = Repo::new();
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    repo.write(
+        "old/base", "base
+",
+    );
+    repo.write(
+        "old/extra",
+        "committed
+",
+    );
+    repo.write(
+        ".gitignore",
+        "new/extra
+",
+    );
+    repo.commit_all("base");
+    fs::remove_file(repo.p().join("old/extra")).unwrap();
+    let deletion = repo.commit_all("delete extra");
+    fs::create_dir_all(repo.p().join("new")).unwrap();
+    repo.git(&["mv", "old/base", "new/base"]);
+    repo.git(&["commit", "-q", "-m", "move"]);
+    let head = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+    repo.write(
+        "new/extra",
+        "PRECIOUS
+",
+    );
+    let e = ops::revert(repo.p(), &deletion, false).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(
+        fs::read_to_string(repo.p().join("new/extra")).unwrap(),
+        "PRECIOUS
+"
+    );
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), head);
+    assert!(!repo.p().join(".git/REVERT_HEAD").exists() && !repo.p().join(".git/sequencer").exists());
+}
+
+#[test]
+fn revert_without_commit_protects_ignored_files_behind_a_staged_rename() {
+    let repo = Repo::new();
+    fs::create_dir_all(repo.p().join("old")).unwrap();
+    repo.write(
+        "old/base", "base
+",
+    );
+    repo.write(
+        "old/extra",
+        "committed
+",
+    );
+    repo.write(
+        ".gitignore",
+        "new/extra
+",
+    );
+    repo.commit_all("base");
+    fs::remove_file(repo.p().join("old/extra")).unwrap();
+    let deletion = repo.commit_all("delete extra");
+    repo.git(&["mv", "old", "new"]);
+    let head = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+    let staged = repo.git(&["diff", "--cached", "--name-status"]);
+    repo.write(
+        "new/extra",
+        "PRECIOUS
+",
+    );
+    let e = ops::revert(repo.p(), &deletion, true).unwrap_err();
+    assert_eq!(e.kind, "ignored-collision", "{}", e.message);
+    assert_eq!(
+        fs::read_to_string(repo.p().join("new/extra")).unwrap(),
+        "PRECIOUS
+"
+    );
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), head);
+    assert_eq!(repo.git(&["diff", "--cached", "--name-status"]), staged, "the staged rename must stay as it was");
+    assert!(!repo.p().join(".git/REVERT_HEAD").exists() && !repo.p().join(".git/sequencer").exists());
+}
+
+fn ignored_fixture() -> Repo {
+    let repo = Repo::new();
+    repo.write(".gitignore", "*.env\nnode_modules/\n");
+    repo.write("app.txt", "1\n");
+    repo.commit_all("base");
+    repo.write("local.env", "PRECIOUS\n");
+    repo.write("other.env", "untouched\n");
+    fs::create_dir_all(repo.p().join("node_modules/pkg")).unwrap();
+    repo.write("node_modules/pkg/index.js", "cache\n");
+    repo
+}
+
+type Report = Option<revqora_lib::git::recovery::IgnoredReport>;
+
+/// Runs `f` as the queued operation `reset` and returns its own ignored-file report.
+fn run_op(repo: &Path, f: impl FnOnce() -> Result<(), runner::GitError>) -> (Result<(), runner::GitError>, Report) {
+    use revqora_lib::git::{operations, recovery};
+    let result = operations::run(repo, "reset", None, |_, _| {}, f);
+    (result, recovery::take_ignored_report(repo))
+}
+
+#[test]
+fn ignored_files_git_changes_unexpectedly_are_saved_reported_and_restorable() {
+    use revqora_lib::git::recovery;
+    let repo = ignored_fixture();
+    // Stand-in for a write no guard predicted: one ignored file replaced, one deleted.
+    let (result, report) = run_op(repo.p(), || {
+        fs::write(repo.p().join("local.env"), "from git\n").unwrap();
+        fs::remove_file(repo.p().join("other.env")).unwrap();
+        Ok(())
+    });
+    result.unwrap();
+    let report = report.expect("the change must be reported");
+    assert_eq!(report.command, "reset");
+    assert_eq!(report.paths, ["local.env", "other.env"]);
+    assert!(recovery::take_ignored_report(repo.p()).is_none(), "a report is delivered once");
+    let checkpoint = report.checkpoint.clone().expect("the ignored files must have been saved");
+    // Restore uses only what is on disk (as after a restart): the checkpoint is listed in Recovery.
+    assert!(recovery::list(repo.p()).unwrap().checkpoints.iter().any(|c| c.id == checkpoint));
+    let saved = recovery::detail(repo.p(), &checkpoint).unwrap();
+    assert!(saved.paths.iter().all(|p| !p.path.starts_with("node_modules")), "wholly ignored folders are not copied");
+    let outcome = recovery::restore_files(repo.p(), &checkpoint, &report.changes).unwrap();
+    assert_eq!(outcome.restored, ["local.env", "other.env"]);
+    assert!(outcome.changed_since.is_empty() && outcome.failed.is_none());
+    assert_eq!(fs::read_to_string(repo.p().join("local.env")).unwrap(), "PRECIOUS\n");
+    assert_eq!(fs::read_to_string(repo.p().join("other.env")).unwrap(), "untouched\n");
+    // An operation that leaves ignored files alone reports nothing.
+    let (result, report) = run_op(repo.p(), || Ok(()));
+    result.unwrap();
+    assert!(report.is_none());
+}
+
+#[test]
+fn restore_never_replaces_a_file_changed_after_the_operation() {
+    use revqora_lib::git::recovery;
+    let repo = ignored_fixture();
+    let (_, report) = run_op(repo.p(), || {
+        fs::write(repo.p().join("local.env"), "from git\n").unwrap();
+        fs::write(repo.p().join("other.env"), "from git\n").unwrap();
+        Ok(())
+    });
+    let report = report.unwrap();
+    // The user edits one file while the dialog is open.
+    repo.write("other.env", "edited later\n");
+    let outcome = recovery::restore_files(repo.p(), report.checkpoint.as_deref().unwrap(), &report.changes).unwrap();
+    assert_eq!(outcome.restored, ["local.env"]);
+    assert_eq!(outcome.changed_since, ["other.env"]);
+    assert_eq!(fs::read_to_string(repo.p().join("other.env")).unwrap(), "edited later\n");
+    assert_eq!(fs::read_to_string(repo.p().join("local.env")).unwrap(), "PRECIOUS\n");
+}
+
+#[test]
+fn a_failed_operation_that_wrote_ignored_files_is_still_reported() {
+    let repo = ignored_fixture();
+    let (result, report) = run_op(repo.p(), || {
+        fs::write(repo.p().join("local.env"), "half written\n").unwrap();
+        Err(runner::GitError::new("git failed midway"))
+    });
+    assert!(result.is_err());
+    let report = report.expect("a failure after a partial write must still be reported");
+    assert_eq!(report.paths, ["local.env"]);
+    assert!(report.checkpoint.is_some());
+}
+
+#[test]
+fn each_queued_operation_keeps_its_own_report() {
+    use std::sync::{Arc, Barrier};
+    let repo = ignored_fixture();
+    repo.write("b.env", "B\n");
+    let path = Arc::new(repo.p().to_path_buf());
+    let a_done = Arc::new(Barrier::new(2));
+    let b_done = Arc::new(Barrier::new(2));
+    let (pa, a1, b1) = (path.clone(), a_done.clone(), b_done.clone());
+    // A finishes its operation, then B runs and takes its report before A takes A's.
+    let a = std::thread::spawn(move || {
+        let result = revqora_lib::git::operations::run(
+            &pa,
+            "reset",
+            None,
+            |_, _| {},
+            || {
+                fs::write(pa.join("local.env"), "A\n").unwrap();
+                Ok(())
+            },
+        );
+        a1.wait();
+        b1.wait();
+        (result, revqora_lib::git::recovery::take_ignored_report(&pa))
+    });
+    let (pb, a2, b2) = (path.clone(), a_done.clone(), b_done.clone());
+    let b = std::thread::spawn(move || {
+        a2.wait();
+        let out = run_op(&pb, || {
+            fs::write(pb.join("b.env"), "changed by B\n").unwrap();
+            Ok(())
+        });
+        b2.wait();
+        out
+    });
+    let (ra, report_a) = a.join().unwrap();
+    let (rb, report_b) = b.join().unwrap();
+    ra.unwrap();
+    rb.unwrap();
+    let report_a = report_a.expect("report of the first operation");
+    let report_b = report_b.expect("report of the second operation");
+    assert_eq!(report_a.paths, ["local.env"]);
+    assert_eq!(report_b.paths, ["b.env"]);
+    assert_ne!(report_a.checkpoint, report_b.checkpoint);
+}
+
+#[test]
+fn ignored_files_that_cannot_be_saved_need_consent_for_that_exact_list() {
+    use revqora_lib::git::recovery;
+    let repo = ignored_fixture();
+    // Larger than a checkpoint may hold; sparse, so the test writes almost nothing.
+    fs::File::create(repo.p().join("huge.env")).unwrap().set_len(101 * 1024 * 1024).unwrap();
+    let mut ran = false;
+    let (result, _) = run_op(repo.p(), || {
+        ran = true;
+        Ok(())
+    });
+    let e = result.unwrap_err();
+    assert_eq!(e.kind, "ignored-backup-unavailable", "{}", e.message);
+    assert_eq!(e.details, ["huge.env", "local.env", "other.env"]);
+    assert!(!ran, "nothing may run before the user accepts");
+    // Consent for an outdated list does not apply.
+    carry(recovery::accept_unprotected(repo.p(), "reset", &e.details, None));
+    repo.write("new.env", "appeared\n");
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    let again = result.unwrap_err();
+    assert_eq!(again.details, ["huge.env", "local.env", "new.env", "other.env"]);
+    // Consent for the current list runs it once; changes are still detected.
+    carry(recovery::accept_unprotected(repo.p(), "reset", &again.details, None));
+    let (result, report) = run_op(repo.p(), || {
+        fs::write(repo.p().join("local.env"), "from git\n").unwrap();
+        Ok(())
+    });
+    result.unwrap();
+    let report = report.expect("changes must still be reported without a copy");
+    assert_eq!(report.paths, ["local.env"]);
+    assert!(report.checkpoint.is_none());
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable", "consent is used once");
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_keeps_file_permissions() {
+    use revqora_lib::git::recovery;
+    use std::os::unix::fs::PermissionsExt;
+    let repo = ignored_fixture();
+    repo.write("run.env", "#!/bin/sh\n");
+    fs::set_permissions(repo.p().join("run.env"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(repo.p().join("local.env"), fs::Permissions::from_mode(0o644)).unwrap();
+    let (_, report) = run_op(repo.p(), || {
+        fs::write(repo.p().join("run.env"), "x\n").unwrap();
+        fs::write(repo.p().join("local.env"), "x\n").unwrap();
+        Ok(())
+    });
+    let report = report.unwrap();
+    recovery::restore_files(repo.p(), report.checkpoint.as_deref().unwrap(), &report.changes).unwrap();
+    let mode = |name: &str| fs::metadata(repo.p().join(name)).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode("run.env"), 0o755);
+    assert_eq!(mode("local.env"), 0o644);
+    assert_eq!(fs::read_to_string(repo.p().join("run.env")).unwrap(), "#!/bin/sh\n");
+}
+
+/// main has personal ignored files; feature brings tracked files under the same names.
+fn collision_fixture() -> Repo {
+    let r = Repo::new();
+    r.write(
+        ".gitignore",
+        "*.env
+",
+    );
+    r.commit_all("base");
+    r.git(&["switch", "-qc", "feature"]);
+    r.write(
+        "keys.env",
+        "versioned keys
+",
+    );
+    r.write(
+        "settings.env",
+        "versioned settings
+",
+    );
+    r.git(&["add", "-f", "keys.env", "settings.env"]);
+    r.git(&["commit", "-qm", "add configuration"]);
+    r.git(&["switch", "-q", "main"]);
+    r.write(
+        "keys.env",
+        "personal keys
+",
+    );
+    r.write(
+        "settings.env",
+        "personal settings
+",
+    );
+    r
+}
+
+fn merge_op(repo: &Path) -> (Result<(), runner::GitError>, Report) {
+    use revqora_lib::git::{operations, ops, recovery};
+    let result = operations::run(repo, "merge_start", None, |_, _| {}, || ops::merge_start(repo, "feature", "ff-only").map(|_| ()));
+    (result, recovery::take_ignored_report(repo))
+}
+
+fn local() -> Vec<String> {
+    vec!["keys.env".to_owned(), "settings.env".to_owned()]
+}
+
+#[test]
+fn a_collision_lists_every_path_and_continues_only_with_the_users_decision() {
+    use revqora_lib::git::recovery;
+    let r = collision_fixture();
+    let read = |name: &str| fs::read_to_string(r.p().join(name)).unwrap();
+    let (result, _) = merge_op(r.p());
+    let e = result.unwrap_err();
+    assert_eq!(e.kind, "ignored-collision");
+    assert_eq!(e.details, ["keys.env", "keys.env", "settings.env", "settings.env"], "all pairs, not just the first");
+    // A decision for part of the list does not apply.
+    carry(recovery::accept_collisions(r.p(), "merge_start", &["keys.env".to_owned()], true));
+    let (result, _) = merge_op(r.p());
+    assert_eq!(result.unwrap_err().kind, "ignored-collision");
+    assert_eq!(
+        read("settings.env"),
+        "personal settings
+"
+    );
+    // Save a copy and continue: saved before Git runs, reported, comparable, restorable on request.
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local(), true));
+    let (result, report) = merge_op(r.p());
+    result.unwrap();
+    assert_eq!(
+        read("settings.env"),
+        "versioned settings
+",
+        "the copy is never applied automatically"
+    );
+    let report = report.expect("the overwritten files must be reported");
+    assert_eq!(report.paths, local());
+    let checkpoint = report.checkpoint.clone().expect("a verified copy");
+    let diff = recovery::compare_saved(r.p(), &checkpoint, "settings.env").unwrap();
+    assert!(!diff.hunks.is_empty());
+    let outcome = recovery::restore_files(r.p(), &checkpoint, &report.changes).unwrap();
+    assert_eq!(outcome.restored, local());
+    assert_eq!(
+        read("settings.env"),
+        "personal settings
+"
+    );
+}
+
+#[test]
+fn continuing_without_a_copy_applies_once() {
+    use revqora_lib::git::recovery;
+    let r = collision_fixture();
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local(), false));
+    // The decision is consumed by the next operation even if that one finds nothing to decide.
+    let (result, _) = run_op(r.p(), || Ok(()));
+    result.unwrap();
+    let (result, _) = merge_op(r.p());
+    assert_eq!(result.unwrap_err().kind, "ignored-collision", "a decision applies to one operation");
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local(), false));
+    let (result, _) = merge_op(r.p());
+    result.unwrap();
+    assert_eq!(
+        fs::read_to_string(r.p().join("settings.env")).unwrap(),
+        "versioned settings
+"
+    );
+}
+
+fn huge_fixture() -> Repo {
+    let repo = ignored_fixture();
+    // Larger than a checkpoint may hold; sparse, so the test writes almost nothing.
+    fs::File::create(repo.p().join("huge.env")).unwrap().set_len(101 * 1024 * 1024).unwrap();
+    repo
+}
+
+fn unprotected_list() -> Vec<String> {
+    vec!["huge.env".to_owned(), "local.env".to_owned(), "other.env".to_owned()]
+}
+
+/// The request that runs next carries `token` (as the client's retry does).
+fn carry(token: String) {
+    revqora_lib::git::recovery::set_request_consent(Some(token));
+}
+
+#[test]
+fn consent_never_survives_its_operation() {
+    use revqora_lib::git::{operations, recovery};
+    let repo = huge_fixture();
+    // Rejected before it starts (stale state): the consent is gone, not kept for later.
+    let token = recovery::accept_unprotected(repo.p(), "reset", &unprotected_list(), None);
+    carry(token.clone());
+    let stale = operations::run(repo.p(), "reset", Some("not-the-current-state"), |_, _| {}, || Ok(()));
+    assert_eq!(stale.unwrap_err().kind, "stale-operation");
+    carry(token);
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable", "a rejected run uses up the consent");
+    // Consent for reset does not apply to another command carrying it.
+    carry(recovery::accept_unprotected(repo.p(), "reset", &unprotected_list(), None));
+    let other = operations::run(repo.p(), "checkout", None, |_, _| {}, || Ok(()));
+    assert_eq!(other.unwrap_err().kind, "ignored-backup-unavailable");
+    // A run whose backup succeeds after all also ends it.
+    let token = recovery::accept_unprotected(repo.p(), "reset", &unprotected_list(), None);
+    fs::remove_file(repo.p().join("huge.env")).unwrap();
+    carry(token.clone());
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    result.unwrap();
+    fs::File::create(repo.p().join("huge.env")).unwrap().set_len(101 * 1024 * 1024).unwrap();
+    carry(token);
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    assert_eq!(result.unwrap_err().kind, "ignored-backup-unavailable");
+}
+
+#[test]
+fn another_request_of_the_same_command_never_uses_the_consent() {
+    use revqora_lib::git::recovery;
+    use std::sync::{Arc, Barrier};
+    let repo = huge_fixture();
+    // Request A was approved; request B (same command, other target) runs first, on its own thread.
+    let token = recovery::accept_unprotected(repo.p(), "reset", &unprotected_list(), None);
+    let path = Arc::new(repo.p().to_path_buf());
+    let done = Arc::new(Barrier::new(2));
+    let (pb, db) = (path.clone(), done.clone());
+    let b = std::thread::spawn(move || {
+        let out = run_op(&pb, || Ok(()));
+        db.wait();
+        out.0
+    });
+    done.wait();
+    assert_eq!(b.join().unwrap().unwrap_err().kind, "ignored-backup-unavailable", "B asks for its own decision");
+    // A's retry still has its approval.
+    carry(token);
+    let (result, _) = run_op(repo.p(), || Ok(()));
+    result.unwrap();
+}
+
+#[test]
+fn a_panicking_operation_still_reports_and_leaves_no_watch_behind() {
+    let repo = ignored_fixture();
+    let other = ignored_fixture();
+    // One worker thread runs both operations, like the reusable blocking pool.
+    let (a, b) = (repo.p().to_path_buf(), other.p().to_path_buf());
+    let (report, next) = std::thread::spawn(move || {
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_op(&a, || {
+                fs::write(a.join("local.env"), "half written\n").unwrap();
+                panic!("operation panicked");
+            })
+        }));
+        assert!(panicked.is_err());
+        let report = revqora_lib::git::recovery::take_ignored_report(&a);
+        let next = run_op(&b, || Ok(()));
+        (report, next)
+    })
+    .join()
+    .unwrap();
+    let report = report.expect("the partial write must be reported after a panic");
+    assert_eq!(report.paths, ["local.env"]);
+    next.0.unwrap();
+    assert!(next.1.is_none(), "the next operation on the worker sees no leftover watch");
+}
+
+#[test]
+fn copy_and_no_copy_decisions_stay_together_and_a_new_copy_choice_starts_clean() {
+    use revqora_lib::git::recovery;
+    let r = collision_fixture();
+    fs::File::create(r.p().join("settings.env")).unwrap().set_len(101 * 1024 * 1024).unwrap();
+    // Copy chosen; the attempt uses up its token and fails to save.
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local(), true));
+    let (result, _) = merge_op(r.p());
+    let e = result.unwrap_err();
+    assert_eq!(e.kind, "ignored-backup-unavailable");
+    // A no-copy consent alone, or an older one, does not carry the collision choice.
+    carry(recovery::accept_unprotected(r.p(), "merge_start", &e.details, None));
+    let (result, _) = merge_op(r.p());
+    assert_eq!(result.unwrap_err().kind, "ignored-collision");
+    let _older = recovery::accept_unprotected(r.p(), "merge_start", &e.details, None);
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local(), true));
+    assert_eq!(merge_op(r.p()).0.unwrap_err().kind, "ignored-backup-unavailable", "a new Copy choice starts clean");
+    // The client's answer repeats the same request's choice: one new token for both, and it runs.
+    carry(recovery::accept_unprotected(r.p(), "merge_start", &e.details, Some((local().as_slice(), true))));
+    let (result, _) = merge_op(r.p());
+    result.unwrap();
+}
+
+/// main ignores `cache`; feature tracks a file named `cache`; locally `cache/` holds data.
+/// Fails only if the file system refuses the local file name.
+#[cfg(unix)]
+fn folder_collision(name: &std::ffi::OsStr) -> std::io::Result<Repo> {
+    let r = Repo::new();
+    r.write(
+        ".gitignore",
+        "cache
+",
+    );
+    r.commit_all("base");
+    r.git(&["switch", "-qc", "feature"]);
+    r.write(
+        "cache", "tracked
+",
+    );
+    r.git(&["add", "-f", "cache"]);
+    r.git(&["commit", "-qm", "track cache"]);
+    r.git(&["switch", "-q", "main"]);
+    fs::create_dir_all(r.p().join("cache/sub")).unwrap();
+    let mut path = r.p().join("cache").into_os_string();
+    path.push("/");
+    path.push(name);
+    fs::write(std::path::PathBuf::from(path), b"PRECIOUS")?;
+    Ok(r)
+}
+
+/// Accepts "save a copy" for the collision and returns the next attempt's error.
+#[cfg(unix)]
+fn copy_attempt(r: &Repo) -> runner::GitError {
+    use revqora_lib::git::recovery;
+    let e = merge_op(r.p()).0.unwrap_err();
+    assert_eq!(e.kind, "ignored-collision");
+    let local: Vec<String> = e.details.iter().skip(1).step_by(2).cloned().collect();
+    carry(recovery::accept_collisions(r.p(), "merge_start", &local, true));
+    merge_op(r.p()).0.unwrap_err()
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_route_refuses_a_name_that_cannot_be_saved() {
+    use std::os::unix::ffi::OsStrExt;
+    let r = match folder_collision(std::ffi::OsStr::from_bytes(b"secret-\xff")) {
+        Ok(r) => r,
+        // macOS (APFS) itself rejects such names, so no such file can exist there.
+        Err(e) if e.raw_os_error() == Some(92) && cfg!(target_os = "macos") => {
+            eprintln!("skipped: this file system rejects non-UTF-8 names ({e})");
+            return;
+        }
+        Err(e) => panic!("creating the fixture failed: {e}"),
+    };
+    let e = copy_attempt(&r);
+    assert_eq!(e.kind, "ignored-backup-unavailable", "{}", e.message);
+    assert_eq!(e.details, ["cache"]);
+    assert!(r.p().join("cache").is_dir(), "Git did not run");
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_route_refuses_an_unreadable_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = folder_collision(std::ffi::OsStr::new("secret")).unwrap();
+    fs::set_permissions(r.p().join("cache/sub"), fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(r.p().join("cache/sub")).is_ok() {
+        // Running as root: permissions do not stop reading, so there is nothing to test.
+        eprintln!("skipped: permissions are not enforced for this user");
+    } else {
+        let e = copy_attempt(&r);
+        assert_eq!(e.kind, "ignored-backup-unavailable", "{}", e.message);
+        assert_eq!(e.details, ["cache"]);
+        assert!(r.p().join("cache/secret").is_file(), "Git did not run");
+    }
+    fs::set_permissions(r.p().join("cache/sub"), fs::Permissions::from_mode(0o755)).unwrap();
+}

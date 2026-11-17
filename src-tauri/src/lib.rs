@@ -50,7 +50,9 @@ async fn stack_retarget(
     blocking(move || git::stacks::retarget_pull(&p(&repo), &id, index, &expected_revision, &connection, &revision, consent)).await
 }
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments.
 async fn stack_append(
+    recovery_consent: Option<String>,
     app: AppHandle,
     repo: String,
     id: String,
@@ -59,20 +61,29 @@ async fn stack_append(
     expected_revision: String,
     expected_state: String,
 ) -> GitResult<git::stacks::Catalog> {
-    mutating(repo.clone(), Some(expected_state.clone()), app, "stack_append", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), Some(expected_state.clone()), app, "stack_append", None, move || {
         git::stacks::append(&p(&repo), &id, &name, existing, &expected_revision, &expected_state)
     })
     .await
 }
 #[tauri::command]
-async fn stack_restack(app: AppHandle, repo: String, plan: git::stacks::Plan, consent: bool, published_consent: bool) -> GitResult<git::stacks::Outcome> {
-    mutating(repo.clone(), Some(plan.state_token.clone()), app, "stack_restack", None, move || {
+async fn stack_restack(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    repo: String,
+    plan: git::stacks::Plan,
+    consent: bool,
+    published_consent: bool,
+) -> GitResult<git::stacks::Outcome> {
+    mutating(recovery_consent.clone(), repo.clone(), Some(plan.state_token.clone()), app, "stack_restack", None, move || {
         git::stacks::restack(&p(&repo), &plan, consent, published_consent)
     })
     .await
 }
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments.
 async fn stack_finalize(
+    recovery_consent: Option<String>,
     app: AppHandle,
     repo: String,
     id: String,
@@ -81,7 +92,7 @@ async fn stack_finalize(
     expected_state: String,
     consent: bool,
 ) -> GitResult<git::stacks::Catalog> {
-    mutating(repo.clone(), Some(expected_state.clone()), app, "stack_finalize", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), Some(expected_state.clone()), app, "stack_finalize", None, move || {
         git::stacks::finalize(&p(&repo), &id, index, &expected_revision, &expected_state, consent)
     })
     .await
@@ -169,7 +180,9 @@ async fn branch_cleanup_review(
     blocking(move || git::branch_cleanup::review_with_analysis(&p(&repo), requests, &base, &protection_rules, analyze.unwrap_or(true))).await
 }
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments.
 async fn branch_cleanup_execute(
+    recovery_consent: Option<String>,
     app: AppHandle,
     repo: String,
     selections: Vec<git::branch_cleanup::Selection>,
@@ -181,7 +194,7 @@ async fn branch_cleanup_execute(
     if expected_state.is_empty() {
         return Err(GitError::new("Prepare a branch cleanup review first."));
     }
-    mutating(repo.clone(), Some(expected_state), app.clone(), "branch_cleanup_execute", Some(op_id.clone()), move || {
+    mutating(recovery_consent.clone(), repo.clone(), Some(expected_state), app.clone(), "branch_cleanup_execute", Some(op_id.clone()), move || {
         git::branch_cleanup::execute_with_checkpoint(&p(&repo), &selections, &protection_rules, create_checkpoint.unwrap_or(true), progress(&app, &op_id))
     })
     .await
@@ -306,7 +319,15 @@ struct Observed<T> {
     state_token: String,
 }
 
-async fn mutating<T, F>(repo: String, expected: Option<String>, app: AppHandle, command: &'static str, id: Option<String>, f: F) -> GitResult<T>
+async fn mutating<T, F>(
+    consent: Option<String>,
+    repo: String,
+    expected: Option<String>,
+    app: AppHandle,
+    command: &'static str,
+    id: Option<String>,
+    f: F,
+) -> GitResult<T>
 where
     T: Send + Serialize + 'static,
     F: FnOnce() -> GitResult<T> + Send + 'static,
@@ -334,6 +355,8 @@ where
                 },
             );
         };
+        // The user's decisions apply only to the request that carries their token.
+        git::recovery::set_request_consent(consent);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             git::operations::run(&p(&repo), command, expected.as_deref(), emit, || {
                 let result = f();
@@ -349,12 +372,24 @@ where
         if let Some(log) = &log {
             log.finish(&result);
         }
+        // Unused if the operation never started (its token is then simply gone).
+        git::recovery::set_request_consent(None);
+        if let Some(report) = git::recovery::take_ignored_report(&p(&repo)) {
+            let _ = app.emit("ignored-files-changed", IgnoredFilesChanged { repo: repo.clone(), report });
+        }
         emit(if result.is_ok() { "finished" } else { "failed" }, 0);
         let _ = app.emit("operation-log-changed", ());
         let _ = app.emit("recovery-changed", ());
         result
     })
     .await
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IgnoredFilesChanged {
+    repo: String,
+    report: git::recovery::IgnoredReport,
 }
 
 fn p(repo: &str) -> PathBuf {
@@ -441,18 +476,25 @@ async fn recovery_detail(repo: String, id: String) -> GitResult<recovery::Checkp
     blocking(move || git::operations::read(&p(&repo), || recovery::detail(&p(&repo), &id))).await
 }
 #[tauri::command]
-async fn recovery_create(app: AppHandle, expected_state: Option<String>, repo: String, label: String) -> GitResult<recovery::Summary> {
-    mutating(repo.clone(), expected_state, app, "recovery_create", None, move || {
+async fn recovery_create(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    label: String,
+) -> GitResult<recovery::Summary> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "recovery_create", None, move || {
         journal::suspend(|| recovery::create(&p(&repo), "manual", &label, true, false))
     })
     .await
 }
 #[tauri::command]
-async fn recovery_delete(app: AppHandle, expected_state: Option<String>, repo: String, id: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app, "recovery_delete", None, move || recovery::delete(&p(&repo), &id)).await
+async fn recovery_delete(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String, id: String) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "recovery_delete", None, move || recovery::delete(&p(&repo), &id)).await
 }
 #[tauri::command]
 async fn recovery_restore_branch(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -460,14 +502,69 @@ async fn recovery_restore_branch(
     reference: Option<usize>,
     name: String,
 ) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app, "recovery_restore_branch", None, move || recovery::restore_branch(&p(&repo), &id, reference, &name)).await
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "recovery_restore_branch", None, move || {
+        recovery::restore_branch(&p(&repo), &id, reference, &name)
+    })
+    .await
 }
 #[tauri::command]
-async fn recovery_restore_stash(app: AppHandle, expected_state: Option<String>, repo: String, id: String, reference: usize) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app, "recovery_restore_stash", None, move || recovery::restore_stash(&p(&repo), &id, reference)).await
+async fn recovery_restore_files(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    id: String,
+    changes: Vec<recovery::IgnoredChange>,
+) -> GitResult<recovery::RestoreOutcome> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "recovery_restore_files", None, move || {
+        recovery::restore_files(&p(&repo), &id, &changes)
+    })
+    .await
+}
+
+/// The user continues the next operation although Git may overwrite these local paths; with
+/// `copy`, they are saved in its checkpoint first.
+#[tauri::command]
+async fn recovery_accept_collisions(repo: String, command: String, paths: Vec<String>, copy: bool) -> GitResult<String> {
+    blocking(move || Ok(recovery::accept_collisions(&p(&repo), &command, &paths, copy))).await
+}
+
+/// Differences between a saved copy in a checkpoint and the current file.
+#[tauri::command]
+async fn recovery_compare_saved(repo: String, id: String, path: String) -> GitResult<git::diff::FileDiff> {
+    blocking(move || recovery::compare_saved(&p(&repo), &id, &path)).await
+}
+
+/// The user accepts that the next operation runs although these ignored files could not be saved.
+#[tauri::command]
+async fn recovery_accept_unprotected(repo: String, command: String, paths: Vec<String>, collision: Option<CollisionChoice>) -> GitResult<String> {
+    blocking(move || Ok(recovery::accept_unprotected(&p(&repo), &command, &paths, collision.as_ref().map(|c| (c.paths.as_slice(), c.copy))))).await
+}
+
+/// A collision decision the client repeats with a no-copy answer for the same request.
+#[derive(serde::Deserialize)]
+struct CollisionChoice {
+    paths: Vec<String>,
+    copy: bool,
+}
+
+#[tauri::command]
+async fn recovery_restore_stash(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    id: String,
+    reference: usize,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "recovery_restore_stash", None, move || {
+        recovery::restore_stash(&p(&repo), &id, reference)
+    })
+    .await
 }
 #[tauri::command]
 async fn recovery_restore_workspace(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -475,7 +572,7 @@ async fn recovery_restore_workspace(
     destination: String,
     name: String,
 ) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app, "recovery_restore_workspace", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "recovery_restore_workspace", None, move || {
         recovery::restore_workspace(&p(&repo), &id, &p(&destination), &name)
     })
     .await
@@ -678,8 +775,16 @@ async fn identity_get(repo: String) -> GitResult<Identity> {
 }
 
 #[tauri::command]
-async fn identity_set(app: AppHandle, expected_state: Option<String>, repo: String, name: String, email: String, global: bool) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "identity_set", None, move || {
+async fn identity_set(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    name: String,
+    email: String,
+    global: bool,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "identity_set", None, move || {
         let r = p(&repo);
         repo::config_set(&r, "user.name", name.trim(), global)?;
         repo::config_set(&r, "user.email", email.trim(), global)
@@ -715,6 +820,7 @@ async fn rev_diff(repo: String, from: Option<String>, to: String, path: String, 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments preserve the existing client contract.
 async fn apply_selection(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     source_head: Option<SourceHead>,
@@ -728,7 +834,7 @@ async fn apply_selection(
     opts: Option<DiffOptions>,
 ) -> GitResult<()> {
     let checkpoint_expected = expected_state.clone();
-    mutating(repo.clone(), expected_state, app.clone(), "apply_selection", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "apply_selection", None, move || {
         let r = p(&repo);
         if mode == SelectionMode::Stage {
             if let Some(head) = source_head {
@@ -751,6 +857,7 @@ async fn apply_selection(
 
 #[tauri::command]
 async fn stage(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     source_head: Option<SourceHead>,
@@ -758,7 +865,7 @@ async fn stage(
     paths: Vec<String>,
     review: Option<status::StageReview>,
 ) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "stage", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "stage", None, move || {
         let r = p(&repo);
         if let Some(head) = source_head {
             head.verify(&r)?;
@@ -778,6 +885,7 @@ async fn working_file_read(repo: String, path: String) -> GitResult<git::file_ed
 
 #[tauri::command]
 async fn working_file_save(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -785,12 +893,22 @@ async fn working_file_save(
     expected_revision: String,
     content: String,
 ) -> GitResult<git::file_editor::Saved> {
-    mutating(repo.clone(), expected_state, app, "working_file_save", None, move || git::file_editor::save(&p(&repo), &path, &expected_revision, &content)).await
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "working_file_save", None, move || {
+        git::file_editor::save(&p(&repo), &path, &expected_revision, &content)
+    })
+    .await
 }
 
 #[tauri::command]
-async fn unstage(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>, require_unsealed: Option<bool>) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "unstage", None, move || {
+async fn unstage(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    paths: Vec<String>,
+    require_unsealed: Option<bool>,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "unstage", None, move || {
         let r = p(&repo);
         let base = if require_unsealed == Some(true) {
             layers::require_unsealed_index(&r)?;
@@ -804,12 +922,21 @@ async fn unstage(app: AppHandle, expected_state: Option<String>, repo: String, p
 }
 
 #[tauri::command]
-async fn discard(app: AppHandle, expected_state: Option<String>, repo: String, tracked: Vec<String>, untracked: Vec<String>) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "discard", None, move || ops::discard_paths(&p(&repo), &tracked, &untracked)).await
+async fn discard(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    tracked: Vec<String>,
+    untracked: Vec<String>,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "discard", None, move || ops::discard_paths(&p(&repo), &tracked, &untracked))
+        .await
 }
 
 #[tauri::command]
 async fn commit(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -818,7 +945,7 @@ async fn commit(
     require_unsealed: Option<bool>,
 ) -> GitResult<String> {
     let checkpoint_expected = expected_state.clone();
-    mutating(repo.clone(), expected_state, app.clone(), "commit", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "commit", None, move || {
         let r = p(&repo);
         if require_unsealed == Some(true) {
             layers::require_unsealed_index(&r)?;
@@ -848,8 +975,15 @@ async fn own_recent_messages(repo: String) -> GitResult<Vec<String>> {
 }
 
 #[tauri::command]
-async fn fixup_commit(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, opts: ops::FixupOptions) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "fixup_commit", None, move || ops::fixup_commit(&p(&repo), &oid, &opts)).await
+async fn fixup_commit(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    oid: String,
+    opts: ops::FixupOptions,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fixup_commit", None, move || ops::fixup_commit(&p(&repo), &oid, &opts)).await
 }
 
 // ───────────────────────────── history ─────────────────────────────
@@ -1042,8 +1176,14 @@ async fn commit_graph_status(repo: String) -> GitResult<bool> {
 }
 
 #[tauri::command]
-async fn commit_graph_write(expected_state: Option<String>, app: AppHandle, repo: String, op_id: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "commit_graph_write", Some(op_id.clone()), move || {
+async fn commit_graph_write(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    op_id: String,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "commit_graph_write", Some(op_id.clone()), move || {
         graph::write_commit_graph(&p(&repo), progress(&app, &op_id))
     })
     .await
@@ -1147,7 +1287,9 @@ async fn branch_details(repo: String, name: String, base: String) -> GitResult<r
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments.
 async fn checkout(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1157,20 +1299,39 @@ async fn checkout(
     source_head: Option<SourceHead>,
 ) -> GitResult<git::branch_switch::SwitchOutcome> {
     let reviewed_state = expected_state.clone();
-    mutating(repo.clone(), expected_state, app, "checkout", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "checkout", None, move || {
         git::branch_switch::switch(&p(&repo), &target, &kind, choice, reviewed_state.as_deref(), source_head.as_ref())
     })
     .await
 }
 
 #[tauri::command]
-async fn branch_create(app: AppHandle, expected_state: Option<String>, repo: String, name: String, start: Option<String>, checkout: bool) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "branch_create", None, move || ops::create_branch(&p(&repo), &name, start.as_deref(), checkout)).await
+async fn branch_create(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    name: String,
+    start: Option<String>,
+    checkout: bool,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "branch_create", None, move || {
+        ops::create_branch(&p(&repo), &name, start.as_deref(), checkout)
+    })
+    .await
 }
 
 #[tauri::command]
-async fn branch_rename(app: AppHandle, expected_state: Option<String>, repo: String, old: String, new: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "branch_rename", None, move || ops::rename_branch(&p(&repo), &old, &new)).await
+async fn branch_rename(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    old: String,
+    new: String,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "branch_rename", None, move || ops::rename_branch(&p(&repo), &old, &new))
+        .await
 }
 
 #[tauri::command]
@@ -1188,6 +1349,7 @@ async fn branch_delete_plan(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Keep the existing flat IPC contract; recovery defaults to enabled.
 async fn branch_delete_reviewed(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1198,7 +1360,7 @@ async fn branch_delete_reviewed(
     create_checkpoint: Option<bool>,
 ) -> GitResult<DeletionResult> {
     let expected = expected_state.clone();
-    mutating(repo.clone(), expected_state, app.clone(), "branch_delete_reviewed", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "branch_delete_reviewed", None, move || {
         branch_review::delete_local_with_checkpoint(
             &p(&repo),
             &review,
@@ -1215,6 +1377,7 @@ async fn branch_delete_reviewed(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Keep the existing flat IPC contract; recovery defaults to enabled.
 async fn branch_delete_remote_reviewed(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1225,7 +1388,7 @@ async fn branch_delete_remote_reviewed(
     create_checkpoint: Option<bool>,
 ) -> GitResult<DeletionResult> {
     let expected = expected_state.clone();
-    mutating(repo.clone(), expected_state, app.clone(), "branch_delete_remote_reviewed", Some(op_id.clone()), move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "branch_delete_remote_reviewed", Some(op_id.clone()), move || {
         branch_review::delete_remote_with_checkpoint(
             &p(&repo),
             &review,
@@ -1251,6 +1414,7 @@ async fn branch_delete_targets(repo: String, name: String) -> GitResult<Vec<Remo
 
 #[tauri::command]
 async fn branch_delete(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1258,11 +1422,15 @@ async fn branch_delete(
     force: bool,
     target: Option<RemoteBranchTarget>,
 ) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "branch_delete", None, move || branch_deletion::delete(&p(&repo), &name, force, target.as_ref())).await
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "branch_delete", None, move || {
+        branch_deletion::delete(&p(&repo), &name, force, target.as_ref())
+    })
+    .await
 }
 
 #[tauri::command]
 async fn branch_delete_remote(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1270,7 +1438,7 @@ async fn branch_delete_remote(
     force: bool,
     op_id: String,
 ) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "branch_delete_remote", Some(op_id.clone()), move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "branch_delete_remote", Some(op_id.clone()), move || {
         branch_deletion::delete_remote(&p(&repo), &target, force, progress(&app, &op_id))
     })
     .await
@@ -1278,48 +1446,78 @@ async fn branch_delete_remote(
 
 #[tauri::command]
 async fn branch_delete_refresh(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
     target: RemoteBranchTarget,
     op_id: String,
 ) -> GitResult<branch_deletion::RemoteDeletionReview> {
-    mutating(repo.clone(), expected_state, app.clone(), "branch_delete_refresh", Some(op_id.clone()), move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "branch_delete_refresh", Some(op_id.clone()), move || {
         branch_deletion::refresh_remote(&p(&repo), &target, progress(&app, &op_id))
     })
     .await
 }
 
 #[tauri::command]
-async fn branch_set_upstream(app: AppHandle, expected_state: Option<String>, repo: String, branch: String, upstream: Option<String>) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "branch_set_upstream", None, move || ops::set_upstream(&p(&repo), &branch, upstream.as_deref())).await
+async fn branch_set_upstream(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    branch: String,
+    upstream: Option<String>,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "branch_set_upstream", None, move || {
+        ops::set_upstream(&p(&repo), &branch, upstream.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
-async fn tag_create(app: AppHandle, expected_state: Option<String>, repo: String, name: String, target: String, message: Option<String>) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "tag_create", None, move || ops::create_tag(&p(&repo), &name, &target, message.as_deref())).await
+async fn tag_create(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    name: String,
+    target: String,
+    message: Option<String>,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "tag_create", None, move || {
+        ops::create_tag(&p(&repo), &name, &target, message.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
-async fn tag_delete(app: AppHandle, expected_state: Option<String>, repo: String, name: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "tag_delete", None, move || ops::delete_tag(&p(&repo), &name)).await
+async fn tag_delete(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String, name: String) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "tag_delete", None, move || ops::delete_tag(&p(&repo), &name)).await
 }
 
 #[tauri::command]
-async fn reset(app: AppHandle, expected_state: Option<String>, repo: String, target: String, mode: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "reset", None, move || ops::reset(&p(&repo), &target, &mode)).await
+async fn reset(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String, target: String, mode: String) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "reset", None, move || ops::reset(&p(&repo), &target, &mode)).await
 }
 
 #[tauri::command]
-async fn undo_commit(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "undo_commit", None, move || ops::undo_last_commit(&p(&repo))).await
+async fn undo_commit(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "undo_commit", None, move || ops::undo_last_commit(&p(&repo))).await
 }
 
 // ───────────────────────────── remotes ─────────────────────────────
 
 #[tauri::command]
-async fn fetch(expected_state: Option<String>, app: AppHandle, repo: String, remote: Option<String>, prune: bool, op_id: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "fetch", Some(op_id.clone()), move || {
+async fn fetch(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    remote: Option<String>,
+    prune: bool,
+    op_id: String,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch", Some(op_id.clone()), move || {
         ops::fetch(&p(&repo), remote.as_deref(), prune, progress(&app, &op_id))
     })
     .await
@@ -1331,8 +1529,15 @@ async fn repo_is_shallow(repo: String) -> GitResult<bool> {
 }
 
 #[tauri::command]
-async fn fetch_more_history(expected_state: Option<String>, app: AppHandle, repo: String, deepen: Option<u32>, op_id: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "fetch_more_history", Some(op_id.clone()), move || {
+async fn fetch_more_history(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    deepen: Option<u32>,
+    op_id: String,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_more_history", Some(op_id.clone()), move || {
         ops::fetch_more_history(&p(&repo), deepen, progress(&app, &op_id))
     })
     .await
@@ -1347,38 +1552,72 @@ async fn sparse_checkout_state(repo: String) -> GitResult<git::sparse::SparseSta
 
 #[tauri::command]
 async fn sparse_checkout_set(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
     cone: bool,
     entries: Vec<String>,
+    reviewed_ignored: Option<Vec<String>>,
 ) -> GitResult<git::sparse::SparseResult> {
-    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_set", None, move || git::sparse::set(&p(&repo), cone, &entries)).await
+    let reviewed = reviewed_ignored;
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "sparse_checkout_set", None, move || {
+        git::sparse::set_with(&p(&repo), cone, &entries, reviewed.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
-async fn sparse_checkout_add(app: AppHandle, expected_state: Option<String>, repo: String, entries: Vec<String>) -> GitResult<git::sparse::SparseResult> {
-    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_add", None, move || git::sparse::add(&p(&repo), &entries)).await
+async fn sparse_checkout_add(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    entries: Vec<String>,
+    reviewed_ignored: Option<Vec<String>>,
+) -> GitResult<git::sparse::SparseResult> {
+    let reviewed = reviewed_ignored;
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "sparse_checkout_add", None, move || {
+        git::sparse::add_with(&p(&repo), &entries, reviewed.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
-async fn sparse_checkout_disable(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<git::sparse::SparseResult> {
-    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_disable", None, move || git::sparse::disable(&p(&repo))).await
+async fn sparse_checkout_disable(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+) -> GitResult<git::sparse::SparseResult> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "sparse_checkout_disable", None, move || git::sparse::disable(&p(&repo)))
+        .await
 }
 
 #[tauri::command]
-async fn sparse_checkout_reapply(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<git::sparse::SparseResult> {
-    mutating(repo.clone(), expected_state, app.clone(), "sparse_checkout_reapply", None, move || git::sparse::reapply(&p(&repo))).await
+async fn sparse_checkout_reapply(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    reviewed_ignored: Option<Vec<String>>,
+) -> GitResult<git::sparse::SparseResult> {
+    let reviewed = reviewed_ignored;
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "sparse_checkout_reapply", None, move || {
+        git::sparse::reapply_with(&p(&repo), reviewed.as_deref())
+    })
+    .await
 }
 
 /// Periodic fetch in the background: never asks for credentials.
 #[tauri::command]
-async fn fetch_background(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "fetch_background", None, move || ops::fetch_background(&p(&repo))).await
+async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_background", None, move || ops::fetch_background(&p(&repo))).await
 }
 
 #[tauri::command]
 async fn pull(
+    recovery_consent: Option<String>,
     expected_state: Option<String>,
     app: AppHandle,
     repo: String,
@@ -1386,51 +1625,98 @@ async fn pull(
     op_id: String,
     prune_remote: Option<bool>,
 ) -> GitResult<ops::PullOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || {
         ops::pull_with_prune(&p(&repo), &mode, prune_remote.unwrap_or(true), progress(&app, &op_id))
     })
     .await
 }
 
 #[tauri::command]
-async fn push(expected_state: Option<String>, app: AppHandle, repo: String, opts: PushOptions, op_id: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "push", Some(op_id.clone()), move || ops::push(&p(&repo), &opts, progress(&app, &op_id))).await
+async fn push(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    opts: PushOptions,
+    op_id: String,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "push", Some(op_id.clone()), move || {
+        ops::push(&p(&repo), &opts, progress(&app, &op_id))
+    })
+    .await
 }
 
 #[tauri::command]
-async fn push_ref(expected_state: Option<String>, app: AppHandle, repo: String, remote: String, refspec: String, op_id: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "push_ref", Some(op_id.clone()), move || {
+async fn push_ref(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    remote: String,
+    refspec: String,
+    op_id: String,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "push_ref", Some(op_id.clone()), move || {
         ops::push_ref(&p(&repo), &remote, &refspec, progress(&app, &op_id))
     })
     .await
 }
 
 #[tauri::command]
-async fn remote_add(app: AppHandle, expected_state: Option<String>, repo: String, name: String, url: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "remote_add", None, move || ops::remote_add(&p(&repo), &name, &url)).await
+async fn remote_add(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    name: String,
+    url: String,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "remote_add", None, move || ops::remote_add(&p(&repo), &name, &url)).await
 }
 
 #[tauri::command]
-async fn remote_remove(app: AppHandle, expected_state: Option<String>, repo: String, name: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "remote_remove", None, move || ops::remote_remove(&p(&repo), &name)).await
+async fn remote_remove(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String, name: String) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "remote_remove", None, move || ops::remote_remove(&p(&repo), &name)).await
 }
 
 #[tauri::command]
-async fn remote_set_url(app: AppHandle, expected_state: Option<String>, repo: String, name: String, url: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "remote_set_url", None, move || ops::remote_set_url(&p(&repo), &name, &url)).await
+async fn remote_set_url(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    name: String,
+    url: String,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "remote_set_url", None, move || ops::remote_set_url(&p(&repo), &name, &url))
+        .await
 }
 
 // ───────────────────────────── merge & friends ─────────────────────────────
 
 #[tauri::command]
-async fn merge_start(app: AppHandle, expected_state: Option<String>, repo: String, target: String, strategy: String) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "merge_start", None, move || ops::merge_start(&p(&repo), &target, &strategy)).await
+async fn merge_start(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    target: String,
+    strategy: String,
+) -> GitResult<OpOutcome> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "merge_start", None, move || ops::merge_start(&p(&repo), &target, &strategy))
+        .await
 }
 
 #[tauri::command]
-async fn op_abort(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<studio::StepOutcome> {
+async fn op_abort(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    kind: String,
+) -> GitResult<studio::StepOutcome> {
     let expected = expected_state.clone();
-    mutating(repo.clone(), expected_state, app.clone(), "op_abort", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "op_abort", None, move || {
         let root = p(&repo);
         let pick = mcp::cherry_pick::before_step(&app, &root, &kind);
         let result = studio::abort(&root, &kind, expected.as_deref())?;
@@ -1441,9 +1727,16 @@ async fn op_abort(app: AppHandle, expected_state: Option<String>, repo: String, 
 }
 
 #[tauri::command]
-async fn op_continue(app: AppHandle, expected_state: Option<String>, repo: String, kind: String, message: Option<String>) -> GitResult<studio::StepOutcome> {
+async fn op_continue(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    kind: String,
+    message: Option<String>,
+) -> GitResult<studio::StepOutcome> {
     let expected = expected_state.clone();
-    mutating(repo.clone(), expected_state, app.clone(), "op_continue", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "op_continue", None, move || {
         let root = p(&repo);
         let pick = mcp::cherry_pick::before_step(&app, &root, &kind);
         let result = studio::step(&root, &kind, expected.as_deref(), || ops::continue_op(&root, &kind, message.as_deref()))?;
@@ -1456,9 +1749,15 @@ async fn op_continue(app: AppHandle, expected_state: Option<String>, repo: Strin
 }
 
 #[tauri::command]
-async fn op_skip(app: AppHandle, expected_state: Option<String>, repo: String, kind: String) -> GitResult<studio::StepOutcome> {
+async fn op_skip(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    kind: String,
+) -> GitResult<studio::StepOutcome> {
     let expected = expected_state.clone();
-    mutating(repo.clone(), expected_state, app.clone(), "op_skip", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "op_skip", None, move || {
         let root = p(&repo);
         let pick = mcp::cherry_pick::before_step(&app, &root, &kind);
         let result = studio::step(&root, &kind, expected.as_deref(), || ops::skip_op(&root, &kind))?;
@@ -1472,6 +1771,7 @@ async fn op_skip(app: AppHandle, expected_state: Option<String>, repo: String, k
 
 #[tauri::command]
 async fn cherry_pick(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1479,7 +1779,7 @@ async fn cherry_pick(
     no_commit: bool,
     mcp_id: Option<String>,
 ) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "cherry_pick", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "cherry_pick", None, move || {
         let root = p(&repo);
         if mcp_id.is_some() {
             for oid in &oids {
@@ -1496,18 +1796,50 @@ async fn cherry_pick(
 }
 
 #[tauri::command]
-async fn cherry_pick_compared_commit(app: AppHandle, expected_state: String, repo: String, pick: ops::ComparedCherryPick) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), Some(expected_state), app, "cherry_pick_compared_commit", None, move || ops::cherry_pick_compared(&p(&repo), &pick)).await
+async fn cherry_pick_compared_commit(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: String,
+    repo: String,
+    pick: ops::ComparedCherryPick,
+) -> GitResult<OpOutcome> {
+    mutating(recovery_consent.clone(), repo.clone(), Some(expected_state), app, "cherry_pick_compared_commit", None, move || {
+        ops::cherry_pick_compared(&p(&repo), &pick)
+    })
+    .await
 }
 
 #[tauri::command]
-async fn revert(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, no_commit: bool) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "revert", None, move || ops::revert(&p(&repo), &oid, no_commit)).await
+async fn revert(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    oid: String,
+    no_commit: bool,
+) -> GitResult<OpOutcome> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "revert", None, move || ops::revert(&p(&repo), &oid, no_commit)).await
 }
 
 #[tauri::command]
-async fn rebase_onto(app: AppHandle, expected_state: Option<String>, repo: String, upstream: String) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "rebase_onto", None, move || ops::rebase_onto(&p(&repo), &upstream)).await
+async fn rebase_onto(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    upstream: String,
+    keep_merges: Option<bool>,
+) -> GitResult<OpOutcome> {
+    let keep = keep_merges.unwrap_or(false);
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "rebase_onto", None, move || {
+        ops::rebase_onto_with(&p(&repo), &upstream, keep)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn rebase_merge_count(repo: String, upstream: String) -> GitResult<u32> {
+    blocking(move || ops::rebase_merge_count(&p(&repo), &upstream)).await
 }
 
 #[tauri::command]
@@ -1518,18 +1850,28 @@ async fn rebase_plan(repo: String, oldest: String) -> GitResult<Observed<ops::Re
 
 #[tauri::command]
 async fn interactive_rebase(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
     base: Option<String>,
     items: Vec<ops::RebaseItem>,
 ) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "interactive_rebase", None, move || ops::interactive_rebase(&p(&repo), base.as_deref(), &items)).await
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "interactive_rebase", None, move || {
+        ops::interactive_rebase(&p(&repo), base.as_deref(), &items)
+    })
+    .await
 }
 
 #[tauri::command]
-async fn rewrite(app: AppHandle, expected_state: Option<String>, repo: String, action: RewriteAction) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "rewrite", None, move || ops::rewrite(&p(&repo), &action)).await
+async fn rewrite(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    action: RewriteAction,
+) -> GitResult<OpOutcome> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "rewrite", None, move || ops::rewrite(&p(&repo), &action)).await
 }
 
 #[tauri::command]
@@ -1549,9 +1891,15 @@ struct StudioStartRequest {
     ack_dirty: bool,
 }
 #[tauri::command]
-async fn rebase_studio_start(app: AppHandle, expected_state: Option<String>, repo: String, request: StudioStartRequest) -> GitResult<studio::StartResult> {
+async fn rebase_studio_start(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    request: StudioStartRequest,
+) -> GitResult<studio::StartResult> {
     let expected = expected_state.clone().ok_or_else(|| GitError::new("A reviewed repository state is required."))?;
-    mutating(repo.clone(), expected_state, app, "rebase_studio_start", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "rebase_studio_start", None, move || {
         studio::start(&p(&repo), &request.oldest, &request.items, &request.review_token, &expected, request.ack_published, request.ack_dirty)
     })
     .await
@@ -1565,9 +1913,19 @@ async fn rebase_studio_comparison(repo: String, id: String) -> GitResult<studio:
     blocking(move || git::operations::inspect(&p(&repo), || studio::comparison(&p(&repo), &id)).map(|(value, _)| value)).await
 }
 #[tauri::command]
-async fn rebase_studio_capture(app: AppHandle, expected_state: Option<String>, repo: String, id: String, head: String) -> GitResult<studio::Report> {
+async fn rebase_studio_capture(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    id: String,
+    head: String,
+) -> GitResult<studio::Report> {
     let expected = expected_state.clone();
-    mutating(repo.clone(), expected_state, app, "rebase_studio_capture", None, move || studio::capture(&p(&repo), &id, &head, expected.as_deref())).await
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "rebase_studio_capture", None, move || {
+        studio::capture(&p(&repo), &id, &head, expected.as_deref())
+    })
+    .await
 }
 
 // ───────────────────────────── conflicts ─────────────────────────────
@@ -1584,7 +1942,9 @@ async fn conflict_index_sides(repo: String, path: String) -> GitResult<conflicts
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments.
 async fn conflict_save(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1593,17 +1953,26 @@ async fn conflict_save(
     stage: bool,
     encoding: Option<String>,
 ) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "conflict_save", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "conflict_save", None, move || {
         conflicts::save_resolution_as(&p(&repo), &path, &content, stage, encoding.as_deref())
     })
     .await
 }
 
 #[tauri::command]
-async fn conflict_external(app: AppHandle, expected_state: Option<String>, repo: String, path: String, tool: Option<String>) -> GitResult<()> {
+async fn conflict_external(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    path: String,
+    tool: Option<String>,
+) -> GitResult<()> {
     // The operation stays open while the merge tool is: no other change lands meanwhile.
-    mutating(repo.clone(), expected_state, app.clone(), "conflict_external", None, move || git::external_tools::mergetool(&p(&repo), &path, tool.as_deref()))
-        .await
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "conflict_external", None, move || {
+        git::external_tools::mergetool(&p(&repo), &path, tool.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1622,18 +1991,36 @@ async fn open_in_editor(repo: String, path: String, line: u32, column: u32, comm
 }
 
 #[tauri::command]
-async fn conflict_take(app: AppHandle, expected_state: Option<String>, repo: String, path: String, which: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "conflict_take", None, move || conflicts::take_side(&p(&repo), &path, &which)).await
+async fn conflict_take(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    path: String,
+    which: String,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "conflict_take", None, move || conflicts::take_side(&p(&repo), &path, &which))
+        .await
 }
 
 #[tauri::command]
-async fn conflict_mark_resolved(app: AppHandle, expected_state: Option<String>, repo: String, paths: Vec<String>) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "conflict_mark_resolved", None, move || conflicts::mark_resolved(&p(&repo), &paths)).await
+async fn conflict_mark_resolved(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    paths: Vec<String>,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "conflict_mark_resolved", None, move || {
+        conflicts::mark_resolved(&p(&repo), &paths)
+    })
+    .await
 }
 
 #[tauri::command]
-async fn conflict_unresolve(app: AppHandle, expected_state: Option<String>, repo: String, path: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "conflict_unresolve", None, move || conflicts::unresolve(&p(&repo), &path)).await
+async fn conflict_unresolve(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String, path: String) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "conflict_unresolve", None, move || conflicts::unresolve(&p(&repo), &path))
+        .await
 }
 
 #[tauri::command]
@@ -1661,6 +2048,7 @@ async fn ignore_preview(repo: String, path: String, kind: String, scope: String)
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn ignore_apply(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1672,8 +2060,10 @@ async fn ignore_apply(
 ) -> GitResult<git::ignore::IgnoreResult> {
     // Under the repository's operation gate: nothing else writes the index between the check
     // against the preview and the untracking.
-    mutating(repo.clone(), expected_state, app.clone(), "ignore_apply", None, move || git::ignore::apply(&p(&repo), &path, &kind, &scope, &token, untrack))
-        .await
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "ignore_apply", None, move || {
+        git::ignore::apply(&p(&repo), &path, &kind, &scope, &token, untrack)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1689,6 +2079,7 @@ async fn nested_repositories(repo: String) -> GitResult<git::workspace_files::Ne
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn stash_selection(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1698,7 +2089,7 @@ async fn stash_selection(
     opts: Option<DiffOptions>,
     message: String,
 ) -> GitResult<git::partial_stash::PartialStashResult> {
-    mutating(repo.clone(), expected_state, app, "stash_selection", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "stash_selection", None, move || {
         git::partial_stash::save(&p(&repo), &path, &selection, &hash, &opts.unwrap_or_default(), &message)
     })
     .await
@@ -1706,17 +2097,22 @@ async fn stash_selection(
 
 #[tauri::command]
 async fn remote_rename_plan(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
     tracking_ref: String,
     new_name: String,
 ) -> GitResult<git::remote_rename::RenamePlan> {
-    mutating(repo.clone(), expected_state, app, "remote_rename_plan", None, move || git::remote_rename::plan(&p(&repo), &tracking_ref, &new_name)).await
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "remote_rename_plan", None, move || {
+        git::remote_rename::plan(&p(&repo), &tracking_ref, &new_name)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn remote_branch_rename(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1725,13 +2121,16 @@ async fn remote_branch_rename(
     if expected_state.as_deref() != Some(plan.state_token.as_str()) {
         return Err(GitError::new("Reopen the remote rename review.").kind("stale-operation"));
     }
-    mutating(repo.clone(), expected_state, app, "remote_branch_rename", None, move || git::remote_rename::rename(&p(&repo), &plan)).await
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "remote_branch_rename", None, move || git::remote_rename::rename(&p(&repo), &plan))
+        .await
 }
 
 // ───────────────────────────── stash ─────────────────────────────
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments.
 async fn stash_save(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1740,14 +2139,16 @@ async fn stash_save(
     keep_index: bool,
     paths: Option<Vec<String>>,
 ) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "stash_save", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "stash_save", None, move || {
         ops::stash_save(&p(&repo), &message, include_untracked, keep_index, &paths.unwrap_or_default())
     })
     .await
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments.
 async fn stash_apply(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1756,7 +2157,7 @@ async fn stash_apply(
     pop: bool,
     restore_index: Option<bool>,
 ) -> GitResult<ops::StashApplyOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "stash_apply", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "stash_apply", None, move || {
         ops::stash_apply_reviewed_with_index(&p(&repo), index, &oid, pop, restore_index.unwrap_or(true))
     })
     .await
@@ -1768,8 +2169,15 @@ async fn stash_list(repo: String) -> GitResult<Vec<refs::StashInfo>> {
 }
 
 #[tauri::command]
-async fn stash_drop(app: AppHandle, expected_state: Option<String>, repo: String, index: u32, oid: String) -> GitResult<recovery::Summary> {
-    mutating(repo.clone(), expected_state.clone(), app, "stash_drop", None, move || {
+async fn stash_drop(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    index: u32,
+    oid: String,
+) -> GitResult<recovery::Summary> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state.clone(), app, "stash_drop", None, move || {
         ops::stash_drop_with_checkpoint(&p(&repo), index, &oid, expected_state.as_deref())
     })
     .await
@@ -1783,28 +2191,38 @@ async fn layers_state(repo: String) -> GitResult<LayersState> {
 }
 
 #[tauri::command]
-async fn layer_seal(app: AppHandle, expected_state: Option<String>, repo: String, name: Option<String>) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "layer_seal", None, move || layers::seal(&p(&repo), name.as_deref())).await
+async fn layer_seal(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String, name: Option<String>) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "layer_seal", None, move || layers::seal(&p(&repo), name.as_deref())).await
 }
 
 #[tauri::command]
-async fn layer_unstage(app: AppHandle, expected_state: Option<String>, repo: String, index: usize, resolutions: Option<layers::Resolutions>) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "layer_unstage", None, move || layers::unstage(&p(&repo), index, &resolutions.unwrap_or_default()))
-        .await
+async fn layer_unstage(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    index: usize,
+    resolutions: Option<layers::Resolutions>,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "layer_unstage", None, move || {
+        layers::unstage(&p(&repo), index, &resolutions.unwrap_or_default())
+    })
+    .await
 }
 
 #[tauri::command]
-async fn layer_discard(app: AppHandle, expected_state: Option<String>, repo: String, index: usize) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "layer_discard", None, move || layers::discard(&p(&repo), index)).await
+async fn layer_discard(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String, index: usize) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "layer_discard", None, move || layers::discard(&p(&repo), index)).await
 }
 
 #[tauri::command]
-async fn layer_merge_down(app: AppHandle, expected_state: Option<String>, repo: String, index: usize) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "layer_merge_down", None, move || layers::merge_down(&p(&repo), index)).await
+async fn layer_merge_down(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String, index: usize) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "layer_merge_down", None, move || layers::merge_down(&p(&repo), index)).await
 }
 
 #[tauri::command]
 async fn layer_move(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1812,42 +2230,64 @@ async fn layer_move(
     delta: i32,
     resolutions: Option<layers::Resolutions>,
 ) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "layer_move", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "layer_move", None, move || {
         layers::move_layer(&p(&repo), index, delta, &resolutions.unwrap_or_default())
     })
     .await
 }
 
 #[tauri::command]
-async fn layer_rename(app: AppHandle, expected_state: Option<String>, repo: String, index: usize, name: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "layer_rename", None, move || layers::rename(&p(&repo), index, &name)).await
+async fn layer_rename(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    index: usize,
+    name: String,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "layer_rename", None, move || layers::rename(&p(&repo), index, &name)).await
 }
 
 #[tauri::command]
-async fn layers_flatten(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "layers_flatten", None, move || layers::flatten(&p(&repo))).await
+async fn layers_flatten(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "layers_flatten", None, move || layers::flatten(&p(&repo))).await
 }
 
 /// Dry-runs a layer operation and returns the first conflict that still needs a resolution.
 #[tauri::command]
 async fn layer_preview(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
     op: layers::LayerOp,
     resolutions: Option<layers::Resolutions>,
 ) -> GitResult<Option<layers::LayerConflict>> {
-    mutating(repo.clone(), expected_state, app.clone(), "layer_preview", None, move || layers::preview(&p(&repo), &op, &resolutions.unwrap_or_default())).await
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "layer_preview", None, move || {
+        layers::preview(&p(&repo), &op, &resolutions.unwrap_or_default())
+    })
+    .await
 }
 
 #[tauri::command]
-async fn layer_unstage_files(app: AppHandle, expected_state: Option<String>, repo: String, index: usize, paths: Vec<String>) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "layer_unstage_files", None, move || layers::unstage_files(&p(&repo), index, &paths)).await
+async fn layer_unstage_files(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    index: usize,
+    paths: Vec<String>,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "layer_unstage_files", None, move || {
+        layers::unstage_files(&p(&repo), index, &paths)
+    })
+    .await
 }
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments preserve the existing client contract.
 async fn layer_commit(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -1857,7 +2297,7 @@ async fn layer_commit(
     opts: Option<CommitOptions>,
     resolutions: Option<layers::Resolutions>,
 ) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "layer_commit", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "layer_commit", None, move || {
         let o = opts.unwrap_or_default();
         if through {
             layers::commit_through(&p(&repo), index, &message, &o)
@@ -1898,24 +2338,39 @@ async fn repo_extras(repo: String) -> GitResult<RepoExtras> {
 }
 
 #[tauri::command]
-async fn submodule_update(expected_state: Option<String>, app: AppHandle, repo: String, paths: Vec<String>, op_id: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "submodule_update", Some(op_id.clone()), move || {
+async fn submodule_update(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    paths: Vec<String>,
+    op_id: String,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "submodule_update", Some(op_id.clone()), move || {
         extras::submodule_update(&p(&repo), &paths, progress(&app, &op_id))
     })
     .await
 }
 
 #[tauri::command]
-async fn submodule_add(expected_state: Option<String>, app: AppHandle, repo: String, url: String, path: String, op_id: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "submodule_add", Some(op_id.clone()), move || {
+async fn submodule_add(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    url: String,
+    path: String,
+    op_id: String,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "submodule_add", Some(op_id.clone()), move || {
         extras::submodule_add(&p(&repo), &url, &path, progress(&app, &op_id))
     })
     .await
 }
 
 #[tauri::command]
-async fn submodule_sync(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "submodule_sync", None, move || extras::submodule_sync(&p(&repo))).await
+async fn submodule_sync(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "submodule_sync", None, move || extras::submodule_sync(&p(&repo))).await
 }
 
 #[tauri::command]
@@ -1936,6 +2391,7 @@ async fn worktree_prune_review(repo: String) -> GitResult<git::worktree_manager:
 }
 #[tauri::command]
 async fn worktree_add(
+    recovery_consent: Option<String>,
     app: AppHandle,
     repo: String,
     expected_state: String,
@@ -1944,10 +2400,12 @@ async fn worktree_add(
     if expected_state.is_empty() || expected_state != review.state_token {
         return Err(GitError::new("Prepare a worktree creation review first."));
     }
-    mutating(repo.clone(), Some(expected_state), app, "worktree_add", None, move || git::worktree_manager::create(&p(&repo), &review)).await
+    mutating(recovery_consent.clone(), repo.clone(), Some(expected_state), app, "worktree_add", None, move || git::worktree_manager::create(&p(&repo), &review))
+        .await
 }
 #[tauri::command]
 async fn worktree_remove(
+    recovery_consent: Option<String>,
     app: AppHandle,
     repo: String,
     expected_state: String,
@@ -1957,10 +2415,15 @@ async fn worktree_remove(
     if expected_state.is_empty() || expected_state != proof.state_token {
         return Err(GitError::new("Prepare a worktree removal review first."));
     }
-    mutating(repo.clone(), Some(expected_state), app, "worktree_remove", None, move || git::worktree_manager::remove(&p(&repo), &proof, allow_dirty)).await
+    mutating(recovery_consent.clone(), repo.clone(), Some(expected_state), app, "worktree_remove", None, move || {
+        git::worktree_manager::remove(&p(&repo), &proof, allow_dirty)
+    })
+    .await
 }
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat Tauri IPC arguments.
 async fn worktree_lock(
+    recovery_consent: Option<String>,
     app: AppHandle,
     repo: String,
     expected_state: String,
@@ -1972,13 +2435,14 @@ async fn worktree_lock(
     if expected_state.is_empty() || registry_token.is_empty() {
         return Err(GitError::new("Refresh the worktree inventory first."));
     }
-    mutating(repo.clone(), Some(expected_state), app, "worktree_lock", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), Some(expected_state), app, "worktree_lock", None, move || {
         git::worktree_manager::lock(&p(&repo), &path, &registry_token, lock, &reason)
     })
     .await
 }
 #[tauri::command]
 async fn worktree_prune(
+    recovery_consent: Option<String>,
     app: AppHandle,
     repo: String,
     expected_state: String,
@@ -1987,7 +2451,10 @@ async fn worktree_prune(
     if expected_state.is_empty() || expected_state != review.state_token {
         return Err(GitError::new("Review missing worktree registrations first."));
     }
-    mutating(repo.clone(), Some(expected_state), app, "worktree_prune", None, move || git::worktree_manager::prune(&p(&repo), &review, |_| {})).await
+    mutating(recovery_consent.clone(), repo.clone(), Some(expected_state), app, "worktree_prune", None, move || {
+        git::worktree_manager::prune(&p(&repo), &review, |_| {})
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1996,18 +2463,36 @@ async fn bisect_status(repo: String) -> GitResult<BisectStatus> {
 }
 
 #[tauri::command]
-async fn bisect_start(app: AppHandle, expected_state: Option<String>, repo: String, bad: String, good: String) -> GitResult<BisectStatus> {
-    mutating(repo.clone(), expected_state, app.clone(), "bisect_start", None, move || extras::bisect_start(&p(&repo), &bad, &good)).await
+async fn bisect_start(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    bad: String,
+    good: String,
+) -> GitResult<BisectStatus> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "bisect_start", None, move || extras::bisect_start(&p(&repo), &bad, &good))
+        .await
 }
 
 #[tauri::command]
-async fn bisect_mark(app: AppHandle, expected_state: Option<String>, repo: String, verdict: String, rev: Option<String>) -> GitResult<BisectStatus> {
-    mutating(repo.clone(), expected_state, app.clone(), "bisect_mark", None, move || extras::bisect_mark(&p(&repo), &verdict, rev.as_deref())).await
+async fn bisect_mark(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    verdict: String,
+    rev: Option<String>,
+) -> GitResult<BisectStatus> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "bisect_mark", None, move || {
+        extras::bisect_mark(&p(&repo), &verdict, rev.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
-async fn bisect_reset(app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "bisect_reset", None, move || extras::bisect_reset(&p(&repo))).await
+async fn bisect_reset(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "bisect_reset", None, move || extras::bisect_reset(&p(&repo))).await
 }
 
 #[tauri::command]
@@ -2016,8 +2501,16 @@ async fn lfs_files(repo: String) -> GitResult<Vec<LfsFile>> {
 }
 
 #[tauri::command]
-async fn lfs_track(app: AppHandle, expected_state: Option<String>, repo: String, pattern: String, track: bool) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "lfs_track", None, move || extras::lfs_track(&p(&repo), &pattern, track)).await
+async fn lfs_track(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    pattern: String,
+    track: bool,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "lfs_track", None, move || extras::lfs_track(&p(&repo), &pattern, track))
+        .await
 }
 
 #[tauri::command]
@@ -2031,8 +2524,18 @@ async fn rerere_get(repo: String) -> GitResult<git::misc_tools::Rerere> {
 }
 
 #[tauri::command]
-async fn rerere_set(app: AppHandle, expected_state: Option<String>, repo: String, enabled: bool, auto_update: bool) -> GitResult<git::misc_tools::Rerere> {
-    mutating(repo.clone(), expected_state, app.clone(), "rerere_set", None, move || git::misc_tools::set_rerere(&p(&repo), enabled, auto_update)).await
+async fn rerere_set(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    enabled: bool,
+    auto_update: bool,
+) -> GitResult<git::misc_tools::Rerere> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "rerere_set", None, move || {
+        git::misc_tools::set_rerere(&p(&repo), enabled, auto_update)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2041,8 +2544,9 @@ async fn note_get(repo: String, oid: String) -> GitResult<Option<String>> {
 }
 
 #[tauri::command]
-async fn note_set(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, text: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "note_set", None, move || git::misc_tools::set_note(&p(&repo), &oid, &text)).await
+async fn note_set(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String, oid: String, text: String) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "note_set", None, move || git::misc_tools::set_note(&p(&repo), &oid, &text))
+        .await
 }
 
 #[tauri::command]
@@ -2051,8 +2555,19 @@ async fn archive_export(repo: String, rev: String, format: String, dest: String,
 }
 
 #[tauri::command]
-async fn stash_branch(app: AppHandle, expected_state: Option<String>, repo: String, name: String, index: u32, oid: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "stash_branch", None, move || git::misc_tools::stash_branch(&p(&repo), &name, index, &oid)).await
+async fn stash_branch(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    name: String,
+    index: u32,
+    oid: String,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "stash_branch", None, move || {
+        git::misc_tools::stash_branch(&p(&repo), &name, index, &oid)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2071,19 +2586,35 @@ async fn lfs_locks(repo: String) -> GitResult<Vec<extras::LfsLock>> {
 }
 
 #[tauri::command]
-async fn lfs_lock(app: AppHandle, expected_state: Option<String>, repo: String, path: String) -> GitResult<extras::LfsLock> {
-    mutating(repo.clone(), expected_state, app.clone(), "lfs_lock", None, move || extras::lfs_lock(&p(&repo), &path)).await
+async fn lfs_lock(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String, path: String) -> GitResult<extras::LfsLock> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "lfs_lock", None, move || extras::lfs_lock(&p(&repo), &path)).await
 }
 
 #[tauri::command]
-async fn lfs_unlock(app: AppHandle, expected_state: Option<String>, repo: String, path: String, force: bool) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "lfs_unlock", None, move || extras::lfs_unlock(&p(&repo), &path, force)).await
+async fn lfs_unlock(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    path: String,
+    force: bool,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "lfs_unlock", None, move || extras::lfs_unlock(&p(&repo), &path, force)).await
 }
 
 #[tauri::command]
-async fn lfs_run(expected_state: Option<String>, app: AppHandle, repo: String, action: String, op_id: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "lfs_run", Some(op_id.clone()), move || extras::lfs_run(&p(&repo), &action, progress(&app, &op_id)))
-        .await
+async fn lfs_run(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    action: String,
+    op_id: String,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "lfs_run", Some(op_id.clone()), move || {
+        extras::lfs_run(&p(&repo), &action, progress(&app, &op_id))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2092,8 +2623,16 @@ async fn signing_get(repo: String) -> GitResult<SigningConfig> {
 }
 
 #[tauri::command]
-async fn signing_set(app: AppHandle, expected_state: Option<String>, repo: String, config: SigningInput, global: bool) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "signing_set", None, move || extras::set_signing(&p(&repo), &config, global)).await
+async fn signing_set(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    config: SigningInput,
+    global: bool,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "signing_set", None, move || extras::set_signing(&p(&repo), &config, global))
+        .await
 }
 
 #[tauri::command]
@@ -2112,9 +2651,18 @@ async fn repo_size(repo: String) -> GitResult<maint::RepoSize> {
 }
 
 #[tauri::command]
-async fn maintenance_run(expected_state: Option<String>, app: AppHandle, repo: String, task: String, op_id: String) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "maintenance_run", Some(op_id.clone()), move || maint::run(&p(&repo), &task, progress(&app, &op_id)))
-        .await
+async fn maintenance_run(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    task: String,
+    op_id: String,
+) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "maintenance_run", Some(op_id.clone()), move || {
+        maint::run(&p(&repo), &task, progress(&app, &op_id))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2128,8 +2676,16 @@ async fn deleted_branches(repo: String) -> GitResult<Vec<more::DeletedBranch>> {
 }
 
 #[tauri::command]
-async fn restore_branch(app: AppHandle, expected_state: Option<String>, repo: String, name: String, oid: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "restore_branch", None, move || more::restore_branch(&p(&repo), &name, &oid)).await
+async fn restore_branch(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    name: String,
+    oid: String,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "restore_branch", None, move || more::restore_branch(&p(&repo), &name, &oid))
+        .await
 }
 
 #[tauri::command]
@@ -2143,18 +2699,27 @@ async fn create_patch(repo: String, oids: Vec<String>, file: String) -> GitResul
 }
 
 #[tauri::command]
-async fn apply_patch(app: AppHandle, expected_state: Option<String>, repo: String, file: String) -> GitResult<OpOutcome> {
-    mutating(repo.clone(), expected_state, app.clone(), "apply_patch", None, move || more::apply_patch(&p(&repo), &file)).await
+async fn apply_patch(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String, file: String) -> GitResult<OpOutcome> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "apply_patch", None, move || more::apply_patch(&p(&repo), &file)).await
 }
 
 #[tauri::command]
-async fn checkout_file(app: AppHandle, expected_state: Option<String>, repo: String, rev: String, path: String) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "checkout_file", None, move || more::checkout_file(&p(&repo), &rev, &path)).await
+async fn checkout_file(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    rev: String,
+    path: String,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "checkout_file", None, move || more::checkout_file(&p(&repo), &rev, &path))
+        .await
 }
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Flat IPC keeps the displayed options and hash with the selection.
 async fn apply_from_commit(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -2165,7 +2730,7 @@ async fn apply_from_commit(
     opts: Option<DiffOptions>,
     expected_hash: Option<String>,
 ) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "apply_from_commit", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "apply_from_commit", None, move || {
         more::apply_from_commit_reviewed(&p(&repo), from.as_deref(), &to, &path, selection.as_deref(), &opts.unwrap_or_default(), expected_hash.as_deref())
     })
     .await
@@ -2177,9 +2742,19 @@ async fn stash_contents(repo: String, oid: String) -> GitResult<more::StashConte
 }
 
 #[tauri::command]
-async fn stash_restore_file(app: AppHandle, expected_state: Option<String>, repo: String, oid: String, path: String, untracked: bool) -> GitResult<()> {
-    mutating(repo.clone(), expected_state, app.clone(), "stash_restore_file", None, move || more::stash_restore_file_at(&p(&repo), &oid, &path, untracked))
-        .await
+async fn stash_restore_file(
+    recovery_consent: Option<String>,
+    app: AppHandle,
+    expected_state: Option<String>,
+    repo: String,
+    oid: String,
+    path: String,
+    untracked: bool,
+) -> GitResult<()> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "stash_restore_file", None, move || {
+        more::stash_restore_file_at(&p(&repo), &oid, &path, untracked)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2306,6 +2881,7 @@ async fn pr_merge_plan(repo: String, number: u64, expected_connection: String, e
 }
 #[tauri::command]
 async fn pr_merge_submit(
+    recovery_consent: Option<String>,
     app: AppHandle,
     repo: String,
     number: u64,
@@ -2313,8 +2889,10 @@ async fn pr_merge_submit(
     expected_revision: String,
     input: git::pr_merge::MergeInput,
 ) -> GitResult<git::pr_merge::MergeResult> {
-    mutating(repo.clone(), None, app, "pr_merge_submit", None, move || git::pr_merge::merge(&p(&repo), number, &expected_connection, &expected_revision, input))
-        .await
+    mutating(recovery_consent.clone(), repo.clone(), None, app, "pr_merge_submit", None, move || {
+        git::pr_merge::merge(&p(&repo), number, &expected_connection, &expected_revision, input)
+    })
+    .await
 }
 #[tauri::command]
 async fn pr_cleanup_plan(
@@ -2328,6 +2906,7 @@ async fn pr_cleanup_plan(
 }
 #[tauri::command]
 async fn pr_cleanup_submit(
+    recovery_consent: Option<String>,
     app: AppHandle,
     repo: String,
     number: u64,
@@ -2335,7 +2914,7 @@ async fn pr_cleanup_submit(
     expected_revision: String,
     input: git::pr_merge::CleanupInput,
 ) -> GitResult<git::pr_merge::CleanupResult> {
-    mutating(repo.clone(), None, app, "pr_cleanup_submit", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), None, app, "pr_cleanup_submit", None, move || {
         git::pr_merge::cleanup_act(&p(&repo), number, &expected_connection, &expected_revision, input)
     })
     .await
@@ -2441,6 +3020,7 @@ async fn pull_request_create(
 
 #[tauri::command]
 async fn pull_request_checkout(
+    recovery_consent: Option<String>,
     app: AppHandle,
     expected_state: Option<String>,
     repo: String,
@@ -2448,7 +3028,7 @@ async fn pull_request_checkout(
     expected_connection: String,
     expected_head: String,
 ) -> GitResult<String> {
-    mutating(repo.clone(), expected_state, app.clone(), "pull_request_checkout", None, move || {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "pull_request_checkout", None, move || {
         forge::checkout(&p(&repo), number, &expected_connection, &expected_head)
     })
     .await
@@ -2800,6 +3380,10 @@ pub fn run() {
             recovery_delete,
             recovery_restore_branch,
             recovery_restore_stash,
+            recovery_restore_files,
+            recovery_accept_unprotected,
+            recovery_accept_collisions,
+            recovery_compare_saved,
             recovery_restore_workspace,
             git_version,
             update_check,
@@ -2904,6 +3488,7 @@ pub fn run() {
             cherry_pick_compared_commit,
             revert,
             rebase_onto,
+            rebase_merge_count,
             rewrite,
             rebase_plan,
             rebase_studio_review,

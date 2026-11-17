@@ -84,7 +84,7 @@ fn gitlinks(raw: &[u8], index: bool) -> GitResult<BTreeMap<String, String>> {
 fn in_module(mut error: GitError, prefix: &str) -> GitError {
     if error.kind == "ignored-collision" {
         // The Pull recovery dialog is rooted at the parent repository.
-        for path in error.details.iter_mut().take(2) {
+        for path in error.details.iter_mut() {
             *path = format!("{prefix}/{path}");
         }
     }

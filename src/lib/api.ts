@@ -147,6 +147,12 @@ export const api = {
   recoveryDelete: (repo: string, id: string) => call<void>("recovery_delete", { repo, id }),
   recoveryRestoreBranch: (repo: string, id: string, reference: number | null, name: string) => call<void>("recovery_restore_branch", { repo, id, reference, name }),
   recoveryRestoreStash: (repo: string, id: string, reference: number) => call<void>("recovery_restore_stash", { repo, id, reference }),
+  /** Puts saved ignored files back in place; files changed since the operation are left alone. */
+  recoveryRestoreFiles: (repo: string, id: string, changes: import("../components/IgnoredFilesChanged").IgnoredChange[]) =>
+    call<import("../components/IgnoredFilesChanged").RestoreOutcome>("recovery_restore_files", { repo, id, changes }),
+  /** Accepts that the next operation runs although exactly these ignored files could not be saved. */
+  recoveryAcceptUnprotected: (repo: string, command: string, paths: string[], collision: { paths: string[]; copy: boolean } | null = null) => call<string>("recovery_accept_unprotected", { repo, command, paths, collision }),
+  recoveryCompareSaved: (repo: string, id: string, path: string) => call<FileDiff>("recovery_compare_saved", { repo, id, path }),
   recoveryRestoreWorkspace: (repo: string, id: string, destination: string, name: string) => call<string>("recovery_restore_workspace", { repo, id, destination, name }),
   operationLogHealth: () => call<OperationLogHealth>("operation_log_health"),
   operationLogList: (filter: OperationLogFilter) => call<OperationLogPage>("operation_log_list", { filter }),
@@ -280,10 +286,13 @@ export const api = {
   fetchMoreHistory: (repo: string, deepen: number | null, opId: string) => call<string>("fetch_more_history", { repo, deepen, opId }),
   sparseCheckoutState: (repo: string) => call<import("./types").SparseState>("sparse_checkout_state", { repo }),
   /** Enables sparse checkout or replaces its folders (cone) / patterns (non-cone). */
-  sparseCheckoutSet: (repo: string, cone: boolean, entries: string[]) => call<import("./types").SparseResult>("sparse_checkout_set", { repo, cone, entries }),
-  sparseCheckoutAdd: (repo: string, entries: string[]) => call<import("./types").SparseResult>("sparse_checkout_add", { repo, entries }),
+  /** `reviewedIgnored`: the ignored files (from a "sparse-ignored-files" error) the user agreed Git may delete; any other file refuses again. */
+  sparseCheckoutSet: (repo: string, cone: boolean, entries: string[], reviewedIgnored: string[] | null = null) =>
+    call<import("./types").SparseResult>("sparse_checkout_set", { repo, cone, entries, reviewedIgnored }),
+  sparseCheckoutAdd: (repo: string, entries: string[], reviewedIgnored: string[] | null = null) =>
+    call<import("./types").SparseResult>("sparse_checkout_add", { repo, entries, reviewedIgnored }),
   sparseCheckoutDisable: (repo: string) => call<import("./types").SparseResult>("sparse_checkout_disable", { repo }),
-  sparseCheckoutReapply: (repo: string) => call<import("./types").SparseResult>("sparse_checkout_reapply", { repo }),
+  sparseCheckoutReapply: (repo: string, reviewedIgnored: string[] | null = null) => call<import("./types").SparseResult>("sparse_checkout_reapply", { repo, reviewedIgnored }),
   pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string, pruneRemote?: boolean) =>
     call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState, pruneRemote }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
@@ -300,7 +309,11 @@ export const api = {
   cherryPickComparedCommit: (repo: string, pick: import("./types").ComparedCherryPick, expectedState: string) =>
     call<OpOutcome>("cherry_pick_compared_commit", { repo, pick, expectedState }),
   revert: (repo: string, oid: string, noCommit: boolean) => call<OpOutcome>("revert", { repo, oid, noCommit }),
-  rebaseOnto: (repo: string, upstream: string, expectedState?: string | null) => call<OpOutcome>("rebase_onto", { repo, upstream, expectedState }),
+  /** `keepMerges` re-creates the branch's merge commits (--rebase-merges) instead of dropping them. */
+  rebaseOnto: (repo: string, upstream: string, expectedState?: string | null, keepMerges = false) =>
+    call<OpOutcome>("rebase_onto", { repo, upstream, expectedState, keepMerges }),
+  /** Merge commits a rebase onto `upstream` would replay. */
+  rebaseMergeCount: (repo: string, upstream: string) => call<number>("rebase_merge_count", { repo, upstream }),
   rewrite: (repo: string, action: RewriteAction, expectedState?: string | null) => call<OpOutcome>("rewrite", { repo, action, expectedState }),
   rebaseStudioReview: (repo: string, oldest: string, items: RebaseItem[]) => call<StudioReview>("rebase_studio_review", { repo, oldest, items }),
   rebaseStudioStart: (repo: string, oldest: string, items: RebaseItem[], review: StudioReview, ackPublished: boolean, ackDirty: boolean) => call<{ outcome: OpOutcome; report: StudioReport }>("rebase_studio_start", { repo, expectedState: review.stateToken, request: { oldest, items, reviewToken: review.token, ackPublished, ackDirty } }),
