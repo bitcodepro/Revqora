@@ -41,7 +41,7 @@ import type { MenuItem } from "../lib/ui";
 import { copyText, openOverlay } from "../lib/ui";
 import * as A from "../lib/actions";
 import * as X from "../lib/extraActions";
-import { getTab, loadGraph } from "../lib/store";
+import { getTab } from "../lib/store";
 import { repositoryKey } from "../lib/repositoryLibrary";
 import { useSettings } from "../lib/settings";
 import { api } from "../lib/api";
@@ -78,7 +78,6 @@ export function primaryBranchMenuItem(root: string, reference: string): MenuItem
     if (primaryBranchByRepo[key] === reference) delete primaryBranchByRepo[key];
     else primaryBranchByRepo[key] = reference;
     settings.set({ primaryBranchByRepo });
-    if (getTab(root)?.branchContext) void loadGraph(root);
   } };
 }
 

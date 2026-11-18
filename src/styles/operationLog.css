@@ -64,3 +64,4 @@
 }
 /* The search field has no border of its own: show focus on its wrapper. */
 .log-search:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
+.log-checkpoints { display: flex; flex-wrap: wrap; gap: 6px; }

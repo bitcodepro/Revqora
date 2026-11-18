@@ -519,12 +519,18 @@ async fn recovery_restore_files(
     expected_state: Option<String>,
     repo: String,
     id: String,
-    changes: Vec<recovery::IgnoredChange>,
+    paths: Vec<String>,
 ) -> GitResult<recovery::RestoreOutcome> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "recovery_restore_files", None, move || {
-        recovery::restore_files(&p(&repo), &id, &changes)
+        recovery::restore_paths(&p(&repo), &id, &paths)
     })
     .await
+}
+/// Each saved path of a checkpoint against the working tree now, with the result of the
+/// operation it was saved for and its last restore. Reads files only.
+#[tauri::command]
+async fn recovery_files(repo: String, id: String) -> GitResult<recovery::CheckpointFiles> {
+    blocking(move || git::operations::read(&p(&repo), || recovery::files(&p(&repo), &id))).await
 }
 
 /// The user continues the next operation although Git may overwrite these local paths; with
@@ -3433,6 +3439,7 @@ pub fn run() {
             recovery_restore_branch,
             recovery_restore_stash,
             recovery_restore_files,
+            recovery_files,
             recovery_accept_unprotected,
             recovery_accept_collisions,
             recovery_compare_saved,

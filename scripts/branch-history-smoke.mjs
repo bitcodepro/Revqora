@@ -152,30 +152,33 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   for (const mode of ["Graph", "Review", "Columns"]) {
     await page.locator(".history-mode").getByRole("button", { name: mode, exact: true }).click();
     await showBranches();
-    // Select a different branch first so a previously rendered highlight cannot satisfy the check.
+    // Select a different branch first so a previously rendered history cannot satisfy the check.
+    // The checked-out branch opens Current branch; any other branch opens its own history.
     await branchRow("main").click();
-    await graph.locator(".grow.branch-member").getByText("Advance pinned history line", { exact: true }).waitFor({ state: "attached" });
+    await page.waitForFunction(() => document.querySelector('select[aria-label="History scope"]')?.value === "HEAD");
+    await graph.getByText("Advance pinned history line", { exact: true }).waitFor({ state: "attached" });
     await viewedBranch.click();
     await page.locator('.sidebar [data-branch-name="target"].viewed-branch').waitFor();
     await branchRow("main").and(page.locator(".current")).waitFor();
-    assert.equal(await historyScope.inputValue(), "branch-context");
-    await graph.locator(".grow.branch-member").getByText("Destination change", { exact: true }).waitFor({ state: "attached" });
-    await graph.locator(".grow.branch-background").getByText("Advance pinned history line", {exact:true}).waitFor({state:"attached"});
-    await graph.locator('.ref[data-branch-mark="base"]').getByText("main", {exact:true}).waitFor({state:"attached"});
+    await page.waitForFunction(() => document.querySelector('select[aria-label="History scope"]')?.value === "refs/heads/target");
+    await graph.getByText("Destination change", { exact: true }).waitFor({ state: "attached" });
+    await graph.getByText("Advance pinned history line", {exact:true}).waitFor({state:"detached"});
+    assert.equal(await historyScope.locator("option", { hasText: "Branch context" }).count(), 0);
+    assert.equal(await graph.locator(".grow.branch-member, .grow.branch-background").count(), 0);
     await page.getByText("Primary · main", {exact:true}).waitFor();
-    assert.equal(await graph.locator(".grow.branch-member").getByText("History line 98", { exact: true }).count(), 0);
+    assert.equal(await graph.getByText("History line 98", { exact: true }).count(), 0);
     assert.equal(await preview.count(), 0, `Selecting a branch in ${mode} must leave commit details closed`);
   }
   await page.locator(".history-mode").getByRole("button", { name: "Graph", exact: true }).click();
   await showBranches();
   await historyScope.selectOption("");
-  await graph.locator(".grow.branch-member, .grow.branch-background").first().waitFor({state:"detached"});
-  assert.equal(await graph.locator("[data-branch-mark]").count(), 0);
+  await graph.getByText("Advance pinned history line", {exact:true}).waitFor({state:"attached"});
+  assert.equal(await graph.locator(".grow.branch-member").count(), 0);
   await historyScope.selectOption("refs/heads/target");
   await graph.getByText("Advance pinned history line", {exact:true}).waitFor({state:"detached"});
   await graph.getByText("Destination change", {exact:true}).waitFor({state:"attached"});
   await viewedBranch.click();
-  await graph.locator(".grow.branch-member").getByText("Destination change", { exact: true }).click();
+  await graph.getByText("Destination change", { exact: true }).click();
   assert.equal(git(root, "branch", "--show-current"), "main");
   await preview.getByText("Destination change", { exact: true }).waitFor();
   await preview.getByRole("button", { name: "Close", exact: true }).click();
@@ -206,6 +209,9 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await comparison.getByRole("button", { name: "Close", exact: true }).click();
   assert.equal(git(root, "branch", "--show-current"), "main");
 
+  // The target branch's history is open; local search covers the scope on screen, so return to main.
+  await historyScope.selectOption("HEAD");
+  await graph.getByText("History line 99", { exact: true }).waitFor({ state: "attached" });
   const localQuery = page.getByPlaceholder(/^Search commits/);
   await localQuery.fill("History line 99");
   await page.locator(".search-box .count").getByText("1 / 1", { exact: true }).waitFor();
@@ -340,7 +346,7 @@ export async function branchHistorySmoke({ page, work, returnRoot }) {
   await active("branch-history");
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
   await branchRow("main").click();
-  await graph.locator(".grow.branch-member").getByText("Advance pinned history line", { exact: true }).click();
+  await graph.getByText("Advance pinned history line", { exact: true }).click();
   await preview.waitFor();
   await branchRow("target").dblclick();
   await waitBranch("target");

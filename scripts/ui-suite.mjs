@@ -17,6 +17,7 @@ import { cloneInputSmoke } from "./clone-input-smoke.mjs";
 import { bitbucketTokenSmoke } from "./bitbucket-token-smoke.mjs";
 import {gitConnectionsSmoke} from "./git-connections-smoke.mjs";
 import {fastSwitchSmoke} from "./fast-switch-smoke.mjs";
+import {recoveryRestartSmoke} from "./recovery-restart-smoke.mjs";
 import { repositoryFolderImportSmoke } from "./repository-folder-import-smoke.mjs";
 import { explorerBranchesSmoke } from "./explorer-branches-smoke.mjs";
 import { repositoryNavigationSmoke } from "./repository-navigation-smoke.mjs";
@@ -53,6 +54,7 @@ try{
     await cloneInputSmoke({page,check,shot,work});
     await gitConnectionsSmoke({exe:path.resolve(arg("--exe")),work,check,out});
     await fastSwitchSmoke({exe:path.resolve(arg("--exe")),work,check,out});
+    await recoveryRestartSmoke({exe:path.resolve(arg("--exe")),work,check,out});
     await check("folder import, Explorer drag and drop, flat filtering and shortcut transfer", async () => {
       await repositoryFolderImportSmoke({ page, work, shot });
       await repositoryNavigationSmoke({ page, work, shot });

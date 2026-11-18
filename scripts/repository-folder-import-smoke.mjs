@@ -253,11 +253,11 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
     await overview.waitFor({ state: "detached" });
     const history = page.locator(".workspace .graph-scroll");
     await history.waitFor();
-    const targetCommit = history.locator(".grow.branch-member").filter({ hasText: "Detached branch target commit" });
+    const targetCommit = history.locator(".grow").filter({ hasText: "Detached branch target commit" });
     await targetCommit.waitFor();
     const scope = page.getByRole("combobox", { name: "History scope", exact: true });
-    assert.equal(await scope.inputValue(), "branch-context");
-    assert.equal(await scope.locator("option:checked").textContent(), "Branch context — detached-branch-tip");
+    await page.waitForFunction(() => document.querySelector('select[aria-label="History scope"]')?.value === "refs/heads/detached-branch-tip");
+    assert.equal(await scope.locator("option:checked").textContent(), "detached-branch-tip");
     assert.equal(await history.locator(".grow.selected").count(), 0, "A branch click must leave the commit unselected");
     const preview = page.locator(".commit-preview");
     assert.equal(await preview.count(), 0, "A branch click must leave commit details closed");

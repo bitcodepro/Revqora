@@ -36,7 +36,7 @@ describe("diagnostics report lines", () => {
   it("includes Git errors and timings of an operation but never command output", () => {
     const detail: OperationLogDetail = {
       entry: { id: "1", repo: "D:/work/repo", repositoryKey: "k", command: "push", status: "failed", requestedAt: 0, startedAt: 5, finishedAt: 900,
-        waitMs: 5, durationMs: 895, beforeHead: null, afterHead: null, outcome: null, errorKind: "auth", error: "Authentication failed", truncated: false },
+        waitMs: 5, durationMs: 895, beforeHead: null, afterHead: null, outcome: null, errorKind: "auth", error: "Authentication failed", truncated: false, checkpoints: [] },
       steps: [{ sequence: 1, cwd: "D:/work/repo", args: ["push", "origin", "main"], startedAt: 5, durationMs: 880, exitCode: 128,
         stdout: "file content that must stay private", stderr: "fatal: Authentication failed", outputOmitted: false, truncated: false }],
     };

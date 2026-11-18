@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open as openFolder } from "@tauri-apps/plugin-dialog";
-import { ArchiveRestore, FolderOpen, GitBranchPlus, Plus, RefreshCw, Search, ShieldCheck, Trash2 } from "lucide-react";
+import { ArchiveRestore, FileStack, FolderOpen, GitBranchPlus, GitCompareArrows, History, Plus, RefreshCw, ScrollText, Search, ShieldCheck, Trash2 } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { basename, shortOid } from "../lib/format";
 import { useRepos } from "../lib/store";
-import type { RecoveryCatalog, RecoveryCheckpoint } from "../lib/types";
+import type { RecoveryCatalog, RecoveryCheckpoint, RecoveryFiles, RecoveryRestoreOutcome } from "../lib/types";
+import { OPERATION_STATUS, changeLabel, lastRestoreLines, orderSavedFiles, restoreReport } from "../lib/recoveryRestore";
+import { compareSavedDialog } from "./IgnoredFilesChanged";
+import { operationLogDialog } from "./OperationLog";
 import { showDialog, toast } from "../lib/ui";
 import { confirmDialog, promptDialog } from "./dialogs";
 import { Modal } from "./Modal";
@@ -13,6 +16,8 @@ import "../styles/recovery.css";
 
 const bytes = (n: number) => n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1048576).toFixed(1)} MiB`;
 const date = (n: number) => new Date(n).toLocaleString();
+const action = (command: string) => command.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
+const SHOWN_FILES = 300;
 
 export function recoveryDialog(root: string, initialId?: string) {
   return showDialog<void>((close) => <RecoveryCenter root={root} initialId={initialId} close={close} />);
@@ -34,6 +39,13 @@ function RecoveryCenter({ root, close, initialId }: { root: string; close: () =>
   const [worktreeBranch, setWorktreeBranch] = useState("");
   const [destination, setDestination] = useState("");
   const [recovered, setRecovered] = useState<string | null>(null);
+  const [files, setFiles] = useState<{ id: string; value: RecoveryFiles } | null>(null);
+  const [filesError, setFilesError] = useState<string | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [restoreResult, setRestoreResult] = useState<{ id: string; value: RecoveryRestoreOutcome; total: number } | null>(null);
+  const [allFiles, setAllFiles] = useState(false);
+  const [missing, setMissing] = useState(false);
+  const wanted = useRef(initialId);
   const alive = useRef(true);
   const version = useRef(0);
   useEffect(() => { alive.current = true; return () => { alive.current = false; version.current++; }; }, []);
@@ -43,6 +55,7 @@ function RecoveryCenter({ root, close, initialId }: { root: string; close: () =>
       const next = await api.recoveryList(root);
       if (!alive.current || v !== version.current) return;
       setCatalog(next); setError(null);
+      if (wanted.current) { setMissing(!next.checkpoints.some((cp) => cp.id === wanted.current)); wanted.current = undefined; }
       setSelected((id) => id && next.checkpoints.some((cp) => cp.id === id) ? id : next.checkpoints[0]?.id ?? null);
     } catch (e) { if (alive.current && v === version.current) setError(errorMessage(e)); }
     finally { if (alive.current && v === version.current) setLoading(false); }
@@ -59,6 +72,14 @@ function RecoveryCenter({ root, close, initialId }: { root: string; close: () =>
     }, (e) => { if (current) setDetailError(errorMessage(e)); });
     return () => { current = false; };
   }, [root, selected]);
+  // Saved paths against the working tree now; read again whenever the catalog is reloaded.
+  useEffect(() => {
+    let current = true; setFilesError(null);
+    setFiles((previous) => previous?.id === selected ? previous : null);
+    if (selected) void api.recoveryFiles(root, selected).then((value) => { if (current) setFiles({ id: selected, value }); }, (e) => { if (current) setFilesError(errorMessage(e)); });
+    return () => { current = false; };
+  }, [root, selected, catalog]);
+  useEffect(() => { setPicked(new Set()); setRestoreResult(null); setAllFiles(false); }, [selected]);
   const entries = useMemo(() => (catalog?.checkpoints ?? []).filter((cp) =>
     (kind === "all" || (kind === "workspace" ? cp.workspace : !cp.workspace)) &&
     `${cp.label} ${cp.command.replaceAll("_", " ")} ${cp.branch ?? ""} ${cp.sourceRoot}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())), [catalog, kind, query]);
@@ -95,7 +116,29 @@ function RecoveryCenter({ root, close, initialId }: { root: string; close: () =>
     const path = await run(() => api.recoveryRestoreWorkspace(root, detail.id, destination.trim(), worktreeBranch.trim()), "Files and staging recovered into a new worktree");
     if (path) setRecovered(path);
   };
+  const restoreSelected = async () => {
+    if (!detail || !picked.size) return;
+    const id = detail.id, paths = [...picked];
+    setBusy(true); setError(null);
+    try {
+      const value = await api.recoveryRestoreFiles(root, id, paths);
+      if (!alive.current) return;
+      setRestoreResult({ id, value, total: paths.length }); setPicked(new Set());
+      const report = restoreReport(value, paths.length);
+      if (report.warning) toast.warning(report.title, report.lines.join("\n")); else toast.success(report.title);
+      await useRepos.getState().refresh(root);
+      await reload();
+    } catch (e) { if (alive.current) setError(errorMessage(e)); }
+    finally { if (alive.current) setBusy(false); }
+  };
   const savedRef = detail && reference !== "" ? detail.refs[Number(reference)] : null;
+  const shownFiles = files && files.id === detail?.id ? files.value : null;
+  const operation = shownFiles?.operation ?? null;
+  const ordered = useMemo(() => orderSavedFiles(shownFiles?.files ?? []), [shownFiles]);
+  const restorable = ordered.filter((f) => f.restorable);
+  const counts = ordered.reduce<Record<string, number>>((n, f) => ({ ...n, [f.state]: (n[f.state] ?? 0) + 1 }), {});
+  const result = restoreResult && restoreResult.id === detail?.id ? restoreResult : null;
+  const report = result ? restoreReport(result.value, result.total) : null;
   return <Modal title="Undo Center" subtitle={`Local recovery checkpoints · ${basename(root)}`} icon={<ShieldCheck size={22} />} wide onClose={() => { if (!busy) close(); }}
     footer={<><span className="recovery-retention">30 days · 100 checkpoints · 100 MiB each · 1 GiB of saved files</span><button type="button" className="btn" disabled={busy} onClick={close}>Close</button></>}>
     <div className="recovery-center" aria-busy={busy}>
@@ -107,11 +150,12 @@ function RecoveryCenter({ root, close, initialId }: { root: string; close: () =>
       </div>
       {error && <div className="recovery-error" role="alert">{error}</div>}
       {catalog?.warning && <div className="recovery-notice">{catalog.warning}</div>}
+      {missing && <div className="recovery-notice" role="status">The checkpoint you opened is no longer available. It was deleted, or removed after 30 days or when newer checkpoints needed the space.</div>}
       <div className="recovery-layout">
         <div className="recovery-list" aria-label="Recovery checkpoints">
           <div className="recovery-caption">{entries.length} checkpoint{entries.length === 1 ? "" : "s"}{loading && " · Refreshing…"}</div>
           {entries.map((cp) => <button type="button" key={cp.id} disabled={busy} data-checkpoint-id={cp.id} aria-pressed={selected === cp.id} className={`recovery-row ${selected === cp.id ? "selected" : ""}`} onClick={() => setSelected(cp.id)}>
-            <b>{cp.label || cp.command.replaceAll("_", " ")}</b><span>{cp.branch ?? "Detached / unborn"} · {shortOid(cp.head ?? "") || "No commits"}</span>
+            <b>{cp.label || cp.command.replaceAll("_", " ")}{cp.operationStatus && cp.operationStatus !== "succeeded" && <em className={`recovery-status ${cp.operationStatus}`}>{OPERATION_STATUS[cp.operationStatus]}</em>}</b><span>{cp.branch ?? "Detached / unborn"} · {shortOid(cp.head ?? "") || "No commits"}</span>
             <time>{date(cp.createdAt)}</time><span>{cp.workspace ? `${cp.files} paths + references` : "References only"} · {bytes(cp.bytes)}</span>
           </button>)}
           {!entries.length && <div className="recovery-empty"><ShieldCheck size={28} /><p>{query ? "No matching checkpoints" : "Checkpoints appear before destructive actions. You can also create one now."}</p></div>}
@@ -122,6 +166,14 @@ function RecoveryCenter({ root, close, initialId }: { root: string; close: () =>
           {detail && <>
             <div className="recovery-title"><div><h3>{detail.label}</h3><span>{date(detail.createdAt)}</span></div><button type="button" className="icon-btn recovery-delete" aria-label="Delete checkpoint" title="Delete checkpoint" disabled={busy} onClick={() => void remove()}><Trash2 size={16} /></button></div>
             <dl className="recovery-meta"><dt>Source worktree</dt><dd>{detail.sourceRoot}</dd><dt>Saved HEAD</dt><dd>{detail.branch ?? "Detached / unborn"} · {shortOid(detail.head ?? "") || "No commits"}</dd><dt>Coverage</dt><dd>{detail.workspace ? `Files, staging and ${detail.references} references` : `${detail.references} references`}</dd><dt>Size</dt><dd>{bytes(detail.bytes)}</dd></dl>
+            {operation && <div className={`recovery-card recovery-operation ${operation.effectiveStatus}`} data-operation-status={operation.effectiveStatus}>
+              <h4><History size={16} /> {action(operation.command)} <em className={`recovery-status ${operation.effectiveStatus}`}>{OPERATION_STATUS[operation.effectiveStatus]}</em></h4>
+              <dl className="recovery-meta"><dt>Started</dt><dd>{date(operation.startedAt)}</dd>{operation.finishedAt !== null && <><dt>Finished</dt><dd>{date(operation.finishedAt)}</dd></>}<dt>Changed by it</dt><dd>{operation.effectiveStatus === "interrupted" || operation.effectiveStatus === "running" ? "Not recorded" : `${Object.keys(operation.changed).length} of the saved paths`}</dd></dl>
+              {operation.error && <pre className="recovery-operation-error">{operation.error}</pre>}
+              {operation.effectiveStatus === "interrupted" && <p>The app stopped before this action finished, so what Git changed is unknown. Saved paths that now differ from their copy need a manual check. Restoring keeps the current file and writes the saved copy beside it.</p>}
+              {operation.effectiveStatus === "running" && <p>This action is still running. Its result appears here when it ends.</p>}
+              {operation.operation && <button type="button" className="btn sm" onClick={() => void operationLogDialog(detail.sourceRoot, operation.operation)}><ScrollText size={13} /> Show in Operation log</button>}
+            </div>}
             {recovered && <div className="recovery-success"><span>Recovered: {recovered}</span><button type="button" className="btn" onClick={() => { void useRepos.getState().open(recovered); close(); }}>Open recovered worktree</button></div>}
             {detail.workspace && <div className="recovery-card">
               <h4><FolderOpen size={16} /> Recover files and staging</h4>
@@ -138,7 +190,30 @@ function RecoveryCenter({ root, close, initialId }: { root: string; close: () =>
               <label>New local branch<input className="input" aria-label="Recovered local branch" value={branch} disabled={busy} onChange={(e) => setBranch(e.target.value)} /></label>
               <div className="recovery-actions"><button type="button" className="btn" disabled={busy || !branch.trim()} onClick={() => void run(() => api.recoveryRestoreBranch(root, detail.id, reference === "" ? null : Number(reference), branch.trim()), "Local branch restored")}><GitBranchPlus size={14} /> Restore branch</button>{savedRef?.kind === "stash" && <button type="button" className="btn" disabled={busy} onClick={() => void run(() => api.recoveryRestoreStash(root, detail.id, Number(reference)), "Stash restored")}><ArchiveRestore size={14} /> Restore stash</button>}</div>
             </div>}
-            {detail.paths.length > 0 && <details className="recovery-paths"><summary>{detail.paths.length} saved paths</summary>{detail.paths.map((item) => <div key={item.path}><span>{item.kind === "missing" ? "Deleted" : item.kind}</span><code>{item.path}</code></div>)}</details>}
+            {detail.paths.length > 0 && <div className="recovery-card recovery-files">
+              <h4><FileStack size={16} /> Saved files</h4>
+              {filesError && <div className="recovery-error">{filesError}</div>}
+              {!shownFiles && !filesError && <p>Comparing saved files with the working tree…</p>}
+              {shownFiles && <>
+                <p>{detail.paths.length} saved path{detail.paths.length === 1 ? "" : "s"}{counts.operation ? ` · ${counts.operation} changed by the operation` : ""}{counts.later ? ` · ${counts.later} changed after it` : ""}{counts.unknown ? ` · ${counts.unknown} need a manual check` : ""}{counts.same ? ` · ${counts.same} match the saved copy` : ""}.</p>
+                <div className="recovery-file-list" aria-label="Saved files">
+                  {ordered.slice(0, allFiles ? ordered.length : SHOWN_FILES).map((file) => <div key={file.path} className={`recovery-file ${file.state}`} data-path={file.path} data-state={file.state}>
+                    <input type="checkbox" aria-label={`Restore ${file.path}`} disabled={!file.restorable || busy} checked={picked.has(file.path)} onChange={(e) => { const on = e.target.checked; setPicked((now) => { const next = new Set(now); if (on) next.add(file.path); else next.delete(file.path); return next; }); }} />
+                    <code title={file.path}>{file.path}</code>
+                    <span className="recovery-change">{changeLabel(file)}</span>
+                    {file.savedKind === "file" && file.state !== "same" ? <button type="button" className="btn sm" aria-label={`Compare ${file.path} with its saved copy`} onClick={() => void compareSavedDialog(root, detail.id, file.path)}><GitCompareArrows size={13} /> Compare</button> : <span />}
+                  </div>)}
+                  {!allFiles && ordered.length > SHOWN_FILES && <button type="button" className="btn sm recovery-more" onClick={() => setAllFiles(true)}>Show {ordered.length - SHOWN_FILES} more</button>}
+                </div>
+                <div className="recovery-actions">
+                  <button type="button" className="btn" disabled={busy || !restorable.length || restorable.every((f) => picked.has(f.path))} onClick={() => setPicked(new Set(restorable.map((f) => f.path)))}>Select all changed</button>
+                  <button type="button" className="btn primary" disabled={busy || !picked.size} onClick={() => void restoreSelected()}><ArchiveRestore size={14} /> Restore selected{picked.size ? ` (${picked.size})` : ""}</button>
+                </div>
+                <small>A file still as the operation left it is replaced, and its current version is saved in a new checkpoint first. A file changed after the operation, or after an action whose result is unknown, stays as it is: the saved copy is written beside it as <code>name.recovered</code>.</small>
+                {report && <div className={report.warning ? "recovery-notice recovery-restore-result" : "recovery-success recovery-restore-result"} role="status"><b>{report.title}</b>{report.lines.map((line) => <span key={line}>{line}</span>)}{result?.value.checkpoint && <button type="button" className="btn sm" onClick={() => setSelected(result.value.checkpoint)}>Open the checkpoint of the replaced versions</button>}</div>}
+                {!report && shownFiles.lastRestore && <div className={shownFiles.lastRestore.finished ? "recovery-last-restore" : "recovery-notice recovery-last-restore"} role="status"><b>{shownFiles.lastRestore.finished ? "Last restore" : "Last restore did not finish"} · {date(shownFiles.lastRestore.startedAt)}</b>{lastRestoreLines(shownFiles.lastRestore).map((line) => <span key={line}>{line}</span>)}</div>}
+              </>}
+            </div>}
           </>}
         </section>
       </div>

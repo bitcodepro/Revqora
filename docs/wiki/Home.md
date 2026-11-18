@@ -55,7 +55,7 @@ Button names are written as they appear in the English interface. **Ctrl+N** ope
 
 This guide follows the current source. Check **Settings → About Revqora** and the [release notes](https://github.com/bitcodepro/Revqora/releases) for the features in your installed build.
 
-![Graph with branch context, workspaces and groups](https://raw.githubusercontent.com/bitcodepro/Revqora/main/docs/screenshots/history-dark.png)
+![Graph with branch history, workspaces and groups](https://raw.githubusercontent.com/bitcodepro/Revqora/main/docs/screenshots/history-dark.png)
 
 *The screenshot uses a demo repository. Your repository names and history will differ.*
 

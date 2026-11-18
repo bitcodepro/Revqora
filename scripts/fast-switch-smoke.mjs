@@ -228,7 +228,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    assert.equal(await firstButton.getAttribute("aria-current"), "true");
    assert.equal(await feature.getAttribute("aria-current"), "true");
    assert.equal(await commitRow("Switch second base").count(), 0);
-   assert.match(await page.getByLabel("History scope").locator("option:checked").textContent(), /Branch context.*feature\/mine/);
+   assert.equal(await page.getByLabel("History scope").inputValue(), "refs/heads/feature/mine");
    assert.equal(git(one, "branch", "--show-current"), "main");
 
    // Both repositories advertise the same PR number and branches. Distinguish

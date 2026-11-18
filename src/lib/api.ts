@@ -13,7 +13,7 @@ function prWrite<T>(write: Promise<T>): Promise<T> {
   forgetPrReads();
   return write.finally(forgetPrReads);
 }
-import type { DeletionPlan, DeletionProof, DeletionResult, RemoteBranchTarget, RemoteDeletionReview, OperationLogDetail, OperationLogFilter, OperationLogPage, OperationLogHealth, RecoveryCatalog, RecoveryCheckpoint, RecoverySummary } from "./types";
+import type { DeletionPlan, DeletionProof, DeletionResult, RemoteBranchTarget, RemoteDeletionReview, OperationLogDetail, OperationLogFilter, OperationLogPage, OperationLogHealth, RecoveryCatalog, RecoveryCheckpoint, RecoveryFiles, RecoveryRestoreOutcome, RecoverySummary } from "./types";
 import type {
   Check,
   CommitHelpers,
@@ -156,8 +156,8 @@ export const api = {
   recoveryRestoreBranch: (repo: string, id: string, reference: number | null, name: string) => call<void>("recovery_restore_branch", { repo, id, reference, name }),
   recoveryRestoreStash: (repo: string, id: string, reference: number) => call<void>("recovery_restore_stash", { repo, id, reference }),
   /** Puts saved ignored files back in place; files changed since the operation are left alone. */
-  recoveryRestoreFiles: (repo: string, id: string, changes: import("../components/IgnoredFilesChanged").IgnoredChange[]) =>
-    call<import("../components/IgnoredFilesChanged").RestoreOutcome>("recovery_restore_files", { repo, id, changes }),
+  recoveryRestoreFiles: (repo: string, id: string, paths: string[]) => call<RecoveryRestoreOutcome>("recovery_restore_files", { repo, id, paths }),
+  recoveryFiles: (repo: string, id: string) => call<RecoveryFiles>("recovery_files", { repo, id }),
   /** Accepts that the next operation runs although exactly these ignored files could not be saved. */
   recoveryAcceptUnprotected: (repo: string, command: string, paths: string[], collision: { paths: string[]; copy: boolean } | null = null) => call<string>("recovery_accept_unprotected", { repo, command, paths, collision }),
   recoveryCompareSaved: (repo: string, id: string, path: string) => call<FileDiff>("recovery_compare_saved", { repo, id, path }),

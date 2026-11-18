@@ -14,7 +14,7 @@ By default, Revqora opens all saved repositories at startup. To restore only the
 
 ## Browse and filter repositories
 
-**Explorer** opens by default. It shows groups, subgroups, repositories and branches in one tree. Expand a repository to see its branches, including saved repositories you have closed. Click a branch to open its history context. The branch context menu has the same actions as the **Branches** panel, which you can still open separately with **Ctrl+Alt+B**.
+**Explorer** opens by default. It shows groups, subgroups, repositories and branches in one tree. Expand a repository to see its branches, including saved repositories you have closed. Click a branch to show its history. The branch context menu has the same actions as the **Branches** panel, which you can still open separately with **Ctrl+Alt+B**.
 
 Use **Find in Explorer** to search by folder, repository or branch. **My branches** uses the creator filter for each repository and keeps its primary branch visible at the top. Right-click a branch and choose **Set as primary branch** to pin it in both Explorer and the Branches panel.
 

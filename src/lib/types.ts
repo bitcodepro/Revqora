@@ -36,6 +36,8 @@ export interface OperationLogEntry {
   requestedAt: number; startedAt: number | null; finishedAt: number | null;
   waitMs: number | null; durationMs: number | null; beforeHead: string | null; afterHead: string | null;
   outcome: string | null; errorKind: string | null; error: string | null; truncated: boolean;
+  /** Recovery checkpoints saved for this operation, oldest first. */
+  checkpoints: string[];
 }
 export interface OperationLogStep {
   sequence: number; cwd: string; args: string[]; startedAt: number; durationMs: number | null;
@@ -219,7 +221,6 @@ export interface GraphSummary {
   commitCount?: number | null;
   maxLanes: number;
   headIndex: number | null;
-  branchContext?: { reference: string; base: string | null; recorded: boolean; primary: string | null } | null;
   /** Stage durations in ms (ref resolution, Git walk, layout, ...), in recording order. */
   stages?: [string, number][];
   /** Rows came from the recent-branch cache or an unchanged previous build. */
@@ -837,6 +838,27 @@ export interface RecoverySummary {
   id: string; createdAt: number; command: string; label: string; sourceRoot: string;
   branch: string | null; head: string | null; workspace: boolean; includesIgnored: boolean;
   files: number; references: number; bytes: number;
+  /** Result of the operation the checkpoint was saved for; absent for manual checkpoints. */
+  operationStatus?: RecoveryOperationStatus;
+}
+export type RecoveryOperationStatus = "running" | "succeeded" | "attention" | "failed" | "interrupted";
+export interface RecoveryFileState { kind: "file" | "link" | "directory" | "missing" | "other" | "unreadable"; len: number; sha256: string | null; target: string | null }
+export interface RecoveryOperation {
+  version: number; operation: string | null; command: string; status: string; startedAt: number; finishedAt: number | null;
+  error: string | null; changed: Record<string, RecoveryFileState>; effectiveStatus: RecoveryOperationStatus;
+}
+/** same: matches the saved copy · operation: as the operation left it · later: changed after the operation · unknown: the operation's effect was not recorded. */
+export type RecoveryFileChange = "same" | "operation" | "later" | "unknown";
+export interface RecoverySavedFile { path: string; savedKind: "file" | "missing" | "directory" | "link"; state: RecoveryFileChange; current: RecoveryFileState; restorable: boolean }
+export interface RecoveryKeptBoth { path: string; copy: string }
+export interface RecoveryRestoreSummary {
+  startedAt: number; finished: boolean; planned: string[]; restored: string[]; keptBoth: RecoveryKeptBoth[]; unchanged: string[];
+  failed: [string, string][]; notFinished: string[]; checkpoint: string | null;
+}
+export interface RecoveryFiles { operation: RecoveryOperation | null; files: RecoverySavedFile[]; lastRestore: RecoveryRestoreSummary | null }
+export interface RecoveryRestoreOutcome {
+  restored: string[]; changedSince: string[]; keptBoth: RecoveryKeptBoth[]; unchanged: string[];
+  failed: [string, string] | null; notAttempted: string[]; checkpoint: string | null; checkpointError: string | null;
 }
 export interface RecoveryRef { name: string; oid: string; kind: "branch" | "remote" | "stash" | "layer"; }
 export interface RecoveryCheckpoint extends RecoverySummary {

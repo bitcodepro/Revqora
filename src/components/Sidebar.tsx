@@ -104,7 +104,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
   const [selection, setSelection] = useState<BranchInfo[]>([]);
   const [revealed, setRevealed] = useState<{ reference: string } | null>(null);
   const selectionAnchor = useRef<string | null>(null);
-  const beforeDoubleClick = useRef<Pick<RepoTab, "branchFilter" | "branchContext" | "viewedBranch"> & { reference: string } | null>(null);
+  const beforeDoubleClick = useRef<Pick<RepoTab, "branchFilter" | "viewedBranch"> & { reference: string } | null>(null);
   const cleanupPending = useRef(false);
   const pinnedRow = useRef<HTMLDivElement>(null);
   const refs = tab.refs;
@@ -246,7 +246,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               // checking out is in the context menu (or a double-click).
               const modifier = e.ctrlKey || e.metaKey;
               if (e.detail <= 1) beforeDoubleClick.current = e.shiftKey || modifier ? null : {
-                reference: b.fullName, branchFilter: tab.branchFilter, branchContext: tab.branchContext, viewedBranch: tab.viewedBranch,
+                reference: b.fullName, branchFilter: tab.branchFilter, viewedBranch: tab.viewedBranch,
               };
               chooseBranch(b, modifier, e.shiftKey);
             }}
@@ -275,7 +275,7 @@ export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) 
               const previous = beforeDoubleClick.current;
               beforeDoubleClick.current = null;
               useRepos.getState().patch(root, {
-                ...(previous?.reference === b.fullName ? { branchFilter: previous.branchFilter, branchContext: previous.branchContext, viewedBranch: previous.viewedBranch } : {}),
+                ...(previous?.reference === b.fullName ? { branchFilter: previous.branchFilter, viewedBranch: previous.viewedBranch } : {}),
                 selected: null, multi: [], historyJump: null,
               });
               if (previous?.reference === b.fullName) void loadGraph(root);

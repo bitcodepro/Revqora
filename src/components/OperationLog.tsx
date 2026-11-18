@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
-import { ClipboardCopy, Clock3, Copy, Download, Loader2, RefreshCw, ScrollText, Search, Trash2, TriangleAlert } from "lucide-react";
+import { ClipboardCopy, Clock3, Copy, Download, Loader2, RefreshCw, ScrollText, Search, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { basename, shortOid } from "../lib/format";
 import type { OperationLogDetail, OperationLogEntry, OperationLogFilter, OperationLogHealth, OperationLogStatus, OperationLogStep } from "../lib/types";
@@ -12,6 +12,7 @@ import { confirmDialog } from "./dialogs";
 import { Modal } from "./Modal";
 import { diagnosticsDialog } from "./Diagnostics";
 import { operationLines } from "../lib/diagnostics";
+import { recoveryDialog } from "./RecoveryCenter";
 import "../styles/operationLog.css";
 
 const STATUS: Record<OperationLogStatus, string> = {
@@ -23,8 +24,9 @@ const label = (command: string) => command.replaceAll("_", " ").replace(/^./, (c
 const duration = (ms: number | null) => ms === null ? "—" : ms < 1000 ? `${ms} ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60000)}m ${Math.floor(ms % 60000 / 1000)}s`;
 const date = (ms: number) => new Date(ms).toLocaleString();
 
-export function operationLogDialog(root: string | null = null) {
-  return showDialog<void>((close) => <OperationLog root={root} close={close} />);
+/** Opens the Operation log, optionally with one entry selected (for example from its recovery checkpoint). */
+export function operationLogDialog(root: string | null = null, initialId?: string | null) {
+  return showDialog<void>((close) => <OperationLog root={root} initialId={initialId ?? null} close={close} />);
 }
 
 export function OperationLogButton({ root }: { root?: string | null }) {
@@ -42,7 +44,7 @@ export function OperationLogButton({ root }: { root?: string | null }) {
   return <button type="button" className={`icon-btn operation-log-open ${warning ? "log-warning" : ""}`} title={binding ? `${title} (${prettyCombo(binding)})` : title} aria-label="Operation log" onClick={() => void operationLogDialog(root ?? null)}><ScrollText size={16} />{warning && <span className="log-warning-dot" />}</button>;
 }
 
-function OperationLog({ root, close }: { root: string | null; close: () => void }) {
+function OperationLog({ root, close, initialId = null }: { root: string | null; close: () => void; initialId?: string | null }) {
   const [scope, setScope] = useState(root ? "repository" : "all");
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
@@ -51,7 +53,10 @@ function OperationLog({ root, close }: { root: string | null; close: () => void 
   const [entries, setEntries] = useState<OperationLogEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [next, setNext] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialId);
+  // The entry this dialog was opened for stays selected until the filters change.
+  const keep = useRef<string | null>(initialId);
+  const filtered = useRef(false);
   const [detail, setDetail] = useState<OperationLogDetail | null>(null);
   const [health, setHealth] = useState<OperationLogHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -78,12 +83,16 @@ function OperationLog({ root, close }: { root: string | null; close: () => void 
       const page = await api.operationLogList(filter);
       if (!alive.current || current !== generation.current) return;
       setEntries(page.entries); setTotal(page.total); setNext(page.next);
-      setSelected((id) => id && page.entries.some((entry) => entry.id === id) ? id : page.entries[0]?.id ?? null);
+      setSelected((id) => id && (id === keep.current || page.entries.some((entry) => entry.id === id)) ? id : page.entries[0]?.id ?? null);
       setError(null); setChanged(false); setOlder(false); setRevision((v) => v + 1);
     } catch (e) { if (alive.current && current === generation.current) setError(errorMessage(e)); }
     finally { if (alive.current && current === generation.current) setLoading(false); }
   }, [filter]);
-  useEffect(() => { setSelected(null); setEntries([]); setTotal(0); setNext(null); void reload(); }, [reload]);
+  useEffect(() => {
+    if (filtered.current) keep.current = null;
+    filtered.current = true;
+    setSelected(keep.current); setEntries([]); setTotal(0); setNext(null); void reload();
+  }, [reload]);
   const running = entries.some(active);
   useEffect(() => {
     const changed = () => { if (!alive.current) return; if (readingOlder.current) setChanged(true); else void reload(); };
@@ -174,10 +183,11 @@ function LogDetail({ detail: { entry, steps } }: { detail: OperationLogDetail })
       <dt>Queue wait</dt><dd>{duration(entry.waitMs ?? (entry.status === "queued" ? Date.now() - entry.requestedAt : null))}</dd><dt>Total duration</dt><dd>{duration(entry.durationMs ?? (active(entry) ? Date.now() - entry.requestedAt : null))}</dd>
       <dt>HEAD before</dt><dd><Head value={entry.beforeHead} /></dd><dt>HEAD after</dt><dd><Head value={entry.afterHead} /></dd>
       {entry.outcome && <><dt>Git workflow</dt><dd>{entry.outcome}</dd></>}
+      {entry.checkpoints.length > 0 && <><dt>Recovery</dt><dd className="log-checkpoints">{entry.checkpoints.map((id) => <button key={id} type="button" className="btn sm log-checkpoint" title={id} onClick={() => void recoveryDialog(entry.repo, id)}><ShieldCheck size={12} /> Open checkpoint{entry.checkpoints.length > 1 ? ` ${entry.checkpoints.indexOf(id) + 1}` : ""}</button>)}</dd></>}
     </dl>
     {entry.error && entry.status !== "interrupted" && <div className="log-result-error"><b>{entry.errorKind}</b><pre>{entry.error}</pre></div>}
     {entry.status === "attention" && <div className="log-notice">This action stopped for conflicts, editing or confirmation. Complete or abort the Git workflow from the repository view.</div>}
-    {entry.status === "interrupted" && <div className="log-notice">The app stopped recording this action. Git may have continued after the app closed; its final result is unknown. Refresh the repository before another action.</div>}
+    {entry.status === "interrupted" && <div className="log-notice">The app stopped recording this action. Git may have continued after the app closed; its final result is unknown. Refresh the repository before another action.{entry.checkpoints.length > 0 && " Its recovery checkpoint shows which saved files differ now and lets you restore them."}</div>}
     {entry.truncated && <div className="log-notice">Some diagnostics were truncated to keep the journal bounded.</div>}
     <h4 className="log-commands-title">Git commands <span className="faint">({steps.length})</span></h4>
     {!steps.length && <div className="faint">{entry.status === "queued" ? "Waiting for the repository queue." : "No Git command results were recorded."}</div>}

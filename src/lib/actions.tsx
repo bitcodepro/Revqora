@@ -3,7 +3,7 @@ import { plural } from "./format";
 // High-level user actions: call the backend, report results, refresh state.
 import { open as openFolder } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage, isGitError, newOpId } from "./api";
-import { ALL, getTab, refreshAfterOperation, useRepos, type Parts } from "./store";
+import { ALL, getTab, historyAfterSwitch, refreshAfterOperation, useRepos, type Parts } from "./store";
 import { endBusy, showDialog, startBusy, toast, useUi } from "./ui";
 import { GitMerge } from "lucide-react";
 import { Modal } from "../components/Modal";
@@ -399,7 +399,8 @@ export async function checkoutWithOutcome(
     }
     const repos = useRepos.getState();
     if (result?.status === "switched" && kind !== "commit") {
-      repos.patch(root, { selected: null, multi: [], historyJump: null });
+      const tab = repos.tabs[root];
+      repos.patch(root, { selected: null, multi: [], historyJump: null, ...(tab ? historyAfterSwitch(tab, result.branch, kind, target) : {}) });
     }
     void repos.refresh(root, { refs: true, graph: true, layers: true });
     if (result?.status !== "switched") return {status:"failed",error:failure ?? new Error("The branch switch did not finish.")};

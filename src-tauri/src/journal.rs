@@ -57,6 +57,8 @@ pub struct Entry {
     pub error_kind: Option<String>,
     pub error: Option<String>,
     pub truncated: bool,
+    /// Recovery checkpoints saved for this operation, oldest first.
+    pub checkpoints: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -202,6 +204,9 @@ impl Journal {
                 cwd TEXT NOT NULL, args TEXT NOT NULL, started_at INTEGER NOT NULL, duration_ms INTEGER, exit_code INTEGER,
                 stdout TEXT NOT NULL DEFAULT '', stderr TEXT NOT NULL DEFAULT '', output_omitted INTEGER NOT NULL,
                 truncated INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(operation,sequence));
+            CREATE TABLE IF NOT EXISTS operation_checkpoints(
+                operation TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE, checkpoint TEXT NOT NULL,
+                created_at INTEGER NOT NULL, PRIMARY KEY(operation,checkpoint));
             PRAGMA user_version=1;",
         )
         .map_err(diagnostic)?;
@@ -337,7 +342,9 @@ impl Journal {
         let mut statement = db
             .prepare(&format!(
                 "SELECT id,repo,repository_key,command,status,requested_at,started_at,finished_at,wait_ms,duration_ms,
-            before_head,after_head,outcome,error_kind,error,truncated FROM operations WHERE {condition}
+            before_head,after_head,outcome,error_kind,error,truncated,
+            (SELECT group_concat(checkpoint,' ') FROM (SELECT checkpoint FROM operation_checkpoints k WHERE k.operation=operations.id ORDER BY created_at,checkpoint))
+            FROM operations WHERE {condition}
             AND (?6 IS NULL OR (requested_at,id)<(?6,?7)) ORDER BY requested_at DESC,id DESC LIMIT ?8"
             ))
             .map_err(diagnostic)?;
@@ -435,7 +442,9 @@ fn read_detail(db: &Connection, id: &str) -> Result<Detail> {
     let entry = db
         .query_row(
             "SELECT id,repo,repository_key,command,status,requested_at,started_at,finished_at,wait_ms,duration_ms,
-            before_head,after_head,outcome,error_kind,error,truncated FROM operations WHERE id=?1",
+            before_head,after_head,outcome,error_kind,error,truncated,
+            (SELECT group_concat(checkpoint,' ') FROM (SELECT checkpoint FROM operation_checkpoints k WHERE k.operation=operations.id ORDER BY created_at,checkpoint))
+            FROM operations WHERE id=?1",
             [id],
             row_entry,
         )
@@ -466,6 +475,7 @@ fn row_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
         error_kind: r.get(13)?,
         error: r.get(14)?,
         truncated: r.get(15)?,
+        checkpoints: r.get::<_, Option<String>>(16)?.map(|ids| ids.split(' ').map(str::to_owned).collect()).unwrap_or_default(),
     })
 }
 
@@ -510,20 +520,7 @@ impl Operation {
         if self.context.closed.swap(true, Ordering::Relaxed) {
             return;
         }
-        let outcome = result.as_ref().ok().and_then(|value| serde_json::to_value(value).ok()).and_then(|v| {
-            v.get("status")
-                .and_then(|s| s.as_str())
-                .filter(|s| matches!(*s, "done" | "conflicts" | "pending" | "stopped" | "upToDate" | "fastForward"))
-                .map(str::to_owned)
-        });
-        let attention = outcome.as_deref().is_some_and(|s| matches!(s, "conflicts" | "pending" | "stopped"));
-        let status = if result.is_err() {
-            "failed"
-        } else if attention {
-            "attention"
-        } else {
-            "succeeded"
-        };
+        let (status, outcome) = result_status(result);
         let error = result.as_ref().err().map(|e| redact::bounded(&redact::text(&e.message), 2048).0);
         let kind = result.as_ref().err().map(|e| redact::bounded(&redact::text(&e.kind), 128).0);
         let update = self.context.store.complete(
@@ -536,6 +533,43 @@ impl Operation {
         if let Err(e) = self.context.store.prune() {
             warn(e);
         }
+    }
+}
+
+/// The journal status of a finished operation (succeeded, attention or failed) and the Git
+/// workflow state it reported, if any.
+pub(crate) fn result_status<T: Serialize>(result: &std::result::Result<T, GitError>) -> (&'static str, Option<String>) {
+    let outcome = result.as_ref().ok().and_then(|value| serde_json::to_value(value).ok()).and_then(|v| {
+        v.get("status")
+            .and_then(|s| s.as_str())
+            .filter(|s| matches!(*s, "done" | "conflicts" | "pending" | "stopped" | "upToDate" | "fastForward"))
+            .map(str::to_owned)
+    });
+    let attention = outcome.as_deref().is_some_and(|s| matches!(s, "conflicts" | "pending" | "stopped"));
+    let status = if result.is_err() {
+        "failed"
+    } else if attention {
+        "attention"
+    } else {
+        "succeeded"
+    };
+    (status, outcome)
+}
+
+/// The journal entry of the operation running on this thread.
+pub(crate) fn current_id() -> Option<String> {
+    CURRENT.with(|c| c.borrow().last().map(|context| context.id.clone()))
+}
+
+/// Records that recovery checkpoint `checkpoint` was saved for journal entry `operation`.
+pub(crate) fn link_checkpoint(operation: &str, checkpoint: &str) {
+    let Ok(store) = store() else { return };
+    let result = store.db.lock().execute(
+        "INSERT OR IGNORE INTO operation_checkpoints(operation,checkpoint,created_at) SELECT id,?2,?3 FROM operations WHERE id=?1",
+        params![operation, checkpoint, now()],
+    );
+    if let Err(e) = result {
+        warn(e);
     }
 }
 

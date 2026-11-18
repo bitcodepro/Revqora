@@ -260,7 +260,13 @@ pub fn inspect<T>(repo: &Path, f: impl FnOnce() -> GitResult<T>) -> GitResult<(T
 }
 
 /// Check the UI's last observed state AFTER reaching the front of the queue.
-pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl FnMut(&str, usize), f: impl FnOnce() -> GitResult<T>) -> GitResult<T> {
+pub fn run<T: serde::Serialize>(
+    repo: &Path,
+    command: &str,
+    expected: Option<&str>,
+    phase: impl FnMut(&str, usize),
+    f: impl FnOnce() -> GitResult<T>,
+) -> GitResult<T> {
     access(repo, true, phase, || {
         // The user's decisions belong to this operation only; they and its watch are dropped on
         // every exit, a rejected precondition or a panic included.
@@ -296,7 +302,10 @@ pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl Fn
                 return Err(GitError::new(format!("Finish or abort the current {} operation first.", state.kind)).kind("operation-in-progress"));
             }
         }
-        super::recovery::before(repo, command, expected).and_then(|()| f())
+        let result = super::recovery::before(repo, command, expected).and_then(|()| f());
+        // The checkpoints saved for this operation keep its result and what it changed.
+        super::recovery::record_outcome(crate::journal::result_status(&result).0, result.as_ref().err().map(|e| e.message.as_str()));
+        result
     })
 }
 

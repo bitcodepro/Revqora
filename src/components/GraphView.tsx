@@ -18,7 +18,7 @@ import { useSettings } from "../lib/settings";
 import { repositoryKey } from "../lib/repositoryLibrary";
 import { actionFor, matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
-import type { GraphLaneAnchor, GraphRow, GraphSummary, HistoryFilters, RefLabel, SearchMode, Seg } from "../lib/types";
+import type { GraphLaneAnchor, GraphRow, HistoryFilters, SearchMode, Seg } from "../lib/types";
 import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, historyListMode, jumpResets, removeFilter } from "../lib/historyFilters";
 import { WORKTREE } from "../lib/types";
 import { absoluteTime, fullTime, relativeTime, shortOid } from "../lib/format";
@@ -43,15 +43,7 @@ const PAD = 10;
 const MAX_LANES = 64;
 const MIN_GRAPH_W = 76;
 const PAGE = 250;
-const BRANCH_CONTEXT_SCOPE = "branch-context";
 const branchName = (reference: string) => reference.replace(/^refs\/(heads|remotes)\//, "");
-
-function matchesBranch(label: RefLabel, reference: string | null | undefined) {
-  if (!reference) return false;
-  if (label.kind === "local" || label.kind === "head") return reference === `refs/heads/${label.name}` ||
-    (!!label.syncedRemote && reference === `refs/remotes/${label.syncedRemote}`);
-  return label.kind === "remote" && reference === `refs/remotes/${label.name}`;
-}
 
 interface LanePin {
   key: string;
@@ -94,7 +86,6 @@ interface RowProps {
   hl: number | null;
   pinnedLaneMember: boolean;
   branchMember: boolean;
-  branchContext: GraphSummary["branchContext"];
   animDelay: number | null;
   dateStyle: "relative" | "absolute";
   showRemote: boolean;
@@ -149,20 +140,14 @@ const Row = memo(function Row(p: RowProps) {
   const incomingBadge = r.incoming && <span className="pill blue incoming-badge" title="Fetched from upstream. Pull to add this commit to the local branch.">Incoming</span>;
   const mid = p.rowH / 2;
   const nodeColor = `var(--lane-${r.color % 12})`;
-  const branchMark = (label: RefLabel) => matchesBranch(label, p.branchContext?.reference) ? "selected" :
-    matchesBranch(label, p.branchContext?.base) ? "base" : matchesBranch(label, p.branchContext?.primary) ? "primary" : undefined;
-  const refs = r.refs.filter(label => {
-    if (p.branchContext && (label.kind === "head" || label.kind === "local" || label.kind === "remote")) return !!branchMark(label);
-    return p.showRemote || label.kind !== "remote";
-  });
-  const branchStyle = p.branchMember ? "branch-member" : p.branchContext && !wip ? "branch-background" : "";
+  const refs = r.refs.filter(label => p.showRemote || label.kind !== "remote");
+  const branchStyle = p.branchMember ? "branch-member" : "";
   const anim =
     p.animDelay !== null ? { animationDelay: `${p.animDelay}ms` } : undefined;
   const badges = refs.map((l) => (
     <RefBadge
       key={l.kind + l.name}
       r={l}
-      branchMark={branchMark(l)}
       merged={
         squashed.includes(l.name) ||
         (!!l.syncedRemote && squashed.includes(l.syncedRemote))
@@ -389,16 +374,15 @@ export function GraphView({
     ? status?.behind ?? 0
     : tab.refs?.local.find(branch => branch.fullName === fixedBranch)?.behind ?? 0;
   const selectHistoryScope = (branchFilter: string | null) => {
-    patch(root, { branchFilter, branchContext: null, viewedBranch: null, selected: null, multi: [], historyJump: null });
+    patch(root, { branchFilter, viewedBranch: null, selected: null, multi: [], historyJump: null });
     setPin(null);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
     void loadGraph(root);
   };
-  const { key: expectedScope } = graphHistoryScope(tab, primaryBranch, showIncoming);
+  const { key: expectedScope } = graphHistoryScope(tab, showIncoming);
   const summary = tab.graphScope === expectedScope ? tab.graph : null;
-  const branchContext = tab.branchContext && summary?.branchContext?.reference === tab.branchContext ? summary.branchContext : null;
   const graphKey = summary?.key;
-  const viewedBranch = tab.branchContext ? branchContext?.reference : tab.viewedBranch;
+  const viewedBranch = tab.viewedBranch;
   const [branchMembers, setBranchMembers] = useState<{ key: string; reference: string; rows: Set<number> } | null>(null);
   useEffect(() => {
     if (!graphKey || !viewedBranch) return;
@@ -489,7 +473,7 @@ export function GraphView({
   const panelMenu = usePanelTitleMenu("history");
   // The search the user asked for. A graph rebuild (paging, watcher, auto-fetch) re-runs it for
   // the new rows but keeps the current match and scroll position.
-  const searchScope = JSON.stringify([root, tab.branchFilter, tab.branchContext, mode, query.trim(), filterReq]);
+  const searchScope = JSON.stringify([root, tab.branchFilter, mode, query.trim(), filterReq]);
   const results = useMemo(() => found?.scope === searchScope ? found.matches : [], [found, searchScope]);
   const foundRef = useRef(found);
   foundRef.current = found;
@@ -702,11 +686,11 @@ export function GraphView({
     void api.graphFind(root, oid, graphKey).then((index) => {
       const latest = useRepos.getState().tabs[root];
       if (!current || latest?.graph?.key !== graphKey || latest.historyJump !== oid) return;
-      const step = jumpStep({ found: index != null, moreHistory: hasMoreHistory(latest), scoped: !!(latest.branchFilter || latest.branchContext) });
+      const step = jumpStep({ found: index != null, moreHistory: hasMoreHistory(latest), scoped: !!latest.branchFilter });
       if (step === "widen-scope") {
         // The branch scope leaves the commit out (a tag on another branch): show all branches
         // and keep the request, so the rebuilt graph selects it.
-        patch(root, { branchFilter: null, branchContext: null, viewedBranch: null });
+        patch(root, { branchFilter: null, viewedBranch: null });
         void loadGraph(root);
         return;
       }
@@ -907,8 +891,8 @@ export function GraphView({
             patch(root, { historyJump: oid });
             return;
           }
-          if (latest.branchFilter || latest.branchContext) {
-            patch(root, { branchFilter: null, branchContext: null, viewedBranch: null, historyJump: oid });
+          if (latest.branchFilter) {
+            patch(root, { branchFilter: null, viewedBranch: null, historyJump: oid });
             void loadGraph(root);
             return;
           }
@@ -1104,10 +1088,10 @@ export function GraphView({
     } else if (matchesShortcut(e, "historyLastCommit")) {
       e.preventDefault();
       if (filtered) { void selectIndex(count - 1); return; }
-      const scope = { branchFilter: tab.branchFilter, branchContext: tab.branchContext, selected: tab.selected };
+      const scope = { branchFilter: tab.branchFilter, selected: tab.selected };
       void loadEntireHistory(root).then(() => {
         const latest = useRepos.getState().tabs[root];
-        const sameView = !!latest && latest.branchFilter === scope.branchFilter && latest.branchContext === scope.branchContext && latest.selected === scope.selected;
+        const sameView = !!latest && latest.branchFilter === scope.branchFilter && latest.selected === scope.selected;
         // The full history is a new graph, usually rendered before this runs: the selectIndex
         // of the key press still belongs to the old graph, so use the one that renders it.
         const step = lastRowStep({ sameView, loadedKey: latest?.graph?.key ?? null, renderedKey: rendered.current.graphKey ?? null });
@@ -1154,7 +1138,6 @@ export function GraphView({
           hl={filtered ? null : hl}
           pinnedLaneMember={!filtered && !!r && r.oid !== WORKTREE && r.laneId === pinned}
           branchMember={!filtered && (highlightedRows?.has(idx) ?? false)}
-          branchContext={filtered ? undefined : branchContext}
           animDelay={drawing ? Math.max(0, i - first) * 16 : null}
           dateStyle={dateStyle}
           showRemote={showRemote}
@@ -1292,10 +1275,7 @@ export function GraphView({
         {pin && <button type="button" className="btn sm" onClick={() => setPin(null)}>Clear line highlight</button>}
         <div className="graph-branch-filter" data-branch-filter={fixedBranch ?? undefined}>
           <select className="select" aria-label="History scope" title="Choose which branch history to show"
-            value={tab.branchContext ? BRANCH_CONTEXT_SCOPE : tab.branchFilter ?? ""} onChange={event => {
-              if (event.target.value !== BRANCH_CONTEXT_SCOPE) selectHistoryScope(event.target.value || null);
-            }}>
-            {tab.branchContext && <option value={BRANCH_CONTEXT_SCOPE}>Branch context — {branchName(tab.branchContext)}</option>}
+            value={tab.branchFilter ?? ""} onChange={event => selectHistoryScope(event.target.value || null)}>
             <option value={CURRENT_HISTORY_BRANCH}>{tab.info?.head.branch ? `Current branch — ${tab.info.head.branch}` : "Current commit (HEAD)"}</option>
             <option value="">All branches (local and fetched)</option>
             {fixedBranch && ![...(tab.refs?.local ?? []), ...(tab.refs?.remote ?? [])].some(branch => branch.fullName === fixedBranch) && <option value={fixedBranch}>{fixedBranch}</option>}
@@ -1304,12 +1284,9 @@ export function GraphView({
           </select>
           {!!(tab.refs?.local.length || tab.refs?.remote.length) && <button type="button" className="icon-btn sm" aria-label="Find a branch" title="Find a branch to show its history"
             onClick={() => void pickBranchScope(tab.refs?.local ?? [], tab.refs?.remote ?? []).then(reference => { if (reference) selectHistoryScope(reference); })}><Search size={12} /></button>}
-          {(fixedBranch || tab.branchContext) && <button type="button" className="icon-btn sm" aria-label="Clear branch filter" title="Return to current branch"
+          {fixedBranch && <button type="button" className="icon-btn sm" aria-label="Clear branch filter" title="Return to current branch"
             onClick={() => selectHistoryScope(CURRENT_HISTORY_BRANCH)}><X size={12} /></button>}
         </div>
-        {branchContext?.base && <span className="pill branch-context-base" title={branchContext.recorded ? "Branch creation recorded by Git" : "Base used for comparison"}>
-          {branchContext.recorded ? "From" : "Compared with"} {branchName(branchContext.base)}
-        </span>}
         {primaryBranch && <span className="pill branch-primary-mark" title={primaryInfo ? `Primary branch · ${primaryInfo.name}` : `Primary branch · ${branchName(primaryBranch)} (ref unavailable)`}>
           Primary · {branchName(primaryBranch)}{primaryInfo && <BranchAheadBehind branch={primaryInfo}/>}
         </span>}

@@ -4,7 +4,7 @@
 
 ## Inspect history and a commit
 
-Use **History scope** to show the current branch, an explicit local or remote branch, or **All branches (local and fetched)**. Clicking a branch in the sidebar opens **Branch context**. The app highlights that branch's own commits, shows the source or comparison branch, and includes the configured primary branch. Click a graph lane to highlight its commits. Use **Clear line highlight** to release it.
+Use **History scope** to show the current branch, an explicit local or remote branch, or **All branches (local and fetched)**. Clicking a branch in the sidebar or Explorer sets **History scope** to that branch, or to **Current branch** when it is the checked-out branch. When you check out the branch you are viewing, History returns to **Current branch** and shows its incoming commits. Click a graph lane to highlight its commits. Use **Clear line highlight** to release it.
 
 History opens with up to 200 commits and extends as you scroll. The count shows the full scope when available. Commit search includes older commits and opens matches beyond the loaded graph in the match list. Clear the search to return to the graph. On a local branch, the eye icon shows or hides fetched commits marked **Incoming**. Pull applies those commits to the local branch.
 

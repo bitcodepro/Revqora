@@ -1019,6 +1019,7 @@ fn restore_never_replaces_a_file_changed_after_the_operation() {
     assert_eq!(outcome.restored, ["local.env"]);
     assert_eq!(outcome.changed_since, ["other.env"]);
     assert_eq!(fs::read_to_string(repo.p().join("other.env")).unwrap(), "edited later\n");
+    assert_eq!(fs::read_to_string(repo.p().join("other.env.recovered")).unwrap(), "untouched\n", "the saved copy is written beside it");
     assert_eq!(fs::read_to_string(repo.p().join("local.env")).unwrap(), "PRECIOUS\n");
 }
 

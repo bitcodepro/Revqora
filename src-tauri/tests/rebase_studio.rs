@@ -66,7 +66,7 @@ impl Repo {
     fn review(&self, items: &[ops::RebaseItem]) -> studio::Review {
         operations::inspect(&self.root, || studio::review(&self.root, &self.a, items)).unwrap().0
     }
-    fn run<T>(&self, name: &str, f: impl FnOnce() -> runner::GitResult<T>) -> runner::GitResult<T> {
+    fn run<T: serde::Serialize>(&self, name: &str, f: impl FnOnce() -> runner::GitResult<T>) -> runner::GitResult<T> {
         let token = status::status(&self.root)?.state_token;
         operations::run(&self.root, name, token.as_deref(), |_, _| {}, f)
     }

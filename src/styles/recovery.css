@@ -41,3 +41,24 @@
 @media (max-width: 780px) { .modal:has(.recovery-center) { width: calc(100vw - 20px); }.recovery-layout { grid-template-columns: minmax(180px, 32%) minmax(0, 1fr); }.recovery-detail { padding: 12px; }.recovery-meta { grid-template-columns: 90px minmax(0, 1fr); } }
 /* The search field has no border of its own: show focus on its wrapper. */
 .recovery-search:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
+/* Result of the operation a checkpoint was saved for, and its saved files against the working tree now. */
+.recovery-status { margin-left: 6px; padding: 1px 6px; border-radius: 9px; font-style: normal; font-weight: 500; font-size: max(10px, var(--fs-xs)); background: color-mix(in srgb, var(--text-faint) 14%, transparent); color: var(--text-dim); white-space: nowrap; }
+.recovery-status.succeeded { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.recovery-status.attention, .recovery-status.interrupted { background: color-mix(in srgb, var(--amber) 18%, transparent); }
+.recovery-status.failed { background: color-mix(in srgb, var(--red) 14%, transparent); }
+.recovery-operation.interrupted, .recovery-operation.failed { border-color: color-mix(in srgb, var(--amber) 45%, var(--border)); }
+.recovery-operation .recovery-meta { margin: 6px 0 8px; }
+.recovery-operation-error { margin: 6px 0 10px; padding: 8px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: max(11px, var(--fs-xs)); background: color-mix(in srgb, var(--red) 8%, transparent); }
+.recovery-file-list { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; margin: 8px 0 12px; }
+.recovery-file { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: max(11px, var(--fs-xs)); }
+.recovery-file:last-child { border-bottom: 0; }
+.recovery-file code { overflow-wrap: anywhere; }
+.recovery-file .recovery-change { color: var(--text-faint); white-space: nowrap; }
+.recovery-file.operation .recovery-change { color: var(--text-dim); }
+.recovery-file.later .recovery-change, .recovery-file.unknown .recovery-change { color: var(--amber); }
+.recovery-file.same { opacity: .7; }
+.recovery-more { margin: 8px 10px; }
+.recovery-restore-result, .recovery-last-restore { display: flex; flex-direction: column; gap: 5px; margin: 12px 0 0; overflow-wrap: anywhere; }
+.recovery-restore-result .btn { align-self: flex-start; }
+.recovery-last-restore:not(.recovery-notice) { padding: 10px 12px; border-radius: 6px; background: var(--bg-hover); font-size: var(--fs-sm); }
+.recovery-card .recovery-notice { margin: 12px 0 0; }
