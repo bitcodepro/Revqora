@@ -306,11 +306,13 @@ export async function prCenterSmoke({page,check,shot,work}) {
       await button("Copy diagnostics…").click();
       const report=page.locator(".modal").last().getByLabel("Diagnostics report text",{exact:true});
       await report.waitFor();const text=await report.innerText();
-      if(!text.startsWith("Revqora diagnostics report")||!/\nGit: git version /.test(text)||!text.includes("Source: Check connection")||!text.includes("Pull request list: Works"))throw Error(`Unexpected report: ${text}`);
+      if(!text.startsWith("Revqora diagnostics report")||!/\nGit: (git version )?\d+\.\d+/.test(text)||!text.includes("Source: Check connection")||!text.includes("Pull request list: Works"))throw Error(`Unexpected report: ${text}`);
       if(text.includes(token)||/Authorization|Bearer/i.test(text))throw Error("The report contains credentials");
       await shot("121-diagnostics-preview");
       await button("Close").click();await button("Close").click();
-      if(requests.slice(before).some(r=>r.method!=="GET"||/git-receive-pack/.test(r.path)&&!/info\/refs/.test(r.path)))throw Error("Check connection sent a write request");
+      // GraphQL reads are POSTs; a mutation or a pack sent for receive-pack would be a write.
+      const write=r=>r.path.startsWith("/api/graphql")?/^\s*mutation\b/.test(r.body?.query??""):!["GET","HEAD"].includes(r.method)||/git-receive-pack/.test(r.path)&&!/info\/refs/.test(r.path);
+      if(requests.slice(before).some(write))throw Error(`Check connection sent a write request: ${JSON.stringify(requests.slice(before).filter(write).map(r=>[r.method,r.path]))}`);
       if(git("rev-parse","HEAD")!==head||!index.equals(fs.readFileSync(path.join(root,".git/index"))))throw Error("Check connection changed the repository");
     });
   } finally {server.closeAllConnections();await new Promise(r=>server.close(r));}

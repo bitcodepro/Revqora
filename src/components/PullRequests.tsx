@@ -10,11 +10,11 @@ import { api, errorMessage, isGitError } from "../lib/api";
 import { forgetPrReads } from "../lib/prCache";
 import { getTab, type RepoTab } from "../lib/store";
 import { showDialog, toast, copyText, openOverlay, contextMenu, type MenuItem } from "../lib/ui";
-import { useAllPullRequests } from "../lib/useAllPullRequests";
+import { pullRequestFreshness, useAllPullRequests } from "../lib/useAllPullRequests";
 import { repositoryKey, useLibrary } from "../lib/repositoryLibrary";
 import * as A from "../lib/actions";
 import type { Check, ForgeInfo, PullRequest, PrDetail, PrEditResult, PrFile, PrFileView, PrMergePlan, PrPage, PrReviewCapabilities, PrReviewKind, PrState, PrTemplates } from "../lib/types";
-import { basename, relativeTime } from "../lib/format";
+import { basename, fullTime, relativeTime } from "../lib/format";
 import { appendPullRequests, forgeRepositoryIdentity, loadPrPreferences, prPreferencesKey, pullRequestNumber, restorePrPreferences, safeWebUrl, searchPullRequests, utf8Length, prWriteAttemptKey, prWriteAttemptPending, setPrWriteAttemptPending, type PrPreferences } from "../lib/prCenter";
 import { Modal } from "./Modal";
 import { Splitter } from "./Overlays";
@@ -284,13 +284,13 @@ const CombinedPullRequests = memo(function CombinedPullRequests({ root }: { root
   const watches = useSettings(s => s.prWatches);
   const watchMine = useSettings(s => !!s.prWatchMineSince);
 
-  const rows = useMemo(() => Object.entries(groups).flatMap(([root, { forge, scope, author, items }]) => {
+  const rows = useMemo(() => Object.entries(groups).flatMap(([root, { forge, scope, author, items, stale }]) => {
     if (!forge) return [];
     const key = repositoryKey(root);
     const repository = { root, name: names[key] ?? basename(root), project: forge.project };
     const identity = forgeRepositoryIdentity(forge);
     return searchPullRequests(items, query).map(pull => ({
-      id: JSON.stringify([key, identity, pull.number]), pull, repository, forge, scope, author,
+      id: JSON.stringify([key, identity, pull.number]), pull, repository, forge, scope, author, stale,
       created: Date.parse(pull.created) || 0,
     }));
   }).sort((a, b) => b.created - a.created || a.id.localeCompare(b.id)), [groups, names, query]);
@@ -306,6 +306,7 @@ const CombinedPullRequests = memo(function CombinedPullRequests({ root }: { root
   }, [selected, selectedId]);
 
   const issues = Object.entries(groups).filter(([, group]) => group.notice);
+  const freshness = pullRequestFreshness(groups, finished);
   const forge = selected?.forge ?? groups[root]?.forge;
   const actionRoot = selectedRoot ?? root;
   const refreshButton = <button type="button" className="icon-btn" title="Refresh all pull requests" aria-label="Refresh all pull requests" disabled={!finished} onClick={refresh}><RefreshCw size={15} className={finished ? "" : "spin"} /></button>;
@@ -332,13 +333,14 @@ const CombinedPullRequests = memo(function CombinedPullRequests({ root }: { root
       </select></div>
       {issues.length > 0 && <details className="pr-scan-issues">
         <summary>{issues.length} {issues.length === 1 ? "repository needs" : "repositories need"} attention</summary>
-        <ul>{issues.map(([path, group]) => <li key={path}><b>{names[repositoryKey(path)] ?? basename(path)}</b> {group.notice}
+        <ul>{issues.map(([path, group]) => <li key={path}><b>{names[repositoryKey(path)] ?? basename(path)}</b> {group.notice}{group.loading ? " Refreshing…" : group.stale && group.loadedAt ? ` Showing results from ${relativeTime(group.loadedAt / 1000)}.` : ""}
           <span className="pr-scan-issue-actions"><button type="button" className="btn sm ghost" onClick={() => void connectionCheckDialog(path)}>Check connection…</button>
             <button type="button" className="btn sm ghost" onClick={() => void diagnosticsDialog({ source: "PR Center", lines: pullRequestErrorLines("List pull requests (all repositories)", path, group.notice ?? "", group.noticeDetails, group.forge ? `${FORGE_NAMES[group.forge.kind]} · ${group.forge.project}` : undefined) })}>Copy diagnostics…</button></span></li>)}</ul>
       </details>}
       <RequestRows rows={rows.map(row => ({ ...row, watched: !!watches[row.repository.root]?.[row.scope]?.selected[row.pull.number] }))}
         selected={selected?.id ?? null} select={setSelectedId} resetKey={JSON.stringify([query, prefs.state, mine])} showRepository />
-      {!finished && <div className="pr-list-empty loading-status" role="status"><Loader2 size={14} className="spin" />Looking for pull requests…</div>}
+      {!finished ? <div className="pr-list-empty loading-status" role="status"><Loader2 size={14} className="spin" />{freshness.refreshing ? `Refreshing pull requests · ${freshness.refreshing} ${freshness.refreshing === 1 ? "repository" : "repositories"} left; earlier results stay until each answers` : "Looking for pull requests…"}</div>
+        : freshness.loadedAt !== null && <div className="pr-freshness faint" role="status" title={fullTime(freshness.loadedAt / 1000)}>Updated {relativeTime(freshness.loadedAt / 1000)}</div>}
     </>}
   >
     {selected && selectedConnection ? <RequestDetail key={JSON.stringify([selected.id, selectedConnection])}
@@ -353,6 +355,8 @@ type RequestListRow<Key> = {
   id: Key;
   pull: PullRequest;
   watched?: boolean;
+  /** The row comes from an earlier load: its repository is refreshing or failed to. */
+  stale?: boolean;
   repository?: { root: string; name: string; project: string };
 };
 
@@ -378,8 +382,9 @@ function RequestRows<Key extends string | number>({ root, rows, selected, select
   };
   return <div className="pr-request-rows" ref={ref} style={{ "--pr-row-height": `${rowHeight}px` } as CSSProperties} role="listbox" aria-label="Pull requests" tabIndex={0} onKeyDown={move} onScroll={e => setTop(e.currentTarget.scrollTop)}>
     <div style={{ height: first * rowHeight }} />
-    {rows.slice(first, last).map(({ id, pull: p, repository, watched }) => <button type="button" role="option" aria-selected={selected === id} data-pr-number={p.number} key={id}
-      className={`pr-request-row ${selected === id ? "selected" : ""}`} onClick={() => select(id)} onContextMenu={e => contextMenu(e, prUrlMenu(p))}>
+    {rows.slice(first, last).map(({ id, pull: p, repository, watched, stale }) => <button type="button" role="option" aria-selected={selected === id} data-pr-number={p.number} data-pr-stale={stale || undefined} key={id}
+      title={stale ? "Earlier result: this repository has not answered the latest refresh" : undefined}
+      className={`pr-request-row ${selected === id ? "selected" : ""} ${stale ? "stale" : ""}`} onClick={() => select(id)} onContextMenu={e => contextMenu(e, prUrlMenu(p))}>
       <span className="pr-row-title"><span className="mono faint">#{p.number}</span><b title={p.title}>{p.title}</b></span>
       {repository && <span className="pr-row-repository ellipsis" title={`${repository.project}\n${repository.root}`}>{repository.name}</span>}
       <span className="pr-row-meta">{watched && <span title="Watched PR" aria-label="Watched PR"><Bell size={12} /></span>}<span className={`pill pr-state-${p.state}`}>{prStateLabel(p)}</span><span className="ellipsis">{p.author}</span><RowSignals root={repository?.root ?? root} pull={p} /><span className="faint">{relativeTime(Date.parse(p.created) / 1000)}</span></span>

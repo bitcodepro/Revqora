@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compare, percentile, prOutcomeProblem, stageTotal, summarize } from "./perf-baseline.mjs";
+import { compare, expectedRows, percentile, prOutcomeProblem, stageTotal, summarize } from "./perf-baseline.mjs";
 import { PROVIDERS, fixtureToken, startForgeFixture } from "./perf-forge-fixture.mjs";
 
 test("median and p95 use the nearest rank and skip missing values", () => {
@@ -78,4 +78,9 @@ test("a PR run with an error in a healthy repository or a list from a failing on
   assert.match(prOutcomeProblem("rate-limited", { rows: 60, ms: 90 }, 60), /instead of failing/);
   assert.match(prOutcomeProblem("forbidden", { rows: 10, error: "Access denied." }, 60), /10 rows before/);
   assert.equal(prOutcomeProblem("ok", undefined, 60), "no result");
+});
+
+test("the PR Center refresh expects every loaded row, including rows read before a page error", () => {
+  const repos = [..."ok ok slow forbidden rate-limited incomplete truncated".split(" ")].map(scenario => ({ scenario }));
+  assert.equal(expectedRows(repos, 60), 60 * 3 + 50 * 2);
 });

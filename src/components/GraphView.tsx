@@ -11,7 +11,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { api, newOpId } from "../lib/api";
+import { api, isGitError, newOpId } from "../lib/api";
 import {cachedGraphRows,rememberGraphRows,rememberGraphPosition} from "../lib/graphRowsCache";
 import { CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, loadMoreHistory, useRepos, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
@@ -526,12 +526,15 @@ export function GraphView({
   const [cgMissing, setCgMissing] = useState(false);
   const [cgBusy, setCgBusy] = useState(false);
   useEffect(() => {
+    // An answer for a larger view or before Dismiss must not show the banner afterwards.
+    let alive = true;
     if (commitCount > 20000 && !dismissed)
       api.commitGraphStatus(root).then(
-        (ok) => setCgMissing(!ok),
+        (ok) => { if (alive) setCgMissing(!ok); },
         () => {},
       );
     else setCgMissing(false);
+    return () => { alive = false; };
   }, [root, commitCount > 20000, dismissed]); // eslint-disable-line react-hooks/exhaustive-deps
   const writeCommitGraph = async () => {
     const id = newOpId();
@@ -859,10 +862,20 @@ export function GraphView({
 
   const onRefClick = useCallback(
     async (name: string) => {
-      const idx = await api.graphFind(root, name).catch(() => null);
-      if (idx !== null && idx !== undefined) selectIndex(idx);
+      // Ask for the graph on screen: after a filter change the backend may already hold the
+      // next graph, whose indexes would select the wrong row here.
+      if (!graphKey) return;
+      const idx = await api.graphFind(root, name, graphKey).catch(() => null);
+      if (idx === null || idx === undefined) return;
+      // A filtered list is indexed by match, not by graph row.
+      if (filtered) {
+        const position = results.findIndex(match => match.graphIndex === idx);
+        if (position >= 0) selectIndex(position);
+        return;
+      }
+      selectIndex(idx);
     },
-    [root, selectIndex],
+    [root, selectIndex, graphKey, filtered, results],
   );
 
   // Jump to a commit when another part of the UI asks (sidebar click etc.).
@@ -884,9 +897,11 @@ export function GraphView({
       patch(root,{selected:oid,multi:[]});
       const local=[...cache.current.values()].find(row=>row.oid===oid);
       if(local){anchor.current=local.index;scrollToIndex(local.index,true);return;}
-      api.graphFind(root, oid).then((idx) => {
+      const shownKey = useRepos.getState().tabs[root]?.graph?.key;
+      api.graphFind(root, oid, shownKey).then((idx) => {
         const latest = useRepos.getState().tabs[root];
-        if(request!==jump||latest?.selected!==oid)return;
+        // A newer jump, another selection or another graph on screen: this index is not valid.
+        if(request!==jump||latest?.selected!==oid||latest?.graph?.key!==shownKey)return;
         if (idx === null || idx === undefined) {
           if (hasMoreHistory(latest)) {
             patch(root, { historyJump: oid });
@@ -905,7 +920,11 @@ export function GraphView({
         }
         anchor.current = idx;
         scrollToIndex(idx, true);
-      }).catch(()=>{});
+      }).catch(error=>{
+        // The graph was replaced meanwhile: let the History jump find the commit once the new
+        // graph is on screen.
+        if(request===jump&&isGitError(error)&&error.kind==="stale-operation"&&useRepos.getState().tabs[root]?.selected===oid)patch(root,{historyJump:oid});
+      });
     };
     window.addEventListener("revqora:jump", onJump);
     return () => {jump++;window.removeEventListener("revqora:jump", onJump);};

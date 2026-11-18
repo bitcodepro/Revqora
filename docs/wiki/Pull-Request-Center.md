@@ -61,7 +61,7 @@ If publication reports an uncertain outcome, check the server and the offered re
 
 ## Refresh behavior
 
-- **Refresh pull requests** refreshes the request list.
+- **Refresh pull requests** refreshes the request list. In the all-repositories list, rows stay visible during a refresh: rows of a repository that has not answered yet are dimmed, and are replaced as soon as it does. A repository whose refresh fails keeps its earlier rows and says when they were loaded. The line under the list shows when the list was last updated.
 - **⟳** next to the **⋯** menu reloads the selected request: details, checks, files and discussions.
 - Use the discussion feed's load controls for remaining pages.
 - The visible merge-readiness panel checks requirements approximately every ten seconds; this is not a live discussion subscription.

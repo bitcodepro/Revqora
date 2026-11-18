@@ -240,7 +240,9 @@ node scripts/perf-baseline.mjs --compare .test-tmp/before.json .test-tmp/after.j
 | Search | first page with a result, and all pages, over IPC (`repository_commit_search_page`, 100 per page) | `diagnostics.queueMs` | `diagnostics.gitMs` | IPC and decoding |
 | History | `graph_load` with `fast` (full rebuild) over IPC | `repository_wait` | `graph_load` stages | IPC and decoding |
 | Workspace | reload with 40 closed repositories in the library → the Explorer's Incoming and Outgoing counts match the manifest | — | the same tracking reads over IPC, six at a time | total − git |
-| All PRs | 44 repositories on the four providers (24 ok, each problem once per provider), loaded three at a time like `useAllPullRequests` → first rows / all repositories finished | — | `apiServed`: provider time summed over requests | — |
+| All PRs | 44 repositories on the four providers (24 ok, each problem once per provider), loaded three at a time over IPC → first rows / all repositories finished. A run counts only when every repository ends as its scenario requires | — | `apiServed`: provider time summed over requests | — |
+| PR Center refresh | the same 44 repositories in PR Center → all repositories, All authors → **Refresh all pull requests** until it completes; `fewestVisible` = fewest rows on screen meanwhile | — | — | — |
+| Deep search | author search with ~5,000 matches, every page of 100; and page 46 resumed after other searches evicted its cached batch | — | `gitCalls`: pages that ran Git | — |
 
 `queue` is time spent waiting for another operation on the same repository; `git` is Git or provider API work in the backend; `ui` is everything else that the user waits for (IPC, React work, rendering). The All-PRs result also lists what each repository ended with (rows or the error message), which shows how partial failures are reported.
 
@@ -280,3 +282,37 @@ What the numbers say:
 - **All PRs**: the first rows arrive after 64 ms and the 24 healthy repositories finish in 1.1 s, but the whole list completes only after 6.1 s, held up by the four slow repositories (two 1.24 s pages each, three repositories at a time). Each failure stays with its repository: 403 → "Access denied …" (GitHub, GitLab) or the provider-specific Bitbucket and Azure explanation, rate limit → "API rate limit reached. Wait before trying again.", incomplete rows and cut JSON → the first page's 50 rows plus an error. Equal PR numbers in different repositories did not collide.
 
 Candidates for the speed stage, chosen from this baseline: keep healthy repositories' PR rows final and visible while slow ones load (completion is bound by the slowest provider, not by the number of repositories), and fewer Git processes per repository for the library-wide Incoming, Outgoing and Changes reads. Startup is bound by WebView2, and switching, search and history are already within about 0.1–0.6 s.
+
+## Speed and consistency (stage 2, November 2026)
+
+Measured on the release build of this branch with the stage 0 harness and fixtures (Windows 11 x64, Git 2.45.1, 5 runs unless noted; median / p95, ms).
+
+| Scenario | Before | After |
+|---|---|---|
+| PR Center, all repositories: Refresh until complete | 6358 / 9320 | 3205 / 4938 |
+| … fewest rows visible during the refresh (of 2,080) | 0 / 0 | 2080 / 2080 |
+| `commit_details` for the 651-file commit, over IPC | 216–355 per call | 102–112 per call |
+| Commit click → file list (651 files) | 366 / 535 | 331 / 410 (7 runs; repeat 338 / 443) |
+| Commit click → big file diff | 463 / 871 | 424 / 825 (7 runs; repeat 439 / 887; one 5-run set 588 / 868) |
+| Author search, ~5k matches, every page of 100 | 5366 / 6305 | 4780 / 5382 |
+| Author search, page 46 resumed after cache eviction | 180 / 199 | 167 / 173 |
+
+What changed:
+
+- **PR Center, all repositories.**
+  - It reads six repositories at a time instead of three, so a slow provider holds fewer others.
+  - A refresh keeps every row on screen. Rows of a repository that has not answered yet are dimmed. Each repository's rows are replaced when it answers, and rows gone on the server then disappear.
+  - A failed refresh keeps that repository's earlier rows with its own error and the time of its last complete load.
+  - The list shows when it was last updated.
+  - The scan is a plain function (`scanPullRequests`) with tests for delayed and dropped answers.
+- **Commit preview.**
+  - The header and the changed files come from one `git show --raw --numstat` instead of `show` plus `diff`. Starting Git is the main cost on Windows.
+  - A long file list paints its first 150 rows, then the rest of its first step one frame later.
+- **Deep search pagination: no change needed.** Later Git batches start with `--skip`. A cursor resumed after its batch left the cache walks history again, and that costs about 170 ms at offset 4,500. Most of a page's time is the ref check that makes a cursor fail after a fetch, a ref change or a history rewrite (`git show-ref`, one process per page), and that check stays.
+- **Stale answers.**
+  - The commit-graph banner ignores an answer for an earlier view.
+  - Ref clicks and sidebar jumps resolve against the graph on screen (`expectedKey`). A jump that meets a replaced graph is retried by the History jump.
+  - A ref click in a filtered History list selects the matching result instead of using a graph index.
+
+Not changed: cold start (bound by WebView2), History rebuilds and Changes. Commit search, `history_search` and `pr_page` still have no cancellation. Obsolete answers are ignored by request generation, and a new PR scan starts after the obsolete in-flight requests finish.
+

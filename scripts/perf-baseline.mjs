@@ -221,6 +221,40 @@ async function session(context) {
         result[`${name} → first result`] = summarize(first);
         result[`${name} → complete`] = summarize(complete);
       }
+
+      // Deep pagination: ~5,000 author matches in pages of 100. Git reads matches in batches;
+      // later batches start with --skip, and a cursor resumed after its batch left the cache
+      // walks history again up to its offset.
+      const deep = [], resumed = [];
+      for (let run = 0; run < context.runs; run++) {
+        const measured = await app.page.evaluate(async repo => {
+          const invoke = window.__TAURI_INTERNALS__.invoke;
+          const search = (query, cursor) => invoke("repository_commit_search_page", { repo, query, mode: "author", cursor, limit: 100 });
+          // Other queries share the bounded batch cache; a fresh query per run starts cold.
+          const evict = async () => { for (const query of ["alex", "sam", "jordan", "taylor", "seventeen"]) await search(query, null); };
+          await evict();
+          const began = performance.now();
+          let cursor = null, pages = 0, hits = 0, slowest = 0, gitCalls = 0, deepCursor = null;
+          do {
+            const pageBegan = performance.now();
+            const page = await search("perf@example.invalid", cursor);
+            slowest = Math.max(slowest, performance.now() - pageBegan);
+            pages++; hits += page.commits.length; if (!page.diagnostics.cacheHit) gitCalls++;
+            cursor = page.hasMore ? page.nextCursor : null;
+            if (pages === 45) deepCursor = cursor;
+          } while (cursor);
+          const total = performance.now() - began;
+          await evict();
+          const resumeBegan = performance.now();
+          const page = await search("perf@example.invalid", deepCursor);
+          return { total, pages, hits, slowest, gitCalls, resumed: performance.now() - resumeBegan, resumedHits: page.commits.length, resumedGit: page.diagnostics.gitMs };
+        }, normal);
+        if (measured.hits < 4000 || !measured.resumedHits) throw new Error(`deep author search: ${JSON.stringify(measured)}`);
+        deep.push({ total: measured.total, slowestPage: measured.slowest, pages: measured.pages, gitCalls: measured.gitCalls, hits: measured.hits });
+        resumed.push({ total: measured.resumed, git: measured.resumedGit });
+      }
+      result["search author, ~5k matches, every page of 100"] = summarize(deep);
+      result["search author, page 46 resumed after cache eviction"] = summarize(resumed);
     }
 
     if (context.only("history")) {
@@ -332,7 +366,7 @@ async function pullRequests(context) {
   });
   const app = await start(context, []);
   const samples = [];
-  let outcome;
+  let outcome, refreshes = [];
   try {
     await app.page.locator(".app[data-app-startup='ready']").waitFor({ timeout: 120_000 });
     await skipWelcome(app.page);
@@ -389,6 +423,7 @@ async function pullRequests(context) {
       const healthy = repos.filter(repo => repo.scenario === "ok").map(repo => measured.outcome[repo.root].ms);
       samples.push({ total: measured.total, first: measured.first, apiServed: api, requests: served.length, healthyComplete: Math.max(...healthy) });
     }
+    refreshes = await prCenterRefreshes(app, repos, context.runs, expectedRows(repos, pulls));
   } catch (error) {
     error.message += `
 Provider requests: ${JSON.stringify(forge.requests.slice(-8))}`;
@@ -398,7 +433,59 @@ Provider requests: ${JSON.stringify(forge.requests.slice(-8))}`;
     await forge.close();
     fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   }
-  return { scenarios: { "all PRs, 44 repositories → first result / complete": summarize(samples) }, outcome };
+  return { scenarios: { "all PRs, 44 repositories → first result / complete": summarize(samples), "PR Center all repositories → Refresh until complete": summarize(refreshes) }, outcome };
+}
+
+/** Rows the combined list shows once every repository has ended: failing lists keep the rows
+ *  loaded before their error (the first page of "incomplete" and "truncated"). */
+export function expectedRows(repos, pulls) {
+  const firstPage = 50;
+  return repos.reduce((sum, repo) => sum + (["ok", "slow"].includes(repo.scenario) ? pulls : ["incomplete", "truncated"].includes(repo.scenario) ? Math.min(firstPage, pulls) : 0), 0);
+}
+
+/**
+ * The PR Center's all-repositories list, refreshed `runs` times: time until the refresh
+ * completes, and the fewest rows visible meanwhile (rows that disappear during a refresh are
+ * rows the user loses sight of).
+ */
+async function prCenterRefreshes(app, repos, runs, expected) {
+  const page = app.page;
+  // The combined list covers the library: add the repositories, as the user would.
+  await page.evaluate(roots => localStorage.setItem("revqora.repositories", JSON.stringify({ version: 1, state: { knownRoots: roots, favorites: [], groups: [], activeGroupId: null } })), repos.map(repo => repo.root));
+  await page.reload();
+  await page.locator(".app[data-app-startup='ready']").waitFor({ timeout: 120_000 });
+  await app.invoke("plugin:event|emit", { event: "open-paths", payload: [repos[0].root] });
+  await page.locator(".topbar .repo-current > b").filter({ hasText: repos[0].name }).waitFor({ timeout: 120_000 });
+  await page.getByRole("button", { name: "Pull requests", exact: true }).click();
+  await page.getByRole("combobox", { name: "Pull request scope", exact: true }).selectOption("all");
+  const region = page.getByRole("region", { name: "Pull requests across repositories", exact: true });
+  await region.getByRole("combobox", { name: "Authors across repositories", exact: true }).selectOption("all");
+  await region.getByRole("button", { name: "Refresh all pull requests", exact: true }).first().waitFor({ state: "visible" });
+  await page.waitForFunction(() => !document.querySelector('[aria-label="Refresh all pull requests"]')?.disabled, null, { timeout: 120_000 });
+  const loaded = Number(await region.locator("[data-pr-loaded]").first().getAttribute("data-pr-loaded"));
+  if (loaded !== expected) throw new Error(`The PR Center lists ${loaded} of ${expected} rows: ${await region.locator(".pr-scan-issues").textContent().catch(() => "")}`);
+  const samples = [];
+  for (let run = 0; run < runs; run++) {
+    const measured = await page.evaluate(async () => {
+      const region = document.querySelector('[aria-label="Pull requests across repositories"]');
+      const count = () => Number(region.querySelector("[data-pr-loaded]")?.getAttribute("data-pr-loaded") ?? 0);
+      const button = () => region.querySelector('button[aria-label="Refresh all pull requests"]');
+      const began = performance.now();
+      button().click();
+      let started = false, fewest = count();
+      while (performance.now() - began < 110_000) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        fewest = Math.min(fewest, count());
+        if (button().disabled) started = true;
+        else if (started) break;
+      }
+      return { total: performance.now() - began, fewest, rows: count(), started };
+    });
+    if (!measured.started) throw new Error("The PR Center refresh did not start");
+    if (measured.rows !== expected) throw new Error(`PR Center refresh ended with ${measured.rows} of ${expected} rows`);
+    samples.push({ total: measured.total, fewestVisible: measured.fewest });
+  }
+  return samples;
 }
 
 // ── command line ───────────────────────────────────────────────────────────────────────────
