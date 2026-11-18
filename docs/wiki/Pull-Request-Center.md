@@ -55,6 +55,10 @@ Local drafts are retained when you close an editor. A saved draft from an older 
 
 If publication reports an uncertain outcome, check the server and the offered result controls before sending again. Closing/reopening is not confirmation that the first send failed.
 
+## Connection problems
+
+**Check connection…** in the PR Center header tests Git and each API capability of the repository separately (see [Accounts](https://github.com/bitcodepro/Revqora/wiki/Accounts-and-providers)). A list error offers **Check connection…** and **Copy diagnostics…**; in the all-repositories list, each repository that needs attention has both actions, so the report names that repository, its provider and the HTTP status and request ID of the failure.
+
 ## Refresh behavior
 
 - **Refresh pull requests** refreshes the request list.

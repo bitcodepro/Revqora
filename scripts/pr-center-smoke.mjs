@@ -291,5 +291,27 @@ export async function prCenterSmoke({page,check,shot,work}) {
     await openNumber(1);
     await prReviewSmoke({page,check,shot,root,invoke,pulls,requests,fixture:reviewFixture,a,git,index,head});
     await prMergeSmoke({page,check,shot,root,pulls,fixture:mergeFixture,git,index,head});
+    // Runs last: the Git checks read this fixture's info/refs, which earlier checks forbid.
+    await check("Check connection shows each step separately and copies a report without secrets",async()=>{
+      const before=requests.length;
+      await center().getByRole("button",{name:"Check connection…",exact:true}).click();
+      const dialog=page.locator(".modal").last();
+      const step=id=>dialog.locator(`.connection-checks li[data-check="${id}"]`);
+      await step("pull-requests").waitFor({timeout:60000});
+      for(const [id,state] of [["profile","ok"],["pull-requests","ok"],["git-read","failed"]])
+        if(await step(id).getAttribute("data-state")!==state)throw Error(`${id} should be ${state}: ${await step(id).innerText()}`);
+      if(!/Cause: /.test(await step("git-read").innerText())||!/Next step: /.test(await step("git-read").innerText()))throw Error("A failed step must name its cause and next step");
+      if(!(await dialog.innerText()).includes("API account pr-tester"))throw Error("The credential source is missing");
+      await shot("120-check-connection");
+      await button("Copy diagnostics…").click();
+      const report=page.locator(".modal").last().getByLabel("Diagnostics report text",{exact:true});
+      await report.waitFor();const text=await report.innerText();
+      if(!text.startsWith("Revqora diagnostics report")||!/\nGit: git version /.test(text)||!text.includes("Source: Check connection")||!text.includes("Pull request list: Works"))throw Error(`Unexpected report: ${text}`);
+      if(text.includes(token)||/Authorization|Bearer/i.test(text))throw Error("The report contains credentials");
+      await shot("121-diagnostics-preview");
+      await button("Close").click();await button("Close").click();
+      if(requests.slice(before).some(r=>r.method!=="GET"||/git-receive-pack/.test(r.path)&&!/info\/refs/.test(r.path)))throw Error("Check connection sent a write request");
+      if(git("rev-parse","HEAD")!==head||!index.equals(fs.readFileSync(path.join(root,".git/index"))))throw Error("Check connection changed the repository");
+    });
   } finally {server.closeAllConnections();await new Promise(r=>server.close(r));}
 }

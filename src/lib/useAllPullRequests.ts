@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage } from "./api";
+import { errorFacts } from "./diagnostics";
 import { authorScope, loadAuthorPreferences, matchesPrAuthor, type PrAuthor } from "./prAuthors";
 import { appendPullRequests } from "./prCenter";
 import { visitPrPages, viewerAuthor } from "./prTracking";
@@ -13,6 +14,8 @@ export type RepositoryRequests = {
   author: PrAuthor | null;
   items: PullRequest[];
   notice?: string;
+  /** Code, HTTP status and request ID of the failure, for a diagnostics report. */
+  noticeDetails?: string[];
 };
 
 const EMPTY: Record<string, RepositoryRequests> = {};
@@ -55,7 +58,7 @@ export function useAllPullRequests(state: PrState, mine: boolean) {
             update(root, old => ({ forge: page.forge, scope, author, items: appendPullRequests(old.scope === scope ? old.items : [], page.items) }));
           }, null, Infinity);
         } catch (error) {
-          update(root, old => ({ ...old, notice: errorMessage(error) }));
+          update(root, old => ({ ...old, notice: errorMessage(error), noticeDetails: errorFacts(error) }));
         }
       }
     }

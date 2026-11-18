@@ -211,6 +211,7 @@ async fn branch_manager_compare(repo: String, base: String, tip: String) -> git:
 // Revqora: Tauri command surface over the git backend.
 
 pub mod askpass;
+pub mod diagnostics;
 pub mod error_log;
 pub mod git;
 pub mod journal;
@@ -711,6 +712,24 @@ async fn git_connection_test(repo: String, remote: String, expected_url_fingerpr
             return Err(GitError::new("The remote changed. Reload before testing.").kind("stale-operation"));
         }
         runner::run(&root, ["ls-remote", "--heads", "--", &remote]).map(|_| "Git access verified".into())
+    })
+    .await
+}
+
+/// Checks Git read and push access and each API capability of one remote (nothing changes).
+#[tauri::command]
+async fn connection_check(repo: String, remote: Option<String>) -> GitResult<git::connection_check::Report> {
+    blocking(move || git::connection_check::run(&p(&repo), remote.as_deref())).await
+}
+
+/// A diagnostics report with versions and platform, without secrets or file contents.
+#[tauri::command]
+async fn diagnostics_report(app: AppHandle, input: diagnostics::Input) -> GitResult<String> {
+    let app_version = app.package_info().version.to_string();
+    blocking(move || {
+        let git_version = runner::version().map(|(_, _, _, version)| version).unwrap_or_else(|_| "unavailable".into());
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok();
+        Ok(diagnostics::report(&input, &diagnostics::Environment { app_version, git_version, created_ms: journal::now(), home }))
     })
     .await
 }
@@ -3446,6 +3465,8 @@ pub fn run() {
             git_connection_snapshot,
             git_connection_save,
             git_connection_test,
+            connection_check,
+            diagnostics_report,
             git_connection_forget,
             repo_info,
             status,

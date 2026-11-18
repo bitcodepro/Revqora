@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
-import { Clock3, Copy, Download, Loader2, RefreshCw, ScrollText, Search, Trash2, TriangleAlert } from "lucide-react";
+import { ClipboardCopy, Clock3, Copy, Download, Loader2, RefreshCw, ScrollText, Search, Trash2, TriangleAlert } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { basename, shortOid } from "../lib/format";
 import type { OperationLogDetail, OperationLogEntry, OperationLogFilter, OperationLogHealth, OperationLogStatus, OperationLogStep } from "../lib/types";
@@ -10,6 +10,8 @@ import { useSettings } from "../lib/settings";
 import { bindingFor, prettyCombo } from "../lib/shortcuts";
 import { confirmDialog } from "./dialogs";
 import { Modal } from "./Modal";
+import { diagnosticsDialog } from "./Diagnostics";
+import { operationLines } from "../lib/diagnostics";
 import "../styles/operationLog.css";
 
 const STATUS: Record<OperationLogStatus, string> = {
@@ -164,7 +166,7 @@ function Head({ value }: { value: string | null }) {
 
 function LogDetail({ detail: { entry, steps } }: { detail: OperationLogDetail }) {
   return <>
-    <div className="log-detail-head"><div><h3>{label(entry.command)}</h3><span className={`log-state ${entry.status}`}>{STATUS[entry.status]}</span></div><button type="button" className="btn sm log-copy" onClick={() => void copyText(JSON.stringify({ entry, steps }, null, 2), "Operation details copied")}><Copy size={13} /> Copy details</button></div>
+    <div className="log-detail-head"><div><h3>{label(entry.command)}</h3><span className={`log-state ${entry.status}`}>{STATUS[entry.status]}</span></div><div className="hstack"><button type="button" className="btn sm log-copy" title="Versions, platform, timings and Git errors, without secrets or file contents" onClick={() => void diagnosticsDialog({ source: "Operation log", lines: operationLines({ entry, steps }) })}><ClipboardCopy size={13} /> Copy diagnostics…</button><button type="button" className="btn sm log-copy" onClick={() => void copyText(JSON.stringify({ entry, steps }, null, 2), "Operation details copied")}><Copy size={13} /> Copy details</button></div></div>
     <dl className="log-metadata">
       <dt>Repository / worktree</dt><dd>{entry.repo}</dd><dt>Requested</dt><dd>{date(entry.requestedAt)}</dd>
       {entry.startedAt !== null && <><dt>Started</dt><dd>{date(entry.startedAt)}</dd></>}

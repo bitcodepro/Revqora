@@ -185,24 +185,7 @@ pub fn connection_identity(repo: &Path) -> GitResult<ConnectionIdentity> {
             Some(credential) => credential,
             None => token(repo, &context.git_url)?,
         };
-        let verify = |credential: &super::forge_accounts::Credential| {
-            super::forge_accounts::verify_identity(&info.kind, &info.api, credential).map_err(|error| {
-                // Bitbucket can reject /user even though the credential grants
-                // PR access. Only reinterpret a 401 after checking the same connection.
-                let pr_access = error.details.iter().any(|detail| detail == "forge_http_status=bitbucket:401")
-                    && super::forge_accounts::request_json(
-                        &info.kind,
-                        &info.api,
-                        credential,
-                        "GET",
-                        &format!("/repositories/{}/pullrequests?pagelen=1", project_path(&info.project)),
-                        None,
-                    )
-                    .is_ok();
-                connection_identity_error(error, pr_access)
-            })
-        };
-        let identity = if context.profile.is_some() { verify(&credential) } else { send_with_git_credential(&info.kind, credential, verify) }?;
+        let identity = verify_connection(&info, credential, context.profile.is_some())?;
         (identity.user_id, identity.login, identity.name, "provider")
     };
     Ok(ConnectionIdentity {
@@ -215,6 +198,58 @@ pub fn connection_identity(repo: &Path) -> GitResult<ConnectionIdentity> {
         source,
         connection_revision: info.connection_revision,
     })
+}
+
+/// Asks the provider whose credential this is. Bitbucket can reject the profile while the
+/// same credential reads pull requests; that case becomes `identity-unavailable`.
+fn verify_connection(info: &ForgeInfo, credential: super::forge_accounts::Credential, has_profile: bool) -> GitResult<super::forge_accounts::Identity> {
+    let verify = |credential: &super::forge_accounts::Credential| {
+        super::forge_accounts::verify_identity(&info.kind, &info.api, credential).map_err(|error| {
+            // Only reinterpret a 401 after checking the same connection.
+            let pr_access = error.details.iter().any(|detail| detail == "forge_http_status=bitbucket:401")
+                && super::forge_accounts::request_json(
+                    &info.kind,
+                    &info.api,
+                    credential,
+                    "GET",
+                    &format!("/repositories/{}/pullrequests?pagelen=1", project_path(&info.project)),
+                    None,
+                )
+                .is_ok();
+            connection_identity_error(error, pr_access)
+        })
+    };
+    if has_profile {
+        verify(&credential)
+    } else {
+        send_with_git_credential(&info.kind, credential, verify)
+    }
+}
+
+/// The selected API connection as the connection check describes it, and a live profile
+/// request with its credential (never the profile saved with the account).
+pub struct ProfileProbe {
+    pub info: ForgeInfo,
+    pub credential_source: String,
+    pub result: GitResult<String>,
+}
+
+pub fn probe_profile(repo: &Path) -> GitResult<Option<ProfileProbe>> {
+    let Some(context) = super::forge_accounts::context(repo)? else { return Ok(None) };
+    let info = context.info;
+    let credential_source = match &context.profile {
+        Some(profile) => format!("API account {} (Accounts)", profile.login),
+        None => "Git credentials for this remote (credential helper)".to_owned(),
+    };
+    let result = if info.kind == "bitbucket-server" {
+        Err(GitError::new("Bitbucket Server connections do not report a verified account profile.").kind("identity-unavailable"))
+    } else {
+        match context.credential.map(Ok).unwrap_or_else(|| token(repo, &context.git_url)) {
+            Ok(credential) => verify_connection(&info, credential, context.profile.is_some()).map(|identity| identity.login),
+            Err(error) => Err(error),
+        }
+    };
+    Ok(Some(ProfileProbe { info, credential_source, result }))
 }
 
 fn connection_identity_error(error: GitError, pr_access: bool) -> GitError {

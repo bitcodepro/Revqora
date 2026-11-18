@@ -75,6 +75,20 @@ The encrypted store is under `data/accounts` beside the executable. The vault pa
 
 An already-bound account that is locked/expired/removed must be unlocked or reconnected explicitly. The app does not silently change to another account for a pending PR write.
 
+## Check connection
+
+**Check connection…** (Accounts, PR Center, a repository that needs attention in the all-repositories PR list) tests one remote and shows a separate result for each part:
+
+| Check | How it is tested |
+|---|---|
+| Git read (HTTPS or SSH) | `git ls-remote --heads` |
+| Git push | `git push --dry-run` of HEAD to a branch name that is never created; no commit is sent. Branch protection is checked only by a real push. A repository without commits, or a server that checks access only when data arrives, shows **Not verified**. |
+| Account profile | a live profile request with the connection's credential |
+| Pull request list | the first page of open pull requests |
+| Pull request files, Checks | the first open pull request's files and checks |
+
+Every check runs without sign-in prompts and with a time limit. Each result is **Works**, **Failed**, **Limited** (for example a Bitbucket token that reads pull requests but not your profile), **Not verified** or **Not checked**, with the cause (no credentials, credential rejected, insufficient permissions, not found, timed out, rate limit, network, SSH host key, provider error, incomplete response) and the next step. The dialog names the repository, remote URL without credentials, provider and where the credentials come from (an API account or Git's credential helper). **Copy diagnostics…** opens the report for review before copying.
+
 ## SSH aliases and multiple accounts
 
 For an SSH alias, explicitly confirm the mapping to the selected API server when the form asks. The SSH user name `git` is a transport identity, not your GitHub/GitLab API account name.

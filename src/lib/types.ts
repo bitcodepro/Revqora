@@ -1019,3 +1019,23 @@ export interface SparseResult {
   leftBehind: string[];
   warning: string | null;
 }
+
+/** One result of "Check connection" (`connection_check`). */
+export interface ConnectionCheckItem {
+  id: "git-read" | "git-write" | "profile" | "pull-requests" | "files" | "checks";
+  label: string;
+  state: "ok" | "failed" | "limited" | "not-verified" | "skipped";
+  detail: string;
+  cause?: "no-credentials" | "token-rejected" | "permission" | "not-found" | "timeout" | "rate-limit" | "network" | "server" | "ssh-host" | "invalid-response" | "other";
+  next?: string;
+  code?: string;
+  httpStatus?: number;
+  requestId?: string;
+  ms: number;
+}
+export interface ConnectionCheckReport {
+  repository: string; remote: string | null; url: string | null; transport: string | null;
+  provider: string | null; project: string | null; credentialSource: string | null; items: ConnectionCheckItem[];
+}
+/** Lines of a diagnostics report; the backend adds versions and removes secrets. */
+export interface DiagnosticsInput { source: string; lines: string[] }

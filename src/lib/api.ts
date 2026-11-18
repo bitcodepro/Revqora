@@ -187,6 +187,8 @@ export const api = {
   repoClone: (parent: string, url: string, name: string, opId: string,connection?:import("./types").GitConnectionOptions, options?: import("./types").CloneOptions) => call<RepoInfo&{connectionWarning:string|null}>("repo_clone", { parent, url, name, opId,connection:connection??null, options: options ?? null }),
   gitConnectionSnapshot:(repo:string)=>call<import("./types").GitConnectionSnapshot>("git_connection_snapshot",{repo}),
   gitConnectionSave:(repo:string,options:import("./types").GitConnectionOptions,expected:string)=>call<import("./types").GitConnectionSnapshot>("git_connection_save",{repo,options,expected}),
+  connectionCheck:(repo:string,remote:string|null=null)=>call<import("./types").ConnectionCheckReport>("connection_check",{repo,remote}),
+  diagnosticsReport:(input:import("./types").DiagnosticsInput)=>call<string>("diagnostics_report",{input}),
   gitConnectionTest:(repo:string,remote:string,expectedUrlFingerprint:string)=>call<string>("git_connection_test",{repo,remote,expectedUrlFingerprint}),
   gitConnectionForget: (repo: string) => call<void>("git_connection_forget", { repo }),
   repoInfo: (repo: string) => call<RepoInfo>("repo_info", { repo }),

@@ -123,6 +123,10 @@ Read the action's explanation and [PR Center provider notes](https://github.com/
 
 ## Report a problem
 
+For a connection problem, start with **Check connection…** in Accounts or PR Center (see [Accounts](https://github.com/bitcodepro/Revqora/wiki/Accounts-and-providers)): it shows which step fails and why.
+
+**Copy diagnostics…** in Error log (per entry), Operation log (per operation), PR Center (with a list error) and Check connection opens a preview of the report first. The report contains the Revqora and Git versions, the platform, the operation, the error code, the HTTP status and the provider's request ID when available, and timings. Tokens, authorization headers, credentials in URLs, private keys, command output and file contents are removed; repositories appear by folder name, and your user folder in other paths is shortened to `~`.
+
 Open **Error log** from the toolbar or Command palette. Use **Copy error**
 for one entry or **Copy all** for the journal. The log includes the operation,
 timestamp and error code when available. It lives in `data/errors.sqlite3`

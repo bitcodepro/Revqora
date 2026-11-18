@@ -4,6 +4,8 @@ import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSync
 import { useFileListNavigation } from "../lib/useFileListNavigation";
 import { AlertTriangle, Bell, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleDashed, Download, ExternalLink, FileDiff, GitMerge, GitPullRequest, GitPullRequestCreate, List, Loader2, Maximize2, MessageSquare, MoreHorizontal, Pencil, RefreshCw, ThumbsDown, ThumbsUp, Trash2, Workflow, XCircle } from "lucide-react";
 import { forgeAccountsDialog } from "./ForgeAccounts";
+import { connectionCheckDialog, diagnosticsDialog } from "./Diagnostics";
+import { errorFacts, pullRequestErrorLines } from "../lib/diagnostics";
 import { api, errorMessage, isGitError } from "../lib/api";
 import { forgetPrReads } from "../lib/prCache";
 import { getTab, type RepoTab } from "../lib/store";
@@ -129,6 +131,8 @@ const ConnectedPullRequests = memo(function ConnectedPullRequests({ root }: { ro
   const [prefs, savePreferences] = usePrPreferences(root);
   const [forge, setForge] = useState<ForgeInfo | null>(null), [items, setItems] = useState<PullRequest[]>([]), [cursor, setCursor] = useState<string | null>(null);
   const [error, setError] = useState(""), [loading, setLoading] = useState(false), [query, setQuery] = useState(""), [selected, setSelected] = useState<number | null>(null), [epoch, setEpoch] = useState(0);
+  // Code, HTTP status and request ID of the list error, for a diagnostics report.
+  const [errorDetails, setErrorDetails] = useState<string[]>([]);
   const generation = useRef(0), busy = useRef(false), preferred = useRef<number | null>(null);
   const [detailRefresh, setDetailRefresh] = useState(0);
   const [authors,setAuthors]=useState<{scope:string;known:PrAuthor[];viewer:PrAuthor|null;prefs:AuthorPreferences}>({scope:"",known:[],viewer:null,prefs:restoreAuthorPreferences(null)});
@@ -188,7 +192,7 @@ const ConnectedPullRequests = memo(function ConnectedPullRequests({ root }: { ro
       applyAuthors(page);
       if (!next && !keep && !shown) setSelected(preferred.current);
       if (keep) setDetailRefresh(n => n + 1);
-    } catch (e) { if (id === generation.current) setError(errorMessage(e)); }
+    } catch (e) { if (id === generation.current) { setError(errorMessage(e)); setErrorDetails(errorFacts(e)); } }
     finally { if (id === generation.current) { busy.current = false; setLoading(false); } }
   }, [root, prefs.state, applyAuthors]);
   useEffect(() => { void load(); const changed = () => { preferred.current = null; lastFirstPages.clear(); forgetPrReads(); void load(); }; window.addEventListener("revqora:forge-accounts", changed); return () => { generation.current++; busy.current = false; window.removeEventListener("revqora:forge-accounts", changed); }; }, [load]);
@@ -247,18 +251,18 @@ const ConnectedPullRequests = memo(function ConnectedPullRequests({ root }: { ro
   return <PrCenterLayout label="Pull Request Center" prefs={prefs} save={savePreferences}
     title={forge ? `PR Center · ${forge.project}` : "PR Center"}
     subtitle={forge ? `${FORGE_NAMES[forge.kind]} · ${forge.remote} · ${forge.accountLogin ?? "Git credentials"}` : "Choose an API account and remote to browse requests"}
-    count={items.length} actions={<><button className="btn sm" onClick={() => void forgeAccountsDialog(root)}>Accounts…</button>{!prefs.listOpen && <><button className="icon-btn" aria-label="Refresh pull requests" disabled={loading} onClick={refresh}><RefreshCw size={15} /></button><button className="btn sm primary" disabled={!forge?.connectionRevision || loading} onClick={() => void created()}>New PR</button></>}</>}
+    count={items.length} actions={<><button className="btn sm" onClick={() => void forgeAccountsDialog(root)}>Accounts…</button><button className="btn sm" title="Check Git and API access for this repository" onClick={() => void connectionCheckDialog(root)}>Check connection…</button>{!prefs.listOpen && <><button className="icon-btn" aria-label="Refresh pull requests" disabled={loading} onClick={refresh}><RefreshCw size={15} /></button><button className="btn sm primary" disabled={!forge?.connectionRevision || loading} onClick={() => void created()}>New PR</button></>}</>}
     list={<>
       <div className="pr-list-tools"><RequestStatus label="Request status" value={prefs.state} change={state => { preferred.current = null; savePreferences({ state }); }} /><button className="icon-btn" title="Refresh pull requests" aria-label="Refresh pull requests" disabled={loading} onClick={refresh}><RefreshCw size={15} className={loading ? "spin" : ""} /></button><button className="btn sm primary" disabled={!forge?.connectionRevision || loading} onClick={() => void created()}><GitPullRequestCreate size={14} />New</button></div>
       <div className="pr-search"><input className="input" aria-label="Search loaded pull requests" placeholder="Search PRs or enter #…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && direct && forge) selectRequest(direct); }} /></div>
       <div className="pr-author-filter"><select className="select" aria-label="Pull request author" title="Authors found in loaded pages. Load more requests to include older PRs." value={authorSelection} disabled={!forge} onChange={e=>chooseAuthor(e.target.value)}><option value="mine">My pull requests{mine?` — ${mine.login||mine.label}`:"…"}</option><option value="all">All authors</option>{otherAuthors.map(a=><option key={a.key} value={a.key}>{a.label}{a.login&&a.login!==a.label?` · ${a.login}`:""}</option>)}{authors.prefs.chosen&&!samePrAuthor(authors.prefs.chosen,mine)&&!otherAuthors.some(a=>a.key===authors.prefs.chosen!.key)&&<option value={authors.prefs.chosen.key}>{authors.prefs.chosen.label}</option>}</select>{forge&&!authors.viewer&&<button type="button" className="icon-btn" aria-label="Set my PR author" title="Set my PR author without profile permissions" onClick={()=>void setMyAuthor(false)}><Pencil size={14}/></button>}</div>
       {direct && forge && <button className="btn sm pr-direct" onClick={() => selectRequest(direct)}>Open #{direct}</button>}
-      {error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connection settings…</button><button type="button" className="btn sm" onClick={refresh}>Try again</button></div>}
+      {error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connection settings…</button><button type="button" className="btn sm" onClick={()=>void connectionCheckDialog(root)}>Check connection…</button><button type="button" className="btn sm" onClick={()=>void diagnosticsDialog({ source: "PR Center", lines: pullRequestErrorLines("List pull requests", root, error, errorDetails, forge ? `${FORGE_NAMES[forge.kind]} · ${forge.project}` : undefined) })}>Copy diagnostics…</button><button type="button" className="btn sm" onClick={refresh}>Try again</button></div>}
       <RequestRows root={root} rows={visible.map(pull => ({ id: pull.number, pull, watched: !!watch.selected[pull.number] }))} selected={selected} select={selectRequest} resetKey={`${query}:${prefs.state}:${authors.prefs.selection}`} />
       {!visible.length && !loading && !error && <p className="pr-list-empty">No matching requests in the loaded pages.{cursor ? " Load more or open a request by number." : ""}</p>}
       <footer className="pr-list-footer">{loading ? <span className="loading-status" role="status"><Loader2 size={13} className="spin" /> Loading requests…</span> : cursor ? <button className="btn sm" onClick={() => void load(cursor)}>Load more requests</button> : <span className="faint">{items.length} loaded</span>}</footer>
     </>}>
-      {!prefs.listOpen && error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connection settings…</button></div>}
+      {!prefs.listOpen && error && <div className="callout warn" role="alert">{error}<button type="button" className="btn sm" onClick={()=>void forgeAccountsDialog(root)}>Connection settings…</button><button type="button" className="btn sm" onClick={()=>void connectionCheckDialog(root)}>Check connection…</button></div>}
       {forge?.connectionRevision && selected ? <RequestDetail key={`${forge.connectionRevision}:${selected}:${epoch}`} root={root} forge={forge} number={selected} refreshToken={detailRefresh} listPull={items.find(p => p.number === selected)} prefs={prefs} savePreferences={savePreferences} updated={updated} reloadConnection={refresh} watched={!!watch.selected[selected]} watchOwn={watchMine && !!mine} mine={mine} toggleWatch={() => togglePrWatch(root, authors.scope, selected)} /> : <div className="pr-empty">{loading ? <><Loader2 size={22} className="spin" />Loading pull requests…</> : error ? "Configure the API connection or refresh to continue." : "Select a pull request or open one by number."}</div>}
   </PrCenterLayout>;
 });
@@ -316,7 +320,7 @@ const CombinedPullRequests = memo(function CombinedPullRequests({ root }: { root
     title={selected ? `PR Center · ${selected.repository.project}` : "PR Center"}
     subtitle={selected ? `${FORGE_NAMES[selected.forge.kind]} · ${selected.forge.remote} · ${selected.forge.accountLogin ?? "Git credentials"}` : "All repositories"}
     count={rows.length}
-    actions={<><button className="btn sm" onClick={() => void forgeAccountsDialog(actionRoot)}>Accounts…</button>{!prefs.listOpen && <>{refreshButton}{createButton(false)}</>}</>}
+    actions={<><button className="btn sm" onClick={() => void forgeAccountsDialog(actionRoot)}>Accounts…</button><button className="btn sm" title="Check Git and API access for the selected repository" onClick={() => void connectionCheckDialog(actionRoot)}>Check connection…</button>{!prefs.listOpen && <>{refreshButton}{createButton(false)}</>}</>}
     list={<>
       <div className="pr-list-tools">
         <RequestStatus label="Request status across repositories" value={prefs.state} change={state => { setSelectedId(null); savePreferences({ state }); }} />
@@ -328,7 +332,9 @@ const CombinedPullRequests = memo(function CombinedPullRequests({ root }: { root
       </select></div>
       {issues.length > 0 && <details className="pr-scan-issues">
         <summary>{issues.length} {issues.length === 1 ? "repository needs" : "repositories need"} attention</summary>
-        <ul>{issues.map(([path, group]) => <li key={path}><b>{names[repositoryKey(path)] ?? basename(path)}</b> {group.notice}</li>)}</ul>
+        <ul>{issues.map(([path, group]) => <li key={path}><b>{names[repositoryKey(path)] ?? basename(path)}</b> {group.notice}
+          <span className="pr-scan-issue-actions"><button type="button" className="btn sm ghost" onClick={() => void connectionCheckDialog(path)}>Check connection…</button>
+            <button type="button" className="btn sm ghost" onClick={() => void diagnosticsDialog({ source: "PR Center", lines: pullRequestErrorLines("List pull requests (all repositories)", path, group.notice ?? "", group.noticeDetails, group.forge ? `${FORGE_NAMES[group.forge.kind]} · ${group.forge.project}` : undefined) })}>Copy diagnostics…</button></span></li>)}</ul>
       </details>}
       <RequestRows rows={rows.map(row => ({ ...row, watched: !!watches[row.repository.root]?.[row.scope]?.selected[row.pull.number] }))}
         selected={selected?.id ?? null} select={setSelectedId} resetKey={JSON.stringify([query, prefs.state, mine])} showRepository />

@@ -203,6 +203,8 @@ pub fn is_read_only<S: AsRef<OsStr>>(args: &[S]) -> bool {
         // the index or the working tree (fetch and `gc --auto` write it concurrently too).
         "commit-graph" => a.get(1).is_some_and(|s| s == "write" || s == "verify"),
         "merge-file" => has("-p") || has("--stdout"),
+        // A dry run only asks the server; no ref, object or remote-tracking branch changes.
+        "push" => has("--dry-run") || has("-n"),
         "remote" => a.len() == 1 || (a.len() == 2 && a[1] == "-v") || a.get(1).is_some_and(|s| s == "get-url"),
         "stash" => a.get(1).map(|s| s == "list").unwrap_or(false),
         "notes" => matches!(a.get(1).map(|s| s.as_str()), Some("show" | "list")),
@@ -694,6 +696,8 @@ mod tests {
     fn classifies_read_only_commands() {
         assert!(is_read_only(&["status", "--porcelain=v2"]));
         assert!(is_read_only(&["notes", "show", "HEAD"]));
+        assert!(is_read_only(&["push", "--dry-run", "--porcelain", "--", "origin", "HEAD:refs/heads/x"]));
+        assert!(!is_read_only(&["push", "origin", "HEAD"]));
         assert!(!is_read_only(&["notes", "add", "-m", "x", "HEAD"]));
         assert!(is_read_only(&["commit-graph", "write", "--reachable"]));
         assert!(!is_read_only(&["pack-refs", "--all"]));

@@ -7,6 +7,7 @@ pub mod commit;
 pub mod config_cache;
 pub mod conflicts;
 pub mod connection;
+pub mod connection_check;
 pub mod diff;
 pub mod external_tools;
 pub mod extras;

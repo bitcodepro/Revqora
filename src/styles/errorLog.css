@@ -31,3 +31,4 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.error-log article header button + button { margin-left: 0; }

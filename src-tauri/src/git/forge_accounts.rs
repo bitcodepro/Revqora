@@ -762,6 +762,20 @@ fn is_api_timeout(error: &(dyn std::error::Error + 'static)) -> bool {
     false
 }
 
+/// Status and the provider's request ID of a failed API response, for diagnostics reports
+/// (`http_status=403`, `request_id=…`). The ID identifies the request in the provider's logs.
+fn response_details(code: u16, response: &ureq::Response) -> Vec<String> {
+    let mut details = vec![format!("http_status={code}")];
+    let id = ["x-github-request-id", "x-request-id", "x-vss-e2eid", "activityid", "x-arequestid"].iter().find_map(|name| response.header(name));
+    if let Some(id) = id.map(str::trim).filter(|id| !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_:.".contains(c))) {
+        details.push(format!("request_id={id}"));
+    }
+    if let Some(wait) = response.header("retry-after").and_then(|s| s.trim().parse::<u64>().ok()) {
+        details.push(format!("retry_after={wait}"));
+    }
+    details
+}
+
 fn api_timeout() -> GitError {
     fail("The Git provider did not finish its API response in time. Retry the request.").kind("forge-timeout")
 }
@@ -832,9 +846,12 @@ pub(super) fn request_content(
             if code == 429
                 || code == 403 && (r.header("x-ratelimit-remaining") == Some("0") || r.header("retry-after").and_then(|s| s.parse::<u64>().ok()).is_some()) =>
         {
-            return Err(fail("API rate limit reached. Wait before trying again.").kind("forge-rate-limit"))
+            let mut error = fail("API rate limit reached. Wait before trying again.").kind("forge-rate-limit");
+            error.details.extend(response_details(code, &r));
+            return Err(error);
         }
-        Err(ureq::Error::Status(code, _)) => {
+        Err(ureq::Error::Status(code, r)) => {
+            let details = response_details(code, &r);
             let mut error = fail(match code {
                 401 => "Token rejected. It may have expired or been revoked. Reconnect this account.".into(),
                 403 => "Access denied. Check token permissions and organization SSO authorization.".into(),
@@ -851,6 +868,7 @@ pub(super) fn request_content(
             if matches!(kind, "bitbucket" | "bitbucket-server" | "azure") && matches!(code, 401 | 403) {
                 error.details.push(format!("forge_http_status={kind}:{code}"));
             }
+            error.details.extend(details);
             return Err(error);
         }
         Err(error) if matches!(method, "GET" | "HEAD") && is_api_timeout(&error) => return Err(api_timeout()),
