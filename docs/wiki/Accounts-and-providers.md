@@ -12,7 +12,7 @@
 
 Git may successfully use an SSH key while the PR API has no usable token. A browser login also does not automatically supply Revqora with an API credential.
 
-**Use Git credential helper** is available as an API connection choice when the stored credential is suitable for the provider API. SSH authentication by itself does not supply an HTTPS API token. If reuse fails, add an API account explicitly.
+**Use Git credential helper** is available as an API connection choice when the stored credential is suitable for the provider API. SSH authentication by itself does not supply an HTTPS API token. If reuse fails, add an API account explicitly. Revqora remembers the helper's answer while it runs: for a minute as it is, then for up to 30 minutes it is still used at once while the helper is asked again in the background. A rejected token (HTTP 401), a new sign-in or **Forget saved tokens** drops it, so the next request asks the helper.
 
 ## Add an API account
 

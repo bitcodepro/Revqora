@@ -818,8 +818,15 @@ pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, on_line: imp
     // Local edits never block a pull. Staged work is saved here, with its staging, in a stash
     // named after the branch; every other edit is set aside by Git's autostash only when the
     // pull integrates something. Both come back afterwards, and a conflict shows the files.
-    let name = pull_stash_name(repo)?;
-    let dirty = head_oid(repo).is_some() && runner::exec(repo, ["diff", "HEAD", "--quiet", "--ignore-submodules=dirty"])?.code == 1;
+    // Both reads are independent; run them side by side. Without a commit, `diff HEAD` fails
+    // (not exit 1), so an unborn branch counts as having nothing to set aside.
+    let parent = super::operations::Inherited::of(repo);
+    let (name, dirty) = std::thread::scope(|scope| {
+        let name = scope.spawn(|| parent.run(|| pull_stash_name(repo)));
+        let dirty = runner::exec(repo, ["diff", "HEAD", "--quiet", "--ignore-submodules=dirty"]).map(|out| out.code == 1);
+        (name.join().unwrap_or_else(|_| Err(GitError::new("Reading the current branch failed."))), dirty)
+    });
+    let (name, dirty) = (name?, dirty?);
     let saved = stash_staged_as(repo, &name)?;
     let top = stash_top(repo)?;
     match pull_unsaved(repo, mode, prune_remote, on_line) {

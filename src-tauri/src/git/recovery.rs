@@ -313,10 +313,18 @@ fn source_path(root: &Path, path: &str) -> GitResult<PathBuf> {
 }
 
 fn refs(root: &Path) -> GitResult<Vec<SavedRef>> {
-    let raw = runner::run(
-        root,
-        ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(objecttype)", "refs/heads", "refs/remotes", "refs/worktree/revqora", "refs/stash"],
-    )?;
+    // Both reads are independent: run them side by side (each Git start costs 60–100 ms on
+    // Windows). The helper joins the caller's repository transaction.
+    let parent = operations::Inherited::of(root);
+    let (raw, stashes) = std::thread::scope(|scope| {
+        let stashes = scope.spawn(|| parent.run(|| runner::run(root, ["stash", "list", "--format=%H"])));
+        let raw = runner::run(
+            root,
+            ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(objecttype)", "refs/heads", "refs/remotes", "refs/worktree/revqora", "refs/stash"],
+        );
+        (raw, stashes.join().unwrap_or_else(|_| Err(fail("Reading the stash list failed."))))
+    });
+    let (raw, stashes) = (raw?, stashes?);
     let mut refs = Vec::new();
     for line in raw.lines() {
         let fields: Vec<_> = line.split('\t').collect();
@@ -331,7 +339,7 @@ fn refs(root: &Path) -> GitResult<Vec<SavedRef>> {
             refs.push(SavedRef { name: fields[0].into(), oid: fields[1].into(), kind: kind.into() });
         }
     }
-    for (i, value) in runner::run(root, ["stash", "list", "--format=%H"])?.lines().enumerate() {
+    for (i, value) in stashes.lines().enumerate() {
         refs.push(SavedRef { name: format!("stash@{{{i}}}"), oid: value.into(), kind: "stash".into() });
     }
     if refs.len() > MAX_FILES {
@@ -1023,10 +1031,10 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
     }
     let tree_input: String = objects.iter().map(|(oid, kind)| format!("{kind} {oid}\t{oid}\0")).collect();
     let tree = git(&root, &strings(&["mktree", "-z"]), Some(tree_input.as_bytes()))?;
-    let empty = git(&root, &strings(&["mktree", "-z"]), Some(&[]))?;
     cp.base_commit = match &cp.summary.head {
         Some(head) => head.clone(),
-        None => commit(&root, &empty, &[])?,
+        // Only a repository without commits needs an empty tree for its base commit.
+        None => commit(&root, &git(&root, &strings(&["mktree", "-z"]), Some(&[]))?, &[])?,
     };
     let mut parents: BTreeSet<String> = cp.refs.iter().map(|r| r.oid.clone()).collect();
     parents.insert(cp.base_commit.clone());

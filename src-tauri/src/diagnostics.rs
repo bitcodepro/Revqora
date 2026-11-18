@@ -77,8 +77,9 @@ pub fn report(input: &Input, environment: &Environment) -> String {
     ];
     let mut omitted = false;
     // Once a diff starts, every following line that continues it is file content, also when
-    // the caller passed each line of a message as its own entry. A blank line or a line that
-    // is not diff syntax ends it.
+    // the caller passed each line of a message as its own entry. Blank lines stay inside it:
+    // an empty line of the file is a context line that may arrive with its leading space
+    // trimmed. Only a non-blank line that is not diff syntax ends it.
     let mut in_block = false;
     for entry in &input.lines {
         // Redact the whole entry first: a private key spans several lines.
@@ -88,7 +89,7 @@ pub fn report(input: &Input, environment: &Environment) -> String {
                 in_block = true;
             }
             if in_block {
-                if line.trim().is_empty() || !continues_file_content(line) {
+                if !line.trim().is_empty() && !continues_file_content(line) {
                     in_block = false;
                 } else {
                     omitted = true;
@@ -178,7 +179,9 @@ mod tests {
             "@@ -1,2 +1,2 @@",
             " unchanged confidential context",
             "-old confidential text",
-            "+new confidential text",
+            " ",
+            "",
+            "+new confidential text after empty context lines",
             "\\ No newline at end of file",
             "Operation: Commit",
         ];

@@ -14,19 +14,34 @@ export async function liveDiffSmoke({page,root,file,noise}) {
   await page.evaluate(()=>{
     const original=window.fetch,base=window.__TAURI_INTERNALS__.convertFileSrc("","ipc");let release;
     const gate=new Promise(resolve=>{release=resolve;});
-    const state=window.__liveDiff={statuses:[],reads:0,held:false,hold:false,release,line:document.querySelector(".changes .diff .dl"),original,loaders:0};
+    const state=window.__liveDiff={statuses:[],reads:0,inflight:0,held:false,hold:false,release,line:document.querySelector(".changes .diff .dl"),original,loaders:0};
     state.observer=new MutationObserver(()=>{if(document.querySelector(".changes .diff .loading-center"))state.loaders++;});
     state.observer.observe(document.querySelector(".changes .diff"),{childList:true,subtree:true});
     window.fetch=async function(input,init){
-      const response=await original.call(this,input,init);
-      if(String(input)===`${base}status`||String(input)===`${base}repository_changes_status`){const s=await response.clone().json();if(s.files&&s.stateVersion>=(state.statuses.at(-1)?.stateVersion??0))state.statuses.push(s);}
-      if(String(input)===`${base}working_diff`){state.reads++;if(state.hold&&!state.held){state.held=true;await gate;}}
-      return response;
+      // Diff reads are counted when they are requested, so a read still in flight is never missed or misattributed.
+      const diff=String(input)===`${base}working_diff`;
+      if(diff){state.reads++;state.inflight++;}
+      try {
+        const response=await original.call(this,input,init);
+        if(String(input)===`${base}status`||String(input)===`${base}repository_changes_status`){const s=await response.clone().json();if(s.files&&s.stateVersion>=(state.statuses.at(-1)?.stateVersion??0))state.statuses.push(s);}
+        if(diff&&state.hold&&!state.held){state.held=true;await gate;}
+        return response;
+      } finally { if(diff)state.inflight--; }
     };
   });
   const frame=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   try {
-    let previous=0;
+    // The status read before the click fingerprinted the previously selected file, so the
+    // new file may still carry its porcelain token and be read once more when the first
+    // status for it arrives. Wait for that status (a warm-up WAL write) and for the diff to
+    // settle, then count: only reads after this point would come from unrelated activity.
+    fs.writeFileSync(noise,"0000");
+    await page.waitForFunction(token=>window.__liveDiff.statuses.some(s=>s.stateToken===null&&s.files.some(f=>f.path==="watcher.sqlite-wal")&&s.files.find(f=>f.path==="watcher-user-probe.txt")?.diffToken===token),initial.file);
+    await frame();
+    await page.waitForFunction(()=>window.__liveDiff.inflight===0);
+    await page.locator(".changes .diff[aria-busy='false']").waitFor();
+    await frame();
+    let previous=await page.evaluate(()=>{const s=window.__liveDiff;if(s.inflight)throw Error("A diff read started while the diff should be settled");s.reads=0;s.loaders=0;s.line=document.querySelector(".changes .diff .dl");return s.statuses.at(-1).stateVersion;});
     for(const text of ["1111","2222","3333"]){
       fs.writeFileSync(noise,text);
       await page.waitForFunction(previous=>window.__liveDiff.statuses.some(s=>s.stateVersion>previous&&s.stateToken===null&&s.files.some(f=>f.path==="watcher.sqlite-wal")),previous);

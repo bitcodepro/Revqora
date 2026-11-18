@@ -609,8 +609,11 @@ pub(super) fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::
     Ok(super::forge_accounts::Credential { username, token: pass, mode: "bearer".into() })
 }
 
-/// How long a Git credential answer is reused (see [`cached_token`]).
+/// How long a Git credential answer is reused as it is (see [`cached_token`]).
 const CREDENTIAL_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Up to this age an answer is still used at once while Git is asked again in the background;
+/// an older one is read from Git before the request.
+const CREDENTIAL_STALE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 type CredentialKey = (std::path::PathBuf, String);
 
@@ -621,6 +624,8 @@ struct CredentialCache {
     /// read the credential that was just forgotten, so its answer is not cached.
     generation: u64,
     entries: std::collections::HashMap<CredentialKey, (std::time::Instant, super::forge_accounts::Credential)>,
+    /// Keys whose answer is being read again in the background.
+    refreshing: std::collections::HashSet<CredentialKey>,
 }
 
 fn credential_cache() -> &'static parking_lot::Mutex<CredentialCache> {
@@ -635,10 +640,63 @@ const CREDENTIAL_ATTEMPTS: usize = 3;
 /// [`token`] for API requests. `git credential fill` through Git Credential Manager takes
 /// 1–2 s on Windows, and every PR request needs the credential (it is part of the
 /// connection revision), so opening one Bitbucket PR spent most of its time here. An
-/// answer is reused for a minute per repository and remote URL; a 401, a new sign-in or
-/// Forget saved tokens invalidates it. No lock is held while Git runs.
+/// answer is reused for a minute per repository and remote URL. After that, for up to 30
+/// minutes, it is still used at once while Git is asked again in the background, so coming
+/// back to pull requests after a pause does not wait for Git. A 401, a new sign-in or Forget
+/// saved tokens invalidates it. No lock is held while Git runs.
 pub(super) fn cached_token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
-    cached_in(credential_cache(), (repo.to_path_buf(), url.to_owned()), || token(repo, url))
+    let key = (repo.to_path_buf(), url.to_owned());
+    let cache = credential_cache();
+    match stale_answer(cache, &key, std::time::Instant::now()) {
+        Some((credential, refresh)) => {
+            if refresh {
+                std::thread::spawn(move || refresh_in(cache, key, |(repo, url)| token(repo, url)));
+            }
+            Ok(credential)
+        }
+        None => cached_in(cache, key.clone(), || token(&key.0, &key.1)),
+    }
+}
+
+/// A remembered answer that is past [`CREDENTIAL_TTL`] but within [`CREDENTIAL_STALE`] at `now`,
+/// and whether the caller should start the one background refresh for it.
+fn stale_answer(
+    cache: &parking_lot::Mutex<CredentialCache>,
+    key: &CredentialKey,
+    now: std::time::Instant,
+) -> Option<(super::forge_accounts::Credential, bool)> {
+    let mut saved = cache.lock();
+    let (at, credential) = saved.entries.get(key)?;
+    let age = now.saturating_duration_since(*at);
+    if age < CREDENTIAL_TTL || age >= CREDENTIAL_STALE {
+        return None;
+    }
+    let credential = credential.clone();
+    Some((credential, saved.refreshing.insert(key.clone())))
+}
+
+/// Reads `key` from Git again. An answer is kept only if nothing was invalidated meanwhile; a
+/// failed lookup drops the remembered answer, so the next request asks Git and reports why.
+fn refresh_in(
+    cache: &parking_lot::Mutex<CredentialCache>,
+    key: CredentialKey,
+    lookup: impl Fn(&CredentialKey) -> GitResult<super::forge_accounts::Credential>,
+) {
+    let generation = cache.lock().generation;
+    let answer = lookup(&key);
+    let mut saved = cache.lock();
+    saved.refreshing.remove(&key);
+    if saved.generation != generation {
+        return;
+    }
+    match answer {
+        Ok(credential) => {
+            saved.entries.insert(key, (std::time::Instant::now(), credential));
+        }
+        Err(_) => {
+            saved.entries.remove(&key);
+        }
+    }
 }
 
 fn cached_in(
@@ -661,7 +719,7 @@ fn cached_in(
         attempt += 1;
         let mut saved = cache.lock();
         if saved.generation == generation {
-            saved.entries.retain(|_, (at, _)| at.elapsed() < CREDENTIAL_TTL);
+            saved.entries.retain(|_, (at, _)| at.elapsed() < CREDENTIAL_STALE);
             saved.entries.insert(key, (std::time::Instant::now(), credential.clone()));
             return Ok(credential);
         }
@@ -1656,6 +1714,43 @@ fi
         assert_eq!(saved.as_deref(), Some("new-token"), "the forgotten token must not be cached again");
         let again = cached_in(&cache, key, || panic!("the fresh answer is reused")).unwrap();
         assert_eq!(again.token, "new-token");
+    }
+
+    #[test]
+    fn an_older_answer_is_used_at_once_and_read_again_in_the_background() {
+        let cache = parking_lot::Mutex::new(CredentialCache::default());
+        let key = (std::path::PathBuf::from("fixture-repo"), "https://example.invalid/team/repo.git".to_owned());
+        // Ages are given as later moments, so the test never waits and never depends on the
+        // clock or on how long the machine has been running.
+        let saved_at = std::time::Instant::now();
+        let after = |seconds: u64| saved_at + std::time::Duration::from_secs(seconds);
+        let remember = |token: &str| cache.lock().entries.insert(key.clone(), (saved_at, fixture_credential(token)));
+        remember("old-token");
+        assert!(stale_answer(&cache, &key, after(30)).is_none(), "within a minute the answer is simply reused");
+        // Past a minute: used as it is, and exactly one caller starts the refresh.
+        let (credential, refresh) = stale_answer(&cache, &key, after(120)).unwrap();
+        assert_eq!((credential.token.as_str(), refresh), ("old-token", true));
+        assert!(!stale_answer(&cache, &key, after(121)).unwrap().1, "one refresh at a time");
+        refresh_in(&cache, key.clone(), |_| Ok(fixture_credential("new-token")));
+        assert!(stale_answer(&cache, &key, std::time::Instant::now()).is_none(), "the refreshed answer is fresh again");
+        assert_eq!(cached_in(&cache, key.clone(), || panic!("fresh answers are reused")).unwrap().token, "new-token");
+
+        // A refresh that overlapped Forget saved tokens is not kept.
+        remember("old-token");
+        refresh_in(&cache, key.clone(), |_| {
+            invalidate(&cache);
+            Ok(fixture_credential("read-before-forget"))
+        });
+        assert!(cache.lock().entries.is_empty());
+
+        // A failed refresh drops the answer, so the next request asks Git and reports the error.
+        remember("old-token");
+        refresh_in(&cache, key.clone(), |_| Err(GitError::new("Git returned no API credential.")));
+        assert!(cache.lock().entries.is_empty());
+
+        // Older than half an hour: not used; the request reads Git first.
+        remember("old-token");
+        assert!(stale_answer(&cache, &key, after(31 * 60)).is_none());
     }
 
     #[test]
