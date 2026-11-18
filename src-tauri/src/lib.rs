@@ -602,6 +602,12 @@ fn git_selection() -> Option<git::locate::GitSelection> {
     git::locate::selection()
 }
 
+/// Version of the Git Credential Manager in use, if any (checked once per selected Git).
+#[tauri::command]
+async fn credential_manager() -> GitResult<Option<git::locate::CredentialManager>> {
+    blocking(|| Ok(git::locate::credential_manager())).await
+}
+
 /// Looks for git again (after the user installed or updated it).
 #[tauri::command]
 async fn git_configure(state: State<'_, AppState>) -> GitResult<git::locate::GitSelection> {
@@ -1670,6 +1676,34 @@ async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expe
         );
     }
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_background", None, move || ops::fetch_background(&p(&repo))).await
+}
+
+/// Stops the fetch, pull or push transfer running in `repo`. Runs at once (never queued
+/// behind the operation it stops). Returns whether a transfer was running.
+#[tauri::command]
+fn cancel_transfer(repo: String) -> bool {
+    git::runner::transfers::cancel(&p(&repo))
+}
+
+/// Tags that moved on the server after a fetch; the local versions were kept.
+#[tauri::command]
+fn moved_tags(repo: String) -> GitResult<Vec<String>> {
+    ops::moved_tags(&p(&repo))
+}
+
+/// Replaces the moved tags with the server's versions.
+#[tauri::command]
+async fn update_moved_tags(recovery_consent: Option<String>, expected_state: Option<String>, app: AppHandle, repo: String, op_id: String) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "update_moved_tags", Some(op_id.clone()), move || {
+        ops::update_moved_tags(&p(&repo), progress(&app, &op_id))
+    })
+    .await
+}
+
+/// Forget saved login for a remote's address (after a failed sign-in, to use another account).
+#[tauri::command]
+async fn forget_saved_login(repo: String, remote: String) -> GitResult<()> {
+    blocking(move || ops::forget_saved_login(&p(&repo), &remote)).await
 }
 
 #[tauri::command]
@@ -3522,6 +3556,11 @@ pub fn run() {
             refs_snapshot,
             repository_branch_names,
             fetch_background,
+            cancel_transfer,
+            credential_manager,
+            moved_tags,
+            update_moved_tags,
+            forget_saved_login,
             squash_merged,
             branch_details,
             checkout,

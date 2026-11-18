@@ -11,6 +11,7 @@ pub mod connection_check;
 pub mod diff;
 pub mod external_tools;
 pub mod extras;
+mod fetch_report;
 pub mod forge;
 pub mod forge_accounts;
 #[cfg(test)]

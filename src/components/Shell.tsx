@@ -412,10 +412,11 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
 // ───────────── status bar ─────────────
 
 /** Current operation: its name, the git phase ("Receiving objects") and a smooth bar for its percent. */
-function BusyItem({ label, line }: { label: string; line: string }) {
+function BusyItem({ label, line, cancel }: { label: string; line: string; cancel?: () => void }) {
   const m = line.match(/^\s*(?:remote:\s*)?([A-Za-z][A-Za-z ]+?):\s+(\d{1,3})%/);
   const phase = m?.[1];
   const pct = m ? Math.min(100, Number(m[2])) : null;
+  const [cancelling, setCancelling] = useState(false);
   return (
     <span className="item busy-item" title={line || label}>
       <span className="busy-dot" />
@@ -430,6 +431,12 @@ function BusyItem({ label, line }: { label: string; line: string }) {
         </>
       ) : (
         line && <span className="busy-line faint">{line}</span>
+      )}
+      {cancel && (
+        <button type="button" className="btn sm busy-cancel" disabled={cancelling} aria-label={`Cancel ${label}`} title="Stop the transfer"
+          onClick={() => { setCancelling(true); cancel(); }}>
+          {cancelling ? "Cancelling…" : "Cancel"}
+        </button>
       )}
     </span>
   );
@@ -491,7 +498,7 @@ export function StatusBar() {
             {plural(tab.layers.layers.length, "stage layer")}
           </span>
         )}
-        {b && <BusyItem label={b.label} line={b.line} />}
+        {b && <BusyItem key={b.id} label={b.label} line={b.line} cancel={b.cancel} />}
         {!b && operations.length === 0 && (tab?.pendingMutations ?? 0) > 0 && <BusyItem label="Updating changes" line="" />}
         {operations.length > 0 && <button type="button" className="item repository-queue" aria-live="polite" title={operations.map((o) => `${o.repo}: ${o.command.replaceAll("_", " ")} (${o.phase})`).join("\n")} onClick={() => void operationLogDialog(tab?.root ?? null)}>
           {!b && <span className="busy-dot" aria-hidden="true" />}

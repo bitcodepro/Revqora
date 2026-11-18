@@ -194,19 +194,27 @@ pub fn status_with_operation(repo: &Path) -> GitResult<StatusWithOperation> {
 }
 
 pub fn status(repo: &Path) -> GitResult<StatusSummary> {
-    read_status(repo, None, false)
+    read_status(repo, None, false, None)
+}
+
+/// [`status`] and the index listing (`ls-files --stage -v -z`) it already read for its state
+/// token, so a caller comparing index snapshots needs no second `ls-files`.
+pub fn status_with_index(repo: &Path) -> GitResult<(StatusSummary, Vec<u8>)> {
+    let mut index = Vec::new();
+    let status = read_status(repo, None, false, Some(&mut index))?;
+    Ok((status, index))
 }
 
 pub fn display_status(repo: &Path) -> GitResult<StatusSummary> {
-    read_status(repo, None, true)
+    read_status(repo, None, true, None)
 }
 
 /// Display refresh for Changes. Only the open diff needs a content fingerprint.
 pub fn changes_status(repo: &Path, path: &str) -> GitResult<StatusSummary> {
-    read_status(repo, Some(path), true)
+    read_status(repo, Some(path), true, None)
 }
 
-fn read_status(repo: &Path, display_path: Option<&str>, allow_locked_file: bool) -> GitResult<StatusSummary> {
+fn read_status(repo: &Path, display_path: Option<&str>, allow_locked_file: bool, index_out: Option<&mut Vec<u8>>) -> GitResult<StatusSummary> {
     super::operations::read(repo, || {
         let version = super::operations::next_version(repo);
         let mut stages = super::stage_timings::Stages::default();
@@ -221,6 +229,10 @@ fn read_status(repo: &Path, display_path: Option<&str>, allow_locked_file: bool)
         });
         let raw = raw?;
         let reads = reads.map_err(|_| GitError::new("Background status task failed."))?;
+        if let Some(out) = index_out {
+            // An index read failure is reported by the token step below.
+            *out = reads.index().map(<[u8]>::to_vec).unwrap_or_default();
+        }
         let mut status = stages.time("parse", || parse(&raw));
         let tokens = stages.time("stateTokens", || super::operations::state_tokens_from(repo, &raw, &mut status.files, display_path, reads));
         if super::stage_timings::enabled() {

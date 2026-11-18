@@ -33,6 +33,8 @@ export interface BusyOp {
   label: string;
   line: string;
   started: number;
+  /** Stops the operation (network transfers); the status bar then shows a Cancel button. */
+  cancel?: () => void;
 }
 
 export interface RepositoryOperation {
@@ -189,8 +191,8 @@ export function toggleRepositoryOverview() {
   useUi.setState(state => ({ repositoryOverview: !state.repositoryOverview }));
 }
 
-export function startBusy(id: string, label: string) {
-  useUi.setState({ busy: [...useUi.getState().busy, { id, label, line: "", started: Date.now() }] });
+export function startBusy(id: string, label: string, cancel?: () => void) {
+  useUi.setState({ busy: [...useUi.getState().busy, { id, label, line: "", started: Date.now(), cancel }] });
 }
 
 const lastBusyUpdate = new Map<string, number>();

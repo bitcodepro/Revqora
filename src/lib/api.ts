@@ -49,6 +49,7 @@ import type {
   GitError,
   UpdateInfo,
   GitSelection,
+  CredentialManager,
   GitVersionInfo,
   GraphRow,
   GraphSummary,
@@ -170,6 +171,8 @@ export const api = {
   operationLogRetry: () => call<OperationLogHealth>("operation_log_retry"),
   gitVersion: () => call<GitVersionInfo>("git_version"),
   gitSelection: () => call<GitSelection | null>("git_selection"),
+  /** Git Credential Manager version when it is the configured helper (checked once per selected Git). */
+  credentialManager: () => call<CredentialManager | null>("credential_manager"),
   updateCheck: () => call<UpdateInfo>("update_check"),
   updateInstall: () => call<void>("update_install"),
   updateRestart: () => call<void>("update_restart"),
@@ -270,6 +273,13 @@ export const api = {
   repositoryBranchNames: (repo: string) => call<string[]>("repository_branch_names", { repo }),
   refs: (repo: string) => call<RefsSnapshot>("refs_snapshot", { repo }),
   fetchBackground: (repo: string) => call<string>("fetch_background", { repo }),
+  /** Stops the running fetch, pull or push transfer of `repo`; false when none was running. */
+  cancelTransfer: (repo: string) => call<boolean>("cancel_transfer", { repo }),
+  /** Tags that moved on the server; the last fetch kept the local versions. */
+  movedTags: (repo: string) => call<string[]>("moved_tags", { repo }),
+  updateMovedTags: (repo: string, opId: string) => call<string>("update_moved_tags", { repo, opId }),
+  /** Removes the saved sign-in for the remote's address from every credential helper. */
+  forgetSavedLogin: (repo: string, remote: string) => call<void>("forget_saved_login", { repo, remote }),
   squashMerged: (repo: string) => call<string[]>("squash_merged", { repo }),
   branchDetails: (repo: string, name: string, base: string) => call<BranchDetails>("branch_details", { repo, name, base }),
   checkout: (repo: string, target: string, kind: "local" | "remote" | "commit", choice?: import("./types").SwitchChoice, expectedState?: string) =>

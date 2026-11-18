@@ -200,28 +200,51 @@ fn shell_path(value: &str) -> String {
 /// ones. Git asks helpers in order, and Git Credential Manager (a .NET process) takes about
 /// 1.3 s per request even when it has nothing for the host; it used to run first on every
 /// fetch, pull and push. The configured helpers follow, in their order, for anything Revqora
-/// does not answer and for `store`/`erase`. Configurations that reset the helper list with
-/// an empty value keep Git's own order.
+/// does not answer and for `store`. A configuration that resets a URL-specific helper list
+/// keeps Git's own order.
+///
+/// Every configured helper is also wrapped so that Git cannot erase a saved login after a
+/// failed transfer (see [`guard_erase`]).
 fn helpers_first(root: &Path, command: &mut Command) {
-    if !crate::git_credentials::remembers(root) {
-        return;
-    }
-    let Some((_, revqora)) = crate::askpass::env().iter().find(|(key, _)| key == crate::git_credentials::HELPER_VAR) else { return };
+    // The runner adds Revqora's helper to every command; the reset below drops it, so it is
+    // placed again: first when it remembers a credential here, last (Git's order) otherwise.
+    let revqora = crate::askpass::env().iter().find(|(key, _)| key == crate::git_credentials::HELPER_VAR).map(|(_, helper)| helper.clone());
+    let first = crate::git_credentials::remembers(root);
     let Ok(out) = super::config_cache::exec(root, &["config", "--show-scope", "-z", "--get-regexp", r"^credential\..*helper$"]) else { return };
     if !out.ok() && out.code != 1 {
         return;
     }
-    if let Some(order) = helper_order(&out.text(), revqora) {
+    if let Some(order) = guarded_order(&out.text(), revqora.as_deref(), first) {
         for entry in order {
             command.args(["-c", &entry]);
         }
     }
 }
 
-/// `-c` values that put `revqora` first and then replay the configured helpers from
-/// `git config --show-scope -z --get-regexp` output, or None to keep Git's order.
-fn helper_order(listing: &str, revqora: &str) -> Option<Vec<String>> {
-    let mut order = vec!["credential.helper=".to_owned(), format!("credential.helper={revqora}")];
+/// Wraps one configured helper so that `erase` is ignored and `get`/`store` reach it as before.
+///
+/// After a failed request Git tells every helper to erase the login for the host. Bitbucket
+/// answers 401 for a repository you cannot access (a typo, a removed repository, revoked
+/// access), so one such fetch used to log the user out of every Bitbucket repository, and a
+/// background fetch kept doing it. Revqora forgets a login only when the user asks for it
+/// (Forget saved login), which runs `git credential reject` without this wrapper.
+fn guard_erase(value: &str) -> String {
+    let body = if let Some(shell) = value.strip_prefix('!') {
+        shell.to_owned()
+    } else if value.starts_with('/') || value.starts_with('\\') || value.as_bytes().get(1) == Some(&b':') {
+        value.to_owned()
+    } else {
+        format!("git credential-{value}")
+    };
+    format!("!f() {{ if [ \"$1\" = erase ]; then cat >/dev/null; return 0; fi; {body} \"$@\"; }}; f")
+}
+
+/// `-c` values that put `revqora` (when given) first or last and replay the configured helpers from
+/// `git config --show-scope -z --get-regexp` output, each wrapped by [`guard_erase`]. A reset
+/// (empty value) of the general list is applied like Git does; a reset of a URL-specific list
+/// returns None to keep Git's own order.
+fn guarded_order(listing: &str, revqora: Option<&str>, first: bool) -> Option<Vec<String>> {
+    let mut helpers: Vec<(String, String)> = Vec::new();
     let mut fields = listing.split('\0');
     while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
         // Command-line entries are Revqora's own (the runner adds its helper to every command).
@@ -230,15 +253,45 @@ fn helper_order(listing: &str, revqora: &str) -> Option<Vec<String>> {
         }
         let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
         let lower = key.to_ascii_lowercase();
-        if !(lower == "credential.helper" || lower.starts_with("credential.") && lower.ends_with(".helper")) {
+        let general = lower == "credential.helper";
+        if !(general || lower.starts_with("credential.") && lower.ends_with(".helper")) {
             continue;
         }
         if value.is_empty() {
-            return None;
+            if !general {
+                return None;
+            }
+            helpers.clear();
+            continue;
         }
-        order.push(format!("{key}={value}"));
+        helpers.push((key.to_owned(), value.to_owned()));
+    }
+    let mut order = vec!["credential.helper=".to_owned()];
+    let own = revqora.map(|revqora| format!("credential.helper={revqora}"));
+    if first {
+        order.extend(own.clone());
+    }
+    order.extend(helpers.into_iter().map(|(key, value)| format!("{key}={}", guard_erase(&value))));
+    if !first {
+        order.extend(own);
     }
     Some(order)
+}
+
+/// Seconds an HTTP transfer may stay below 1 KB/s before Git gives up. Without a limit a
+/// server that accepts the connection and then goes silent keeps a fetch, pull or push
+/// waiting forever. `REVQORA_TRANSFER_STALL_SECONDS` overrides the default of 60.
+pub fn stall_seconds() -> u64 {
+    std::env::var("REVQORA_TRANSFER_STALL_SECONDS").ok().and_then(|v| v.trim().parse().ok()).filter(|&v| v > 0).unwrap_or(60)
+}
+
+/// Adds the stall limit unless the user configured one (for all hosts or for one URL).
+/// Background fetches set the stricter `GIT_HTTP_LOW_SPEED_*` variables, which Git prefers.
+fn stall_limit(root: &Path, command: &mut Command) {
+    let configured = super::config_cache::exec(root, &["config", "--get-regexp", r"^http\..*lowspeed(limit|time)$"]).is_ok_and(|out| out.ok());
+    if !configured {
+        command.args(["-c", "http.lowSpeedLimit=1000", "-c", &format!("http.lowSpeedTime={}", stall_seconds())]);
+    }
 }
 
 pub fn apply(root: &Path, command: &mut Command, selected: Option<&Options>, args: &[String]) -> GitResult<()> {
@@ -279,6 +332,9 @@ pub fn apply(root: &Path, command: &mut Command, selected: Option<&Options>, arg
             .env("GCM_GITHUB_AUTHMODES", "oauth")
             .env("GCM_GITLAB_AUTHMODES", "browser")
             .env("GCM_BITBUCKET_AUTHMODES", "oauth");
+        if network {
+            helpers_first(root, command);
+        }
     } else if network && options.https == Https::Auto {
         // Git validates access on the transport request. GCM's profile probe
         // can reject an otherwise valid Bitbucket repository token.
@@ -294,6 +350,7 @@ pub fn apply(root: &Path, command: &mut Command, selected: Option<&Options>, arg
     if !network {
         return Ok(());
     }
+    stall_limit(root, command);
     if options.ssh == Ssh::Auto && options.ssh_program.is_empty() {
         return Ok(());
     }
@@ -356,23 +413,48 @@ mod tests {
     fn revqora_helper_goes_first_and_configured_helpers_keep_their_order() {
         let listing = "system\0credential.helper\nmanager\0command\0credential.helper\n!revqora\0global\0credential.https://dev.azure.com.helper\nazure\0global\0credential.https://github.com.username\nme\0";
         assert_eq!(
-            helper_order(listing, "!revqora").unwrap(),
-            ["credential.helper=", "credential.helper=!revqora", "credential.helper=manager", "credential.https://dev.azure.com.helper=azure"]
+            guarded_order(listing, Some("!revqora"), true).unwrap(),
+            [
+                "credential.helper=".to_owned(),
+                "credential.helper=!revqora".into(),
+                format!("credential.helper={}", guard_erase("manager")),
+                format!("credential.https://dev.azure.com.helper={}", guard_erase("azure"))
+            ]
         );
-        assert_eq!(helper_order("", "!r").unwrap(), ["credential.helper=", "credential.helper=!r"]);
-        // A configured reset changes which helpers apply: keep Git's own order.
-        assert!(helper_order("system\0credential.helper\nmanager\0local\0credential.helper\n\0", "!r").is_none());
+        assert_eq!(guarded_order("", Some("!r"), true).unwrap(), ["credential.helper=", "credential.helper=!r"]);
+        assert_eq!(guarded_order("", None, false).unwrap(), ["credential.helper="]);
+        // Without a remembered credential Revqora keeps its place after the configured helpers.
+        assert_eq!(
+            guarded_order("global\0credential.helper\nmanager\0", Some("!r"), false).unwrap(),
+            ["credential.helper=".to_owned(), format!("credential.helper={}", guard_erase("manager")), "credential.helper=!r".into()]
+        );
+        // A reset of the general list drops the helpers before it, as in Git.
+        assert_eq!(
+            guarded_order("system\0credential.helper\nmanager\0local\0credential.helper\n\0local\0credential.helper\nstore\0", None, false).unwrap(),
+            ["credential.helper=".to_owned(), format!("credential.helper={}", guard_erase("store"))]
+        );
+        // A reset of a URL-specific list keeps Git's own order.
+        assert!(guarded_order("global\0credential.https://x.invalid.helper\n\0", None, false).is_none());
     }
 
     #[test]
     fn helper_listing_matches_git_output() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in(crate::portable::temp_dir().unwrap()).unwrap();
         super::super::runner::run(dir.path(), ["init", "-q"]).unwrap();
         super::super::runner::run(dir.path(), ["config", "credential.https://example.invalid.helper", "store --file=x"]).unwrap();
         let out = super::super::runner::exec(dir.path(), ["config", "--show-scope", "-z", "--get-regexp", r"^credential\..*helper$"]).unwrap();
-        let order = helper_order(&out.text(), "!r").unwrap();
-        assert!(order.contains(&"credential.https://example.invalid.helper=store --file=x".to_owned()), "{order:?}");
+        let order = guarded_order(&out.text(), Some("!r"), false).unwrap();
+        assert!(order.contains(&format!("credential.https://example.invalid.helper={}", guard_erase("store --file=x"))), "{order:?}");
     }
+
+    #[test]
+    fn wrapped_helpers_run_the_same_command() {
+        assert_eq!(guard_erase("manager"), "!f() { if [ \"$1\" = erase ]; then cat >/dev/null; return 0; fi; git credential-manager \"$@\"; }; f");
+        assert!(guard_erase("!my-helper --flag").contains("; my-helper --flag \"$@\";"));
+        assert!(guard_erase("C:/tools/helper.exe").contains("; C:/tools/helper.exe \"$@\";"));
+        assert!(guard_erase("/usr/bin/helper").contains("; /usr/bin/helper \"$@\";"));
+    }
+
     use crate::git::{ops, runner};
     fn root() -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();

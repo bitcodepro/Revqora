@@ -357,6 +357,8 @@ pub(super) mod process_tree {
                 }
             }
         }
+        /// Dropping a Unix tree never kills it.
+        pub fn keep_descendants(&self) {}
     }
     pub fn spawn(cmd: &mut Command) -> GitResult<(Child, Tree)> {
         cmd.process_group(0);
@@ -402,6 +404,14 @@ pub(super) mod process_tree {
                 TerminateJobObject(self.handle, 1);
             }
         }
+        /// Lets processes that outlive the leader keep running when the tree is dropped (for
+        /// example a `gc --auto` that a finished fetch detached).
+        pub fn keep_descendants(&self) {
+            unsafe {
+                let limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                SetInformationJobObject(self.handle, JobObjectExtendedLimitInformation, &limits as *const _ as _, std::mem::size_of_val(&limits) as u32);
+            }
+        }
     }
     impl Drop for Tree {
         fn drop(&mut self) {
@@ -410,6 +420,10 @@ pub(super) mod process_tree {
             }
         }
     }
+    // A job handle may be used from any thread; Cancel terminates a transfer's tree from the
+    // UI thread while the transfer thread waits on it.
+    unsafe impl Send for Tree {}
+    unsafe impl Sync for Tree {}
     #[cfg(test)]
     impl Tree {
         /// Whitelisted observations only: no command arguments, environment or prompts.
