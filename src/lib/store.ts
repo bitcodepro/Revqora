@@ -8,7 +8,7 @@ import { create } from "zustand";
 import { api, errorMessage } from "./api";
 import { useSettings } from "./settings";
 import { toast, useUi } from "./ui";
-import type { GraphSummary, LayersState, RefsSnapshot, RepoExtras, RepoInfo, StatusSummary } from "./types";
+import type { BranchTracking, GraphSummary, LayersState, RefsSnapshot, RepoExtras, RepoInfo, StatusSummary } from "./types";
 import { WORKTREE } from "./types";
 import { setOperationHooks } from "./operationClient";
 
@@ -749,11 +749,23 @@ export function repositorySidebarStatus(tab: RepoTab | undefined) {
 
 /**
  * Commits of the current branch that Push would send: ahead of its upstream, or, for a branch
- * without an upstream, commits absent from every fetched remote branch (when branches are loaded).
+ * without an upstream, commits absent from every fetched remote branch. An open repository
+ * answers from its own status; `tracking` (refs only, see repositoryTracking.ts) covers
+ * repositories that are closed or still loading, and the unpublished count of a branch whose
+ * list of branches is not loaded.
  */
-export function repositoryOutgoing(tab: RepoTab | undefined): number {
+export function repositoryOutgoing(tab: RepoTab | undefined, tracking?: BranchTracking): number {
   const status = repositorySidebarStatus(tab);
-  if (!status?.branch) return 0;
+  if (!status) return tracking?.branch ? tracking.upstream ? tracking.ahead : tracking.unpublished ?? 0 : 0;
+  if (!status.branch) return 0;
   if (status.upstream) return status.ahead;
-  return tab?.refs?.local.find(branch => branch.name === status.branch)?.unpublished ?? 0;
+  const local = tab?.refs?.local.find(branch => branch.name === status.branch);
+  if (local) return local.unpublished ?? 0;
+  return tracking && tracking.branch === status.branch && tracking.oid === status.oid ? tracking.unpublished ?? 0 : 0;
+}
+
+/** Commits the current branch's upstream has and the branch does not (see repositoryOutgoing). */
+export function repositoryIncoming(tab: RepoTab | undefined, tracking?: BranchTracking): number {
+  const status = repositorySidebarStatus(tab);
+  return status ? status.behind : tracking?.behind ?? 0;
 }

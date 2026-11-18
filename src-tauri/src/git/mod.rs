@@ -40,6 +40,7 @@ pub mod stage_timings;
 pub mod status;
 pub mod storage;
 pub mod submodule_log;
+pub mod tracking;
 pub mod watcher;
 
 pub mod file_editor;

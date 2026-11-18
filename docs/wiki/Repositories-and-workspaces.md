@@ -22,7 +22,7 @@ Press **Ctrl+Alt+R** to show the optional **Repositories** panel as a flat list.
 
 Star a group, repository or branch to find it under **Favorites**. A starred group shows its folders and repositories. A starred branch appears with its repository and parent folders, even if those items have no stars.
 
-Use **Incoming** to show repositories with commits to pull, **Outgoing** to show repositories whose current branch has commits to push (ahead of its upstream, or not on any fetched remote branch when it has no upstream), or **Changes** to show repositories with staged, unstaged or untracked files. These filters use the last known Git status and keep matching repositories in their folder tree.
+Use **Incoming** to show repositories with commits to pull, **Outgoing** to show repositories whose current branch has commits to push (ahead of its upstream, or not on any fetched remote branch when it has no upstream), or **Changes** to show repositories with staged, unstaged or untracked files. These filters use the last known Git status and keep matching repositories in their folder tree. Incoming and Outgoing include repositories that are not open: Revqora checks the current branch of every repository in the library shortly after start, and again when you return to the window, without scanning working files. Their rows show the counts as **↑** and **↓**.
 
 ## Import and organize groups
 

@@ -762,6 +762,13 @@ async fn repository_sidebar_status(repo: String) -> GitResult<StatusSummary> {
     blocking(move || status::sidebar_status(&p(&repo))).await
 }
 
+/// Incoming and outgoing commits of the current branch, without scanning the working tree
+/// (the Explorer's Incoming and Outgoing filters for repositories that are not open).
+#[tauri::command]
+async fn repository_branch_tracking(repo: String) -> GitResult<git::tracking::BranchTracking> {
+    blocking(move || git::tracking::branch_tracking(&p(&repo))).await
+}
+
 #[tauri::command]
 async fn repository_changes_status(repo: String, path: Option<String>) -> GitResult<StatusSummary> {
     blocking(move || status::changes_status(&p(&repo), path.as_deref().unwrap_or(""))).await
@@ -3413,6 +3420,7 @@ pub fn run() {
             git_configure,
             askpass_respond,
             repository_sidebar_status,
+            repository_branch_tracking,
             repository_changes_status,
             repository_status_with_operation,
             repo_open,

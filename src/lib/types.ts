@@ -98,6 +98,19 @@ export interface StageReview {
   files: Record<string, string>;
 }
 
+/** Incoming and outgoing commits of the current branch, read from refs only. */
+export interface BranchTracking {
+  /** `null` for a detached HEAD. */
+  branch: string | null;
+  /** `null` before the branch's first commit. */
+  oid: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  /** For a branch without an upstream: commits absent from every fetched remote branch. */
+  unpublished: number | null;
+}
+
 export interface StatusSummary {
   stateToken?: string | null;
   diffContextToken?: string | null;

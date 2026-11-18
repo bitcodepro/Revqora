@@ -4,7 +4,7 @@ vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), h
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() }, toast: { warning: vi.fn() } }));
 import { api } from "./api";
-import { covers, CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, repositoryOutgoing, useRepos, type RepoTab } from "./store";
+import { covers, CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, repositoryIncoming, repositoryOutgoing, useRepos, type RepoTab } from "./store";
 import { previewGeneration } from "./commitPreview";
 import { repositoryCall, type Invoke } from "./operationClient";
 import type { RepoInfo, StatusSummary } from "./types";
@@ -316,6 +316,21 @@ describe("repositoryOutgoing", () => {
   it("counts unpublished commits of a branch without an upstream", () => {
     expect(repositoryOutgoing(tab({}, 2))).toBe(2);
     expect(repositoryOutgoing(tab({}))).toBe(0);
+  });
+  it("uses the refs-only tracking of a closed or loading repository", () => {
+    const tracking = { branch: "feature", oid: "a", upstream: null, ahead: 0, behind: 0, unpublished: 4 };
+    expect(repositoryOutgoing(undefined, tracking)).toBe(4);
+    expect(repositoryOutgoing(tab(null), { ...tracking, upstream: "origin/feature", ahead: 2, unpublished: null })).toBe(2);
+    expect(repositoryIncoming(undefined, { ...tracking, behind: 5 })).toBe(5);
+    expect(repositoryOutgoing(undefined, { ...tracking, branch: null })).toBe(0);
+  });
+  it("prefers an open repository's status and loaded branches over tracking", () => {
+    const tracking = { branch: "feature", oid: "a", upstream: null, ahead: 0, behind: 7, unpublished: 4 };
+    expect(repositoryOutgoing(tab({}, 2), tracking)).toBe(2);
+    expect(repositoryIncoming(tab({ behind: 1 }), tracking)).toBe(1);
+    const unloaded = { ...tab({}), refs: null } as RepoTab;
+    expect(repositoryOutgoing(unloaded, tracking)).toBe(4);
+    expect(repositoryOutgoing(unloaded, { ...tracking, oid: "older" })).toBe(0);
   });
   it("ignores a detached HEAD and an unknown status", () => {
     expect(repositoryOutgoing(tab({ branch: null, ahead: 4 }))).toBe(0);

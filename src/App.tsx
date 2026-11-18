@@ -40,6 +40,7 @@ import { RepositoryOverview, RepositorySidebar } from "./components/Repositories
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
 import { RepositoryExplorer } from "./components/RepositoryExplorer";
+import { startRepositoryTracking } from "./lib/repositoryTracking";
 import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows, type PanelId } from "./components/PanelWindows";
 import "./styles/workspace.css";
 
@@ -394,6 +395,9 @@ function MainApp() {
       unsubs.forEach(u => void u.then(stop => stop(), () => {}));
     };
   }, []);
+
+  // Incoming and outgoing commits of the whole library, for the Explorer filters.
+  useEffect(() => startRepositoryTracking(), []);
 
   // Refresh when the window regains focus (changes made in other tools).
   useEffect(() => {

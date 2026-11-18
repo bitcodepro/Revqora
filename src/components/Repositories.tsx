@@ -13,7 +13,8 @@ import * as A from "../lib/actions";
 import { basename, relativeTime } from "../lib/format";
 import { pullBlockReason, runRepositoryBatch, type BatchResult } from "../lib/repositoryBatch";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { repositoryOutgoing, repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
+import { repositoryIncoming, repositoryOutgoing, repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
+import { trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
 import { contextMenu, endBusy, showDialog, startBusy, toast, toggleRepositoryOverview, useUi } from "../lib/ui";
 import { AheadBehind } from "./bits";
 import { Modal } from "./Modal";
@@ -161,6 +162,7 @@ export function RepositorySidebar() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [changesOnly, setChangesOnly] = useState(false);
   const [outgoingOnly, setOutgoingOnly] = useState(false);
+  const tracking = useRepositoryTracking(s => s.byKey);
   const library = useLibrary();
   const groupId = library.activeGroupId;
   const actionsCollapsed = useSettings(s => s.repositoryActionsCollapsed);
@@ -175,14 +177,14 @@ export function RepositorySidebar() {
   const scope = groupFilter ? treeSubtreeIds(library.groups, [groupFilter.id]) : null;
   const groupKeys = groupFilter && new Set(groupRepositoryRoots(library.groups, groupFilter.id).map(repositoryKey));
   const candidates = uniqueRoots([...order, ...library.knownRoots]).filter(root => !groupKeys || groupKeys.has(repositoryKey(root)));
-  const count = candidates.filter(root => (repositorySidebarStatus(tabs[root])?.behind ?? 0) > 0).length;
-  const outgoingCount = candidates.filter(root => repositoryOutgoing(tabs[root]) > 0).length;
+  const count = candidates.filter(root => repositoryIncoming(tabs[root], trackingOf(tracking, root)) > 0).length;
+  const outgoingCount = candidates.filter(root => repositoryOutgoing(tabs[root], trackingOf(tracking, root)) > 0).length;
   const favorite = new Set(library.favorites.map(repositoryKey));
   const displayName = (root: string) => library.repositoryNames[repositoryKey(root)] ?? tabs[root]?.info?.name ?? basename(root);
   const search = query.trim().toLowerCase();
   const filterUpdates = updatesOnly;
   const visible = candidates.filter(root => `${root} ${displayName(root)}`.toLowerCase().includes(search)
-    && (!filterUpdates || !!repositorySidebarStatus(tabs[root])?.behind) && (!outgoingOnly || repositoryOutgoing(tabs[root]) > 0) && (!favoritesOnly || favorite.has(repositoryKey(root)))
+    && (!filterUpdates || repositoryIncoming(tabs[root], trackingOf(tracking, root)) > 0) && (!outgoingOnly || repositoryOutgoing(tabs[root], trackingOf(tracking, root)) > 0) && (!favoritesOnly || favorite.has(repositoryKey(root)))
     && (!changesOnly || !!repositorySidebarStatus(tabs[root])?.files.length));
   const selected = visible.filter(root => selection.includes(root));
   const groupIdsByRoot = new Map<string, string[]>();

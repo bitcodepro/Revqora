@@ -66,6 +66,7 @@ import type {
   RewriteAction,
   SearchMode,
   StatusSummary,
+  BranchTracking,
 } from "./types";
 
 export function isGitError(e: unknown): e is GitError {
@@ -179,6 +180,7 @@ export const api = {
   repoScanFolder: (scanId: number, path: string, includeGenerated: boolean) => call<RepositoryFolderScan>("repo_scan_folder", { scanId, path, includeGenerated }),
   repoCancelFolderScan: (scanId: number) => call<void>("repo_cancel_folder_scan", { scanId }),
   repositorySidebarStatus: (repo: string) => call<StatusSummary>("repository_sidebar_status", { repo }),
+  repositoryBranchTracking: (repo: string) => call<BranchTracking>("repository_branch_tracking", { repo }),
   repositoryChangesStatus: (repo: string, path: string | null) => call<StatusSummary>("repository_changes_status", { repo, path }),
   repoInit: (path: string, branch?: string) => call<RepoInfo>("repo_init", { path, branch }),
   repoClone: (parent: string, url: string, name: string, opId: string,connection?:import("./types").GitConnectionOptions, options?: import("./types").CloneOptions) => call<RepoInfo&{connectionWarning:string|null}>("repo_clone", { parent, url, name, opId,connection:connection??null, options: options ?? null }),
