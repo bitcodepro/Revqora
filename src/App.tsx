@@ -40,7 +40,7 @@ import { RepositoryOverview, RepositorySidebar } from "./components/Repositories
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
 import { RepositoryExplorer } from "./components/RepositoryExplorer";
-import { scanRepositoryChanges, scanRepositoryTracking, startRepositoryTracking } from "./lib/repositoryTracking";
+import { repositoryGitChanged, scanRepositoryChanges, scanRepositoryTracking, startRepositoryTracking } from "./lib/repositoryTracking";
 import { uniqueRoots, useLibrary } from "./lib/repositoryLibrary";
 import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows, type PanelId } from "./components/PanelWindows";
 import "./styles/workspace.css";
@@ -371,6 +371,8 @@ function MainApp() {
         const { repo, git } = e.payload;
         if (!useRepos.getState().tabs[repo]) return;
         useRepos.getState().refresh(repo, git ? { background: true, revalidate: true, info: true, status: true, refs: true, layers: true, graph: true } : { background: true, status: true, layers: true, changesDisplay: true });
+        // Remote refs moved (push or fetch in another tool): the unpublished count may be stale.
+        if (git) repositoryGitChanged(repo);
         window.dispatchEvent(new CustomEvent("revqora:worktree", { detail: { repo } }));
       }),
     );

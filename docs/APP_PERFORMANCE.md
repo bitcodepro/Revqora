@@ -253,7 +253,7 @@ Release build of `3804fc7` plus the stage 0 timing hooks, Windows 11 x64 (12 log
 | cold start → first History rows | 5 | 2267 / 2840 | 0 / 0 | 743 / 801 | 184 / 672 | shell 1367 / 1567 |
 | switch → newest commit visible (5k history) | 5 | 154 / 200 | 0 / 0 | 0 / 0 | 154 / 200 |  |
 | switch → newest commit visible (20k merges) | 5 | 149 / 172 | 0 / 0 | 0 / 0 | 149 / 172 |  |
-| commit click → file list → big file diff (651 files) | 5 | 490 / 900 | — | — | — | files 188 / 487 |
+| commit click → file list → big file diff (651 files) ¹ | 5 | 463 / 871 | — | — | — | files 366 / 535 |
 | search subject token (quick) → first result | 5 | 68 / 220 | — | — | — |  |
 | search subject token (quick) → complete | 5 | 68 / 220 | 0 / 0 | 64 / 211 | 4 / 9 | hits 1 / 1; pages 1 / 1 |
 | search body-only token (message) → first result | 5 | 68 / 170 | — | — | — |  |
@@ -267,11 +267,13 @@ Release build of `3804fc7` plus the stage 0 timing hooks, Windows 11 x64 (12 log
 | reload → Incoming/Outgoing for 40 closed repositories | 5 | 1628 / 1750 | — | 1530 / 1885 | 0 / 221 | ready 449 / 645; outgoing 1577 / 1750; incoming 1628 / 1750; changesSweep 1489 / 1837 |
 | all PRs, 44 repositories → first result / complete | 5 | 6148 / 6208 | — | — | — | first 64 / 68; apiServed 13513 / 13617; requests 80 / 80; healthyComplete 1091 / 1155 |
 
+¹ Re-measured after a harness fix. The first version waited for a state that never came (both commits list `big.txt`), so every run spent 30 s before it started. It could also stop its timer on the previous commit's rows: 188 ms for the file list was too low. Each step now waits until the preview names the clicked commit, and the diff shows that commit's rewritten lines. The PR row is valid: every repository ended as its scenario requires in all five runs. Each run now checks that, and a healthy repository that fails, or a failing one that loads, rejects the run.
+
 What the numbers say:
 
 - **Cold start** takes 2.3 s to the first History row; 1.4 s of it is WebView2 starting with a new profile, 0.74 s the history build (`graph_load`), the rest UI.
 - **Switching** between open repositories shows the target's newest commit in about 150 ms with no Git work: the open repository's graph is reused.
-- **Commit → diff** on a 651-file commit: the file list in 188 ms, the 20,000-line file's diff in 490 ms (median); the first, cold run is the p95 (900 ms).
+- **Commit → diff** on a 651-file commit: the file list in 366 ms, the 20,000-line file's diff in 463 ms (median); the first, cold run is the p95 (871 ms).
 - **Search** returns the first result in about 70 ms; the 298 author matches (3 pages of 100) complete in about 205 ms. Queue time is 0: nothing else ran on these repositories.
 - **History rebuild** (`graph_load` with `fast`): 0.29 s for 5,275 commits and 0.61 s for 20,000 commits with 206 merges, almost all of it Git and graph building. In one merges run a background `graph_load` of the same repository fell into the window, which is the 1,170 ms Git p95.
 - **Workspace**: after a reload, the Explorer's Incoming and Outgoing counts are complete for 40 closed repositories in 1.6 s. The same branch reads alone over IPC take 1.5 s (six at a time), so Git process starts dominate; the change count of all 40 takes another 1.5 s.

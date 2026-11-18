@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compare, percentile, stageTotal, summarize } from "./perf-baseline.mjs";
+import { compare, percentile, prOutcomeProblem, stageTotal, summarize } from "./perf-baseline.mjs";
 import { PROVIDERS, fixtureToken, startForgeFixture } from "./perf-forge-fixture.mjs";
 
 test("median and p95 use the nearest rank and skip missing values", () => {
@@ -66,4 +66,16 @@ test("fake providers page, fail and cut responses as the scenario says", async (
   } finally {
     await forge.close();
   }
+});
+
+test("a PR run with an error in a healthy repository or a list from a failing one is not a measurement", () => {
+  assert.equal(prOutcomeProblem("ok", { rows: 60, ms: 120 }, 60), null);
+  assert.equal(prOutcomeProblem("slow", { rows: 60, ms: 3600 }, 60), null);
+  assert.equal(prOutcomeProblem("forbidden", { rows: 0, error: "Access denied." }, 60), null);
+  assert.equal(prOutcomeProblem("truncated", { rows: 50, error: "invalid JSON" }, 60), null);
+  assert.match(prOutcomeProblem("ok", { rows: 0, error: "API rate limit reached.", ms: 90 }, 60), /^failed: API rate limit/);
+  assert.match(prOutcomeProblem("ok", { rows: 50, ms: 90 }, 60), /50 of 60/);
+  assert.match(prOutcomeProblem("rate-limited", { rows: 60, ms: 90 }, 60), /instead of failing/);
+  assert.match(prOutcomeProblem("forbidden", { rows: 10, error: "Access denied." }, 60), /10 rows before/);
+  assert.equal(prOutcomeProblem("ok", undefined, 60), "no result");
 });

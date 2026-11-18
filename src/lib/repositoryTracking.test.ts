@@ -3,16 +3,18 @@ import type { BranchTracking } from "./types";
 
 const mocks = vi.hoisted(() => ({ repositoryBranchTracking: vi.fn(), repositoryChangeCount: vi.fn() }));
 vi.mock("./api", () => ({ api: mocks, errorMessage: String }));
+const repos = vi.hoisted(() => ({ state: { order: [] as string[], tabs: {} as Record<string, unknown> } }));
 vi.mock("./store", () => ({
-  repositorySidebarStatus: () => null,
-  useRepos: { getState: () => ({ order: [], tabs: {} }), subscribe: () => () => {} },
+  repositorySidebarStatus: (tab?: { status?: unknown }) => tab?.status ?? null,
+  useRepos: { getState: () => repos.state, subscribe: () => () => {} },
 }));
 vi.mock("./repositoryLibrary", async original => ({
   ...await original<typeof import("./repositoryLibrary")>(),
   useLibrary: { getState: () => ({ knownRoots: [] }), subscribe: () => () => {} },
 }));
 
-const { changesOf, scanRepositoryChanges, scanRepositoryTracking, trackingOf, useRepositoryTracking } = await import("./repositoryTracking");
+const { changesOf, repositoryGitChanged, scanRepositoryChanges, scanRepositoryTracking, trackingOf, useRepositoryTracking } = await import("./repositoryTracking");
+const { repositoryOutgoing } = await vi.importActual<typeof import("./store")>("./store");
 
 const tracking = (change: Partial<BranchTracking> = {}): BranchTracking =>
   ({ branch: "main", oid: "a", upstream: "origin/main", ahead: 0, behind: 0, unpublished: null, ...change });
@@ -22,6 +24,7 @@ describe("repository tracking", () => {
     mocks.repositoryBranchTracking.mockReset();
     mocks.repositoryChangeCount.mockReset();
     useRepositoryTracking.setState({ byKey: {}, changes: {} });
+    repos.state = { order: [], tabs: {} };
   });
 
   it("checks every repository of the library, several at a time", async () => {
@@ -79,5 +82,38 @@ describe("repository tracking", () => {
     expect(trackingOf(useRepositoryTracking.getState().byKey, "C:/work/moved")).toBeDefined();
     await scanRepositoryTracking(["C:/work/moved"]);
     expect(trackingOf(useRepositoryTracking.getState().byKey, "C:/work/moved")).toBeUndefined();
+  });
+
+  it("reads an open tab's unpublished count again when a push in another tool moves the remote refs", async () => {
+    // An open, inactive tab on a branch without an upstream; its list of branches is not loaded.
+    const root = "C:/work/feature";
+    const status = { branch: "feature", oid: "f1", upstream: null, ahead: 0, behind: 0, files: [] };
+    const tab = { root, status } as unknown as Parameters<typeof repositoryOutgoing>[0];
+    repos.state = { order: [root], tabs: { [root]: tab } };
+    mocks.repositoryBranchTracking.mockResolvedValueOnce(tracking({ branch: "feature", oid: "f1", upstream: null, unpublished: 2 }));
+    await scanRepositoryTracking([root]);
+    expect(repositoryOutgoing(tab, trackingOf(useRepositoryTracking.getState().byKey, root))).toBe(2);
+
+    // `git push origin feature` elsewhere: remote refs change, the branch and HEAD do not.
+    mocks.repositoryBranchTracking.mockResolvedValueOnce(tracking({ branch: "feature", oid: "f1", upstream: null, unpublished: 0 }));
+    repositoryGitChanged(root);
+    await vi.waitFor(() => expect(mocks.repositoryBranchTracking).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(repositoryOutgoing(tab, trackingOf(useRepositoryTracking.getState().byKey, root))).toBe(0));
+  });
+
+  it("leaves tabs that answer from their own status or branch list to their own refresh", async () => {
+    const status = (upstream: string | null, branch: string | null = "main") => ({ branch, oid: "a", upstream, ahead: 0, behind: 0, files: [] });
+    repos.state = { order: [], tabs: {
+      "C:/work/tracked": { root: "C:/work/tracked", status: status("origin/main") },
+      "C:/work/loaded": { root: "C:/work/loaded", status: status(null), refs: { local: [] } },
+      "C:/work/detached": { root: "C:/work/detached", status: status(null, null) },
+    } };
+    for (const root of ["C:/work/tracked", "C:/work/loaded", "C:/work/detached", "C:/work/closed"]) repositoryGitChanged(root);
+    expect(mocks.repositoryBranchTracking).not.toHaveBeenCalled();
+    // A tab still loading its status shows the tracking counts: read them again.
+    repos.state = { order: [], tabs: { "C:/work/loading": { root: "C:/work/loading" } } };
+    mocks.repositoryBranchTracking.mockResolvedValue(tracking());
+    repositoryGitChanged("C:/work/loading");
+    await vi.waitFor(() => expect(mocks.repositoryBranchTracking).toHaveBeenCalledWith("C:/work/loading"));
   });
 });

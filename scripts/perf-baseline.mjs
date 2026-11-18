@@ -167,19 +167,26 @@ async function session(context) {
       // Commit in History → its file list in the details panel → the first file's diff lines.
       await app.page.locator(".explorer-sidebar .repository-select").filter({ hasText: "large-diff" }).first().click();
       const row = app.page.locator(".graph-rows .grow").filter({ hasText: subjects.large }).first();
-      const other = app.page.locator(".graph-rows .grow:not(.wip)").nth(1);
+      const otherSubject = execFileSync("git", ["-C", large, "log", "-1", "--format=%s", "HEAD~1"], { encoding: "utf8" }).trim();
+      const other = app.page.locator(".graph-rows .grow").filter({ hasText: otherSubject }).first();
       await row.waitFor({ timeout: 120_000 });
+      // The preview names a commit only once its own details have loaded, so the subject tells
+      // which commit's file list is shown (both commits list data/big.txt).
+      const shown = subject => app.page.waitForFunction(([subject]) => {
+        const heading = document.querySelector(".details .commit-subject");
+        return heading?.textContent === subject && !!document.querySelector(".details .file-row[data-file-path]");
+      }, [subject], { timeout: 120_000 });
       const samples = [];
       for (let run = 0; run < context.runs; run++) {
         await other.click();
-        await app.page.waitForFunction(() => !document.querySelector(".details .file-row[data-file-path='data/big.txt']"), null, { timeout: 30_000 }).catch(() => {});
+        await shown(otherSubject);
         const began = performance.now();
         await row.click();
-        const file = app.page.locator(".details .file-row[data-file-path]").first();
-        await file.waitFor({ timeout: 120_000 });
+        await shown(subjects.large);
         const files = performance.now() - began;
         await app.page.locator(".details .file-row[data-file-path='data/big.txt']").first().click();
-        await app.page.locator(".details .dl").first().waitFor({ timeout: 120_000 });
+        // Only this commit's diff of big.txt has rewritten lines (the base commit adds the file).
+        await app.page.locator(".details .dl").filter({ hasText: "rewritten" }).first().waitFor({ timeout: 120_000 });
         samples.push({ total: performance.now() - began, files });
       }
       result["commit click → file list → big file diff (651 files)"] = summarize(samples);
@@ -239,6 +246,22 @@ async function session(context) {
   return result;
 }
 
+/**
+ * Why one repository's PR list did not end as its fixture scenario requires, or null.
+ * "ok" and "slow" load every pull request without an error; "forbidden" and "rate-limited"
+ * fail before any row; "incomplete" and "truncated" fail on the second page.
+ */
+export function prOutcomeProblem(scenario, outcome, pulls) {
+  if (!outcome) return "no result";
+  if (scenario === "ok" || scenario === "slow") {
+    if (outcome.error) return `failed: ${outcome.error}`;
+    return outcome.rows === pulls ? null : `${outcome.rows} of ${pulls} pull requests`;
+  }
+  if (!outcome.error) return `loaded ${outcome.rows} pull requests instead of failing`;
+  if ((scenario === "forbidden" || scenario === "rate-limited") && outcome.rows) return `${outcome.rows} rows before the error`;
+  return null;
+}
+
 /** A library of 40 closed repositories: time until the Explorer's filters show every repository. */
 async function workspace(context) {
   const manifest = context.manifest.workspace;
@@ -296,7 +319,8 @@ async function pullRequests(context) {
   // 24 healthy repositories, then each problem once per provider (equal PR numbers everywhere).
   const plan = [...Array.from({ length: 24 }, (_, i) => ({ kind: PROVIDERS[i % 4], scenario: "ok" })),
     ...kinds.flatMap(scenario => PROVIDERS.map(kind => ({ kind, scenario })))];
-  const forge = await startForgeFixture({ pulls: 60, delayMs: 40, slowMs: 1200 });
+  const pulls = 60;
+  const forge = await startForgeFixture({ pulls, delayMs: 40, slowMs: 1200 });
   const home = fs.mkdtempSync(path.join(context.temp, "pr-repos-"));
   const repos = plan.map((entry, index) => {
     const name = `pr-${String(index + 1).padStart(2, "0")}-${entry.scenario}`;
@@ -354,9 +378,16 @@ async function pullRequests(context) {
       }, repos.map(repo => repo.root));
       const served = forge.requests.slice(before);
       const api = served.reduce((sum, request) => sum + request.ms, 0);
-      const healthy = repos.filter(repo => repo.scenario === "ok").map(repo => measured.outcome[repo.root]);
-      samples.push({ total: measured.total, first: measured.first, apiServed: api, requests: served.length, healthyComplete: Math.max(...healthy.map(entry => entry.ms ?? Infinity)) });
       outcome = Object.fromEntries(repos.map(repo => [repo.name, measured.outcome[repo.root]]));
+      // A run counts only when every repository ended as its scenario requires: an error in a
+      // healthy repository, or a list from a failing one, is not a valid measurement.
+      const wrong = repos.flatMap(repo => {
+        const problem = prOutcomeProblem(repo.scenario, measured.outcome[repo.root], pulls);
+        return problem ? [`${repo.name}: ${problem}`] : [];
+      });
+      if (wrong.length) throw new Error(`PR run ${run + 1}: ${wrong.length} repositories ended unexpectedly\n${wrong.join("\n")}`);
+      const healthy = repos.filter(repo => repo.scenario === "ok").map(repo => measured.outcome[repo.root].ms);
+      samples.push({ total: measured.total, first: measured.first, apiServed: api, requests: served.length, healthyComplete: Math.max(...healthy) });
     }
   } catch (error) {
     error.message += `

@@ -83,6 +83,20 @@ function needsTracking(tab: RepoTab | undefined, previous: RepoTab | undefined, 
     || tab?.lastFetchedAt !== previous?.lastFetchedAt;
 }
 
+/**
+ * Git data of an open repository changed on disk (the watcher: a push, fetch or commit made in
+ * another tool). Its counts come from tracking while its status is loading, and the unpublished
+ * count of a branch without an upstream does while its list of branches is not loaded; a push
+ * or fetch changes that count without changing the branch or HEAD, so read it again.
+ */
+export function repositoryGitChanged(root: string): void {
+  const tab = useRepos.getState().tabs[root];
+  if (!tab || tab.refs) return;
+  const status = repositorySidebarStatus(tab);
+  if (status && (!status.branch || status.upstream)) return;
+  void scanRepositoryTracking([root]);
+}
+
 const FOCUS_INTERVAL_MS = 10_000;
 let stop: (() => void) | null = null;
 
