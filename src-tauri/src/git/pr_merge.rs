@@ -71,6 +71,12 @@ pub struct Plan {
     pub queue_state: Option<String>,
     pub merged: bool,
     pub source_branch_may_be_deleted: bool,
+    /// What the server reported for the head commit: requested changes and merge conflicts.
+    /// None when the provider did not say. Used by the attention queue, not by the merge dialog.
+    #[serde(skip)]
+    pub changes_requested: Option<bool>,
+    #[serde(skip)]
+    pub conflicts: Option<bool>,
 }
 impl Plan {
     fn block(&mut self, s: impl Into<String>) {
@@ -89,6 +95,15 @@ struct Prepared {
 }
 pub fn plan(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Plan> {
     prepare(repo, n, connection, revision).map(|p| p.plan)
+}
+/// Merge readiness of the PR as the server reports it now, for the attention queue: the same
+/// reads as [`plan`] without the merge identity and the second metadata read that guard a
+/// merge confirmation. Nothing here can be used to submit a merge.
+pub fn current_readiness(repo: &Path, n: u64, connection: &str) -> GitResult<(Detail, Plan)> {
+    let f = forge::reviewed_connection(repo, connection)?;
+    let (d, v) = pr_center::load_detail(repo, &f, n)?;
+    let (plan, _) = readiness(repo, &f, &d, &v)?;
+    Ok((d, plan))
 }
 pub fn verified_checks(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Vec<forge::Check>> {
     let (f, d, _) = scoped(repo, n, connection, revision)?;
@@ -129,6 +144,8 @@ fn readiness(repo: &Path, f: &ForgeInfo, d: &Detail, v: &Value) -> GitResult<(Pl
         queue_state: None,
         merged: d.pull.state == "merged",
         source_branch_may_be_deleted: matches!(f.kind.as_str(), "github" | "bitbucket-server"),
+        changes_requested: None,
+        conflicts: None,
     };
     if !oid(&p.source_sha) || !oid(&p.target_sha) {
         p.block("The server has not provided complete source and target commit IDs.");

@@ -13,7 +13,7 @@ function prWrite<T>(write: Promise<T>): Promise<T> {
   forgetPrReads();
   return write.finally(forgetPrReads);
 }
-import type { DeletionPlan, DeletionProof, DeletionResult, RemoteBranchTarget, RemoteDeletionReview, OperationLogDetail, OperationLogFilter, OperationLogPage, OperationLogHealth, RecoveryCatalog, RecoveryCheckpoint, RecoverySummary } from "./types";
+import type { DeletionPlan, DeletionProof, DeletionResult, RemoteBranchTarget, RemoteDeletionReview, OperationLogDetail, OperationLogFilter, OperationLogPage, OperationLogHealth, RecoveryCatalog, RecoveryCheckpoint, RecoveryFiles, RecoveryRestoreOutcome, RecoverySummary } from "./types";
 import type {
   Check,
   CommitHelpers,
@@ -66,6 +66,7 @@ import type {
   RewriteAction,
   SearchMode,
   StatusSummary,
+  BranchTracking,
 } from "./types";
 
 export function isGitError(e: unknown): e is GitError {
@@ -155,8 +156,8 @@ export const api = {
   recoveryRestoreBranch: (repo: string, id: string, reference: number | null, name: string) => call<void>("recovery_restore_branch", { repo, id, reference, name }),
   recoveryRestoreStash: (repo: string, id: string, reference: number) => call<void>("recovery_restore_stash", { repo, id, reference }),
   /** Puts saved ignored files back in place; files changed since the operation are left alone. */
-  recoveryRestoreFiles: (repo: string, id: string, changes: import("../components/IgnoredFilesChanged").IgnoredChange[]) =>
-    call<import("../components/IgnoredFilesChanged").RestoreOutcome>("recovery_restore_files", { repo, id, changes }),
+  recoveryRestoreFiles: (repo: string, id: string, paths: string[]) => call<RecoveryRestoreOutcome>("recovery_restore_files", { repo, id, paths }),
+  recoveryFiles: (repo: string, id: string) => call<RecoveryFiles>("recovery_files", { repo, id }),
   /** Accepts that the next operation runs although exactly these ignored files could not be saved. */
   recoveryAcceptUnprotected: (repo: string, command: string, paths: string[], collision: { paths: string[]; copy: boolean } | null = null) => call<string>("recovery_accept_unprotected", { repo, command, paths, collision }),
   recoveryCompareSaved: (repo: string, id: string, path: string) => call<FileDiff>("recovery_compare_saved", { repo, id, path }),
@@ -179,11 +180,15 @@ export const api = {
   repoScanFolder: (scanId: number, path: string, includeGenerated: boolean) => call<RepositoryFolderScan>("repo_scan_folder", { scanId, path, includeGenerated }),
   repoCancelFolderScan: (scanId: number) => call<void>("repo_cancel_folder_scan", { scanId }),
   repositorySidebarStatus: (repo: string) => call<StatusSummary>("repository_sidebar_status", { repo }),
+  repositoryBranchTracking: (repo: string) => call<BranchTracking>("repository_branch_tracking", { repo }),
+  repositoryChangeCount: (repo: string) => call<number>("repository_change_count", { repo }),
   repositoryChangesStatus: (repo: string, path: string | null) => call<StatusSummary>("repository_changes_status", { repo, path }),
   repoInit: (path: string, branch?: string) => call<RepoInfo>("repo_init", { path, branch }),
   repoClone: (parent: string, url: string, name: string, opId: string,connection?:import("./types").GitConnectionOptions, options?: import("./types").CloneOptions) => call<RepoInfo&{connectionWarning:string|null}>("repo_clone", { parent, url, name, opId,connection:connection??null, options: options ?? null }),
   gitConnectionSnapshot:(repo:string)=>call<import("./types").GitConnectionSnapshot>("git_connection_snapshot",{repo}),
   gitConnectionSave:(repo:string,options:import("./types").GitConnectionOptions,expected:string)=>call<import("./types").GitConnectionSnapshot>("git_connection_save",{repo,options,expected}),
+  connectionCheck:(repo:string,remote:string|null=null)=>call<import("./types").ConnectionCheckReport>("connection_check",{repo,remote}),
+  diagnosticsReport:(input:import("./types").DiagnosticsInput)=>call<string>("diagnostics_report",{input}),
   gitConnectionTest:(repo:string,remote:string,expectedUrlFingerprint:string)=>call<string>("git_connection_test",{repo,remote,expectedUrlFingerprint}),
   gitConnectionForget: (repo: string) => call<void>("git_connection_forget", { repo }),
   repoInfo: (repo: string) => call<RepoInfo>("repo_info", { repo }),
@@ -417,6 +422,7 @@ export const api = {
   repositoryWebLink: (repo: string, reference: string | null) => call<string | null>("repository_web_link", { repo, reference }),
   pullRequests: (repo: string) => call<{ forge: ForgeInfo; items: PullRequest[] }>("pull_requests", { repo }),
   prPage: (repo: string, state: import("./types").PrState, cursor: string | null = null) => call<import("./types").PrPage>("pr_page", { repo, state, cursor }),
+  prAttention: (repo: string, number: number, expectedConnection: string) => call<import("./types").PrAttention>("pr_attention", { repo, number, expectedConnection }),
   prMergePlan: (repo: string, number: number, expectedConnection: string, expectedRevision: string) => call<import("./types").PrMergePlan>("pr_merge_plan", { repo, number, expectedConnection, expectedRevision }),
   prMergeSubmit: (repo: string, number: number, expectedConnection: string, expectedRevision: string, input: import("./types").PrMergeInput) => prWrite(call<import("./types").PrMergeResult>("pr_merge_submit", { repo, number, expectedConnection, expectedRevision, input })),
   prCleanupPlan: (repo: string, number: number, expectedConnection: string, expectedRevision: string, input: import("./types").PrCleanupInput) => call<import("./types").PrCleanupReview>("pr_cleanup_plan", { repo, number, expectedConnection, expectedRevision, input }),

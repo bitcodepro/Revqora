@@ -211,6 +211,7 @@ async fn branch_manager_compare(repo: String, base: String, tip: String) -> git:
 // Revqora: Tauri command surface over the git backend.
 
 pub mod askpass;
+pub mod diagnostics;
 pub mod error_log;
 pub mod git;
 pub mod journal;
@@ -518,12 +519,18 @@ async fn recovery_restore_files(
     expected_state: Option<String>,
     repo: String,
     id: String,
-    changes: Vec<recovery::IgnoredChange>,
+    paths: Vec<String>,
 ) -> GitResult<recovery::RestoreOutcome> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app, "recovery_restore_files", None, move || {
-        recovery::restore_files(&p(&repo), &id, &changes)
+        recovery::restore_paths(&p(&repo), &id, &paths)
     })
     .await
+}
+/// Each saved path of a checkpoint against the working tree now, with the result of the
+/// operation it was saved for and its last restore. Reads files only.
+#[tauri::command]
+async fn recovery_files(repo: String, id: String) -> GitResult<recovery::CheckpointFiles> {
+    blocking(move || git::operations::read(&p(&repo), || recovery::files(&p(&repo), &id))).await
 }
 
 /// The user continues the next operation although Git may overwrite these local paths; with
@@ -715,6 +722,24 @@ async fn git_connection_test(repo: String, remote: String, expected_url_fingerpr
     .await
 }
 
+/// Checks Git read and push access and each API capability of one remote (nothing changes).
+#[tauri::command]
+async fn connection_check(repo: String, remote: Option<String>) -> GitResult<git::connection_check::Report> {
+    blocking(move || git::connection_check::run(&p(&repo), remote.as_deref())).await
+}
+
+/// A diagnostics report with versions and platform, without secrets or file contents.
+#[tauri::command]
+async fn diagnostics_report(app: AppHandle, input: diagnostics::Input) -> GitResult<String> {
+    let app_version = app.package_info().version.to_string();
+    blocking(move || {
+        let git_version = runner::version().map(|(_, _, _, version)| version).unwrap_or_else(|_| "unavailable".into());
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok();
+        Ok(diagnostics::report(&input, &diagnostics::Environment { app_version, git_version, created_ms: journal::now(), home }))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn git_connection_forget(repo: String) -> GitResult<()> {
     blocking(move || {
@@ -760,6 +785,19 @@ async fn repository_status_with_operation(repo: String) -> GitResult<status::Sta
 #[tauri::command]
 async fn repository_sidebar_status(repo: String) -> GitResult<StatusSummary> {
     blocking(move || status::sidebar_status(&p(&repo))).await
+}
+
+/// Incoming and outgoing commits of the current branch, without scanning the working tree
+/// (the Explorer's Incoming and Outgoing filters for repositories that are not open).
+#[tauri::command]
+async fn repository_branch_tracking(repo: String) -> GitResult<git::tracking::BranchTracking> {
+    blocking(move || git::tracking::branch_tracking(&p(&repo))).await
+}
+
+/// Number of changed entries, for the Changes filter of a repository that is not open.
+#[tauri::command]
+async fn repository_change_count(repo: String) -> GitResult<usize> {
+    blocking(move || git::tracking::change_count(&p(&repo))).await
 }
 
 #[tauri::command]
@@ -2981,6 +3019,10 @@ async fn pr_detail(repo: String, number: u64, expected_connection: String) -> Gi
     blocking(move || git::pr_center::detail(&p(&repo), number, &expected_connection)).await
 }
 #[tauri::command]
+async fn pr_attention(repo: String, number: u64, expected_connection: String) -> GitResult<git::pr_attention::Attention> {
+    blocking(move || git::pr_attention::attention(&p(&repo), number, &expected_connection)).await
+}
+#[tauri::command]
 async fn pr_checks(repo: String, number: u64, expected_connection: String, expected_revision: Option<String>) -> GitResult<git::pr_center::Checks> {
     blocking(move || git::pr_center::checks(&p(&repo), number, &expected_connection, expected_revision.as_deref())).await
 }
@@ -3401,6 +3443,7 @@ pub fn run() {
             recovery_restore_branch,
             recovery_restore_stash,
             recovery_restore_files,
+            recovery_files,
             recovery_accept_unprotected,
             recovery_accept_collisions,
             recovery_compare_saved,
@@ -3413,6 +3456,8 @@ pub fn run() {
             git_configure,
             askpass_respond,
             repository_sidebar_status,
+            repository_branch_tracking,
+            repository_change_count,
             repository_changes_status,
             repository_status_with_operation,
             repo_open,
@@ -3431,6 +3476,8 @@ pub fn run() {
             git_connection_snapshot,
             git_connection_save,
             git_connection_test,
+            connection_check,
+            diagnostics_report,
             git_connection_forget,
             repo_info,
             status,
@@ -3611,6 +3658,7 @@ pub fn run() {
             pr_review_act,
             pr_page,
             pr_detail,
+            pr_attention,
             pr_checks,
             pr_create,
             pr_edit,

@@ -730,3 +730,82 @@ fn concurrent_snapshot_reads_never_erase_newly_committed_session_credentials() {
     thread.join().unwrap();
     result.unwrap();
 }
+
+/// Stage 1 acceptance case: a Bitbucket token that reads pull requests but not the user
+/// profile gives two clear results, and the failing step names its HTTP status.
+#[test]
+fn connection_check_separates_a_limited_bitbucket_profile_from_working_pull_requests() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let root = root_dir.path().join("repository");
+    fs::create_dir(&root).unwrap();
+    runner::run(&root, ["init", "-q"]).unwrap();
+    let pull = serde_json::json!({
+        "id": 7, "title": "Change", "state": "OPEN", "draft": false, "created_on": "2026-01-01T00:00:00Z", "updated_on": "2026-01-01T00:00:00Z",
+        "author": {"uuid": "{1}", "nickname": "someone", "display_name": "Someone"},
+        "source": {"branch": {"name": "topic"}, "commit": {"hash": "1111111111111111111111111111111111111111"}, "repository": {"full_name": "team/repo"}},
+        "destination": {"branch": {"name": "main"}, "commit": {"hash": "2222222222222222222222222222222222222222"}, "repository": {"full_name": "team/repo"}},
+        "links": {"html": {"href": "https://example.invalid/team/repo/pull-requests/7"}},
+        "participants": [], "description": "", "summary": {"raw": ""}
+    });
+    let body = pull.to_string();
+    let h = Http::new(move |path, _| {
+        if path.starts_with("/2.0/user") {
+            return "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nX-Request-Id: bb-req-42\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                .into();
+        }
+        if path.starts_with("/2.0/repositories/team/repo/pullrequests?") {
+            return response(200, &format!("{{\"values\":[{body}]}}"));
+        }
+        if path.starts_with("/2.0/repositories/team/repo/pullrequests/7/diffstat") {
+            return response(200, r#"{"values":[{"status":"modified","old":{"path":"a.txt"},"new":{"path":"a.txt"},"lines_added":1,"lines_removed":0}]}"#);
+        }
+        if path.contains("/statuses") {
+            return response(200, r#"{"values":[{"key":"build","name":"build","state":"SUCCESSFUL","url":"https://example.invalid/build"}]}"#);
+        }
+        if path.starts_with("/2.0/repositories/team/repo/pullrequests/7") {
+            return response(200, &body);
+        }
+        response(404, "{}")
+    });
+    let m = manager().unwrap();
+    let mut request = input(&h, "bitbucket", "repository-scoped-token", false);
+    request.verify_identity = Some(false);
+    let added = m.add(request, &m.snapshot().unwrap().revision).unwrap();
+    let id = added.accounts.iter().find(|a| a.profile.server.server == h.url).unwrap().profile.id.clone();
+    let url = format!("{}/team/repo.git", h.url);
+    runner::run(&root, ["remote", "add", "origin", &url]).unwrap();
+    let repo = repository(&root);
+    m.edit(&m.snapshot().unwrap().revision, |d, _| {
+        d.bindings.push(Binding {
+            repository: repo.clone(),
+            remote: "origin".into(),
+            fingerprint: fingerprint(&url),
+            account_id: Some(id.clone()),
+            allow_ssh_alias: false,
+        });
+        d.active.push(Active { repository: repo.clone(), remote: "origin".into() });
+        Ok(())
+    })
+    .unwrap();
+    let report = crate::git::connection_check::run(&root, None).unwrap();
+    let find = |id: &str| report.items.iter().find(|item| item.id == id).unwrap().clone();
+    assert_eq!(report.provider.as_deref(), Some("Bitbucket Cloud"));
+    assert!(report.credential_source.as_deref().unwrap().contains("API account"));
+    let profile = find("profile");
+    assert_eq!((profile.state, profile.cause), ("limited", Some("permission")), "{:?}", report.items);
+    assert!(profile.detail.contains("read:user:bitbucket"), "{}", profile.detail);
+    assert!(profile.next.as_deref().unwrap().contains("Pull requests can still work"));
+    assert_eq!(find("pull-requests").state, "ok", "{:?} {:?}", report.items, h.seen.lock());
+    assert_eq!(find("files").state, "ok", "{:?} {:?}", report.items, h.seen.lock());
+    assert_eq!(find("checks").state, "ok", "{:?} {:?}", report.items, h.seen.lock());
+    // Git reads the same fake server, which is not a Git server: a failed step with a cause.
+    assert_eq!(find("git-read").state, "failed");
+    assert!(find("git-read").cause.is_some());
+    m.edit(&m.snapshot().unwrap().revision, |d, _| {
+        d.bindings.retain(|b| b.repository != repo);
+        d.active.retain(|a| a.repository != repo);
+        d.accounts.retain(|a| a.profile.id != id);
+        Ok(())
+    })
+    .unwrap();
+}

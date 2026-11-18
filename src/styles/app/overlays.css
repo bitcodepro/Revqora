@@ -419,3 +419,9 @@
   font-size: var(--fs-xs);
   color: var(--text-faint);
 }
+/* The full text an MCP approval publishes: wrapped and scrollable, never cut. */
+.code-list.approval-body {
+  max-height: 320px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

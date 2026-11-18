@@ -120,6 +120,10 @@ pub struct Summary {
     pub files: usize,
     pub references: usize,
     pub bytes: u64,
+    /// Result of the operation the checkpoint was saved for (listing only; never stored in the
+    /// manifest): running, succeeded, attention, failed or interrupted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_status: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -232,7 +236,11 @@ pub fn list(root: &Path) -> GitResult<Catalog> {
                     continue;
                 }
                 match read(root, &id) {
-                    Ok(cp) => items.push(cp.summary),
+                    Ok(cp) => {
+                        let mut summary = cp.summary;
+                        summary.operation_status = outcome::listed_status(root, &id);
+                        items.push(summary);
+                    }
                     Err(_) => skipped += 1,
                 }
             }
@@ -305,10 +313,18 @@ fn source_path(root: &Path, path: &str) -> GitResult<PathBuf> {
 }
 
 fn refs(root: &Path) -> GitResult<Vec<SavedRef>> {
-    let raw = runner::run(
-        root,
-        ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(objecttype)", "refs/heads", "refs/remotes", "refs/worktree/revqora", "refs/stash"],
-    )?;
+    // Both reads are independent: run them side by side (each Git start costs 60–100 ms on
+    // Windows). The helper joins the caller's repository transaction.
+    let parent = operations::Inherited::of(root);
+    let (raw, stashes) = std::thread::scope(|scope| {
+        let stashes = scope.spawn(|| parent.run(|| runner::run(root, ["stash", "list", "--format=%H"])));
+        let raw = runner::run(
+            root,
+            ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(objecttype)", "refs/heads", "refs/remotes", "refs/worktree/revqora", "refs/stash"],
+        );
+        (raw, stashes.join().unwrap_or_else(|_| Err(fail("Reading the stash list failed."))))
+    });
+    let (raw, stashes) = (raw?, stashes?);
     let mut refs = Vec::new();
     for line in raw.lines() {
         let fields: Vec<_> = line.split('\t').collect();
@@ -323,7 +339,7 @@ fn refs(root: &Path) -> GitResult<Vec<SavedRef>> {
             refs.push(SavedRef { name: fields[0].into(), oid: fields[1].into(), kind: kind.into() });
         }
     }
-    for (i, value) in runner::run(root, ["stash", "list", "--format=%H"])?.lines().enumerate() {
+    for (i, value) in stashes.lines().enumerate() {
         refs.push(SavedRef { name: format!("stash@{{{i}}}"), oid: value.into(), kind: "stash".into() });
     }
     if refs.len() > MAX_FILES {
@@ -582,6 +598,12 @@ pub fn begin(root: &Path, command: &str) {
     });
     let base = watch_key(root);
     ACTIVE.with(|a| *a.borrow_mut() = taken.filter(|c| c.command == command && c.repo == base));
+    outcome::enter(command);
+}
+
+/// End of the running operation's work: records its result beside each checkpoint saved for it.
+pub(crate) fn record_outcome(status: &str, error: Option<&str>) {
+    outcome::record(status, error);
 }
 
 /// Ends the operation started by `begin` on every exit path, unwinding included: reports changed
@@ -592,6 +614,7 @@ impl Drop for Finish {
     fn drop(&mut self) {
         finish_watch(&self.0);
         ACTIVE.with(|a| a.borrow_mut().take());
+        outcome::leave();
     }
 }
 
@@ -816,81 +839,10 @@ pub fn compare_saved(root: &Path, id: &str, path: &str) -> GitResult<super::diff
     Ok(super::diff::to_display(first, path, super::diff::fingerprint(&out.stdout)))
 }
 
-/// Result of putting saved ignored files back.
-#[derive(Clone, Serialize, Debug, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct RestoreOutcome {
-    pub restored: Vec<String>,
-    /// Changed since the operation (by the user or another program): left as they are.
-    pub changed_since: Vec<String>,
-    /// The file whose write failed, and why; files after it were not attempted.
-    pub failed: Option<(String, String)>,
-    pub not_attempted: Vec<String>,
-}
-
-/// Puts the saved content and permissions of `changes` from checkpoint `id` back in place. A file
-/// that no longer looks as it did right after the operation is left alone and listed.
+/// Puts the saved copies of the ignored files an operation changed back in place (see
+/// `restore_paths`).
 pub fn restore_files(root: &Path, id: &str, changes: &[IgnoredChange]) -> GitResult<RestoreOutcome> {
-    let _lock = lock(root)?;
-    let root = fs::canonicalize(repo::discover(root)?)?;
-    let cp = read(&root, id)?;
-    let folder = base(&root)?.join(id);
-    // Preflight everything before writing anything.
-    let mut plan = Vec::new();
-    for change in changes {
-        let Some((index, saved)) = cp.paths.iter().enumerate().find(|(_, s)| s.path == change.path) else {
-            return Err(fail(format!("{} is not in this checkpoint.", change.path)));
-        };
-        if saved.kind != "file" {
-            return Err(fail(format!("{} was not a regular file in this checkpoint.", change.path)));
-        }
-        let stored = folder.join("files").join(index.to_string());
-        if Some(digest(&stored)?) != saved.sha256 {
-            return Err(fail(format!("The saved copy of {} is damaged. Nothing was restored.", change.path)));
-        }
-        let destination = source_path(&root, &change.path)?;
-        plan.push((change, saved, stored, destination));
-    }
-    let mut outcome = RestoreOutcome::default();
-    let mut rest = plan.into_iter();
-    for (change, saved, stored, destination) in rest.by_ref() {
-        let now = snapshot(&root, &change.path);
-        let unchanged = match &now {
-            None => !change.exists && fs::symlink_metadata(&destination).is_err(),
-            Some(n) => change.exists && n.len == change.len && n.sha256 == change.sha256 && n.sha256.is_some(),
-        };
-        if !unchanged {
-            outcome.changed_since.push(change.path.clone());
-            continue;
-        }
-        let write = || -> GitResult<()> {
-            let parent = destination.parent().ok_or_else(|| fail("Invalid path."))?;
-            fs::create_dir_all(parent)?;
-            let mut temporary = super::atomic_file::new_in(parent)?;
-            std::io::copy(&mut File::open(&stored)?, &mut temporary)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if saved.mode != 0 {
-                    temporary.as_file().set_permissions(fs::Permissions::from_mode(saved.mode))?;
-                }
-            }
-            #[cfg(not(unix))]
-            let _ = saved;
-            temporary.as_file().sync_all()?;
-            super::atomic_file::replace(temporary, &destination)?;
-            Ok(())
-        };
-        match write() {
-            Ok(()) => outcome.restored.push(change.path.clone()),
-            Err(e) => {
-                outcome.failed = Some((change.path.clone(), e.message));
-                break;
-            }
-        }
-    }
-    outcome.not_attempted = rest.map(|(change, ..)| change.path.clone()).collect();
-    Ok(outcome)
+    restore_paths(root, id, &changes.iter().map(|c| c.path.clone()).collect::<Vec<_>>())
 }
 
 struct Capture<'a> {
@@ -961,6 +913,7 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
             files: 0,
             references: 0,
             bytes: 0,
+            operation_status: None,
         },
         version: 1,
         common_dir: operations::repository_key(&root).to_string_lossy().into_owned(),
@@ -1078,10 +1031,10 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
     }
     let tree_input: String = objects.iter().map(|(oid, kind)| format!("{kind} {oid}\t{oid}\0")).collect();
     let tree = git(&root, &strings(&["mktree", "-z"]), Some(tree_input.as_bytes()))?;
-    let empty = git(&root, &strings(&["mktree", "-z"]), Some(&[]))?;
     cp.base_commit = match &cp.summary.head {
         Some(head) => head.clone(),
-        None => commit(&root, &empty, &[])?,
+        // Only a repository without commits needs an empty tree for its base commit.
+        None => commit(&root, &git(&root, &strings(&["mktree", "-z"]), Some(&[]))?, &[])?,
     };
     let mut parents: BTreeSet<String> = cp.refs.iter().map(|r| r.oid.clone()).collect();
     parents.insert(cp.base_commit.clone());
@@ -1131,6 +1084,7 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
         }
         cp.summary.bytes = size;
     };
+    let tracked = outcome::started(folder.path(), &cp.summary);
     let mut manifest = File::create(folder.path().join("checkpoint.pending"))?;
     manifest.write_all(&data)?;
     manifest.sync_all()?;
@@ -1139,6 +1093,9 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
     drop(manifest);
     let kept = folder.keep();
     fs::rename(kept.join("checkpoint.pending"), kept.join("checkpoint.json"))?;
+    if tracked {
+        outcome::registered(&root, &cp.summary.id);
+    }
     prune_locked(&root, Some(&cp.summary.id))?;
     Ok(cp.summary)
 }
@@ -1185,12 +1142,40 @@ fn delete_locked(root: &Path, id: &str) -> GitResult<()> {
     fs::remove_dir_all(target)?;
     Ok(())
 }
+type PinList = std::sync::Mutex<Vec<(PathBuf, String)>>;
+fn pinned() -> &'static PinList {
+    static P: std::sync::OnceLock<PinList> = std::sync::OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
+/// Keeps a checkpoint out of retention pruning while it is being read from, for example while a
+/// restore first saves the current files in a new checkpoint. `root` must be canonical.
+pub(super) struct Pin(PathBuf, String);
+pub(super) fn pin(root: &Path, id: &str) -> Pin {
+    pinned().lock().unwrap_or_else(|e| e.into_inner()).push((root.to_path_buf(), id.to_owned()));
+    Pin(root.to_path_buf(), id.to_owned())
+}
+impl Drop for Pin {
+    fn drop(&mut self) {
+        let mut list = pinned().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = list.iter().position(|(root, id)| *root == self.0 && *id == self.1) {
+            list.remove(i);
+        }
+    }
+}
+fn is_pinned(root: &Path, id: &str) -> bool {
+    pinned().lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(r, i)| r == root && i == id)
+}
+
 fn prune_locked(root: &Path, keep: Option<&str>) -> GitResult<()> {
     let items = list(root)?.checkpoints;
     let mut bytes = 0;
     for (i, item) in items.iter().enumerate() {
         bytes += item.bytes;
-        if Some(item.id.as_str()) != keep && (i >= MAX_COUNT || bytes > MAX_TOTAL || item.created_at < crate::journal::now() - RETENTION) {
+        if Some(item.id.as_str()) != keep
+            && !is_pinned(root, &item.id)
+            && (i >= MAX_COUNT || bytes > MAX_TOTAL || item.created_at < crate::journal::now() - RETENTION)
+        {
             delete_locked(root, &item.id)?;
         }
     }
@@ -1582,6 +1567,9 @@ pub fn protect_transport(root: &Path, push: bool, remote: Option<&str>, explicit
     }
     Ok(())
 }
+
+mod outcome;
+pub use outcome::{files, restore_paths, CheckpointFiles, FileState, KeptBoth, OperationRecord, OperationView, RestoreOutcome, RestoreSummary, SavedFile};
 
 #[cfg(test)]
 mod tests;

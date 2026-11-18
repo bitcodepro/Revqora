@@ -6,6 +6,7 @@ import type {ForgeAccount,ForgeAccountInput,ForgeAccountsSnapshot,ForgeConnectio
 import {Modal} from "./Modal";
 import {confirmDialog} from "./dialogs";
 import {tokenProvider} from "../lib/tokenProvider";
+import {connectionCheckDialog} from "./Diagnostics";
 import {gitConnectionDialog} from "./GitConnections";
 import {authModeOf,methodOf,missingInput,providerNames as providers,providerServers as defaults,signInMethods,tokenPage,type SignInMethodId} from "../lib/accountMethods";
 
@@ -125,7 +126,7 @@ function ForgeAccounts({root,close}:{root:string|null;close:()=>void}){
           <small>Automatic mode uses matching HTTPS credentials already available to Git. A selected API account uses its own token.</small>
           <button className="btn primary" type="button" disabled={alias&&!allowAlias} onClick={()=>{if(target&&connections)void perform(()=>api.forgeConnectionSelect(root,{remote:target.name,fingerprint:target.fingerprint,accountId:account||null,allowSshAlias:allowAlias},connections.revision),"API account and remote selected");}}>Use for PR and checks</button>
         </fieldset>:<p className="muted">This repository has no remotes.</p>}
-        <button type="button" className="btn" disabled={disabled} onClick={()=>{close();void gitConnectionDialog(root);}}>Git connection settings…</button>
+        <div className="hstack"><button type="button" className="btn" disabled={disabled} onClick={()=>{close();void gitConnectionDialog(root);}}>Git connection settings…</button><button type="button" className="btn" disabled={disabled} onClick={()=>{close();void connectionCheckDialog(root,remote||null);}}>Check connection…</button></div>
       </section>}
       <div className="hstack"><b>API accounts</b><div className="spacer"/><button className="btn" type="button" disabled={disabled} onClick={()=>begin(null)}>Add API account</button><button className="icon-btn" type="button" aria-label="Refresh API accounts" disabled={disabled} onClick={()=>{setError("");void refresh();}}><RefreshCw size={15}/></button></div>
       <p className="help">Use Add API account to choose a different token for pull requests and checks.</p>

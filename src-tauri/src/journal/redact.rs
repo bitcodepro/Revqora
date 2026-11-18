@@ -16,9 +16,15 @@ pub fn text(value: &str) -> String {
                 "$1=[redacted]",
             ),
             (
-                Regex::new(r"\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|glpat-[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b").unwrap(),
+                Regex::new(r"\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|gl(?:pat|rt|dt|ptt|oas|cbt|ft|imt|soat)-[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b").unwrap(),
                 "[redacted]",
             ),
+            // Atlassian API and app tokens (Bitbucket).
+            (Regex::new(r"\bAT(?:BB|ATT|CTT)[A-Za-z0-9_=-]{12,}").unwrap(), "[redacted]"),
+            // Tokens after an authentication scheme outside a header line.
+            (Regex::new(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{12,}").unwrap(), "$1 [redacted]"),
+            // Azure DevOps personal access tokens (52 base32 characters, or the 84-character format).
+            (Regex::new(r"\b(?:[a-z2-7]{52}|[A-Za-z0-9]{84})\b").unwrap(), "[redacted]"),
         ]
     });
     rules.iter().fold(value.to_owned(), |s, (pattern, replacement)| pattern.replace_all(&s, *replacement).into_owned())
@@ -125,6 +131,14 @@ mod tests {
         assert!(clean.contains("other=ok"));
         let json = text(r#"{"accessToken":"jsonSecret","client_secret":"clientSecret"}"#);
         assert!(!json.contains("jsonSecret") && !json.contains("clientSecret"));
+        let more = text("ATBB0123456789abcdefABCDEF ATATT3xFfGF0abcdefghijklmnop glrt-abcdefgh12345678 sent Bearer abcDEF0123456789.xyz and basic dXNlcjpzZWNyZXRwYXNzd29yZA== azure 7a3ndq2k5hvjrfq6zwq3b4ix7j2ns3hmdmfxwp4x6vgpqhmpkkwq end");
+        for secret in ["ATBB0123", "ATATT3x", "glrt-abc", "abcDEF0123", "dXNlcjpz", "7a3ndq2k"] {
+            assert!(!more.contains(secret), "{more}");
+        }
+        assert!(more.contains("Bearer [redacted]") && more.ends_with("end"), "{more}");
+        // Commit IDs and ordinary words stay readable.
+        let plain = "Token rejected for commit 0123456789abcdef0123456789abcdef01234567 (basic access)";
+        assert_eq!(text(plain), plain);
         assert!(!text("-----BEGIN OPENSSH PRIVATE KEY-----\nprivate material\n-----END OPENSSH PRIVATE KEY-----").contains("private material"));
         assert_eq!(bounded("абв", 3), ("а".into(), true));
     }

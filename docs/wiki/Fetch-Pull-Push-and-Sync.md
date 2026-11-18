@@ -45,7 +45,16 @@ If a Push response is lost or reports a partial/uncertain result, inspect the se
 | Merge | Integrates the upstream with a merge when necessary. A non-fast-forward merge is left for review before **Confirm merge** creates its commit. |
 | Rebase | Replays local commits on the upstream. Replayed commits get new SHAs. |
 
-Choose the mode in Settings. If local and remote histories both contain unique commits, inspect them before choosing merge or rebase. Commit/stash unfinished work when requested; ignored-file collisions and conflicts can also stop an update.
+Choose the mode in Settings. If local and remote histories both contain unique commits, inspect them before choosing merge or rebase. Ignored-file collisions and untracked files in the way can still stop an update.
+
+### Pull with unfinished changes
+
+You do not need to commit or stash before **Pull**. Revqora sets your local changes aside, pulls, and brings them back:
+
+- Staged work is saved, with its staging, in a stash named `Revqora: changes on <branch> saved before pull`. Other edits are set aside by Git only when the pull brings in commits.
+- When everything comes back cleanly, the saved copy is dropped and the result says the changes were set aside and restored.
+- When an incoming commit changed the same lines, the pull ends with conflicts. **Changes** lists the conflicted files; use **Resolve** to open them. The named stash stays in **Stashes** as a copy of your changes until you drop it.
+- If the pull itself fails (for example, the remote cannot be reached), your changes are put back as they were.
 
 ## When a completed feature branch has disappeared
 
@@ -59,7 +68,7 @@ For a *new unpublished branch*, publish it with Push. For a *merged and deleted 
 
 ## Auto-fetch and Refresh
 
-Auto-fetch updates known remote history at the configured interval. It does not automatically Pull, Push, commit or refresh PR discussions. **F5** refreshes the local view; use PR-specific refresh buttons for API data.
+Auto-fetch updates known remote history at the configured interval. The first round runs 15 seconds after start and fetches four repositories at a time. With **Also fetch repositories that are not open** (on by default) it covers every repository in the library, so Explorer's **Incoming** filter is current without opening each one. It never asks for credentials; a repository that needs them is skipped until restart. It does not automatically Pull, Push, commit or refresh PR discussions. **F5** refreshes the local view; use PR-specific refresh buttons for API data.
 
 A slow or unresponsive remote does not freeze the repository. While Fetch, Pull, Push or Auto-fetch waits on the server, History, Changes and diffs keep loading. Other actions that change the repository (commit, checkout, another Pull) wait their turn and run in the order you started them. Auto-fetch never queues in front of you: when another operation is running, it skips that round quietly and tries again at the next interval. It gives up after 30 seconds without leaving Git lock files behind.
 

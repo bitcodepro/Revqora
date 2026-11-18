@@ -132,6 +132,8 @@ pub fn access<T>(repo: &Path, write: bool, mut phase: impl FnMut(&str, usize), f
         return f();
     }
     let gate = gate(&key);
+    // Opt-in diagnostics (REVQORA_STAGE_TIMINGS): how long this call waited for the repository.
+    let waiting = super::stage_timings::enabled().then(std::time::Instant::now);
     if write {
         let ticket = {
             let mut q = gate.tickets.lock();
@@ -151,13 +153,25 @@ pub fn access<T>(repo: &Path, write: bool, mut phase: impl FnMut(&str, usize), f
             gate.changed.notify_all();
         });
         let _access = gate.access.write();
+        note_wait(repo, "write", waiting);
         let _scope = enter_scope(key, true);
         phase("running", 0);
         f()
     } else {
         let _access = gate.access.read();
+        note_wait(repo, "read", waiting);
         let _scope = enter_scope(key, false);
         f()
+    }
+}
+
+/// Records a wait of at least a millisecond for the repository gate (queue time in baselines).
+fn note_wait(repo: &Path, kind: &str, started: Option<std::time::Instant>) {
+    let Some(waited) = started.map(|started| started.elapsed()) else { return };
+    if waited >= std::time::Duration::from_millis(1) {
+        let mut stages = super::stage_timings::Stages::default();
+        stages.add("wait", waited);
+        super::stage_timings::record("repository_wait", repo, &stages, kind);
     }
 }
 
@@ -246,7 +260,13 @@ pub fn inspect<T>(repo: &Path, f: impl FnOnce() -> GitResult<T>) -> GitResult<(T
 }
 
 /// Check the UI's last observed state AFTER reaching the front of the queue.
-pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl FnMut(&str, usize), f: impl FnOnce() -> GitResult<T>) -> GitResult<T> {
+pub fn run<T: serde::Serialize>(
+    repo: &Path,
+    command: &str,
+    expected: Option<&str>,
+    phase: impl FnMut(&str, usize),
+    f: impl FnOnce() -> GitResult<T>,
+) -> GitResult<T> {
     access(repo, true, phase, || {
         // The user's decisions belong to this operation only; they and its watch are dropped on
         // every exit, a rejected precondition or a panic included.
@@ -282,7 +302,10 @@ pub fn run<T>(repo: &Path, command: &str, expected: Option<&str>, phase: impl Fn
                 return Err(GitError::new(format!("Finish or abort the current {} operation first.", state.kind)).kind("operation-in-progress"));
             }
         }
-        super::recovery::before(repo, command, expected).and_then(|()| f())
+        let result = super::recovery::before(repo, command, expected).and_then(|()| f());
+        // The checkpoints saved for this operation keep its result and what it changed.
+        super::recovery::record_outcome(crate::journal::result_status(&result).0, result.as_ref().err().map(|e| e.message.as_str()));
+        result
     })
 }
 

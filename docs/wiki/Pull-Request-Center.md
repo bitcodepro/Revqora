@@ -15,6 +15,20 @@ The left request list can be hidden/resized to leave more room for the selected 
 
 Choose **All repositories** in the scope selector to combine requests from the open repositories in the current workspace. Use **My pull requests** to filter to your own requests. The list retains the same detail pane and shows a repository name and source → target for each request. Repositories with no matching PRs have no rows. When Revqora resolves your author, the **My pull requests** entry shows the name.
 
+### Needs attention
+
+In **All repositories**, the **Needs attention** filter shows only the open requests that need you, with the reason on each row:
+
+| Filter | A request is listed when |
+| --- | --- |
+| **Waiting for my review** | The provider lists you as a reviewer who has not reviewed yet. Team and group requests are not expanded. |
+| **Needs my changes** | Your request has changes requested or merge conflicts. |
+| **CI failed** | A check on your request's latest commit failed or was cancelled. The row names up to five checks. |
+| **Ready to merge** | The server reports nothing blocking a merge of your request, including required checks. This uses the same reads as **Merge…**. |
+| **Needs a check** | Revqora could not read the status: the read failed, the provider does not report it (Bitbucket Cloud merge checks), or more than 20 of your requests are open in one repository. |
+
+**Needs attention** combines all reasons. Revqora remembers the filter. Each row shows when its CI and merge status were read; **Refresh** reads them again. For example, after a fix makes CI pass, refresh and the request moves from **CI failed** to **Ready to merge**.
+
 ## Create or edit a PR
 
 Publish the source branch with Push first. Then choose **New** / **New PR**, select source and target branches, and enter the title and description.
@@ -55,9 +69,13 @@ Local drafts are retained when you close an editor. A saved draft from an older 
 
 If publication reports an uncertain outcome, check the server and the offered result controls before sending again. Closing/reopening is not confirmation that the first send failed.
 
+## Connection problems
+
+**Check connection…** in the PR Center header tests Git and each API capability of the repository separately (see [Accounts](https://github.com/bitcodepro/Revqora/wiki/Accounts-and-providers)). A list error offers **Check connection…** and **Copy diagnostics…**; in the all-repositories list, each repository that needs attention has both actions, so the report names that repository, its provider and the HTTP status and request ID of the failure.
+
 ## Refresh behavior
 
-- **Refresh pull requests** refreshes the request list.
+- **Refresh pull requests** refreshes the request list. In the all-repositories list, rows stay visible during a refresh: rows of a repository that has not answered yet are dimmed, and are replaced as soon as it does. A repository whose refresh fails keeps its earlier rows and says when they were loaded. The line under the list shows when the list was last updated.
 - **⟳** next to the **⋯** menu reloads the selected request: details, checks, files and discussions.
 - Use the discussion feed's load controls for remaining pages.
 - The visible merge-readiness panel checks requirements approximately every ten seconds; this is not a live discussion subscription.

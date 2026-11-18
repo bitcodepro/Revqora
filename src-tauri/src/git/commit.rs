@@ -5,7 +5,6 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::diff::empty_tree;
 use super::runner::{self, GitError, GitResult};
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,10 +131,35 @@ pub fn details(repo: &Path, oid: &str) -> GitResult<CommitDetails> {
 
 /// Commit header and file list. Remote containment stays unknown (`None`).
 pub fn header(repo: &Path, oid: &str) -> GitResult<CommitDetails> {
-    // `--end-of-options`: a value such as `--output=<file>` must never be read as an option.
-    let raw =
-        runner::run(repo, ["show", "--no-show-signature", "-s", "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%B", "--end-of-options", oid])?;
-    let f: Vec<&str> = raw.splitn(9, '\x1f').collect();
+    // One Git process for the header and the changed files: starting Git is the main cost of a
+    // preview on Windows. The diff is against the first parent (`-m --first-parent`, also for
+    // merges, as before) or the empty tree for a root commit (`--root`, whatever log.showRoot
+    // says). `--end-of-options`: a value such as `--output=<file>` must never be read as an option.
+    let raw = runner::run(
+        repo,
+        [
+            "show",
+            "--no-show-signature",
+            "--no-notes",
+            "--no-color",
+            "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%B",
+            "-z",
+            "--raw",
+            "--numstat",
+            "--find-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--root",
+            "-m",
+            "--first-parent",
+            "--end-of-options",
+            oid,
+        ],
+    )?;
+    // A commit message cannot contain NUL, so the first NUL ends the header.
+    let (head, changes) = raw.split_once('\0').unwrap_or((raw.as_str(), ""));
+    let files = parse_changed_files(changes.trim_start_matches('\n'))?;
+    let f: Vec<&str> = head.splitn(9, '\x1f').collect();
     let parents: Vec<String> = f.get(1).unwrap_or(&"").split_whitespace().map(|s| s.to_string()).collect();
     let message = f.get(8).unwrap_or(&"").trim_end().to_string();
     let (subject, body) = match message.split_once('\n') {
@@ -143,12 +167,6 @@ pub fn header(repo: &Path, oid: &str) -> GitResult<CommitDetails> {
         None => (message.clone(), String::new()),
     };
     let base = parents.first().cloned();
-    let resolved = f.first().unwrap_or(&"").trim();
-    let diff_base = match &base {
-        Some(base) => base.clone(),
-        None => empty_tree(repo)?,
-    };
-    let files = changed_files(repo, &diff_base, resolved)?;
     Ok(CommitDetails {
         oid: f.first().unwrap_or(&"").trim().to_string(),
         parents,
@@ -206,7 +224,74 @@ pub fn blob_text(repo: &Path, spec: &str) -> GitResult<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_changed_files;
+    use super::{changed_files, header, parse_changed_files};
+    use crate::git::{diff::empty_tree, runner};
+    use std::path::Path;
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        runner::run(repo, args).unwrap().trim().to_owned()
+    }
+
+    /// The single-process header must give what the separate `show` + `diff` gave before.
+    #[test]
+    fn one_process_header_matches_separate_header_and_diff_for_every_commit_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "Tester"],
+            &["config", "user.email", "tester@example.com"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.autocrlf", "false"],
+            &["config", "log.showRoot", "false"],
+        ] {
+            git(repo, args);
+        }
+        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(repo.join("move.txt"), "a file that will be renamed\nwith enough content\nto be found\n").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-qm", "Root commit\n\nWith a body: ünïcödé, tabs\tand a trailing line\n"]);
+        git(repo, &["checkout", "-qb", "side"]);
+        std::fs::write(repo.join("side.txt"), "side\n").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-qm", "Side work"]);
+        git(repo, &["checkout", "-q", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\nTWO\nthree\n").unwrap();
+        git(repo, &["mv", "move.txt", "moved.txt"]);
+        std::fs::write(repo.join("image.bin"), [0u8, 159, 146, 150, 0, 1, 2]).unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-qm", "Edit, rename and binary"]);
+        git(repo, &["merge", "-q", "--no-ff", "-m", "Merge side", "side"]);
+        git(repo, &["commit", "-q", "--allow-empty", "-m", "Empty commit"]);
+
+        for (rev, files) in [("HEAD~3", 2), ("HEAD~2", 3), ("HEAD~1", 1), ("HEAD", 0)] {
+            let oid = git(repo, &["rev-parse", rev]);
+            let details = header(repo, &oid).unwrap();
+            let base = details.parents.first().cloned().unwrap_or_else(|| empty_tree(repo).unwrap());
+            let expected = changed_files(repo, &base, &oid).unwrap();
+            let shape = |files: &[super::ChangedFile]| {
+                files.iter().map(|f| (f.path.clone(), f.old_path.clone(), f.status.clone(), f.additions, f.deletions, f.binary)).collect::<Vec<_>>()
+            };
+            assert_eq!(shape(&details.files), shape(&expected), "{rev}");
+            assert_eq!(details.files.len(), files, "{rev}");
+            assert_eq!(details.oid, oid);
+            assert_eq!(details.diff_base, details.parents.first().cloned());
+            assert_eq!((details.author.as_str(), details.author_email.as_str()), ("Tester", "tester@example.com"));
+        }
+        let root = header(repo, &git(repo, &["rev-parse", "HEAD~3"])).unwrap();
+        assert_eq!(root.subject, "Root commit");
+        assert_eq!(root.body, "With a body: ünïcödé, tabs\tand a trailing line");
+        assert!(root.parents.is_empty() && root.diff_base.is_none());
+        let edited = header(repo, &git(repo, &["rev-parse", "HEAD~2"])).unwrap();
+        let renamed = edited.files.iter().find(|f| f.path == "moved.txt").unwrap();
+        assert_eq!((renamed.status.as_str(), renamed.old_path.as_deref()), ("R", Some("move.txt")));
+        assert!(edited.files.iter().any(|f| f.path == "image.bin" && f.binary));
+        assert_eq!(edited.files.iter().find(|f| f.path == "a.txt").map(|f| (f.additions, f.deletions)), Some((Some(2), Some(1))));
+        let merge = header(repo, &git(repo, &["rev-parse", "HEAD~1"])).unwrap();
+        assert_eq!(merge.parents.len(), 2);
+        assert_eq!(merge.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["side.txt"], "a merge lists its changes against the first parent");
+    }
+
     #[test]
     fn statistics_match_paths_even_with_reversed_order_and_many_entries() {
         let mut raw = String::new();

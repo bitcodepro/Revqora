@@ -102,15 +102,15 @@ export async function explorerBranchesSmoke({ page, work, shot }) {
   await page.mouse.move(bounds.x + 55, bounds.y + bounds.height / 2, { steps: 3 });
   assert.equal(await page.locator("body.explorer-dragging").count(), 0);
   await page.mouse.up();
-  // Browse a closed repository without activating it, then open its branch context.
+  // Browse a closed repository without activating it, then open that branch's history.
   await inventory.getByRole("button", { name: "Close inventory-service", exact: true }).click();
   await inventory.getByRole("button", { name: "Close inventory-service", exact: true }).waitFor({ state: "detached" });
   await ref.waitFor();
   await ref.click();
   await page.locator(".repo-current").getByText("inventory-service", { exact: true }).waitFor();
   await page.getByRole("combobox", { name: "History scope" }).waitFor();
-  await page.waitForFunction(() => [...document.querySelectorAll("select option")].some(option =>
-    option.selected && option.textContent.includes("Branch context") && option.textContent.includes("feature/reservations")));
+  await page.waitForFunction(() => document.querySelector('select[aria-label="History scope"]')?.value === "refs/heads/feature/reservations");
+  assert.equal(await page.locator('select[aria-label="History scope"] option', { hasText: "Branch context" }).count(), 0);
   assert.equal(execFileSync("git", ["-C", roots[0], "branch", "--show-current"], { encoding: "utf8", windowsHide: true }).trim(), "main");
 
   const navigation = page.getByRole("group", { name: "Repository navigation", exact: true });

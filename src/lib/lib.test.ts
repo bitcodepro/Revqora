@@ -3,7 +3,7 @@ import { applyResolution, findLines, parseConflicts, resolveAll } from "./confli
 import { wordDiff } from "./worddiff";
 import { initials, relativeTime } from "./format";
 import { visibleUpdate } from "./update";
-import { createAutoFetch } from "./autofetch";
+import { createAutoFetch, fetchRound } from "./autofetch";
 import type { UpdateInfo } from "./types";
 
 const SAMPLE = `top
@@ -142,6 +142,23 @@ describe("background fetch", () => {
     await failing("/repo");
     await failing("/repo"); // missing or expired credentials: no more attempts
     expect(calls).toBe(1);
+  });
+
+  it("fetches a library of 40 repositories four at a time and stops when the round ends", async () => {
+    let running = 0, peak = 0;
+    const fetched: string[] = [];
+    const roots = Array.from({ length: 40 }, (_, i) => `/repo-${i}`);
+    await fetchRound(roots, async root => {
+      peak = Math.max(peak, ++running);
+      await new Promise(resolve => setTimeout(resolve, 2));
+      running--;
+      fetched.push(root);
+    }, () => true, 4);
+    expect(peak).toBe(4);
+    expect(fetched.sort()).toEqual([...roots].sort());
+    let started = 0;
+    await fetchRound(roots, async () => { started++; }, () => started < 3, 4);
+    expect(started).toBeLessThan(10);
   });
 
   it("treats a busy repository as a skipped round, not a failure", async () => {

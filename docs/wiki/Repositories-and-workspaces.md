@@ -14,7 +14,7 @@ By default, Revqora opens all saved repositories at startup. To restore only the
 
 ## Browse and filter repositories
 
-**Explorer** opens by default. It shows groups, subgroups, repositories and branches in one tree. Expand a repository to see its branches, including saved repositories you have closed. Click a branch to open its history context. The branch context menu has the same actions as the **Branches** panel, which you can still open separately with **Ctrl+Alt+B**.
+**Explorer** opens by default. It shows groups, subgroups, repositories and branches in one tree. Expand a repository to see its branches, including saved repositories you have closed. Click a branch to show its history. The branch context menu has the same actions as the **Branches** panel, which you can still open separately with **Ctrl+Alt+B**.
 
 Use **Find in Explorer** to search by folder, repository or branch. **My branches** uses the creator filter for each repository and keeps its primary branch visible at the top. Right-click a branch and choose **Set as primary branch** to pin it in both Explorer and the Branches panel.
 
@@ -22,7 +22,7 @@ Press **Ctrl+Alt+R** to show the optional **Repositories** panel as a flat list.
 
 Star a group, repository or branch to find it under **Favorites**. A starred group shows its folders and repositories. A starred branch appears with its repository and parent folders, even if those items have no stars.
 
-Use **Incoming** to show repositories with commits to pull, **Outgoing** to show repositories whose current branch has commits to push (ahead of its upstream, or not on any fetched remote branch when it has no upstream), or **Changes** to show repositories with staged, unstaged or untracked files. These filters use the last known Git status and keep matching repositories in their folder tree.
+Use **Incoming** to show repositories with commits to pull, **Outgoing** to show repositories whose current branch has commits to push (ahead of its upstream, or not on any fetched remote branch when it has no upstream), or **Changes** to show repositories with staged, unstaged or untracked files. These filters use the last known Git status and keep matching repositories in their folder tree. All three filters include repositories that are not open: Revqora checks the current branch of every repository in the library shortly after start (without scanning working files), then their changes, and again when you return to the window. Their rows show **↑**, **↓** and the changes dot. Incoming shows what the last fetch found; auto-fetch also fetches repositories that are not open, starting 15 seconds after launch.
 
 ## Import and organize groups
 

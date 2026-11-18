@@ -1,0 +1,50 @@
+.diagnostics-preview {
+  max-height: 52vh;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: var(--font-code);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.connection-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 8px 0 12px;
+}
+.connection-facts dt { color: var(--text-dim); }
+.connection-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.connection-checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 46vh;
+  overflow: auto;
+}
+.connection-checks li {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.connection-checks li p { margin: 2px 0 0; overflow-wrap: anywhere; }
+.connection-check-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.connection-check-state { font-size: var(--fs-sm); font-weight: 600; }
+.connection-check-cause { color: var(--text-dim); font-size: var(--fs-sm); }
+.connection-check-next { font-size: var(--fs-sm); }
+.connection-checks li[data-state="ok"] .connection-check-icon,
+.connection-checks li[data-state="ok"] .connection-check-state { color: var(--green); }
+.connection-checks li[data-state="failed"] .connection-check-icon,
+.connection-checks li[data-state="failed"] .connection-check-state { color: var(--red); }
+.connection-checks li[data-state="limited"] .connection-check-icon,
+.connection-checks li[data-state="limited"] .connection-check-state,
+.connection-checks li[data-state="not-verified"] .connection-check-icon,
+.connection-checks li[data-state="not-verified"] .connection-check-state { color: var(--amber); }
+.connection-checks li[data-state="skipped"] { color: var(--text-dim); }
+.pr-scan-issue-actions { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }

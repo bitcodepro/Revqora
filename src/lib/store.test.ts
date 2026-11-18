@@ -4,7 +4,7 @@ vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), h
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() }, toast: { warning: vi.fn() } }));
 import { api } from "./api";
-import { covers, CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, repositoryOutgoing, useRepos, type RepoTab } from "./store";
+import { covers, CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, historyAfterSwitch, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, repositoryHasChanges, repositoryIncoming, repositoryOutgoing, shownHistoryBranch, useRepos, type RepoTab } from "./store";
 import { previewGeneration } from "./commitPreview";
 import { repositoryCall, type Invoke } from "./operationClient";
 import type { RepoInfo, StatusSummary } from "./types";
@@ -73,7 +73,7 @@ describe("background repository observation", () => {
 
     const tab = useRepos.getState().tabs[root];
     expect(tab.graph?.key).toBe("new-head");
-    expect(tab.graphScope).toBe(graphHistoryScope(tab, undefined, true).key);
+    expect(tab.graphScope).toBe(graphHistoryScope(tab, true).key);
     expect(api.graphLoad).toHaveBeenCalledTimes(2);
   });
   it("starts a new branch selection beside an obsolete build and publishes only the latest request", async () => {
@@ -317,9 +317,61 @@ describe("repositoryOutgoing", () => {
     expect(repositoryOutgoing(tab({}, 2))).toBe(2);
     expect(repositoryOutgoing(tab({}))).toBe(0);
   });
+  it("uses the refs-only tracking of a closed or loading repository", () => {
+    const tracking = { branch: "feature", oid: "a", upstream: null, ahead: 0, behind: 0, unpublished: 4 };
+    expect(repositoryOutgoing(undefined, tracking)).toBe(4);
+    expect(repositoryOutgoing(tab(null), { ...tracking, upstream: "origin/feature", ahead: 2, unpublished: null })).toBe(2);
+    expect(repositoryIncoming(undefined, { ...tracking, behind: 5 })).toBe(5);
+    expect(repositoryOutgoing(undefined, { ...tracking, branch: null })).toBe(0);
+  });
+  it("prefers an open repository's status and loaded branches over tracking", () => {
+    const tracking = { branch: "feature", oid: "a", upstream: null, ahead: 0, behind: 7, unpublished: 4 };
+    expect(repositoryOutgoing(tab({}, 2), tracking)).toBe(2);
+    expect(repositoryIncoming(tab({ behind: 1 }), tracking)).toBe(1);
+    const unloaded = { ...tab({}), refs: null } as RepoTab;
+    expect(repositoryOutgoing(unloaded, tracking)).toBe(4);
+    expect(repositoryOutgoing(unloaded, { ...tracking, oid: "older" })).toBe(0);
+  });
+  it("reports changes from an open repository's status or from the count of a closed one", () => {
+    expect(repositoryHasChanges(tab({ files: [{ path: "a" }] } as unknown as Partial<StatusSummary>), 0)).toBe(true);
+    expect(repositoryHasChanges(tab({}), 5)).toBe(false);
+    expect(repositoryHasChanges(undefined, 2)).toBe(true);
+    expect(repositoryHasChanges(undefined, 0)).toBe(false);
+    expect(repositoryHasChanges(undefined)).toBe(false);
+  });
   it("ignores a detached HEAD and an unknown status", () => {
     expect(repositoryOutgoing(tab({ branch: null, ahead: 4 }))).toBe(0);
     expect(repositoryOutgoing(tab(null))).toBe(0);
     expect(repositoryOutgoing(undefined)).toBe(0);
+  });
+});
+
+describe("History after a branch switch", () => {
+  const view = (patch: Partial<Pick<RepoTab, "branchFilter" | "viewedBranch">>) => ({ branchFilter: CURRENT_HISTORY_BRANCH, viewedBranch: null, ...patch });
+  it("shows the branch just checked out as Current branch, so its incoming commits appear and no line stays tinted", () => {
+    expect(historyAfterSwitch(view({ branchFilter: "refs/heads/main-mt" }), "main-mt", "local", "main-mt"))
+      .toEqual({ branchFilter: CURRENT_HISTORY_BRANCH, viewedBranch: null });
+  });
+  it("treats a remote branch checked out as a new local branch the same way", () => {
+    expect(historyAfterSwitch(view({ branchFilter: "refs/remotes/origin/feature" }), "feature", "remote", "origin/feature"))
+      .toEqual({ branchFilter: CURRENT_HISTORY_BRANCH, viewedBranch: null });
+  });
+  it("clears only the highlight of the new current branch in Current branch or All branches", () => {
+    expect(historyAfterSwitch(view({ viewedBranch: "refs/heads/main-mt" }), "main-mt", "local", "main-mt")).toEqual({ viewedBranch: null });
+    expect(historyAfterSwitch(view({ branchFilter: null, viewedBranch: "refs/heads/main-mt" }), "main-mt", "local", "main-mt")).toEqual({ viewedBranch: null });
+  });
+  it("keeps a view of another branch", () => {
+    expect(historyAfterSwitch(view({ branchFilter: "refs/heads/release" }), "main-mt", "local", "main-mt")).toEqual({});
+    expect(historyAfterSwitch(view({ branchFilter: null, viewedBranch: "refs/heads/release" }), "main-mt", "local", "main-mt")).toEqual({});
+  });
+});
+
+describe("Branch shown in History", () => {
+  it("is the open single-branch history or the highlighted branch, never Current branch", () => {
+    expect(shownHistoryBranch({ branchFilter: "refs/heads/target", viewedBranch: null })).toBe("refs/heads/target");
+    expect(shownHistoryBranch({ branchFilter: null, viewedBranch: "refs/heads/target" })).toBe("refs/heads/target");
+    expect(shownHistoryBranch({ branchFilter: CURRENT_HISTORY_BRANCH, viewedBranch: null })).toBeNull();
+    expect(shownHistoryBranch({ branchFilter: null, viewedBranch: null })).toBeNull();
+    expect(shownHistoryBranch(undefined)).toBeNull();
   });
 });

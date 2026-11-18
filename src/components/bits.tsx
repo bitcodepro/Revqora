@@ -59,14 +59,13 @@ export function Avatar({ name, email, large }: { name: string; email?: string; l
   );
 }
 
-export function RefBadge({ r, color, merged, branchMark, onClick, onContextMenu }: { r: RefLabel; color?: number; merged?: string; branchMark?: "selected" | "base" | "primary"; onClick?: (e: React.MouseEvent) => void; onContextMenu?: (e: React.MouseEvent) => void }) {
+export function RefBadge({ r, color, merged, onClick, onContextMenu }: { r: RefLabel; color?: number; merged?: string; onClick?: (e: React.MouseEvent) => void; onContextMenu?: (e: React.MouseEvent) => void }) {
   const style = color !== undefined ? ({ "--lane-c": `var(--lane-${color % 12})` } as React.CSSProperties) : undefined;
   const icon =
     r.kind === "tag" ? <Tag size={12} /> : r.kind === "remote" ? <Cloud size={12} /> : r.kind === "detached" ? <CircleDot size={12} /> : r.kind === "bisect" ? <Bug size={12} /> : <GitBranch size={12} />;
   return (
     <span
       className={`ref ${r.kind} ${r.kind === "bisect" ? (r.name.endsWith("bad") ? "bad" : "good") : ""}${merged ? " squashed" : ""}`}
-      data-branch-mark={branchMark}
       data-ref-kind={r.kind}
       data-ref-name={r.name}
       style={style}
@@ -145,8 +144,16 @@ export function FileGroups<T extends { path: string }>({
 }) {
   const [closed, setClosed] = useState<Set<string>>(new Set());
   // Huge lists (tens of thousands of untracked files) render in steps as they scroll into view.
-  const [limit, setLimit] = useState(FILE_STEP);
-  const more = items.length > limit ? <MoreFiles shown={limit} total={items.length} onMore={(all) => setLimit((n) => all ? items.length : n + FILE_STEP)} /> : null;
+  // A long list paints its first rows at once and the rest of the first step one frame later,
+  // so a large commit's files appear sooner.
+  const [limit, setLimit] = useState(FIRST_PAINT);
+  const filling = limit < FILE_STEP && items.length > limit;
+  useEffect(() => {
+    if (!filling) return;
+    const frame = requestAnimationFrame(() => setLimit((n) => Math.max(n, FILE_STEP)));
+    return () => cancelAnimationFrame(frame);
+  }, [filling]);
+  const more = items.length > limit && !filling ? <MoreFiles shown={limit} total={items.length} onMore={(all) => setLimit((n) => all ? items.length : n + FILE_STEP)} /> : null;
   if (!tree) return <>{items.slice(0, limit).map((it) => render(it, false))}{more}</>;
   let budget = limit;
   /** The files of an open folder that still fit in the rendered budget. */
@@ -188,6 +195,8 @@ export function FileGroups<T extends { path: string }>({
 }
 
 const FILE_STEP = 600;
+/** Rows of a long file list painted before the rest of the first step. */
+const FIRST_PAINT = 150;
 
 /** The end of a partly rendered file list: loads the next rows when it scrolls into view. */
 function MoreFiles({ shown, total, onMore }: { shown: number; total: number; onMore: (all: boolean) => void }) {

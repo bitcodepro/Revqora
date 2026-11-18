@@ -184,8 +184,9 @@ pub fn page(repo: &Path, state: &str, cursor: Option<&str>) -> GitResult<Page> {
             format!("{}?state={}&order_by=updated_at&sort=desc&per_page={PAGE}&page={page}", endpoint(&f), if state == "open" { "opened" } else { state })
         }
         "bitbucket" => format!(
-            // `+values.participants` adds approvals to the default fields (no extra request).
-            "{}?{}sort=-updated_on&pagelen={PAGE}&page={page}&fields=%2Bvalues.participants",
+            // `+values.participants` adds approvals and `+values.reviewers` the requested
+            // reviewers to the default fields (no extra request).
+            "{}?{}sort=-updated_on&pagelen={PAGE}&page={page}&fields=%2Bvalues.participants,%2Bvalues.reviewers",
             endpoint(&f),
             match state {
                 "open" => "state=OPEN&",
@@ -331,7 +332,7 @@ fn detail_value(f: &ForgeInfo, v: &Value) -> GitResult<Detail> {
         _ => (text(v, "/description"), text(v, "/creationDate"), text(v, "/lastMergeTargetCommit/commitId"), String::new(), None),
     };
     // Comment and approval counts change without changing what a write was reviewed against.
-    let reviewed = PullRequest { signals: None, ..pull.clone() };
+    let reviewed = PullRequest { signals: None, reviewers: None, ..pull.clone() };
     let revision = hash(
         serde_json::to_vec(&json!([
             f.connection_revision,

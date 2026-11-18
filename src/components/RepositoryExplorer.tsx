@@ -10,7 +10,8 @@ import { selectExplorerBranches } from "../lib/explorerBranches";
 import type { BranchInfo, RefsSnapshot } from "../lib/types";
 import { basename } from "../lib/format";
 import { useSettings } from "../lib/settings";
-import { repositoryOutgoing, repositorySidebarStatus, useRepos } from "../lib/store";
+import { repositoryHasChanges, repositoryIncoming, repositoryOutgoing, shownHistoryBranch, useRepos } from "../lib/store";
+import { changesOf, trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
 import { contextMenu, toast, useUi, type MenuItem } from "../lib/ui";
 import { bindingFor, matchesShortcut, prettyCombo } from "../lib/shortcuts";
 import { useNavigationSelection } from "../lib/navigationSelection";
@@ -94,6 +95,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
   const [incomingOnly, setIncomingOnly] = useState(false);
   const [outgoingOnly, setOutgoingOnly] = useState(false);
+  const tracking = useRepositoryTracking(s => s.byKey), changes = useRepositoryTracking(s => s.changes);
   const [changesOnly, setChangesOnly] = useState(false);
   const [collapsedFavorites, setCollapsedFavorites] = useState<Set<string>>(() => new Set());
   const [expandedRepositories, setExpandedRepositories] = useState<Set<string>>(() => new Set());
@@ -108,9 +110,9 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const paths = uniqueRoots([...order, ...known]);
   const canonical = new Map(paths.map(root => [repositoryKey(root), root]));
   const favoriteKeys = new Set(favorites.map(repositoryKey));
-  const incoming = new Set(paths.filter(root => !!repositorySidebarStatus(tabs[root])?.behind));
-  const outgoing = new Set(paths.filter(root => repositoryOutgoing(tabs[root]) > 0));
-  const hasChanges = (root: string) => !!repositorySidebarStatus(tabs[root])?.files.length;
+  const incoming = new Set(paths.filter(root => repositoryIncoming(tabs[root], trackingOf(tracking, root)) > 0));
+  const outgoing = new Set(paths.filter(root => repositoryOutgoing(tabs[root], trackingOf(tracking, root)) > 0));
+  const hasChanges = (root: string) => repositoryHasChanges(tabs[root], changesOf(changes, root));
   const label = (root: string) => names[repositoryKey(root)] ?? tabs[root]?.info?.name ?? basename(root);
   const repositoryEntry = (path: string, parentId: string | null): Extract<ExplorerEntry, { kind: "repository" }> => {
     const key = repositoryKey(path), root = canonical.get(key) ?? path;
@@ -345,7 +347,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
           return <ExplorerBranchRow key={entry.id} id={entry.id} root={entry.root} branch={entry.branch} refs={entry.refs} upstream={entry.upstream}
             depth={depth} primary={primaryBranches[key] === reference} favorite={branchFavorites[key]?.includes(reference) ?? false}
             focused={focusedId === entry.id} selected={selection.includes(entry.id)}
-            viewed={entry.root === active && !overview && (tabs[entry.root]?.viewedBranch ? tabs[entry.root]?.viewedBranch === reference : entry.branch.isHead)}
+            viewed={entry.root === active && !overview && (shownHistoryBranch(tabs[entry.root]) ? shownHistoryBranch(tabs[entry.root]) === reference : entry.branch.isHead)}
             historyDetached={!!panels.history} withRepository={run => branchNavigation(entry.root, run)}
             onSelect={(event, activate) => select(event, entry, activate)}/>;
         }

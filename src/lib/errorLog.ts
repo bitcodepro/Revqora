@@ -20,7 +20,7 @@ export function recordError(source: string, error: unknown, repository?: string)
   if (value) reported.add(value);
   const code = typeof value?.kind === "string" ? value.kind : error instanceof Error ? error.name : "error";
   const details = Array.isArray(value?.details) ? value.details
-    .filter((detail): detail is string => typeof detail === "string" && /^(os_error=-?\d+|io_kind=\w+)$/.test(detail)) : [];
+    .filter((detail): detail is string => typeof detail === "string" && /^(os_error=-?\d+|io_kind=\w+|http_status=\d{3}|request_id=[\w:.-]{1,128}|retry_after=\d+)$/.test(detail)) : [];
   const message = typeof value?.message === "string" ? value.message : String(error);
   // Keep arbitrary Git output and command arguments out of the shareable log.
   const write = invoke("error_log_record", {

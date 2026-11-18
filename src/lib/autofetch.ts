@@ -33,3 +33,11 @@ export function createAutoFetch(deps: AutoFetchDeps) {
 }
 
 export const defaultFetch = (root: string) => api.fetchBackground(root);
+
+/** One auto-fetch round: `parallel` repositories at a time, in order, until `current()` ends. */
+export async function fetchRound(roots: string[], fetch: (root: string) => Promise<void>, current: () => boolean, parallel: number): Promise<void> {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(parallel, roots.length) }, async () => {
+    while (current() && next < roots.length) await fetch(roots[next++]);
+  }));
+}

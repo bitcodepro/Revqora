@@ -95,6 +95,8 @@ export interface Settings {
   checkUpdates: boolean;
   /** Background fetch interval in minutes; 0 turns it off. */
   autoFetchMinutes: number;
+  /** Auto-fetch also covers library repositories that are not open (Incoming for the whole library). */
+  autoFetchLibrary: boolean;
   prPollMinutes: number;
   prWatchMineSince: number | null;
   prAllRepositories: boolean;
@@ -177,6 +179,7 @@ export const useSettings = create<Settings>()(
       diffFullFile: false,
       checkUpdates: true,
       autoFetchMinutes: 5,
+      autoFetchLibrary: true,
       prPollMinutes: 5,
       prWatchMineSince: null,
       prAllRepositories: false,

@@ -44,6 +44,11 @@ export function mcpNeedsApproval(mode: McpApprovalMode, action: string, options:
 
 const missing = (message: string) => new McpToolError("action_details_required", message);
 
+/** Git's output without the intermediate progress lines ("Writing objects:  33% (1/3)"); the final "…, done." lines stay. */
+export function withoutProgress(output: string) {
+  return output.split(/\r?\n/).filter(line => !/:\s+\d{1,3}% \(\d+\/\d+\)(, [^,]*\/s)?\s*$/.test(line)).join("\n");
+}
+
 async function submitOnce<T>(pending: () => boolean, mark: (pending: boolean) => void, submit: () => Promise<T>, keep?: (value: T) => boolean) {
   if (pending()) throw new McpToolError("result_unverified", "Check the previous write on the provider before submitting another request.");
   mark(true);
@@ -94,7 +99,7 @@ Promise<AutomaticOutcome> {
       await authorize();
       const message = await api.push(root, { remote: remote.name, branch: baseline.branch, remoteBranch: destination,
         forceWithLease: a.force ?? false, setUpstream: a.setUpstream ?? false }, newOpId(), expectedState);
-      return { message, result: { remote: remote.name, branch: baseline.branch, destination } };
+      return { message: withoutProgress(message), result: { remote: remote.name, branch: baseline.branch, destination } };
     }
     case "create_pr": {
       if (!a.title?.trim() || !a.branch?.trim() || !a.base?.trim()) throw missing("Supply title, branch (published source), and base (target) to create a pull request.");

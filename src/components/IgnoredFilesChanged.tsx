@@ -7,6 +7,7 @@ import { Modal } from "./Modal";
 import { recoveryDialog } from "./RecoveryCenter";
 import { confirmDialog } from "./dialogs";
 import { api } from "../lib/api";
+import { restoreReport } from "../lib/recoveryRestore";
 import { showDialog, toast } from "../lib/ui";
 import { useRepos } from "../lib/store";
 
@@ -23,13 +24,6 @@ export interface IgnoredReport {
   checkpoint: string | null;
   paths: string[];
   changes: IgnoredChange[];
-}
-
-export interface RestoreOutcome {
-  restored: string[];
-  changedSince: string[];
-  failed: [string, string] | null;
-  notAttempted: string[];
 }
 
 /** Before an operation: ignored files could not be saved. The user accepts exactly this list. */
@@ -104,7 +98,7 @@ export async function ignoredFilesChangedDialog(root: string, report: IgnoredRep
     >
       <p className="muted">
         {report.checkpoint
-          ? "Their previous content and permissions were saved in a recovery checkpoint before the operation; it stays available in Recovery. Restoring replaces the version Git wrote. A file you changed after the operation is left as it is."
+          ? "Their previous content and permissions were saved in a recovery checkpoint before the operation; it stays available in Recovery. Restoring replaces the version Git wrote, which is saved in a new checkpoint first. A file you changed after the operation stays as it is, and its saved copy is written beside it as name.recovered."
           : "You chose to run this operation without saving them, so their previous content cannot be restored."}
       </p>
       {report.checkpoint ? <ChangedList root={root} checkpoint={report.checkpoint} changes={report.changes} /> : <div className="code-list">{report.paths.join("\n")}</div>}
@@ -114,15 +108,10 @@ export async function ignoredFilesChangedDialog(root: string, report: IgnoredRep
   if (choice === "recovery") return recoveryDialog(root, report.checkpoint);
   if (choice !== "restore") return;
   try {
-    const r = await api.recoveryRestoreFiles(root, report.checkpoint, report.changes);
-    const lines = [
-      r.restored.length ? `Restored: ${r.restored.join(", ")}` : "",
-      r.changedSince.length ? `Left as they are (changed after the operation): ${r.changedSince.join(", ")}` : "",
-      r.failed ? `Failed: ${r.failed[0]} (${r.failed[1]})` : "",
-      r.notAttempted.length ? `Not attempted: ${r.notAttempted.join(", ")}` : "",
-    ].filter(Boolean).join("\n");
-    if (r.failed || r.changedSince.length) toast.warning(`Restored ${r.restored.length} of ${report.changes.length} ignored files`, lines);
-    else toast.success(`Restored ${r.restored.length} ignored file${r.restored.length === 1 ? "" : "s"}`);
+    const r = await api.recoveryRestoreFiles(root, report.checkpoint, report.changes.map((c) => c.path));
+    const summary = restoreReport(r, report.changes.length);
+    if (summary.warning) toast.warning(summary.title, summary.lines.join("\n"));
+    else toast.success(summary.title);
     void useRepos.getState().refresh(root, { status: true });
   } catch (e) {
     toast.error(e, "Could not restore the ignored files");

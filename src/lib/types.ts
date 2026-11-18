@@ -36,6 +36,8 @@ export interface OperationLogEntry {
   requestedAt: number; startedAt: number | null; finishedAt: number | null;
   waitMs: number | null; durationMs: number | null; beforeHead: string | null; afterHead: string | null;
   outcome: string | null; errorKind: string | null; error: string | null; truncated: boolean;
+  /** Recovery checkpoints saved for this operation, oldest first. */
+  checkpoints: string[];
 }
 export interface OperationLogStep {
   sequence: number; cwd: string; args: string[]; startedAt: number; durationMs: number | null;
@@ -96,6 +98,19 @@ export interface StageReview {
   oid: string | null;
   operation: Pick<OpState, "kind" | "incoming" | "step" | "stoppedAt">;
   files: Record<string, string>;
+}
+
+/** Incoming and outgoing commits of the current branch, read from refs only. */
+export interface BranchTracking {
+  /** `null` for a detached HEAD. */
+  branch: string | null;
+  /** `null` before the branch's first commit. */
+  oid: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  /** For a branch without an upstream: commits absent from every fetched remote branch. */
+  unpublished: number | null;
 }
 
 export interface StatusSummary {
@@ -206,7 +221,6 @@ export interface GraphSummary {
   commitCount?: number | null;
   maxLanes: number;
   headIndex: number | null;
-  branchContext?: { reference: string; base: string | null; recorded: boolean; primary: string | null } | null;
   /** Stage durations in ms (ref resolution, Git walk, layout, ...), in recording order. */
   stages?: [string, number][];
   /** Rows came from the recent-branch cache or an unchanged previous build. */
@@ -784,6 +798,19 @@ export interface PullRequest {
   headSha: string;
   /** Review state the provider reports in lists; a missing field is not reported. */
   signals?: PrSignals;
+  /** Reviewers the provider names in lists; missing when it does not list them. */
+  reviewers?: PrReviewer[];
+}
+/** `state` "unknown": the list does not say whether this reviewer has reviewed (GitLab). */
+export interface PrReviewer { id: string; login: string; name: string; state: "requested" | "approved" | "changes_requested" | "commented" | "unknown"; group?: boolean }
+/** CI, merge readiness and reviewer states read from the provider for one PR. */
+export interface PrAttention {
+  number: number; revision: string; headSha: string; checkedAt: number;
+  ci: "failed" | "pending" | "passed" | "none"; failedChecks: string[];
+  merge: "ready" | "blocked" | "unknown"; blockers: string[];
+  reviewers?: PrReviewer[];
+  /** Server facts for the current head; absent when the provider does not report them. */
+  changesRequested?: boolean; conflicts?: boolean;
 }
 export interface PrSignals { comments?: number; approvals?: number; changesRequested?: number; conflicts?: boolean }
 
@@ -824,6 +851,27 @@ export interface RecoverySummary {
   id: string; createdAt: number; command: string; label: string; sourceRoot: string;
   branch: string | null; head: string | null; workspace: boolean; includesIgnored: boolean;
   files: number; references: number; bytes: number;
+  /** Result of the operation the checkpoint was saved for; absent for manual checkpoints. */
+  operationStatus?: RecoveryOperationStatus;
+}
+export type RecoveryOperationStatus = "running" | "succeeded" | "attention" | "failed" | "interrupted";
+export interface RecoveryFileState { kind: "file" | "link" | "directory" | "missing" | "other" | "unreadable"; len: number; sha256: string | null; target: string | null }
+export interface RecoveryOperation {
+  version: number; operation: string | null; command: string; status: string; startedAt: number; finishedAt: number | null;
+  error: string | null; changed: Record<string, RecoveryFileState>; effectiveStatus: RecoveryOperationStatus;
+}
+/** same: matches the saved copy · operation: as the operation left it · later: changed after the operation · unknown: the operation's effect was not recorded. */
+export type RecoveryFileChange = "same" | "operation" | "later" | "unknown";
+export interface RecoverySavedFile { path: string; savedKind: "file" | "missing" | "directory" | "link"; state: RecoveryFileChange; current: RecoveryFileState; restorable: boolean }
+export interface RecoveryKeptBoth { path: string; copy: string }
+export interface RecoveryRestoreSummary {
+  startedAt: number; finished: boolean; planned: string[]; restored: string[]; keptBoth: RecoveryKeptBoth[]; unchanged: string[];
+  failed: [string, string][]; notFinished: string[]; checkpoint: string | null;
+}
+export interface RecoveryFiles { operation: RecoveryOperation | null; files: RecoverySavedFile[]; lastRestore: RecoveryRestoreSummary | null }
+export interface RecoveryRestoreOutcome {
+  restored: string[]; changedSince: string[]; keptBoth: RecoveryKeptBoth[]; unchanged: string[];
+  failed: [string, string] | null; notAttempted: string[]; checkpoint: string | null; checkpointError: string | null;
 }
 export interface RecoveryRef { name: string; oid: string; kind: "branch" | "remote" | "stash" | "layer"; }
 export interface RecoveryCheckpoint extends RecoverySummary {
@@ -1006,3 +1054,23 @@ export interface SparseResult {
   leftBehind: string[];
   warning: string | null;
 }
+
+/** One result of "Check connection" (`connection_check`). */
+export interface ConnectionCheckItem {
+  id: "git-read" | "git-write" | "profile" | "pull-requests" | "files" | "checks";
+  label: string;
+  state: "ok" | "failed" | "limited" | "not-verified" | "skipped";
+  detail: string;
+  cause?: "no-credentials" | "token-rejected" | "permission" | "not-found" | "timeout" | "rate-limit" | "network" | "server" | "ssh-host" | "invalid-response" | "other";
+  next?: string;
+  code?: string;
+  httpStatus?: number;
+  requestId?: string;
+  ms: number;
+}
+export interface ConnectionCheckReport {
+  repository: string; remote: string | null; url: string | null; transport: string | null;
+  provider: string | null; project: string | null; credentialSource: string | null; items: ConnectionCheckItem[];
+}
+/** Lines of a diagnostics report; the backend adds versions and removes secrets. */
+export interface DiagnosticsInput { source: string; lines: string[] }

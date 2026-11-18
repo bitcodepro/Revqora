@@ -45,6 +45,97 @@ pub struct PullRequest {
     /// Review state the provider includes in its list answer at no extra cost.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signals: Option<PrSignals>,
+    /// Reviewers the list answer names; missing when the provider does not list them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reviewers: Option<Vec<PrReviewer>>,
+}
+
+/// A reviewer from a PR list row. `state`: "requested" (no decision yet), "approved",
+/// "changes_requested", "commented", or "unknown" when the list does not say.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrReviewer {
+    pub id: String,
+    pub login: String,
+    pub name: String,
+    pub state: &'static str,
+    /// A team or group: whether it includes the viewer is not known.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub group: bool,
+}
+
+fn reviewer(v: &Value, id: &str, login: &str, name: &str, state: &'static str, group: bool) -> PrReviewer {
+    PrReviewer {
+        id: user_id(v, id),
+        login: v.pointer(login).and_then(Value::as_str).unwrap_or("").into(),
+        name: v.pointer(name).and_then(Value::as_str).unwrap_or("").into(),
+        state,
+        group,
+    }
+}
+
+/// Reviewers as each provider lists them, without another request.
+fn reviewers(kind: &str, v: &Value) -> Option<Vec<PrReviewer>> {
+    let rows = |ptr: &str| v.pointer(ptr).and_then(Value::as_array);
+    match kind {
+        // GitHub removes a reviewer from this list once they submit a review.
+        "github" => {
+            let users = rows("/requested_reviewers")?.iter().map(|r| reviewer(r, "/id", "/login", "/login", "requested", false));
+            let teams = rows("/requested_teams").into_iter().flatten().map(|t| reviewer(t, "/id", "/slug", "/name", "requested", true));
+            Some(users.chain(teams).collect())
+        }
+        // GitLab lists reviewers without their review state.
+        "gitlab" => Some(rows("/reviewers")?.iter().map(|r| reviewer(r, "/id", "/username", "/name", "unknown", false)).collect()),
+        "bitbucket" => {
+            let participants = rows("/participants")?;
+            let mut list: Vec<PrReviewer> = participants
+                .iter()
+                .filter(|p| p.get("role").and_then(Value::as_str) == Some("REVIEWER"))
+                .map(|p| {
+                    let state = match p.get("state").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase().as_str() {
+                        "approved" => "approved",
+                        "changes_requested" => "changes_requested",
+                        _ if p.get("approved").and_then(Value::as_bool) == Some(true) => "approved",
+                        _ => "requested",
+                    };
+                    reviewer(p, "/user/uuid", "/user/nickname", "/user/display_name", state, false)
+                })
+                .collect();
+            for r in rows("/reviewers").into_iter().flatten() {
+                let r = reviewer(r, "/uuid", "/nickname", "/display_name", "requested", false);
+                if !r.id.is_empty() && !list.iter().any(|known| known.id == r.id) {
+                    list.push(r);
+                }
+            }
+            Some(list)
+        }
+        "bitbucket-server" => Some(
+            rows("/reviewers")?
+                .iter()
+                .map(|r| {
+                    let state = match r.get("status").and_then(Value::as_str) {
+                        Some("APPROVED") => "approved",
+                        Some("NEEDS_WORK") => "changes_requested",
+                        _ => "requested",
+                    };
+                    reviewer(r, "/user/id", "/user/name", "/user/displayName", state, false)
+                })
+                .collect(),
+        ),
+        _ => Some(
+            rows("/reviewers")?
+                .iter()
+                .map(|r| {
+                    let state = match r.get("vote").and_then(Value::as_i64).unwrap_or(0) {
+                        5.. => "approved",
+                        ..=-5 => "changes_requested",
+                        _ => "requested",
+                    };
+                    reviewer(r, "/id", "/uniqueName", "/displayName", state, r.get("isContainer").and_then(Value::as_bool) == Some(true))
+                })
+                .collect(),
+        ),
+    }
 }
 
 /// What a PR list row can show without another request. A missing field means the
@@ -185,24 +276,7 @@ pub fn connection_identity(repo: &Path) -> GitResult<ConnectionIdentity> {
             Some(credential) => credential,
             None => token(repo, &context.git_url)?,
         };
-        let verify = |credential: &super::forge_accounts::Credential| {
-            super::forge_accounts::verify_identity(&info.kind, &info.api, credential).map_err(|error| {
-                // Bitbucket can reject /user even though the credential grants
-                // PR access. Only reinterpret a 401 after checking the same connection.
-                let pr_access = error.details.iter().any(|detail| detail == "forge_http_status=bitbucket:401")
-                    && super::forge_accounts::request_json(
-                        &info.kind,
-                        &info.api,
-                        credential,
-                        "GET",
-                        &format!("/repositories/{}/pullrequests?pagelen=1", project_path(&info.project)),
-                        None,
-                    )
-                    .is_ok();
-                connection_identity_error(error, pr_access)
-            })
-        };
-        let identity = if context.profile.is_some() { verify(&credential) } else { send_with_git_credential(&info.kind, credential, verify) }?;
+        let identity = verify_connection(&info, credential, context.profile.is_some())?;
         (identity.user_id, identity.login, identity.name, "provider")
     };
     Ok(ConnectionIdentity {
@@ -215,6 +289,58 @@ pub fn connection_identity(repo: &Path) -> GitResult<ConnectionIdentity> {
         source,
         connection_revision: info.connection_revision,
     })
+}
+
+/// Asks the provider whose credential this is. Bitbucket can reject the profile while the
+/// same credential reads pull requests; that case becomes `identity-unavailable`.
+fn verify_connection(info: &ForgeInfo, credential: super::forge_accounts::Credential, has_profile: bool) -> GitResult<super::forge_accounts::Identity> {
+    let verify = |credential: &super::forge_accounts::Credential| {
+        super::forge_accounts::verify_identity(&info.kind, &info.api, credential).map_err(|error| {
+            // Only reinterpret a 401 after checking the same connection.
+            let pr_access = error.details.iter().any(|detail| detail == "forge_http_status=bitbucket:401")
+                && super::forge_accounts::request_json(
+                    &info.kind,
+                    &info.api,
+                    credential,
+                    "GET",
+                    &format!("/repositories/{}/pullrequests?pagelen=1", project_path(&info.project)),
+                    None,
+                )
+                .is_ok();
+            connection_identity_error(error, pr_access)
+        })
+    };
+    if has_profile {
+        verify(&credential)
+    } else {
+        send_with_git_credential(&info.kind, credential, verify)
+    }
+}
+
+/// The selected API connection as the connection check describes it, and a live profile
+/// request with its credential (never the profile saved with the account).
+pub struct ProfileProbe {
+    pub info: ForgeInfo,
+    pub credential_source: String,
+    pub result: GitResult<String>,
+}
+
+pub fn probe_profile(repo: &Path) -> GitResult<Option<ProfileProbe>> {
+    let Some(context) = super::forge_accounts::context(repo)? else { return Ok(None) };
+    let info = context.info;
+    let credential_source = match &context.profile {
+        Some(profile) => format!("API account {} (Accounts)", profile.login),
+        None => "Git credentials for this remote (credential helper)".to_owned(),
+    };
+    let result = if info.kind == "bitbucket-server" {
+        Err(GitError::new("Bitbucket Server connections do not report a verified account profile.").kind("identity-unavailable"))
+    } else {
+        match context.credential.map(Ok).unwrap_or_else(|| token(repo, &context.git_url)) {
+            Ok(credential) => verify_connection(&info, credential, context.profile.is_some()).map(|identity| identity.login),
+            Err(error) => Err(error),
+        }
+    };
+    Ok(Some(ProfileProbe { info, credential_source, result }))
 }
 
 fn connection_identity_error(error: GitError, pr_access: bool) -> GitError {
@@ -483,8 +609,11 @@ pub(super) fn token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::
     Ok(super::forge_accounts::Credential { username, token: pass, mode: "bearer".into() })
 }
 
-/// How long a Git credential answer is reused (see [`cached_token`]).
+/// How long a Git credential answer is reused as it is (see [`cached_token`]).
 const CREDENTIAL_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Up to this age an answer is still used at once while Git is asked again in the background;
+/// an older one is read from Git before the request.
+const CREDENTIAL_STALE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 type CredentialKey = (std::path::PathBuf, String);
 
@@ -495,6 +624,8 @@ struct CredentialCache {
     /// read the credential that was just forgotten, so its answer is not cached.
     generation: u64,
     entries: std::collections::HashMap<CredentialKey, (std::time::Instant, super::forge_accounts::Credential)>,
+    /// Keys whose answer is being read again in the background.
+    refreshing: std::collections::HashSet<CredentialKey>,
 }
 
 fn credential_cache() -> &'static parking_lot::Mutex<CredentialCache> {
@@ -509,10 +640,63 @@ const CREDENTIAL_ATTEMPTS: usize = 3;
 /// [`token`] for API requests. `git credential fill` through Git Credential Manager takes
 /// 1–2 s on Windows, and every PR request needs the credential (it is part of the
 /// connection revision), so opening one Bitbucket PR spent most of its time here. An
-/// answer is reused for a minute per repository and remote URL; a 401, a new sign-in or
-/// Forget saved tokens invalidates it. No lock is held while Git runs.
+/// answer is reused for a minute per repository and remote URL. After that, for up to 30
+/// minutes, it is still used at once while Git is asked again in the background, so coming
+/// back to pull requests after a pause does not wait for Git. A 401, a new sign-in or Forget
+/// saved tokens invalidates it. No lock is held while Git runs.
 pub(super) fn cached_token(repo: &Path, url: &str) -> GitResult<super::forge_accounts::Credential> {
-    cached_in(credential_cache(), (repo.to_path_buf(), url.to_owned()), || token(repo, url))
+    let key = (repo.to_path_buf(), url.to_owned());
+    let cache = credential_cache();
+    match stale_answer(cache, &key, std::time::Instant::now()) {
+        Some((credential, refresh)) => {
+            if refresh {
+                std::thread::spawn(move || refresh_in(cache, key, |(repo, url)| token(repo, url)));
+            }
+            Ok(credential)
+        }
+        None => cached_in(cache, key.clone(), || token(&key.0, &key.1)),
+    }
+}
+
+/// A remembered answer that is past [`CREDENTIAL_TTL`] but within [`CREDENTIAL_STALE`] at `now`,
+/// and whether the caller should start the one background refresh for it.
+fn stale_answer(
+    cache: &parking_lot::Mutex<CredentialCache>,
+    key: &CredentialKey,
+    now: std::time::Instant,
+) -> Option<(super::forge_accounts::Credential, bool)> {
+    let mut saved = cache.lock();
+    let (at, credential) = saved.entries.get(key)?;
+    let age = now.saturating_duration_since(*at);
+    if age < CREDENTIAL_TTL || age >= CREDENTIAL_STALE {
+        return None;
+    }
+    let credential = credential.clone();
+    Some((credential, saved.refreshing.insert(key.clone())))
+}
+
+/// Reads `key` from Git again. An answer is kept only if nothing was invalidated meanwhile; a
+/// failed lookup drops the remembered answer, so the next request asks Git and reports why.
+fn refresh_in(
+    cache: &parking_lot::Mutex<CredentialCache>,
+    key: CredentialKey,
+    lookup: impl Fn(&CredentialKey) -> GitResult<super::forge_accounts::Credential>,
+) {
+    let generation = cache.lock().generation;
+    let answer = lookup(&key);
+    let mut saved = cache.lock();
+    saved.refreshing.remove(&key);
+    if saved.generation != generation {
+        return;
+    }
+    match answer {
+        Ok(credential) => {
+            saved.entries.insert(key, (std::time::Instant::now(), credential));
+        }
+        Err(_) => {
+            saved.entries.remove(&key);
+        }
+    }
 }
 
 fn cached_in(
@@ -535,7 +719,7 @@ fn cached_in(
         attempt += 1;
         let mut saved = cache.lock();
         if saved.generation == generation {
-            saved.entries.retain(|_, (at, _)| at.elapsed() < CREDENTIAL_TTL);
+            saved.entries.retain(|_, (at, _)| at.elapsed() < CREDENTIAL_STALE);
             saved.entries.insert(key, (std::time::Instant::now(), credential.clone()));
             return Ok(credential);
         }
@@ -759,6 +943,7 @@ pub(super) fn gh_pr(v: &Value) -> PullRequest {
         created: s(v, "created_at"),
         head_sha: v.get("head").map(|h| s(h, "sha")).unwrap_or_default(),
         signals: signals("github", v),
+        reviewers: reviewers("github", v),
     }
 }
 
@@ -777,6 +962,7 @@ pub(super) fn gl_mr(v: &Value) -> PullRequest {
         created: s(v, "created_at"),
         head_sha: s(v, "sha"),
         signals: signals("gitlab", v),
+        reviewers: reviewers("gitlab", v),
     }
 }
 
@@ -799,6 +985,7 @@ pub fn bb_pr(v: &Value) -> PullRequest {
         created: s(v, "created_on"),
         head_sha: p(v, "/source/commit/hash"),
         signals: signals("bitbucket", v),
+        reviewers: reviewers("bitbucket", v),
     }
 }
 
@@ -817,6 +1004,7 @@ pub fn bbs_pr(v: &Value) -> PullRequest {
         created: v.get("createdDate").and_then(|d| d.as_i64()).map(iso_from_millis).unwrap_or_default(),
         head_sha: p(v, "/fromRef/latestCommit"),
         signals: signals("bitbucket-server", v),
+        reviewers: reviewers("bitbucket-server", v),
     }
 }
 
@@ -861,6 +1049,7 @@ pub(super) fn azure_pr(v: &Value, f: &ForgeInfo) -> PullRequest {
         created: s(v, "creationDate"),
         head_sha: p(v, "/lastMergeSourceCommit/commitId"),
         signals: signals("azure", v),
+        reviewers: reviewers("azure", v),
     }
 }
 
@@ -1147,6 +1336,58 @@ mod tests {
         assert_eq!(az.signals, Some(PrSignals { approvals: Some(2), changes_requested: Some(1), conflicts: Some(true), ..Default::default() }));
         // GitHub lists no counts: the row stays without signals instead of showing zeros.
         assert_eq!(gh_pr(&json(r#"{"number":1}"#)).signals, None);
+    }
+
+    #[test]
+    fn list_rows_name_reviewers_with_the_state_each_provider_reports() {
+        let json = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+        let states = |p: PullRequest| p.reviewers.map(|list| list.into_iter().map(|r| (r.id, r.login, r.state, r.group)).collect::<Vec<_>>());
+        let gh = gh_pr(&json(r#"{"number":1,"requested_reviewers":[{"id":7,"login":"ann"}],"requested_teams":[{"id":9,"slug":"core","name":"Core"}]}"#));
+        assert_eq!(states(gh), Some(vec![("7".into(), "ann".into(), "requested", false), ("9".into(), "core".into(), "requested", true)]));
+        // A provider that does not list reviewers leaves the field out instead of claiming none.
+        assert_eq!(gh_pr(&json(r#"{"number":1}"#)).reviewers, None);
+        let gl = gl_mr(&json(r#"{"iid":1,"reviewers":[{"id":3,"username":"bob","name":"Bob"}]}"#));
+        assert_eq!(states(gl), Some(vec![("3".into(), "bob".into(), "unknown", false)]));
+        let bb = bb_pr(&json(
+            r#"{"id":1,"participants":[{"role":"REVIEWER","approved":true,"user":{"uuid":"{a}","nickname":"ann"}},{"role":"PARTICIPANT","approved":false,"user":{"uuid":"{p}"}},{"role":"REVIEWER","state":"changes_requested","user":{"uuid":"{b}","nickname":"bob"}}],"reviewers":[{"uuid":"{b}","nickname":"bob"},{"uuid":"{c}","nickname":"cy"}]}"#,
+        ));
+        assert_eq!(
+            states(bb),
+            Some(vec![
+                ("{a}".into(), "ann".into(), "approved", false),
+                ("{b}".into(), "bob".into(), "changes_requested", false),
+                ("{c}".into(), "cy".into(), "requested", false)
+            ])
+        );
+        let bbs = bbs_pr(&json(
+            r#"{"id":1,"reviewers":[{"status":"UNAPPROVED","user":{"id":5,"name":"dee"}},{"status":"NEEDS_WORK","user":{"id":6,"name":"eve"}}]}"#,
+        ));
+        assert_eq!(states(bbs), Some(vec![("5".into(), "dee".into(), "requested", false), ("6".into(), "eve".into(), "changes_requested", false)]));
+        let f = ForgeInfo {
+            kind: "azure".into(),
+            host: String::new(),
+            project: "p/r".into(),
+            remote: "origin".into(),
+            web_url: String::new(),
+            api: String::new(),
+            connection_revision: None,
+            account_login: None,
+            account_id: None,
+        };
+        let az = azure_pr(
+            &json(
+                r#"{"pullRequestId":1,"reviewers":[{"id":"u1","uniqueName":"fay@x","vote":0},{"id":"u2","uniqueName":"gus@x","vote":-5},{"id":"g1","uniqueName":"[p]\\Team","vote":10,"isContainer":true}]}"#,
+            ),
+            &f,
+        );
+        assert_eq!(
+            states(az),
+            Some(vec![
+                ("u1".into(), "fay@x".into(), "requested", false),
+                ("u2".into(), "gus@x".into(), "changes_requested", false),
+                ("g1".into(), "[p]\\Team".into(), "approved", true)
+            ])
+        );
     }
 
     #[test]
@@ -1473,6 +1714,43 @@ fi
         assert_eq!(saved.as_deref(), Some("new-token"), "the forgotten token must not be cached again");
         let again = cached_in(&cache, key, || panic!("the fresh answer is reused")).unwrap();
         assert_eq!(again.token, "new-token");
+    }
+
+    #[test]
+    fn an_older_answer_is_used_at_once_and_read_again_in_the_background() {
+        let cache = parking_lot::Mutex::new(CredentialCache::default());
+        let key = (std::path::PathBuf::from("fixture-repo"), "https://example.invalid/team/repo.git".to_owned());
+        // Ages are given as later moments, so the test never waits and never depends on the
+        // clock or on how long the machine has been running.
+        let saved_at = std::time::Instant::now();
+        let after = |seconds: u64| saved_at + std::time::Duration::from_secs(seconds);
+        let remember = |token: &str| cache.lock().entries.insert(key.clone(), (saved_at, fixture_credential(token)));
+        remember("old-token");
+        assert!(stale_answer(&cache, &key, after(30)).is_none(), "within a minute the answer is simply reused");
+        // Past a minute: used as it is, and exactly one caller starts the refresh.
+        let (credential, refresh) = stale_answer(&cache, &key, after(120)).unwrap();
+        assert_eq!((credential.token.as_str(), refresh), ("old-token", true));
+        assert!(!stale_answer(&cache, &key, after(121)).unwrap().1, "one refresh at a time");
+        refresh_in(&cache, key.clone(), |_| Ok(fixture_credential("new-token")));
+        assert!(stale_answer(&cache, &key, std::time::Instant::now()).is_none(), "the refreshed answer is fresh again");
+        assert_eq!(cached_in(&cache, key.clone(), || panic!("fresh answers are reused")).unwrap().token, "new-token");
+
+        // A refresh that overlapped Forget saved tokens is not kept.
+        remember("old-token");
+        refresh_in(&cache, key.clone(), |_| {
+            invalidate(&cache);
+            Ok(fixture_credential("read-before-forget"))
+        });
+        assert!(cache.lock().entries.is_empty());
+
+        // A failed refresh drops the answer, so the next request asks Git and reports the error.
+        remember("old-token");
+        refresh_in(&cache, key.clone(), |_| Err(GitError::new("Git returned no API credential.")));
+        assert!(cache.lock().entries.is_empty());
+
+        // Older than half an hour: not used; the request reads Git first.
+        remember("old-token");
+        assert!(stale_answer(&cache, &key, after(31 * 60)).is_none());
     }
 
     #[test]

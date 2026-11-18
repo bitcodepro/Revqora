@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mcpNeedsApproval, pushesToTrackedUpstream } from "./mcpAutomatic";
+import { mcpNeedsApproval, pushesToTrackedUpstream, withoutProgress } from "./mcpAutomatic";
 
 describe("MCP approval modes", () => {
   it("preserves review by default and lets Full approve cover deletion", () => {
@@ -34,5 +34,16 @@ describe("MCP approval modes", () => {
     expect(pushesToTrackedUpstream({ remote: "fork" }, "feature", "origin/feature")).toBe(false);
     expect(pushesToTrackedUpstream({}, "feature", null)).toBe(false);
     expect(pushesToTrackedUpstream({}, "feat", "origin/team/feat")).toBe(false);
+  });
+});
+
+describe("MCP Git output", () => {
+  it("leaves out progress lines and keeps the result", () => {
+    const output = ["Enumerating objects: 5, done.", "Counting objects:  20% (1/5)", "Counting objects: 100% (5/5), done.",
+      "Writing objects:  33% (1/3)", "Writing objects: 100% (3/3), 421 bytes | 140.00 KiB/s, done.", "Total 3 (delta 1), reused 0 (delta 0)",
+      "remote: Create pull request for feature:", "   c6af2ac..38df736  feature -> feature"].join("\n");
+    expect(withoutProgress(output).split("\n")).toEqual(["Enumerating objects: 5, done.", "Counting objects: 100% (5/5), done.",
+      "Writing objects: 100% (3/3), 421 bytes | 140.00 KiB/s, done.", "Total 3 (delta 1), reused 0 (delta 0)",
+      "remote: Create pull request for feature:", "   c6af2ac..38df736  feature -> feature"]);
   });
 });

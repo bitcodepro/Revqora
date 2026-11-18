@@ -65,8 +65,13 @@ export async function fastSwitchSmoke({exe,work,check,out}){
       if(url===bridge.convertFileSrc("graph_load","ipc"))counts.graph_load=(counts.graph_load??0)+1;
       const omitSnapshot=active&&url===diffUrl&&omitSnapshotFor&&repoKey(JSON.parse(init.body).repo)===repoKey(omitSnapshotFor);
       const payload=command ? JSON.parse(init.body) : null;
-      const prPage=command==="pr_page" && prFixtures?.find(entry=>repoKey(entry.root)===repoKey(payload.repo));
-      const response=prPage ? new Response(JSON.stringify(prPage.page),{headers:{"content-type":"application/json","Tauri-Response":"ok"}})
+      // Fixtures can change while the gate is installed (window.__prFixtures) and differ by request status.
+      const fixtures=window.__prFixtures??prFixtures;
+      const fixtureFor=repo=>fixtures?.find(entry=>repoKey(entry.root)===repoKey(repo));
+      const prPage=command==="pr_page" && fixtureFor(payload.repo);
+      const forgeKind=url===bridge.convertFileSrc("forge_kind","ipc") && fixtureFor(JSON.parse(init.body).repo);
+      if(forgeKind)return new Response(JSON.stringify("github"),{headers:{"content-type":"application/json","Tauri-Response":"ok"}});
+      const response=prPage ? new Response(JSON.stringify(prPage.pages?.[payload.state]??prPage.page),{headers:{"content-type":"application/json","Tauri-Response":"ok"}})
         : await Reflect.apply(original,window,[input,init]);
       if(omitSnapshot&&response.ok){
         const diff=await response.json();
@@ -223,7 +228,7 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    assert.equal(await firstButton.getAttribute("aria-current"), "true");
    assert.equal(await feature.getAttribute("aria-current"), "true");
    assert.equal(await commitRow("Switch second base").count(), 0);
-   assert.match(await page.getByLabel("History scope").locator("option:checked").textContent(), /Branch context.*feature\/mine/);
+   assert.equal(await page.getByLabel("History scope").inputValue(), "refs/heads/feature/mine");
    assert.equal(git(one, "branch", "--show-current"), "main");
 
    // Both repositories advertise the same PR number and branches. Distinguish
@@ -250,6 +255,51 @@ export async function fastSwitchSmoke({exe,work,check,out}){
    await page.evaluate(() => window.__fastSwitchGate.restore());
    assert.equal(await firstButton.getAttribute("aria-current"), "true");
    assert.equal(await prCenter.getByText("PR from switch-two", { exact: true }).count(), 0);
+
+   // All repositories: a refresh keeps every row visible while its answers are held, updates each
+   // repository as it answers, and never applies answers for an earlier request status.
+   const pagesFor = (suffix) => fixtures.map(({root, page: base}) => ({root, pages: Object.fromEntries(["open", "closed"].map(state => [state, {...base,
+     items: base.items.map(item => ({...item, state, title: `${state === "open" ? "PR" : "Closed PR"} from ${path.basename(root)}${suffix}`}))}]))}));
+   await page.evaluate(value => { window.__prFixtures = value; }, pagesFor(""));
+   assert(await installGate(["pr_page"], null, pagesFor("")));
+   await page.getByLabel("Pull request scope").selectOption("all");
+   const combined = page.getByRole("region", { name: "Pull requests across repositories", exact: true });
+   await combined.getByRole("combobox", { name: "Authors across repositories", exact: true }).selectOption("all");
+   const releaseAll = () => page.evaluate(() => { for (const entry of window.__fastSwitchGate.held.splice(0)) entry.release(); });
+   await page.waitForFunction(() => window.__fastSwitchGate.held.length >= 2);
+   await releaseAll();
+   const listed = combined.getByRole("listbox", { name: "Pull requests", exact: true }).getByRole("option");
+   const row = title => listed.filter({ hasText: title });
+   await row("PR from switch-one").waitFor();
+   await row("PR from switch-two").waitFor();
+   await page.evaluate(value => { window.__prFixtures = value; }, pagesFor(" (refreshed)"));
+   await combined.getByRole("button", { name: "Refresh all pull requests", exact: true }).first().click();
+   await page.waitForFunction(() => window.__fastSwitchGate.held.length >= 2);
+   for (const name of ["switch-one", "switch-two"]) assert.equal(await row(`PR from ${name}`).getAttribute("data-pr-stale"), "true", `${name} stays visible, marked as earlier`);
+   await combined.getByRole("status").filter({ hasText: "earlier results stay" }).waitFor();
+   await page.evaluate(() => { const held = window.__fastSwitchGate.held; const index = held.findIndex(entry => entry.repo.endsWith("switch-one")); held.splice(index, 1)[0].release(); });
+   await row("PR from switch-one (refreshed)").waitFor();
+   assert.equal(await row("PR from switch-one (refreshed)").getAttribute("data-pr-stale"), null);
+   assert.equal(await row("PR from switch-two").getAttribute("data-pr-stale"), "true", "switch-two has not answered yet");
+   await releaseAll();
+   await row("PR from switch-two (refreshed)").waitFor();
+   await combined.getByRole("status").filter({ hasText: /^Updated / }).waitFor();
+   // Another status while the open answers are held: they are dropped, not shown as closed ones.
+   await combined.getByRole("button", { name: "Refresh all pull requests", exact: true }).first().click();
+   await page.waitForFunction(() => window.__fastSwitchGate.held.length >= 2);
+   await combined.getByRole("combobox", { name: "Request status across repositories", exact: true }).selectOption("closed");
+   assert.equal(await listed.count(), 0, "another status starts an empty list");
+   // The held open answers arrive after the switch; the closed scan starts once they are done.
+   await releaseAll();
+   await page.waitForFunction(() => window.__fastSwitchGate.held.length >= 2);
+   assert.equal(await listed.count(), 0, "answers for the earlier status were applied");
+   await releaseAll();
+   await row("Closed PR from switch-one (refreshed)").waitFor();
+   await row("Closed PR from switch-two (refreshed)").waitFor();
+   assert.equal(await listed.count(), 2);
+   await page.evaluate(() => { window.__fastSwitchGate.restore(); delete window.__prFixtures; });
+   await combined.getByRole("combobox", { name: "Request status across repositories", exact: true }).selectOption("open");
+   await page.getByLabel("Pull request scope").selectOption("repository");
 
    const nested = path.join(one, "stale-nested");
    fs.mkdirSync(nested);

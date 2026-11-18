@@ -8,7 +8,7 @@ import { create } from "zustand";
 import { api, errorMessage } from "./api";
 import { useSettings } from "./settings";
 import { toast, useUi } from "./ui";
-import type { GraphSummary, LayersState, RefsSnapshot, RepoExtras, RepoInfo, StatusSummary } from "./types";
+import type { BranchTracking, GraphSummary, LayersState, RefsSnapshot, RepoExtras, RepoInfo, StatusSummary } from "./types";
 import { WORKTREE } from "./types";
 import { setOperationHooks } from "./operationClient";
 
@@ -45,7 +45,6 @@ export interface RepoTab {
   graphError?: string | null;
   graphHasWorktree: boolean;
   branchFilter: string | null;
-  branchContext?: string | null;
   viewedBranch?: string | null;
   graphLimit: number;
   graphScope?: string;
@@ -317,7 +316,6 @@ function persistTabs() {
 
 function includeWorkingChanges(tab: RepoTab, dirty: boolean) {
   const branch = tab.info?.head?.branch;
-  if (tab.branchContext) return dirty && !!branch && tab.branchContext === `refs/heads/${branch}`;
   return dirty && (!tab.branchFilter || tab.branchFilter === CURRENT_HISTORY_BRANCH || !!branch && tab.branchFilter === `refs/heads/${branch}`);
 }
 
@@ -545,17 +543,17 @@ async function refreshOnce(root: string, parts: Parts) {
   let graphP: Promise<void> | null = null;
   let requestedHead: string | null | undefined;
   const refreshHistory = (tab: RepoTab, dirty?: boolean) => {
-    requestedHead = tab.branchFilter === CURRENT_HISTORY_BRANCH && !tab.branchContext ? historyHead(tab) : undefined;
+    requestedHead = tab.branchFilter === CURRENT_HISTORY_BRANCH ? historyHead(tab) : undefined;
     graphP = loadGraph(root, dirty);
   };
   if (canLoadGraph() && parts.graph && !before.graph) refreshHistory(before, initialDirty);
   void refsP.then(refs => {
     if (!refs || !current()) return;
     const state = useRepos.getState(), tab = state.tabs[root];
-    const scope = tab.branchContext ?? tab.branchFilter;
+    const scope = tab.branchFilter;
     const missing = scope?.startsWith("refs/") && !refs.local.some(branch => branch.fullName === scope) && !refs.remote.some(branch => branch.fullName === scope);
     const rebuild = missing && canLoadGraph();
-    state.patch(root, missing ? { refs, branchFilter: CURRENT_HISTORY_BRANCH, branchContext: null, viewedBranch: null, selected: null, multi: [], historyJump: null, ...(rebuild ? { graph: null } : {}) } : { refs });
+    state.patch(root, missing ? { refs, branchFilter: CURRENT_HISTORY_BRANCH, viewedBranch: null, selected: null, multi: [], historyJump: null, ...(rebuild ? { graph: null } : {}) } : { refs });
     if (rebuild) refreshHistory(state.tabs[root]);
   }).catch(() => {});
   for (const p of [infoP, refsP]) p.catch(() => {}); // rejections are handled below
@@ -592,7 +590,7 @@ async function refreshOnce(root: string, parts: Parts) {
         // The fast initial graph can start before repo_info observes a checkout.
         // Its rows belong to the old scope, even if the Git command saw the new HEAD.
         const headScopeChanged = requestedHead !== undefined && latest.branchFilter === CURRENT_HISTORY_BRANCH &&
-          !latest.branchContext && requestedHead !== historyHead(latest);
+          requestedHead !== historyHead(latest);
         if (headScopeChanged || (parts.revalidate && !graphP)) refreshHistory(latest, dirty);
       }
     }
@@ -669,8 +667,27 @@ export async function loadEntireHistory(root: string) {
 
 const historyHead = (tab: RepoTab) => tab.info?.head.branch ?? tab.info?.head.oid ?? null;
 
-export function graphHistoryScope(tab: RepoTab, primary: string | undefined, showIncoming: boolean) {
-  const scope = tab.branchContext ? { reference: tab.branchContext, primary: primary ?? null } : tab.branchFilter;
+/**
+ * History after switching to local branch `branch` (from `target`, a remote branch when `kind` is
+ * "remote"). A history of the branch just checked out becomes Current branch, where its incoming
+ * commits are shown, and its highlight is cleared: the whole current line would otherwise stay
+ * tinted. Views of other branches stay as they are.
+ */
+export function historyAfterSwitch(tab: Pick<RepoTab, "branchFilter" | "viewedBranch">, branch: string, kind: "local" | "remote", target: string): Partial<RepoTab> {
+  const switched = (reference: string | null | undefined) => !!reference && (reference === `refs/heads/${branch}` || kind === "remote" && reference === `refs/remotes/${target}`);
+  if (switched(tab.branchFilter)) return { branchFilter: CURRENT_HISTORY_BRANCH, viewedBranch: null };
+  return switched(tab.viewedBranch) ? { viewedBranch: null } : {};
+}
+
+/** The branch whose history the tab shows when it is not the checked-out one, else null. */
+export function shownHistoryBranch(tab: Pick<RepoTab, "branchFilter" | "viewedBranch"> | undefined): string | null {
+  if (!tab) return null;
+  if (tab.viewedBranch) return tab.viewedBranch;
+  return tab.branchFilter && tab.branchFilter !== CURRENT_HISTORY_BRANCH ? tab.branchFilter : null;
+}
+
+export function graphHistoryScope(tab: RepoTab, showIncoming: boolean) {
+  const scope = tab.branchFilter;
   return { scope, key: JSON.stringify([scope, showIncoming, scope === CURRENT_HISTORY_BRANCH ? historyHead(tab) : null]) };
 }
 
@@ -681,8 +698,7 @@ async function loadGraphOnce(root: string, includeWorktree: boolean | undefined,
   const dirty = includeWorkingChanges(tab, includeWorktree ?? (!!tab.status && tab.status.files.length > 0));
   const settings = useSettings.getState();
   const showIncoming = !settings.hideIncomingByRepo[root];
-  const primary = tab.branchContext ? settings.primaryBranchByRepo[repositoryKey(root)] : undefined;
-  const { scope, key: scopeKey } = graphHistoryScope(tab, primary, showIncoming);
+  const { scope, key: scopeKey } = graphHistoryScope(tab, showIncoming);
   const limit = Math.max(tab.graphScope === scopeKey ? tab.graphLimit : INITIAL_GRAPH_COMMITS, minimumCommits);
   store.patch(root, { graphLoading: true, graphError: null });
   try {
@@ -749,11 +765,30 @@ export function repositorySidebarStatus(tab: RepoTab | undefined) {
 
 /**
  * Commits of the current branch that Push would send: ahead of its upstream, or, for a branch
- * without an upstream, commits absent from every fetched remote branch (when branches are loaded).
+ * without an upstream, commits absent from every fetched remote branch. An open repository
+ * answers from its own status; `tracking` (refs only, see repositoryTracking.ts) covers
+ * repositories that are closed or still loading, and the unpublished count of a branch whose
+ * list of branches is not loaded.
  */
-export function repositoryOutgoing(tab: RepoTab | undefined): number {
+export function repositoryOutgoing(tab: RepoTab | undefined, tracking?: BranchTracking): number {
   const status = repositorySidebarStatus(tab);
-  if (!status?.branch) return 0;
+  if (!status) return tracking?.branch ? tracking.upstream ? tracking.ahead : tracking.unpublished ?? 0 : 0;
+  if (!status.branch) return 0;
   if (status.upstream) return status.ahead;
-  return tab?.refs?.local.find(branch => branch.name === status.branch)?.unpublished ?? 0;
+  const local = tab?.refs?.local.find(branch => branch.name === status.branch);
+  if (local) return local.unpublished ?? 0;
+  return tracking && tracking.branch === status.branch && tracking.oid === status.oid ? tracking.unpublished ?? 0 : 0;
+}
+
+/** Whether a repository has staged, unstaged or untracked changes: its own status when open,
+ *  otherwise the change count read for repositories that are not open. */
+export function repositoryHasChanges(tab: RepoTab | undefined, changes?: number): boolean {
+  const status = repositorySidebarStatus(tab);
+  return status ? status.files.length > 0 : (changes ?? 0) > 0;
+}
+
+/** Commits the current branch's upstream has and the branch does not (see repositoryOutgoing). */
+export function repositoryIncoming(tab: RepoTab | undefined, tracking?: BranchTracking): number {
+  const status = repositorySidebarStatus(tab);
+  return status ? status.behind : tracking?.behind ?? 0;
 }

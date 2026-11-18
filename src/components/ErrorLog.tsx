@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { Bug, Copy, RefreshCw, Trash2 } from "lucide-react";
+import { Bug, ClipboardCopy, Copy, RefreshCw, Trash2 } from "lucide-react";
 import { errorMessage } from "../lib/api";
 import { clearErrorLog, readErrorLog, type ErrorLogEntry } from "../lib/errorLog";
+import { errorLogLines } from "../lib/diagnostics";
+import { diagnosticsDialog } from "./Diagnostics";
 import { shortcutTitle } from "../lib/shortcuts";
 import { copyText, showDialog } from "../lib/ui";
 import { confirmDialog } from "./dialogs";
@@ -74,6 +76,8 @@ function ErrorLog({ close }: { close: () => void }) {
             <strong>{entry.source}</strong>
             <time dateTime={new Date(entry.timestamp).toISOString()}>{new Date(entry.timestamp).toLocaleString()}</time>
             <span className="muted">{entry.code}{entry.count > 1 ? ` · ×${entry.count}` : ""}</span>
+            <button type="button" className="icon-btn sm" aria-label="Copy diagnostics" title="Copy diagnostics (versions, platform, no secrets)…"
+              onClick={() => void diagnosticsDialog({ source: "Error log", lines: errorLogLines(entry) })}><ClipboardCopy size={14} /></button>
             <button type="button" className="icon-btn sm" aria-label="Copy error" title="Copy error"
               onClick={() => void copyText(formatEntry(entry), "Error copied")}><Copy size={14} /></button>
           </header>

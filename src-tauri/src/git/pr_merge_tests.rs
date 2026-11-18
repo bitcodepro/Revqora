@@ -38,3 +38,17 @@ fn unknown_check_states_are_never_green() {
     assert_eq!(checks::status("cancelled"), "cancelled");
     assert_eq!(checks::status("succeeded"), "success");
 }
+
+#[test]
+fn github_reports_requested_changes_and_conflicts_for_the_attention_queue() {
+    use serde_json::json;
+    let facts = super::providers::github_review_facts;
+    // A branch without required reviews: reviewDecision is null, the latest reviews say it.
+    let open = json!({"mergeable":"MERGEABLE","reviewDecision":null,"latestOpinionatedReviews":{"nodes":[{"state":"APPROVED"},{"state":"CHANGES_REQUESTED"}]}});
+    assert_eq!(facts(&open), (Some(true), Some(false)));
+    let decided = json!({"mergeable":"CONFLICTING","reviewDecision":"CHANGES_REQUESTED"});
+    assert_eq!(facts(&decided), (Some(true), Some(true)));
+    let approved = json!({"mergeable":"UNKNOWN","reviewDecision":"APPROVED","latestOpinionatedReviews":{"nodes":[{"state":"APPROVED"}]}});
+    assert_eq!(facts(&approved), (Some(false), None));
+    assert_eq!(facts(&json!({"reviewDecision":null})), (None, None), "not reported stays unknown");
+}

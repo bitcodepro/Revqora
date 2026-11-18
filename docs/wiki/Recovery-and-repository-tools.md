@@ -17,6 +17,8 @@ Open the relevant entry and read its command, phase, timing, result and error. A
 
 Use the log to distinguish “not started,” “failed,” “partially completed” and “remote result uncertain.” A partial error does not mean every earlier step was rolled back.
 
+An entry whose action saved a recovery checkpoint shows **Open checkpoint**. An entry marked **Outcome unknown** was still running when the app closed or crashed: open its checkpoint to see which saved files differ now.
+
 ## Undo Center and checkpoints
 
 Select a recovery point and inspect what it contains: reference tips, Git-visible workspace/index data, or a more complete worktree-removal snapshot depending on the operation.
@@ -24,6 +26,25 @@ Select a recovery point and inspect what it contains: reference tips, Git-visibl
 Choose the restoration action offered for that checkpoint and review the destination/state. A local branch restored to a saved SHA is still local; recreating a remote branch needs a separate authorized publication.
 
 Recovery coverage is operation-specific. A saved commit pointer cannot reconstruct uncommitted content that was never captured. Keep important work committed or otherwise backed up before relying on a destructive operation.
+
+### After a crash or restart
+
+Every checkpoint saved for an action keeps that action's result beside it: **Succeeded**, **Needs attention**, **Failed** (with the error), or **Interrupted** when the app stopped before the action finished. **Show in Operation log** opens the matching log entry.
+
+**Saved files** compares every saved path with the working tree now:
+
+| Label | Meaning | Restore |
+| --- | --- | --- |
+| Matches the saved copy | Nothing to restore. | — |
+| Changed by the operation | The file is still as the action left it. | Replaced by the saved copy. The current version is saved in a new checkpoint first. |
+| Changed after the operation | Someone edited it after the action. | Kept as it is. The saved copy is written beside it as `name.recovered`. |
+| Differs; needs a manual check | The action was interrupted, so what it changed is unknown. | Kept as it is, with the saved copy beside it. |
+
+Use **Compare** to see the saved copy against the file now. Then tick the files and choose **Restore selected**. The result names every restored file and every copy written beside a file. If the current versions cannot be saved first, no file is replaced: each gets its copy beside it, and the reason is shown.
+
+Each restore is logged beside the checkpoint. If the app stops during a restore, **Last restore did not finish** lists the files that were done and the ones to check by hand.
+
+Example: Pull is waiting for a slow server and the app crashes. After the restart, **Operation log** shows Pull as **Outcome unknown**. **Open checkpoint** shows **Interrupted**, and every saved file still **Matches the saved copy**, so Git changed nothing.
 
 ## Deleted branches and reflog
 

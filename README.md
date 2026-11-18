@@ -380,7 +380,10 @@ set your author so Revqora can identify your own comments.
 
 In **Settings → Behaviour**, set **PR activity check** and **Git auto-fetch**
 independently. Both default to five minutes and can be turned off. Auto-fetch
-updates remote refs for open repositories so you can see incoming commits.
+updates remote refs so you can see incoming commits: the first round runs 15
+seconds after start, four repositories at a time, and by default also covers
+library repositories that are not open (**Also fetch repositories that are not
+open**).
 
 Integrations cover GitHub/Enterprise, GitLab, Azure DevOps, Bitbucket Cloud and
 Bitbucket Server/Data Center. Capabilities differ by provider and permissions:
