@@ -1134,12 +1134,40 @@ fn delete_locked(root: &Path, id: &str) -> GitResult<()> {
     fs::remove_dir_all(target)?;
     Ok(())
 }
+type PinList = std::sync::Mutex<Vec<(PathBuf, String)>>;
+fn pinned() -> &'static PinList {
+    static P: std::sync::OnceLock<PinList> = std::sync::OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
+/// Keeps a checkpoint out of retention pruning while it is being read from, for example while a
+/// restore first saves the current files in a new checkpoint. `root` must be canonical.
+pub(super) struct Pin(PathBuf, String);
+pub(super) fn pin(root: &Path, id: &str) -> Pin {
+    pinned().lock().unwrap_or_else(|e| e.into_inner()).push((root.to_path_buf(), id.to_owned()));
+    Pin(root.to_path_buf(), id.to_owned())
+}
+impl Drop for Pin {
+    fn drop(&mut self) {
+        let mut list = pinned().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = list.iter().position(|(root, id)| *root == self.0 && *id == self.1) {
+            list.remove(i);
+        }
+    }
+}
+fn is_pinned(root: &Path, id: &str) -> bool {
+    pinned().lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(r, i)| r == root && i == id)
+}
+
 fn prune_locked(root: &Path, keep: Option<&str>) -> GitResult<()> {
     let items = list(root)?.checkpoints;
     let mut bytes = 0;
     for (i, item) in items.iter().enumerate() {
         bytes += item.bytes;
-        if Some(item.id.as_str()) != keep && (i >= MAX_COUNT || bytes > MAX_TOTAL || item.created_at < crate::journal::now() - RETENTION) {
+        if Some(item.id.as_str()) != keep
+            && !is_pinned(root, &item.id)
+            && (i >= MAX_COUNT || bytes > MAX_TOTAL || item.created_at < crate::journal::now() - RETENTION)
+        {
             delete_locked(root, &item.id)?;
         }
     }

@@ -809,6 +809,8 @@ export interface PrAttention {
   ci: "failed" | "pending" | "passed" | "none"; failedChecks: string[];
   merge: "ready" | "blocked" | "unknown"; blockers: string[];
   reviewers?: PrReviewer[];
+  /** Server facts for the current head; absent when the provider does not report them. */
+  changesRequested?: boolean; conflicts?: boolean;
 }
 export interface PrSignals { comments?: number; approvals?: number; changesRequested?: number; conflicts?: boolean }
 

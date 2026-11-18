@@ -73,9 +73,13 @@ export function attentionReasons(pull: PullRequest, viewer: PrAuthor | null, fac
     else if (review?.state === "unknown") { const reason = notRead(facts, "Your review state"); if (reason) reasons.push(reason); }
     return reasons;
   }
+  // The provider read for the current head wins over the list; GitHub and GitLab lists do not
+  // report requested changes at all.
   const s = pull.signals;
-  if (s?.changesRequested) reasons.push({ kind: "changes", text: `Changes requested by ${plural(s.changesRequested, "reviewer", "reviewers")}` });
-  if (s?.conflicts) reasons.push({ kind: "changes", text: `Merge conflicts with ${pull.base}` });
+  const changes = value?.changesRequested ?? !!s?.changesRequested;
+  const conflicts = value?.conflicts ?? !!s?.conflicts;
+  if (changes) reasons.push({ kind: "changes", text: s?.changesRequested ? `Changes requested by ${plural(s.changesRequested, "reviewer", "reviewers")}` : "Changes requested" });
+  if (conflicts) reasons.push({ kind: "changes", text: `Merge conflicts with ${pull.base}` });
   if (!value) {
     const reason = notRead(facts, "CI and merge status");
     if (reason) reasons.push(reason);
@@ -83,7 +87,7 @@ export function attentionReasons(pull: PullRequest, viewer: PrAuthor | null, fac
   }
   if (value.ci === "failed") reasons.push({ kind: "ci", text: value.failedChecks.length ? `CI failed: ${value.failedChecks.join(", ")}` : "CI failed" });
   if (value.merge === "ready") reasons.push({ kind: "merge", text: "Ready to merge: the server reports nothing blocking" });
-  else if (value.merge === "unknown" && !pull.draft && value.ci !== "failed" && !s?.conflicts && !s?.changesRequested) {
+  else if (value.merge === "unknown" && !pull.draft && value.ci !== "failed" && !conflicts && !changes) {
     reasons.push({ kind: "check", text: "Merge readiness is not reported by this provider's API. Check it on the server." });
   }
   return reasons;

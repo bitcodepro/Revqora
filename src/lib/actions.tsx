@@ -120,7 +120,9 @@ export function handleOutcome(root: string, out: OpOutcome | undefined, what: st
   switch (out.status) {
     case "conflicts":
       st.patch(root, { view: "changes", changeSel: out.conflicts[0] ? { kind: "conflict", path: out.conflicts[0] } : null });
-      toast.warning(`${what}: ${plural(out.conflicts.length, "conflict")}`, "Resolve them in the Changes view, then continue — or abort to roll everything back.");
+      // Restoring set-aside changes can conflict after the operation itself finished: nothing is left to continue or abort.
+      if ((st.tabs[root]?.info?.state.kind ?? "none") === "none") toast.warning(`${what}: ${plural(out.conflicts.length, "conflict")} in your restored changes`, out.message.trim() || "Resolve the conflicted files in the Changes view. A copy of your changes is kept in Stashes.");
+      else toast.warning(`${what}: ${plural(out.conflicts.length, "conflict")}`, "Resolve them in the Changes view, then continue — or abort to roll everything back.");
       break;
     case "pending":
       st.patch(root, { view: "changes" });

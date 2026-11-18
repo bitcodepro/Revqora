@@ -472,16 +472,18 @@ async function prCenterRefreshes(app, repos, runs, expected) {
       const button = () => region.querySelector('button[aria-label="Refresh all pull requests"]');
       const began = performance.now();
       button().click();
-      let started = false, fewest = count();
+      let started = false, finished = false, fewest = count();
       while (performance.now() - began < 110_000) {
         await new Promise(resolve => setTimeout(resolve, 10));
         fewest = Math.min(fewest, count());
         if (button().disabled) started = true;
-        else if (started) break;
+        else if (started) { finished = true; break; }
       }
-      return { total: performance.now() - began, fewest, rows: count(), started };
+      return { total: performance.now() - began, fewest, rows: count(), started, finished };
     });
     if (!measured.started) throw new Error("The PR Center refresh did not start");
+    // A refresh keeps the earlier rows, so the row count alone cannot tell a finished refresh from a hung one.
+    if (!measured.finished) throw new Error(`The PR Center refresh did not finish within 110 s (run ${run + 1})`);
     if (measured.rows !== expected) throw new Error(`PR Center refresh ended with ${measured.rows} of ${expected} rows`);
     samples.push({ total: measured.total, fewestVisible: measured.fewest });
   }

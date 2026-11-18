@@ -284,7 +284,7 @@ export function OpBanner({ tab, onResolve }: { tab: RepoTab; onResolve: (path: s
     </button>
   );
   const resolveBtn = !ok && (
-    <button className="btn warn" onClick={() => onResolve(conflicts[0].path)}>
+    <button className="btn primary" onClick={() => onResolve(conflicts[0].path)}>
       <Swords size={14} /> Resolve {plural(conflicts.length, "conflict")}
     </button>
   );

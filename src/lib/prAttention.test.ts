@@ -45,6 +45,17 @@ describe("Needs attention reasons", () => {
     expect(attentionReasons(mine(4), me, facts(4))).toEqual([]);
   });
 
+  it("uses the server's answer where the list does not report requested changes (GitHub, GitLab)", () => {
+    // GitHub's list has comment counts only; the readiness read for the head says changes were requested.
+    const github = mine(7, { signals: { comments: 3 } });
+    const blocked = facts(7, { blockers: ["Required reviews are not satisfied."], changesRequested: true, conflicts: false });
+    expect(attentionReasons(github, me, blocked)).toEqual([{ kind: "changes", text: "Changes requested" }]);
+    expect(matchesAttention(attentionReasons(github, me, blocked), "changes")).toBe(true);
+    expect(attentionReasons(mine(7), me, facts(7, { conflicts: true }))).toEqual([{ kind: "changes", text: "Merge conflicts with main" }]);
+    // The answer for the current head wins over an older list count.
+    expect(attentionReasons(mine(7, { signals: { changesRequested: 1 } }), me, facts(7, { changesRequested: false }))).toEqual([]);
+  });
+
   it("never treats an unread or outdated status as fine", () => {
     expect(kinds(attentionReasons(mine(5), me))).toEqual(["check"]);
     expect(attentionReasons(mine(5), me, { error: "Rate limited" })).toEqual([{ kind: "check", text: "CI and merge status unavailable: Rate limited" }]);

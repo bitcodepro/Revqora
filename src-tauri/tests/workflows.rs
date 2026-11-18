@@ -31,6 +31,40 @@ fn pull_fixture() -> (Repo, Repo) {
 }
 
 #[test]
+fn pull_sets_local_changes_aside_and_brings_them_back_in_every_mode() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        // The incoming commit touches the file the user is editing, in another place.
+        let (local, remote) = pull_fixture();
+        remote.write("notes.txt", "one\ntwo\nthree\nfour\nfive\n");
+        remote.commit_all("notes");
+        ops::pull(local.p(), mode, |_| {}).unwrap();
+        remote.write("notes.txt", "ONE\ntwo\nthree\nfour\nfive\n");
+        let theirs = remote.commit_all("remote edit");
+        local.write("notes.txt", "one\ntwo\nthree\nfour\nfive, my unfinished line\n");
+        local.write("staged.txt", "staged\n");
+        local.git(&["add", "staged.txt"]);
+        let out = ops::pull(local.p(), mode, |_| {}).unwrap();
+        assert!(matches!(out.status.as_str(), "done" | "fastForward"), "{mode}: {out:?}");
+        assert_eq!(local.git(&["rev-parse", "HEAD"]).trim(), theirs, "{mode}: pulled");
+        assert_eq!(local.read("notes.txt"), "ONE\ntwo\nthree\nfour\nfive, my unfinished line\n", "{mode}: edit restored");
+        assert_eq!(local.git(&["show", ":staged.txt"]), "staged\n", "{mode}: staging restored");
+        assert!(local.git(&["stash", "list"]).is_empty(), "{mode}: the saved copy is dropped once restored");
+        assert!(out.message.contains("set aside during the pull and restored"), "{mode}: {out:?}");
+
+        // A conflicting edit is restored with conflict markers and its named copy is kept.
+        let (local, remote) = pull_fixture();
+        remote.write("base.txt", "remote version\n");
+        remote.commit_all("remote edit");
+        local.write("base.txt", "my version\n");
+        let out = ops::pull(local.p(), mode, |_| {}).unwrap();
+        assert_eq!(out.status, "conflicts", "{mode}: {out:?}");
+        assert_eq!(out.conflicts, vec!["base.txt".to_string()], "{mode}");
+        assert!(local.read("base.txt").contains("my version"), "{mode}: the edit is in the conflict");
+        assert!(local.git(&["stash", "list"]).contains("Revqora: changes on main saved before pull"), "{mode}: named copy kept");
+    }
+}
+
+#[test]
 fn pull_reconciles_a_deleted_upstream_without_merging_another_branch() {
     for mode in ["ff-only", "merge", "rebase"] {
         let (local, remote) = pull_fixture();

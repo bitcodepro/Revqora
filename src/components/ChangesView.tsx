@@ -598,7 +598,7 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
                 "Conflicts",
                 conflicts.length,
                 visibleConflicts.length,
-                <button className="btn sm warn" onClick={() => onOpenConflict(visibleConflicts[0].path)}>
+                <button className="btn sm resolve-btn" onClick={() => onOpenConflict(visibleConflicts[0].path)}>
                   <Swords size={12} /> Resolve
                 </button>,
               )}

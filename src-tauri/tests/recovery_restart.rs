@@ -182,6 +182,39 @@ fn a_restore_the_app_did_not_finish_shows_which_files_were_done() {
     assert!(!last.finished);
     assert_eq!(last.restored, ["draft.txt"]);
     assert_eq!(last.not_finished, ["local.env"]);
+
+    // After the restart the user restores the rest: the cut record is dropped and the new
+    // restore is the one shown. (The log was cut by hand above; on disk the file is still as
+    // the operation left it, as after a real crash before its write.)
+    repo.write("local.env", "SECRET=from git\n");
+    let again = recovery::restore_paths(repo.p(), &id, &["local.env".into()]).unwrap();
+    assert_eq!(again.restored, ["local.env"]);
+    assert_eq!(repo.read("local.env"), "SECRET=mine\n");
+    let last = recovery::files(repo.p(), &id).unwrap().last_restore.unwrap();
+    assert!(last.finished && last.not_finished.is_empty(), "{last:?}");
+    assert_eq!(last.restored, ["local.env"]);
+    assert!(fs::read_to_string(&log).unwrap().lines().all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok()), "no fragment is left in the log");
+}
+
+#[test]
+fn restoring_from_the_oldest_checkpoint_at_the_retention_limit_keeps_that_checkpoint() {
+    let repo = Repo::new();
+    let (result, id) = reset(&repo, || overwrite_both(&repo));
+    result.unwrap();
+    let id = id.unwrap();
+    // Fill the store up to its limit of 100, so the restore's safety copy is checkpoint 101.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    while recovery::list(repo.p()).unwrap().checkpoints.len() < 100 {
+        recovery::create(repo.p(), "test_fill", "Filler", false, false).unwrap();
+    }
+    assert_eq!(recovery::list(repo.p()).unwrap().checkpoints.last().map(|c| c.id.as_str()), Some(id.as_str()), "the reset checkpoint is the oldest");
+    let outcome = recovery::restore_paths(repo.p(), &id, &["draft.txt".into(), "local.env".into()]).unwrap();
+    assert_eq!(outcome.restored, ["draft.txt", "local.env"], "{outcome:?}");
+    assert!(outcome.checkpoint.is_some() && outcome.checkpoint_error.is_none(), "{outcome:?}");
+    assert_eq!(repo.read("draft.txt"), "my uncommitted draft\n");
+    assert_eq!(repo.read("local.env"), "SECRET=mine\n");
+    let last = recovery::files(repo.p(), &id).expect("the source checkpoint survives its own restore").last_restore.unwrap();
+    assert!(last.finished, "{last:?}");
 }
 
 #[test]

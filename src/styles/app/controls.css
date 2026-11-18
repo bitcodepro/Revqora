@@ -55,6 +55,10 @@
   border-color: transparent;
   color: #1a1404;
 }
+/* Opens conflict resolution: a standard button whose icon carries the conflict colour. */
+.btn.resolve-btn svg {
+  color: var(--amber);
+}
 .btn.ghost {
   background: transparent;
   border-color: transparent;

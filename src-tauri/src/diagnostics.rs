@@ -46,6 +46,25 @@ fn is_file_content(line: &str) -> bool {
     ["diff --git ", "@@ ", "+++ ", "--- ", "Binary files "].iter().any(|prefix| trimmed.starts_with(prefix))
 }
 
+/// Lines a diff goes on with once it started: context, added and removed lines, and the
+/// extended headers Git writes between files.
+fn continues_file_content(line: &str) -> bool {
+    const HEADERS: [&str; 11] = [
+        "index ",
+        "new file mode",
+        "deleted file mode",
+        "old mode",
+        "new mode",
+        "similarity index",
+        "dissimilarity index",
+        "rename from",
+        "rename to",
+        "copy from",
+        "copy to",
+    ];
+    line.starts_with([' ', '+', '-', '\\']) || is_file_content(line) || HEADERS.iter().any(|h| line.trim_start().starts_with(h))
+}
+
 pub fn report(input: &Input, environment: &Environment) -> String {
     let mut lines = vec![
         "Revqora diagnostics report".to_owned(),
@@ -57,17 +76,19 @@ pub fn report(input: &Input, environment: &Environment) -> String {
         String::new(),
     ];
     let mut omitted = false;
+    // Once a diff starts, every following line that continues it is file content, also when
+    // the caller passed each line of a message as its own entry. A blank line or a line that
+    // is not diff syntax ends it.
+    let mut in_block = false;
     for entry in &input.lines {
         // Redact the whole entry first: a private key spans several lines.
         let entry = shorten_home(&redact::text(entry), environment.home.as_deref());
-        // Once a diff starts, the rest of the entry up to a blank line is file content.
-        let mut in_block = false;
         for line in entry.lines() {
             if is_file_content(line) {
                 in_block = true;
             }
             if in_block {
-                if line.trim().is_empty() {
+                if line.trim().is_empty() || !continues_file_content(line) {
                     in_block = false;
                 } else {
                     omitted = true;
@@ -145,6 +166,26 @@ mod tests {
             assert!(!text.contains(secret), "{secret} leaked:\n{text}");
         }
         assert!(text.contains("page=2") && text.contains("After the diff") && text.contains("[file contents omitted]"), "{text}");
+    }
+
+    #[test]
+    fn a_diff_split_into_one_entry_per_line_is_omitted_up_to_the_next_ordinary_line() {
+        // The Error log passes every line of a message as its own entry.
+        let lines = [
+            "Message:",
+            "diff --git a/private.txt b/private.txt",
+            "index 1234567..89abcde 100644",
+            "@@ -1,2 +1,2 @@",
+            " unchanged confidential context",
+            "-old confidential text",
+            "+new confidential text",
+            "\\ No newline at end of file",
+            "Operation: Commit",
+        ];
+        let input = Input { source: "Error log".into(), lines: lines.iter().map(|l| l.to_string()).collect() };
+        let text = report(&input, &environment());
+        assert!(!text.contains("confidential") && !text.contains("private.txt"), "{text}");
+        assert!(text.contains("Message:") && text.contains("Operation: Commit") && text.contains("[file contents omitted]"), "{text}");
     }
 
     #[test]

@@ -45,7 +45,7 @@ const page = (items: PullRequest[], nextCursor: string | null = null): Page => (
 async function scan(roots: string[], start: Record<string, RepositoryRequests> = {}, current = () => true, parallel?: number) {
   const groups: Record<string, RepositoryRequests> = { ...start };
   const snapshots: Record<string, RepositoryRequests>[] = [];
-  const earlier = new Map(Object.entries(start).map(([root, group]) => [root, group.items]));
+  const earlier = new Map(Object.entries(start).map(([root, group]) => [root, { scope: group.scope, items: group.items }]));
   await scanPullRequests(roots, "open", earlier, current, (root, change) => {
     groups[root] = change(groups[root] ?? { forge: null, scope: "", author: null, items: [] });
     snapshots.push(structuredClone(groups));
@@ -91,6 +91,18 @@ describe("refreshing pull requests across repositories", () => {
     const fixed = (await scan(["/repo"], seedGroups({ "/repo": failed }, ["/repo"]))).groups["/repo"];
     expect(fixed).toMatchObject({ notice: undefined, stale: false });
     expect(fixed.items.map(p => p.number)).toEqual([2]);
+  });
+
+  it("never brings back rows of another project or account on a later page, even after a page error", async () => {
+    // The rows were read for another account; the refresh now reads as alice (viewer 1).
+    const start = seedGroups({ "/repo": { forge, scope: "earlier account", author: null, items: [titled(7, "other 7"), titled(8, "other 8")] } }, ["/repo"]);
+    for (const second of [() => Promise.resolve(page([titled(2)])), () => Promise.reject(new Error("Page 2 could not be loaded."))]) {
+      api.prPage.mockReset().mockResolvedValueOnce(page([titled(1)], "p2")).mockImplementationOnce(second);
+      const { groups, snapshots } = await scan(["/repo"], start);
+      for (const shown of snapshots) expect(shown["/repo"].items.map(p => p.number)).not.toContain(7);
+      expect(groups["/repo"].items.every(p => p.number < 7)).toBe(true);
+      expect(groups["/repo"].scope).not.toBe("earlier account");
+    }
   });
 
   it("applies nothing once the scan is no longer current (another status or a newer refresh)", async () => {

@@ -23,6 +23,26 @@ pub(super) fn actor(repo: &Path, f: &ForgeInfo) -> GitResult<(String, String)> {
 fn route(f: &ForgeInfo, n: u64, s: &str) -> String {
     format!("{}/{n}{s}", pr_center::endpoint(f))
 }
+/// Requested changes and conflicts from GitHub's readiness answer. `reviewDecision` is empty
+/// when the branch requires no reviews, so the latest review of each writer is read as well.
+pub(super) fn github_review_facts(pr: &Value) -> (Option<bool>, Option<bool>) {
+    let review = text(pr, "/reviewDecision");
+    let latest = pr.pointer("/latestOpinionatedReviews/nodes").and_then(Value::as_array);
+    let changes = if review == "CHANGES_REQUESTED" {
+        Some(true)
+    } else if let Some(nodes) = latest {
+        Some(nodes.iter().any(|n| n.get("state").and_then(Value::as_str) == Some("CHANGES_REQUESTED")))
+    } else {
+        (!review.is_empty()).then_some(false)
+    };
+    let conflicts = match text(pr, "/mergeable").as_str() {
+        "CONFLICTING" => Some(true),
+        "MERGEABLE" => Some(false),
+        _ => None,
+    };
+    (changes, conflicts)
+}
+
 fn gh(repo: &Path, f: &ForgeInfo, d: &Detail, p: &mut Plan) -> GitResult<Value> {
     let project = forge::project_path(&f.project);
     let parts = f.project.split_once('/').ok_or_else(|| error("Invalid GitHub repository."))?;
@@ -34,7 +54,7 @@ fn gh(repo: &Path, f: &ForgeInfo, d: &Detail, p: &mut Plan) -> GitResult<Value> 
         let rules = scope.spawn(|| {
             parent.run(|| forge::request(repo, f, "GET", &format!("/repos/{project}/rules/branches/{}?per_page=100", forge::enc(&d.pull.base)), None))
         });
-        let g = scope.spawn(|| parent.run(|| forge::graphql(repo,f,"query RevqoraMergeReadiness($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id headRefOid baseRefOid mergeable mergeStateStatus reviewDecision mergeQueueEntry{id state position} baseRef{branchProtectionRule{requiresApprovingReviews requiredApprovingReviewCount requiresCodeOwnerReviews requiresStatusChecks requiresStrictStatusChecks requiresConversationResolution requiresCommitSignatures requiresLinearHistory}}}}}",json!({"owner":parts.0,"name":parts.1,"number":d.pull.number}))));
+        let g = scope.spawn(|| parent.run(|| forge::graphql(repo,f,"query RevqoraMergeReadiness($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id headRefOid baseRefOid mergeable mergeStateStatus reviewDecision latestOpinionatedReviews(first:100,writersOnly:true){nodes{state}} mergeQueueEntry{id state position} baseRef{branchProtectionRule{requiresApprovingReviews requiredApprovingReviewCount requiresCodeOwnerReviews requiresStatusChecks requiresStrictStatusChecks requiresConversationResolution requiresCommitSignatures requiresLinearHistory}}}}}",json!({"owner":parts.0,"name":parts.1,"number":d.pull.number}))));
         let checks = scope.spawn(|| parent.run(|| checks::load(repo, f, d)));
         let r = forge::request(repo, f, "GET", &format!("/repos/{project}"), None);
         let joined = |h: std::thread::ScopedJoinHandle<'_, GitResult<Value>>| h.join().unwrap_or_else(|_| Err(error("A merge readiness read failed.")));
@@ -59,6 +79,7 @@ fn gh(repo: &Path, f: &ForgeInfo, d: &Detail, p: &mut Plan) -> GitResult<Value> 
     let review = text(pr, "/reviewDecision");
     p.rule("Server merge state", format!("{mergeable} / {state}"), true);
     p.rule("Required reviews", if review.is_empty() { "No review decision reported".into() } else { review.clone() }, true);
+    (p.changes_requested, p.conflicts) = github_review_facts(pr);
     // GitHub computes mergeability in the background after a push; UNKNOWN is not a conflict.
     match mergeable.as_str() {
         "MERGEABLE" => {}
@@ -140,6 +161,7 @@ fn gl(repo: &Path, f: &ForgeInfo, d: &Detail, v: &Value, p: &mut Plan) -> GitRes
     let r = forge::request(repo, f, "GET", &format!("/projects/{}", forge::enc(&f.project)), None)?;
     let state = text(v, "/detailed_merge_status");
     p.rule("GitLab merge requirements", state.clone(), true);
+    p.conflicts = v.get("has_conflicts").and_then(Value::as_bool);
     if state != "mergeable" || !yes(v, "/user/can_merge") || yes(&r, "/archived") {
         p.block("GitLab has not granted a ready merge to this user (reviews, pipeline, discussions or permissions may still block it).");
     }
@@ -213,6 +235,8 @@ fn az(repo: &Path, f: &ForgeInfo, d: &Detail, v: &Value, p: &mut Plan) -> GitRes
     }
     let state = text(v, "/mergeStatus");
     p.rule("Azure merge state", state.clone(), true);
+    p.conflicts = (!state.is_empty()).then(|| state == "conflicts");
+    p.changes_requested = v.get("reviewers").and_then(Value::as_array).map(|r| r.iter().any(|x| x.get("vote").and_then(Value::as_i64).unwrap_or(0) <= -5));
     if state != "succeeded" {
         p.block("Azure has not completed a conflict-free merge evaluation.");
     }
@@ -273,6 +297,8 @@ fn az(repo: &Path, f: &ForgeInfo, d: &Detail, v: &Value, p: &mut Plan) -> GitRes
 fn bbs(repo: &Path, f: &ForgeInfo, d: &Detail, v: &Value, p: &mut Plan) -> GitResult<Value> {
     let readiness = forge::request(repo, f, "GET", &route(f, d.pull.number, "/merge"), None)?;
     let settings = forge::request(repo, f, "GET", &format!("{}/settings/pull-requests", forge::server_repo(f)), None)?;
+    p.conflicts = readiness.get("conflicted").and_then(Value::as_bool);
+    p.changes_requested = v.get("reviewers").and_then(Value::as_array).map(|r| r.iter().any(|x| x.get("status").and_then(Value::as_str) == Some("NEEDS_WORK")));
     if readiness.get("conflicted").and_then(Value::as_bool) != Some(false) {
         p.block("Bitbucket has not confirmed a conflict-free merge.");
     }

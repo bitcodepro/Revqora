@@ -34,6 +34,13 @@ pub struct Attention {
     /// Reviewers with their state, when the list answer does not include it (GitLab).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reviewers: Option<Vec<PrReviewer>>,
+    /// Whether a reviewer currently requests changes, as the server reports it for this PR.
+    /// The list answer of GitHub and GitLab does not include it. None when not reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes_requested: Option<bool>,
+    /// Whether the server reports merge conflicts with the target. None when not reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflicts: Option<bool>,
 }
 
 fn ci_state(checks: &[forge::Check]) -> (&'static str, Vec<String>) {
@@ -94,6 +101,10 @@ pub fn attention(repo: &Path, number: u64, connection: &str) -> GitResult<Attent
     } else {
         None
     };
+    let changes_requested = match &reviewers {
+        Some(list) => Some(list.iter().any(|r| r.state == "changes_requested")),
+        None => plan.changes_requested,
+    };
     let checked_at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
     Ok(Attention {
         number,
@@ -105,6 +116,8 @@ pub fn attention(repo: &Path, number: u64, connection: &str) -> GitResult<Attent
         merge,
         blockers: if merge == "blocked" { plan.blockers } else { vec![] },
         reviewers,
+        changes_requested,
+        conflicts: plan.conflicts,
     })
 }
 

@@ -815,10 +815,21 @@ pub fn pull(repo: &Path, mode: &str, on_line: impl FnMut(&str)) -> GitResult<Pul
 
 pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
     super::recovery::protect_transport(repo, false, None, None, false)?;
-    let saved = if mode == "merge" || mode == "rebase" { stash_staged(repo, "Pull")? } else { None };
+    // Local edits never block a pull. Staged work is saved here, with its staging, in a stash
+    // named after the branch; every other edit is set aside by Git's autostash only when the
+    // pull integrates something. Both come back afterwards, and a conflict shows the files.
+    let name = pull_stash_name(repo)?;
+    let dirty = head_oid(repo).is_some() && runner::exec(repo, ["diff", "HEAD", "--quiet", "--ignore-submodules=dirty"])?.code == 1;
+    let saved = stash_staged_as(repo, &name)?;
+    let top = stash_top(repo)?;
     match pull_unsaved(repo, mode, prune_remote, on_line) {
         Ok(mut outcome) => {
+            let set_aside = dirty && matches!(outcome.operation.status.as_str(), "done" | "fastForward");
+            name_autostash(repo, top.as_deref(), &name)?;
             restore_saved(repo, saved, &mut outcome.operation)?;
+            if set_aside && outcome.operation.status != "conflicts" && !outcome.operation.message.contains("Your local changes") {
+                outcome.operation.message.push_str("\nYour local changes were set aside during the pull and restored.");
+            }
             Ok(outcome)
         }
         Err(error) => {
@@ -828,6 +839,37 @@ pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, on_line: imp
             Err(error)
         }
     }
+}
+
+/// "Revqora: changes on <branch> saved before pull", so the stash list says what a kept copy is.
+fn pull_stash_name(repo: &Path) -> GitResult<String> {
+    let branch = runner::exec(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+    let branch = if branch.ok() { branch.text().trim().to_owned() } else { "detached HEAD".into() };
+    Ok(format!("Revqora: changes on {branch} saved before pull"))
+}
+
+fn stash_top(repo: &Path) -> GitResult<Option<String>> {
+    let top = runner::exec(repo, ["rev-parse", "--quiet", "--verify", "refs/stash"])?;
+    Ok(top.ok().then(|| top.text().trim().to_owned()))
+}
+
+/// When restoring Git's autostash conflicted, Git keeps the changes as a stash called
+/// "autostash". Give that entry the pull's name. Older entries are never touched.
+fn name_autostash(repo: &Path, before: Option<&str>, name: &str) -> GitResult<()> {
+    let Some(oid) = stash_top(repo)? else { return Ok(()) };
+    if Some(oid.as_str()) == before {
+        return Ok(());
+    }
+    let subject = runner::run(repo, ["log", "-g", "-1", "--format=%gs", "refs/stash"])?;
+    if subject.trim() != "autostash" {
+        return Ok(());
+    }
+    // Storing the commit that is already on top adds no entry, so drop the unnamed one first.
+    // The commit stays in the repository; if storing fails, the error names it.
+    runner::run(repo, ["stash", "drop", "-q", "stash@{0}"])?;
+    runner::run(repo, ["stash", "store", "-m", name, &oid])
+        .map_err(|e| GitError::new(format!("Your changes are kept in commit {oid}, but naming its stash failed: {}", e.message)))?;
+    Ok(())
 }
 
 fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
@@ -985,7 +1027,7 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
             }
         }
     } else {
-        merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, mode == "merge")?
+        merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, true)?
     };
     if recurse && !matches!(outcome.status.as_str(), "conflicts" | "stopped") {
         // Native `git pull` does this after a successful merge, including
@@ -1570,13 +1612,18 @@ pub fn skip_op(repo: &Path, kind: &str) -> GitResult<OpOutcome> {
 /// it any stage layers) would come back unstaged. When something is staged, Revqora saves the
 /// changes itself (a normal stash keeps the index) and restores them with `--index`.
 fn stash_staged(repo: &Path, what: &str) -> GitResult<Option<String>> {
+    stash_staged_as(repo, &format!("Revqora: changes saved before {what}"))
+}
+
+/// When something is staged, saves all local changes (with their staging) in a stash called `name`.
+fn stash_staged_as(repo: &Path, name: &str) -> GitResult<Option<String>> {
     let staged = runner::exec(repo, ["diff", "--cached", "--quiet", "--ignore-submodules=dirty"])?;
     match staged.code {
         0 => return Ok(None),
         1 => {}
         _ => return Err(runner::to_error("git diff --cached", &staged)),
     }
-    runner::run(repo, ["stash", "push", "-m", &format!("Revqora: changes saved before {what}")])?;
+    runner::run(repo, ["stash", "push", "-m", name])?;
     Ok(Some(runner::run(repo, ["rev-parse", "--verify", "refs/stash"])?.trim().to_string()))
 }
 

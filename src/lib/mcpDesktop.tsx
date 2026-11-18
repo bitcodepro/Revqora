@@ -148,8 +148,8 @@ function useApprovalArming(): boolean {
   return armed;
 }
 
-function Approval({ action, description, details, field, close }: {
-  action: string; description: string; details: string[]; field?: ApprovalField; close: (approved: ApprovalResult | null) => void;
+function Approval({ action, description, details, body, field, close }: {
+  action: string; description: string; details: string[]; body?: string; field?: ApprovalField; close: (approved: ApprovalResult | null) => void;
 }) {
   const [value, setValue] = useState(field?.initial ?? "");
   const error = field?.validate(value);
@@ -168,6 +168,10 @@ function Approval({ action, description, details, field, close }: {
       {error && <span className="red" role="alert">{error}</span>}
     </>}
     {details.length > 0 && <pre className="code-list">{details.join("\n")}</pre>}
+    {body !== undefined && <>
+      <p className="muted">Text that will be published, in full:</p>
+      <pre className="code-list approval-body" tabIndex={0} aria-label="Text that will be published">{body}</pre>
+    </>}
   </Modal>;
 }
 
@@ -350,7 +354,8 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     const pr = ["review_pr", "merge_pr", "pr_workflow"].includes(action) ? await prContext(root, number!) : null;
     if (pr && a.revision && a.revision !== pr.detail.revision) throw new McpToolError("stale_state", "The pull request changed. Read the current revision and submit a new request.");
     if (pr) detail.push(pr.detail.pull.title, `${pr.detail.pull.head} → ${pr.detail.pull.base} · ${pr.detail.pull.headSha}`);
-    if (action === "review_pr" && a.message) detail.push("", "Message:", a.message.length > 600 ? a.message.slice(0, 600) + "…" : a.message);
+    // Approving publishes exactly this text, so all of it is shown.
+    const body = action === "review_pr" && a.message ? a.message : undefined;
     // Bitbucket Cloud does not report its merge checks, so Revqora never merges there. Say so before asking for approval.
     if (action === "merge_pr" && pr?.forge.kind === "bitbucket") throw new McpToolError("pr_action_unavailable", "Merge this pull request in Bitbucket Cloud. Revqora cannot read its merge checks.");
     if (action === "create_pr") {
@@ -396,7 +401,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     if (manual) {
       status.phase = "awaiting_confirmation";
       const approved = await showDialog<ApprovalResult | null>(close => <Approval action={title}
-        description={`${root} · ${baseline.branch ?? "detached HEAD"}`} details={detail} field={field} close={close} />,
+        description={`${root} · ${baseline.branch ?? "detached HEAD"}`} details={detail} body={body} field={field} close={close} />,
         { ms: 120_000, value: { reason: "approval_timed_out" } });
       if (!approved || "reason" in approved) { cancelAction(status, approved?.reason ?? "dialog_dismissed"); return; }
       value = approved.value;

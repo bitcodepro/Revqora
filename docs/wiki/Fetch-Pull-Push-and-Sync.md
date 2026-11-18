@@ -45,7 +45,16 @@ If a Push response is lost or reports a partial/uncertain result, inspect the se
 | Merge | Integrates the upstream with a merge when necessary. A non-fast-forward merge is left for review before **Confirm merge** creates its commit. |
 | Rebase | Replays local commits on the upstream. Replayed commits get new SHAs. |
 
-Choose the mode in Settings. If local and remote histories both contain unique commits, inspect them before choosing merge or rebase. Commit/stash unfinished work when requested; ignored-file collisions and conflicts can also stop an update.
+Choose the mode in Settings. If local and remote histories both contain unique commits, inspect them before choosing merge or rebase. Ignored-file collisions and untracked files in the way can still stop an update.
+
+### Pull with unfinished changes
+
+You do not need to commit or stash before **Pull**. Revqora sets your local changes aside, pulls, and brings them back:
+
+- Staged work is saved, with its staging, in a stash named `Revqora: changes on <branch> saved before pull`. Other edits are set aside by Git only when the pull brings in commits.
+- When everything comes back cleanly, the saved copy is dropped and the result says the changes were set aside and restored.
+- When an incoming commit changed the same lines, the pull ends with conflicts. **Changes** lists the conflicted files; use **Resolve** to open them. The named stash stays in **Stashes** as a copy of your changes until you drop it.
+- If the pull itself fails (for example, the remote cannot be reached), your changes are put back as they were.
 
 ## When a completed feature branch has disappeared
 

@@ -70,6 +70,8 @@ export async function readAttention(root: string, group: Pick<RepositoryRequests
 }
 
 const EMPTY: Record<string, RepositoryRequests> = {};
+/** Rows of an earlier scan per repository, with the author scope (project and account) they belong to. */
+export type EarlierRows = Map<string, { scope: string; items: PullRequest[] }>;
 /** Repositories read at once. Each waits on its own server, so slow ones hold fewer others. */
 export const PR_SCAN_PARALLEL = 6;
 
@@ -130,7 +132,7 @@ export function useAllPullRequests(state: PrState, mine: boolean, attention = fa
     let current = true;
     const previous = latest.current;
     const seeded = previous && previous.scan.state === scan.state ? seedGroups(previous.groups, scan.roots) : EMPTY;
-    const earlier = new Map(Object.entries(seeded).map(([root, group]) => [root, group.items]));
+    const earlier: EarlierRows = new Map(Object.entries(seeded).map(([root, group]) => [root, { scope: group.scope, items: group.items }]));
     setResult({ scan, groups: seeded, finished: false });
     function update(root: string, change: (old: RepositoryRequests) => RepositoryRequests) {
       if (!current) return;
@@ -163,11 +165,13 @@ export function useAllPullRequests(state: PrState, mine: boolean, attention = fa
 
 /**
  * Reads the pull requests of `roots`, `parallel` repositories at a time, and reports each
- * page through `update`. `earlier` holds the rows of a refreshed repository: they stay until
- * its refresh completes, then rows that are gone on the server disappear. Nothing is reported
+ * page through `update`. `earlier` holds the rows of a refreshed repository with the project
+ * and account they were read for: they stay until its refresh completes, then rows that are
+ * gone on the server disappear. Once a page comes from another project or account, those rows
+ * are dropped for the rest of the scan. Nothing is reported
  * once `current()` is false (another status, another library or a newer refresh).
  */
-export async function scanPullRequests(roots: string[], state: PrState, earlier: Map<string, PullRequest[]>, current: () => boolean,
+export async function scanPullRequests(roots: string[], state: PrState, earlier: EarlierRows, current: () => boolean,
   update: (root: string, change: (old: RepositoryRequests) => RepositoryRequests) => void, parallel = PR_SCAN_PARALLEL, attention: () => boolean = () => false): Promise<void> {
   let index = 0;
   const report = (root: string, change: (old: RepositoryRequests) => RepositoryRequests) => { if (current()) update(root, change); };
@@ -187,7 +191,10 @@ export async function scanPullRequests(roots: string[], state: PrState, earlier:
           freshScope = scope;
           forge = page.forge;
           author = viewerAuthor(page.viewer) ?? loadAuthorPreferences(root, scope, page.forge).mine;
-          report(root, old => ({ ...old, forge: page.forge, scope, author, items: old.scope === scope ? refreshingRows(fresh, earlier.get(root) ?? []) : fresh }));
+          const retained = earlier.get(root);
+          if (retained && retained.scope !== scope) earlier.delete(root);
+          const keep = retained?.scope === scope ? retained.items : [];
+          report(root, old => ({ ...old, forge: page.forge, scope, author, items: refreshingRows(fresh, keep) }));
         }, null, Infinity);
         if (complete) report(root, old => ({ ...old, items: fresh, notice: undefined, noticeDetails: undefined, loading: false, stale: false, loadedAt: Date.now() }));
         if (complete && attention() && current()) await readAttention(root, { forge, author, items: fresh }, current, change => report(root, change));

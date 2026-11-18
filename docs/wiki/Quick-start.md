@@ -26,7 +26,7 @@ To add a second repository, press **Ctrl+O** again. The existing one stays open.
 
 ## 3. Get the latest shared code
 
-Select `main` in **Branches**, then use **Pull**. If you already have unfinished changes, commit or stash them when Git requires it.
+Select `main` in **Branches**, then use **Pull**. Unfinished changes do not block it: Revqora sets them aside, pulls and brings them back, and shows any conflicted files in **Changes**.
 
 You can first use **Fetch** to update remote information without changing your working files. A separate Fetch is not required before Pull.
 

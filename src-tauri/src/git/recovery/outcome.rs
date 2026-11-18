@@ -260,6 +260,14 @@ fn append(dir: &Path, event: &RestoreEvent) -> GitResult<()> {
     if fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file()) {
         return Err(fail("The restore log was replaced by a link or folder."));
     }
+    // A crash can leave the last record cut short. Drop that fragment first, so this record starts
+    // on a line of its own and every later read still reaches it.
+    if let Ok(bytes) = fs::read(&path) {
+        if bytes.last().is_some_and(|b| *b != b'\n') {
+            let keep = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+            OpenOptions::new().write(true).open(&path)?.set_len(keep as u64)?;
+        }
+    }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(&line)?;
     file.sync_data()?;
@@ -300,8 +308,8 @@ fn last_restore(dir: &Path) -> Option<RestoreSummary> {
     let mut summary: Option<RestoreSummary> = None;
     for line in BufReader::new(File::open(path).ok()?).lines() {
         let Ok(line) = line else { break };
-        // A line cut short by a crash ends the log.
-        let Ok(event) = serde_json::from_str::<RestoreEvent>(&line) else { break };
+        // A line cut short by a crash is skipped; records written after it still count.
+        let Ok(event) = serde_json::from_str::<RestoreEvent>(&line) else { continue };
         if event.event == "plan" {
             summary = Some(RestoreSummary { started_at: event.at, planned: event.paths, checkpoint: event.checkpoint, ..Default::default() });
             continue;
@@ -460,6 +468,8 @@ fn set_mode(_file: &File, _saved: &SavedPath) -> std::io::Result<()> {
 /// beside the checkpoint, so a restore the app could not finish can be reviewed after a restart.
 pub fn restore_paths(root: &Path, id: &str, paths: &[String]) -> GitResult<RestoreOutcome> {
     let root = fs::canonicalize(repo::discover(root)?)?;
+    // The safety checkpoint created below may reach the retention limit; this one must survive it.
+    let _pin = super::pin(&root, id);
     let cp = read(&root, id)?;
     let dir = base(&root)?.join(id);
     let record = read_record(&dir);
