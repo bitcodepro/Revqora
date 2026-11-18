@@ -130,6 +130,11 @@ fn server_messages_lose_terminal_colour_codes() {
     let w = world();
     let hook = w.remote.join("hooks").join("pre-receive");
     std::fs::write(&hook, "#!/bin/sh\nprintf '\\033[38;5;226mPolicy: blocked\\033[0m\\n' >&2\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     commit(&w.user, "u.txt", "u\n", "user");
     let options = ops::PushOptions {
         remote: Some("origin".into()),
