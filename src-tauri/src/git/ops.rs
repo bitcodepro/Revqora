@@ -648,7 +648,10 @@ pub fn update_moved_tags(repo: &Path, mut on_line: impl FnMut(&str)) -> GitResul
 
 /// After the server deleted the branch its HEAD named (a renamed default branch, with prune),
 /// `refs/remotes/<remote>/HEAD` pointed nowhere. Point it at the server's current default
-/// branch. Only runs when the fetch deleted something; failures leave the ref as it was.
+/// branch. Only runs when the fetch deleted something. The ref changes only on the server's
+/// own answer: a failed query (network, sign-in) or a default branch that was not fetched
+/// leaves it as it was; it is removed only when the server answered and names no default
+/// branch (empty repository or detached HEAD).
 fn repair_remote_heads(repo: &Path, remote: Option<&str>, output: &str) {
     if !output.contains("[deleted]") {
         return;
@@ -661,18 +664,38 @@ fn repair_remote_heads(repo: &Path, remote: Option<&str>, output: &str) {
         if target.is_empty() || runner::exec(repo, ["rev-parse", "--verify", "-q", &target]).is_ok_and(|out| out.ok()) {
             continue;
         }
-        let Ok(listing) = runner::exec(repo, ["ls-remote", "--symref", "--", &name, "HEAD"]) else { continue };
-        let default = listing.text().lines().find_map(|line| line.strip_prefix("ref: refs/heads/")?.strip_suffix("\tHEAD").map(str::to_owned));
-        let tracking = default.map(|branch| format!("refs/remotes/{name}/{branch}"));
-        match tracking {
-            Some(tracking) if runner::exec(repo, ["rev-parse", "--verify", "-q", &tracking]).is_ok_and(|out| out.ok()) => {
-                let _ = runner::exec(repo, ["symbolic-ref", "-m", "Revqora: follow the remote's default branch", &head, &tracking]);
+        let listing = match runner::exec(repo, ["ls-remote", "--symref", "--", &name, "HEAD"]) {
+            Ok(listing) if listing.ok() => listing.text(),
+            // No answer from the server is no evidence about its default branch.
+            _ => continue,
+        };
+        match listing.lines().find_map(|line| line.strip_prefix("ref: refs/heads/")?.strip_suffix("\tHEAD").map(str::to_owned)) {
+            Some(branch) => {
+                let tracking = format!("refs/remotes/{name}/{branch}");
+                if runner::exec(repo, ["rev-parse", "--verify", "-q", &tracking]).is_ok_and(|out| out.ok()) {
+                    let _ = runner::exec(repo, ["symbolic-ref", "-m", "Revqora: follow the remote's default branch", &head, &tracking]);
+                }
             }
-            _ => {
+            None => {
                 let _ = runner::exec(repo, ["symbolic-ref", "--delete", &head]);
             }
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn a_failed_default_branch_query_keeps_the_remote_head() {
+    let fixture = tempfile::tempdir_in(crate::portable::temp_dir().unwrap()).unwrap();
+    let repo = fixture.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    runner::run(&repo, ["init", "-qb", "main"]).unwrap();
+    // The server cannot be reached (as after a network or sign-in failure).
+    let missing = fixture.path().join("missing.git");
+    runner::run(&repo, ["remote", "add", "origin", &missing.to_string_lossy()]).unwrap();
+    runner::run(&repo, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]).unwrap();
+    repair_remote_heads(&repo, Some("origin"), " - [deleted]         (none)     -> origin/main");
+    assert_eq!(runner::run(&repo, ["symbolic-ref", "refs/remotes/origin/HEAD"]).unwrap().trim(), "refs/remotes/origin/main");
 }
 
 /// Forget saved login: drops the saved sign-in for a remote's address from every configured

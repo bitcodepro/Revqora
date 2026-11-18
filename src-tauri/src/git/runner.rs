@@ -516,16 +516,25 @@ pub fn strip_ansi(text: &str) -> String {
     out
 }
 
-/// Network transfers (fetch, push, ls-remote) that the user can cancel, by repository.
+/// Network transfers (fetch, push, ls-remote) that the user can cancel, by operation.
+///
+/// Cancel names one operation (the id the interface gave its Fetch, Pull or Push). Another
+/// operation of the same repository, running or queued, is never touched. An operation
+/// cancelled while it still waits in the queue ends as cancelled when its turn comes, before
+/// it changes anything.
 pub mod transfers {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::super::validation::process_tree::Tree;
+    use super::{GitError, GitResult};
 
     struct Active {
         id: u64,
+        operation: Option<String>,
         repo: PathBuf,
         tree: Arc<Tree>,
         cancelled: Arc<AtomicBool>,
@@ -533,6 +542,15 @@ pub mod transfers {
 
     static ACTIVE: Mutex<Vec<Active>> = Mutex::new(Vec::new());
     static NEXT: AtomicU64 = AtomicU64::new(1);
+    /// Operations the user cancelled that have not ended yet (or never started). Locked
+    /// after `ACTIVE` when both are needed.
+    static CANCELLED: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+    /// Remembered cancellations of operations that never run are dropped after this many.
+    const REMEMBERED: usize = 64;
+
+    thread_local! {
+        static OPERATION: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
 
     fn key(repo: &Path) -> PathBuf {
         std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_owned())
@@ -540,6 +558,34 @@ pub mod transfers {
 
     fn active() -> std::sync::MutexGuard<'static, Vec<Active>> {
         ACTIVE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn cancelled() -> std::sync::MutexGuard<'static, VecDeque<String>> {
+        CANCELLED.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(in crate::git) fn cancelled_error() -> GitError {
+        GitError::new("Transfer cancelled.").kind("cancelled")
+    }
+
+    /// Runs operation `operation` on this thread: its network commands can be cancelled by
+    /// [`cancel`] with the same id. Fails as cancelled without running `f` when it was
+    /// cancelled while queued.
+    pub fn for_operation<T>(operation: &str, f: impl FnOnce() -> GitResult<T>) -> GitResult<T> {
+        struct Restore(Option<String>, String);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                OPERATION.with(|current| *current.borrow_mut() = self.0.take());
+                cancelled().retain(|id| id != &self.1);
+            }
+        }
+        if cancelled().iter().any(|id| id == operation) {
+            cancelled().retain(|id| id != operation);
+            return Err(cancelled_error());
+        }
+        let previous = OPERATION.with(|current| current.borrow_mut().replace(operation.to_owned()));
+        let _restore = Restore(previous, operation.to_owned());
+        f()
     }
 
     pub(in crate::git) struct Registration {
@@ -569,23 +615,39 @@ pub mod transfers {
     pub(in crate::git) fn register(repo: &Path, tree: Tree) -> Registration {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let tree = Arc::new(tree);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        active().push(Active { id, repo: key(repo), tree: tree.clone(), cancelled: cancelled.clone() });
-        Registration { id, tree, cancelled }
+        let operation = OPERATION.with(|current| current.borrow().clone());
+        let mut list = active();
+        // Cancel may have arrived between the operation's start and this command.
+        let stop = operation.as_ref().is_some_and(|op| cancelled().iter().any(|id| id == op));
+        let flag = Arc::new(AtomicBool::new(stop));
+        if stop {
+            tree.terminate();
+        }
+        list.push(Active { id, operation, repo: key(repo), tree: tree.clone(), cancelled: flag.clone() });
+        Registration { id, tree, cancelled: flag }
     }
 
-    /// Stops every transfer running for `repo` (with the helpers it started). Returns whether
-    /// one was running. The interrupted command fails with kind `cancelled`.
-    pub fn cancel(repo: &Path) -> bool {
-        let key = key(repo);
+    /// Cancels operation `operation`: stops its running transfer (with the helpers it started)
+    /// or, when it has not started yet, makes it end as cancelled when its turn comes. Returns
+    /// whether a running transfer was stopped.
+    pub fn cancel(operation: &str) -> bool {
         let list = active();
-        let mut any = false;
-        for transfer in list.iter().filter(|a| a.repo == key) {
+        {
+            let mut ids = cancelled();
+            if !ids.iter().any(|id| id == operation) {
+                if ids.len() >= REMEMBERED {
+                    ids.pop_front();
+                }
+                ids.push_back(operation.to_owned());
+            }
+        }
+        let mut stopped = false;
+        for transfer in list.iter().filter(|a| a.operation.as_deref() == Some(operation)) {
             transfer.cancelled.store(true, Ordering::Release);
             transfer.tree.terminate();
-            any = true;
+            stopped = true;
         }
-        any
+        stopped
     }
 
     /// Whether a transfer is running for `repo`.
@@ -771,7 +833,7 @@ where
                     trace.finish(Some(out.code), &out.stdout, &out.stderr);
                 }
                 if cancelled && !out.ok() {
-                    return Err(GitError::new("Transfer cancelled.").kind("cancelled"));
+                    return Err(transfers::cancelled_error());
                 }
                 if out.ok() {
                     Ok(format!("{stdout}{collected}"))

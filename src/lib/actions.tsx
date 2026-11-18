@@ -92,8 +92,8 @@ export async function act<T>(root: string, fn: () => Promise<T>, o: ActOptions<T
   }
 }
 
-/** Cancel for a fetch, pull or push: stops its Git transfer (the operation then fails as cancelled). */
-const cancelTransfer = (root: string) => () => void api.cancelTransfer(root).catch(() => undefined);
+/** Cancel for one fetch, pull or push (by its operation id): stops its Git transfer, or ends it before it starts when it is still queued. */
+const cancelTransfer = (opId: string) => () => void api.cancelTransfer(opId).catch(() => undefined);
 
 /** Errors every fetch, pull and push can end with. Returns false for the caller's own cases. */
 export function reportTransferError(root: string, e: unknown, label: string, remoteName?: string | null): boolean {
@@ -181,7 +181,7 @@ async function warnOutdatedCredentialManager(root: string) {
 
 async function remote<T>(root: string, label: string, fn: (opId: string) => Promise<T>, success?: (r: T) => string | null, remoteName?: string | null): Promise<T | undefined> {
   const opId = newOpId();
-  startBusy(opId, label, cancelTransfer(root));
+  startBusy(opId, label, cancelTransfer(opId));
   try {
     const r = await fn(opId);
     const msg = success?.(r);
@@ -326,7 +326,7 @@ export async function pullBranch(root: string, target: PullTarget) {
 export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase", expectedState?: string, pruneRemote?: boolean, target?: PullTarget) {
   const mode = modeOverride ?? useSettings.getState().pullMode;
   const opId = newOpId();
-  startBusy(opId, "Pulling", cancelTransfer(root));
+  startBusy(opId, "Pulling", cancelTransfer(opId));
   let diverged = false;
   let outcome: PullOutcome | undefined;
   try {

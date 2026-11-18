@@ -161,7 +161,7 @@ fn a_renamed_default_branch_moves_origin_head() {
 }
 
 #[test]
-fn cancel_stops_a_running_fetch() {
+fn cancel_stops_only_the_operation_it_names() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/silent.git", listener.local_addr().unwrap());
     std::thread::spawn(move || {
@@ -176,20 +176,35 @@ fn cancel_stops_a_running_fetch() {
     git(tmp.path(), &["config", "remote.origin.proxy", ""]);
     git(tmp.path(), &["config", "http.lowSpeedTime", "600"]);
     git(tmp.path(), &["config", "http.lowSpeedLimit", "1"]);
-    assert!(!runner::transfers::cancel(tmp.path()), "nothing runs yet");
     let repo = tmp.path().to_owned();
-    let fetch = std::thread::spawn(move || ops::fetch(&repo, Some("origin"), false, |_| {}));
+    let fetch = std::thread::spawn(move || runner::transfers::for_operation("op-fetch", || ops::fetch(&repo, Some("origin"), false, |_| {})));
     let start = std::time::Instant::now();
     while !runner::transfers::running(tmp.path()) {
         assert!(start.elapsed() < std::time::Duration::from_secs(30), "the fetch never started");
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    assert!(runner::transfers::cancel(tmp.path()));
+
+    // Cancel of the Pull queued behind the fetch: the fetch keeps running...
+    assert!(!runner::transfers::cancel("op-pull"), "the queued pull has no transfer yet");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(runner::transfers::running(tmp.path()), "cancelling the queued pull stopped the fetch");
+    // ...and the pull ends as cancelled when its turn comes, without running.
+    let mut ran = false;
+    let pulled = runner::transfers::for_operation("op-pull", || {
+        ran = true;
+        ops::pull(tmp.path(), "ff-only", |_| {}).map(|_| ())
+    });
+    assert_eq!(pulled.expect_err("cancelled while queued").kind, "cancelled");
+    assert!(!ran, "a pull cancelled in the queue still ran");
+
+    // Cancel of the fetch itself stops it.
+    assert!(runner::transfers::cancel("op-fetch"));
     let error = fetch.join().unwrap().expect_err("cancelled");
     assert_eq!(error.kind, "cancelled", "{}", error.message);
     assert!(start.elapsed() < std::time::Duration::from_secs(30), "cancel took {:?}", start.elapsed());
     assert!(!runner::transfers::running(tmp.path()));
+    // The cancellations are used up: the same ids run normally later.
+    assert!(runner::transfers::for_operation("op-pull", || Ok(())).is_ok());
 }
 
 #[test]

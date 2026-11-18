@@ -1574,7 +1574,7 @@ async fn fetch(
     op_id: String,
 ) -> GitResult<String> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch", Some(op_id.clone()), move || {
-        ops::fetch(&p(&repo), remote.as_deref(), prune, progress(&app, &op_id))
+        git::runner::transfers::for_operation(&op_id, || ops::fetch(&p(&repo), remote.as_deref(), prune, progress(&app, &op_id)))
     })
     .await
 }
@@ -1678,11 +1678,12 @@ async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expe
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_background", None, move || ops::fetch_background(&p(&repo))).await
 }
 
-/// Stops the fetch, pull or push transfer running in `repo`. Runs at once (never queued
-/// behind the operation it stops). Returns whether a transfer was running.
+/// Cancels the Fetch, Pull or Push with operation id `op_id`, running or still queued. Runs at
+/// once (never queued behind the operation it stops). Other operations are not touched.
+/// Returns whether a running transfer was stopped.
 #[tauri::command]
-fn cancel_transfer(repo: String) -> bool {
-    git::runner::transfers::cancel(&p(&repo))
+fn cancel_transfer(op_id: String) -> bool {
+    git::runner::transfers::cancel(&op_id)
 }
 
 /// Tags that moved on the server after a fetch; the local versions were kept.
@@ -1695,7 +1696,7 @@ fn moved_tags(repo: String) -> GitResult<Vec<String>> {
 #[tauri::command]
 async fn update_moved_tags(recovery_consent: Option<String>, expected_state: Option<String>, app: AppHandle, repo: String, op_id: String) -> GitResult<String> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "update_moved_tags", Some(op_id.clone()), move || {
-        ops::update_moved_tags(&p(&repo), progress(&app, &op_id))
+        git::runner::transfers::for_operation(&op_id, || ops::update_moved_tags(&p(&repo), progress(&app, &op_id)))
     })
     .await
 }
@@ -1717,7 +1718,7 @@ async fn pull(
     prune_remote: Option<bool>,
 ) -> GitResult<ops::PullOutcome> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || {
-        ops::pull_with_prune(&p(&repo), &mode, prune_remote.unwrap_or(true), progress(&app, &op_id))
+        git::runner::transfers::for_operation(&op_id, || ops::pull_with_prune(&p(&repo), &mode, prune_remote.unwrap_or(true), progress(&app, &op_id)))
     })
     .await
 }
@@ -1732,7 +1733,7 @@ async fn push(
     op_id: String,
 ) -> GitResult<String> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "push", Some(op_id.clone()), move || {
-        ops::push(&p(&repo), &opts, progress(&app, &op_id))
+        git::runner::transfers::for_operation(&op_id, || ops::push(&p(&repo), &opts, progress(&app, &op_id)))
     })
     .await
 }

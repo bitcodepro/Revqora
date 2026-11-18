@@ -74,7 +74,7 @@ A slow or unresponsive remote does not freeze the repository. While Fetch, Pull,
 
 ## Stop a transfer
 
-While Fetch, Pull or Push transfers data, the status bar shows **Cancel**. It stops Git and everything Git started for the transfer. A cancelled Pull does not merge and puts your local changes back. An HTTPS server that sends nothing for 60 seconds ends the transfer by itself with "The server stopped sending data"; check your network, VPN or proxy and try again.
+While Fetch, Pull or Push runs or waits its turn, the status bar shows **Cancel** for it. It stops that operation only: Git and everything Git started for its transfer. An operation cancelled while it waits does not start. A cancelled Pull does not merge and puts your local changes back. An HTTPS server that sends nothing for 60 seconds ends the transfer by itself with "The server stopped sending data"; check your network, VPN or proxy and try again.
 
 ## When Fetch reports a problem
 

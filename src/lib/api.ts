@@ -273,8 +273,8 @@ export const api = {
   repositoryBranchNames: (repo: string) => call<string[]>("repository_branch_names", { repo }),
   refs: (repo: string) => call<RefsSnapshot>("refs_snapshot", { repo }),
   fetchBackground: (repo: string) => call<string>("fetch_background", { repo }),
-  /** Stops the running fetch, pull or push transfer of `repo`; false when none was running. */
-  cancelTransfer: (repo: string) => call<boolean>("cancel_transfer", { repo }),
+  /** Cancels one Fetch, Pull or Push by its operation id, running or still queued; true when a running transfer was stopped. */
+  cancelTransfer: (opId: string) => call<boolean>("cancel_transfer", { opId }),
   /** Tags that moved on the server; the last fetch kept the local versions. */
   movedTags: (repo: string) => call<string[]>("moved_tags", { repo }),
   updateMovedTags: (repo: string, opId: string) => call<string>("update_moved_tags", { repo, opId }),
