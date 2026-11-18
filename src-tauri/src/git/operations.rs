@@ -132,6 +132,8 @@ pub fn access<T>(repo: &Path, write: bool, mut phase: impl FnMut(&str, usize), f
         return f();
     }
     let gate = gate(&key);
+    // Opt-in diagnostics (REVQORA_STAGE_TIMINGS): how long this call waited for the repository.
+    let waiting = super::stage_timings::enabled().then(std::time::Instant::now);
     if write {
         let ticket = {
             let mut q = gate.tickets.lock();
@@ -151,13 +153,25 @@ pub fn access<T>(repo: &Path, write: bool, mut phase: impl FnMut(&str, usize), f
             gate.changed.notify_all();
         });
         let _access = gate.access.write();
+        note_wait(repo, "write", waiting);
         let _scope = enter_scope(key, true);
         phase("running", 0);
         f()
     } else {
         let _access = gate.access.read();
+        note_wait(repo, "read", waiting);
         let _scope = enter_scope(key, false);
         f()
+    }
+}
+
+/// Records a wait of at least a millisecond for the repository gate (queue time in baselines).
+fn note_wait(repo: &Path, kind: &str, started: Option<std::time::Instant>) {
+    let Some(waited) = started.map(|started| started.elapsed()) else { return };
+    if waited >= std::time::Duration::from_millis(1) {
+        let mut stages = super::stage_timings::Stages::default();
+        stages.add("wait", waited);
+        super::stage_timings::record("repository_wait", repo, &stages, kind);
     }
 }
 

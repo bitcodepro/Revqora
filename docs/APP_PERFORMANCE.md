@@ -196,3 +196,85 @@ Measured with `cargo test --test library_tracking_timing -- --ignored --nocaptur
 | Background fetch of 20 repositories, four at a time | 4.2 s |
 
 Each Git process costs most of the tracking time. The change count is about as expensive as the status, because both check the index against the working tree; it runs after the branch reads. With a real server, fetch time depends on the network.
+
+## Baseline harness (stage 0, November 2026)
+
+Another agent or developer can repeat these measurements on the same data and compare two commits of the app. Every number is a median and p95 over the stated runs (nearest rank: with 5 runs, p95 is the slowest run). Choose speed targets from this baseline, not before it.
+
+### Data
+
+`node scripts/perf-fixtures.mjs <empty-dir>` writes the same content on every run (fixed seed and dates, `git fast-import`, about 30 s):
+
+| Fixture | Content |
+|---|---|
+| `normal/` | 5,275 commits: 5,075 on main and a 200-commit topic fork, 33 local and remote refs, subject token `PERF-825`, body-only token `PERF-BODY-810`, every 17th commit by `perf-17@example.invalid` (298 commits) |
+| `merges/` | 20,000 commits on 40 feature branches with 206 merges back into main |
+| `large-diff/` | HEAD changes 651 files, renames 50 and rewrites 5,000 lines of a 20,000-line `big.txt` |
+| `workspace/` | 40 clones of one local origin: 3 with commits to push, 3 behind after a fetch, 3 with changes, 2 on a branch without upstream, the rest clean |
+| `manifest.json` | fixture version, Git version and the expected answers (which repositories are Incoming, Outgoing, Changes) |
+
+`scripts/perf-forge-fixture.mjs` starts local stand-ins for GitHub, GitLab, Bitbucket Cloud and Azure DevOps, each on its own loopback port with the providers' own paging. Every repository serves PR numbers 1–60, so equal numbers in different repositories are always present. Per repository, a scenario selects: `ok`, `slow` (+1.2 s per response), `forbidden` (403), `rate-limited` (GitHub 403 with `x-ratelimit-remaining: 0`, others 429 with `Retry-After`), `incomplete` (page 2 rows without a source branch) or `truncated` (page 2 cut in the middle of the JSON). Each served request is recorded with its server-side time. `scripts/perf-baseline.test.mjs` checks these scenarios for all four providers.
+
+### Commands
+
+Use a disposable directory for profiles and test repositories, and the release build (`npx tauri build --no-bundle`):
+
+```bash
+export REVQORA_TEST_TMP="$PWD/.test-tmp" TEMP="$PWD/.test-tmp" TMP="$PWD/.test-tmp" TMPDIR="$PWD/.test-tmp"
+node scripts/perf-fixtures.mjs .test-tmp/fixtures
+node scripts/perf-baseline.mjs --fixtures .test-tmp/fixtures --runs 5 --out .test-tmp/before.json
+# check out and build the other commit, then
+node scripts/perf-baseline.mjs --fixtures .test-tmp/fixtures --runs 5 --out .test-tmp/after.json
+node scripts/perf-baseline.mjs --compare .test-tmp/before.json .test-tmp/after.json
+```
+
+`--only startup,switch,diff,search,history,workspace,prs` limits the scenarios; `--exe` selects another build. The harness sets `REVQORA_STAGE_TIMINGS` to a temporary file and removes profiles, timing files and PR test repositories afterwards. Close other heavy work (builds, test runs) first: they change the results more than most code changes.
+
+### Scenarios and how time is split
+
+| Scenario | Start → end | queue | git | ui |
+|---|---|---|---|---|
+| Cold start | process spawn (new WebView2 profile) → first History row of `normal` | `repository_wait` lines for the repository | `graph_load` stages | total − WebView start (`shell`, spawn → top bar) − queue − git |
+| Repository switch | click in the Explorer → the target's newest commit visible (`normal`, `merges`) | `repository_wait` | `graph_load` stages | the rest |
+| Commit → diff | click the HEAD commit of `large-diff` → file list (`files`) → click `data/big.txt` → first diff line (`total`) | — | — | — |
+| Search | first page with a result, and all pages, over IPC (`repository_commit_search_page`, 100 per page) | `diagnostics.queueMs` | `diagnostics.gitMs` | IPC and decoding |
+| History | `graph_load` with `fast` (full rebuild) over IPC | `repository_wait` | `graph_load` stages | IPC and decoding |
+| Workspace | reload with 40 closed repositories in the library → the Explorer's Incoming and Outgoing counts match the manifest | — | the same tracking reads over IPC, six at a time | total − git |
+| All PRs | 44 repositories on the four providers (24 ok, each problem once per provider), loaded three at a time like `useAllPullRequests` → first rows / all repositories finished | — | `apiServed`: provider time summed over requests | — |
+
+`queue` is time spent waiting for another operation on the same repository; `git` is Git or provider API work in the backend; `ui` is everything else that the user waits for (IPC, React work, rendering). The All-PRs result also lists what each repository ended with (rows or the error message), which shows how partial failures are reported.
+
+### Baseline of commit 3804fc7 (November 2026)
+
+Release build of `3804fc7` plus the stage 0 timing hooks, Windows 11 x64 (12 logical CPUs), Git 2.45.1.windows.1, fixtures v1, 5 runs per scenario, milliseconds as median / p95. Another Rust build was running on the machine during the measurement, so absolute values are slightly pessimistic; compare commits on the same machine in the same conditions.
+
+| Scenario | Runs | Total | Queue | Git/API | UI | Other (median / p95) |
+|---|---:|---:|---:|---:|---:|---|
+| cold start → first History rows | 5 | 2267 / 2840 | 0 / 0 | 743 / 801 | 184 / 672 | shell 1367 / 1567 |
+| switch → newest commit visible (5k history) | 5 | 154 / 200 | 0 / 0 | 0 / 0 | 154 / 200 |  |
+| switch → newest commit visible (20k merges) | 5 | 149 / 172 | 0 / 0 | 0 / 0 | 149 / 172 |  |
+| commit click → file list → big file diff (651 files) | 5 | 490 / 900 | — | — | — | files 188 / 487 |
+| search subject token (quick) → first result | 5 | 68 / 220 | — | — | — |  |
+| search subject token (quick) → complete | 5 | 68 / 220 | 0 / 0 | 64 / 211 | 4 / 9 | hits 1 / 1; pages 1 / 1 |
+| search body-only token (message) → first result | 5 | 68 / 170 | — | — | — |  |
+| search body-only token (message) → complete | 5 | 68 / 170 | 0 / 0 | 64 / 166 | 4 / 4 | hits 1 / 1; pages 1 / 1 |
+| search author, all pages (author) → first result | 5 | 68 / 179 | — | — | — |  |
+| search author, all pages (author) → complete | 5 | 205 / 316 | 0 / 0 | 193 / 303 | 12 / 13 | hits 298 / 298; pages 3 / 3 |
+| search 20k merges (quick) → first result | 5 | 63 / 379 | — | — | — |  |
+| search 20k merges (quick) → complete | 5 | 125 / 570 | 0 / 0 | 117 / 548 | 8 / 22 | hits 4 / 4; pages 2 / 2 |
+| graph_load fast rebuild (normal) | 5 | 286 / 305 | 0 / 0 | 276 / 299 | 9 / 11 |  |
+| graph_load fast rebuild (merges) | 5 | 610 / 614 | 0 / 0 | 583 / 1170 | 31 / 32 |  |
+| reload → Incoming/Outgoing for 40 closed repositories | 5 | 1628 / 1750 | — | 1530 / 1885 | 0 / 221 | ready 449 / 645; outgoing 1577 / 1750; incoming 1628 / 1750; changesSweep 1489 / 1837 |
+| all PRs, 44 repositories → first result / complete | 5 | 6148 / 6208 | — | — | — | first 64 / 68; apiServed 13513 / 13617; requests 80 / 80; healthyComplete 1091 / 1155 |
+
+What the numbers say:
+
+- **Cold start** takes 2.3 s to the first History row; 1.4 s of it is WebView2 starting with a new profile, 0.74 s the history build (`graph_load`), the rest UI.
+- **Switching** between open repositories shows the target's newest commit in about 150 ms with no Git work: the open repository's graph is reused.
+- **Commit → diff** on a 651-file commit: the file list in 188 ms, the 20,000-line file's diff in 490 ms (median); the first, cold run is the p95 (900 ms).
+- **Search** returns the first result in about 70 ms; the 298 author matches (3 pages of 100) complete in about 205 ms. Queue time is 0: nothing else ran on these repositories.
+- **History rebuild** (`graph_load` with `fast`): 0.29 s for 5,275 commits and 0.61 s for 20,000 commits with 206 merges, almost all of it Git and graph building. In one merges run a background `graph_load` of the same repository fell into the window, which is the 1,170 ms Git p95.
+- **Workspace**: after a reload, the Explorer's Incoming and Outgoing counts are complete for 40 closed repositories in 1.6 s. The same branch reads alone over IPC take 1.5 s (six at a time), so Git process starts dominate; the change count of all 40 takes another 1.5 s.
+- **All PRs**: the first rows arrive after 64 ms and the 24 healthy repositories finish in 1.1 s, but the whole list completes only after 6.1 s, held up by the four slow repositories (two 1.24 s pages each, three repositories at a time). Each failure stays with its repository: 403 → "Access denied …" (GitHub, GitLab) or the provider-specific Bitbucket and Azure explanation, rate limit → "API rate limit reached. Wait before trying again.", incomplete rows and cut JSON → the first page's 50 rows plus an error. Equal PR numbers in different repositories did not collide.
+
+Candidates for the speed stage, chosen from this baseline: keep healthy repositories' PR rows final and visible while slow ones load (completion is bound by the slowest provider, not by the number of repositories), and fewer Git processes per repository for the library-wide Incoming, Outgoing and Changes reads. Startup is bound by WebView2, and switching, search and history are already within about 0.1–0.6 s.
