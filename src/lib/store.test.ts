@@ -4,7 +4,7 @@ vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), h
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() }, toast: { warning: vi.fn() } }));
 import { api } from "./api";
-import { covers, CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, repositoryIncoming, repositoryOutgoing, useRepos, type RepoTab } from "./store";
+import { covers, CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, repositoryHasChanges, repositoryIncoming, repositoryOutgoing, useRepos, type RepoTab } from "./store";
 import { previewGeneration } from "./commitPreview";
 import { repositoryCall, type Invoke } from "./operationClient";
 import type { RepoInfo, StatusSummary } from "./types";
@@ -331,6 +331,13 @@ describe("repositoryOutgoing", () => {
     const unloaded = { ...tab({}), refs: null } as RepoTab;
     expect(repositoryOutgoing(unloaded, tracking)).toBe(4);
     expect(repositoryOutgoing(unloaded, { ...tracking, oid: "older" })).toBe(0);
+  });
+  it("reports changes from an open repository's status or from the count of a closed one", () => {
+    expect(repositoryHasChanges(tab({ files: [{ path: "a" }] } as unknown as Partial<StatusSummary>), 0)).toBe(true);
+    expect(repositoryHasChanges(tab({}), 5)).toBe(false);
+    expect(repositoryHasChanges(undefined, 2)).toBe(true);
+    expect(repositoryHasChanges(undefined, 0)).toBe(false);
+    expect(repositoryHasChanges(undefined)).toBe(false);
   });
   it("ignores a detached HEAD and an unknown status", () => {
     expect(repositoryOutgoing(tab({ branch: null, ahead: 4 }))).toBe(0);

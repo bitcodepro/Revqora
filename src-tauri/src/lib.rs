@@ -769,6 +769,12 @@ async fn repository_branch_tracking(repo: String) -> GitResult<git::tracking::Br
     blocking(move || git::tracking::branch_tracking(&p(&repo))).await
 }
 
+/// Number of changed entries, for the Changes filter of a repository that is not open.
+#[tauri::command]
+async fn repository_change_count(repo: String) -> GitResult<usize> {
+    blocking(move || git::tracking::change_count(&p(&repo))).await
+}
+
 #[tauri::command]
 async fn repository_changes_status(repo: String, path: Option<String>) -> GitResult<StatusSummary> {
     blocking(move || status::changes_status(&p(&repo), path.as_deref().unwrap_or(""))).await
@@ -3421,6 +3427,7 @@ pub fn run() {
             askpass_respond,
             repository_sidebar_status,
             repository_branch_tracking,
+            repository_change_count,
             repository_changes_status,
             repository_status_with_operation,
             repo_open,

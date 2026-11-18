@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BranchTracking } from "./types";
 
-const mocks = vi.hoisted(() => ({ repositoryBranchTracking: vi.fn() }));
+const mocks = vi.hoisted(() => ({ repositoryBranchTracking: vi.fn(), repositoryChangeCount: vi.fn() }));
 vi.mock("./api", () => ({ api: mocks, errorMessage: String }));
 vi.mock("./store", () => ({
   repositorySidebarStatus: () => null,
@@ -12,7 +12,7 @@ vi.mock("./repositoryLibrary", async original => ({
   useLibrary: { getState: () => ({ knownRoots: [] }), subscribe: () => () => {} },
 }));
 
-const { scanRepositoryTracking, trackingOf, useRepositoryTracking } = await import("./repositoryTracking");
+const { changesOf, scanRepositoryChanges, scanRepositoryTracking, trackingOf, useRepositoryTracking } = await import("./repositoryTracking");
 
 const tracking = (change: Partial<BranchTracking> = {}): BranchTracking =>
   ({ branch: "main", oid: "a", upstream: "origin/main", ahead: 0, behind: 0, unpublished: null, ...change });
@@ -20,7 +20,8 @@ const tracking = (change: Partial<BranchTracking> = {}): BranchTracking =>
 describe("repository tracking", () => {
   beforeEach(() => {
     mocks.repositoryBranchTracking.mockReset();
-    useRepositoryTracking.setState({ byKey: {} });
+    mocks.repositoryChangeCount.mockReset();
+    useRepositoryTracking.setState({ byKey: {}, changes: {} });
   });
 
   it("checks every repository of the library, several at a time", async () => {
@@ -57,6 +58,19 @@ describe("repository tracking", () => {
     await Promise.all([second, third]);
     expect(mocks.repositoryBranchTracking).toHaveBeenCalledTimes(2);
     expect(trackingOf(useRepositoryTracking.getState().byKey, "C:/work/one")?.ahead).toBe(3);
+  });
+
+  it("reads every branch before any change count, so Incoming and Outgoing fill first", async () => {
+    const order: string[] = [];
+    mocks.repositoryBranchTracking.mockImplementation(async (root: string) => { order.push(`branch ${root}`); return tracking(); });
+    mocks.repositoryChangeCount.mockImplementation(async (root: string) => { order.push(`changes ${root}`); return root.endsWith("3") ? 4 : 0; });
+    const roots = Array.from({ length: 12 }, (_, i) => `C:/work/repo-${i}`);
+    await Promise.all([scanRepositoryTracking(roots), scanRepositoryChanges(roots)]);
+    const lastBranch = Math.max(...order.flatMap((entry, i) => entry.startsWith("branch") ? [i] : []));
+    const firstChanges = order.findIndex(entry => entry.startsWith("changes"));
+    expect(lastBranch).toBeLessThan(firstChanges + 6);
+    const changes = useRepositoryTracking.getState().changes;
+    expect(roots.filter(root => (changesOf(changes, root) ?? 0) > 0)).toEqual(["C:/work/repo-3"]);
   });
 
   it("drops the counts of a repository that can no longer be read", async () => {

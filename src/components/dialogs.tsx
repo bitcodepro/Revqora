@@ -931,7 +931,11 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
           <select id="git-fetch-interval" className="select" value={s.autoFetchMinutes} onChange={e => s.set({ autoFetchMinutes: Number(e.target.value) })}>
             {[0, 1, 5, 10, 15, 30, 60].map(m => <option key={m} value={m}>{m ? `${m} min` : "Off"}</option>)}
           </select>
-          <small className="muted">Fetch open repositories and update the current branch’s ahead/behind counts.</small>
+          <small className="muted">Fetch open repositories and update the current branch’s ahead/behind counts. The first fetch runs 15 seconds after start.</small>
+          <label className="check">
+            <input type="checkbox" checked={s.autoFetchLibrary} onChange={e => s.set({ autoFetchLibrary: e.target.checked })} /> Also fetch repositories that are not open
+          </label>
+          <small className="muted">Keeps Incoming current for the whole library. Fetching never asks for credentials; a repository that needs them is skipped until restart.</small>
         </div>
         <label htmlFor="pr-watch-interval">PR activity check</label>
         <div>

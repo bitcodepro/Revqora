@@ -175,10 +175,24 @@ Now `fetch`, `push` and `ls-remote` inside a writing operation run in a *network
 - For direct Git, use `git log --branches --remotes --tags HEAD --fixed-strings --regexp-ignore-case --grep=PERF-825 --format=%H`. Replace `--grep` with `--author` for the email query. Use the same refs and query each time. Record application cache state separately from the OS cache, and collect a full MCP-client timing separately from the WebView-to-backend timing.
 - Include a large merge-heavy history, a commit touching hundreds of files, and a workspace with about 40 repositories in the next baseline. For parallel search, compare first result, completion and foreground UI latency together before changing concurrency.
 
-## Incoming and Outgoing for the whole library (November 2026)
+## Incoming, Outgoing and Changes for the whole library (November 2026)
 
-The Explorer's Incoming and Outgoing filters used the status of open repositories only. A repository in the library that was not open never matched, and an open one that was not selected matched Outgoing only once its branches were loaded (for a branch without an upstream). With 40 repositories, commits to push in closed repositories appeared only after opening them.
+The Explorer's Incoming, Outgoing and Changes filters used the status of open repositories only, and auto-fetch covered open repositories only, one at a time, first after a whole interval. A repository in the library that was not open never matched, and an open one that was not selected matched Outgoing only once its branches were loaded (for a branch without an upstream). With 40 repositories, commits to push in closed repositories appeared only after opening them.
 
 `repository_branch_tracking` reads the current branch without a working-tree scan: HEAD from the repository's own files, one `for-each-ref` for the branch, its upstream and `upstream:track`, and one `rev-list --count <tip> --not --remotes` for a branch without an upstream. The UI (`src/lib/repositoryTracking.ts`) checks every repository of the library at start, six at a time, reads of one repository one after another; then new repositories, closed tabs, open tabs whose branch list is not loaded, and closed repositories when the window regains focus (at most every 10 s). Open repositories still answer from their own status.
 
-Measured with `cargo test --test library_tracking_timing -- --ignored --nocapture` (40 clones of a 2,000-file repository with 20 untracked files each, six reads at a time, Windows): the sidebar status of all 40 takes 1.83–1.91 s, branch tracking 0.62–0.74 s. Each Git process costs most of the time; the gap grows with the working tree.
+Changes for repositories that are not open come from `repository_change_count`: one `git status --porcelain=v1 --untracked-files=normal --no-renames` (an untracked folder counts once). These reads are queued after every branch read, so Incoming and Outgoing fill first.
+
+Incoming needs fresh remote refs. Auto-fetch now starts its first round 15 s after launch instead of one interval later, fetches four repositories at a time instead of one, and by default includes library repositories that are not open (Settings → Git auto-fetch → **Also fetch repositories that are not open**). A finished operation on a closed repository updates its counts.
+
+Measured with `cargo test --test library_tracking_timing -- --ignored --nocapture` (40 clones of a 2,000-file repository with 20 untracked files each, six reads at a time, local bare remote, Windows):
+
+| Read for all 40 repositories | Time |
+|---|---|
+| Sidebar status (before: open repositories only) | 1.86–1.93 s |
+| Branch tracking (Incoming, Outgoing) | 0.64–0.66 s |
+| Change count (Changes) | 1.85–1.89 s |
+| Background fetch of 20 repositories, one at a time (before) | 12.4 s |
+| Background fetch of 20 repositories, four at a time | 4.2 s |
+
+Each Git process costs most of the tracking time. The change count is about as expensive as the status, because both check the index against the working tree; it runs after the branch reads. With a real server, fetch time depends on the network.

@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, CircleAlert, FolderGit2, FolderPlus, Pencil, Unlink, X } from "lucide-react";
 import type { CSSProperties, MouseEvent, PointerEvent } from "react";
 import { repositoryIncoming, repositoryOutgoing, repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
-import { trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
+import { changesOf, trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
 import { contextMenu } from "../lib/ui";
 import { bindingFor, matchesShortcut, prettyCombo } from "../lib/shortcuts";
 import { FavoriteButton, openLibraryRepository, renameRepositoryDialog } from "./RepositoryLibrary";
@@ -40,6 +40,7 @@ export function RepositoryNavigationRow({ root, name, tab, current, selected, se
   const status = repositorySidebarStatus(tab);
   // A closed or still loading repository shows the counts read from its refs.
   const tracking = useRepositoryTracking(s => status ? undefined : trackingOf(s.byKey, root));
+  const changes = useRepositoryTracking(s => status ? undefined : changesOf(s.changes, root));
   const menu = () => [
     ...repositoryMenu(root, name, selection, groupId, createGroup),
     ...(explorer ? [{ separator: true as const }, {
@@ -70,7 +71,7 @@ export function RepositoryNavigationRow({ root, name, tab, current, selected, se
       {!tab && <span className="faint">Closed</span>}
       {tab && !tab.info && (tab.error ? <CircleAlert size={12} className="amber" aria-label="Repository unavailable"/> : <span className="faint" title="Opening repository…" aria-label="Opening repository">…</span>)}
       <AheadBehind ahead={status ? status.ahead : repositoryOutgoing(undefined, tracking)} behind={status ? status.behind : repositoryIncoming(undefined, tracking)}/>
-      {!!status?.files.length && <span className="repository-dirty" aria-label="Local changes"/>}
+      {(status ? !!status.files.length : !!changes) && <span className="repository-dirty" aria-label="Local changes"/>}
       {!!tab?.fetchError && <CircleAlert size={12} className="amber"/>}
     </button>
     <FavoriteButton root={root} name={name}/>

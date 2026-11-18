@@ -1,12 +1,13 @@
-//! Time to fill the Explorer's Incoming and Outgoing filters for a library of repositories:
-//! the refs-only branch tracking against the full sidebar status. Ignored by default:
+//! Time to fill the Explorer's Incoming, Outgoing and Changes filters for a library of
+//! repositories: refs-only branch tracking and the change count against the full sidebar
+//! status, and a background fetch round of the whole library. Ignored by default:
 //! `cargo test --test library_tracking_timing -- --ignored --nocapture`
 //! Set REVQORA_TIMING_REPOSITORIES / REVQORA_TIMING_FILES to change the fixture size.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use revqora_lib::git::{runner, status, tracking};
+use revqora_lib::git::{ops, runner, status, tracking};
 
 fn git(dir: &Path, args: &[&str]) {
     runner::run(dir, args.iter().copied()).unwrap_or_else(|e| panic!("git {args:?}: {e:?}"));
@@ -17,10 +18,14 @@ fn env_count(name: &str, default: usize) -> usize {
 
 /// Runs `read` for every repository, six at a time like the UI, and returns milliseconds.
 fn sweep(repos: &[PathBuf], read: fn(&Path)) -> u128 {
+    sweep_with(repos, 6, read)
+}
+
+fn sweep_with(repos: &[PathBuf], parallel: usize, read: fn(&Path)) -> u128 {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let started = Instant::now();
     std::thread::scope(|scope| {
-        for _ in 0..6 {
+        for _ in 0..parallel {
             scope.spawn(|| loop {
                 let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let Some(repo) = repos.get(index) else { break };
@@ -69,8 +74,19 @@ fn library_tracking_compared_with_sidebar_status() {
     for round in 1..=3 {
         let status_ms = sweep(&repos, |repo| drop(status::sidebar_status(repo).unwrap()));
         let tracking_ms = sweep(&repos, |repo| assert!(tracking::branch_tracking(repo).unwrap().branch.is_some()));
-        println!("round {round}: {count} repositories × {files} files: sidebar status {status_ms} ms, branch tracking {tracking_ms} ms");
+        let changes_ms = sweep(&repos, |repo| assert_eq!(tracking::change_count(repo).unwrap(), 20));
+        println!(
+            "round {round}: {count} repositories × {files} files: sidebar status {status_ms} ms, branch tracking {tracking_ms} ms, change count {changes_ms} ms"
+        );
     }
+    // Incoming: a new commit on the server, then one background fetch round of the library.
+    git(&seed, &["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "--allow-empty", "-qm", "incoming"]);
+    git(&seed, &["push", "-q", origin.to_str().unwrap(), "main"]);
+    let sequential_ms = sweep_with(&repos[..count / 2], 1, |repo| drop(ops::fetch_background(repo).unwrap()));
+    let parallel_ms = sweep_with(&repos[count / 2..], 4, |repo| drop(ops::fetch_background(repo).unwrap()));
+    println!("background fetch of {} repositories: one at a time {sequential_ms} ms, four at a time {parallel_ms} ms", count / 2);
+    let incoming = repos.iter().filter(|repo| tracking::branch_tracking(repo).unwrap().behind > 0).count();
+    assert_eq!(incoming, count, "every fetched repository shows the incoming commit");
     let outgoing = repos.iter().filter(|repo| tracking::branch_tracking(repo).unwrap().ahead > 0).count();
     assert_eq!(outgoing, count.div_ceil(13));
 }

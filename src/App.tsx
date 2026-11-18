@@ -32,7 +32,7 @@ import { ChangesView } from "./components/ChangesView";
 import { AskpassHost } from "./components/Askpass";
 import { branchCommitCompare } from "./components/BranchCommitCompare";
 import { startUpdateChecks } from "./lib/update";
-import { createAutoFetch, defaultFetch } from "./lib/autofetch";
+import { createAutoFetch, defaultFetch, fetchRound } from "./lib/autofetch";
 import { useBackgroundPoll } from "./lib/backgroundPolling";
 import { checkPullRequestActivity, resetPullRequestActivity } from "./lib/prTracking";
 import { refreshRepositoryView } from "./lib/prRefresh";
@@ -40,7 +40,8 @@ import { RepositoryOverview, RepositorySidebar } from "./components/Repositories
 import { HISTORY_MODES, workspaceMode } from "./lib/workspaceLayouts";
 import { WorkspaceLayoutContext, useWorkspaceLayout } from "./lib/workspaceLayoutContext";
 import { RepositoryExplorer } from "./components/RepositoryExplorer";
-import { startRepositoryTracking } from "./lib/repositoryTracking";
+import { scanRepositoryChanges, scanRepositoryTracking, startRepositoryTracking } from "./lib/repositoryTracking";
+import { uniqueRoots, useLibrary } from "./lib/repositoryLibrary";
 import { DetachedPanel, DetachedPlaceholder, PanelWindowsProvider, usePanelTitleMenu, usePanelWindows, type PanelId } from "./components/PanelWindows";
 import "./styles/workspace.css";
 
@@ -268,24 +269,36 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
 const quietFetch = createAutoFetch({
   fetch: defaultFetch,
   refresh: (root) => {
+    // A repository that is not open only needs its incoming and outgoing counts.
+    if (!useRepos.getState().tabs[root]) return scanRepositoryTracking([root]);
     useRepos.getState().patch(root, { lastFetchedAt: Date.now(), fetchError: null });
     return useRepos.getState().refresh(root, { background: true, revalidate: true, info: true, status: true, refs: true });
   },
-  failed: (root, e) => useRepos.getState().patch(root, { fetchError: errorMessage(e) }),
-  busy: () => useUi.getState().busy.length > 0 || useUi.getState().repositoryOperations.length > 0 || Object.values(useRepos.getState().tabs).some((t) => t.pendingMutations > 0),
+  failed: (root, e) => { if (useRepos.getState().tabs[root]) useRepos.getState().patch(root, { fetchError: errorMessage(e) }); },
+  // Other background fetches of the same round do not count as the user's work.
+  busy: () => useUi.getState().busy.length > 0 || useUi.getState().repositoryOperations.some(op => op.command !== "fetch_background")
+    || Object.values(useRepos.getState().tabs).some((t) => t.pendingMutations > 0),
 });
 
-/** Fetches open repositories in the background (Settings → Git auto-fetch). */
+/** Background fetches running at once (each waits on its own server). */
+const AUTO_FETCH_PARALLEL = 4;
+/** The first round starts shortly after launch instead of one interval later. */
+const FIRST_AUTO_FETCH_MS = 15_000;
+
+/** Fetches open repositories, and with Settings → Git auto-fetch → "Also fetch repositories that
+ *  are not open" the whole library, so Incoming is current without opening each repository. */
 function useAutoFetch() {
   const minutes = useSettings((s) => s.autoFetchMinutes);
   useBackgroundPoll(minutes, async current => {
     const { active, order } = useRepos.getState();
-    const roots = new Set(active ? [active, ...order] : order);
-    for (const root of roots) {
-      if (!current()) return;
-      if (useRepos.getState().tabs[root]?.info) await quietFetch(root);
-    }
-  });
+    const library = useSettings.getState().autoFetchLibrary ? useLibrary.getState().knownRoots : [];
+    const roots = uniqueRoots([...(active ? [active] : []), ...order, ...library]);
+    await fetchRound(roots, async root => {
+      const tab = useRepos.getState().tabs[root];
+      // An open repository is fetched once it has loaded.
+      if (!tab || tab.info) await quietFetch(root);
+    }, current, AUTO_FETCH_PARALLEL);
+  }, false, undefined, FIRST_AUTO_FETCH_MS);
 }
 
 export default function App() {
@@ -365,6 +378,11 @@ function MainApp() {
     unsubs.push(listen<{ opId: string; line: string }>("op-progress", (e) => updateBusy(e.payload.opId, e.payload.line)));
     unsubs.push(listen<RepositoryOperation>("repository-operation", (e) => {
       updateRepositoryOperation(e.payload);
+      if ((e.payload.phase === "finished" || e.payload.phase === "failed") && !useRepos.getState().tabs[e.payload.repo]) {
+        // A repository that is not open (background fetch, an MCP client): update its counts.
+        void scanRepositoryTracking([e.payload.repo]);
+        if (e.payload.command !== "fetch_background") void scanRepositoryChanges([e.payload.repo]);
+      }
       if (e.payload.command === "fetch_background") return;
       if (e.payload.phase === "finished" || e.payload.phase === "failed") {
         // Shared refs can change in another worktree. Refresh all open views.

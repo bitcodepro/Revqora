@@ -764,6 +764,13 @@ export function repositoryOutgoing(tab: RepoTab | undefined, tracking?: BranchTr
   return tracking && tracking.branch === status.branch && tracking.oid === status.oid ? tracking.unpublished ?? 0 : 0;
 }
 
+/** Whether a repository has staged, unstaged or untracked changes: its own status when open,
+ *  otherwise the change count read for repositories that are not open. */
+export function repositoryHasChanges(tab: RepoTab | undefined, changes?: number): boolean {
+  const status = repositorySidebarStatus(tab);
+  return status ? status.files.length > 0 : (changes ?? 0) > 0;
+}
+
 /** Commits the current branch's upstream has and the branch does not (see repositoryOutgoing). */
 export function repositoryIncoming(tab: RepoTab | undefined, tracking?: BranchTracking): number {
   const status = repositorySidebarStatus(tab);

@@ -59,7 +59,7 @@ For a *new unpublished branch*, publish it with Push. For a *merged and deleted 
 
 ## Auto-fetch and Refresh
 
-Auto-fetch updates known remote history at the configured interval. It does not automatically Pull, Push, commit or refresh PR discussions. **F5** refreshes the local view; use PR-specific refresh buttons for API data.
+Auto-fetch updates known remote history at the configured interval. The first round runs 15 seconds after start and fetches four repositories at a time. With **Also fetch repositories that are not open** (on by default) it covers every repository in the library, so Explorer's **Incoming** filter is current without opening each one. It never asks for credentials; a repository that needs them is skipped until restart. It does not automatically Pull, Push, commit or refresh PR discussions. **F5** refreshes the local view; use PR-specific refresh buttons for API data.
 
 A slow or unresponsive remote does not freeze the repository. While Fetch, Pull, Push or Auto-fetch waits on the server, History, Changes and diffs keep loading. Other actions that change the repository (commit, checkout, another Pull) wait their turn and run in the order you started them. Auto-fetch never queues in front of you: when another operation is running, it skips that round quietly and tries again at the next interval. It gives up after 30 seconds without leaving Git lock files behind.
 

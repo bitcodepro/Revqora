@@ -13,8 +13,8 @@ import * as A from "../lib/actions";
 import { basename, relativeTime } from "../lib/format";
 import { pullBlockReason, runRepositoryBatch, type BatchResult } from "../lib/repositoryBatch";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { repositoryIncoming, repositoryOutgoing, repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
-import { trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
+import { repositoryHasChanges, repositoryIncoming, repositoryOutgoing, repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
+import { changesOf, trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
 import { contextMenu, endBusy, showDialog, startBusy, toast, toggleRepositoryOverview, useUi } from "../lib/ui";
 import { AheadBehind } from "./bits";
 import { Modal } from "./Modal";
@@ -162,7 +162,7 @@ export function RepositorySidebar() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [changesOnly, setChangesOnly] = useState(false);
   const [outgoingOnly, setOutgoingOnly] = useState(false);
-  const tracking = useRepositoryTracking(s => s.byKey);
+  const tracking = useRepositoryTracking(s => s.byKey), changes = useRepositoryTracking(s => s.changes);
   const library = useLibrary();
   const groupId = library.activeGroupId;
   const actionsCollapsed = useSettings(s => s.repositoryActionsCollapsed);
@@ -185,7 +185,7 @@ export function RepositorySidebar() {
   const filterUpdates = updatesOnly;
   const visible = candidates.filter(root => `${root} ${displayName(root)}`.toLowerCase().includes(search)
     && (!filterUpdates || repositoryIncoming(tabs[root], trackingOf(tracking, root)) > 0) && (!outgoingOnly || repositoryOutgoing(tabs[root], trackingOf(tracking, root)) > 0) && (!favoritesOnly || favorite.has(repositoryKey(root)))
-    && (!changesOnly || !!repositorySidebarStatus(tabs[root])?.files.length));
+    && (!changesOnly || repositoryHasChanges(tabs[root], changesOf(changes, root))));
   const selected = visible.filter(root => selection.includes(root));
   const groupIdsByRoot = new Map<string, string[]>();
   for (const group of library.groups) {

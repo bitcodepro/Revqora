@@ -51,6 +51,16 @@ pub fn branch_tracking(repo: &Path) -> GitResult<BranchTracking> {
     })
 }
 
+/// Staged, unstaged and untracked entries, for the Changes filter of a repository that is not
+/// open. One `git status` without rename detection; an untracked folder counts once instead of
+/// listing every file in it. Like every read, it never rewrites the index.
+pub fn change_count(repo: &Path) -> GitResult<usize> {
+    operations::read(repo, || {
+        let raw = runner::run_bytes(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--no-renames"])?;
+        Ok(raw.split(|byte| *byte == 0).filter(|entry| !entry.is_empty()).count())
+    })
+}
+
 /// The branch HEAD points to; `None` when HEAD is detached.
 fn head_reference(repo: &Path) -> GitResult<Option<String>> {
     if let Some(head) = head_file(repo) {
@@ -145,6 +155,25 @@ mod tests {
         git(&repo, &["switch", "-q", "--detach"]);
         assert_eq!(branch_tracking(&repo).unwrap(), BranchTracking::default(), "detached HEAD has nothing to push");
         assert_eq!(head_file(&repo).map(|head| head.len()), Some(40));
+    }
+
+    #[test]
+    fn counts_staged_unstaged_and_untracked_entries_without_touching_the_index() {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture.path();
+        git(repo, &["init", "-qb", "main"]);
+        commit(repo, "tracked.txt");
+        assert_eq!(change_count(repo).unwrap(), 0);
+        let index = std::fs::read(repo.join(".git/index")).unwrap();
+        std::fs::write(repo.join("tracked.txt"), "edited").unwrap();
+        std::fs::create_dir_all(repo.join("build/deep")).unwrap();
+        std::fs::write(repo.join("build/deep/a.o"), "x").unwrap();
+        std::fs::write(repo.join("build/b.o"), "x").unwrap();
+        assert_eq!(change_count(repo).unwrap(), 2, "an edit and one untracked folder");
+        assert_eq!(std::fs::read(repo.join(".git/index")).unwrap(), index, "a read must not rewrite the index");
+        std::fs::write(repo.join("staged.txt"), "new").unwrap();
+        git(repo, &["add", "staged.txt"]);
+        assert_eq!(change_count(repo).unwrap(), 3);
     }
 
     #[test]
