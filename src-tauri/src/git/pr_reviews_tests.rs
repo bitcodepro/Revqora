@@ -386,3 +386,13 @@ fn real_review_contracts_pin_lines_and_identity_and_preserve_git_and_failed_draf
         manager.remove(&aid, &manager.snapshot().unwrap().revision).unwrap();
     }
 }
+
+#[test]
+fn bitbucket_participants_without_a_vote_report_their_role() {
+    let state = |v: serde_json::Value| participant_state(&v);
+    assert_eq!(state(serde_json::json!({"role":"PARTICIPANT","approved":false,"state":null})), "COMMENTED");
+    assert_eq!(state(serde_json::json!({"role":"REVIEWER","approved":false,"state":null})), "REVIEW_REQUESTED");
+    assert_eq!(state(serde_json::json!({"role":"REVIEWER","approved":false,"state":"changes_requested"})), "changes_requested");
+    assert_eq!(state(serde_json::json!({"role":"PARTICIPANT","approved":true})), "APPROVED");
+    assert_eq!(state(serde_json::json!({"role":"REVIEWER","status":"NEEDS_WORK"})), "NEEDS_WORK");
+}

@@ -61,7 +61,7 @@ try{
       await explorerBranchesSmoke({ page, work, shot });
     });
   }else if(suite==="cleanup") await branchCleanupSmoke({page,check,shot,work});
-  else {await worktreeManagerSmoke({page,check,shot,work});await forgeAccountsSmoke({page,check,shot,work,profile:path.join(work,"profile"),restart});await prCenterSmoke({page:app.page,check,shot,work});await agentWorkspaceSmoke({page:app.page,check,shot,work,restart,deferCleanup});await workflowSmoke({page:app.page,check,shot,work,restart});await futureStagesSmoke({page:app.page,check,shot,work,restart});}
+  else {await worktreeManagerSmoke({page,check,shot,work});await forgeAccountsSmoke({page,check,shot,work,profile:path.join(work,"profile"),restart});await prCenterSmoke({page:app.page,check,shot,work,exe:path.resolve(arg("--exe")),profile:path.join(work,"profile")});await agentWorkspaceSmoke({page:app.page,check,shot,work,restart,deferCleanup});await workflowSmoke({page:app.page,check,shot,work,restart});await futureStagesSmoke({page:app.page,check,shot,work,restart});}
   if(suite==="worktrees")await bitbucketTokenSmoke({exe:path.resolve(arg("--exe")),work,check,out});
   assertSmokeCoverage(suite,completed);
   if(errors.length)throw new Error(errors.join(" | "));

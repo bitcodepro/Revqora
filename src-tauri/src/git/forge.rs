@@ -45,6 +45,97 @@ pub struct PullRequest {
     /// Review state the provider includes in its list answer at no extra cost.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signals: Option<PrSignals>,
+    /// Reviewers the list answer names; missing when the provider does not list them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reviewers: Option<Vec<PrReviewer>>,
+}
+
+/// A reviewer from a PR list row. `state`: "requested" (no decision yet), "approved",
+/// "changes_requested", "commented", or "unknown" when the list does not say.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrReviewer {
+    pub id: String,
+    pub login: String,
+    pub name: String,
+    pub state: &'static str,
+    /// A team or group: whether it includes the viewer is not known.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub group: bool,
+}
+
+fn reviewer(v: &Value, id: &str, login: &str, name: &str, state: &'static str, group: bool) -> PrReviewer {
+    PrReviewer {
+        id: user_id(v, id),
+        login: v.pointer(login).and_then(Value::as_str).unwrap_or("").into(),
+        name: v.pointer(name).and_then(Value::as_str).unwrap_or("").into(),
+        state,
+        group,
+    }
+}
+
+/// Reviewers as each provider lists them, without another request.
+fn reviewers(kind: &str, v: &Value) -> Option<Vec<PrReviewer>> {
+    let rows = |ptr: &str| v.pointer(ptr).and_then(Value::as_array);
+    match kind {
+        // GitHub removes a reviewer from this list once they submit a review.
+        "github" => {
+            let users = rows("/requested_reviewers")?.iter().map(|r| reviewer(r, "/id", "/login", "/login", "requested", false));
+            let teams = rows("/requested_teams").into_iter().flatten().map(|t| reviewer(t, "/id", "/slug", "/name", "requested", true));
+            Some(users.chain(teams).collect())
+        }
+        // GitLab lists reviewers without their review state.
+        "gitlab" => Some(rows("/reviewers")?.iter().map(|r| reviewer(r, "/id", "/username", "/name", "unknown", false)).collect()),
+        "bitbucket" => {
+            let participants = rows("/participants")?;
+            let mut list: Vec<PrReviewer> = participants
+                .iter()
+                .filter(|p| p.get("role").and_then(Value::as_str) == Some("REVIEWER"))
+                .map(|p| {
+                    let state = match p.get("state").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase().as_str() {
+                        "approved" => "approved",
+                        "changes_requested" => "changes_requested",
+                        _ if p.get("approved").and_then(Value::as_bool) == Some(true) => "approved",
+                        _ => "requested",
+                    };
+                    reviewer(p, "/user/uuid", "/user/nickname", "/user/display_name", state, false)
+                })
+                .collect();
+            for r in rows("/reviewers").into_iter().flatten() {
+                let r = reviewer(r, "/uuid", "/nickname", "/display_name", "requested", false);
+                if !r.id.is_empty() && !list.iter().any(|known| known.id == r.id) {
+                    list.push(r);
+                }
+            }
+            Some(list)
+        }
+        "bitbucket-server" => Some(
+            rows("/reviewers")?
+                .iter()
+                .map(|r| {
+                    let state = match r.get("status").and_then(Value::as_str) {
+                        Some("APPROVED") => "approved",
+                        Some("NEEDS_WORK") => "changes_requested",
+                        _ => "requested",
+                    };
+                    reviewer(r, "/user/id", "/user/name", "/user/displayName", state, false)
+                })
+                .collect(),
+        ),
+        _ => Some(
+            rows("/reviewers")?
+                .iter()
+                .map(|r| {
+                    let state = match r.get("vote").and_then(Value::as_i64).unwrap_or(0) {
+                        5.. => "approved",
+                        ..=-5 => "changes_requested",
+                        _ => "requested",
+                    };
+                    reviewer(r, "/id", "/uniqueName", "/displayName", state, r.get("isContainer").and_then(Value::as_bool) == Some(true))
+                })
+                .collect(),
+        ),
+    }
 }
 
 /// What a PR list row can show without another request. A missing field means the
@@ -794,6 +885,7 @@ pub(super) fn gh_pr(v: &Value) -> PullRequest {
         created: s(v, "created_at"),
         head_sha: v.get("head").map(|h| s(h, "sha")).unwrap_or_default(),
         signals: signals("github", v),
+        reviewers: reviewers("github", v),
     }
 }
 
@@ -812,6 +904,7 @@ pub(super) fn gl_mr(v: &Value) -> PullRequest {
         created: s(v, "created_at"),
         head_sha: s(v, "sha"),
         signals: signals("gitlab", v),
+        reviewers: reviewers("gitlab", v),
     }
 }
 
@@ -834,6 +927,7 @@ pub fn bb_pr(v: &Value) -> PullRequest {
         created: s(v, "created_on"),
         head_sha: p(v, "/source/commit/hash"),
         signals: signals("bitbucket", v),
+        reviewers: reviewers("bitbucket", v),
     }
 }
 
@@ -852,6 +946,7 @@ pub fn bbs_pr(v: &Value) -> PullRequest {
         created: v.get("createdDate").and_then(|d| d.as_i64()).map(iso_from_millis).unwrap_or_default(),
         head_sha: p(v, "/fromRef/latestCommit"),
         signals: signals("bitbucket-server", v),
+        reviewers: reviewers("bitbucket-server", v),
     }
 }
 
@@ -896,6 +991,7 @@ pub(super) fn azure_pr(v: &Value, f: &ForgeInfo) -> PullRequest {
         created: s(v, "creationDate"),
         head_sha: p(v, "/lastMergeSourceCommit/commitId"),
         signals: signals("azure", v),
+        reviewers: reviewers("azure", v),
     }
 }
 
@@ -1182,6 +1278,58 @@ mod tests {
         assert_eq!(az.signals, Some(PrSignals { approvals: Some(2), changes_requested: Some(1), conflicts: Some(true), ..Default::default() }));
         // GitHub lists no counts: the row stays without signals instead of showing zeros.
         assert_eq!(gh_pr(&json(r#"{"number":1}"#)).signals, None);
+    }
+
+    #[test]
+    fn list_rows_name_reviewers_with_the_state_each_provider_reports() {
+        let json = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+        let states = |p: PullRequest| p.reviewers.map(|list| list.into_iter().map(|r| (r.id, r.login, r.state, r.group)).collect::<Vec<_>>());
+        let gh = gh_pr(&json(r#"{"number":1,"requested_reviewers":[{"id":7,"login":"ann"}],"requested_teams":[{"id":9,"slug":"core","name":"Core"}]}"#));
+        assert_eq!(states(gh), Some(vec![("7".into(), "ann".into(), "requested", false), ("9".into(), "core".into(), "requested", true)]));
+        // A provider that does not list reviewers leaves the field out instead of claiming none.
+        assert_eq!(gh_pr(&json(r#"{"number":1}"#)).reviewers, None);
+        let gl = gl_mr(&json(r#"{"iid":1,"reviewers":[{"id":3,"username":"bob","name":"Bob"}]}"#));
+        assert_eq!(states(gl), Some(vec![("3".into(), "bob".into(), "unknown", false)]));
+        let bb = bb_pr(&json(
+            r#"{"id":1,"participants":[{"role":"REVIEWER","approved":true,"user":{"uuid":"{a}","nickname":"ann"}},{"role":"PARTICIPANT","approved":false,"user":{"uuid":"{p}"}},{"role":"REVIEWER","state":"changes_requested","user":{"uuid":"{b}","nickname":"bob"}}],"reviewers":[{"uuid":"{b}","nickname":"bob"},{"uuid":"{c}","nickname":"cy"}]}"#,
+        ));
+        assert_eq!(
+            states(bb),
+            Some(vec![
+                ("{a}".into(), "ann".into(), "approved", false),
+                ("{b}".into(), "bob".into(), "changes_requested", false),
+                ("{c}".into(), "cy".into(), "requested", false)
+            ])
+        );
+        let bbs = bbs_pr(&json(
+            r#"{"id":1,"reviewers":[{"status":"UNAPPROVED","user":{"id":5,"name":"dee"}},{"status":"NEEDS_WORK","user":{"id":6,"name":"eve"}}]}"#,
+        ));
+        assert_eq!(states(bbs), Some(vec![("5".into(), "dee".into(), "requested", false), ("6".into(), "eve".into(), "changes_requested", false)]));
+        let f = ForgeInfo {
+            kind: "azure".into(),
+            host: String::new(),
+            project: "p/r".into(),
+            remote: "origin".into(),
+            web_url: String::new(),
+            api: String::new(),
+            connection_revision: None,
+            account_login: None,
+            account_id: None,
+        };
+        let az = azure_pr(
+            &json(
+                r#"{"pullRequestId":1,"reviewers":[{"id":"u1","uniqueName":"fay@x","vote":0},{"id":"u2","uniqueName":"gus@x","vote":-5},{"id":"g1","uniqueName":"[p]\\Team","vote":10,"isContainer":true}]}"#,
+            ),
+            &f,
+        );
+        assert_eq!(
+            states(az),
+            Some(vec![
+                ("u1".into(), "fay@x".into(), "requested", false),
+                ("u2".into(), "gus@x".into(), "changes_requested", false),
+                ("g1".into(), "[p]\\Team".into(), "approved", true)
+            ])
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@ import {createPrMergeFixture,prMergeSmoke} from "./pr-merge-smoke.mjs";
 import {createPrReviewFixture,prReviewSmoke} from "./pr-review-smoke.mjs";
 // The native UI and Rust HTTP client talk only to this loopback forge.
 import http from "node:http";
+import {execFile} from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import {timedExecFileSync as execFileSync} from "./ci-timing.mjs";
@@ -9,7 +10,7 @@ import {withViewport} from "./ui-driver.mjs";
 import {interceptClipboard} from "./name-path-copy-smoke.mjs";
 import { hasDiffOption, setDiffOption } from "./diff-view-menu.mjs";
 
-export async function prCenterSmoke({page,check,shot,work}) {
+export async function prCenterSmoke({page,check,shot,work,exe,profile}) {
   const root=path.join(work,"stage13-pr-center"),requests=[],token="stage13-public-fixture-token",a="a".repeat(40),b="b".repeat(40);
   fs.mkdirSync(root);const git=(...args)=>execFileSync("git",["-C",root,...args],{encoding:"utf8",windowsHide:true,env:{...process.env,GIT_OPTIONAL_LOCKS:"0"}}).trim();
   git("init","-qb","main");git("config","user.name","PR Tester");git("config","user.email","pr@example.invalid");git("config","commit.gpgsign","false");
@@ -291,6 +292,64 @@ export async function prCenterSmoke({page,check,shot,work}) {
     await openNumber(1);
     await prReviewSmoke({page,check,shot,root,invoke,pulls,requests,fixture:reviewFixture,a,git,index,head});
     await prMergeSmoke({page,check,shot,root,pulls,fixture:mergeFixture,git,index,head});
+    await check("Needs attention shows why each PR needs you, keeps its filter and matches the MCP queue",async()=>{
+      // PR 1 (another author) asks for your review; your own open PRs get CI and merge reads.
+      pulls.get(1).requested_reviewers=[{id:13,login:"pr-tester"}];
+      Object.assign(mergeFixture.state,{queue:false,late:false,allow:["merge","squash","rebase"]});
+      const scope=page.getByRole("combobox",{name:"Pull request scope",exact:true});
+      await scope.selectOption("all");
+      const all=page.getByRole("region",{name:"Pull requests across repositories",exact:true});
+      const list=all.getByRole("listbox",{name:"Pull requests",exact:true});
+      const filter=all.getByRole("combobox",{name:"Needs attention filter",exact:true});
+      const settled=async()=>{await all.getByRole("button",{name:"Refresh all pull requests",exact:true}).and(page.locator(":enabled")).waitFor({timeout:90000});await all.locator(".loading-status").waitFor({state:"detached",timeout:90000});};
+      const shown=()=>list.getByRole("option").evaluateAll(rows=>rows.map(row=>[Number(row.dataset.prNumber),[...row.querySelectorAll("[data-attention]")].map(r=>r.dataset.attention+": "+r.textContent)]));
+      const attentionReads=()=>requests.filter(r=>r.path.includes("/rules/branches/")).length;
+      const readsBefore=attentionReads(),requestsBefore=requests.length,began=Date.now();
+      await filter.selectOption("review");
+      await settled();
+      // Request cost of one queue scan: list pages plus the reads for your own open PRs.
+      const scanned=requests.slice(requestsBefore),lists=scanned.filter(r=>/\/pulls\?/.test(r.path)).length,read=attentionReads()-readsBefore;
+      console.log(`Needs attention scan: ${Date.now()-began} ms, ${scanned.length} requests (${lists} list pages, ${read} PRs read, ${((scanned.length-lists)/Math.max(1,read)).toFixed(1)} requests per PR)`);
+      const review=await shown();
+      if(review.length!==2||review.some(([n,reasons])=>n!==1||reasons.join()!=="review: Your review is requested"))throw Error(`Review queue was ${JSON.stringify(review)}`);
+      if(!await all.getByRole("combobox",{name:"Authors across repositories",exact:true}).isDisabled())throw Error("The queue must cover every author");
+      if(attentionReads()===readsBefore)throw Error("Turning on the queue did not read merge readiness");
+      await filter.selectOption("merge");
+      const merge=await shown();
+      if(!merge.length||merge.some(([n,reasons])=>n%2||!reasons.some(r=>r.startsWith("merge: Ready to merge"))))throw Error(`Ready-to-merge queue was ${JSON.stringify(merge)}`);
+      if(!await list.getByRole("option").first().locator(".pr-reason-time").innerText().then(t=>t.startsWith("checked")))throw Error("A row did not show when its status was read");
+      await filter.selectOption("check");
+      const unread=await shown();
+      // The second repository's merge rules are not served, and only 20 requests per repository are read.
+      if(!unread.some(([,reasons])=>reasons.some(r=>r.startsWith("check: CI and merge status unavailable:")))||!unread.some(([,reasons])=>reasons.some(r=>r.startsWith("check: Not checked: more than 20"))))throw Error(`Needs-a-check queue was ${JSON.stringify(unread)}`);
+      await shot("109-pr-needs-attention");
+      // The filter survives leaving the combined view.
+      await filter.selectOption("review");
+      await scope.selectOption("repository");await page.waitForSelector("[data-pr-detail]");
+      await scope.selectOption("all");
+      if(await filter.inputValue()!=="review")throw Error("The attention filter was not kept");
+      await settled();
+      const ui=(await shown()).map(([n,reasons])=>[n,reasons.map(r=>r.slice(r.indexOf(": ")+2))]).sort();
+      await invoke("mcp_enable",{enabled:true});
+      try {
+        const messages=[{id:1,method:"initialize",params:{protocolVersion:"2025-11-25"}},{method:"notifications/initialized"},{id:2,method:"tools/call",params:{name:"pull_request_queue",arguments:{filter:"review"}}}];
+        const stdout=await new Promise((resolve,reject)=>{
+          const child=execFile(exe,["--mcp"],{windowsHide:true,timeout:140_000,env:{...process.env,REVQORA_MULTI_INSTANCE:"1",WEBVIEW2_USER_DATA_FOLDER:profile}},(error,out)=>error?reject(error):resolve(out));
+          child.stdin.on("error",reject);
+          child.stdin.end(messages.map(message=>JSON.stringify({jsonrpc:"2.0",...message})).join("\n")+"\n");
+        });
+        const reply=stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line)).find(message=>message.id===2);
+        if(reply?.result?.isError!==false)throw Error(`MCP queue failed: ${JSON.stringify(reply)}`);
+        const queue=JSON.parse(reply.result.content[0].text);
+        const mcp=queue.items.map(item=>[item.number,item.reasons.map(r=>r.text)]).sort();
+        if(JSON.stringify(mcp)!==JSON.stringify(ui))throw Error(`MCP queue ${JSON.stringify(mcp)} differs from the PR Center ${JSON.stringify(ui)}`);
+        if(!queue.repositories.some(r=>r.repository===root&&r.status==="complete"&&r.loadedAt))throw Error("MCP queue did not report repository freshness");
+      } finally {await invoke("mcp_enable",{enabled:false});}
+      delete pulls.get(1).requested_reviewers;
+      await filter.selectOption("all");
+      await scope.selectOption("repository");
+      await page.waitForSelector("[data-pr-detail]");
+    });
     // Runs last: the Git checks read this fixture's info/refs, which earlier checks forbid.
     await check("Check connection shows each step separately and copies a report without secrets",async()=>{
       const before=requests.length;

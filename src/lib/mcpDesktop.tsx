@@ -3,13 +3,15 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, newOpId } from "./api";
 import { McpToolError, mcpError } from "./mcpErrors";
-import { mcpNeedsApproval, pushesToTrackedUpstream, runAutomaticMcpAction, type McpActionOptions } from "./mcpAutomatic";
+import { mcpNeedsApproval, pushesToTrackedUpstream, runAutomaticMcpAction, withoutProgress, type McpActionOptions } from "./mcpAutomatic";
 import { assertDiffVersion, conflictLine, conflictSidePage, diffPage, type DiffPageOptions } from "./mcpDiff";
 import { loadBranchPreferences } from "./branchManager";
 import { deletionProtection } from "./branchProtection";
 import * as A from "./actions";
 import { basename } from "./format";
 import { useRepos } from "./store";
+import { buildQueue, keepSnapshot, queueKey, queuePage, resumeSnapshot } from "./prQueue";
+import type { AttentionFilter } from "./prAttention";
 import { useSettings } from "./settings";
 import { closeOverlay, openOverlay, showDialog, useUi } from "./ui";
 import type { BranchInfo, McpApprovalMode, PrState, SearchMode, StageReview, StashInfo, StatusSummary } from "./types";
@@ -22,7 +24,7 @@ type Arguments = McpActionOptions & DiffPageOptions & {
   scope?: string; query?: string; mode?: SearchMode | "all"; state?: PrState;
   section?: string; cursor?: string; revision?: string; fileId?: string;
   view?: string; id?: string; action?: string; paths?: string[];
-  from?: string; to?: string; feed?: string; statusVersion?: string;
+  from?: string; to?: string; feed?: string; statusVersion?: string; filter?: Exclude<AttentionFilter, "all">;
 };
 interface DesktopRequest {
   id: string;
@@ -288,7 +290,9 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     const pathReview = action === "unstage" ? await reviewPaths(root, action, a.paths!) : prepared.paths;
     let target = stash?.oid ?? pickOid ?? a.target;
     const number = a.number;
-    const title = actionNames[action];
+    // A review with a chosen kind is submitted as approved; without one the review dialog opens.
+    const reviewKindNames: Record<string, string> = { comment: "Comment", approve: "Approve", request_changes: "Request changes" };
+    const title = action === "review_pr" && a.reviewKind ? `Submit PR review: ${reviewKindNames[a.reviewKind]}` : actionNames[action];
     const detail: string[] = [];
     if (action === "commit" && !a.message?.trim()) throw new Error("Supply a commit message.");
     if (target && action !== "create_branch") detail.push(`Target: ${target}`);
@@ -346,6 +350,14 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
     const pr = ["review_pr", "merge_pr", "pr_workflow"].includes(action) ? await prContext(root, number!) : null;
     if (pr && a.revision && a.revision !== pr.detail.revision) throw new McpToolError("stale_state", "The pull request changed. Read the current revision and submit a new request.");
     if (pr) detail.push(pr.detail.pull.title, `${pr.detail.pull.head} → ${pr.detail.pull.base} · ${pr.detail.pull.headSha}`);
+    if (action === "review_pr" && a.message) detail.push("", "Message:", a.message.length > 600 ? a.message.slice(0, 600) + "…" : a.message);
+    // Bitbucket Cloud does not report its merge checks, so Revqora never merges there. Say so before asking for approval.
+    if (action === "merge_pr" && pr?.forge.kind === "bitbucket") throw new McpToolError("pr_action_unavailable", "Merge this pull request in Bitbucket Cloud. Revqora cannot read its merge checks.");
+    if (action === "create_pr") {
+      if (!(await api.forgeInfo(root))?.connectionRevision) throw new McpToolError("pr_connection_required", "Choose an API account and remote in Revqora's PR Center first.");
+      if (a.title) detail.push(`Title: ${a.title}`);
+      if (a.branch || a.base) detail.push(`${a.branch ?? "current branch"} → ${a.base ?? "default target"}${a.draft ? " · draft" : ""}`);
+    }
     if (action === "commit") {
       const info = await api.repoInfo(root);
       if (info.state.kind !== "none" || baseline.conflictCount || !baseline.stagedCount) throw new Error("Stage changes and finish the current Git operation before committing.");
@@ -519,7 +531,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
       case "fetch":
         if (manual && a.prune === undefined) {
           if (await A.fetchAll(root, false) === undefined) throw new Error("Fetch failed. See Revqora's operation log.");
-        } else status.message = await api.fetch(root, null, a.prune ?? false, newOpId());
+        } else status.message = withoutProgress(await api.fetch(root, null, a.prune ?? false, newOpId()));
         break;
       case "stash_drop": {
         const checkpoint = await api.stashDrop(root, stash!.index, stash!.oid, expectedState);
@@ -540,7 +552,7 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
         break;
       }
       default:
-        if (!manual) {
+        if (!manual || action === "review_pr" && a.reviewKind) {
           const outcome = await runAutomaticMcpAction({ root, action, options: a, baseline, expectedState, mode, pullMode, pr, mergePlan,
             workflowCursor: run?.cursor, authorize: async () => {
               if (!await authorize()) throw new McpToolError("session_expired", cancellationMessages.session_expired);
@@ -554,10 +566,20 @@ async function runAction(event: DesktopRequest, root: string, a: Arguments, stat
           case "stash": await A.stash(root, expectedState); break;
           case "pull": await A.pull(root, pullMode, expectedState, a.prune ?? false); break;
           case "push": await A.push(root); break;
-          case "create_pr": await (await import("../components/PullRequests")).createPullRequest(root, null); break;
+          case "create_pr": {
+            // The editor opens with the requested title, branches and description. The request finishes when the user creates or cancels it.
+            status.phase = "awaiting_confirmation";
+            status.message = "Create or cancel the pull request in Revqora's PR editor.";
+            const pull = await (await import("../components/PullRequests")).createPullRequest(root, null,
+              { head: a.branch?.trim(), base: a.base?.trim(), title: a.title?.trim(), body: a.message, draft: a.draft });
+            if (!pull) { cancelAction(status, "dialog_dismissed"); return; }
+            status.result = { number: pull.number, url: pull.url, branch: pull.head, base: pull.base };
+            status.message = undefined;
+            status.phase = "succeeded";
+            return;
+          }
           case "review_pr": await (await import("../components/PrReviews")).chooseReview(pr!, () => { void useRepos.getState().refresh(root); }); break;
           case "merge_pr":
-            if (pr!.forge.kind === "bitbucket") throw new Error("This PR must be merged in Bitbucket. Review it in PR Center.");
             await mergeDialog({ ...pr!, updated: () => { void useRepos.getState().refresh(root); } });
             break;
           case "review_workflow_step": {
@@ -662,6 +684,17 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
     }
     const { session: _session, root: _root, ...result } = status;
     return result;
+  }
+  if (name === "pull_request_queue") {
+    // Open repositories only, as for every other tool; one repository narrows it.
+    const roots = a.repository ? [requireRepo(a.repository)] : permittedRoots();
+    const filter = a.filter ?? "any", key = queueKey(roots, filter);
+    if (a.cursor) {
+      const resumed = resumeSnapshot(a.cursor, key);
+      if (!resumed) throw new McpToolError("stale_state", "This queue page expired or belongs to another filter or repository set. Start again without cursor.");
+      return queuePage(resumed.snapshot, resumed.offset);
+    }
+    return queuePage(keepSnapshot(await buildQueue(roots, filter), key));
   }
   const root = requireRepo(a.repository);
   switch (name) {

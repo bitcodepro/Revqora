@@ -27,6 +27,7 @@ pub mod more;
 pub mod operations;
 pub mod ops;
 pub mod optimize;
+pub mod pr_attention;
 pub mod pr_center;
 pub mod pr_merge;
 pub mod pr_reviews;

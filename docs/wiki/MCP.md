@@ -36,7 +36,7 @@ Every `request_action` requires `repository` and `action`. Extra parameters that
 | `stash_drop` | `stashIndex` and full stash SHA as `target` | |
 | `fetch`, `pull` | | `prune` defaults to `false` in all approval modes |
 | `push` | | `remote`, `remoteBranch`, `force`, `setUpstream` for automatic push |
-| `create_pr` | `title`, `branch` and `base` for automatic creation | `message`, `draft` for automatic creation |
+| `create_pr` | `title`, `branch` and `base` for automatic creation | `message`, `draft` |
 | `review_pr` | `number` | `revision`, `reviewKind`, `message` |
 | `merge_pr` | `number` | `revision`, `method`, `message` |
 | `pr_workflow` | `number` | `revision` |
@@ -45,13 +45,17 @@ Every `request_action` requires `repository` and `action`. Extra parameters that
 
 `create_branch` resolves the starting point before confirmation and reports the created branch and SHA. Without `base` it starts from `HEAD`. You can qualify a local branch as `refs/heads/<name>`. A missing branch or commit returns `branch_not_found` or `commit_not_found` before confirmation. A Stage path missing from `repository_status` returns `file_not_found`. If it appears there but cannot be staged, Revqora returns `file_not_eligible`. Revqora rechecks the relevant state before executing.
 
+With approval, `create_pr` opens Revqora's PR editor filled with the requested title, source and target branches, description and draft setting. You can change them before creating. While the editor is open the action stays `awaiting_confirmation`; it then reports `succeeded` with the created PR's `number`, `url`, `branch` and `base`, or `cancelled` when the editor is closed. `review_pr` with `reviewKind` shows the review kind and message in the approval and submits that review once approved. Without `reviewKind` it opens the review dialog and reports `handed_off`. Bitbucket Cloud pull requests are merged on Bitbucket: `merge_pr` returns `pr_action_unavailable` before asking for approval.
+
 If a provider write returns `result_unverified`, inspect the PR, reviews or merge status on the provider before retrying. Revqora guards against duplicate writes when the first result is uncertain.
 
 The former `sync` action returns `action_removed`. Use `fetch`, `pull` or `push` for the desired operation.
 
 The MCP confirmation dialog expires after 120 seconds. The action reports `cancelled` with reason `approval_timed_out`, and the desktop releases the next request.
 
-A `pull_request` read has a 120-second desktop deadline. Files and checks return their revision and accept an expected revision to detect stale requests. For diff, pass the revision and file ID returned by files. Bitbucket profile verification uses the selected PR connection. For personal tokens, `/user` requires `read:user:bitbucket` (OAuth: `account`).
+`pull_request_queue` lists the open pull requests that need you, as the PR Center's **Needs attention** filter does, across the repositories open in Revqora or for one `repository`. Pass `filter` (`any`, `review`, `changes`, `ci`, `merge` or `check`). Each item carries its `reasons` and `checkedAt`; each repository its `status` (`complete`, `failed`, `incomplete`, `needs_identity` or `no_provider`), `loadedAt` and `error`, so a failed or slow provider is reported instead of looking empty. `needs_identity` means the list loaded but Revqora does not know your account there; set **My PR author** in the PR Center or use a verified API account. Follow `nextCursor` with the same filter and repository; an expired cursor returns `stale_state`.
+
+A `pull_request` or `pull_request_queue` read has a 120-second desktop deadline. Files and checks return their revision and accept an expected revision to detect stale requests. For diff, pass the revision and file ID returned by files. Bitbucket profile verification uses the selected PR connection. For personal tokens, `/user` requires `read:user:bitbucket` (OAuth: `account`).
 
 ## Checkout and stash recovery
 

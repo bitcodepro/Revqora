@@ -3,6 +3,7 @@ import { api, errorMessage } from "./api";
 import { errorFacts } from "./diagnostics";
 import { authorScope, loadAuthorPreferences, matchesPrAuthor, type PrAuthor } from "./prAuthors";
 import { appendPullRequests } from "./prCenter";
+import { ATTENTION_PARALLEL, attentionCandidates, IDENTITY_NOTICE, type AttentionFacts } from "./prAttention";
 import { visitPrPages, viewerAuthor } from "./prTracking";
 import { uniqueRoots, useLibrary } from "./repositoryLibrary";
 import { useRepos } from "./store";
@@ -22,7 +23,51 @@ export type RepositoryRequests = {
   loading?: boolean;
   /** Some rows come from an earlier load: the refresh is running or failed. */
   stale?: boolean;
+  /** Provider reads for the "Needs attention" queue, by PR number. */
+  attention?: Record<number, AttentionFacts>;
+  /** Why this repository's queue may be incomplete (for example, an unknown identity). */
+  attentionNotice?: string;
 };
+
+/** Runs at most `n` tasks at once, in the order they were queued. */
+export function limiter(n: number) {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  return async function run<T>(task: () => Promise<T>): Promise<T> {
+    if (running >= n) await new Promise<void>(resolve => waiting.push(resolve));
+    running++;
+    try { return await task(); } finally { running--; waiting.shift()?.(); }
+  };
+}
+/** Shared by the PR Center and the MCP queue, so together they never exceed it. */
+const attentionSlots = limiter(ATTENTION_PARALLEL);
+
+/**
+ * Reads CI, merge readiness and review state for the open PRs of one repository that need the
+ * viewer. Earlier answers stay until a new one arrives; an error replaces the answer, so a
+ * failed read is never shown as an earlier success.
+ */
+export async function readAttention(root: string, group: Pick<RepositoryRequests, "forge" | "author" | "items">, current: () => boolean,
+  report: (change: (old: RepositoryRequests) => RepositoryRequests) => void, run: <T>(task: () => Promise<T>) => Promise<T> = attentionSlots): Promise<void> {
+  const connection = group.forge?.connectionRevision;
+  if (!group.forge) return;
+  if (!group.author) { report(old => ({ ...old, attentionNotice: IDENTITY_NOTICE })); return; }
+  const { check, skipped } = attentionCandidates(group.items, group.author);
+  const skippedText = `Not checked: more than ${check.length} of your requests in this repository. Open the PR to see its status.`;
+  report(old => {
+    const attention: Record<number, AttentionFacts> = {};
+    for (const n of check) attention[n] = { ...old.attention?.[n], loading: true, error: undefined, skipped: undefined };
+    for (const n of skipped) attention[n] = { skipped: skippedText };
+    return { ...old, attention, attentionNotice: undefined };
+  });
+  const settle = (n: number, facts: AttentionFacts) => report(old => ({ ...old, attention: { ...old.attention, [n]: facts } }));
+  await Promise.all(check.map(n => run(async () => {
+    if (!current()) return;
+    if (!connection) { settle(n, { error: "Choose an API account for this repository." }); return; }
+    try { settle(n, { value: await api.prAttention(root, n, connection) }); }
+    catch (error) { settle(n, { error: errorMessage(error) }); }
+  })));
+}
 
 const EMPTY: Record<string, RepositoryRequests> = {};
 /** Repositories read at once. Each waits on its own server, so slow ones hold fewer others. */
@@ -51,7 +96,7 @@ export function seedGroups(previous: Record<string, RepositoryRequests> | undefi
   return groups;
 }
 
-export function useAllPullRequests(state: PrState, mine: boolean) {
+export function useAllPullRequests(state: PrState, mine: boolean, attention = false) {
   const known = useLibrary(s => s.knownRoots);
   const opened = useRepos(s => s.order);
   // Library edits that keep the same repositories must not restart the scan.
@@ -59,8 +104,18 @@ export function useAllPullRequests(state: PrState, mine: boolean) {
   const roots = useMemo(() => JSON.parse(rootsKey) as string[], [rootsKey]);
   const [generation, setGeneration] = useState(0);
   const refresh = useCallback(async () => { setGeneration(n => n + 1); }, []);
+  // Turning the attention queue on reads the provider for the PRs that need you; turning it
+  // off keeps the rows and reads nothing more.
+  const wantAttention = useRef(attention);
+  wantAttention.current = attention;
+  const [attentionEpoch, setAttentionEpoch] = useState(0);
+  const attentionWasOn = useRef(attention);
+  useEffect(() => {
+    if (attention && !attentionWasOn.current) setAttentionEpoch(n => n + 1);
+    attentionWasOn.current = attention;
+  }, [attention]);
   // "Mine" filters the scanned rows, so switching it does not load every repository again.
-  const scan = useMemo(() => ({ roots, state, generation }), [roots, state, generation]);
+  const scan = useMemo(() => ({ roots, state, generation, attentionEpoch }), [roots, state, generation, attentionEpoch]);
   const [result, setResult] = useState<{ scan: typeof scan; groups: typeof EMPTY; finished: boolean }>();
   const scans = useRef(Promise.resolve());
   // The rows shown now, which a refresh keeps until each repository answers again.
@@ -85,7 +140,7 @@ export function useAllPullRequests(state: PrState, mine: boolean) {
     }
     scans.current = scans.current.then(async () => {
       if (!current) return;
-      await scanPullRequests(scan.roots, scan.state, earlier, () => current, update);
+      await scanPullRequests(scan.roots, scan.state, earlier, () => current, update, PR_SCAN_PARALLEL, () => wantAttention.current && scan.state !== "closed" && scan.state !== "merged");
       if (current) setResult(previous => previous?.scan === scan ? { ...previous, finished: true } : previous);
     });
     return () => { current = false; };
@@ -113,13 +168,13 @@ export function useAllPullRequests(state: PrState, mine: boolean) {
  * once `current()` is false (another status, another library or a newer refresh).
  */
 export async function scanPullRequests(roots: string[], state: PrState, earlier: Map<string, PullRequest[]>, current: () => boolean,
-  update: (root: string, change: (old: RepositoryRequests) => RepositoryRequests) => void, parallel = PR_SCAN_PARALLEL): Promise<void> {
+  update: (root: string, change: (old: RepositoryRequests) => RepositoryRequests) => void, parallel = PR_SCAN_PARALLEL, attention: () => boolean = () => false): Promise<void> {
   let index = 0;
   const report = (root: string, change: (old: RepositoryRequests) => RepositoryRequests) => { if (current()) update(root, change); };
   async function worker() {
     while (current() && index < roots.length) {
       const root = roots[index++];
-      let fresh: PullRequest[] = [], freshScope: string | null = null;
+      let fresh: PullRequest[] = [], freshScope: string | null = null, forge: ForgeInfo | null = null, author: PrAuthor | null = null;
       try {
         if (!await api.forgeKind(root) || !current()) {
           // No provider any more: forget the rows of an earlier scan.
@@ -128,12 +183,14 @@ export async function scanPullRequests(roots: string[], state: PrState, earlier:
         }
         const complete = await visitPrPages(cursor => api.prPage(root, state, cursor), current, page => {
           const scope = authorScope(page.forge, page.viewer);
-          const author = viewerAuthor(page.viewer) ?? loadAuthorPreferences(root, scope, page.forge).mine;
           fresh = appendPullRequests(freshScope === scope ? fresh : [], page.items);
           freshScope = scope;
+          forge = page.forge;
+          author = viewerAuthor(page.viewer) ?? loadAuthorPreferences(root, scope, page.forge).mine;
           report(root, old => ({ ...old, forge: page.forge, scope, author, items: old.scope === scope ? refreshingRows(fresh, earlier.get(root) ?? []) : fresh }));
         }, null, Infinity);
         if (complete) report(root, old => ({ ...old, items: fresh, notice: undefined, noticeDetails: undefined, loading: false, stale: false, loadedAt: Date.now() }));
+        if (complete && attention() && current()) await readAttention(root, { forge, author, items: fresh }, current, change => report(root, change));
       } catch (error) {
         // Rows read before the error stay, and so do earlier rows: marked as not current.
         report(root, old => ({ ...old, notice: errorMessage(error), noticeDetails: errorFacts(error), loading: false, stale: old.items.length > fresh.length }));

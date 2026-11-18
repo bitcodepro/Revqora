@@ -798,6 +798,17 @@ export interface PullRequest {
   headSha: string;
   /** Review state the provider reports in lists; a missing field is not reported. */
   signals?: PrSignals;
+  /** Reviewers the provider names in lists; missing when it does not list them. */
+  reviewers?: PrReviewer[];
+}
+/** `state` "unknown": the list does not say whether this reviewer has reviewed (GitLab). */
+export interface PrReviewer { id: string; login: string; name: string; state: "requested" | "approved" | "changes_requested" | "commented" | "unknown"; group?: boolean }
+/** CI, merge readiness and reviewer states read from the provider for one PR. */
+export interface PrAttention {
+  number: number; revision: string; headSha: string; checkedAt: number;
+  ci: "failed" | "pending" | "passed" | "none"; failedChecks: string[];
+  merge: "ready" | "blocked" | "unknown"; blockers: string[];
+  reviewers?: PrReviewer[];
 }
 export interface PrSignals { comments?: number; approvals?: number; changesRequested?: number; conflicts?: boolean }
 

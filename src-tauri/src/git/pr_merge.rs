@@ -90,6 +90,15 @@ struct Prepared {
 pub fn plan(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Plan> {
     prepare(repo, n, connection, revision).map(|p| p.plan)
 }
+/// Merge readiness of the PR as the server reports it now, for the attention queue: the same
+/// reads as [`plan`] without the merge identity and the second metadata read that guard a
+/// merge confirmation. Nothing here can be used to submit a merge.
+pub fn current_readiness(repo: &Path, n: u64, connection: &str) -> GitResult<(Detail, Plan)> {
+    let f = forge::reviewed_connection(repo, connection)?;
+    let (d, v) = pr_center::load_detail(repo, &f, n)?;
+    let (plan, _) = readiness(repo, &f, &d, &v)?;
+    Ok((d, plan))
+}
 pub fn verified_checks(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<Vec<forge::Check>> {
     let (f, d, _) = scoped(repo, n, connection, revision)?;
     let checks = checks::load(repo, &f, &d)?;

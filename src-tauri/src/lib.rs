@@ -3019,6 +3019,10 @@ async fn pr_detail(repo: String, number: u64, expected_connection: String) -> Gi
     blocking(move || git::pr_center::detail(&p(&repo), number, &expected_connection)).await
 }
 #[tauri::command]
+async fn pr_attention(repo: String, number: u64, expected_connection: String) -> GitResult<git::pr_attention::Attention> {
+    blocking(move || git::pr_attention::attention(&p(&repo), number, &expected_connection)).await
+}
+#[tauri::command]
 async fn pr_checks(repo: String, number: u64, expected_connection: String, expected_revision: Option<String>) -> GitResult<git::pr_center::Checks> {
     blocking(move || git::pr_center::checks(&p(&repo), number, &expected_connection, expected_revision.as_deref())).await
 }
@@ -3654,6 +3658,7 @@ pub fn run() {
             pr_review_act,
             pr_page,
             pr_detail,
+            pr_attention,
             pr_checks,
             pr_create,
             pr_edit,

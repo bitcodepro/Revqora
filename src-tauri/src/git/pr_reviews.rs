@@ -24,6 +24,22 @@ fn id(v: &Value, p: &str) -> String {
 fn boolean(v: &Value, p: &str) -> bool {
     v.pointer(p).and_then(Value::as_bool) == Some(true)
 }
+/// A Bitbucket participant's review state. Bitbucket Cloud leaves `state` empty for a
+/// reviewer who has not voted and for someone who only commented; the role tells them apart.
+fn participant_state(x: &Value) -> String {
+    if boolean(x, "/approved") {
+        return "APPROVED".into();
+    }
+    let state = text(x, "/state") + &text(x, "/status");
+    if !state.is_empty() {
+        return state;
+    }
+    match text(x, "/role").as_str() {
+        "REVIEWER" => "REVIEW_REQUESTED".into(),
+        "PARTICIPANT" => "COMMENTED".into(),
+        _ => state,
+    }
+}
 fn scoped(repo: &Path, n: u64, connection: &str, revision: &str) -> GitResult<(ForgeInfo, Detail, Value)> {
     let f = forge::reviewed_connection(repo, connection)?;
     let (d, v) = pr_center::load_detail(repo, &f, n)?;
@@ -449,7 +465,7 @@ pub fn page(repo: &Path, n: u64, connection: &str, revision: &str, feed: &str, c
         rows.iter().map(|v| singleton(v, feed, "github")).collect()
     } else if feed == "reviews" {
         notice = Some("Current review/approval status, not a complete review event history.".into());
-        let rows=match f.kind.as_str(){"gitlab"=>{let a=forge::request(repo,&f,"GET",&route(&f,n,"/approvals"),None)?;array(&a,"/approved_by")?.iter().map(|x|json!({"id":id(x,"/user/id"),"author":text(x,"/user/username"),"state":"APPROVED","body":"","created":text(x,"/approved_at")})).collect::<Vec<_>>()},"azure"=>array(&v,"/reviewers")?.iter().map(|x|json!({"id":id(x,"/id"),"author":text(x,"/displayName"),"state":format!("vote {}",id(x,"/vote")),"body":"","created":""})).collect(),_=>v.get(if f.kind=="bitbucket"{"participants"}else{"reviewers"}).and_then(Value::as_array).ok_or_else(||err("Missing review status."))?.iter().map(|x|json!({"id":id(x,"/user/uuid")+&id(x,"/user/id"),"author":text(x,"/user/display_name")+&text(x,"/user/displayName"),"state":if boolean(x,"/approved"){"APPROVED".into()}else{text(x,"/state")+&text(x,"/status")},"body":"","created":""})).collect()};
+        let rows=match f.kind.as_str(){"gitlab"=>{let a=forge::request(repo,&f,"GET",&route(&f,n,"/approvals"),None)?;array(&a,"/approved_by")?.iter().map(|x|json!({"id":id(x,"/user/id"),"author":text(x,"/user/username"),"state":"APPROVED","body":"","created":text(x,"/approved_at")})).collect::<Vec<_>>()},"azure"=>array(&v,"/reviewers")?.iter().map(|x|json!({"id":id(x,"/id"),"author":text(x,"/displayName"),"state":format!("vote {}",id(x,"/vote")),"body":"","created":""})).collect(),_=>v.get(if f.kind=="bitbucket"{"participants"}else{"reviewers"}).and_then(Value::as_array).ok_or_else(||err("Missing review status."))?.iter().map(|x|json!({"id":id(x,"/user/uuid")+&id(x,"/user/id"),"author":text(x,"/user/display_name")+&text(x,"/user/displayName"),"state":participant_state(x),"body":"","created":""})).collect()};
         if rows.len() > c.offset + PAGE {
             next = Some(c.offset + PAGE);
         }

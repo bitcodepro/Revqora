@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { authorOf } from "./prAuthors";
 import type { ForgeInfo, PullRequest } from "./types";
-import { mineOnly, pullRequestFreshness, refreshingRows, scanPullRequests, seedGroups, type RepositoryRequests } from "./useAllPullRequests";
+import { mineOnly, pullRequestFreshness, readAttention, refreshingRows, scanPullRequests, seedGroups, type RepositoryRequests } from "./useAllPullRequests";
 
-const api = vi.hoisted(() => ({ forgeKind: vi.fn(), prPage: vi.fn() }));
+const api = vi.hoisted(() => ({ forgeKind: vi.fn(), prPage: vi.fn(), prAttention: vi.fn() }));
 vi.mock("./api", () => ({ api, errorMessage: (error: unknown) => error instanceof Error ? error.message : String(error) }));
 
 const forge = { kind: "github", api: "https://api.github.com", project: "team/repo", accountLogin: "alice" } as ForgeInfo;
@@ -120,5 +120,32 @@ describe("refreshing pull requests across repositories", () => {
     expect(refreshingRows([titled(5), titled(3)], [titled(3, "old"), titled(2), titled(1)]).map(p => [p.number, p.title])).toEqual([[5, "PR 5"], [3, "PR 3"], [2, "PR 2"], [1, "PR 1"]]);
     expect(seedGroups(undefined, ["/repo"])).toEqual({});
     expect(seedGroups({ "/gone": group({}) }, ["/repo"])).toEqual({});
+  });
+});
+
+describe("Attention reads", () => {
+  const connected = { ...forge, connectionRevision: "conn" } as ForgeInfo;
+  const own = (number: number) => ({ ...mine, number, headSha: `sha${number}`, state: "open", created: `2026-11-0${number}T00:00:00Z` } as PullRequest);
+  it("keeps the earlier answer while reading again, and replaces it with an error instead of keeping it", async () => {
+    let state: RepositoryRequests = group({ forge: connected, items: [own(1), own(2)], attention: { 1: { value: { headSha: "sha1", ci: "failed" } as never } } });
+    const seen: RepositoryRequests[] = [];
+    let release!: () => void;
+    api.prAttention.mockImplementation((_root: string, number: number) => number === 1
+      ? new Promise((_, reject) => { release = () => reject(new Error("HTTP 502")); })
+      : Promise.resolve({ number, headSha: "sha2", ci: "passed" }));
+    const done = readAttention("/repo", state, () => true, change => { state = change(state); seen.push(state); }, task => task());
+    expect(seen[0].attention?.[1]).toMatchObject({ loading: true, value: { ci: "failed" } });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    release();
+    await done;
+    expect(state.attention?.[1]).toEqual({ error: "HTTP 502" });
+    expect(state.attention?.[2]?.value).toMatchObject({ ci: "passed" });
+  });
+
+  it("asks for an identity before reading anything", async () => {
+    let state = group({ forge: connected, author: null });
+    await readAttention("/repo", state, () => true, change => { state = change(state); });
+    expect(state.attentionNotice).toMatch(/does not know your account/);
+    expect(api.prAttention).not.toHaveBeenCalled();
   });
 });

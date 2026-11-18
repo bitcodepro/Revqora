@@ -422,6 +422,7 @@ export const api = {
   repositoryWebLink: (repo: string, reference: string | null) => call<string | null>("repository_web_link", { repo, reference }),
   pullRequests: (repo: string) => call<{ forge: ForgeInfo; items: PullRequest[] }>("pull_requests", { repo }),
   prPage: (repo: string, state: import("./types").PrState, cursor: string | null = null) => call<import("./types").PrPage>("pr_page", { repo, state, cursor }),
+  prAttention: (repo: string, number: number, expectedConnection: string) => call<import("./types").PrAttention>("pr_attention", { repo, number, expectedConnection }),
   prMergePlan: (repo: string, number: number, expectedConnection: string, expectedRevision: string) => call<import("./types").PrMergePlan>("pr_merge_plan", { repo, number, expectedConnection, expectedRevision }),
   prMergeSubmit: (repo: string, number: number, expectedConnection: string, expectedRevision: string, input: import("./types").PrMergeInput) => prWrite(call<import("./types").PrMergeResult>("pr_merge_submit", { repo, number, expectedConnection, expectedRevision, input })),
   prCleanupPlan: (repo: string, number: number, expectedConnection: string, expectedRevision: string, input: import("./types").PrCleanupInput) => call<import("./types").PrCleanupReview>("pr_cleanup_plan", { repo, number, expectedConnection, expectedRevision, input }),

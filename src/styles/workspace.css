@@ -371,6 +371,11 @@ button.pr-status-item {cursor:pointer}
 button.pr-status-item:hover {background:var(--bg)}
 .pr-signal {display:inline-flex;align-items:center;gap:4px;color:var(--text-dim);white-space:nowrap}
 .pr-signal.ok {color:var(--green)}.pr-signal.warn {color:var(--amber)}.pr-signal.danger {color:var(--red)}
+.pr-attention-filter {padding-bottom:6px}
+.pr-row-reasons {display:flex;gap:4px;align-items:center;min-width:0;overflow:hidden;white-space:nowrap;font-size:var(--fs-xs)}
+.pr-reason {padding:1px 6px;border-radius:4px;background:var(--bg-hover);overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0}
+.pr-reason-review {color:var(--accent)}.pr-reason-changes {color:var(--amber)}.pr-reason-ci {color:var(--red)}.pr-reason-merge {color:var(--green)}.pr-reason-check {color:var(--text-dim, var(--text))}
+.pr-reason-time {margin-left:auto;flex:none}
 .pr-row-signals {display:inline-flex;align-items:center;gap:8px;margin-left:auto;flex:none}
 .pr-row-signals .pr-signal {gap:3px}
 .pr-row-meta>.pr-row-signals+span {margin-left:0}
