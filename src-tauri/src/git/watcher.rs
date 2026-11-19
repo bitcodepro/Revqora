@@ -127,10 +127,19 @@ impl QuietFolders {
         self.known.clear();
     }
 
-    /// Whether the changed `path` lies in a quiet folder.
+    /// Whether the changed `path` lies in a quiet folder or is one. Windows also reports the
+    /// folder itself when a file inside it changes.
     fn contains(&mut self, path: &Path) -> bool {
         let Ok(rel) = path.strip_prefix(&self.root) else { return false };
-        let parts: Vec<String> = rel.parent().map(|dir| dir.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        if self.contains_folder(rel.parent()) {
+            return true;
+        }
+        !rel.as_os_str().is_empty() && path.is_dir() && self.contains_folder(Some(rel))
+    }
+
+    /// Whether `dir` (relative to the root) or one of its top folders is quiet.
+    fn contains_folder(&mut self, dir: Option<&Path>) -> bool {
+        let parts: Vec<String> = dir.map(|dir| dir.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect()).unwrap_or_default();
         let folders: Vec<String> = (1..=parts.len().min(Self::DEPTH)).map(|n| parts[..n].join("/")).collect();
         let unknown: Vec<String> = folders.iter().filter(|f| !self.known.contains_key(*f)).cloned().collect();
         if !unknown.is_empty() {
@@ -265,7 +274,14 @@ where
                         let metadata = if p.starts_with(&git_dir) { &git_dir } else { &common };
                         match classify_owned(&root, metadata, &ignored, p) {
                             Some(true) => (pending_git, relevant) = (true, true),
-                            Some(false) if !quiet.contains(p) => (pending_wt, relevant) = (true, true),
+                            Some(false) if !quiet.contains(p) => {
+                                (pending_wt, relevant) = (true, true);
+                                #[cfg(test)]
+                                {
+                                    use std::io::Write;
+                                    let _ = writeln!(std::io::stderr(), "[repository watcher] working tree change: {:?} {p:?}", ev.kind);
+                                }
+                            }
                             Some(false) | None => {}
                         }
                     }
@@ -441,6 +457,33 @@ mod tests {
         fs::write(root.join("release/out.txt"), b"3").unwrap();
         rx.recv_timeout(Duration::from_secs(10)).expect("a change of a force-added file was not reported");
         drop(watcher);
+        tmp.close().unwrap();
+    }
+
+    #[test]
+    fn a_quiet_folder_reported_for_itself_is_quiet_but_a_tracked_file_named_like_a_pattern_is_not() {
+        use crate::git::runner;
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join("release/sub")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        runner::run(&root, ["init", "-qb", "main"]).unwrap();
+        fs::write(root.join(".gitignore"), b"/release/\n*.log\n").unwrap();
+        fs::write(root.join("release/sub/out.txt"), b"1").unwrap();
+        fs::write(root.join("kept.log"), b"1").unwrap();
+        fs::write(root.join("src/main.rs"), b"1").unwrap();
+        runner::run(&root, ["add", "-f", "kept.log"]).unwrap();
+        let mut quiet = super::QuietFolders::new(&root);
+        // Windows reports the folder itself when a file inside it changes.
+        assert!(quiet.contains(&root.join("release")));
+        assert!(quiet.contains(&root.join("release/sub")));
+        assert!(quiet.contains(&root.join("release/sub/out.txt")));
+        assert!(!quiet.contains(&root.join("src")));
+        assert!(!quiet.contains(&root.join("src/main.rs")));
+        assert!(!quiet.contains(&root.join("kept.log")), "a tracked file is not a folder");
+        assert!(!quiet.contains(&root));
+        drop(quiet);
         tmp.close().unwrap();
     }
 

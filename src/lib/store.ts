@@ -186,6 +186,29 @@ function waitApplied(root: string, since: number, job: Promise<void> | undefined
   });
 }
 
+/** Resolves true once no staging or other tracked change of `root` is still being applied (its
+ *  status read included), false after `timeoutMs` or when the repository closes. */
+export function mutationsSettled(root: string, timeoutMs: number): Promise<boolean> {
+  const state = () => {
+    const tab = useRepos.getState().tabs[root];
+    return !tab ? false : tab.pendingMutations === 0 ? true : null;
+  };
+  const now = state();
+  if (now !== null) return Promise.resolve(now);
+  return new Promise((resolve) => {
+    const finish = (value: boolean) => {
+      clearTimeout(timer);
+      stop();
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    const stop = useRepos.subscribe(() => {
+      const next = state();
+      if (next !== null) finish(next);
+    });
+  });
+}
+
 /**
  * Refreshes `parts` for a change made at `since` and resolves once the shown repository's
  * status and info include it; refs, layers and history keep loading behind. A read that

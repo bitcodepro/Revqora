@@ -4,7 +4,7 @@ vi.mock("./settings", () => ({ useSettings: { getState: () => ({ set: vi.fn(), h
 vi.mock("./repositoryLibrary", async original => ({ ...await original<typeof import("./repositoryLibrary")>(), useLibrary: { getState: () => ({ remember: vi.fn() }) } }));
 vi.mock("./ui", () => ({ useUi: { setState: vi.fn() }, toast: { warning: vi.fn() } }));
 import { api } from "./api";
-import { covers, CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, historyAfterSwitch, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, repositoryHasChanges, repositoryIncoming, repositoryOutgoing, shownHistoryBranch, useRepos, type RepoTab } from "./store";
+import { covers, CURRENT_HISTORY_BRANCH, graphHistoryScope, hasMoreHistory, historyAfterSwitch, INITIAL_GRAPH_COMMITS, loadEntireHistory, loadGraph, repositoryHasChanges, repositoryIncoming, repositoryOutgoing, mutationsSettled, shownHistoryBranch, useRepos, type RepoTab } from "./store";
 import { previewGeneration } from "./commitPreview";
 import { repositoryCall, type Invoke } from "./operationClient";
 import type { RepoInfo, StatusSummary } from "./types";
@@ -304,6 +304,22 @@ describe("background repository observation", () => {
     expect(useRepos.getState().tabs[root].info?.head.branch).toBe("topic");
     await expect(repositoryCall(invoke, "commit", { repo: root, message: "Reviewed topic" })).resolves.toBe("committed");
     expect(calls.filter(c => c === "commit")).toHaveLength(1);
+  });
+});
+
+describe("mutationsSettled", () => {
+  it("waits for staging to finish, gives up after the timeout and when the repository closes", async () => {
+    useRepos.getState().patch(root, { pendingMutations: 0 });
+    await expect(mutationsSettled(root, 1_000)).resolves.toBe(true);
+    useRepos.getState().patch(root, { pendingMutations: 1 });
+    const waiting = mutationsSettled(root, 1_000);
+    useRepos.getState().patch(root, { pendingMutations: 0 });
+    await expect(waiting).resolves.toBe(true);
+    useRepos.getState().patch(root, { pendingMutations: 1 });
+    await expect(mutationsSettled(root, 10)).resolves.toBe(false);
+    const closing = mutationsSettled(root, 1_000);
+    useRepos.setState({ tabs: {} });
+    await expect(closing).resolves.toBe(false);
   });
 });
 

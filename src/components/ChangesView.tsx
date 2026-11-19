@@ -43,7 +43,7 @@ import {
 import { coAuthorDialog } from "./CommitAuthoring";
 import { addCoAuthor, coAuthorsIn, mergeRecentMessages, rememberMessage, removeCoAuthor, splitMessage } from "../lib/commitTrailers";
 import { api, errorMessage, isGitError, newOpId } from "../lib/api";
-import { useRepos, type ChangeSel, type RepoTab } from "../lib/store";
+import { mutationsSettled, useRepos, type ChangeSel, type RepoTab } from "../lib/store";
 import { useSettings } from "../lib/settings";
 import { bindingFor, matchesShortcut, prettyCombo, shortcutTitle } from "../lib/shortcuts";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
@@ -938,6 +938,8 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   const amendHead = useRef(draft.amendHead ?? null);
   const amendMessage = useRef(draft.amendMessage ?? null);
   const submitting = useRef(false);
+  /** The commit action of the latest render, for a shortcut that waited for staging. */
+  const latestCommit = useRef<() => Promise<void>>(async () => {});
   const setSummary = (value: string | ((current: string) => string)) => {
     amendRequest.current++;
     const next = typeof value === "function" ? value(messageRef.current.summary) : value;
@@ -1220,11 +1222,25 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
   };
 
   const label = merging ? (kind === "merge" ? "Confirm merge" : "Commit squash") : picking ? `Continue ${kind}` : amend ? "Amend commit" : stagedCount ? `Commit ${plural(stagedCount, "file")}` : "Commit";
+  latestCommit.current = () => doCommit();
   const submitShortcut = (e: React.KeyboardEvent) => {
     if (!matchesShortcut(e, "commit")) return;
     e.preventDefault();
     e.stopPropagation();
-    void doCommit();
+    if (pendingMutations === 0 || submitting.current) {
+      void doCommit();
+      return;
+    }
+    // Staging that is still finishing (its status read) must not swallow the shortcut: commit
+    // once it is done, with the form as it is then.
+    submitting.current = true;
+    void mutationsSettled(root, 30_000).then(async (settled) => {
+      // Let the form render the settled status before deciding.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      submitting.current = false;
+      if (settled) await latestCommit.current();
+      else toast.info("Updating changes", "Commit again once staging has finished.");
+    });
   };
 
   if (rebasing) {
