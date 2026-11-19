@@ -108,7 +108,9 @@ fn owned_paths(root: &Path, git_dir: &Path) -> Vec<PathBuf> {
 /// Folders of the working tree that Git ignores and that hold no tracked file (build output,
 /// logs, caches beyond the fixed list in `classify`). A change inside them cannot change the
 /// status, so it does not start a refresh. Answers are kept until a `.gitignore` or
-/// `info/exclude` changes; only the top folders (three levels) are checked.
+/// `info/exclude` changes (which files are ignored) or the index changes (which files are
+/// tracked: `git add -f` tracks a file inside an ignored folder); only the top folders (three
+/// levels) are checked.
 struct QuietFolders {
     root: PathBuf,
     known: std::collections::HashMap<String, bool>,
@@ -172,6 +174,14 @@ fn changes_ignore_rules(path: &Path) -> bool {
     path.file_name().is_some_and(|name| name == ".gitignore") || path.ends_with("info/exclude")
 }
 
+/// Whether `path` is this working tree's index (or its shared part, or the lock Git renames
+/// over it): the list of tracked files may have changed. `git_dirs` are this working tree's Git
+/// directory as given and resolved, in `comparable` form.
+fn changes_tracked_files(path: &Path, git_dirs: &[PathBuf]) -> bool {
+    let Some(name) = path.file_name().map(|name| name.to_string_lossy()) else { return false };
+    (name == "index" || name == "index.lock" || name.starts_with("sharedindex.")) && path.parent().is_some_and(|dir| git_dirs.contains(&comparable(dir)))
+}
+
 /// Milliseconds since the Unix epoch (the UI compares it with `Date.now()`).
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -184,6 +194,8 @@ where
 {
     let ignored = owned_paths(&root, &git_dir);
     let mut quiet = QuietFolders::new(&root);
+    // The index lives in this working tree's own Git directory (also for a linked worktree).
+    let index_dirs: Vec<PathBuf> = [Some(git_dir.clone()), std::fs::canonicalize(&git_dir).ok()].into_iter().flatten().map(|dir| comparable(&dir)).collect();
     let common = super::operations::repository_key(&root);
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher = notify::recommended_watcher(move |res| {
@@ -246,7 +258,7 @@ where
                 Ok(Ok(ev)) if !matches!(ev.kind, notify::EventKind::Access(_)) => {
                     let mut relevant = false;
                     for p in &ev.paths {
-                        if changes_ignore_rules(p) {
+                        if changes_ignore_rules(p) || changes_tracked_files(p, &index_dirs) {
                             quiet.forget();
                         }
                         // Shared refs/config/stash live outside a linked worktree's git dir.
@@ -391,6 +403,57 @@ mod tests {
         assert!(reported.last().is_some_and(|since| *since > read_started), "{read_started} vs {reported:?}");
         drop(watcher);
         tmp.close().unwrap();
+    }
+
+    #[test]
+    fn a_file_added_with_force_inside_a_quiet_ignored_folder_is_watched_again() {
+        use super::watch;
+        use crate::git::runner;
+        use std::{fs, sync::mpsc, time::Duration};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join("release")).unwrap();
+        runner::run(&root, ["init", "-qb", "main"]).unwrap();
+        fs::write(root.join(".gitignore"), b"/release/\n").unwrap();
+        fs::write(root.join("release/out.txt"), b"1").unwrap();
+        let git_dir = crate::git::repo::git_dir(&root).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let watcher = watch(
+            root.clone(),
+            git_dir,
+            move |_, worktree, _| {
+                if worktree {
+                    let _ = tx.send(());
+                }
+            },
+            || {},
+        )
+        .unwrap();
+        let settle = || while rx.recv_timeout(Duration::from_millis(800)).is_ok() {};
+        std::thread::sleep(Duration::from_millis(300));
+        settle();
+        // Build output in an ignored folder without tracked files does not start a refresh.
+        fs::write(root.join("release/out.txt"), b"2").unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(1500)).is_err(), "a write into a quiet ignored folder was reported");
+        // `git add -f` tracks the file: the folder is no longer quiet.
+        runner::run(&root, ["add", "-f", "release/out.txt"]).unwrap();
+        settle();
+        fs::write(root.join("release/out.txt"), b"3").unwrap();
+        rx.recv_timeout(Duration::from_secs(10)).expect("a change of a force-added file was not reported");
+        drop(watcher);
+        tmp.close().unwrap();
+    }
+
+    #[test]
+    fn only_the_working_trees_own_index_counts_as_a_change_of_tracked_files() {
+        let git_dir = Path::new("/work/repo/.git");
+        let dirs = [comparable(git_dir)];
+        for name in ["index", "index.lock", "sharedindex.0123456789abcdef0123456789abcdef01234567"] {
+            assert!(super::changes_tracked_files(&git_dir.join(name), &dirs), "{name}");
+        }
+        assert!(!super::changes_tracked_files(Path::new("/work/repo/docs/index"), &dirs));
+        assert!(!super::changes_tracked_files(&git_dir.join("HEAD"), &dirs));
+        assert!(!super::changes_tracked_files(&git_dir.join("worktrees/other/index"), &dirs));
     }
 
     #[cfg(windows)]
