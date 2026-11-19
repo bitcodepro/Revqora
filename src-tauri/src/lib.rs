@@ -603,9 +603,16 @@ fn git_selection() -> Option<git::locate::GitSelection> {
 }
 
 /// Version of the Git Credential Manager in use, if any (checked once per selected Git).
+/// `revqoraToken` says that Revqora answers this repository's sign-in itself, before GCM.
 #[tauri::command]
-async fn credential_manager() -> GitResult<Option<git::locate::CredentialManager>> {
-    blocking(|| Ok(git::locate::credential_manager())).await
+async fn credential_manager(repo: Option<String>) -> GitResult<Option<git::locate::CredentialManager>> {
+    blocking(move || {
+        Ok(git::locate::credential_manager().map(|mut gcm| {
+            gcm.revqora_token = repo.is_some_and(|repo| git_credentials::remembers(&p(&repo)));
+            gcm
+        }))
+    })
+    .await
 }
 
 /// Looks for git again (after the user installed or updated it).
@@ -1678,7 +1685,7 @@ async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expe
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_background", None, move || ops::fetch_background(&p(&repo))).await
 }
 
-/// Cancels the Fetch, Pull or Push with operation id `op_id`, running or still queued. Runs at
+/// Cancels the Fetch, Pull, Push or Push tag with operation id `op_id`, running or still queued. Runs at
 /// once (never queued behind the operation it stops). Other operations are not touched.
 /// Returns whether a running transfer was stopped.
 #[tauri::command]
@@ -1749,7 +1756,7 @@ async fn push_ref(
     op_id: String,
 ) -> GitResult<String> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "push_ref", Some(op_id.clone()), move || {
-        ops::push_ref(&p(&repo), &remote, &refspec, progress(&app, &op_id))
+        git::runner::transfers::for_operation(&op_id, || ops::push_ref(&p(&repo), &remote, &refspec, progress(&app, &op_id)))
     })
     .await
 }

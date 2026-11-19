@@ -489,6 +489,8 @@ export interface CredentialManager {
   version: string;
   outdated: boolean;
   minVersion: string;
+  /** Revqora answers the asked repository's sign-in with its own saved token, before GCM. */
+  revqoraToken: boolean;
 }
 
 export interface UpdateInfo {

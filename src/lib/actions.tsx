@@ -1,5 +1,6 @@
 import { readableMergeMessage } from "./branchRef";
 import { plural } from "./format";
+import { bitbucketHttps } from "./bitbucketHttps";
 // High-level user actions: call the backend, report results, refresh state.
 import { open as openFolder } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage, isGitError, newOpId } from "./api";
@@ -95,11 +96,14 @@ export async function act<T>(root: string, fn: () => Promise<T>, o: ActOptions<T
 /** Cancel for one fetch, pull or push (by its operation id): stops its Git transfer, or ends it before it starts when it is still queued. */
 const cancelTransfer = (opId: string) => () => void api.cancelTransfer(opId).catch(() => undefined);
 
-/** Errors every fetch, pull and push can end with. Returns false for the caller's own cases. */
-export function reportTransferError(root: string, e: unknown, label: string, remoteName?: string | null): boolean {
+/** Errors every fetch, pull and push can end with. Returns false for the caller's own cases.
+ *  `sends`: the transfer uploads (Push, Push tag); the server may have accepted it before Cancel stopped Git. */
+export function reportTransferError(root: string, e: unknown, label: string, remoteName?: string | null, sends = false): boolean {
   if (!isGitError(e)) return false;
   if (e.kind === "cancelled") {
-    toast.info(`${label} cancelled`, "Nothing else was changed.");
+    toast.info(`${label} cancelled`, sends
+      ? "The server may already have received it before Git was stopped. Fetch to see what the server has now."
+      : "Your branches and files were not changed.");
   } else if (e.kind === "auth") {
     recordError("Authentication failed", e);
     useUi.getState().toast({
@@ -163,23 +167,25 @@ export async function updateMovedTags(root: string) {
 
 const warnedCredentialManager = new Set<string>();
 
-/** Bitbucket Cloud refuses Git Credential Manager older than 3.0.0 from November 30, 2026: warn once per session. */
-async function warnOutdatedCredentialManager(root: string) {
-  const remotes = getTab(root)?.refs?.remotes ?? [];
-  if (warnedCredentialManager.has("bitbucket") || !remotes.some((r) => /bitbucket\.org/i.test(`${r.fetchUrl} ${r.pushUrl}`))) return;
-  warnedCredentialManager.add("bitbucket");
+/** Bitbucket Cloud refuses OAuth sign-in from Git Credential Manager older than 3.0.0 from November 30, 2026.
+ *  Warn once per session, only where GCM can be the one signing in: an HTTPS bitbucket.org remote, GCM configured
+ *  and older, and no token of Revqora's own answering first. SSH, API tokens and app passwords are not affected. */
+async function warnOutdatedCredentialManager(root: string, remoteName?: string | null) {
+  const remotes = (getTab(root)?.refs?.remotes ?? []).filter((r) => !remoteName || r.name === remoteName);
+  if (warnedCredentialManager.has("bitbucket") || !remotes.some((r) => bitbucketHttps(r.fetchUrl) || bitbucketHttps(r.pushUrl))) return;
   try {
-    const gcm = await api.credentialManager();
-    if (gcm?.outdated) {
+    const gcm = await api.credentialManager(root);
+    if (gcm?.outdated && !gcm.revqoraToken && !warnedCredentialManager.has("bitbucket")) {
+      warnedCredentialManager.add("bitbucket");
       toast.warning("Update Git Credential Manager",
-        `Bitbucket stops accepting sign-ins from Git Credential Manager older than ${gcm.minVersion} on November 30, 2026. Installed: ${gcm.version}. Update Git for Windows (it includes Git Credential Manager) or Git Credential Manager itself.`);
+        `From November 30, 2026 Bitbucket stops accepting OAuth (browser) sign-in from Git Credential Manager older than ${gcm.minVersion}. Installed: ${gcm.version}. This matters only if you sign in to Bitbucket through Git Credential Manager with OAuth; SSH keys, API tokens and app passwords keep working. Update Git for Windows (it includes Git Credential Manager) or Git Credential Manager itself.`);
     }
   } catch {
-    warnedCredentialManager.delete("bitbucket");
+    // Asked again after the next transfer.
   }
 }
 
-async function remote<T>(root: string, label: string, fn: (opId: string) => Promise<T>, success?: (r: T) => string | null, remoteName?: string | null): Promise<T | undefined> {
+async function remote<T>(root: string, label: string, fn: (opId: string) => Promise<T>, success?: (r: T) => string | null, remoteName?: string | null, sends = false): Promise<T | undefined> {
   const opId = newOpId();
   startBusy(opId, label, cancelTransfer(opId));
   try {
@@ -188,14 +194,14 @@ async function remote<T>(root: string, label: string, fn: (opId: string) => Prom
     if (msg) toast.success(msg);
     return r;
   } catch (e) {
-    if (reportTransferError(root, e, label, remoteName)) return undefined;
+    if (reportTransferError(root, e, label, remoteName, sends)) return undefined;
     if (isGitError(e) && e.kind === "rejected") toast.error(e, "Push rejected — pull first or force push");
     else toast.error(e, `${label} failed`);
     return undefined;
   } finally {
     endBusy(opId);
     await refreshAfterOperation(root, opId);
-    void warnOutdatedCredentialManager(root);
+    void warnOutdatedCredentialManager(root, remoteName);
   }
 }
 
@@ -351,7 +357,7 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
   } finally {
     endBusy(opId);
     await refreshAfterOperation(root, opId);
-    void warnOutdatedCredentialManager(root);
+    void warnOutdatedCredentialManager(root, target?.upstream.split("/")[0] ?? null);
   }
   if (outcome) {
     if (outcome.status === "upstreamGone" && outcome.upstreamGone) {
@@ -423,14 +429,14 @@ export async function push(root: string) {
   const status = t2.status;
   const opts = await pushDialog({ branch, remotes: t2.refs?.remotes ?? [], upstream: status?.upstream ?? null, ahead: status?.ahead ?? 0, behind: status?.behind ?? 0 });
   if (!opts) return;
-  await remote(root, `Pushing ${branch}`, (id) => api.push(root, opts, id, status?.stateToken), () => `Pushed ${branch}`, opts.remote ?? null);
+  await remote(root, `Pushing ${branch}`, (id) => api.push(root, opts, id, status?.stateToken), () => `Pushed ${branch}`, opts.remote ?? null, true);
 }
 
 /** One-click push used after committing; asks only when needed. */
 export async function quickPush(root: string) {
   const tab = getTab(root);
   if (tab?.status?.upstream && tab.status.behind === 0) {
-    await remote(root, "Pushing", (id) => api.push(root, {}, id), () => "Pushed");
+    await remote(root, "Pushing", (id) => api.push(root, {}, id), () => "Pushed", null, true);
   } else {
     await push(root);
   }
@@ -693,7 +699,7 @@ export async function deleteTag(root: string, name: string) {
 
 export async function pushTag(root: string, name: string) {
   const r = getTab(root)?.refs?.remotes[0]?.name ?? "origin";
-  await remote(root, `Pushing tag ${name}`, (id) => api.pushRef(root, r, `refs/tags/${name}`, id), () => `Pushed tag ${name}`);
+  await remote(root, `Pushing tag ${name}`, (id) => api.pushRef(root, r, `refs/tags/${name}`, id), () => `Pushed tag ${name}`, r, true);
 }
 
 // ───────────── stash ─────────────

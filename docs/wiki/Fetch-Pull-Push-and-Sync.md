@@ -74,7 +74,7 @@ A slow or unresponsive remote does not freeze the repository. While Fetch, Pull,
 
 ## Stop a transfer
 
-While Fetch, Pull or Push runs or waits its turn, the status bar shows **Cancel** for it. It stops that operation only: Git and everything Git started for its transfer. An operation cancelled while it waits does not start. A cancelled Pull does not merge and puts your local changes back. An HTTPS server that sends nothing for 60 seconds ends the transfer by itself with "The server stopped sending data"; check your network, VPN or proxy and try again.
+While Fetch, Pull, Push or Push tag runs or waits its turn, the status bar shows **Cancel** for it. It stops that operation only: Git and everything Git started for its transfer. An operation cancelled while it waits does not start. A cancelled Fetch or Pull leaves your branches and files as they were; a cancelled Pull does not merge and puts your local changes back. A Push may already have reached the server before Git was stopped: Fetch to see what the server has. An HTTPS server that sends nothing for 60 seconds ends the transfer by itself with "The server stopped sending data"; check your network, VPN or proxy and try again.
 
 ## When Fetch reports a problem
 
@@ -83,7 +83,7 @@ While Fetch, Pull or Push runs or waits its turn, the status bar shows **Cancel*
 | **N tags changed on the server** | Someone moved a tag (for example a `nightly` tag) after you fetched it. Branches were fetched; your local tag was kept. | **Update moved tags** takes the server's versions. The old targets stay in the tags' reflogs. |
 | **Some remotes could not be fetched** | Fetch of all remotes reached some of them. The message names the ones fetched and why the others failed. | Fix or remove the broken remote (**Branches → Remotes**). |
 | **Authentication failed** | The server refused the sign-in, or you have no access to that repository. Your saved sign-in is kept. | Check the remote URL and your access. To sign in with another account, use **Forget saved login**; the next transfer asks you to sign in. |
-| **Update Git Credential Manager** | Bitbucket stops accepting Git Credential Manager older than 3.0.0 on November 30, 2026. | Update Git for Windows (it includes Git Credential Manager) or Git Credential Manager itself. |
+| **Update Git Credential Manager** | From November 30, 2026 Bitbucket stops accepting OAuth (browser) sign-in from Git Credential Manager older than 3.0.0. It matters only if you sign in to Bitbucket through Git Credential Manager with OAuth; SSH keys, API tokens and app passwords keep working. Revqora shows it only for HTTPS bitbucket.org remotes and not when it signs in with its own saved token. | Update Git for Windows (it includes Git Credential Manager) or Git Credential Manager itself. |
 
 If the server's default branch was renamed, the next Fetch that removes the old branch also moves `origin/HEAD` to the new default branch.
 

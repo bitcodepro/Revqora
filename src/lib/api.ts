@@ -172,7 +172,7 @@ export const api = {
   gitVersion: () => call<GitVersionInfo>("git_version"),
   gitSelection: () => call<GitSelection | null>("git_selection"),
   /** Git Credential Manager version when it is the configured helper (checked once per selected Git). */
-  credentialManager: () => call<CredentialManager | null>("credential_manager"),
+  credentialManager: (repo?: string) => call<CredentialManager | null>("credential_manager", { repo: repo ?? null }),
   updateCheck: () => call<UpdateInfo>("update_check"),
   updateInstall: () => call<void>("update_install"),
   updateRestart: () => call<void>("update_restart"),

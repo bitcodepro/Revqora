@@ -134,7 +134,8 @@ pub fn selection() -> Option<GitSelection> {
     STATE.read().as_ref().map(|s| s.selection.clone())
 }
 
-/// Oldest Git Credential Manager that Bitbucket Cloud accepts from November 30, 2026.
+/// Oldest Git Credential Manager whose OAuth sign-in Bitbucket Cloud accepts from November 30,
+/// 2026. SSH, API tokens and app passwords are not affected.
 pub const GCM_MIN_FOR_BITBUCKET: (u32, u32, u32) = (3, 0, 0);
 
 /// The Git Credential Manager that Git runs, when the configured helper is GCM.
@@ -145,6 +146,8 @@ pub struct CredentialManager {
     /// Older than [`GCM_MIN_FOR_BITBUCKET`]: Bitbucket sign-ins stop working.
     pub outdated: bool,
     pub min_version: String,
+    /// Revqora holds a token for the asked repository and answers its sign-in before GCM.
+    pub revqora_token: bool,
 }
 
 static GCM: RwLock<Option<Option<CredentialManager>>> = RwLock::new(None);
@@ -198,7 +201,7 @@ fn probe_credential_manager() -> Option<CredentialManager> {
         return None;
     }
     let (a, b, c) = GCM_MIN_FOR_BITBUCKET;
-    Some(CredentialManager { outdated: parsed < GCM_MIN_FOR_BITBUCKET, version, min_version: format!("{a}.{b}.{c}") })
+    Some(CredentialManager { outdated: parsed < GCM_MIN_FOR_BITBUCKET, version, min_version: format!("{a}.{b}.{c}"), revqora_token: false })
 }
 
 #[cfg(test)]
