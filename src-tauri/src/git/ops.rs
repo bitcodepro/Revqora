@@ -701,7 +701,7 @@ fn a_failed_default_branch_query_keeps_the_remote_head() {
 /// Forget saved login: drops the saved sign-in for a remote's address from every configured
 /// credential helper (Git Credential Manager, the store, Revqora's own) by running
 /// `git credential reject`. A failed transfer never does this on its own (see
-/// `connection::guard_erase`); the user asks for it, for example to sign in with another account.
+/// `connection::guard`); the user asks for it, for example to sign in with another account.
 pub fn forget_saved_login(repo: &Path, remote: &str) -> GitResult<()> {
     if remote.starts_with('-') {
         return Err(GitError::new("Choose a remote name that does not start with '-'.").kind("invalid-argument"));
@@ -866,6 +866,61 @@ pub fn fetch_background_with_deadline(repo: &Path, timeout: std::time::Duration)
     let out = settle_fetch(repo, None, runner::run_with_deadline(repo, &args, &env, timeout))?;
     prune_tracking_separately(repo, None, &env, Some(timeout))?;
     Ok(out)
+}
+
+#[cfg(test)]
+#[test]
+fn a_user_write_stops_a_background_fetch_instead_of_waiting_for_it() {
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    // A server that accepts the fetch and never answers: the fetch would wait 40 s.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/repository.git", listener.local_addr().unwrap());
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = fixture.path().to_path_buf();
+    runner::run(&repo, ["init", "-qb", "main"]).unwrap();
+    runner::run(&repo, ["remote", "add", "origin", &url]).unwrap();
+    runner::run(&repo, ["config", "--local", "remote.origin.proxy", ""]).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    // Holds every connection open until released; it may also see none (stopped earlier).
+    let server = std::thread::spawn(move || {
+        let mut held = Vec::new();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(60) {
+            if let Ok((stream, _)) = listener.accept() {
+                held.push(stream);
+            }
+            if !matches!(released.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    });
+    let fetching = repo.clone();
+    let background = std::thread::spawn(move || {
+        super::operations::access(
+            &fetching,
+            true,
+            |_, _| {},
+            || super::operations::yielding(&fetching, || fetch_background_with_deadline(&fetching, Duration::from_secs(40))),
+        )
+    });
+    let started = Instant::now();
+    while !runner::transfers::running(&repo) {
+        assert!(started.elapsed() < Duration::from_secs(20), "The background fetch never reached the server");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The user's own change to the repository starts at once instead of after the fetch.
+    let began = Instant::now();
+    runner::run(&repo, ["config", "--local", "revqora.probe", "1"]).unwrap();
+    let waited = began.elapsed();
+    let result = background.join().unwrap();
+    let _ = release.send(());
+    server.join().unwrap();
+    assert_eq!(result.unwrap_err().kind, "repository-busy");
+    assert!(waited < Duration::from_secs(10), "the write waited {waited:?} for the background fetch");
 }
 
 #[cfg(test)]

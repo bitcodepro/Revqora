@@ -10,13 +10,15 @@ use std::{
 use zeroize::{Zeroize, Zeroizing};
 #[cfg(windows)]
 mod remembered;
-#[cfg(windows)]
 use sha2::{Digest, Sha256};
 
 pub const REPO_VAR: &str = "REVQORA_CREDENTIAL_REPO";
 pub const EPOCH_VAR: &str = "REVQORA_CREDENTIAL_EPOCH";
 pub const HELPER_VAR: &str = "REVQORA_CREDENTIAL_HELPER";
 pub const HELPER_FLAG: &str = "--revqora-git-credential";
+/// Names one Git command run by Revqora: its helper calls share it, so `kept` can tell whether
+/// Revqora itself answered `get` in that very command.
+pub const CALL_VAR: &str = "REVQORA_CREDENTIAL_CALL";
 const LIMIT: usize = 200;
 
 #[derive(Serialize, Deserialize)]
@@ -25,6 +27,8 @@ pub(crate) struct Request {
     root: String,
     epoch: u64,
     input: String,
+    #[serde(default)]
+    call: String,
 }
 impl Drop for Request {
     fn drop(&mut self) {
@@ -54,19 +58,58 @@ struct Entry {
     password: Zeroizing<String>,
     expires: u64,
     touched: u64,
+    /// Approved by Git after a configured helper (Git Credential Manager, a keychain) answered:
+    /// neither typed into a Revqora prompt nor remembered by Revqora. That helper keeps it.
+    from_helper: bool,
 }
 struct Cache {
     epoch: u64,
     entries: Vec<Entry>,
     #[cfg(windows)]
     pending: Vec<Pending>,
+    /// Digests of values typed into Revqora's Git prompts in the last ten minutes, per
+    /// repository: a login Git approves with one of them did not come from a helper.
+    typed: Vec<Typed>,
+    /// Logins Revqora answered `get` with, per Git command (see [`CALL_VAR`]).
+    answered: Vec<Answered>,
 }
 static CACHE: Mutex<Cache> = Mutex::new(Cache {
     epoch: 0,
     entries: Vec::new(),
     #[cfg(windows)]
     pending: Vec::new(),
+    typed: Vec::new(),
+    answered: Vec::new(),
 });
+struct Answered {
+    call: String,
+    key: Key,
+    digest: Zeroizing<[u8; 32]>,
+    until: u64,
+}
+struct Typed {
+    root: PathBuf,
+    digest: Zeroizing<[u8; 32]>,
+    until: u64,
+}
+
+/// Notes a value typed into a Revqora prompt that Git opened for `repo`.
+pub(crate) fn note_typed(repo: &Path, epoch: u64, value: &str) {
+    note_typed_in(&mut CACHE.lock(), repo, epoch, value);
+}
+
+fn note_typed_in(cache: &mut Cache, repo: &Path, epoch: u64, value: &str) {
+    let Some(root) = root(repo) else { return };
+    if cache.epoch != epoch || value.is_empty() || value.len() > 16384 {
+        return;
+    }
+    let time = now();
+    cache.typed.retain(|entry| entry.until > time);
+    if cache.typed.len() >= LIMIT {
+        cache.typed.remove(0);
+    }
+    cache.typed.push(Typed { root, digest: Zeroizing::new(Sha256::digest(value.as_bytes()).into()), until: time + 600 });
+}
 #[cfg(windows)]
 struct Pending {
     key: Key,
@@ -148,6 +191,7 @@ pub(crate) fn forget(repo: &Path) -> std::io::Result<()> {
     remembered::Store::for_repo(&root)?.forget()?;
     cache.entries.retain(|entry| entry.key.root != root);
     cache.pending.retain(|entry| entry.key.root != root);
+    cache.typed.retain(|entry| entry.root != root);
     cache.epoch = cache.epoch.wrapping_add(1);
     Ok(())
 }
@@ -168,6 +212,13 @@ fn remembered_on_disk(root: &Path) -> bool {
 #[cfg(not(windows))]
 fn remembered_on_disk(_root: &Path) -> bool {
     false
+}
+/// Whether Revqora holds a login for `repo` that a configured helper gave it in this session.
+/// Only then can a `store` to the configured helpers repeat what they keep already (see
+/// [`run_helper`]'s `kept` check); otherwise they are not asked.
+pub(crate) fn holds_helper_logins(repo: &Path) -> bool {
+    let Some(root) = root(repo) else { return false };
+    CACHE.lock().entries.iter().any(|entry| entry.key.root == root && entry.from_helper)
 }
 pub fn epoch() -> u64 {
     CACHE.lock().epoch
@@ -257,7 +308,21 @@ fn handle_in(request: &Request, cache: &mut Cache) -> std::io::Result<String> {
                 }
             }
             if let Some(entry) = first {
-                return Ok(response(&entry.key, &entry.password, Some(entry.expires)));
+                let answer = response(&entry.key, &entry.password, Some(entry.expires));
+                if entry.from_helper && !request.call.is_empty() {
+                    let answered = Answered {
+                        call: request.call.clone(),
+                        key: entry.key.clone(),
+                        digest: Zeroizing::new(Sha256::digest(entry.password.as_bytes()).into()),
+                        until: time + 600,
+                    };
+                    cache.answered.retain(|entry| entry.until > time);
+                    if cache.answered.len() >= LIMIT {
+                        cache.answered.remove(0);
+                    }
+                    cache.answered.push(answered);
+                }
+                return Ok(answer);
             }
         }
         "store" => {
@@ -267,10 +332,12 @@ fn handle_in(request: &Request, cache: &mut Cache) -> std::io::Result<String> {
             if key.username.is_empty() {
                 return Ok(String::new());
             }
+            let digest: [u8; 32] = Sha256::digest(password.as_bytes()).into();
+            cache.typed.retain(|entry| entry.until > time);
+            let typed = cache.typed.iter().any(|entry| entry.root == key.root && *entry.digest == digest);
             #[cfg(windows)]
             let remembered = {
                 cache.pending.retain(|entry| entry.until > time);
-                let digest: [u8; 32] = Sha256::digest(password.as_bytes()).into();
                 cache
                     .pending
                     .iter()
@@ -293,6 +360,10 @@ fn handle_in(request: &Request, cache: &mut Cache) -> std::io::Result<String> {
                     }
                 }
                 #[cfg(windows)]
+                let from_helper = !typed && remembered.is_none();
+                #[cfg(not(windows))]
+                let from_helper = !typed;
+                #[cfg(windows)]
                 let saved = remembered
                     .map(|pending| {
                         remembered::Store::for_repo(&key.root)?.save(remembered::Token {
@@ -303,9 +374,25 @@ fn handle_in(request: &Request, cache: &mut Cache) -> std::io::Result<String> {
                         })
                     })
                     .transpose();
-                cache.entries.push(Entry { key, password, expires, touched: time });
+                cache.entries.push(Entry { key, password, expires, touched: time, from_helper });
                 #[cfg(windows)]
                 saved?;
+            }
+        }
+        // Asked by a configured helper's wrapper before Git's `store` reaches it: "1" only when
+        // Revqora itself answered `get` in this Git command with exactly this login, and that
+        // login came from a configured helper earlier. Anything a helper answered in this command
+        // (a refreshed token, say) reaches every helper's `store`.
+        "kept" => {
+            let kept = password.is_some_and(|password| {
+                let digest: [u8; 32] = Sha256::digest(password.as_bytes()).into();
+                !key.username.is_empty()
+                    && !request.call.is_empty()
+                    && cache.answered.iter().any(|entry| entry.until > time && entry.call == request.call && entry.key == key && *entry.digest == digest)
+                    && cache.entries.iter().any(|entry| entry.from_helper && entry.key == key && entry.password.as_bytes() == password.as_bytes())
+            });
+            if kept {
+                return Ok("1".into());
             }
         }
         "erase" => {
@@ -319,8 +406,11 @@ fn handle_in(request: &Request, cache: &mut Cache) -> std::io::Result<String> {
     }
     Ok(String::new())
 }
+/// Answers Git's credential helper protocol for Revqora's own helper. `kept` is not a Git
+/// operation: the wrapper around a configured helper asks it before `store` (exit 0 = that
+/// helper gave Revqora exactly this login and keeps it; skip the call).
 pub(crate) fn run_helper(port: &str, operation: &str) -> i32 {
-    if !matches!(operation, "get" | "store" | "erase") {
+    if !matches!(operation, "get" | "store" | "erase" | "kept") {
         return 0;
     }
     let (Ok(token), Ok(root), Ok(epoch)) = (std::env::var(crate::askpass::GIT_TOKEN_VAR), std::env::var(REPO_VAR), std::env::var(EPOCH_VAR)) else {
@@ -333,8 +423,12 @@ pub(crate) fn run_helper(port: &str, operation: &str) -> i32 {
     if std::io::stdin().take(48 * 1024).read_to_string(&mut input).is_err() {
         return 1;
     }
-    let request = Request { operation: operation.into(), root, epoch, input };
+    let call = std::env::var(CALL_VAR).unwrap_or_default();
+    let request = Request { operation: operation.into(), root, epoch, input, call };
+    let kept = operation == "kept";
     match crate::askpass::credential(port, &token, request) {
+        Ok(value) if kept => i32::from(value != "1"),
+        Err(_) if kept => 1,
         Ok(value) => {
             let value = Zeroizing::new(value);
             let mut output = std::io::stdout();
@@ -356,12 +450,13 @@ mod tests {
     fn remembers_only_approved_prompt_values_and_reuses_them_after_restart() {
         let fixture = tempfile::tempdir_in(crate::portable::temp_dir().unwrap()).unwrap();
         let repo = fixture.path();
-        let mut cache = Cache { epoch: 0, entries: vec![], pending: vec![] };
+        let mut cache = Cache { epoch: 0, entries: vec![], pending: vec![], typed: vec![], answered: vec![] };
         let request = |operation: &str, fields: &str| Request {
             operation: operation.into(),
             root: repo.to_string_lossy().into_owned(),
             epoch: 0,
             input: format!("protocol=https\nhost=bitbucket.org\npath=team/repo.git\nusername=git-name\n{fields}\n"),
+            call: String::new(),
         };
         let url = url::Url::parse("https://git-name@bitbucket.org/team/repo.git").unwrap();
         let store = remembered::Store::for_repo(&root(repo).unwrap()).unwrap();
@@ -379,5 +474,56 @@ mod tests {
         handle_in(&request("erase", "password=fixture-token\n"), &mut cache).unwrap();
         assert!(handle_in(&request("get", ""), &mut cache).unwrap().is_empty());
         store.forget().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod kept_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_helper_login_revqora_answered_in_the_same_command_counts_as_kept() {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture.path();
+        let mut cache = Cache {
+            epoch: 0,
+            entries: vec![],
+            #[cfg(windows)]
+            pending: vec![],
+            typed: vec![],
+            answered: vec![],
+        };
+        let request = |operation: &str, call: &str, host: &str, fields: &str| Request {
+            operation: operation.into(),
+            root: repo.to_string_lossy().into_owned(),
+            epoch: 0,
+            input: format!("protocol=https\nhost={host}\nusername=user\n{fields}\n"),
+            call: call.into(),
+        };
+        let kept = |cache: &mut Cache, call: &str, host: &str, password: &str| {
+            handle_in(&request("kept", call, host, &format!("password={password}\n")), cache).unwrap() == "1"
+        };
+        // Command 1: a configured helper answered; Git approves the login everywhere.
+        handle_in(&request("store", "1", "a.invalid", "password=helper-token\n"), &mut cache).unwrap();
+        assert!(!kept(&mut cache, "1", "a.invalid", "helper-token"), "Revqora did not answer this command: the helpers must store it");
+        // Command 2: Revqora answers with that login, so the helper keeps it already.
+        assert!(handle_in(&request("get", "2", "a.invalid", ""), &mut cache).unwrap().contains("password=helper-token\n"));
+        assert!(kept(&mut cache, "2", "a.invalid", "helper-token"));
+        assert!(!kept(&mut cache, "3", "a.invalid", "helper-token"), "another command did not get Revqora's answer");
+        assert!(!kept(&mut cache, "2", "a.invalid", "other-token"), "a changed password must reach the helper");
+        assert!(!kept(&mut cache, "2", "b.invalid", "helper-token"), "another host must reach the helper");
+        assert!(!kept(&mut cache, "", "a.invalid", "helper-token"));
+        // Command 4: the cached login is gone, a helper answers with a refreshed token. Revqora
+        // keeps the new token, but every helper must still store it.
+        handle_in(&request("store", "4", "a.invalid", "password=refreshed-token\n"), &mut cache).unwrap();
+        assert!(!kept(&mut cache, "4", "a.invalid", "refreshed-token"));
+        // A login typed into Revqora's prompt was never given by a helper, even when Revqora answers it later.
+        note_typed_in(&mut cache, repo, 0, "typed-token");
+        handle_in(&request("store", "5", "b.invalid", "password=typed-token\n"), &mut cache).unwrap();
+        assert!(handle_in(&request("get", "6", "b.invalid", ""), &mut cache).unwrap().contains("password=typed-token\n"));
+        assert!(!kept(&mut cache, "6", "b.invalid", "typed-token"));
+        // A prompt of another session (older epoch) is ignored.
+        note_typed_in(&mut cache, repo, 7, "old-token");
+        assert_eq!(cache.typed.len(), 1);
     }
 }

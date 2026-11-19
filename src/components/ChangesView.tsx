@@ -1224,6 +1224,12 @@ function CommitBox({ tab, stagedCount }: { tab: RepoTab; stagedCount: number }) 
     if (!matchesShortcut(e, "commit")) return;
     e.preventDefault();
     e.stopPropagation();
+    // Staging still reading its status can already list the file; say why nothing happens
+    // instead of committing later, when the form or repository may have changed.
+    if (pendingMutations > 0 && !submitting.current && !busy) {
+      toast.info("Waiting for staging to finish", "Commit again once the staged files are up to date.");
+      return;
+    }
     void doCommit();
   };
 

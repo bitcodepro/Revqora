@@ -11,6 +11,7 @@ import { toast, useUi } from "./ui";
 import type { BranchTracking, GraphSummary, LayersState, RefsSnapshot, RepoExtras, RepoInfo, StatusSummary } from "./types";
 import { WORKTREE } from "./types";
 import { setOperationHooks } from "./operationClient";
+import { changeTime, unreadParts, type ReadStamps } from "./readFreshness";
 
 export type View = "history" | "changes" | "pulls";
 export const CURRENT_HISTORY_BRANCH = "HEAD";
@@ -91,7 +92,8 @@ interface RepoStore {
   activate: (root: string | null) => void;
   arrange: (roots: string[], active: string | null) => void;
   patch: (root: string, p: Partial<RepoTab>) => void;
-  refresh: (root: string, parts?: Parts) => Promise<void>;
+  /** `since`: when the change happened; parts read after it are skipped (see unreadParts). */
+  refresh: (root: string, parts?: Parts, options?: { since?: number }) => Promise<void>;
   trackBranchRefs: (root: string) => () => void;
 }
 
@@ -124,7 +126,93 @@ function emptyTab(root: string): RepoTab {
   };
 }
 
+// Small parts that every refresh reads again. An answer equal to the shown one keeps the
+// shown object, so memoized views (branches, history rows, toolbar) do not re-render.
+const SAME_BY_VALUE: (keyof RepoTab)[] = ["info", "extras", "layers", "squashMerged", "refsError", "error"];
+
+/** `p` without the values the tab already shows; null when nothing changes. */
+function keepUnchanged(t: RepoTab, p: Partial<RepoTab>): Partial<RepoTab> | null {
+  let next: Partial<RepoTab> | null = null;
+  for (const key of SAME_BY_VALUE) {
+    if (!(key in p) || p[key] === t[key]) continue;
+    const a = p[key], b = t[key];
+    if (a && b && typeof a === "object" && typeof b === "object" && JSON.stringify(a) === JSON.stringify(b)) {
+      next ??= { ...p };
+      (next as Record<string, unknown>)[key] = b;
+    }
+  }
+  const result = next ?? p;
+  for (const key of Object.keys(result) as (keyof RepoTab)[]) {
+    if (result[key] !== t[key]) return result;
+  }
+  return null;
+}
+
 const inflight = new Map<string, Promise<void>>();
+// When each part of a repository was last read (Date.now() at the start of the read). See
+// unreadParts: a change seen before that time is already in the result.
+const readStamps = new Map<string, ReadStamps>();
+// When the last operation of each repository finished (backend clock, ms since the epoch).
+const operationEnds = new Map<string, number>();
+
+// Start time of the read whose full status and repository info are on screen, per repository,
+// and callers waiting for a newer one (see settle).
+const applied = new Map<string, { status?: number; info?: number }>();
+const appliedWaiters = new Map<string, Set<() => void>>();
+function markApplied(root: string, part: "status" | "info", at: number) {
+  const now = applied.get(root) ?? {};
+  if ((now[part] ?? Number.NEGATIVE_INFINITY) >= at) return; // already newer
+  applied.set(root, { ...now, [part]: at });
+  for (const check of [...(appliedWaiters.get(root) ?? [])]) check();
+}
+/** Resolves once status and info read after `since` are shown, or when `job` ends. */
+function waitApplied(root: string, since: number, job: Promise<void> | undefined): Promise<void> {
+  return new Promise(resolve => {
+    const waiters = appliedWaiters.get(root) ?? new Set<() => void>();
+    appliedWaiters.set(root, waiters);
+    const done = () => {
+      waiters.delete(check);
+      if (!waiters.size) appliedWaiters.delete(root);
+      resolve();
+    };
+    const check = () => {
+      const shown = applied.get(root);
+      // Like unreadParts: only a read that started after the change includes it.
+      if ((shown?.status ?? Number.NEGATIVE_INFINITY) > since && (shown?.info ?? Number.NEGATIVE_INFINITY) > since) done();
+    };
+    waiters.add(check);
+    void (job ?? Promise.resolve()).catch(() => {}).finally(done);
+    check();
+  });
+}
+
+/**
+ * Refreshes `parts` for a change made at `since` and resolves once the shown repository's
+ * status and info include it; refs, layers and history keep loading behind. A read that
+ * already started after the change is shared, not repeated.
+ */
+export function refreshUntilShown(root: string, parts: Parts, since: number): Promise<void> {
+  const store = useRepos.getState();
+  const job = store.refresh(root, parts, { since });
+  return parts.status && parts.info && store.active === root ? waitApplied(root, since, job) : job ?? Promise.resolve();
+}
+
+/** A closed or reopened repository starts without remembered reads. */
+function forgetReads(root: string) {
+  readStamps.delete(root);
+  applied.delete(root);
+  operationEnds.delete(root);
+}
+
+/** Records the end of an operation from its "finished"/"failed" event. */
+export function noteOperationEnd(root: string, at: number | undefined) {
+  if (typeof at === "number") operationEnds.set(root, Math.max(at, operationEnds.get(root) ?? 0));
+}
+
+/** When the changes of an operation that `root`'s caller started at `startedAt` were complete. */
+export function operationChangeTime(root: string, startedAt: number): number {
+  return changeTime(operationEnds.get(root), startedAt);
+}
 const pending = new Map<string, Parts>();
 /** The parts the running refresh of a repository is reading right now. */
 const reading = new Map<string, Parts>();
@@ -192,6 +280,7 @@ function register(paths: string[], active?: string | null): string[] {
     if (!tabs[root]) {
       tabs[root] = { ...emptyTab(root), opening: true };
       lifetimes.set(root, Symbol(root));
+      forgetReads(root);
       order.push(root);
     }
     return root;
@@ -237,6 +326,7 @@ function hydrate(root: string): Promise<string | null> {
           openAliases: uniqueRoots([...(existing?.openAliases ?? []), ...(original.openAliases ?? []), root]),
         };
         lifetimes.delete(root);
+        forgetReads(root);
         if (!lifetimes.has(actual)) lifetimes.set(actual, lifetime ?? Symbol(actual));
         const active = state.active === root ? actual : state.active;
         useRepos.setState({
@@ -350,6 +440,7 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     forgetGraphRows(root);
     forgetWorkingDiff(root);
     lifetimes.delete(root);
+    forgetReads(root);
     openingJobs.delete(root);
     pending.delete(root);
     graphRequests.set(root, (graphRequests.get(root) ?? 0) + 1);
@@ -420,7 +511,9 @@ export const useRepos = create<RepoStore>()((set, get) => ({
       // Invalidate interpretation independently from unrelated worktree content.
       invalidatePreview(root);
     }
-    set({ tabs: { ...get().tabs, [root]: { ...t, ...p } } });
+    const changed = keepUnchanged(t, p);
+    if (!changed) return;
+    set({ tabs: { ...get().tabs, [root]: { ...t, ...changed } } });
   },
 
   trackBranchRefs: root => {
@@ -439,9 +532,15 @@ export const useRepos = create<RepoStore>()((set, get) => ({
     };
   },
 
-  refresh: async (root, parts = ALL) => {
+  refresh: async (root, parts = ALL, options) => {
     if (!get().tabs[root] || get().tabs[root].opening) return;
     if (get().active !== root) parts = { ...parts, summary: true, graph: false, layers: false, refs: parts.refs && trackedBranchRefs.has(repositoryKey(root)) };
+    else if (options?.since !== undefined) {
+      // Shown repositories only: summary reads of hidden ones are not stamped.
+      const left = unreadParts(readStamps.get(root), parts, options.since);
+      if (!left) return inflight.get(root);
+      parts = left;
+    }
     // Ordinary working-file activity does not change immutable commit previews.
     // Metadata/attribute events and explicit refreshes still invalidate them.
     if (!parts.revalidate && (!parts.background || parts.info || parts.refs || parts.graph)) invalidatePreview(root);
@@ -502,9 +601,18 @@ setOperationHooks({
   refreshed: (root, status, info) => {
     if (useRepos.getState().tabs[root]) useRepos.getState().patch(root, { status, info });
   },
+  changeTime: (root, startedAt) => operationChangeTime(root, startedAt),
+  settle: async (root, since) => {
+    const store = useRepos.getState(), tab = store.tabs[root];
+    if (store.active !== root || !tab || tab.opening) return false;
+    await refreshUntilShown(root, { status: true, info: true, background: true }, since);
+    return true;
+  },
 });
 
 async function refreshOnce(root: string, parts: Parts) {
+  // Taken before any read starts: only changes made before this moment are surely included.
+  const readStartedAt = Date.now();
   const store = useRepos.getState();
   if (!store.tabs[root]) return;
   const lifetime = lifetimes.get(root);
@@ -536,9 +644,21 @@ async function refreshOnce(root: string, parts: Parts) {
   }) : Promise.resolve(null);
   const extrasP = !parts.summary && (parts.refs || parts.info) ? api.repoExtras(root).catch(() => null) : Promise.resolve(null);
   const layersP = !parts.summary && (parts.layers || parts.status) ? api.layersState(root).catch(() => null) : Promise.resolve(null);
+  // Stamp what this read covers before awaiting it, so a change reported meanwhile but
+  // made earlier joins this read. A failed read puts the previous stamps back.
+  const previousStamps = readStamps.get(root);
+  if (!parts.summary) {
+    const startedAt = readStartedAt, stamps: ReadStamps = { ...previousStamps };
+    if (parts.info || (parts.status && !changesDisplay)) stamps.info = startedAt;
+    if (parts.status) stamps[changesDisplay ? "changes" : "status"] = startedAt;
+    if (parts.refs) stamps.refs = startedAt;
+    if (parts.layers || parts.status) stamps.layers = startedAt;
+    if (parts.graph && canLoadGraph()) stamps.graph = startedAt;
+    readStamps.set(root, stamps);
+  }
   // Publish independently: slow layers/extras must not hide local branch info
   // or refs that are already ready. The full status still owns action guards.
-  void infoP.then(info=>{if(info&&current())useRepos.getState().patch(root,{info});}).catch(()=>{});
+  void infoP.then(info=>{if(info&&current()){useRepos.getState().patch(root,{info});if(!parts.summary)markApplied(root,"info",readStartedAt);}}).catch(()=>{});
   const initialDirty = !!(before.status ?? before.sidebarStatus)?.files.length;
   let graphP: Promise<void> | null = null;
   let requestedHead: string | null | undefined;
@@ -568,6 +688,7 @@ async function refreshOnce(root: string, parts: Parts) {
     const st = status ?? tab.status;
     const dirty = !!st && st.files.length > 0;
     if (status) useRepos.getState().patch(root, sidebarOnly ? { sidebarStatus: status } : { status });
+    if (status && !sidebarOnly && !changesDisplay) markApplied(root, "status", readStartedAt);
     const graphWorktree = graphP ? includeWorkingChanges(before, initialDirty) : tab.graphHasWorktree;
     if (canLoadGraph() && ((!graphP && (parts.graph || !tab.graph)) || includeWorkingChanges(tab, dirty) !== graphWorktree)) {
       refreshHistory(tab, dirty);
@@ -601,6 +722,8 @@ async function refreshOnce(root: string, parts: Parts) {
     patch.error = null;
   } catch (e) {
     patch.error = errorMessage(e);
+    if (previousStamps) readStamps.set(root, previousStamps);
+    else readStamps.delete(root);
     if (current() && !sidebarOnly) {
       const status = useRepos.getState().tabs[root]?.status;
       if (status && status === before.status) patch.status = { ...status, stateToken: null };
@@ -759,7 +882,36 @@ export function refreshAfterOperation(root: string, id: string): Promise<void> {
   return started ?? useRepos.getState().refresh(root, ALL);
 }
 
-export function repositorySidebarStatus(tab: RepoTab | undefined) {
+/** The fields of a tab that repository lists (Explorer, Repositories) show. */
+const LIST_FIELDS = ["root", "info", "error", "fetchError", "loaded", "opening", "sidebarStatus", "status", "refs", "refsError", "branchFilter", "viewedBranch"] as const;
+export type ListedTab = Pick<RepoTab, typeof LIST_FIELDS[number]>;
+let listedFrom: Record<string, RepoTab> | null = null;
+let listed: Record<string, ListedTab> = {};
+function selectListedTabs(state: { tabs: Record<string, RepoTab> }): Record<string, ListedTab> {
+  if (state.tabs === listedFrom) return listed;
+  listedFrom = state.tabs;
+  const next: Record<string, ListedTab> = {};
+  let changed = Object.keys(listed).length !== Object.keys(state.tabs).length;
+  for (const [root, tab] of Object.entries(state.tabs)) {
+    const previous = listed[root];
+    if (previous && LIST_FIELDS.every(field => previous[field] === tab[field])) next[root] = previous;
+    else {
+      next[root] = Object.fromEntries(LIST_FIELDS.map(field => [field, tab[field]])) as ListedTab;
+      changed = true;
+    }
+  }
+  if (changed) listed = next;
+  return listed;
+}
+/**
+ * Open tabs as repository lists see them. History, selection and diff updates of a tab do
+ * not change the result, so lists of all repositories do not re-render for them.
+ */
+export function useListedTabs(): Record<string, ListedTab> {
+  return useRepos(selectListedTabs);
+}
+
+export function repositorySidebarStatus(tab: Pick<RepoTab, "sidebarStatus" | "status"> | undefined) {
   return tab?.sidebarStatus ?? tab?.status ?? null;
 }
 
@@ -770,7 +922,7 @@ export function repositorySidebarStatus(tab: RepoTab | undefined) {
  * repositories that are closed or still loading, and the unpublished count of a branch whose
  * list of branches is not loaded.
  */
-export function repositoryOutgoing(tab: RepoTab | undefined, tracking?: BranchTracking): number {
+export function repositoryOutgoing(tab: Pick<RepoTab, "sidebarStatus" | "status" | "refs"> | undefined, tracking?: BranchTracking): number {
   const status = repositorySidebarStatus(tab);
   if (!status) return tracking?.branch ? tracking.upstream ? tracking.ahead : tracking.unpublished ?? 0 : 0;
   if (!status.branch) return 0;
@@ -782,13 +934,13 @@ export function repositoryOutgoing(tab: RepoTab | undefined, tracking?: BranchTr
 
 /** Whether a repository has staged, unstaged or untracked changes: its own status when open,
  *  otherwise the change count read for repositories that are not open. */
-export function repositoryHasChanges(tab: RepoTab | undefined, changes?: number): boolean {
+export function repositoryHasChanges(tab: Pick<RepoTab, "sidebarStatus" | "status"> | undefined, changes?: number): boolean {
   const status = repositorySidebarStatus(tab);
   return status ? status.files.length > 0 : (changes ?? 0) > 0;
 }
 
 /** Commits the current branch's upstream has and the branch does not (see repositoryOutgoing). */
-export function repositoryIncoming(tab: RepoTab | undefined, tracking?: BranchTracking): number {
+export function repositoryIncoming(tab: Pick<RepoTab, "sidebarStatus" | "status"> | undefined, tracking?: BranchTracking): number {
   const status = repositorySidebarStatus(tab);
   return status ? status.behind : tracking?.behind ?? 0;
 }

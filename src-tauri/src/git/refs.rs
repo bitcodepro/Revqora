@@ -417,7 +417,23 @@ fn count_unpublished(repo: &Path, local: &mut [BranchInfo], remote: &[BranchInfo
     Ok(())
 }
 
+/// False only when the repository surely has no stash: no `refs/stash` file and no packed
+/// entry for it (files backend). Saves a `stash list` process on every refresh.
+fn may_have_stash(repo: &Path) -> bool {
+    let Some(common) = super::graph::common_dir(repo) else { return true };
+    if common.join("reftable").exists() || common.join("refs").join("stash").exists() {
+        return true;
+    }
+    match std::fs::read(common.join("packed-refs")) {
+        Ok(packed) => packed.split(|b| *b == b'\n').any(|line| line.ends_with(b" refs/stash") || line.ends_with(b" refs/stash\r")),
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
 pub fn stashes(repo: &Path) -> GitResult<Vec<StashInfo>> {
+    if !may_have_stash(repo) {
+        return Ok(Vec::new());
+    }
     let out = runner::exec(repo, ["stash", "list", "--format=%gd%x1f%H%x1f%ct%x1f%gs"])?;
     if !out.ok() {
         return Ok(Vec::new());
@@ -579,6 +595,11 @@ pub struct GraphRefs {
 /// Reads refs once for both the graph's ref snapshot and its labels, so the two
 /// cannot disagree and a build does not enumerate refs or resolve HEAD twice.
 pub fn graph_refs(repo: &Path) -> GitResult<GraphRefs> {
+    // HEAD from Git's files when they are ordinary (no process); see repo::head_from_files.
+    if let Some(oid) = super::repo::git_dir(repo).ok().and_then(|gd| super::repo::head_from_files(&gd)).and_then(|head| head.oid) {
+        let raw = graph_ref_list(repo)?;
+        return graph_refs_from(repo, &raw, runner::Output { stdout: format!("{oid}\n").into_bytes(), stderr: String::new(), code: 0 });
+    }
     // HEAD is resolved in parallel with the enumeration (two processes, one wait).
     let parent = super::operations::Inherited::of(repo);
     let (raw, head_out) = std::thread::scope(|scope| {

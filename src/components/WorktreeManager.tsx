@@ -163,14 +163,22 @@ export function WorktreeManager({root,floating=false,onClose=closeOverlay}:{root
   const details=useToolDetailSize("Worktree manager details",850);
   const [snapshot,setSnapshot]=useState<WorktreeManagerSnapshot|null>(null),[prefs,setPrefs]=useState(()=>loadWorktreePreferences(root)),[query,setQuery]=useState("");
   const [selected,setSelected]=useState<string|null>(null),[loading,setLoading]=useState(true),[error,setError]=useState(""),[scroll,setScroll]=useState(0),[height,setHeight]=useState(500);
-  const generation=useRef(0),inflight=useRef<number|null>(null),reviewing=useRef(false),viewport=useRef<HTMLDivElement>(null);
+  const generation=useRef(0),inflight=useRef<number|null>(null),again=useRef(false),lastRead=useRef(0),reviewing=useRef(false),viewport=useRef<HTMLDivElement>(null);
   const pending=useRepos(s=>(s.tabs[root]?.pendingMutations??0)>0);
-  const refresh=useCallback(async()=>{if(inflight.current!==null||reviewing.current)return;const id=++generation.current;inflight.current=id;setLoading(true);setError("");
-    try{const data=await api.worktreeManagerSnapshot(root);if(id===generation.current)setSnapshot(data);}catch(e){if(id===generation.current)setError(errorMessage(e));}finally{if(inflight.current===id)inflight.current=null;if(id===generation.current)setLoading(false);}
+  // A change during a read is read once more afterwards (it may not be in that snapshot).
+  const refresh=useCallback(async()=>{if(reviewing.current)return;if(inflight.current!==null){again.current=true;return;}again.current=false;const id=++generation.current;inflight.current=id;lastRead.current=Date.now();setLoading(true);setError("");
+    try{const data=await api.worktreeManagerSnapshot(root);if(id===generation.current)setSnapshot(data);}catch(e){if(id===generation.current)setError(errorMessage(e));}finally{if(inflight.current===id)inflight.current=null;if(id===generation.current)setLoading(false);if(again.current&&id===generation.current)void refresh();}
   },[root]);
-  useEffect(()=>{void refresh();const timer=setInterval(()=>{if(document.visibilityState==="visible")void refresh();},10000);const update=()=>void refresh();window.addEventListener("revqora:worktree",update);window.addEventListener("revqora:refs",update);window.addEventListener("focus",update);
-    return()=>{clearInterval(timer);generation.current++;window.removeEventListener("revqora:worktree",update);window.removeEventListener("revqora:refs",update);window.removeEventListener("focus",update);};
-  },[refresh]);
+  useEffect(()=>{void refresh();const timer=setInterval(()=>{if(document.visibilityState==="visible")void refresh();},10000);
+    // Only changes of this repository's worktrees: the event fires for every open repository.
+    const sameRepository=(repo:unknown)=>{if(typeof repo!=="string")return true;const tabs=useRepos.getState().tabs,mine=tabs[root]?.info?.commonDir,theirs=tabs[repo]?.info?.commonDir;return !mine||!theirs||mine===theirs;};
+    const onWorktree=(event:Event)=>{if(sameRepository((event as CustomEvent<{repo?:string}>).detail?.repo))void refresh();};
+    const update=()=>void refresh();
+    // Returning to the window: the timer and the watcher cover short switches.
+    const onFocus=()=>{if(Date.now()-lastRead.current>=3000)void refresh();};
+    window.addEventListener("revqora:worktree",onWorktree);window.addEventListener("revqora:refs",update);window.addEventListener("focus",onFocus);
+    return()=>{clearInterval(timer);generation.current++;window.removeEventListener("revqora:worktree",onWorktree);window.removeEventListener("revqora:refs",update);window.removeEventListener("focus",onFocus);};
+  },[refresh,root]);
   useEffect(()=>{try{localStorage.setItem(worktreePreferencesKey(root),JSON.stringify(prefs));}catch{toast.warning("Worktree preferences could not be saved");}},[root,prefs]);
   useEffect(()=>{const p=viewport.current;if(!p)return;const observer=new ResizeObserver(()=>setHeight(p.clientHeight));observer.observe(p);return()=>observer.disconnect();},[]);
   const rows=useMemo(()=>selectWorktrees(snapshot?.worktrees??[],prefs,query),[snapshot,prefs,query]);

@@ -149,6 +149,45 @@ fn partial_stash_preserves_staging_and_unselected_changes_and_has_a_native_stash
 }
 
 #[test]
+fn stashing_the_last_change_of_a_file_and_reading_its_diff_leave_the_index_bytes_unchanged() {
+    let r = Repo::new();
+    let lines: Vec<_> = (1..=24)
+        .map(|n| {
+            format!(
+                "line {n}
+"
+            )
+        })
+        .collect();
+    fs::write(r.root.join("f.txt"), lines.concat()).unwrap();
+    r.commit("Base");
+    // Older than the next writes, so the file's stat in the index is not racily clean.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(
+        r.root.join("f.txt"),
+        lines.concat().replace(
+            "line 20
+",
+            "line 20
+SECOND
+",
+        ),
+    )
+    .unwrap();
+    let index = r.index();
+    let opts = diff::DiffOptions::default();
+    let d = diff::working_diff(&r.root, "f.txt", diff::WorkSide::Unstaged, None, false, &opts).unwrap();
+    let saved = r.stash("f.txt", &changes(&d, 0), &d.hash, &opts).unwrap();
+    assert!(saved.removed, "{:?}", saved.warning);
+    assert_eq!(fs::read_to_string(r.root.join("f.txt")).unwrap(), lines.concat());
+    // The file has its committed content again with a new stat: Git's porcelain diff would
+    // refresh and rewrite the index here.
+    let after = diff::working_diff(&r.root, "f.txt", diff::WorkSide::Unstaged, None, false, &opts).unwrap();
+    assert!(after.hunks.is_empty());
+    assert!(r.index() == index, "reading the diff rewrote the index");
+}
+
+#[test]
 fn partial_stash_supports_individual_added_lines_crlf_and_quoted_unicode_paths() {
     let r = Repo::new();
     let name = "файл [1] 'space'.txt";

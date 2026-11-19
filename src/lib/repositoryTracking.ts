@@ -98,6 +98,8 @@ export function repositoryGitChanged(root: string): void {
 }
 
 const FOCUS_INTERVAL_MS = 10_000;
+const FOCUS_AWAY_MS = 30_000;
+const FIRST_SWEEP_MAX_DELAY_MS = 4_000;
 let stop: (() => void) | null = null;
 
 /** Checks the whole library now, new repositories when they are added, closed repositories when
@@ -106,7 +108,23 @@ let stop: (() => void) | null = null;
 export function startRepositoryTracking(): () => void {
   if (stop) return stop;
   const all = () => uniqueRoots([...useRepos.getState().order, ...useLibrary.getState().knownRoots]);
-  scanClosed(all());
+  // The first sweep reads every repository of the library: let the shown repository's history
+  // appear first (or wait at most a few seconds), so it does not compete with that.
+  let swept = false;
+  const sweep = () => {
+    if (swept) return;
+    swept = true;
+    window.clearTimeout(sweepTimer);
+    unsubscribeShown();
+    scanClosed(all());
+  };
+  const shownReady = () => {
+    const state = useRepos.getState(), tab = state.active ? state.tabs[state.active] : null;
+    return !tab || !!tab.graph || !!tab.error;
+  };
+  const sweepTimer = window.setTimeout(sweep, FIRST_SWEEP_MAX_DELAY_MS);
+  const unsubscribeShown = useRepos.subscribe(() => { if (shownReady()) sweep(); });
+  if (useRepos.getState().order.length === 0 || shownReady()) sweep();
   const unsubscribeLibrary = useLibrary.subscribe((state, previous) => {
     if (state.knownRoots === previous.knownRoots) return;
     const known = new Set(previous.knownRoots.map(repositoryKey));
@@ -123,17 +141,26 @@ export function startRepositoryTracking(): () => void {
     if (closed.length) scanClosed(closed);
     if (added.length || changed.length) void scanRepositoryTracking([...added, ...changed]);
   });
-  let lastFocus = Date.now();
+  let lastFocus = Date.now(), blurredAt: number | null = null;
+  // Reads every closed repository: only after the user was away long enough to have worked in
+  // other tools, not when focus returns from a dialog, a detached panel or a quick switch.
+  const onBlur = () => { blurredAt = Date.now(); };
   const onFocus = () => {
-    if (Date.now() - lastFocus < FOCUS_INTERVAL_MS) return;
+    const away = blurredAt === null ? 0 : Date.now() - blurredAt;
+    blurredAt = null;
+    if (away < FOCUS_AWAY_MS || Date.now() - lastFocus < FOCUS_INTERVAL_MS) return;
     lastFocus = Date.now();
     const tabs = useRepos.getState().tabs;
     scanClosed(all().filter(root => !repositorySidebarStatus(tabs[root])));
   };
+  window.addEventListener("blur", onBlur);
   window.addEventListener("focus", onFocus);
   stop = () => {
+    window.clearTimeout(sweepTimer);
+    unsubscribeShown();
     unsubscribeLibrary();
     unsubscribeRepos();
+    window.removeEventListener("blur", onBlur);
     window.removeEventListener("focus", onFocus);
     stop = null;
   };

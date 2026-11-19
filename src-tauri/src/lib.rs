@@ -310,6 +310,9 @@ struct OperationEvent {
     command: String,
     phase: String,
     ahead: usize,
+    /// When this phase began (ms since the epoch). For "finished" and "failed" every change of
+    /// the operation happened before it.
+    at: u64,
 }
 
 #[derive(Serialize)]
@@ -353,6 +356,7 @@ where
                     command: command.into(),
                     phase: phase.into(),
                     ahead,
+                    at: watcher::now_ms(),
                 },
             );
         };
@@ -797,20 +801,21 @@ async fn repository_status_with_operation(repo: String) -> GitResult<status::Sta
 
 #[tauri::command]
 async fn repository_sidebar_status(repo: String) -> GitResult<StatusSummary> {
-    blocking(move || status::sidebar_status(&p(&repo))).await
+    // Repositories that are not shown: below the CPU priority of what the user waits for.
+    blocking(move || git::runner::in_background(|| status::sidebar_status(&p(&repo)))).await
 }
 
 /// Incoming and outgoing commits of the current branch, without scanning the working tree
 /// (the Explorer's Incoming and Outgoing filters for repositories that are not open).
 #[tauri::command]
 async fn repository_branch_tracking(repo: String) -> GitResult<git::tracking::BranchTracking> {
-    blocking(move || git::tracking::branch_tracking(&p(&repo))).await
+    blocking(move || git::runner::in_background(|| git::tracking::branch_tracking(&p(&repo)))).await
 }
 
 /// Number of changed entries, for the Changes filter of a repository that is not open.
 #[tauri::command]
 async fn repository_change_count(repo: String) -> GitResult<usize> {
-    blocking(move || git::tracking::change_count(&p(&repo))).await
+    blocking(move || git::runner::in_background(|| git::tracking::change_count(&p(&repo)))).await
 }
 
 #[tauri::command]
@@ -1682,7 +1687,11 @@ async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expe
             GitError::new("Another operation is running in this repository. Automatic fetch will try again at the next interval.").kind("repository-busy")
         );
     }
-    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_background", None, move || ops::fetch_background(&p(&repo))).await
+    // Below-normal priority, and stopped as soon as the user starts an operation here.
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_background", None, move || {
+        git::runner::in_background(|| git::operations::yielding(&p(&repo), || ops::fetch_background(&p(&repo))))
+    })
+    .await
 }
 
 /// Cancels the Fetch, Pull, Push or Push tag with operation id `op_id`, running or still queued. Runs at
@@ -3151,6 +3160,9 @@ struct RepoChanged {
     repo: String,
     git: bool,
     worktree: bool,
+    /// When the first change of this batch was seen (ms since the epoch): a read that started
+    /// later already includes it.
+    since: u64,
 }
 
 #[tauri::command]
@@ -3169,8 +3181,8 @@ async fn watch_repo(app: AppHandle, state: State<'_, AppState>, repo: String, re
     let w = watcher::watch(
         p(&repo),
         gd,
-        move |git, worktree| {
-            let _ = app.emit("repo-changed", RepoChanged { repo: key.clone(), git, worktree });
+        move |git, worktree, since| {
+            let _ = app.emit("repo-changed", RepoChanged { repo: key.clone(), git, worktree, since });
         },
         move || {
             let _ = error_app.emit("repo-watch-failed", error_repo);

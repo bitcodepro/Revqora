@@ -17,7 +17,12 @@ export function OverflowToolbar({ children, className = "toolbar" }: { children:
     const observer = new ResizeObserver(measure);
     observer.observe(bar);
     if (bar.parentElement) observer.observe(bar.parentElement);
-    return () => observer.disconnect();
-  });
+    // Buttons and labels that change without a resize (a count, a new action).
+    const content = new MutationObserver(measure);
+    content.observe(bar, { childList: true, subtree: true, characterData: true });
+    return () => { observer.disconnect(); content.disconnect(); };
+    // Set up once: measuring after every render forced a synchronous layout on each
+    // toolbar update, also when nothing in it changed.
+  }, []);
   return <div ref={ref} className={className}>{children}</div>;
 }

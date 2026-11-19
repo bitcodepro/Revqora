@@ -869,11 +869,26 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
     // Capture is a mutation: pinning objects must never occur in a read path.
     let _lock = lock(root)?;
     let root = fs::canonicalize(repo::discover(root)?)?;
-    if workspace {
-        let filenames = runner::run_bytes(&root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"])?;
-        std::str::from_utf8(&filenames).map_err(|_| fail("Non-UTF-8 filenames cannot be captured safely."))?;
+    // The file name check, the status and the reference list are independent reads: run them
+    // side by side (each Git start costs 60–150 ms on Windows). The helpers join the caller's
+    // repository transaction.
+    let parent = operations::Inherited::of(&root);
+    let (names, before, saved_refs) = std::thread::scope(|scope| {
+        let names =
+            workspace.then(|| scope.spawn(|| parent.run(|| runner::run_bytes(&root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]))));
+        let saved_refs = scope.spawn(|| parent.run(|| refs(&root)));
+        let before = status::status(&root);
+        let joined = |name: &str| fail(format!("Reading {name} for the checkpoint failed."));
+        (
+            names.map(|handle| handle.join().unwrap_or_else(|_| Err(joined("the file names")))),
+            before,
+            saved_refs.join().unwrap_or_else(|_| Err(joined("the references"))),
+        )
+    });
+    if let Some(filenames) = names {
+        std::str::from_utf8(&filenames?).map_err(|_| fail("Non-UTF-8 filenames cannot be captured safely."))?;
     }
-    let before = status::status(&root)?;
+    let before = before?;
     if expected.is_some_and(|expected| before.state_token.as_deref() != Some(expected)) {
         return Err(fail(
             "The repository changed while waiting to save its checkpoint. Refresh and review the action again. The requested action was not started.",
@@ -919,7 +934,7 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
         common_dir: operations::repository_key(&root).to_string_lossy().into_owned(),
         pin: String::new(),
         base_commit: String::new(),
-        refs: refs(&root)?,
+        refs: saved_refs?,
         paths: Vec::new(),
         index_files: Vec::new(),
         sparse: false,
@@ -942,7 +957,10 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
         if gd.join("index").exists() {
             index_paths.push(gd.join("index"));
         }
-        let shared = runner::run(&root, ["rev-parse", "--shared-index-path"])?;
+        // A split index keeps its shared part as `sharedindex.<oid>` beside the index. Without
+        // such a file there is nothing to copy, so Git is not asked.
+        let may_split = fs::read_dir(&gd).map_or(true, |entries| entries.flatten().any(|e| e.file_name().to_string_lossy().starts_with("sharedindex.")));
+        let shared = if may_split { runner::run(&root, ["rev-parse", "--shared-index-path"])? } else { String::new() };
         if !shared.trim().is_empty() {
             let path = root.join(shared.trim());
             let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -1016,10 +1034,19 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
     // A flat tree pins every index object, including unmerged stages. The raw
     // index itself is copied, so split indexes and conflict stages survive recovery.
     let mut objects = BTreeMap::new();
-    if workspace {
-        git(&root, &strings(&["hash-object", "-w", "--stdin"]), Some(&[]))?;
-    }
-    let raw = if workspace { runner::run(&root, ["ls-files", "--stage", "-z"])? } else { String::new() };
+    let raw = if workspace {
+        // Writing the empty blob and listing the index do not depend on each other. The helper
+        // only reads; the write stays on this thread, inside its transaction.
+        let (written, raw) = std::thread::scope(|scope| {
+            let raw = scope.spawn(|| parent.run(|| runner::run(&root, ["ls-files", "--stage", "-z"])));
+            let written = git(&root, &strings(&["hash-object", "-w", "--stdin"]), Some(&[]));
+            (written, raw.join().unwrap_or_else(|_| Err(fail("Listing the index for the checkpoint failed."))))
+        });
+        written?;
+        raw?
+    } else {
+        String::new()
+    };
     for item in raw.split('\0').filter(|s| !s.is_empty()) {
         let fields: Vec<_> = item.split_once('\t').map(|(h, _)| h.split_whitespace().collect()).unwrap_or_default();
         if fields.len() != 3 || !oid(fields[1]) {

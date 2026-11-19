@@ -105,13 +105,175 @@ fn owned_paths(root: &Path, git_dir: &Path) -> Vec<PathBuf> {
     ignored
 }
 
+/// Folders of the working tree that Git ignores and that hold no tracked file (build output,
+/// logs, caches beyond the fixed list in `classify`). A change inside them cannot change the
+/// status, so it does not start a refresh. Answers are kept until which files are ignored may
+/// have changed (a `.gitignore`, `info/exclude`, the repository's configuration, or the user's
+/// global excludes file, `core.excludesFile`) or the index changes (which files are tracked:
+/// `git add -f` tracks a file inside an ignored folder); only the top folders (three levels)
+/// are checked.
+struct QuietFolders {
+    root: PathBuf,
+    known: std::collections::HashMap<String, bool>,
+    /// The global excludes file as it was when the answers were learned. It lives outside the
+    /// watched folders, so it is compared again (at most once a second) before an answer is used.
+    excludes: Option<Excludes>,
+}
+
+struct Excludes {
+    path: Option<PathBuf>,
+    stamp: Option<(std::time::SystemTime, u64)>,
+    checked: Instant,
+}
+
+impl QuietFolders {
+    const DEPTH: usize = 3;
+    const EXCLUDES_CHECK: Duration = Duration::from_secs(1);
+
+    fn new(root: &Path) -> Self {
+        QuietFolders { root: root.to_path_buf(), known: Default::default(), excludes: None }
+    }
+
+    fn forget(&mut self) {
+        self.known.clear();
+        self.excludes = None;
+    }
+
+    /// The file Git reads for `core.excludesFile` (its default when unset).
+    fn excludes_path(&self) -> Option<PathBuf> {
+        let configured = super::config_cache::exec(&self.root, &["config", "--path", "--get", "core.excludesFile"])
+            .ok()
+            .filter(|out| out.ok())
+            .map(|out| out.text().trim().to_owned());
+        if let Some(path) = configured.filter(|path| !path.is_empty()) {
+            let path = PathBuf::from(path);
+            return Some(if path.is_absolute() { path } else { self.root.join(path) });
+        }
+        let base = std::env::var_os("XDG_CONFIG_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from).or_else(|| {
+            std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).filter(|dir| !dir.is_empty()).map(|home| PathBuf::from(home).join(".config"))
+        })?;
+        Some(base.join("git").join("ignore"))
+    }
+
+    fn excludes_stamp(path: Option<&Path>) -> Option<(std::time::SystemTime, u64)> {
+        let meta = std::fs::metadata(path?).ok()?;
+        Some((meta.modified().ok()?, meta.len()))
+    }
+
+    /// Drops the answers when the global excludes file changed since they were learned: its
+    /// content, or which file `core.excludesFile` names (the global Git configuration lives
+    /// outside the watched folders too).
+    fn check_excludes(&mut self) {
+        let Some(excludes) = &self.excludes else { return };
+        if excludes.checked.elapsed() < Self::EXCLUDES_CHECK {
+            return;
+        }
+        let path = self.excludes_path();
+        let stamp = Self::excludes_stamp(path.as_deref());
+        let Some(excludes) = &mut self.excludes else { return };
+        excludes.checked = Instant::now();
+        if path != excludes.path || stamp != excludes.stamp {
+            self.forget();
+        }
+    }
+
+    /// Whether the changed `path` lies in a quiet folder or is one. Windows also reports the
+    /// folder itself when a file inside it changes.
+    fn contains(&mut self, path: &Path) -> bool {
+        let Ok(rel) = path.strip_prefix(&self.root) else { return false };
+        self.check_excludes();
+        if self.contains_folder(rel.parent()) {
+            return true;
+        }
+        !rel.as_os_str().is_empty() && path.is_dir() && self.contains_folder(Some(rel))
+    }
+
+    /// Whether `dir` (relative to the root) or one of its top folders is quiet.
+    fn contains_folder(&mut self, dir: Option<&Path>) -> bool {
+        let parts: Vec<String> = dir.map(|dir| dir.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        let folders: Vec<String> = (1..=parts.len().min(Self::DEPTH)).map(|n| parts[..n].join("/")).collect();
+        let unknown: Vec<String> = folders.iter().filter(|f| !self.known.contains_key(*f)).cloned().collect();
+        if !unknown.is_empty() {
+            self.learn(&unknown);
+        }
+        folders.iter().any(|f| self.known.get(f).copied().unwrap_or(false))
+    }
+
+    fn learn(&mut self, folders: &[String]) {
+        if self.excludes.is_none() {
+            let path = self.excludes_path();
+            let stamp = Self::excludes_stamp(path.as_deref());
+            self.excludes = Some(Excludes { path, stamp, checked: Instant::now() });
+        }
+        for folder in folders {
+            self.known.insert(folder.clone(), false);
+        }
+        let input: Vec<u8> = folders.iter().flat_map(|f| format!("{f}/\0").into_bytes()).collect();
+        let Ok(out) = super::runner::exec_full(&self.root, ["check-ignore", "-z", "--stdin"], &[], Some(&input)) else { return };
+        if out.code > 1 {
+            return;
+        }
+        let ignored: Vec<String> =
+            out.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).trim_end_matches('/').to_owned()).collect();
+        if ignored.is_empty() {
+            return;
+        }
+        // An ignored folder can still hold tracked files, whose changes matter.
+        let mut args = vec!["ls-files".to_owned(), "-z".to_owned(), "--cached".to_owned(), "--".to_owned()];
+        args.extend(ignored.iter().map(|f| format!(":(literal){f}/")));
+        let Ok(tracked) = super::runner::exec_full(&self.root, &args, &[], None) else { return };
+        if !tracked.ok() {
+            return;
+        }
+        let tracked: Vec<String> = tracked.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect();
+        for folder in ignored {
+            let prefix = format!("{folder}/");
+            let quiet = !tracked.iter().any(|path| path.starts_with(&prefix));
+            self.known.insert(folder, quiet);
+        }
+    }
+}
+
+/// Whether `path` changes which files Git ignores.
+fn changes_ignore_rules(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == ".gitignore") || path.ends_with("info/exclude")
+}
+
+/// Whether `path` is the configuration of this working tree or its repository, which can name
+/// another global excludes file (`core.excludesFile`). `dirs` as for [`changes_tracked_files`],
+/// plus the shared Git directory.
+fn changes_configuration(path: &Path, dirs: &[PathBuf]) -> bool {
+    path.file_name().is_some_and(|name| name == "config" || name == "config.worktree") && path.parent().is_some_and(|dir| dirs.contains(&comparable(dir)))
+}
+
+/// Whether `path` is this working tree's index (or its shared part, or the lock Git renames
+/// over it): the list of tracked files may have changed. `git_dirs` are this working tree's Git
+/// directory as given and resolved, in `comparable` form.
+fn changes_tracked_files(path: &Path, git_dirs: &[PathBuf]) -> bool {
+    let Some(name) = path.file_name().map(|name| name.to_string_lossy()) else { return false };
+    (name == "index" || name == "index.lock" || name.starts_with("sharedindex.")) && path.parent().is_some_and(|dir| git_dirs.contains(&comparable(dir)))
+}
+
+/// Milliseconds since the Unix epoch (the UI compares it with `Date.now()`).
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
 pub fn watch<F, E>(root: PathBuf, git_dir: PathBuf, on_change: F, on_error: E) -> notify::Result<RepoWatcher>
 where
-    F: Fn(bool, bool) + Send + 'static,
+    F: Fn(bool, bool, u64) + Send + 'static,
     E: FnOnce() + Send + 'static,
 {
     let ignored = owned_paths(&root, &git_dir);
+    let mut quiet = QuietFolders::new(&root);
+    // The index lives in this working tree's own Git directory (also for a linked worktree).
+    let index_dirs: Vec<PathBuf> = [Some(git_dir.clone()), std::fs::canonicalize(&git_dir).ok()].into_iter().flatten().map(|dir| comparable(&dir)).collect();
     let common = super::operations::repository_key(&root);
+    let config_dirs: Vec<PathBuf> = index_dirs
+        .iter()
+        .cloned()
+        .chain([Some(common.clone()), std::fs::canonicalize(&common).ok()].into_iter().flatten().map(|dir| comparable(&dir)))
+        .collect();
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher = notify::recommended_watcher(move |res| {
         let _ = tx.send(res);
@@ -140,34 +302,63 @@ where
         register(&common, "shared Git directory")?;
     }
     std::thread::spawn(move || {
-        let debounce = Duration::from_millis(350);
+        // Report once the burst is over (QUIET without a new change), and at the latest MAX
+        // after its first change, so a long Git operation still updates the view.
+        const QUIET: Duration = Duration::from_millis(100);
+        const MAX: Duration = Duration::from_millis(400);
+        const IDLE: Duration = Duration::from_millis(250);
         let mut pending_git = false;
         let mut pending_wt = false;
         let mut first: Option<Instant> = None;
+        let mut last: Option<Instant> = None;
+        // Wall-clock time of the burst's last change: only a read that started after it sees
+        // every change of the burst (one that started between two changes misses the second).
+        let mut since: u64 = 0;
         loop {
             if stop_rx.try_recv().is_ok() {
                 break;
             }
-            match rx.recv_timeout(Duration::from_millis(120)) {
+            let wait = match (first, last) {
+                (Some(first), Some(last)) => (QUIET.saturating_sub(last.elapsed())).min(MAX.saturating_sub(first.elapsed())).max(Duration::from_millis(1)),
+                _ => IDLE,
+            };
+            match rx.recv_timeout(wait) {
                 // File reads must not cause feedback refreshes. Still reach the
                 // debounce flush below when access events arrive continuously.
                 Ok(Ok(ev)) if ev.need_rescan() => {
+                    // Events were lost: an ignore rule or the index may have changed unseen.
+                    quiet.forget();
                     pending_git = true;
                     pending_wt = true;
                     first.get_or_insert_with(Instant::now);
+                    last = Some(Instant::now());
+                    since = now_ms();
                 }
                 Ok(Ok(ev)) if !matches!(ev.kind, notify::EventKind::Access(_)) => {
+                    let mut relevant = false;
                     for p in &ev.paths {
+                        if changes_ignore_rules(p) || changes_tracked_files(p, &index_dirs) || changes_configuration(p, &config_dirs) {
+                            quiet.forget();
+                        }
                         // Shared refs/config/stash live outside a linked worktree's git dir.
                         let metadata = if p.starts_with(&git_dir) { &git_dir } else { &common };
                         match classify_owned(&root, metadata, &ignored, p) {
-                            Some(true) => pending_git = true,
-                            Some(false) => pending_wt = true,
-                            None => {}
+                            Some(true) => (pending_git, relevant) = (true, true),
+                            Some(false) if !quiet.contains(p) => {
+                                (pending_wt, relevant) = (true, true);
+                                #[cfg(test)]
+                                {
+                                    use std::io::Write;
+                                    let _ = writeln!(std::io::stderr(), "[repository watcher] working tree change: {:?} {p:?}", ev.kind);
+                                }
+                            }
+                            Some(false) | None => {}
                         }
                     }
-                    if (pending_git || pending_wt) && first.is_none() {
-                        first = Some(Instant::now());
+                    if relevant {
+                        first.get_or_insert_with(Instant::now);
+                        last = Some(Instant::now());
+                        since = now_ms();
                     }
                 }
                 Ok(Ok(_)) => {}
@@ -179,12 +370,13 @@ where
                     break;
                 }
             }
-            if let Some(t) = first {
-                if t.elapsed() >= debounce {
-                    on_change(pending_git, pending_wt);
+            if let (Some(started), Some(latest)) = (first, last) {
+                if latest.elapsed() >= QUIET || started.elapsed() >= MAX {
+                    on_change(pending_git, pending_wt, since);
                     pending_git = false;
                     pending_wt = false;
                     first = None;
+                    last = None;
                 }
             }
         }
@@ -236,23 +428,188 @@ mod tests {
         let watcher = watch(
             linked.clone(),
             git_dir,
-            move |git, _| {
+            move |git, _, since| {
                 if git {
-                    let _ = tx.send(());
+                    let _ = tx.send(since);
                 }
             },
             || {},
         )
         .unwrap();
         phase("creating external branch");
+        let before = super::now_ms();
         runner::run(&root, ["branch", "external-branch"]).unwrap();
         phase("awaiting shared ref notification (10s deadline)");
-        rx.recv_timeout(Duration::from_secs(10)).expect("Shared refs did not refresh the linked worktree");
+        let since = rx.recv_timeout(Duration::from_secs(10)).expect("Shared refs did not refresh the linked worktree");
+        // The batch reports when its last change was seen, after the write began.
+        assert!(since >= before && since <= super::now_ms(), "{before} <= {since}");
         phase("dropping watcher");
         drop(watcher);
         phase("removing fixture");
         tmp.close().unwrap();
         phase("complete");
+    }
+
+    #[test]
+    fn a_batch_reports_its_last_change_so_a_read_between_two_changes_is_not_enough() {
+        use super::watch;
+        use crate::git::runner;
+        use std::{fs, sync::mpsc, time::Duration};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        runner::run(&root, ["init", "-qb", "main"]).unwrap();
+        let git_dir = crate::git::repo::git_dir(&root).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let watcher = watch(
+            root.clone(),
+            git_dir,
+            move |_, worktree, since| {
+                if worktree {
+                    let _ = tx.send(since);
+                }
+            },
+            || {},
+        )
+        .unwrap();
+        // Let the watch settle, then make two changes inside one burst.
+        std::thread::sleep(Duration::from_millis(300));
+        while rx.try_recv().is_ok() {}
+        fs::write(root.join("first.txt"), b"1").unwrap();
+        std::thread::sleep(Duration::from_millis(40));
+        // A read that starts here sees the first change but not the second.
+        let read_started = super::now_ms();
+        std::thread::sleep(Duration::from_millis(5));
+        fs::write(root.join("second.txt"), b"2").unwrap();
+        let mut reported = vec![rx.recv_timeout(Duration::from_secs(10)).expect("The changes were not reported")];
+        while let Ok(since) = rx.recv_timeout(Duration::from_millis(600)) {
+            reported.push(since);
+        }
+        // The batch that ends the burst must not count the read above as fresh.
+        assert!(reported.last().is_some_and(|since| *since > read_started), "{read_started} vs {reported:?}");
+        drop(watcher);
+        tmp.close().unwrap();
+    }
+
+    #[test]
+    fn a_file_added_with_force_inside_a_quiet_ignored_folder_is_watched_again() {
+        use super::watch;
+        use crate::git::runner;
+        use std::{fs, sync::mpsc, time::Duration};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join("release")).unwrap();
+        runner::run(&root, ["init", "-qb", "main"]).unwrap();
+        fs::write(root.join(".gitignore"), b"/release/\n").unwrap();
+        fs::write(root.join("release/out.txt"), b"1").unwrap();
+        let git_dir = crate::git::repo::git_dir(&root).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let watcher = watch(
+            root.clone(),
+            git_dir,
+            move |_, worktree, _| {
+                if worktree {
+                    let _ = tx.send(());
+                }
+            },
+            || {},
+        )
+        .unwrap();
+        let settle = || while rx.recv_timeout(Duration::from_millis(800)).is_ok() {};
+        std::thread::sleep(Duration::from_millis(300));
+        settle();
+        // Build output in an ignored folder without tracked files does not start a refresh.
+        fs::write(root.join("release/out.txt"), b"2").unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(1500)).is_err(), "a write into a quiet ignored folder was reported");
+        // `git add -f` tracks the file: the folder is no longer quiet.
+        runner::run(&root, ["add", "-f", "release/out.txt"]).unwrap();
+        settle();
+        fs::write(root.join("release/out.txt"), b"3").unwrap();
+        rx.recv_timeout(Duration::from_secs(10)).expect("a change of a force-added file was not reported");
+        drop(watcher);
+        tmp.close().unwrap();
+    }
+
+    #[test]
+    fn a_quiet_folder_reported_for_itself_is_quiet_but_a_tracked_file_named_like_a_pattern_is_not() {
+        use crate::git::runner;
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join("release/sub")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        runner::run(&root, ["init", "-qb", "main"]).unwrap();
+        fs::write(root.join(".gitignore"), b"/release/\n*.log\n").unwrap();
+        fs::write(root.join("release/sub/out.txt"), b"1").unwrap();
+        fs::write(root.join("kept.log"), b"1").unwrap();
+        fs::write(root.join("src/main.rs"), b"1").unwrap();
+        runner::run(&root, ["add", "-f", "kept.log"]).unwrap();
+        let mut quiet = super::QuietFolders::new(&root);
+        // Windows reports the folder itself when a file inside it changes.
+        assert!(quiet.contains(&root.join("release")));
+        assert!(quiet.contains(&root.join("release/sub")));
+        assert!(quiet.contains(&root.join("release/sub/out.txt")));
+        assert!(!quiet.contains(&root.join("src")));
+        assert!(!quiet.contains(&root.join("src/main.rs")));
+        assert!(!quiet.contains(&root.join("kept.log")), "a tracked file is not a folder");
+        assert!(!quiet.contains(&root));
+        drop(quiet);
+        tmp.close().unwrap();
+    }
+
+    #[test]
+    fn a_folder_is_watched_again_once_the_global_excludes_file_no_longer_ignores_it() {
+        use crate::git::runner;
+        use std::{fs, time::Duration};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join("release")).unwrap();
+        runner::run(&root, ["init", "-qb", "main"]).unwrap();
+        let excludes = tmp.path().join("global-ignore");
+        fs::write(&excludes, b"/release/\n").unwrap();
+        runner::run(&root, ["config", "core.excludesFile", &excludes.to_string_lossy()]).unwrap();
+        fs::write(root.join("release/out.txt"), b"1").unwrap();
+        let mut quiet = super::QuietFolders::new(&root);
+        assert!(quiet.contains(&root.join("release/out.txt")));
+        // The user stops ignoring the folder in the global excludes file.
+        fs::write(&excludes, b"*.tmp\n").unwrap();
+        quiet.excludes.as_mut().unwrap().checked = std::time::Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        assert!(!quiet.contains(&root.join("release/out.txt")), "the folder stayed quiet after its ignore rule was removed");
+        // Ignored again, then the global configuration names another excludes file without the rule.
+        fs::write(
+            &excludes,
+            b"/release/
+",
+        )
+        .unwrap();
+        quiet.forget();
+        assert!(quiet.contains(&root.join("release/out.txt")));
+        let other = tmp.path().join("other-ignore");
+        fs::write(
+            &other, b"*.tmp
+",
+        )
+        .unwrap();
+        runner::run(&root, ["config", "core.excludesFile", &other.to_string_lossy()]).unwrap();
+        quiet.excludes.as_mut().unwrap().checked = std::time::Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        assert!(!quiet.contains(&root.join("release/out.txt")), "the folder stayed quiet after core.excludesFile named another file");
+        drop(quiet);
+        tmp.close().unwrap();
+    }
+
+    #[test]
+    fn only_the_working_trees_own_index_counts_as_a_change_of_tracked_files() {
+        let git_dir = Path::new("/work/repo/.git");
+        let dirs = [comparable(git_dir)];
+        for name in ["index", "index.lock", "sharedindex.0123456789abcdef0123456789abcdef01234567"] {
+            assert!(super::changes_tracked_files(&git_dir.join(name), &dirs), "{name}");
+        }
+        assert!(!super::changes_tracked_files(Path::new("/work/repo/docs/index"), &dirs));
+        assert!(!super::changes_tracked_files(&git_dir.join("HEAD"), &dirs));
+        assert!(!super::changes_tracked_files(&git_dir.join("worktrees/other/index"), &dirs));
+        assert!(super::changes_configuration(&git_dir.join("config"), &dirs));
+        assert!(super::changes_configuration(&git_dir.join("config.worktree"), &dirs));
+        assert!(!super::changes_configuration(Path::new("/work/repo/src/config"), &dirs));
     }
 
     #[cfg(windows)]

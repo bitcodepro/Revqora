@@ -76,6 +76,12 @@ pub(super) fn require_directory(path: &Path) -> GitResult<()> {
 
 pub fn discover(path: &Path) -> GitResult<PathBuf> {
     require_directory(path)?;
+    // Remembered with the Git directory (see `location`) while `path/.git` stays the same:
+    // guarded operations ask for it before every checkpoint.
+    location(path).map(|(root, _)| root)
+}
+
+fn discover_uncached(path: &Path) -> GitResult<PathBuf> {
     let out = runner::exec(path, ["rev-parse", "--show-toplevel"])?;
     if !out.ok() {
         return Err(GitError::new(format!("{} is not inside a Git repository.", path.display())).kind("not-a-repo"));
@@ -130,6 +136,15 @@ pub fn git_dir(repo: &Path) -> GitResult<PathBuf> {
 }
 
 pub fn head(repo: &Path) -> GitResult<HeadInfo> {
+    // HEAD is read on every refresh and twice per journaled operation: answer from Git's
+    // files when they are ordinary, without starting two processes.
+    if let Some(head) = git_dir(repo).ok().and_then(|gd| head_from_files(&gd)) {
+        return Ok(head);
+    }
+    head_from_git(repo)
+}
+
+fn head_from_git(repo: &Path) -> GitResult<HeadInfo> {
     // Both reads are independent: run them side by side.
     let parent = super::operations::Inherited::of(repo);
     let (sym, oid_out) = std::thread::scope(|scope| {
@@ -141,6 +156,66 @@ pub fn head(repo: &Path) -> GitResult<HeadInfo> {
     let branch = if sym.ok() { Some(sym.text().trim().to_string()) } else { None };
     let oid = if oid_out.ok() { Some(oid_out.text().trim().to_string()) } else { None };
     Ok(HeadInfo { detached: branch.is_none() && oid.is_some(), unborn: oid.is_none(), branch, oid })
+}
+
+/// HEAD from the files Git keeps, as `symbolic-ref -q --short HEAD` and
+/// `rev-parse -q --verify HEAD^{commit}` would report it: `HEAD` in the Git directory, then the
+/// branch as a loose ref in the shared directory, then `packed-refs`.
+///
+/// None (ask Git) for anything that is not plain: reftable, a HEAD that names something other
+/// than a local branch, a branch that is itself a symbolic ref, a short name Git would print
+/// differently because another ref has it too, or a branch found nowhere (possibly unborn, or a
+/// read during `pack-refs`).
+pub(crate) fn head_from_files(gd: &Path) -> Option<HeadInfo> {
+    let common = match std::fs::read_to_string(gd.join("commondir")) {
+        Ok(text) if !text.trim().is_empty() => {
+            let target = normalize(PathBuf::from(text.trim()));
+            if target.is_absolute() {
+                target
+            } else {
+                gd.join(target)
+            }
+        }
+        _ => gd.to_path_buf(),
+    };
+    if common.join("reftable").exists() || gd.join("reftable").exists() {
+        return None;
+    }
+    let text = std::fs::read_to_string(gd.join("HEAD")).ok()?;
+    let text = text.trim_end_matches(['\n', '\r']);
+    let object = |value: &str| (value.len() == 40 || value.len() == 64) && value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+    let Some(target) = text.strip_prefix("ref: ") else {
+        return object(text).then(|| HeadInfo { branch: None, oid: Some(text.to_owned()), detached: true, unborn: false });
+    };
+    let name = target.strip_prefix("refs/heads/")?;
+    if name.is_empty() || target.contains("..") || target.contains('\\') {
+        return None;
+    }
+    let packed = match std::fs::read_to_string(common.join("packed-refs")) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return None,
+    };
+    let packed_oid = |refname: &str| {
+        packed
+            .lines()
+            .filter(|line| !line.starts_with(['#', '^']))
+            .find_map(|line| line.split_once(' ').filter(|(_, r)| *r == refname).map(|(oid, _)| oid.to_owned()))
+    };
+    let exists = |refname: &str| common.join(refname).is_file() || packed_oid(refname).is_some();
+    // `--short` keeps "heads/<name>" when another ref has the same short name.
+    if [format!("refs/{name}"), format!("refs/tags/{name}"), format!("refs/remotes/{name}"), format!("refs/remotes/{name}/HEAD")].iter().any(|r| exists(r)) {
+        return None;
+    }
+    let oid = match std::fs::read_to_string(common.join(target)) {
+        Ok(loose) => {
+            let loose = loose.trim_end_matches(['\n', '\r']).to_owned();
+            object(&loose).then_some(loose)?
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => packed_oid(target).filter(|oid| object(oid))?,
+        Err(_) => return None,
+    };
+    Some(HeadInfo { branch: Some(name.to_owned()), oid: Some(oid), detached: false, unborn: false })
 }
 
 fn read_trim(p: &Path) -> Option<String> {
@@ -268,10 +343,20 @@ pub fn op_state(repo: &Path, gd: &Path) -> OpState {
     st
 }
 
-pub fn info(path: &Path) -> GitResult<RepoInfo> {
-    // One Git process answers both questions on every refresh. Unusual output (a path
-    // containing a line break) falls back to the separate reads.
-    require_directory(path)?;
+/// The working tree root and Git directory of `path`. Remembered per folder while `path/.git`
+/// stays the same and the Git directory still exists, like [`git_dir`]: every refresh asks.
+fn location(path: &Path) -> GitResult<(PathBuf, PathBuf)> {
+    type Remembered = (Option<String>, PathBuf, PathBuf);
+    static PLACES: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<PathBuf, Remembered>>> = std::sync::OnceLock::new();
+    let places = PLACES.get_or_init(Default::default);
+    let identity = dot_git_identity(path);
+    if identity.is_some() {
+        if let Some((_, root, gd)) = places.lock().get(path).filter(|(known, root, gd)| known == &identity && root.is_dir() && gd.join("HEAD").is_file()) {
+            return Ok((root.clone(), gd.clone()));
+        }
+    }
+    // One Git process answers both questions. Unusual output (a path containing a line
+    // break) falls back to the separate reads.
     let both = runner::exec(path, ["rev-parse", "--show-toplevel", "--absolute-git-dir"])?;
     let text = both.text();
     let lines: Vec<&str> = text.lines().collect();
@@ -280,11 +365,22 @@ pub fn info(path: &Path) -> GitResult<RepoInfo> {
             (normalize(PathBuf::from(top.trim())), normalize(PathBuf::from(git.trim())))
         }
         _ => {
-            let root = discover(path)?;
+            let root = discover_uncached(path)?;
             let gd = git_dir(&root)?;
             (root, gd)
         }
     };
+    if identity.is_some() && dot_git_identity(path) == identity {
+        places.lock().insert(path.to_path_buf(), (identity, root.clone(), gd.clone()));
+    }
+    Ok((root, gd))
+}
+
+pub fn info(path: &Path) -> GitResult<RepoInfo> {
+    // One Git process answers both questions on every refresh. Unusual output (a path
+    // containing a line break) falls back to the separate reads.
+    require_directory(path)?;
+    let (root, gd) = location(path)?;
     let head = head(&root)?;
     let state = op_state(&root, &gd);
     let name = root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| root.to_string_lossy().into_owned());
@@ -317,4 +413,79 @@ pub fn config_set(repo: &Path, key: &str, value: &str, global: bool) -> GitResul
         runner::run(repo, ["config", key, value])?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod head_tests {
+    use super::*;
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        runner::run(repo, args).unwrap().trim().to_string()
+    }
+
+    fn same_as_git(repo: &Path) -> Option<HeadInfo> {
+        let gd = git_dir(repo).unwrap();
+        let files = head_from_files(&gd);
+        let from_git = head_from_git(repo).unwrap();
+        if let Some(files) = &files {
+            assert_eq!(
+                (&files.branch, &files.oid, files.detached, files.unborn),
+                (&from_git.branch, &from_git.oid, from_git.detached, from_git.unborn),
+                "files and Git disagree in {}",
+                repo.display()
+            );
+        }
+        files
+    }
+
+    #[test]
+    fn head_read_from_files_matches_git_or_defers_to_it() {
+        let dir = tempfile::tempdir_in(crate::portable::temp_dir().unwrap()).unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-qb", "main"]);
+        for (key, value) in [("user.name", "Fixture"), ("user.email", "fixture@example.test"), ("commit.gpgsign", "false")] {
+            git(&repo, &["config", key, value]);
+        }
+        // Unborn: the branch exists nowhere, so Git is asked.
+        assert!(same_as_git(&repo).is_none());
+        assert!(head(&repo).unwrap().unborn);
+
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "one"]);
+        let loose = same_as_git(&repo).expect("a loose branch is read from files");
+        assert_eq!(loose.branch.as_deref(), Some("main"));
+
+        // Packed branch: no loose file left.
+        git(&repo, &["pack-refs", "--all"]);
+        assert!(!repo.join(".git/refs/heads/main").exists());
+        assert!(same_as_git(&repo).is_some());
+
+        // A nested branch name, then a detached HEAD.
+        git(&repo, &["switch", "-qc", "feature/x"]);
+        assert_eq!(same_as_git(&repo).unwrap().branch.as_deref(), Some("feature/x"));
+        git(&repo, &["switch", "-q", "--detach", "HEAD"]);
+        let detached = same_as_git(&repo).expect("a detached HEAD is read from files");
+        assert!(detached.detached && detached.branch.is_none());
+
+        // A tag with the branch's name: Git prints "heads/main", so the files defer to Git.
+        git(&repo, &["switch", "-q", "main"]);
+        git(&repo, &["tag", "main"]);
+        assert!(same_as_git(&repo).is_none());
+        assert_eq!(head(&repo).unwrap().branch.as_deref(), Some("heads/main"));
+        git(&repo, &["tag", "-d", "main"]);
+
+        // A linked worktree keeps HEAD in its own Git directory and branches in the shared one.
+        let linked = dir.path().join("linked");
+        git(&repo, &["worktree", "add", "-q", "-b", "side", linked.to_str().unwrap()]);
+        assert_eq!(same_as_git(&linked).unwrap().branch.as_deref(), Some("side"));
+        git(&repo, &["pack-refs", "--all"]);
+        assert_eq!(same_as_git(&linked).unwrap().branch.as_deref(), Some("side"));
+
+        // Repository info uses the same answers and is remembered per folder.
+        let info = info(&linked).unwrap();
+        assert_eq!(info.head.branch.as_deref(), Some("side"));
+        assert_eq!(normalize(PathBuf::from(&info.root)), normalize(linked.clone()));
+    }
 }

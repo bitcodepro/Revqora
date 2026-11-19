@@ -26,6 +26,10 @@ import { openInDiffTool, openInEditor } from "../lib/externalTools";
 import { folderHistoryDialog } from "./HistoryDialogs";
 import { CommitNote, prefetchNote } from "./CommitNote";
 
+// Selections closer together than this are a key repeat or rapid clicks: wait briefly.
+const RAPID_SELECTION_MS = 150;
+let lastDetailSelection = Number.NEGATIVE_INFINITY;
+
 export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
   const fileNavigation = useFileListNavigation();
   const generation = useSyncExternalStore(
@@ -89,7 +93,10 @@ ${oid}`;
     const current = () => alive && previewGeneration(root) === generation;
     setDetailError(null);
     if (peekDetails(detailKey, oid)) return;
-    // Skip transient selections while holding an arrow key or rapidly clicking.
+    // Skip transient selections while holding an arrow key or rapidly clicking; a single
+    // selection loads at once.
+    const now = performance.now(), rapid = now - lastDetailSelection < RAPID_SELECTION_MS;
+    lastDetailSelection = now;
     const timer = window.setTimeout(() => {
       if (!current()) return;
       prefetchNote(root, oid);
@@ -97,7 +104,7 @@ ${oid}`;
         (value) => { if (current()) setDetailResult({ key: detailKey, generation, value }); },
         (e) => { if (current()) setDetailError({ key: detailKey, generation, message: errorMessage(e) }); },
       );
-    }, 50);
+    }, rapid ? 50 : 0);
     return () => { alive = false; window.clearTimeout(timer); };
   }, [root, oid, detailKey, generation]);
 

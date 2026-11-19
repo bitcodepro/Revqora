@@ -198,6 +198,19 @@ export function Splitter({ dir, onDrag, onStart, onCommit, onEnd, style, label }
   const moved = useRef(false);
   const endRef = useRef(onEnd);
   endRef.current = onEnd;
+  // Pointer moves arrive faster than frames: apply their sum once per frame, so a drag
+  // re-renders the panes at most at the display rate.
+  const dragRef = useRef(onDrag);
+  dragRef.current = onDrag;
+  const pending = useRef(0);
+  const frame = useRef<{ view: Window; id: number } | null>(null);
+  const flush = () => {
+    if (frame.current) frame.current.view.cancelAnimationFrame(frame.current.id);
+    frame.current = null;
+    const delta = pending.current;
+    pending.current = 0;
+    if (delta) dragRef.current(delta);
+  };
   const finish = (view: Window | null) => {
     // Ref-backed sizes can persist immediately. State-backed callers read after React renders.
     onCommit?.();
@@ -225,13 +238,17 @@ export function Splitter({ dir, onDrag, onStart, onCommit, onEnd, style, label }
         const current = dir === "v" ? e.clientX : e.clientY;
         if (current !== position.current) {
           moved.current = true;
-          onDrag(current - position.current);
+          pending.current += current - position.current;
+          const view = e.currentTarget.ownerDocument.defaultView;
+          if (!frame.current && view) frame.current = { view, id: view.requestAnimationFrame(() => { frame.current = null; flush(); }) };
+          else if (!view) flush();
         }
         position.current = current;
       }}
       onLostPointerCapture={e => {
         if (position.current === null) return;
         position.current = null;
+        flush();
         setDragging(false);
         if (moved.current) finish(e.currentTarget.ownerDocument.defaultView);
       }}

@@ -38,6 +38,9 @@ struct Gate {
     /// Network sections of the current writer (see [`network`]): while non-zero, the writer
     /// holds `access` shared instead of exclusive.
     network: Mutex<usize>,
+    /// Transfer id of optional work holding the queue (see [`yielding`]): the next writer
+    /// stops it instead of waiting for the network.
+    yielding: Mutex<Option<String>>,
 }
 
 thread_local! {
@@ -142,6 +145,10 @@ pub fn access<T>(repo: &Path, write: bool, mut phase: impl FnMut(&str, usize), f
             phase("queued", (ticket - q.serving) as usize);
             ticket
         };
+        // Optional work (automatic fetch) must not make the user's operation wait for a server.
+        if let Some(id) = gate.yielding.lock().clone() {
+            super::runner::transfers::cancel(&id);
+        }
         let mut q = gate.tickets.lock();
         while q.serving != ticket {
             gate.changed.wait(&mut q);
@@ -173,6 +180,34 @@ fn note_wait(repo: &Path, kind: &str, started: Option<std::time::Instant>) {
         stages.add("wait", waited);
         super::stage_timings::record("repository_wait", repo, &stages, kind);
     }
+}
+
+/// Runs optional work `f` inside a write transaction so that the next writer of the repository
+/// stops it (its network commands are cancelled) instead of queueing behind it. A stopped run
+/// fails with kind `repository-busy`; nothing it did not finish is applied.
+pub fn yielding<T>(repo: &Path, f: impl FnOnce() -> GitResult<T>) -> GitResult<T> {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let gate = gate(&repository_key(repo));
+    let id = format!("yielding-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    *gate.yielding.lock() = Some(id.clone());
+    let _clear = DropGuard::new(gate.as_ref(), |gate| *gate.yielding.lock() = None);
+    // A writer that queued before this point would wait for the whole transfer.
+    let queued = {
+        let q = gate.tickets.lock();
+        q.next > q.serving + 1
+    };
+    if queued {
+        return Err(
+            GitError::new("Another operation is waiting for this repository. Automatic fetch will try again at the next interval.").kind("repository-busy")
+        );
+    }
+    super::runner::transfers::for_operation(&id, f).map_err(|error| {
+        if error.kind == "cancelled" {
+            GitError::new("Automatic fetch stopped for another operation in this repository. It will try again at the next interval.").kind("repository-busy")
+        } else {
+            error
+        }
+    })
 }
 
 pub fn read<T>(repo: &Path, f: impl FnOnce() -> GitResult<T>) -> GitResult<T> {
@@ -553,10 +588,27 @@ pub fn state_reads(repo: &Path, display_path: Option<&str>) -> StateReads {
     // this transaction, then hash their results in a fixed order.
     let parent = Inherited::of(repo);
     let failed = || GitError::new("Background status task failed.");
+    let dirs = super::repo::git_dir(repo).ok().map(|gd| {
+        let common = super::graph::common_dir(repo).unwrap_or_else(|| gd.clone());
+        (gd, common)
+    });
     std::thread::scope(|sc| {
         let external_files = sc.spawn(|| parent.run(|| external_attribute_files(repo)));
-        let index = sc.spawn(|| parent.run(|| runner::run_bytes(repo, index_args)));
-        let references = display_path.is_none().then(|| sc.spawn(|| parent.run(|| runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"]))));
+        let index = sc.spawn(|| {
+            parent.run(|| {
+                let stamp = dirs.as_ref().and_then(|(gd, _)| state_cache::index_stamp(gd));
+                state_cache::remembered(repo, "index", &index_args, stamp, || runner::run_bytes(repo, &index_args))
+            })
+        });
+        let references = display_path.is_none().then(|| {
+            sc.spawn(|| {
+                parent.run(|| {
+                    let args = ["for-each-ref", "--format=%(refname)%00%(objectname)"];
+                    let stamp = dirs.as_ref().and_then(|(gd, common)| state_cache::refs_stamp(gd, common));
+                    state_cache::remembered(repo, "refs", &args, stamp, || runner::run_bytes(repo, args)).map(|out| String::from_utf8_lossy(&out).into_owned())
+                })
+            })
+        });
         let gd = super::repo::git_dir(repo);
         StateReads {
             gd,
@@ -565,6 +617,133 @@ pub fn state_reads(repo: &Path, display_path: Option<&str>) -> StateReads {
             references: references.map(|task| task.join().unwrap_or_else(|_| Err(failed()))),
         }
     })
+}
+
+/// Outputs of the state-token reads that depend only on the index or only on the refs, reused
+/// while those files keep their size and modification time. A file changed within the last
+/// two seconds is never trusted (Git's own racy-timestamp rule: a second change in the same
+/// clock tick can keep both), so the read runs again then.
+pub mod state_cache {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    pub type Stamp = u64;
+    const RACY: Duration = Duration::from_secs(2);
+    const KEPT: usize = 16;
+
+    fn settled(modified: SystemTime, now: SystemTime) -> bool {
+        now.duration_since(modified).is_ok_and(|age| age >= RACY)
+    }
+
+    fn hash_meta(hasher: &mut impl std::hash::Hasher, path: &Path, now: SystemTime) -> Option<()> {
+        use std::hash::Hash;
+        path.hash(hasher);
+        match fs::metadata(path) {
+            Ok(meta) => {
+                let modified = meta.modified().ok()?;
+                if !settled(modified, now) {
+                    return None;
+                }
+                meta.len().hash(hasher);
+                modified.hash(hasher);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0u8.hash(hasher),
+            Err(_) => return None,
+        }
+        Some(())
+    }
+
+    /// The index file, or None when it changed recently or cannot be read.
+    pub fn index_stamp(gd: &Path) -> Option<Stamp> {
+        let now = SystemTime::now();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        hash_meta(&mut hasher, &gd.join("index"), now)?;
+        // A split index keeps entries in a shared file as well.
+        if let Ok(entries) = fs::read_dir(gd) {
+            let mut shared: Vec<PathBuf> =
+                entries.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("sharedindex."))).collect();
+            shared.sort();
+            for file in shared {
+                hash_meta(&mut hasher, &file, now)?;
+            }
+        }
+        Some(std::hash::Hasher::finish(&hasher))
+    }
+
+    /// Every ref file (loose refs of the repository and of this worktree, packed-refs, HEAD),
+    /// or None for reftable, for a recent change, or when a folder cannot be read.
+    pub fn refs_stamp(gd: &Path, common: &Path) -> Option<Stamp> {
+        if common.join("reftable").exists() || gd.join("reftable").exists() {
+            return None;
+        }
+        let now = SystemTime::now();
+        let mut files = vec![common.join("packed-refs"), gd.join("HEAD"), common.join("HEAD")];
+        let mut stack = vec![common.join("refs")];
+        if gd != common {
+            stack.push(gd.join("refs"));
+        }
+        while let Some(dir) = stack.pop() {
+            let entries = match fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return None,
+            };
+            // A folder whose entries changed recently may hide a renamed ref.
+            if !settled(fs::metadata(&dir).ok()?.modified().ok()?, now) {
+                return None;
+            }
+            for entry in entries.flatten() {
+                match entry.file_type() {
+                    Ok(t) if t.is_dir() => stack.push(entry.path()),
+                    Ok(_) => files.push(entry.path()),
+                    Err(_) => return None,
+                }
+            }
+        }
+        files.sort();
+        files.dedup();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for file in &files {
+            hash_meta(&mut hasher, file, now)?;
+        }
+        Some(std::hash::Hasher::finish(&hasher))
+    }
+
+    type Key = (PathBuf, &'static str, Vec<String>);
+    type Entry = (Key, Stamp, Vec<u8>);
+
+    fn entries() -> &'static Mutex<Vec<Entry>> {
+        static ENTRIES: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
+        ENTRIES.get_or_init(Default::default)
+    }
+
+    /// `read`'s output, reused while `stamp` (None: always read) is unchanged.
+    pub fn remembered<S: AsRef<str>>(
+        repo: &Path,
+        kind: &'static str,
+        args: &[S],
+        stamp: Option<Stamp>,
+        read: impl FnOnce() -> GitResult<Vec<u8>>,
+    ) -> GitResult<Vec<u8>> {
+        let key: Key = (repo.to_path_buf(), kind, args.iter().map(|a| a.as_ref().to_owned()).collect());
+        let Some(stamp) = stamp else { return read() };
+        if let Some((_, _, out)) = entries().lock().iter().find(|(k, s, _)| k == &key && *s == stamp) {
+            return Ok(out.clone());
+        }
+        let out = read()?;
+        let mut list = entries().lock();
+        list.retain(|(k, _, _)| k != &key);
+        if list.len() >= KEPT {
+            list.remove(0);
+        }
+        list.push((key, stamp, out.clone()));
+        Ok(out)
+    }
+
+    /// Forgets every remembered output (tests that count Git processes).
+    pub fn forget() {
+        entries().lock().clear();
+    }
 }
 
 pub fn state_tokens(repo: &Path, raw_status: &str, files: &mut [super::status::FileStatus], display_path: Option<&str>) -> GitResult<StateTokens> {

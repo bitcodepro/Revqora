@@ -1,3 +1,4 @@
+import { useShallow } from "zustand/react/shallow";
 import { useLibrary, uniqueRoots, repositoryKey, groupRepositoryRoots } from "../lib/repositoryLibrary";
 import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
 import { groupEditorDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
@@ -13,7 +14,7 @@ import * as A from "../lib/actions";
 import { basename, relativeTime } from "../lib/format";
 import { pullBlockReason, runRepositoryBatch, type BatchResult } from "../lib/repositoryBatch";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
-import { repositoryHasChanges, repositoryIncoming, repositoryOutgoing, repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
+import { repositoryHasChanges, repositoryIncoming, repositoryOutgoing, repositorySidebarStatus, useListedTabs, useRepos, type RepoTab } from "../lib/store";
 import { changesOf, trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
 import { contextMenu, endBusy, showDialog, startBusy, toast, toggleRepositoryOverview, useUi } from "../lib/ui";
 import { AheadBehind } from "./bits";
@@ -154,7 +155,7 @@ function BulkRemoteButtons({ roots }: { roots: string[] }) {
 export function RepositorySidebar() {
   const panelMenu = usePanelTitleMenu("repositories");
   const order = useRepos((s) => s.order);
-  const tabs = useRepos((s) => s.tabs);
+  const tabs = useListedTabs();
   const active = useRepos((s) => s.active);
   const overview = useUi((s) => s.repositoryOverview);
   const [query, setQuery] = useState("");
@@ -163,7 +164,8 @@ export function RepositorySidebar() {
   const [changesOnly, setChangesOnly] = useState(false);
   const [outgoingOnly, setOutgoingOnly] = useState(false);
   const tracking = useRepositoryTracking(s => s.byKey), changes = useRepositoryTracking(s => s.changes);
-  const library = useLibrary();
+  // Only what this list shows: the library store also changes for unrelated settings.
+  const library = useLibrary(useShallow(s => ({ activeGroupId: s.activeGroupId, favorites: s.favorites, groups: s.groups, knownRoots: s.knownRoots, repositoryNames: s.repositoryNames, selectGroup: s.selectGroup })));
   const groupId = library.activeGroupId;
   const actionsCollapsed = useSettings(s => s.repositoryActionsCollapsed);
   const navigation = useNavigationSelection<HTMLDivElement>();

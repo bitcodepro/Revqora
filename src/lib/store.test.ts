@@ -289,6 +289,9 @@ describe("background repository observation", () => {
     const info = (branch: string) => ({ head: { branch, oid } } as RepoInfo);
     const status = { ...snapshot("topic-state", 5), branch: "topic", oid };
     useRepos.getState().patch(root, { status, info: info("main"), pendingMutations: 0 });
+    // The shown repository is read again through the store after the refused commit.
+    vi.mocked(api.status).mockResolvedValue(status);
+    vi.mocked(api.repoInfo).mockResolvedValue(info("topic"));
     const calls: string[] = [];
     const invoke: Invoke = async <T>(command: string) => {
       calls.push(command);

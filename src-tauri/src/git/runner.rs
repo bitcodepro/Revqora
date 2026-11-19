@@ -5,7 +5,7 @@
 
 use std::ffi::OsStr;
 use std::io::{BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -69,13 +69,9 @@ impl Output {
     }
 }
 
-pub fn git_exe() -> PathBuf {
-    super::locate::exe()
-}
-
 /// Builds a configured `git` command rooted at `repo`.
 pub fn command(repo: &Path) -> Command {
-    let mut c = Command::new(git_exe());
+    let mut c = super::locate::command();
     c.current_dir(repo);
     // Credentials and SSH passphrases are asked through Revqora's own dialog.
     for (k, v) in crate::askpass::env() {
@@ -86,6 +82,8 @@ pub fn command(repo: &Path) -> Command {
     }
     c.env(crate::git_credentials::REPO_VAR, std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_owned()));
     c.env(crate::git_credentials::EPOCH_VAR, crate::git_credentials::epoch().to_string());
+    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    c.env(crate::git_credentials::CALL_VAR, format!("{}-{}", std::process::id(), CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     c.args([
         "-c",
         "core.quotepath=false",
@@ -150,12 +148,50 @@ fn describe(args: &[&OsStr]) -> String {
     s
 }
 
-/// Clears remembered configuration answers when a writing command ends (even on error).
-struct ClearConfigCache;
+/// The process tree of a command with a time limit; network commands are also registered as
+/// transfers so they can be cancelled.
+enum Limited {
+    Tree(super::validation::process_tree::Tree),
+    Transfer(transfers::Registration),
+}
+
+/// Clears remembered configuration answers when a writing command ends (even on error): of
+/// the repository it ran in (and its other worktrees), or of every repository when the command
+/// can change configuration outside it (see [`changes_shared_configuration`]).
+struct ClearConfigCache(Option<std::path::PathBuf>);
+
+impl ClearConfigCache {
+    fn after<S: AsRef<OsStr>>(repo: &Path, args: &[S]) -> Self {
+        ClearConfigCache((!changes_shared_configuration(args)).then(|| repo.to_path_buf()))
+    }
+}
 
 impl Drop for ClearConfigCache {
     fn drop(&mut self) {
-        super::config_cache::clear();
+        match &self.0 {
+            Some(repo) => super::config_cache::clear_repository(repo),
+            None => super::config_cache::clear(),
+        }
+    }
+}
+
+/// Writing commands that may change configuration other repositories read: global, system or
+/// explicit configuration files, credentials, and commands that create or set up repositories.
+pub fn changes_shared_configuration<S: AsRef<OsStr>>(args: &[S]) -> bool {
+    let a: Vec<String> = args.iter().map(|s| s.as_ref().to_string_lossy().into_owned()).collect();
+    let mut start = 0;
+    while a.get(start).is_some_and(|v| v == "-c") && a.get(start + 1).is_some() {
+        start += 2;
+    }
+    if a.get(start).is_some_and(|v| v == "--literal-pathspecs") {
+        start += 1;
+    }
+    let a = &a[start..];
+    let has = |flag: &str| a.iter().any(|x| x == flag || x.starts_with(&format!("{flag}=")));
+    match a.first().map(|s| s.as_str()).unwrap_or("") {
+        "config" => has("--global") || has("--system") || has("--file") || has("-f") || has("--blob"),
+        "restore" | "switch" | "checkout" | "branch" | "remote" | "rebase" | "worktree" | "symbolic-ref" | "sparse-checkout" | "bisect" => false,
+        _ => true,
     }
 }
 
@@ -251,7 +287,8 @@ pub fn keeps_configuration<S: AsRef<OsStr>>(args: &[S]) -> bool {
         "push" => !has("-u") && !has("--set-upstream"),
         "maintenance" => a.get(1).is_some_and(|s| s == "run"),
         "update-ref" | "merge" | "commit" | "reset" | "update-index" | "read-tree" | "add" | "rm" | "apply" | "pack-refs" | "gc" | "tag" | "cherry-pick"
-        | "revert" | "stash" | "reflog" | "notes" | "prune" | "repack" | "checkout-index" => true,
+        | "revert" | "stash" | "reflog" | "notes" | "prune" | "repack" | "checkout-index" | "restore" | "write-tree" | "clean" | "archive" | "mktree"
+        | "hash-object" => true,
         _ => false,
     }
 }
@@ -363,7 +400,7 @@ where
     let writes = !is_read_only(&args);
     // Any writing command may change configuration (remote, config, submodule, ...): drop
     // remembered configuration answers afterwards instead of trusting file timestamps alone.
-    let _forget = (writes && !keeps_configuration(&args)).then(|| ClearConfigCache);
+    let _forget = (writes && !keeps_configuration(&args)).then(|| ClearConfigCache::after(repo, &args));
     super::operations::access(
         repo,
         writes,
@@ -398,6 +435,12 @@ where
                 } else {
                     (c.spawn().map_err(spawn_error)?, None)
                 };
+                // A network command with a time limit (automatic fetch) can be cancelled as well:
+                // the next writer of the repository stops it (operations::yielding).
+                let tree = match tree {
+                    Some(tree) if network => Some(Limited::Transfer(transfers::register(repo, tree))),
+                    tree => tree.map(Limited::Tree),
+                };
                 // Feed stdin on a separate thread so large inputs cannot deadlock with stdout.
                 let writer = input.map(|data| {
                     let data = data.to_vec();
@@ -409,11 +452,18 @@ where
                 let stderr_pipe = child.stderr.take().expect("stderr piped");
                 let err_thread = std::thread::spawn(move || capture_bytes(stderr_pipe, limit.map(|_| 128 * 1024)));
                 let stdout_pipe = child.stdout.take().expect("stdout piped");
+                let mut cancelled = false;
                 let (stdout, status): (_, GitResult<ExitStatus>) = if let Some((timeout, tree)) = timeout.zip(tree) {
                     let out_thread = std::thread::spawn(move || capture_bytes(stdout_pipe, limit));
                     let outcome = wait_for_deadline(&mut child, timeout);
                     // Descendants can still hold the output pipes when the Git leader exits.
-                    tree.terminate();
+                    match tree {
+                        Limited::Tree(tree) => tree.terminate(),
+                        Limited::Transfer(registration) => {
+                            registration.terminate();
+                            cancelled = registration.finish();
+                        }
+                    }
                     let status = child.wait();
                     let stdout = out_thread.join().unwrap_or_else(|_| Err(std::io::Error::other("Git stdout reader failed")));
                     (stdout, outcome.and(status.map_err(GitError::from)))
@@ -438,7 +488,11 @@ where
                     return Err(GitError::new("Git output exceeds the preview size limit.").kind("output-limit"));
                 }
                 let stderr = String::from_utf8_lossy(&stderr).into_owned();
-                Ok(Output { stdout, stderr, code: status.code().unwrap_or(-1) })
+                let out = Output { stdout, stderr, code: status.code().unwrap_or(-1) };
+                if cancelled && !out.ok() {
+                    return Err(transfers::cancelled_error());
+                }
+                Ok(out)
             });
             if let Some(trace) = capture.as_mut() {
                 match &result {
@@ -595,6 +649,11 @@ pub mod transfers {
     }
 
     impl Registration {
+        /// Stops the transfer's whole process tree.
+        pub(in crate::git) fn terminate(&self) {
+            self.tree.terminate();
+        }
+
         /// Ends the registration once the leader has exited; returns whether Cancel stopped it.
         pub(in crate::git) fn finish(self) -> bool {
             active().retain(|a| a.id != self.id);
@@ -755,7 +814,7 @@ pub fn run_streaming_with_connection<F>(
 where
     F: FnMut(&str),
 {
-    let _forget = (!is_read_only(args) && !keeps_configuration(args)).then(|| ClearConfigCache);
+    let _forget = (!is_read_only(args) && !keeps_configuration(args)).then(|| ClearConfigCache::after(repo, args));
     super::operations::access(
         repo,
         !is_read_only(args),
