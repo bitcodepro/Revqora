@@ -76,6 +76,12 @@ pub(super) fn require_directory(path: &Path) -> GitResult<()> {
 
 pub fn discover(path: &Path) -> GitResult<PathBuf> {
     require_directory(path)?;
+    // Remembered with the Git directory (see `location`) while `path/.git` stays the same:
+    // guarded operations ask for it before every checkpoint.
+    location(path).map(|(root, _)| root)
+}
+
+fn discover_uncached(path: &Path) -> GitResult<PathBuf> {
     let out = runner::exec(path, ["rev-parse", "--show-toplevel"])?;
     if !out.ok() {
         return Err(GitError::new(format!("{} is not inside a Git repository.", path.display())).kind("not-a-repo"));
@@ -359,7 +365,7 @@ fn location(path: &Path) -> GitResult<(PathBuf, PathBuf)> {
             (normalize(PathBuf::from(top.trim())), normalize(PathBuf::from(git.trim())))
         }
         _ => {
-            let root = discover(path)?;
+            let root = discover_uncached(path)?;
             let gd = git_dir(&root)?;
             (root, gd)
         }

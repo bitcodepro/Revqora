@@ -54,6 +54,9 @@ struct Entry {
     password: Zeroizing<String>,
     expires: u64,
     touched: u64,
+    /// Approved by Git after another helper (Git Credential Manager, a keychain) answered,
+    /// not typed into Revqora. That helper already keeps it.
+    from_helper: bool,
 }
 struct Cache {
     epoch: u64,
@@ -168,6 +171,16 @@ fn remembered_on_disk(root: &Path) -> bool {
 #[cfg(not(windows))]
 fn remembered_on_disk(_root: &Path) -> bool {
     false
+}
+/// Whether every login Revqora holds for `repo` came from a configured helper in this session
+/// (and none is remembered on disk). Git sends each approved login to every helper again; when
+/// Revqora answers with such a login, the configured helper already has it and storing it
+/// there again only costs time (about a second for Git Credential Manager).
+pub(crate) fn answers_only_with_helper_logins(repo: &Path) -> bool {
+    let Some(root) = root(repo) else { return false };
+    let cache = CACHE.lock();
+    let mut held = cache.entries.iter().filter(|entry| entry.key.root == root).peekable();
+    held.peek().is_some() && held.all(|entry| entry.from_helper) && !remembered_on_disk(&root)
 }
 pub fn epoch() -> u64 {
     CACHE.lock().epoch
@@ -293,6 +306,10 @@ fn handle_in(request: &Request, cache: &mut Cache) -> std::io::Result<String> {
                     }
                 }
                 #[cfg(windows)]
+                let from_helper = remembered.is_none();
+                #[cfg(not(windows))]
+                let from_helper = true;
+                #[cfg(windows)]
                 let saved = remembered
                     .map(|pending| {
                         remembered::Store::for_repo(&key.root)?.save(remembered::Token {
@@ -303,7 +320,7 @@ fn handle_in(request: &Request, cache: &mut Cache) -> std::io::Result<String> {
                         })
                     })
                     .transpose();
-                cache.entries.push(Entry { key, password, expires, touched: time });
+                cache.entries.push(Entry { key, password, expires, touched: time, from_helper });
                 #[cfg(windows)]
                 saved?;
             }

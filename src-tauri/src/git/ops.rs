@@ -701,7 +701,7 @@ fn a_failed_default_branch_query_keeps_the_remote_head() {
 /// Forget saved login: drops the saved sign-in for a remote's address from every configured
 /// credential helper (Git Credential Manager, the store, Revqora's own) by running
 /// `git credential reject`. A failed transfer never does this on its own (see
-/// `connection::guard_erase`); the user asks for it, for example to sign in with another account.
+/// `connection::guard`); the user asks for it, for example to sign in with another account.
 pub fn forget_saved_login(repo: &Path, remote: &str) -> GitResult<()> {
     if remote.starts_with('-') {
         return Err(GitError::new("Choose a remote name that does not start with '-'.").kind("invalid-argument"));
