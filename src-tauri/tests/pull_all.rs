@@ -36,6 +36,9 @@ fn fixture() -> Fixture {
     commit(&other, "base.txt", "base\n");
     git(&other, &["push", "-q", "origin", "HEAD:main", "HEAD:feature", "HEAD:diverged", "HEAD:linked", "HEAD:ahead"]);
     git(root, &["clone", "-q", remote.to_str().unwrap(), work.to_str().unwrap()]);
+    // Pull all checks files out with the repository's own settings: keep line endings exact on
+    // machines with a global core.autocrlf.
+    git(&work, &["config", "core.autocrlf", "false"]);
     for branch in ["feature", "diverged", "linked", "ahead"] {
         git(&work, &["branch", "-q", "--track", branch, &format!("origin/{branch}")]);
     }
