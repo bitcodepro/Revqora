@@ -576,13 +576,20 @@ mod tests {
         quiet.excludes.as_mut().unwrap().checked = std::time::Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
         assert!(!quiet.contains(&root.join("release/out.txt")), "the folder stayed quiet after its ignore rule was removed");
         // Ignored again, then the global configuration names another excludes file without the rule.
-        fs::write(&excludes, b"/release/
-").unwrap();
+        fs::write(
+            &excludes,
+            b"/release/
+",
+        )
+        .unwrap();
         quiet.forget();
         assert!(quiet.contains(&root.join("release/out.txt")));
         let other = tmp.path().join("other-ignore");
-        fs::write(&other, b"*.tmp
-").unwrap();
+        fs::write(
+            &other, b"*.tmp
+",
+        )
+        .unwrap();
         runner::run(&root, ["config", "core.excludesFile", &other.to_string_lossy()]).unwrap();
         quiet.excludes.as_mut().unwrap().checked = std::time::Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
         assert!(!quiet.contains(&root.join("release/out.txt")), "the folder stayed quiet after core.excludesFile named another file");
