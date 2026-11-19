@@ -32,6 +32,8 @@ has `contents: write`. No additional repository secrets are required.
   mismatches, publication guards, immutable tags and interrupted draft uploads.
 - Packages build natively for `win-x64`, `linux-x64`, `linux-arm64`,
   `osx-arm64` and `osx-x64`. Linux uses `.tar.gz`; Windows and macOS use `.zip`.
+  Windows additionally produces `Revqora-<version>-win-x64-setup.exe`, a per-user
+  NSIS installer, plus its SHA-256 sidecar. The existing portable ZIP is unchanged.
   macOS ships the Tauri-generated `Revqora.app` with its ad-hoc signature.
   No signing certificate or notarization is introduced.
 - Each archive includes the application, README, MIT LICENSE,
@@ -40,7 +42,13 @@ has `contents: write`. No additional repository secrets are required.
   checks the SHA-256 sidecar, required contents, executable architecture,
   Unix execute permissions and embedded source metadata. It rejects traversal,
   links, unexpected files and common local data/build artifacts.
-- A separate job downloads and verifies all five archive/checksum pairs before
+- The Windows installer contains the same executable, notices, licenses and build
+  manifest as the ZIP. Verification uses 7-Zip to inspect NSIS without executing it
+  and compares every portable payload file byte-for-byte. CI installs the Ubuntu
+  `7zip` package for aggregate verification/publication; Windows uses its hosted
+  7-Zip installation. A missing inspection tool fails verification, never skips it.
+- A separate job downloads and verifies all five archives plus the Windows installer,
+  each with its checksum, before
   publication. Preview artifacts are retained for seven days.
 
 The existing local `npm run package` remains the Windows portable packaging
@@ -80,7 +88,7 @@ matching Typlo.
 The publisher verifies its repository, workflow, event, ref and source SHA,
 revalidates downloaded packages and requires current main to still equal the
 tested SHA. It reserves a new immutable lightweight `v*` tag, creates a draft,
-uploads all ten assets, checks their names and sizes, and then publishes.
+uploads all twelve assets, checks their names and sizes, and then publishes.
 If main advanced, the run fails before reserving a tag. If upload or publication
 fails afterwards, the tag/draft remains for inspection. Do not delete or move
 tags, or blindly rerun a version after such a failure.
@@ -98,6 +106,9 @@ python scripts/release.py verify --rid win-x64 --version 0.1.0 --directory dist/
 
 Use an empty package output directory and the matching native OS. Packaging and
 verification do not publish. `publish` refuses an ordinary local session.
+Windows packaging and any verification that includes Windows assets require 7-Zip
+(`7z`/`7zz` on PATH, or the standard `Program Files/7-Zip/7z.exe` location on Windows).
+Installer verification only reads its contents; it does not install the app or modify the registry.
 
 ## Repository protection
 
