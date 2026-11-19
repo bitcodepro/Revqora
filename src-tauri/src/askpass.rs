@@ -255,6 +255,10 @@ fn handle(stream: TcpStream, server: &Server, channels: &Channels, on_request: &
     server.pending.lock().remove(&id);
     let reply = match answer {
         Some(v) => {
+            if let Some((root, epoch)) = &ask.repository {
+                // Not a login from a configured helper: Git must still hand it to them.
+                crate::git_credentials::note_typed(std::path::Path::new(root), *epoch, &v.value);
+            }
             if v.remember {
                 if let (Some((root, epoch)), Some(destination)) = (ask.repository, destination) {
                     crate::git_credentials::remember_input(std::path::Path::new(&root), epoch, &destination, &v.value, v.email);

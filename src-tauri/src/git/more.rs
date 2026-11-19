@@ -375,7 +375,16 @@ pub fn compare_worktree(repo: &Path, from: &str) -> GitResult<WorktreeComparison
 }
 
 pub fn worktree_file_diff(repo: &Path, from: &str, path: &str, opts: &DiffOptions) -> GitResult<FileDiff> {
-    let mut args = vec!["diff".to_string(), "--no-color".into(), "--no-ext-diff".into(), "--find-renames".into(), format!("-U{}", opts.context.unwrap_or(3))];
+    // Without this, `git diff` rewrites a stat-dirty index (see `diff::working_output`).
+    let mut args = vec![
+        "-c".to_string(),
+        "diff.autoRefreshIndex=false".into(),
+        "diff".into(),
+        "--no-color".into(),
+        "--no-ext-diff".into(),
+        "--find-renames".into(),
+        format!("-U{}", opts.context.unwrap_or(3)),
+    ];
     if opts.ignore_whitespace {
         args.push("-w".into());
     }

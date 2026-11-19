@@ -65,6 +65,8 @@ export async function commitDraftSmoke({ page, work, returnRoot, shot }) {
   };
   const release = () => page.evaluate(async () => { window.__commitDraftGate.release(); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); });
   const restore = () => page.evaluate(() => window.__commitDraftGate?.restore());
+  // Staging lists the file before its own status read ends; the shortcut commits after that.
+  const committable = () => page.waitForSelector(".changes[data-pending='false']");
   try {
     await openRepository(page, root);
     await page.locator(".view-tab").filter({ hasText: "Changes" }).click();
@@ -177,6 +179,7 @@ export async function commitDraftSmoke({ page, work, returnRoot, shot }) {
     if (git("rev-parse", "HEAD") !== base || !git("diff", "--cached", "--name-only").includes(big)) throw Error("Returning from the large-file warning changed HEAD or unstaged the file");
     await page.locator(`.changes .file-row[title="${big}"]`).dblclick();
     await primary.getByText("Commit 1 file", { exact: true }).waitFor();
+    await committable();
     await page.evaluate(installCommitDraftGate, "commit");
     await summary().press("Control+Alt+m");
     await held();
@@ -188,6 +191,7 @@ export async function commitDraftSmoke({ page, work, returnRoot, shot }) {
 
     await page.locator(`.changes .file-row[title="${big}"]`).dblclick();
     await primary.getByText("Commit 1 file", { exact: true }).waitFor();
+    await committable();
     await summary().fill("Confirm the large file");
     await summary().press("Control+Alt+m");
     await warning.getByRole("button", { name: "Commit anyway" }).click();

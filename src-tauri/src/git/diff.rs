@@ -423,7 +423,9 @@ fn working_output(
     opts: &DiffOptions,
     preview: bool,
 ) -> GitResult<(Vec<u8>, bool)> {
-    let mut args = vec!["diff".to_string(), "--full-index".into()];
+    // Porcelain `git diff` rewrites the index when a file's stat changed but its content did not
+    // (diff.autoRefreshIndex), even with GIT_OPTIONAL_LOCKS=0. Reads must not write the index.
+    let mut args = vec!["-c".to_string(), "diff.autoRefreshIndex=false".into(), "diff".into(), "--full-index".into()];
     args.extend(base_args(opts));
     if untracked && side == WorkSide::Unstaged {
         args.push("--no-index".into());

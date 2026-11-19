@@ -107,30 +107,76 @@ fn owned_paths(root: &Path, git_dir: &Path) -> Vec<PathBuf> {
 
 /// Folders of the working tree that Git ignores and that hold no tracked file (build output,
 /// logs, caches beyond the fixed list in `classify`). A change inside them cannot change the
-/// status, so it does not start a refresh. Answers are kept until a `.gitignore` or
-/// `info/exclude` changes (which files are ignored) or the index changes (which files are
-/// tracked: `git add -f` tracks a file inside an ignored folder); only the top folders (three
-/// levels) are checked.
+/// status, so it does not start a refresh. Answers are kept until which files are ignored may
+/// have changed (a `.gitignore`, `info/exclude`, the repository's configuration, or the user's
+/// global excludes file, `core.excludesFile`) or the index changes (which files are tracked:
+/// `git add -f` tracks a file inside an ignored folder); only the top folders (three levels)
+/// are checked.
 struct QuietFolders {
     root: PathBuf,
     known: std::collections::HashMap<String, bool>,
+    /// The global excludes file as it was when the answers were learned. It lives outside the
+    /// watched folders, so it is compared again (at most once a second) before an answer is used.
+    excludes: Option<Excludes>,
+}
+
+struct Excludes {
+    path: Option<PathBuf>,
+    stamp: Option<(std::time::SystemTime, u64)>,
+    checked: Instant,
 }
 
 impl QuietFolders {
     const DEPTH: usize = 3;
+    const EXCLUDES_CHECK: Duration = Duration::from_secs(1);
 
     fn new(root: &Path) -> Self {
-        QuietFolders { root: root.to_path_buf(), known: Default::default() }
+        QuietFolders { root: root.to_path_buf(), known: Default::default(), excludes: None }
     }
 
     fn forget(&mut self) {
         self.known.clear();
+        self.excludes = None;
+    }
+
+    /// The file Git reads for `core.excludesFile` (its default when unset).
+    fn excludes_path(&self) -> Option<PathBuf> {
+        let configured = super::config_cache::exec(&self.root, &["config", "--path", "--get", "core.excludesFile"])
+            .ok()
+            .filter(|out| out.ok())
+            .map(|out| out.text().trim().to_owned());
+        if let Some(path) = configured.filter(|path| !path.is_empty()) {
+            let path = PathBuf::from(path);
+            return Some(if path.is_absolute() { path } else { self.root.join(path) });
+        }
+        let base = std::env::var_os("XDG_CONFIG_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from).or_else(|| {
+            std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).filter(|dir| !dir.is_empty()).map(|home| PathBuf::from(home).join(".config"))
+        })?;
+        Some(base.join("git").join("ignore"))
+    }
+
+    fn excludes_stamp(path: Option<&Path>) -> Option<(std::time::SystemTime, u64)> {
+        let meta = std::fs::metadata(path?).ok()?;
+        Some((meta.modified().ok()?, meta.len()))
+    }
+
+    /// Drops the answers when the global excludes file changed since they were learned.
+    fn check_excludes(&mut self) {
+        let Some(excludes) = &mut self.excludes else { return };
+        if excludes.checked.elapsed() < Self::EXCLUDES_CHECK {
+            return;
+        }
+        excludes.checked = Instant::now();
+        if Self::excludes_stamp(excludes.path.as_deref()) != excludes.stamp {
+            self.forget();
+        }
     }
 
     /// Whether the changed `path` lies in a quiet folder or is one. Windows also reports the
     /// folder itself when a file inside it changes.
     fn contains(&mut self, path: &Path) -> bool {
         let Ok(rel) = path.strip_prefix(&self.root) else { return false };
+        self.check_excludes();
         if self.contains_folder(rel.parent()) {
             return true;
         }
@@ -149,6 +195,11 @@ impl QuietFolders {
     }
 
     fn learn(&mut self, folders: &[String]) {
+        if self.excludes.is_none() {
+            let path = self.excludes_path();
+            let stamp = Self::excludes_stamp(path.as_deref());
+            self.excludes = Some(Excludes { path, stamp, checked: Instant::now() });
+        }
         for folder in folders {
             self.known.insert(folder.clone(), false);
         }
@@ -183,6 +234,13 @@ fn changes_ignore_rules(path: &Path) -> bool {
     path.file_name().is_some_and(|name| name == ".gitignore") || path.ends_with("info/exclude")
 }
 
+/// Whether `path` is the configuration of this working tree or its repository, which can name
+/// another global excludes file (`core.excludesFile`). `dirs` as for [`changes_tracked_files`],
+/// plus the shared Git directory.
+fn changes_configuration(path: &Path, dirs: &[PathBuf]) -> bool {
+    path.file_name().is_some_and(|name| name == "config" || name == "config.worktree") && path.parent().is_some_and(|dir| dirs.contains(&comparable(dir)))
+}
+
 /// Whether `path` is this working tree's index (or its shared part, or the lock Git renames
 /// over it): the list of tracked files may have changed. `git_dirs` are this working tree's Git
 /// directory as given and resolved, in `comparable` form.
@@ -206,6 +264,11 @@ where
     // The index lives in this working tree's own Git directory (also for a linked worktree).
     let index_dirs: Vec<PathBuf> = [Some(git_dir.clone()), std::fs::canonicalize(&git_dir).ok()].into_iter().flatten().map(|dir| comparable(&dir)).collect();
     let common = super::operations::repository_key(&root);
+    let config_dirs: Vec<PathBuf> = index_dirs
+        .iter()
+        .cloned()
+        .chain([Some(common.clone()), std::fs::canonicalize(&common).ok()].into_iter().flatten().map(|dir| comparable(&dir)))
+        .collect();
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher = notify::recommended_watcher(move |res| {
         let _ = tx.send(res);
@@ -267,7 +330,7 @@ where
                 Ok(Ok(ev)) if !matches!(ev.kind, notify::EventKind::Access(_)) => {
                     let mut relevant = false;
                     for p in &ev.paths {
-                        if changes_ignore_rules(p) || changes_tracked_files(p, &index_dirs) {
+                        if changes_ignore_rules(p) || changes_tracked_files(p, &index_dirs) || changes_configuration(p, &config_dirs) {
                             quiet.forget();
                         }
                         // Shared refs/config/stash live outside a linked worktree's git dir.
@@ -488,6 +551,28 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_is_watched_again_once_the_global_excludes_file_no_longer_ignores_it() {
+        use crate::git::runner;
+        use std::{fs, time::Duration};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir_all(root.join("release")).unwrap();
+        runner::run(&root, ["init", "-qb", "main"]).unwrap();
+        let excludes = tmp.path().join("global-ignore");
+        fs::write(&excludes, b"/release/\n").unwrap();
+        runner::run(&root, ["config", "core.excludesFile", &excludes.to_string_lossy()]).unwrap();
+        fs::write(root.join("release/out.txt"), b"1").unwrap();
+        let mut quiet = super::QuietFolders::new(&root);
+        assert!(quiet.contains(&root.join("release/out.txt")));
+        // The user stops ignoring the folder in the global excludes file.
+        fs::write(&excludes, b"*.tmp\n").unwrap();
+        quiet.excludes.as_mut().unwrap().checked = std::time::Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        assert!(!quiet.contains(&root.join("release/out.txt")), "the folder stayed quiet after its ignore rule was removed");
+        drop(quiet);
+        tmp.close().unwrap();
+    }
+
+    #[test]
     fn only_the_working_trees_own_index_counts_as_a_change_of_tracked_files() {
         let git_dir = Path::new("/work/repo/.git");
         let dirs = [comparable(git_dir)];
@@ -497,6 +582,9 @@ mod tests {
         assert!(!super::changes_tracked_files(Path::new("/work/repo/docs/index"), &dirs));
         assert!(!super::changes_tracked_files(&git_dir.join("HEAD"), &dirs));
         assert!(!super::changes_tracked_files(&git_dir.join("worktrees/other/index"), &dirs));
+        assert!(super::changes_configuration(&git_dir.join("config"), &dirs));
+        assert!(super::changes_configuration(&git_dir.join("config.worktree"), &dirs));
+        assert!(!super::changes_configuration(Path::new("/work/repo/src/config"), &dirs));
     }
 
     #[cfg(windows)]
