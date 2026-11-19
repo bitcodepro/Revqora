@@ -639,7 +639,7 @@ function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
     { id: "check-updates", label: "Check for updates", group: "App", icon: <Download size={15} />, run: checkUpdates },
     { id: "workspace-search", label: "Search all repositories", group: "History", icon: <FolderSearch size={15} />, run: () => workspaceCommitSearch("", "quick") },
     { id: "fetch-all", label: "Fetch all repositories", group: "Remote", icon: <Download size={15} />, run: () => fetchRepositories() },
-    { id: "pull-all", label: "Pull all repositories…", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => { const roots = useRepos.getState().order; if (roots.length) void pullRepositories(roots); } },
+    { id: "pull-all", label: "Pull all repositories", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => void pullRepositories() },
     ...(tab ? [{ id: "recovery-center", label: "Undo Center…", group: "Repository", icon: <ShieldCheck size={15} />, run: () => recoveryDialog(tab.root) }] : []),
     {
       id: "theme",

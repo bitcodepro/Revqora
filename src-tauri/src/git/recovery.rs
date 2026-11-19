@@ -686,6 +686,7 @@ fn writes_worktree(command: &str) -> bool {
             | "revert"
             | "merge_start"
             | "pull"
+            | "pull_all_branches"
             | "checkout"
             | "pull_request_checkout"
             | "stash_apply"

@@ -383,7 +383,7 @@ where
             let _ = app.emit("ignored-files-changed", IgnoredFilesChanged { repo: repo.clone(), report });
         }
         emit(if result.is_ok() { "finished" } else { "failed" }, 0);
-        if result.is_ok() && matches!(command, "fetch" | "fetch_background" | "fetch_more_history" | "pull" | "pull_request_checkout") {
+        if result.is_ok() && matches!(command, "fetch" | "fetch_background" | "fetch_more_history" | "pull" | "pull_all_branches" | "pull_request_checkout") {
             // New commits arrived: extend Git's commit-graph in the background.
             git::optimize::schedule(&p(&repo), true);
         }
@@ -1735,6 +1735,22 @@ async fn pull(
 ) -> GitResult<ops::PullOutcome> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || {
         git::runner::transfers::for_operation(&op_id, || ops::pull_with_prune(&p(&repo), &mode, prune_remote.unwrap_or(true), progress(&app, &op_id)))
+    })
+    .await
+}
+
+/// Pull all, for one repository: fetch every remote and fast-forward every branch that only
+/// lacks incoming commits. Journaled and protected as a pull.
+#[tauri::command]
+async fn pull_all_branches(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    op_id: String,
+) -> GitResult<ops::BranchesPull> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "pull_all_branches", Some(op_id.clone()), move || {
+        git::runner::transfers::for_operation(&op_id, || ops::pull_all_branches(&p(&repo), progress(&app, &op_id)))
     })
     .await
 }
@@ -3601,6 +3617,7 @@ pub fn run() {
             undo_commit,
             fetch,
             pull,
+            pull_all_branches,
             push,
             push_ref,
             remote_add,

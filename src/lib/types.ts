@@ -1029,6 +1029,12 @@ export interface StackOutcome {phase:string;message:string;checkpoint:string}
 
 export interface SymbolHistoryPage extends CodeHistoryPage {anchor:string;scanned:number;unavailable:number;notices:string[]}
 
+/** What Pull all did in one repository. */
+export interface BranchesPull {
+  updated: { branch: string; commits: number; current: boolean }[];
+  skipped: { branch: string; reason: string }[];
+}
+
 export interface PullOutcome extends OpOutcome { upstreamGone?: { branch: string; remote: string; reference: string; defaultBranch: string | null }; }
 export interface FoundRepository {
   root: string;

@@ -318,6 +318,8 @@ export const api = {
   sparseCheckoutReapply: (repo: string, reviewedIgnored: string[] | null = null) => call<import("./types").SparseResult>("sparse_checkout_reapply", { repo, reviewedIgnored }),
   pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string, pruneRemote?: boolean) =>
     call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState, pruneRemote }),
+  /** Pull all for one repository: fetch every remote, fast-forward every branch behind its upstream. */
+  pullAllBranches: (repo: string, opId: string) => call<import("./types").BranchesPull>("pull_all_branches", { repo, opId }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
   pushRef: (repo: string, remote: string, refspec: string, opId: string, expectedState?: string | null) => call<string>("push_ref", { repo, remote, refspec, opId, expectedState }),
   remoteAdd: (repo: string, name: string, url: string) => call<void>("remote_add", { repo, name, url }),

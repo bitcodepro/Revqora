@@ -8,127 +8,103 @@ import { useNavigationSelection } from "../lib/navigationSelection";
 import { useRepositoryDrag } from "../lib/explorerMoves";
 import { activateRepository as activate, matchesGroupShortcut, renameRepositoryOnKey, repositoryMenu, RepositoryNavigationRow } from "./RepositoryNavigationRow";
 import { useSettings } from "../lib/settings";
-import { ArrowDown, ArrowDownToLine, ArrowUp, Check, CircleAlert, FolderGit2, FolderSearch, GitBranch, Pencil, Plus, RefreshCw, Search, Star, X } from "lucide-react";
+import { ArrowDown, ArrowDownToLine, ArrowUp, FolderGit2, FolderSearch, GitBranch, Pencil, Plus, RefreshCw, Search, Star, X } from "lucide-react";
 import { api, errorMessage, newOpId } from "../lib/api";
 import * as A from "../lib/actions";
 import { basename, relativeTime } from "../lib/format";
-import { pullBlockReason, runRepositoryBatch, type BatchResult } from "../lib/repositoryBatch";
+import { fetchRound } from "../lib/autofetch";
+import type { BranchesPull } from "../lib/types";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { repositoryHasChanges, repositoryIncoming, repositoryOutgoing, repositorySidebarStatus, useListedTabs, useRepos, type RepoTab } from "../lib/store";
-import { changesOf, trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
-import { contextMenu, endBusy, showDialog, startBusy, toast, toggleRepositoryOverview, useUi } from "../lib/ui";
+import { changesOf, scanRepositoryTracking, trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
+import { contextMenu, endBusy, startBusy, toast, toggleRepositoryOverview, useUi } from "../lib/ui";
 import { AheadBehind } from "./bits";
-import { Modal } from "./Modal";
 import { Splitter } from "./Overlays";
 import { usePanelTitleMenu } from "./PanelWindows";
 import { namePathMenu } from "./NamePathMenu";
 import { runMenuShortcut } from "./menus";
 
 let running = false;
-let choosingPull = false;
 
-async function runBatch(roots: string[], kind: "fetch" | "pull") {
+/** Every repository in the list: the open ones and the library's closed ones. */
+function listedRoots() {
+  return uniqueRoots([...useRepos.getState().order, ...useLibrary.getState().knownRoots]);
+}
+
+const nameOf = (root: string) => useLibrary.getState().repositoryNames[repositoryKey(root)] ?? useRepos.getState().tabs[root]?.info?.name ?? basename(root);
+const firstLine = (text: string) => text.split(/\r?\n/).find((line) => line.trim())?.trim() ?? text;
+
+interface Outcome {
+  root: string;
+  error?: string;
+  pulled?: BranchesPull;
+}
+
+/** Four repositories at a time; one failing never stops the rest. No dialogs: the list shows
+ *  the new counts as each repository finishes, and one message sums it up. */
+async function runAll(kind: "fetch" | "pull", roots: string[]) {
   if (running || useUi.getState().busy.length || !roots.length) return;
   running = true;
   const id = newOpId();
-  startBusy(id, kind === "fetch" ? "Fetching repositories" : "Updating repositories");
-  let results: BatchResult[] = [];
+  const label = kind === "fetch" ? "Fetching" : "Pulling";
+  startBusy(id, `${label} repositories (0/${roots.length})`);
+  const outcomes: Outcome[] = [];
   try {
-    results = await runRepositoryBatch(roots, kind, {
-      read: async (root) => {
-        const [info, status] = await Promise.all([api.repoInfo(root), api.status(root)]);
-        return { info, status };
-      },
-      fetch: async (root) => {
-        try {
-          const out = await api.fetch(root, null, true, id);
-          useRepos.getState().patch(root, { lastFetchedAt: Date.now(), fetchError: null });
-          return out;
-        } catch (e) {
-          useRepos.getState().patch(root, { fetchError: errorMessage(e) });
-          throw e;
-        }
-      },
-      // This path never rebases, stashes, or creates a merge commit.
-      pull: async (root) => {
-        const out = await api.pull(root, "ff-only", id);
-        if (!["done", "fastForward", "upToDate", "upstreamGone"].includes(out.status)) throw new Error(out.message || "Pull needs attention");
-        useRepos.getState().patch(root, { lastFetchedAt: Date.now(), fetchError: null });
-        return out;
-      },
-      refresh: (root) => useRepos.getState().refresh(root, { info: true, status: true, refs: true, graph: useRepos.getState().active === root }),
-      isOpen: (root) => !!useRepos.getState().tabs[root],
-      progress: (root, index, total) => useUi.setState((s) => ({
-        busy: s.busy.map((b) => b.id === id ? { ...b, label: `${kind === "fetch" ? "Fetching" : "Pulling"} ${basename(root)} (${index}/${total})`, line: "" } : b),
-      })),
-    });
+    await fetchRound(roots, async (root) => {
+      const outcome: Outcome = { root };
+      const open = () => !!useRepos.getState().tabs[root];
+      try {
+        if (kind === "fetch") await api.fetch(root, null, true, id);
+        else outcome.pulled = await api.pullAllBranches(root, id);
+        if (open()) useRepos.getState().patch(root, { lastFetchedAt: Date.now(), fetchError: null });
+      } catch (e) {
+        outcome.error = firstLine(errorMessage(e));
+        if (kind === "fetch" && open()) useRepos.getState().patch(root, { fetchError: errorMessage(e) });
+      }
+      await (open()
+        ? useRepos.getState().refresh(root, { info: true, status: true, refs: true, graph: useRepos.getState().active === root })
+        : scanRepositoryTracking([root])).catch(() => {});
+      outcomes.push(outcome);
+      useUi.setState((s) => ({ busy: s.busy.map((b) => b.id === id ? { ...b, label: `${label} repositories (${outcomes.length}/${roots.length})`, line: "" } : b) }));
+    }, () => true, 4);
   } finally {
     endBusy(id);
     running = false;
   }
-  const done = results.filter((r) => r.status === "done").length;
-  const failed = results.filter((r) => r.status === "failed").length;
-  const skipped = results.filter((r) => r.status === "skipped").length;
-  const summary = `${done} ${kind === "fetch" ? "fetched" : "updated"} · ${skipped} skipped · ${failed} failed`;
-  if (!failed && !skipped) toast.success(summary);
-  else toast.warning(summary, "Open the results to see which repositories need attention.");
-  if (kind === "pull" || failed || skipped) {
-    await showDialog<void>((close) => (
-      <Modal title={kind === "fetch" ? "Fetch results" : "Pull results"} subtitle={summary} onClose={() => close()} footer={<button className="btn primary" onClick={() => close()}>Done</button>}>
-        <div className="batch-list">
-          {results.map((r) => (
-            <div className="batch-row" key={r.root}>
-              {r.status === "done" ? <Check size={16} className="green" /> : <CircleAlert size={16} className="amber" />}
-              <div className="grow-text"><b>{basename(r.root)}</b><div className="batch-note">{r.message}</div></div>
-              <button className="btn sm" onClick={() => { activate(r.root); close(); }}>Open</button>
-            </div>
-          ))}
-        </div>
-      </Modal>
-    ));
+  report(kind, outcomes);
+}
+
+function report(kind: "fetch" | "pull", outcomes: Outcome[]) {
+  const failed = outcomes.filter((o) => o.error).map((o) => `${nameOf(o.root)}: ${o.error}`);
+  const list = (lines: string[]) => lines.slice(0, 5).join("\n") + (lines.length > 5 ? `\n…and ${lines.length - 5} more` : "");
+  if (kind === "fetch") {
+    const tracking = useRepositoryTracking.getState().byKey;
+    const incoming = outcomes.filter((o) => !o.error && repositoryIncoming(useRepos.getState().tabs[o.root], trackingOf(tracking, o.root)) > 0).map((o) => nameOf(o.root));
+    const title = `Fetched ${outcomes.length - failed.length} of ${outcomes.length} repositories`;
+    const news = incoming.length ? `Incoming commits: ${incoming.join(", ")}` : "No incoming commits";
+    if (failed.length) toast.warning(`${title} · ${failed.length} failed`, list([...failed, news]));
+    else toast.success(title, news);
+    return;
   }
+  const updated = outcomes.flatMap((o) => (o.pulled?.updated ?? []).map((u) => ({ root: o.root, ...u })));
+  const skipped = outcomes.flatMap((o) => (o.pulled?.skipped ?? []).map((k) => `${nameOf(o.root)} · ${k.branch}: ${firstLine(k.reason)}`));
+  const repositories = new Set(updated.map((u) => u.root)).size;
+  const title = updated.length
+    ? `Pulled ${updated.length} branch${updated.length === 1 ? "" : "es"} in ${repositories} repositor${repositories === 1 ? "y" : "ies"}`
+    : "Everything is up to date";
+  if (failed.length || skipped.length) {
+    toast.warning(`${title} · ${failed.length + skipped.length} need${failed.length + skipped.length === 1 ? "s" : ""} attention`, list([...failed, ...skipped]));
+  } else toast.success(title, updated.length ? updated.map((u) => `${nameOf(u.root)} · ${u.branch} +${u.commits}`).slice(0, 5).join("\n") : undefined);
 }
 
-export function fetchRepositories(roots = useRepos.getState().order) {
-  return runBatch(roots, "fetch");
+/** Fetch every remote of every listed repository. */
+export function fetchRepositories(roots = listedRoots()) {
+  return runAll("fetch", roots);
 }
 
-export async function pullRepositories(onlyRoots?: string[]) {
-  if (choosingPull || running || useUi.getState().busy.length) return;
-  choosingPull = true;
-  const roots = onlyRoots ?? useRepos.getState().order;
-  try {
-    // Refresh the preview as well as rechecking each repository during execution.
-    await Promise.allSettled(roots.map((r) => useRepos.getState().refresh(r, { info: true, status: true, guard: true })));
-    const tabs = roots.map((r) => useRepos.getState().tabs[r]).filter((t): t is RepoTab => !!t);
-    const selected = await showDialog<string[] | null>((close) => <PullRepositoriesDialog tabs={tabs} close={close} />);
-    if (selected?.length) await runBatch(selected, "pull");
-  } finally {
-    choosingPull = false;
-  }
-}
-
-function PullRepositoriesDialog({ tabs, close }: { tabs: RepoTab[]; close: (roots: string[] | null) => void }) {
-  const [selected, setSelected] = useState(() => new Set(tabs.filter((t) => !t?.fetchError && !pullBlockReason(t)).map((t) => t.root)));
-  const submit = () => selected.size && close([...selected]);
-  return (
-    <Modal title="Pull repositories" subtitle={`${selected.size} selected · checked-out branches only`} onClose={() => close(null)} onSubmit={submit}
-      footer={<><button type="button" className="btn" onClick={() => close(null)}>Cancel</button><button type="submit" className="btn primary" disabled={!selected.size}>Pull ({selected.size})</button></>}>
-      <div className="callout">Fast-forward only. Repositories with local changes, diverged history, failed fetches or an operation in progress need individual attention. Use Fetch all first to check for remote updates.</div>
-      <div className="batch-list">
-        {tabs.map((t) => {
-          const reason = t?.fetchError ? "Fetch failed — fetch this repository first" : pullBlockReason(t);
-          return (
-            <label className="batch-row" key={t.root} title={t.root}>
-              <input type="checkbox" disabled={!!reason} checked={selected.has(t.root)} onChange={(e) => setSelected((s) => { const n = new Set(s); if (e.target.checked) n.add(t.root); else n.delete(t.root); return n; })} />
-              <div className="grow-text"><b>{t?.info?.name ?? basename(t.root)}</b><div className="batch-note">{reason ?? `${t?.status?.branch} · fast-forward`}</div></div>
-              <AheadBehind ahead={t?.status?.ahead ?? 0} behind={t?.status?.behind ?? 0} />
-            </label>
-          );
-        })}
-      </div>
-    </Modal>
-  );
+/** Fetch, then fast-forward every branch that only lacks incoming commits, in every listed repository. */
+export function pullRepositories(roots = listedRoots()) {
+  return runAll("pull", roots);
 }
 
 function RepoState({ tab }: { tab: RepoTab }) {
@@ -142,12 +118,14 @@ function RepoState({ tab }: { tab: RepoTab }) {
   return <span className="faint">Clean</span>;
 }
 
-function BulkRemoteButtons({ roots }: { roots: string[] }) {
+/** Fetch all and Pull all always cover every listed repository, open or not. */
+function BulkRemoteButtons() {
   const busy = useUi((s) => s.busy.length > 0);
+  const count = useRepos((s) => s.order.length) + useLibrary((s) => s.knownRoots.length);
   return (
     <div className="repository-sync">
-      <button className="btn sm" data-shortcut="fetch-all" disabled={busy || !roots.length} onClick={() => void fetchRepositories(roots)}><RefreshCw size={13} /> Fetch all</button>
-      <button className="btn sm" data-shortcut="pull-all" disabled={busy || !roots.length} onClick={() => void pullRepositories(roots)}><ArrowDownToLine size={13} /> Pull all</button>
+      <button className="btn sm" data-shortcut="fetch-all" disabled={busy || !count} title="Fetch every remote of every repository" onClick={() => void fetchRepositories()}><RefreshCw size={13} /> Fetch all</button>
+      <button className="btn sm" data-shortcut="pull-all" disabled={busy || !count} title="Fetch, then fast-forward every branch that only lacks incoming commits, in every repository" onClick={() => void pullRepositories()}><ArrowDownToLine size={13} /> Pull all</button>
     </div>
   );
 }
@@ -208,7 +186,7 @@ export function RepositorySidebar() {
       <header onContextMenu={panelMenu}><FolderGit2 size={15} /><b>Repositories</b><span className="pill">{candidates.length}</span><div className="spacer" /><button aria-label="Hide repositories" className="icon-btn sm" title="Hide repositories" onClick={() => set({ repositoriesOpen: false })}><X size={13} /></button></header>
       <div className="repository-filter input-wrap"><Search size={13} /><input className="input sm" placeholder="Find repository…" aria-label="Find repository" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {groups.length > 0 && <select className="input sm repository-group-filter" aria-label="Repository group" value={groupId ?? ""} onChange={event => library.selectGroup(event.target.value || null)}><option value="">All repositories</option>{groups.map(({ entry, depth }) => <option key={entry.id} value={entry.id}>{"　".repeat(depth)}{entry.name}</option>)}</select>}
-      {!search && !filterUpdates && !outgoingOnly && !favoritesOnly && !changesOnly && !groupFilter && <BulkRemoteButtons roots={order} />}
+      {!search && !filterUpdates && !outgoingOnly && !favoritesOnly && !changesOnly && !groupFilter && <BulkRemoteButtons />}
       {/* The same status filters as Explorer; they combine with the search and each other. */}
       <div className="explorer-filters repository-sidebar-filters">
         <button type="button" className={`repository-updates ${favoritesOnly ? "active" : ""}`} aria-label="Favorites" aria-pressed={favoritesOnly}
@@ -276,7 +254,7 @@ export function RepositoryOverview() {
   const incoming = scoped.filter(root => !!repositorySidebarStatus(tabs[root])?.behind).length;
   return (
     <div ref={navigation.panel} className="repository-overview">
-      <header><div><h2>Repositories</h2><span className="faint">{group?.name ?? "All repositories"} · {scoped.length} open · {incoming} with incoming commits</span></div><div className="spacer" />{!query.trim() && !group && <BulkRemoteButtons roots={order} />}<button className="btn sm" data-shortcut="open" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button><button type="button" className="icon-btn" title="Close repository overview" aria-label="Close repository overview" onClick={toggleRepositoryOverview}><X size={16}/></button></header>
+      <header><div><h2>Repositories</h2><span className="faint">{group?.name ?? "All repositories"} · {scoped.length} open · {incoming} with incoming commits</span></div><div className="spacer" />{!query.trim() && !group && <BulkRemoteButtons />}<button className="btn sm" data-shortcut="open" onClick={() => A.openRepoDialog()}><Plus size={14} /> Open</button><button type="button" className="icon-btn" title="Close repository overview" aria-label="Close repository overview" onClick={toggleRepositoryOverview}><X size={16}/></button></header>
       <div className="repository-overview-search input-wrap"><Search size={14} /><input className="input" placeholder="Find repository…" aria-label="Find repository in overview" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       {group && <button className="btn sm" type="button" onClick={() => useLibrary.getState().selectGroup(null)}>Clear group filter · {group.name}</button>}
       <div className="repository-table-scroll" onClick={event => {
@@ -302,7 +280,7 @@ export function RepositoryOverview() {
                 <td>{status ? <AheadBehind ahead={status.ahead} behind={status.behind} /> : "…"}</td>
                 <td><RepoState tab={t} /></td>
                 <td className="faint">{t.lastFetchedAt ? relativeTime(t.lastFetchedAt / 1000) : "Not fetched this session"}</td>
-                <td><button className="btn sm" disabled={busy || !!t?.fetchError || !!pullBlockReason({ info: t.info, status })} onClick={() => void pullRepositories([r])}>Pull</button></td>
+                <td><button className="btn sm" disabled={busy} title="Fetch, then fast-forward every branch of this repository that only lacks incoming commits" onClick={() => void pullRepositories([r])}>Pull</button></td>
               </tr>
             ); })}
           </tbody>
