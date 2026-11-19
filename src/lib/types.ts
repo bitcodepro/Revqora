@@ -482,6 +482,8 @@ export interface GitSelection {
   version: string;
   tooOld: boolean;
   minVersion: string;
+  /** Git for Windows launcher (`cmd\git.exe`) that was found; Revqora runs `path`, the git behind it, directly. */
+  launcher?: string;
 }
 
 /** Git Credential Manager in use. `outdated`: Bitbucket Cloud refuses it from November 30, 2026. */

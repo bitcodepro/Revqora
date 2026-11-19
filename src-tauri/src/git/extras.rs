@@ -383,8 +383,21 @@ pub fn repo_uses_lfs(repo: &Path) -> bool {
 
 pub fn lfs_status(repo: &Path) -> GitResult<LfsStatus> {
     let used = repo_uses_lfs(repo);
-    let ver = runner::exec(repo, ["lfs", "version"])?;
-    let available = ver.ok();
+    // `git lfs version` starts a separate program on every refresh of an LFS repository; the
+    // answer only changes when LFS is installed or removed (Detect again re-reads Git).
+    static VERSION: parking_lot::Mutex<Option<(u64, Option<String>)>> = parking_lot::Mutex::new(None);
+    let git = super::locate::generation();
+    let known = VERSION.lock().as_ref().filter(|(for_git, _)| *for_git == git).map(|(_, version)| version.clone());
+    let version = match known {
+        Some(version) => version,
+        None => {
+            let ver = runner::exec(repo, ["lfs", "version"])?;
+            let version = ver.ok().then(|| ver.text().trim().to_string());
+            *VERSION.lock() = Some((git, version.clone()));
+            version
+        }
+    };
+    let available = version.is_some();
     let mut patterns = Vec::new();
     if let Ok(attrs) = std::fs::read_to_string(repo.join(".gitattributes")) {
         for l in attrs.lines() {
@@ -395,7 +408,7 @@ pub fn lfs_status(repo: &Path) -> GitResult<LfsStatus> {
             }
         }
     }
-    Ok(LfsStatus { available, version: available.then(|| ver.text().trim().to_string()), used, patterns })
+    Ok(LfsStatus { available, version, used, patterns })
 }
 
 pub fn lfs_files(repo: &Path) -> GitResult<Vec<LfsFile>> {

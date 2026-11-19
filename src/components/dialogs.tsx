@@ -979,6 +979,11 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
                   {sel.path}
                 </span>
               )}
+              {sel.launcher && (
+                <span className="faint" style={{ fontSize: "var(--fs-xs)" }} title={sel.launcher}>
+                  Runs directly, without the launcher {sel.launcher}: each Git command starts one process instead of two.
+                </span>
+              )}
             </>
           )}
         </div>

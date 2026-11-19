@@ -5,7 +5,7 @@
 
 use std::ffi::OsStr;
 use std::io::{BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -69,13 +69,9 @@ impl Output {
     }
 }
 
-pub fn git_exe() -> PathBuf {
-    super::locate::exe()
-}
-
 /// Builds a configured `git` command rooted at `repo`.
 pub fn command(repo: &Path) -> Command {
-    let mut c = Command::new(git_exe());
+    let mut c = super::locate::command();
     c.current_dir(repo);
     // Credentials and SSH passphrases are asked through Revqora's own dialog.
     for (k, v) in crate::askpass::env() {

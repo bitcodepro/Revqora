@@ -316,3 +316,29 @@ What changed:
 
 Not changed: cold start (bound by WebView2), History rebuilds and Changes. Commit search, `history_search` and `pr_page` still have no cancellation. Obsolete answers are ignored by request generation, and a new PR scan starts after the obsolete in-flight requests finish.
 
+## Instant response (November 2026)
+
+The goal is that a click, a commit or a file save shows its result without extra waiting. Most of the waiting came from starting Git processes that were not needed, or from a fixed delay.
+
+- **Git without the launcher on Windows** (`git/locate.rs`).
+  - Git for Windows' `cmd\git.exe` and `bin\git.exe` are small launchers that start the real Git (`ucrt64\bin\git.exe` or `mingw64\bin\git.exe`, depending on the version) as a second process. On the measurement machine one call took 74 ms through the launcher and 56 ms directly.
+  - Revqora now runs the real binary directly when it finds it next to the launcher. It sets the same environment the launcher does: `<prefix>\bin`, `usr\bin` and `%HOME%\bin` in front of `PATH`, and `MSYSTEM` if it is not set. Git's own `!env` output was identical both ways.
+  - If the layout is not recognized, the file is larger than a launcher, or `usr\bin` is missing, the launcher is used as before. `REVQORA_GIT_DIRECT=0` turns this off. **Settings** names the launcher that is bypassed.
+- **Each read runs once per change** (`src/lib/readFreshness.ts`, `store.ts`).
+  - Before, one Stage or Commit read status 4–5 times: the operation client, the action, the operation event and the watcher event for `.git/index` each started their own refresh.
+  - Every refresh part (info, status, refs, layers, history) now remembers when its last read started. A change event carries its time (`since`): the watcher sends the first change in its batch and an operation event the time it finished. A part read after that time is skipped, and a read already running is shared.
+  - An action and the operation client wait only until the new status and repository info are on screen, not for history.
+- **HEAD from files** (`repo::head`). The branch and commit are read from `HEAD`, the loose ref and `packed-refs` without starting Git. Git is still asked for reftable repositories, an unborn branch, an ambiguous short name (a tag or remote with the branch's name), or anything else unusual. A test compares both answers for a loose and a packed branch, a nested name, a detached HEAD and a linked worktree.
+- **Fewer processes per refresh.**
+  - The repository's top level and Git directory are remembered per folder while `.git` stays the same.
+  - Stage layers are not looked up with `rev-parse` when no layer ref exists in the files.
+  - `git lfs version` is asked once per selected Git.
+- **File watcher.** A batch is sent 100 ms after the last change, or at most 400 ms after the first, instead of a fixed 350 ms plus a 120 ms poll.
+- **Operation journal.** SQLite runs with `synchronous=NORMAL` in WAL mode instead of `FULL`. This survives an app crash or kill; a power loss can drop the last rows.
+- **Clicks in History.** The commit preview no longer waits 50 ms after a single click; the delay remains only while keys or clicks follow each other within 150 ms.
+- **Startup.**
+  - The first sweep of the library's repositories waits until the shown repository's history appears, or at most 4 seconds.
+  - Sidebar status, branch tracking and change counts of other repositories run at below-normal priority.
+- **Sidebar.** It re-renders only when its own data changes.
+
+Not measured through the app yet: the changes were checked with unit and integration tests. The launcher figure above is the only timing; repeat the stage 0 baseline before and after to measure the rest.

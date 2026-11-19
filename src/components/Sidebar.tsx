@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import {
   Archive,
   ChevronDown,
@@ -87,7 +87,19 @@ function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
     .map(([, v]) => v);
 }
 
-export function Sidebar({ tab, onHide }: { tab: RepoTab; onHide?: () => void }) {
+type SidebarProps = { tab: RepoTab; onHide?: () => void };
+
+/** The branch list reads only these parts of the repository: status, history and selection
+ *  updates (several per refresh) do not rebuild thousands of branch rows. */
+function sameSidebar(a: SidebarProps, b: SidebarProps) {
+  const x = a.tab, y = b.tab;
+  return x.root === y.root && x.refs === y.refs && x.info === y.info && x.extras === y.extras && x.squashMerged === y.squashMerged
+    && x.branchFilter === y.branchFilter && x.viewedBranch === y.viewedBranch && !a.onHide === !b.onHide;
+}
+
+export const Sidebar = memo(SidebarView, sameSidebar);
+
+function SidebarView({ tab, onHide }: SidebarProps) {
   const panelMenu = usePanelTitleMenu("branches", [{ label: "Branch Manager", icon: <GitBranch size={14}/>, onClick: () => openOverlay({ kind: "branches", root: tab.root }) }]);
   const { panels } = usePanelWindows();
   const reveal = useUi(s => s.branchReveal);

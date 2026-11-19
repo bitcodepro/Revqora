@@ -10,7 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Columns3, FilePlus2, GitCommitHorizontal, GitGraph, GitPullRequest, Maximize2, Minimize2, RefreshCw, Rows3 } from "lucide-react";
-import { rememberOperationRefresh, retryRepositoryWatch, useRepos, type RepoTab } from "./lib/store";
+import { noteOperationEnd, rememberOperationRefresh, retryRepositoryWatch, useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, toggledThemePref, useSettings } from "./lib/settings";
 import { applyTheme } from "./lib/themeApply";
 import { closeOverlay, openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
@@ -367,10 +367,11 @@ function MainApp() {
     });
     unsubs.push(
       listen<string>("repo-watch-failed", (e) => retryRepositoryWatch(e.payload)),
-      listen<{ repo: string; git: boolean; worktree: boolean }>("repo-changed", (e) => {
-        const { repo, git } = e.payload;
+      listen<{ repo: string; git: boolean; worktree: boolean; since?: number }>("repo-changed", (e) => {
+        const { repo, git, since } = e.payload;
         if (!useRepos.getState().tabs[repo]) return;
-        useRepos.getState().refresh(repo, git ? { background: true, revalidate: true, info: true, status: true, refs: true, layers: true, graph: true } : { background: true, status: true, layers: true, changesDisplay: true });
+        // Parts read after the change (an operation's own refresh) are not read again.
+        useRepos.getState().refresh(repo, git ? { background: true, revalidate: true, info: true, status: true, refs: true, layers: true, graph: true } : { background: true, status: true, layers: true, changesDisplay: true }, { since });
         // Remote refs moved (push or fetch in another tool): the unpublished count may be stale.
         if (git) repositoryGitChanged(repo);
         window.dispatchEvent(new CustomEvent("revqora:worktree", { detail: { repo } }));
@@ -387,10 +388,13 @@ function MainApp() {
       }
       if (e.payload.command === "fetch_background") return;
       if (e.payload.phase === "finished" || e.payload.phase === "failed") {
-        // Shared refs can change in another worktree. Refresh all open views.
+        // Shared refs can change in another worktree. Refresh all open views; parts read after
+        // the operation ended (by the caller that waited for it) are not read again.
+        noteOperationEnd(e.payload.repo, e.payload.at);
+        const since = e.payload.at;
         for (const root of useRepos.getState().order) {
-          if (root === e.payload.repo) rememberOperationRefresh(e.payload.id, useRepos.getState().refresh(root));
-          else if (useRepos.getState().tabs[root]?.info?.commonDir === e.payload.repositoryKey) void useRepos.getState().refresh(root);
+          if (root === e.payload.repo) rememberOperationRefresh(e.payload.id, useRepos.getState().refresh(root, undefined, { since }));
+          else if (useRepos.getState().tabs[root]?.info?.commonDir === e.payload.repositoryKey) void useRepos.getState().refresh(root, undefined, { since });
         }
       }
     }));

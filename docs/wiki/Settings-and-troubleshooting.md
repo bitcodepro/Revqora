@@ -4,6 +4,8 @@
 
 Open **Settings** with **Ctrl+,**. Configure the available theme, font, shortcut, Git detection, Pull mode, auto-fetch, avatars and update options there.
 
+On Windows, Revqora runs the Git binary inside Git for Windows directly instead of its `cmd\git.exe` launcher, so each Git command starts one process instead of two. **Settings** then names the launcher it bypasses. If the installation layout is not recognized, the launcher is used. Set the environment variable `REVQORA_GIT_DIRECT=0` to always use the launcher.
+
 Use **About Revqora** for the installed version, author and project links. The author is [bitcodepro](https://github.com/bitcodepro).
 
 Revqora-owned settings, account vault, recovery payloads, logs, agent history/profiles, workflows, caches and temporary data live under `data` beside the executable, or beside `Revqora.app` on macOS. Git's repository metadata remains in the repository.

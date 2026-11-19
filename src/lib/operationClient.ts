@@ -18,6 +18,11 @@ interface Hooks {
   observed: (repo: string) => string | null;
   observedHead?: (repo: string) => { branch: string | null; oid: string | null } | null;
   refreshed: (repo: string, status: StatusSummary, info: RepoInfo) => void;
+  /** When the changes of an operation started at `startedAt` were complete (see changeTime). */
+  changeTime?: (repo: string, startedAt: number) => number;
+  /** Brings the shown repository's status and info up to `since`, sharing a read that already
+   *  started after it. False when the repository is not shown: the caller reads them itself. */
+  settle?: (repo: string, since: number) => Promise<boolean>;
   pending?: (repo: string, delta: number) => void;
   /** Asked when ignored files could not be saved before an operation; true accepts that list. */
   confirmUnprotected?: (repo: string, message: string, paths: string[]) => Promise<boolean>;
@@ -78,6 +83,7 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
   // backend queue, but the foreground controls stay usable while it runs.
   if (command === "fetch_background") return invoke<T>(command, { ...args, expectedState: null });
   hooks.pending?.(repo, 1);
+  const startedAt = Date.now();
   let refresh = true;
   try {
     if (command === "stage" && args?.review) {
@@ -117,8 +123,14 @@ export async function repositoryCall<T>(invoke: Invoke, command: string, args?: 
     // their own preceding mutation rather than reusing its now-stale token.
     // Refresh failures must not turn a successful Git mutation into a retryable error.
     if (refresh) {
-      await Promise.all([invoke<StatusSummary>("status", { repo }), invoke<RepoInfo>("repo_info", { repo })])
-        .then(([status, info]) => hooks.refreshed(repo, status, info), () => {}).catch(() => {});
+      // The operation's completion event already starts a full read after the change; share it
+      // instead of reading status and info a second time.
+      const since = hooks.changeTime?.(repo, startedAt) ?? Date.now();
+      const settled = await (hooks.settle?.(repo, since) ?? Promise.resolve(false)).catch(() => false);
+      if (!settled) {
+        await Promise.all([invoke<StatusSummary>("status", { repo }), invoke<RepoInfo>("repo_info", { repo })])
+          .then(([status, info]) => hooks.refreshed(repo, status, info), () => {}).catch(() => {});
+      }
     }
     hooks.pending?.(repo, -1);
   }

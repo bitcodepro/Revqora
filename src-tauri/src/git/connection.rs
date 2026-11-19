@@ -99,7 +99,7 @@ pub fn snapshot(root: &Path) -> GitResult<Snapshot> {
     Ok(value)
 }
 fn manager_configured(root: &Path) -> bool {
-    let mut command = Command::new(super::locate::exe());
+    let mut command = super::locate::command();
     command.current_dir(root).args(["config", "--get-all", "credential.helper"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {

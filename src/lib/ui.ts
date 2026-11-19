@@ -44,6 +44,8 @@ export interface RepositoryOperation {
   command: string;
   phase: "queued" | "running" | "finished" | "failed";
   ahead: number;
+  /** When this phase began (ms since the epoch); for "finished"/"failed" every change is done. */
+  at?: number;
 }
 
 export function updateRepositoryOperation(op: RepositoryOperation) {

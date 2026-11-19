@@ -164,7 +164,24 @@ fn write_chain_if(repo: &Path, expected: &str, base_commit: Option<&str>, layers
     Ok(out.ok())
 }
 
+/// True when the files show that no layer chain exists: no loose per-worktree ref and no packed
+/// entry, with the files backend. Every refresh asks, and most repositories have no layers.
+fn surely_no_layers(repo: &Path) -> bool {
+    let Ok(gd) = super::repo::git_dir(repo) else { return false };
+    let common = super::graph::common_dir(repo).unwrap_or_else(|| gd.clone());
+    if gd.join("reftable").exists() || common.join("reftable").exists() || gd.join(LAYER_REF).exists() {
+        return false;
+    }
+    [gd.join("packed-refs"), common.join("packed-refs")].iter().all(|packed| match std::fs::read_to_string(packed) {
+        Ok(text) => !text.lines().any(|line| line.split_once(' ').is_some_and(|(_, name)| name == LAYER_REF)),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    })
+}
+
 fn layer_ref_oid(repo: &Path) -> GitResult<Option<String>> {
+    if surely_no_layers(repo) {
+        return Ok(None);
+    }
     let out = runner::exec(repo, ["rev-parse", "--verify", "--quiet", LAYER_REF])?;
     Ok(out.ok().then(|| out.text().trim().to_string()).filter(|s| !s.is_empty()))
 }
@@ -425,6 +442,9 @@ pub fn state(repo: &Path) -> GitResult<LayersState> {
 
 /// The commit that "staged" diffs should be computed against (top layer or HEAD).
 pub fn staged_base(repo: &Path) -> Option<String> {
+    if surely_no_layers(repo) {
+        return None;
+    }
     runner::exec(repo, ["rev-parse", "-q", "--verify", LAYER_REF]).ok().filter(|o| o.ok()).map(|o| o.text().trim().to_string())
 }
 

@@ -1,6 +1,7 @@
 //! Finds the git executable Revqora runs: the one installed on the system (on PATH, or the
 //! usual Git for Windows locations). `REVQORA_GIT` overrides it.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -20,15 +21,92 @@ pub struct GitSelection {
     /// The found git is older than [`MIN_VERSION`].
     pub too_old: bool,
     pub min_version: String,
+    /// The Git for Windows launcher (`cmd\git.exe`) that was found when Revqora runs the git
+    /// binary behind it directly (`path`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<String>,
 }
 
 struct State {
     exe: PathBuf,
+    /// Environment the Git for Windows launcher would have set (empty when git runs as found).
+    env: Vec<(OsString, OsString)>,
     version: (u32, u32, u32),
     selection: GitSelection,
 }
 
+/// A configured `git` process: the selected executable with the environment its launcher
+/// would set. Every git process Revqora starts is built here.
+pub fn command() -> Command {
+    ensure();
+    let state = STATE.read();
+    let Some(state) = state.as_ref() else { return Command::new("git") };
+    let mut c = Command::new(&state.exe);
+    for (key, value) in &state.env {
+        c.env(key, value);
+    }
+    c
+}
+
+/// The git binary behind a Git for Windows launcher and the environment the launcher sets.
+///
+/// `<Git>\cmd\git.exe` and `<Git>\bin\git.exe` are small launchers: every call starts the real
+/// git (`<Git>\ucrt64\bin\git.exe`, or `mingw64`, `clangarm64`, `mingw32`) as a second process,
+/// about 18 ms more per command on Windows. The launcher only sets `MSYSTEM` and puts the
+/// toolchain folders and `%HOME%\bin` first on `PATH` (git sets HOME and the rest itself), so
+/// running the binary with the same variables gives git, hooks, ssh and credential helpers the
+/// same environment. None when the found file is not such a launcher or the layout differs.
+fn direct_git(found: &Path, var: &dyn Fn(&str) -> Option<OsString>) -> Option<(PathBuf, Vec<(OsString, OsString)>)> {
+    if !cfg!(windows) || var("REVQORA_GIT_DIRECT").is_some_and(|v| v == "0") {
+        return None;
+    }
+    let folder = found.parent()?;
+    let kind = folder.file_name()?.to_string_lossy().to_ascii_lowercase();
+    // The launcher is about 45 KB; the real git is several MB.
+    if !(kind == "cmd" || kind == "bin") || std::fs::metadata(found).ok()?.len() > 1024 * 1024 {
+        return None;
+    }
+    let top = folder.parent()?;
+    let usr = top.join("usr").join("bin");
+    if !usr.is_dir() {
+        return None;
+    }
+    let (bin, msystem) = [("ucrt64", "UCRT64"), ("mingw64", "MINGW64"), ("clangarm64", "CLANGARM64"), ("mingw32", "MINGW32")]
+        .into_iter()
+        .map(|(prefix, msystem)| (top.join(prefix).join("bin"), msystem))
+        .find(|(bin, _)| bin.join("git.exe").is_file())?;
+    let home = var("HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| match (var("HOMEDRIVE"), var("HOMEPATH")) {
+            (Some(drive), Some(path)) if !drive.is_empty() && !path.is_empty() => {
+                let mut home = drive;
+                home.push(path);
+                Some(home)
+            }
+            _ => None,
+        })
+        .or_else(|| var("USERPROFILE").filter(|h| !h.is_empty()));
+    let mut folders = vec![bin.clone(), usr];
+    if let Some(home) = home {
+        folders.push(PathBuf::from(home).join("bin"));
+    }
+    folders.extend(var("PATH").map(|path| std::env::split_paths(&path).collect::<Vec<_>>()).unwrap_or_default());
+    let mut env = vec![(OsString::from("PATH"), std::env::join_paths(folders).ok()?)];
+    if var("MSYSTEM").is_none_or(|v| v.is_empty()) {
+        env.push((OsString::from("MSYSTEM"), OsString::from(msystem)));
+    }
+    Some((bin.join("git.exe"), env))
+}
+
 static STATE: RwLock<Option<State>> = RwLock::new(None);
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Changes every time Git is looked up again (start, Detect again): answers remembered about
+/// the installed tools are read again after it changes.
+pub fn generation() -> u64 {
+    ensure();
+    GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
 
 pub fn parse_version(text: &str) -> (u32, u32, u32) {
     let v = text.trim().trim_start_matches("git version ");
@@ -36,8 +114,9 @@ pub fn parse_version(text: &str) -> (u32, u32, u32) {
     (nums.next().unwrap_or(0), nums.next().unwrap_or(0), nums.next().unwrap_or(0))
 }
 
-fn probe(exe: &Path) -> Option<String> {
+fn probe(exe: &Path, env: &[(OsString, OsString)]) -> Option<String> {
     let mut c = Command::new(exe);
+    c.envs(env.iter().map(|(k, v)| (k, v)));
     c.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
     {
@@ -88,10 +167,18 @@ pub fn configure() -> GitSelection {
         Some(p) => ("custom", Some(p)),
         None => ("system", find_system_git()),
     };
-    let probed = found.as_ref().and_then(|p| probe(p).map(|v| (p.clone(), v)));
+    // Prefer the git binary behind a Git for Windows launcher; keep the launcher when the
+    // binary is missing or does not answer.
+    let var = |name: &str| std::env::var_os(name);
+    let direct = found.as_ref().and_then(|launcher| {
+        let (exe, env) = direct_git(launcher, &var)?;
+        let version = probe(&exe, &env)?;
+        Some((exe, env, version, Some(launcher.to_string_lossy().into_owned())))
+    });
+    let probed = direct.or_else(|| found.as_ref().and_then(|p| probe(p, &[]).map(|v| (p.clone(), Vec::new(), v, None))));
     let min = format!("{}.{}", MIN_VERSION.0, MIN_VERSION.1);
-    let (exe, version, selection) = match probed {
-        Some((p, v)) => {
+    let (exe, env, version, selection) = match probed {
+        Some((p, env, v, launcher)) => {
             let ver = parse_version(&v);
             let sel = GitSelection {
                 source: source.into(),
@@ -99,16 +186,19 @@ pub fn configure() -> GitSelection {
                 version: v,
                 too_old: (ver.0, ver.1) < MIN_VERSION,
                 min_version: min,
+                launcher,
             };
-            (p, ver, sel)
+            (p, env, ver, sel)
         }
         None => (
             PathBuf::from("git"),
+            Vec::new(),
             (0, 0, 0),
-            GitSelection { source: "none".into(), path: String::new(), version: String::new(), too_old: false, min_version: min },
+            GitSelection { source: "none".into(), path: String::new(), version: String::new(), too_old: false, min_version: min, launcher: None },
         ),
     };
-    *STATE.write() = Some(State { exe, version, selection: selection.clone() });
+    *STATE.write() = Some(State { exe, env, version, selection: selection.clone() });
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     *GCM.write() = None;
     selection
 }
@@ -164,9 +254,8 @@ pub fn credential_manager() -> Option<CredentialManager> {
 }
 
 fn probe_credential_manager() -> Option<CredentialManager> {
-    let git = exe();
     let run = |args: &[&str]| -> Option<String> {
-        let mut c = Command::new(&git);
+        let mut c = command();
         c.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).env("GCM_INTERACTIVE", "never").env("GIT_TERMINAL_PROMPT", "0");
         #[cfg(windows)]
         {
@@ -207,6 +296,54 @@ fn probe_credential_manager() -> Option<CredentialManager> {
 #[cfg(test)]
 mod tests {
     use super::parse_version;
+
+    #[cfg(windows)]
+    #[test]
+    fn the_git_behind_a_launcher_runs_with_the_environment_the_launcher_sets() {
+        use std::ffi::OsString;
+        use std::path::Path;
+        let fixture = tempfile::tempdir_in(crate::portable::temp_dir().unwrap()).unwrap();
+        let top = fixture.path().join("Git");
+        for dir in ["cmd", "usr/bin", "ucrt64/bin"] {
+            std::fs::create_dir_all(top.join(dir)).unwrap();
+        }
+        std::fs::write(top.join("cmd/git.exe"), b"launcher").unwrap();
+        std::fs::write(top.join("ucrt64/bin/git.exe"), b"git").unwrap();
+        let vars = |extra: &'static [(&'static str, &'static str)]| {
+            move |name: &str| -> Option<OsString> {
+                extra.iter().find(|(k, _)| *k == name).map(|(_, v)| OsString::from(v)).or_else(|| match name {
+                    "PATH" => Some(OsString::from(r"C:\Windows\system32;C:\Tools")),
+                    "USERPROFILE" => Some(OsString::from(r"C:\Users\Person")),
+                    _ => None,
+                })
+            }
+        };
+        let env_of = |env: &[(OsString, OsString)], key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.to_string_lossy().into_owned());
+
+        let (exe, env) = super::direct_git(&top.join("cmd/git.exe"), &vars(&[])).expect("the binary behind the launcher");
+        assert_eq!(exe, top.join("ucrt64").join("bin").join("git.exe"));
+        let path = env_of(&env, "PATH").unwrap();
+        let folders: Vec<_> = std::env::split_paths(&path).collect();
+        assert_eq!(folders[0], top.join("ucrt64").join("bin"));
+        assert_eq!(folders[1], top.join("usr").join("bin"));
+        assert_eq!(folders[2], Path::new(r"C:\Users\Person").join("bin"));
+        assert_eq!(&folders[3..], [Path::new(r"C:\Windows\system32"), Path::new(r"C:\Tools")]);
+        assert_eq!(env_of(&env, "MSYSTEM").as_deref(), Some("UCRT64"));
+
+        // HOME wins over USERPROFILE, and a MSYSTEM that is already set is kept.
+        let (_, env) = super::direct_git(&top.join("cmd/git.exe"), &vars(&[("HOME", r"D:\Home"), ("MSYSTEM", "MINGW64")])).unwrap();
+        assert_eq!(std::env::split_paths(&env_of(&env, "PATH").unwrap()).nth(2).unwrap(), Path::new(r"D:\Home").join("bin"));
+        assert_eq!(env_of(&env, "MSYSTEM"), None);
+
+        // Opt-out, the real binary itself, a large file and an unknown layout keep git as found.
+        assert!(super::direct_git(&top.join("cmd/git.exe"), &vars(&[("REVQORA_GIT_DIRECT", "0")])).is_none());
+        assert!(super::direct_git(&top.join("ucrt64/bin/git.exe"), &vars(&[])).is_none());
+        std::fs::write(top.join("cmd/git.exe"), vec![0u8; 2 * 1024 * 1024]).unwrap();
+        assert!(super::direct_git(&top.join("cmd/git.exe"), &vars(&[])).is_none());
+        std::fs::write(top.join("cmd/git.exe"), b"launcher").unwrap();
+        std::fs::remove_dir_all(top.join("usr")).unwrap();
+        assert!(super::direct_git(&top.join("cmd/git.exe"), &vars(&[])).is_none());
+    }
 
     #[test]
     fn parses_versions() {

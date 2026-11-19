@@ -5,7 +5,7 @@ import { bitbucketHttps } from "./bitbucketHttps";
 import { open as openFolder } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage, isGitError, newOpId } from "./api";
 import { recordError } from "./errorLog";
-import { ALL, getTab, historyAfterSwitch, refreshAfterOperation, useRepos, type Parts } from "./store";
+import { ALL, getTab, historyAfterSwitch, operationChangeTime, refreshAfterOperation, refreshUntilShown, useRepos, type Parts } from "./store";
 import { endBusy, showDialog, startBusy, toast, useUi } from "./ui";
 import { GitMerge } from "lucide-react";
 import { Modal } from "../components/Modal";
@@ -58,6 +58,7 @@ export async function prepareOperation(root: string): Promise<string | null> {
 /** Runs a backend action with consistent error handling and refresh. */
 export async function act<T>(root: string, fn: () => Promise<T>, o: ActOptions<T> = {}): Promise<T | undefined> {
   const busyId = o.busy ? newOpId() : null;
+  const startedAt = Date.now();
   if (busyId) startBusy(busyId, o.busy!);
   try {
     const r = await fn();
@@ -86,9 +87,10 @@ export async function act<T>(root: string, fn: () => Promise<T>, o: ActOptions<T
     if (busyId) endBusy(busyId);
     // Status / state first (what the caller acts on); history and refs follow in the background.
     if (o.refresh !== false) {
-      const parts = o.refresh ?? ALL;
-      await useRepos.getState().refresh(root, { info: parts.info, status: parts.status, layers: parts.layers });
-      if (parts.refs || parts.graph) void useRepos.getState().refresh(root, { refs: parts.refs, graph: parts.graph, info: parts.info });
+      // The operation's own completion refresh usually started already: share it.
+      const parts = o.refresh ?? ALL, since = operationChangeTime(root, startedAt);
+      await refreshUntilShown(root, { info: parts.info, status: parts.status, layers: parts.layers }, since);
+      if (parts.refs || parts.graph) void useRepos.getState().refresh(root, { refs: parts.refs, graph: parts.graph, info: parts.info }, { since });
     }
   }
 }

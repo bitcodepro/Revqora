@@ -105,9 +105,14 @@ fn owned_paths(root: &Path, git_dir: &Path) -> Vec<PathBuf> {
     ignored
 }
 
+/// Milliseconds since the Unix epoch (the UI compares it with `Date.now()`).
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
 pub fn watch<F, E>(root: PathBuf, git_dir: PathBuf, on_change: F, on_error: E) -> notify::Result<RepoWatcher>
 where
-    F: Fn(bool, bool) + Send + 'static,
+    F: Fn(bool, bool, u64) + Send + 'static,
     E: FnOnce() + Send + 'static,
 {
     let ignored = owned_paths(&root, &git_dir);
@@ -140,21 +145,36 @@ where
         register(&common, "shared Git directory")?;
     }
     std::thread::spawn(move || {
-        let debounce = Duration::from_millis(350);
+        // Report once the burst is over (QUIET without a new change), and at the latest MAX
+        // after its first change, so a long Git operation still updates the view.
+        const QUIET: Duration = Duration::from_millis(100);
+        const MAX: Duration = Duration::from_millis(400);
+        const IDLE: Duration = Duration::from_millis(250);
         let mut pending_git = false;
         let mut pending_wt = false;
         let mut first: Option<Instant> = None;
+        let mut last: Option<Instant> = None;
+        // Wall-clock time of the burst's first change: reads that started later already see it.
+        let mut since: u64 = 0;
         loop {
             if stop_rx.try_recv().is_ok() {
                 break;
             }
-            match rx.recv_timeout(Duration::from_millis(120)) {
+            let wait = match (first, last) {
+                (Some(first), Some(last)) => (QUIET.saturating_sub(last.elapsed())).min(MAX.saturating_sub(first.elapsed())).max(Duration::from_millis(1)),
+                _ => IDLE,
+            };
+            match rx.recv_timeout(wait) {
                 // File reads must not cause feedback refreshes. Still reach the
                 // debounce flush below when access events arrive continuously.
                 Ok(Ok(ev)) if ev.need_rescan() => {
                     pending_git = true;
                     pending_wt = true;
-                    first.get_or_insert_with(Instant::now);
+                    if first.is_none() {
+                        first = Some(Instant::now());
+                        since = now_ms();
+                    }
+                    last = Some(Instant::now());
                 }
                 Ok(Ok(ev)) if !matches!(ev.kind, notify::EventKind::Access(_)) => {
                     for p in &ev.paths {
@@ -166,8 +186,12 @@ where
                             None => {}
                         }
                     }
-                    if (pending_git || pending_wt) && first.is_none() {
-                        first = Some(Instant::now());
+                    if pending_git || pending_wt {
+                        if first.is_none() {
+                            first = Some(Instant::now());
+                            since = now_ms();
+                        }
+                        last = Some(Instant::now());
                     }
                 }
                 Ok(Ok(_)) => {}
@@ -179,12 +203,13 @@ where
                     break;
                 }
             }
-            if let Some(t) = first {
-                if t.elapsed() >= debounce {
-                    on_change(pending_git, pending_wt);
+            if let (Some(started), Some(latest)) = (first, last) {
+                if latest.elapsed() >= QUIET || started.elapsed() >= MAX {
+                    on_change(pending_git, pending_wt, since);
                     pending_git = false;
                     pending_wt = false;
                     first = None;
+                    last = None;
                 }
             }
         }
@@ -236,18 +261,21 @@ mod tests {
         let watcher = watch(
             linked.clone(),
             git_dir,
-            move |git, _| {
+            move |git, _, since| {
                 if git {
-                    let _ = tx.send(());
+                    let _ = tx.send(since);
                 }
             },
             || {},
         )
         .unwrap();
         phase("creating external branch");
+        let before = super::now_ms();
         runner::run(&root, ["branch", "external-branch"]).unwrap();
         phase("awaiting shared ref notification (10s deadline)");
-        rx.recv_timeout(Duration::from_secs(10)).expect("Shared refs did not refresh the linked worktree");
+        let since = rx.recv_timeout(Duration::from_secs(10)).expect("Shared refs did not refresh the linked worktree");
+        // The batch reports when its first change was seen, after the write began.
+        assert!(since >= before && since <= super::now_ms(), "{before} <= {since}");
         phase("dropping watcher");
         drop(watcher);
         phase("removing fixture");

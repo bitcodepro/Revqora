@@ -188,8 +188,10 @@ impl Journal {
         if version > 1 {
             return Err("This operation journal was created by a newer app version.".into());
         }
+        // WAL with synchronous=NORMAL survives an app crash or kill; only a power loss can drop
+        // the last few rows. FULL synced the log on every write of every Git command.
         db.execute_batch(
-            "PRAGMA foreign_keys=ON; PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
+            "PRAGMA foreign_keys=ON; PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
             CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS operations(
                 id TEXT PRIMARY KEY, session TEXT NOT NULL, repo TEXT NOT NULL, repository_key TEXT NOT NULL,
