@@ -107,8 +107,6 @@ Before opening or updating a PR:
 - [ ] Copy diagnostics (Error log, Operation log, PR Center errors, Check connection) previews the report before copying. It includes the Revqora and Git versions, platform, operation, error code, HTTP status, request ID and timings when available, and never tokens, authorization headers, URL credentials, private keys, command output or file contents.
 - [ ] Error log lists recent application errors independently of Operation log. It copies one entry or all entries, preserves diagnostic codes, redacts credentials before storage and prunes entries older than seven days.
 - [ ] Clear log deletes recorded application errors after confirmation. New errors can still be recorded and Operation log is unaffected.
-- [ ] On Windows with Git for Windows, Settings shows the real Git binary and names the bypassed launcher. Fetch, Push with credential prompts, SSH, Git LFS and hooks work as through the launcher. With `REVQORA_GIT_DIRECT=0`, or a layout that is not recognized, the launcher is used.
-- [ ] After Stage, Commit or a file save, the Changes list and repository info update once, without a visible delay or a second flicker. A change made outside Revqora during an operation still appears.
 - [ ] On Windows, a briefly locked working file can be read after the lock is released. A persistent read failure reports its file and OS error and does not supply a mutation precondition.
 
 ## Drag and drop in History and Branches

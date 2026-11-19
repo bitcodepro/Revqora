@@ -43,8 +43,7 @@ Rust and Node.js are only needed to build Revqora from source.
 On Windows, choose a writable installation folder and run the extracted executable,
 not the copy inside the ZIP. Keep the package files together. If Git is not found,
 install it and use **Settings → Detect again**. `REVQORA_GIT` can select a specific
-Git executable. Revqora runs the Git binary behind Git for Windows' `cmd\git.exe`
-launcher directly; `REVQORA_GIT_DIRECT=0` keeps the launcher.
+Git executable.
 
 ### 2. Open a repository
 
