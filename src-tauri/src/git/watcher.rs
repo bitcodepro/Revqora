@@ -160,14 +160,19 @@ impl QuietFolders {
         Some((meta.modified().ok()?, meta.len()))
     }
 
-    /// Drops the answers when the global excludes file changed since they were learned.
+    /// Drops the answers when the global excludes file changed since they were learned: its
+    /// content, or which file `core.excludesFile` names (the global Git configuration lives
+    /// outside the watched folders too).
     fn check_excludes(&mut self) {
-        let Some(excludes) = &mut self.excludes else { return };
+        let Some(excludes) = &self.excludes else { return };
         if excludes.checked.elapsed() < Self::EXCLUDES_CHECK {
             return;
         }
+        let path = self.excludes_path();
+        let stamp = Self::excludes_stamp(path.as_deref());
+        let Some(excludes) = &mut self.excludes else { return };
         excludes.checked = Instant::now();
-        if Self::excludes_stamp(excludes.path.as_deref()) != excludes.stamp {
+        if path != excludes.path || stamp != excludes.stamp {
             self.forget();
         }
     }
@@ -321,6 +326,8 @@ where
                 // File reads must not cause feedback refreshes. Still reach the
                 // debounce flush below when access events arrive continuously.
                 Ok(Ok(ev)) if ev.need_rescan() => {
+                    // Events were lost: an ignore rule or the index may have changed unseen.
+                    quiet.forget();
                     pending_git = true;
                     pending_wt = true;
                     first.get_or_insert_with(Instant::now);
@@ -568,6 +575,17 @@ mod tests {
         fs::write(&excludes, b"*.tmp\n").unwrap();
         quiet.excludes.as_mut().unwrap().checked = std::time::Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
         assert!(!quiet.contains(&root.join("release/out.txt")), "the folder stayed quiet after its ignore rule was removed");
+        // Ignored again, then the global configuration names another excludes file without the rule.
+        fs::write(&excludes, b"/release/
+").unwrap();
+        quiet.forget();
+        assert!(quiet.contains(&root.join("release/out.txt")));
+        let other = tmp.path().join("other-ignore");
+        fs::write(&other, b"*.tmp
+").unwrap();
+        runner::run(&root, ["config", "core.excludesFile", &other.to_string_lossy()]).unwrap();
+        quiet.excludes.as_mut().unwrap().checked = std::time::Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        assert!(!quiet.contains(&root.join("release/out.txt")), "the folder stayed quiet after core.excludesFile named another file");
         drop(quiet);
         tmp.close().unwrap();
     }

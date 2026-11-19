@@ -82,6 +82,8 @@ pub fn command(repo: &Path) -> Command {
     }
     c.env(crate::git_credentials::REPO_VAR, std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_owned()));
     c.env(crate::git_credentials::EPOCH_VAR, crate::git_credentials::epoch().to_string());
+    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    c.env(crate::git_credentials::CALL_VAR, format!("{}-{}", std::process::id(), CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     c.args([
         "-c",
         "core.quotepath=false",
