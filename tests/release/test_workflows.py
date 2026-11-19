@@ -7,6 +7,17 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_windows_installer_is_uploaded_and_inspected_before_publication(self):
+        steps = self.package["jobs"]["package"]["steps"]
+        upload = next(s for s in steps if s.get("uses", "").startswith("actions/upload-artifact@"))
+        for output in ("archive", "checksum", "installer", "installer_checksum"):
+            self.assertIn("${{ steps.package.outputs." + output + " }}", upload["with"]["path"])
+        for job in ("verify-packages", "release"):
+            steps = self.ci["jobs"][job]["steps"]
+            prepare = next(i for i, s in enumerate(steps) if "install -y --no-install-recommends 7zip" in s.get("run", ""))
+            verify = next(i for i, s in enumerate(steps) if "scripts/release.py " in s.get("run", ""))
+            self.assertLess(prepare, verify)
+
     def setUp(self):
         self.ci = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)
         self.package = yaml.load((ROOT / ".github/workflows/package.yml").read_text(), Loader=yaml.BaseLoader)

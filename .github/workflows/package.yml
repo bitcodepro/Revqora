@@ -65,6 +65,8 @@ jobs:
           path: |
             ${{ steps.package.outputs.archive }}
             ${{ steps.package.outputs.checksum }}
+            ${{ steps.package.outputs.installer }}
+            ${{ steps.package.outputs.installer_checksum }}
           if-no-files-found: error
           retention-days: 7
 

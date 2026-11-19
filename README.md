@@ -31,7 +31,7 @@ from [Releases](https://github.com/bitcodepro/Revqora/releases/latest).
 
 | Platform | Package | Run |
 | --- | --- | --- |
-| Windows 10/11, x64 | `win-x64.zip` | Extract the entire archive, then open `revqora.exe`. Requires [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/). |
+| Windows 10/11, x64 | `win-x64-setup.exe` or `win-x64.zip` | Run the per-user installer for shortcuts and folder context menus, or extract the entire portable ZIP and open `revqora.exe`. Requires [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/). |
 | Linux, x64 or ARM64 | `linux-x64.tar.gz` / `linux-arm64.tar.gz` | Extract and run `./revqora`. Requires WebKitGTK 4.1 and the platform's GTK/system libraries; this is not an AppImage. |
 | macOS, Apple Silicon or Intel | `osx-arm64.zip` / `osx-x64.zip` | Extract and open `Revqora.app`. Packages are ad-hoc signed, not notarized. |
 
@@ -714,7 +714,7 @@ Run native Windows verification in a dedicated test directory. Set `REVQORA_TEST
 after the run. Hosted WebView2 testing enables `REVQORA_VERIFY_UI_AUTOMATION=1`;
 normal production packages omit that automation feature.
 
-CI checks Windows, Ubuntu and macOS and builds five architecture-specific packages.
+CI checks Windows, Ubuntu and macOS and builds five architecture-specific archives plus a Windows NSIS installer, all with checksums. Windows downloads remain unsigned. Both Windows formats keep `data` beside the executable; in-app updates still use the portable ZIP. The installer does not migrate data from other copies.
 PRs produce preview artifacts; publication is restricted to verified main builds.
 See [CI and releases](https://github.com/bitcodepro/Revqora/blob/main/docs/ci-release.md)
 and [CI performance](https://github.com/bitcodepro/Revqora/blob/main/docs/CI_PERFORMANCE.md).

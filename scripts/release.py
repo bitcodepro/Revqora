@@ -93,6 +93,46 @@ def archive_name(version, rid):
     return f"Revqora-{version}-{rid}.{extension(rid)}"
 
 
+def installer_name(version):
+    version_tuple(version)
+    return f"Revqora-{version}-win-x64-setup.exe"
+
+
+def seven_zip():
+    for name in ("7z", "7zz"):
+        found = shutil.which(name)
+        if found:
+            return found
+    windows = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "7-Zip/7z.exe"
+    if sys.platform == "win32" and windows.is_file():
+        return str(windows)
+    raise FileNotFoundError("7-Zip is required to verify the NSIS installer without running it")
+
+
+def verify_installer(installer, version, archive):
+    """Read the NSIS payload, never execute/install it. The ZIP was already verified."""
+    if installer.name != installer_name(version):
+        raise ValueError("Installer filename mismatch")
+    checksum = installer.with_name(installer.name + ".sha256")
+    if checksum.read_text(encoding="ascii").strip() != f"{digest(installer)}  {installer.name}":
+        raise ValueError("Installer SHA-256 mismatch")
+    extractor = seven_zip()
+    listing = run([extractor, "l", "-slt", str(installer)], capture_output=True, text=True).stdout
+    if "Type = Nsis" not in listing:
+        raise ValueError("Expected an NSIS installer")
+    # Tauri maps resources to the same relative paths as the portable ZIP. Compare every
+    # file, including the x64 executable and the source/version manifest, without writing
+    # or launching the extracted payload. NSIS's outer executable itself can be x86.
+    with zipfile.ZipFile(archive) as bundle:
+        for entry in bundle.infolist():
+            if entry.is_dir():
+                continue
+            payload = run([extractor, "x", "-so", str(installer), entry.filename], capture_output=True).stdout
+            if payload != bundle.read(entry):
+                raise ValueError(f"Installer payload differs from verified ZIP: {entry.filename}")
+    print(f"PASS {installer.name}: SHA-256, NSIS and payload identical to verified ZIP")
+
+
 def digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -193,11 +233,15 @@ def verify_archive(archive, version, rid, commit):
 
 def verify_packages(directory, version, commit, rids=RIDS):
     expected = {name for rid in rids for name in (archive_name(version, rid), archive_name(version, rid) + ".sha256")}
+    if "win-x64" in rids:
+        expected.update((installer_name(version), installer_name(version) + ".sha256"))
     actual = {path.name for path in directory.iterdir()}
     if actual != expected:
-        raise ValueError(f"Expected exactly the archive/checksum pairs; missing={sorted(expected - actual)}, extra={sorted(actual - expected)}")
+        raise ValueError(f"Expected exactly the package/checksum pairs; missing={sorted(expected - actual)}, extra={sorted(actual - expected)}")
     for rid in rids:
         verify_archive(directory / archive_name(version, rid), version, rid, commit)
+    if "win-x64" in rids:
+        verify_installer(directory / installer_name(version), version, directory / archive_name(version, "win-x64"))
     return [directory / name for name in sorted(expected)]
 
 
@@ -214,8 +258,11 @@ def package(directory, version, rid):
     expected_host = "win32" if rid.startswith("win-") else "darwin" if rid.startswith("osx-") else "linux"
     if sys.platform != expected_host:
         raise ValueError("Release packages require a native package host")
+    if rid == "win-x64":
+        seven_zip()  # Fail before building if the installer cannot be inspected.
     archive = directory / name
-    if archive.exists() or archive.with_name(name + ".sha256").exists():
+    installer = directory / installer_name(version) if rid == "win-x64" else None
+    if archive.exists() or archive.with_name(name + ".sha256").exists() or (installer and (installer.exists() or installer.with_name(installer.name + ".sha256").exists())):
         raise FileExistsError("Use an empty output directory; packages are not silently replaced")
     commit = run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     # Isolate generated bundles from prior build output. The source manifests stay unchanged.
@@ -265,9 +312,25 @@ def package(directory, version, rid):
                         entry.mode = 0o755 if relative == executable_path(rid) else 0o644
                         with file.open("rb") as stream:
                             bundle.addfile(entry, stream)
+        if installer:
+            # Bundle the same production executable, not the UI-automation test build.
+            # `tauri bundle` does not run Vite again or delete the portable ZIP in dist/.
+            resources = {str(file): file.relative_to(staging).as_posix() for file in staging.rglob("*") if file.is_file() and file != executable}
+            config = json.dumps({"version": version, "bundle": {"active": True, "useLocalToolsDir": True, "resources": resources}})
+            nsis = release / "bundle/nsis"
+            for old in nsis.glob("*.exe"):
+                old.unlink()  # Only generated installers in this isolated checkout.
+            run([node, str(ROOT / "node_modules/@tauri-apps/cli/tauri.js"), "bundle", "--bundles", "nsis", "--no-binary-patching", "--config", config])
+            built = list(nsis.glob("*.exe"))
+            if len(built) != 1:
+                raise ValueError("Expected exactly one newly built NSIS installer")
+            shutil.copyfile(built[0], installer)
+            installer.with_name(installer.name + ".sha256").write_text(f"{digest(installer)}  {installer.name}\n", encoding="ascii")
     archive.with_name(name + ".sha256").write_text(f"{digest(archive)}  {name}\n", encoding="ascii")
     verify_archive(archive, version, rid, commit)
-    outputs({"archive": archive.as_posix(), "checksum": archive.as_posix() + ".sha256"})
+    if installer:
+        verify_installer(installer, version, archive)
+    outputs({"archive": archive.as_posix(), "checksum": archive.as_posix() + ".sha256", "installer": installer.as_posix() if installer else "", "installer_checksum": installer.as_posix() + ".sha256" if installer else ""})
 
 
 def gh_api(path, method="GET", data=None):

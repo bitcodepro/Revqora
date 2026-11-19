@@ -66,6 +66,22 @@ def make_archive(directory, rid, change=None, link=False, version=VERSION):
     return archive
 
 
+def make_installer(directory, version=VERSION):
+    installer = directory / release.installer_name(version)
+    installer.write_bytes(b"synthetic NSIS fixture, never executable")
+    installer.with_name(installer.name + ".sha256").write_text(f"{release.digest(installer)}  {installer.name}\n", encoding="ascii")
+    return installer
+
+
+def inspect_installer(args, **kwargs):
+    if args[1] == "l":
+        return SimpleNamespace(stdout="Type = Nsis\n")
+    installer = Path(args[3])
+    archive = installer.with_name(installer.name.replace("-setup.exe", ".zip"))
+    with zipfile.ZipFile(archive) as bundle:
+        return SimpleNamespace(stdout=bundle.read(args[4]))
+
+
 class VersionTests(unittest.TestCase):
     def test_first_release_and_numeric_order(self):
         self.assertEqual(release.select_version([])["version"], "0.1.0")
@@ -100,10 +116,35 @@ class PackageTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
 
-    def test_all_five_platform_packages_and_checksums(self):
+    def test_all_five_platform_packages_and_installer_checksums(self):
         for rid in release.RIDS:
             make_archive(self.directory, rid)
-        self.assertEqual(len(release.verify_packages(self.directory, VERSION, COMMIT)), 10)
+        make_installer(self.directory)
+        with patch.object(release, "seven_zip", return_value="7z"), patch.object(release, "run", side_effect=inspect_installer):
+            self.assertEqual(len(release.verify_packages(self.directory, VERSION, COMMIT)), 12)
+
+    def test_installer_is_required_and_payload_must_match_verified_zip(self):
+        archive = make_archive(self.directory, "win-x64")
+        with self.assertRaisesRegex(ValueError, "missing"):
+            release.verify_packages(self.directory, VERSION, COMMIT, ("win-x64",))
+        installer = make_installer(self.directory)
+        with patch.object(release, "seven_zip", return_value="7z"), patch.object(release, "run", side_effect=[SimpleNamespace(stdout="Type = Nsis"), SimpleNamespace(stdout=b"wrong payload")]):
+            with self.assertRaisesRegex(ValueError, "payload differs"):
+                release.verify_installer(installer, VERSION, archive)
+        installer.write_bytes(b"modified")
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            release.verify_installer(installer, VERSION, archive)
+
+    def test_non_windows_asset_set_is_unchanged(self):
+        make_archive(self.directory, "linux-x64")
+        self.assertEqual(len(release.verify_packages(self.directory, VERSION, COMMIT, ("linux-x64",))), 2)
+
+    def test_rejects_non_nsis_executable_even_with_valid_checksum(self):
+        archive = make_archive(self.directory, "win-x64")
+        installer = make_installer(self.directory)
+        with patch.object(release, "seven_zip", return_value="7z"), patch.object(release, "run", return_value=SimpleNamespace(stdout="Type = PE")):
+            with self.assertRaisesRegex(ValueError, "NSIS"):
+                release.verify_installer(installer, VERSION, archive)
 
     def test_mac_preview_preserves_tauri_semver(self):
         version = "0.0.0-pr.1"
@@ -130,15 +171,26 @@ class PackageTests(unittest.TestCase):
         def build(args, **kwargs):
             if args[0] == "git":
                 return SimpleNamespace(stdout=COMMIT)
+            if args[0] == "7z":
+                return inspect_installer(args, **kwargs)
             self.assertTrue(args[1].endswith("tauri.js"))
+            if args[2] == "bundle":
+                self.assertIn("--no-binary-patching", args)
+                config = json.loads(args[args.index("--config") + 1])
+                self.assertTrue(config["bundle"]["useLocalToolsDir"])
+                self.assertEqual(set(config["bundle"]["resources"].values()), {"README.md", "LICENSE", release.NOTICES, "build-info.json", *("licenses/" + f for f in release.FONT_LICENSES)})
+                output = native.parent / "bundle/nsis/generated.exe"
+                output.parent.mkdir(parents=True)
+                output.write_bytes(b"synthetic NSIS fixture, never executable")
+                return SimpleNamespace(returncode=0)
             self.assertEqual(directory.parent.resolve(), (root / "dist").resolve())
             shutil.rmtree(root / "dist")
             (root / "dist").mkdir()
             return SimpleNamespace(returncode=0)
 
-        with patch.object(release, "ROOT", root), patch.object(release.sys, "platform", "win32"), patch.object(release.shutil, "which", return_value="node"), patch.object(release, "run", side_effect=build):
+        with patch.object(release, "ROOT", root), patch.object(release.sys, "platform", "win32"), patch.object(release.shutil, "which", return_value="node"), patch.object(release, "seven_zip", return_value="7z"), patch.object(release, "run", side_effect=build):
             release.package(directory, VERSION, "win-x64")
-        self.assertEqual(len(release.verify_packages(directory, VERSION, COMMIT, ("win-x64",))), 2)
+            self.assertEqual(len(release.verify_packages(directory, VERSION, COMMIT, ("win-x64",))), 4)
 
     def test_rejects_modified_archive(self):
         archive = make_archive(self.directory, "win-x64")
