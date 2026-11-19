@@ -452,4 +452,28 @@ fn graph_rebuilds_incrementally() {
     let g4 = graph::build_with(&r, None, false, 1000, false, Some(&g3)).unwrap();
     assert_eq!(g4.source, "full");
     assert_eq!(g4.rows.len(), 4);
+
+    // Several branches that all moved forward (as after a fetch) are checked together.
+    for name in ["b1", "b2", "b3"] {
+        git(&r, &["branch", name]);
+    }
+    let g5 = graph::build_with(&r, None, false, 1000, false, Some(&g4)).unwrap();
+    let advance = |name: &str| {
+        let tip = git(&r, &["rev-parse", name]);
+        let next = git(&r, &["commit-tree", "HEAD^{tree}", "-p", tip.trim(), "-m", &format!("on {name}")]);
+        git(&r, &["update-ref", &format!("refs/heads/{name}"), next.trim()]);
+    };
+    for name in ["b1", "b2", "b3"] {
+        advance(name);
+    }
+    let g6 = graph::build_with(&r, None, false, 1000, false, Some(&g5)).unwrap();
+    assert_eq!(g6.source, "incremental");
+    let full = graph::build(&r, None, false, 1000, false).unwrap();
+    assert_eq!(g6.rows.iter().map(|x| x.oid.as_str()).collect::<Vec<_>>(), full.rows.iter().map(|x| x.oid.as_str()).collect::<Vec<_>>());
+    // One of them moved back while the others moved forward: the history is read again.
+    advance("b2");
+    advance("b3");
+    git(&r, &["update-ref", "refs/heads/b1", "HEAD"]);
+    let g7 = graph::build_with(&r, None, false, 1000, false, Some(&g6)).unwrap();
+    assert_eq!(g7.source, "full");
 }

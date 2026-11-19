@@ -2,7 +2,8 @@ import { api, isGitError } from "./api";
 
 export interface AutoFetchDeps {
   fetch: (root: string) => Promise<unknown>;
-  refresh: (root: string) => Promise<unknown>;
+  /** `changed` false: the fetch reported that no ref changed. */
+  refresh: (root: string, changed: boolean) => Promise<unknown>;
   busy: () => boolean;
   failed?: (root: string, error: unknown) => void;
 }
@@ -19,8 +20,8 @@ export function createAutoFetch(deps: AutoFetchDeps) {
     if (disabled.has(root) || inFlight.has(root) || deps.busy()) return;
     inFlight.add(root);
     try {
-      await deps.fetch(root);
-      await deps.refresh(root);
+      const result = await deps.fetch(root);
+      await deps.refresh(root, refsChanged(result));
     } catch (e) {
       // The repository was busy with another operation: not a failure, try at the next interval.
       if (isGitError(e) && e.kind === "repository-busy") return;
@@ -33,6 +34,11 @@ export function createAutoFetch(deps: AutoFetchDeps) {
 }
 
 export const defaultFetch = (root: string) => api.fetchBackground(root);
+
+/** False only when the fetch said that no ref changed. */
+function refsChanged(result: unknown): boolean {
+  return !(typeof result === "object" && result !== null && (result as { refsChanged?: unknown }).refsChanged === false);
+}
 
 /** One auto-fetch round: `parallel` repositories at a time, in order, until `current()` ends. */
 export async function fetchRound(roots: string[], fetch: (root: string) => Promise<void>, current: () => boolean, parallel: number): Promise<void> {

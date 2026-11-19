@@ -68,7 +68,7 @@ fn a_failed_sign_in_never_erases_the_saved_login_for_the_host() {
         git(&repo, &["config", "credential.helper", ""]);
         git(&repo, &["config", "--add", "credential.helper", &format!("store --file=\"{}\"", store.to_string_lossy().replace('\\', "/"))]);
         git(&repo, &["remote", "add", "origin", &format!("{origin}/team/missing.git")]);
-        let result = if background { ops::fetch_background(&repo) } else { ops::fetch(&repo, None, false, |_| {}) };
+        let result = if background { ops::fetch_background(&repo).map(|f| f.output) } else { ops::fetch(&repo, None, false, |_| {}) };
         let error = result.expect_err("the server refuses every request");
         assert_eq!(error.kind, "auth", "{}", error.message);
         assert!(std::fs::read_to_string(&store).unwrap().contains("saved-token"), "background={background}: the saved login was erased");

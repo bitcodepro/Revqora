@@ -1679,7 +1679,7 @@ async fn sparse_checkout_reapply(
 
 /// Periodic fetch in the background: never asks for credentials.
 #[tauri::command]
-async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<String> {
+async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<ops::BackgroundFetch> {
     // Optional work never queues in front of (or behind) the user's own operation: it would
     // delay that operation by a whole network round trip. The next interval tries again.
     if git::operations::writer_active(&p(&repo)) {

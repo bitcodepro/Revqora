@@ -180,4 +180,17 @@ describe("background fetch", () => {
     expect(calls).toBe(2);
     expect(refreshed).toBe(1);
   });
+
+  it("tells the refresh whether the fetch changed any ref", async () => {
+    const answers: unknown[] = [{ output: "", refsChanged: false }, { output: "", refsChanged: true }, "older answer"];
+    const changed: boolean[] = [];
+    const quietFetch = createAutoFetch({
+      fetch: async () => answers.shift(),
+      refresh: async (_root, refs) => { changed.push(refs); },
+      busy: () => false,
+    });
+    for (let i = 0; i < 3; i++) await quietFetch("/repo");
+    // Only an explicit "nothing changed" skips reading; anything else reads as before.
+    expect(changed).toEqual([false, true, true]);
+  });
 });

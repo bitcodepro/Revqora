@@ -52,6 +52,38 @@ fn worktrees_add_list_lock_remove() {
 }
 
 #[test]
+fn the_remembered_worktree_list_follows_commits_locks_and_deleted_folders() {
+    // The list is reused only while its files are older than two seconds: wait after each
+    // change, so the reuse (not the recent-change rule) has to notice it.
+    let settle = || std::thread::sleep(std::time::Duration::from_millis(2300));
+    let tmp = tempfile::tempdir().unwrap();
+    let r = repo(tmp.path(), "main");
+    commit(&r, "a.txt", "a\n", "init");
+    let wt = tmp.path().join("wt-cached");
+    extras::worktree_add(&r, &wt.to_string_lossy(), None, Some("cached"), Some("main")).unwrap();
+    settle();
+    let other = |r: &Path| extras::worktrees(r).unwrap().into_iter().find(|w| !w.is_current).unwrap();
+    let before = other(&r);
+    assert_eq!(other(&r).head, before.head);
+
+    let moved = commit(&wt, "b.txt", "b\n", "in the worktree");
+    settle();
+    assert_eq!(other(&r).head.as_deref(), Some(moved.as_str()));
+
+    runner::run(&r, ["worktree", "lock", "--reason", "kept", &before.path]).unwrap();
+    settle();
+    let locked = other(&r);
+    assert!(locked.locked);
+    assert_eq!(locked.lock_reason.as_deref(), Some("kept"));
+    runner::run(&r, ["worktree", "unlock", &before.path]).unwrap();
+    settle();
+    assert!(!other(&r).locked);
+
+    fs::remove_dir_all(&wt).unwrap();
+    assert!(other(&r).prunable, "a worktree folder deleted outside Git is prunable at once");
+}
+
+#[test]
 fn submodules_add_status_update() {
     // Give this fixture's Git children a complete config environment atomically.
     // Mutating process-wide GIT_CONFIG_* in parallel tests can expose COUNT=1

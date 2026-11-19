@@ -463,6 +463,24 @@ fn parse_log(text: &str) -> Vec<CommitMeta> {
     commits
 }
 
+/// Whether every ref in `moved` (old, new) only moved forward. A fetch often moves several
+/// remote branches at once: the checks run side by side (eight at a time), not one by one.
+fn all_fast_forward(repo: &Path, moved: &[(&str, &str)]) -> bool {
+    let check = |(old, new): &(&str, &str)| runner::exec(repo, ["merge-base", "--is-ancestor", old, new]).is_ok_and(|out| out.ok());
+    if moved.len() <= 1 {
+        return moved.iter().all(check);
+    }
+    let parent = super::operations::Inherited::of(repo);
+    moved.chunks(8).all(|chunk| {
+        std::thread::scope(|scope| {
+            let tasks: Vec<_> = chunk.iter().map(|pair| scope.spawn(|| parent.run(|| check(pair)))).collect();
+            // The scope joins every task before answering: none outlives the parent's transaction.
+            let answers: Vec<bool> = tasks.into_iter().map(|task| task.join().unwrap_or(false)).collect();
+            answers.into_iter().all(|ok| ok)
+        })
+    })
+}
+
 /// Tries to reuse the previous history: unchanged refs → same commits; refs that only moved
 /// forward (or new refs) → read just the new commits and put them in front.
 fn reuse_history(repo: &Path, prev: &GraphCache, refs: &[(String, String)]) -> Option<(Vec<CommitMeta>, &'static str)> {
@@ -477,21 +495,21 @@ fn reuse_history(repo: &Path, prev: &GraphCache, refs: &[(String, String)]) -> O
     let old: HashMap<&str, &str> = prev.refs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let new: HashMap<&str, &str> = refs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let mut tips = Vec::new();
-    for (name, oid) in &old {
+    let mut moved: Vec<(&str, &str)> = Vec::new();
+    // In ref order, not the maps' order: commits with the same time then keep one order.
+    for (name, oid) in prev.refs.iter().map(|(a, b)| (a.as_str(), b.as_str())) {
         match new.get(name) {
             None => return None, // a ref disappeared: commits may have become unreachable
-            Some(n) if n != oid => {
-                let ff = runner::exec(repo, ["merge-base", "--is-ancestor", oid, n]).ok()?.ok();
-                if !ff {
-                    return None;
-                }
-                tips.push(n.to_string());
-            }
+            Some(n) if *n != oid => moved.push((oid, n)),
             _ => {}
         }
     }
-    for (name, oid) in &new {
-        if !old.contains_key(name) {
+    if !all_fast_forward(repo, &moved) {
+        return None;
+    }
+    tips.extend(moved.iter().map(|(_, n)| n.to_string()));
+    for (name, oid) in refs {
+        if !old.contains_key(name.as_str()) {
             tips.push(oid.to_string());
         }
     }

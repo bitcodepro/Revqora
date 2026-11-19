@@ -29,8 +29,14 @@ fn background_fetch_updates_remote_refs_without_rewriting_fetch_head_or_checkout
     let before = std::fs::read(&fetch_head).unwrap();
     let original = runner::run(&local, ["rev-parse", "HEAD"]).unwrap();
     commit("second");
-    ops::fetch_background(&local).unwrap();
+    assert!(ops::fetch_background(&local).unwrap().refs_changed, "a new commit moved origin/main");
     assert_eq!(runner::run(&local, ["rev-parse", "origin/main"]).unwrap(), runner::run(&source, ["rev-parse", "HEAD"]).unwrap());
+    // Nothing new on the server: the app need not read branches and history again.
+    assert!(!ops::fetch_background(&local).unwrap().refs_changed);
+    runner::run(&source, ["tag", "v1"]).unwrap();
+    assert!(ops::fetch_background(&local).unwrap().refs_changed, "a new tag is a change");
+    runner::run(&source, ["branch", "side"]).unwrap();
+    assert!(ops::fetch_background(&local).unwrap().refs_changed, "a new remote branch is a change");
     assert_eq!(runner::run(&local, ["rev-parse", "HEAD"]).unwrap(), original);
     assert_eq!(std::fs::read(fetch_head).unwrap(), before);
 }

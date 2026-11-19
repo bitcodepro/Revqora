@@ -845,8 +845,23 @@ pub fn background_env(ssh_configured: bool) -> Vec<(&'static str, &'static str)>
 }
 
 /// Quiet periodic fetch of all remotes; never shows a credential prompt.
-pub fn fetch_background(repo: &Path) -> GitResult<String> {
-    fetch_background_with_deadline(repo, std::time::Duration::from_secs(30))
+/// What an automatic fetch did.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundFetch {
+    pub output: String,
+    /// Whether any ref (branch, remote branch, tag) moved, appeared or disappeared. Without a
+    /// change there is nothing new to read: most automatic fetches bring nothing.
+    pub refs_changed: bool,
+}
+
+pub fn fetch_background(repo: &Path) -> GitResult<BackgroundFetch> {
+    // Usually remembered from the last status read: no Git process while the ref files keep
+    // their size and time, and none afterwards when the fetch changed nothing.
+    let before = super::operations::state_cache::current_refs(repo).ok();
+    let output = fetch_background_with_deadline(repo, std::time::Duration::from_secs(30))?;
+    let after = super::operations::state_cache::current_refs(repo).ok();
+    Ok(BackgroundFetch { output, refs_changed: before.is_none() || before != after })
 }
 
 /// [`fetch_background`] with its time limit (tests use a short one).

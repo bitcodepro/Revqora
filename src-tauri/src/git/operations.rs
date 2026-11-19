@@ -47,6 +47,12 @@ thread_local! {
     static SCOPES: RefCell<Vec<(PathBuf, bool)>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Whether the calling thread is inside any repository transaction (it may hold a gate, so it
+/// must never wait for another thread's Git command).
+pub fn in_any_transaction() -> bool {
+    SCOPES.with(|s| !s.borrow().is_empty())
+}
+
 fn enter_scope(key: PathBuf, write: bool) -> impl Drop {
     SCOPES.with(|s| s.borrow_mut().push((key, write)));
     DropGuard::new((), |()| {
@@ -603,9 +609,8 @@ pub fn state_reads(repo: &Path, display_path: Option<&str>) -> StateReads {
         let references = display_path.is_none().then(|| {
             sc.spawn(|| {
                 parent.run(|| {
-                    let args = ["for-each-ref", "--format=%(refname)%00%(objectname)"];
                     let stamp = dirs.as_ref().and_then(|(gd, common)| state_cache::refs_stamp(gd, common));
-                    state_cache::remembered(repo, "refs", &args, stamp, || runner::run_bytes(repo, args)).map(|out| String::from_utf8_lossy(&out).into_owned())
+                    state_cache::refs_listing(repo, stamp)
                 })
             })
         });
@@ -709,6 +714,41 @@ pub mod state_cache {
         Some(std::hash::Hasher::finish(&hasher))
     }
 
+    /// Everything `worktree list` reads: the ref files (each worktree's commit), the repository
+    /// configuration (bare, core.worktree), and per linked worktree its HEAD, lock, recorded
+    /// location and whether that location still exists (prunable). None as [`refs_stamp`].
+    pub fn worktrees_stamp(gd: &Path, common: &Path) -> Option<Stamp> {
+        use std::hash::Hash;
+        let refs = refs_stamp(gd, common)?;
+        let now = SystemTime::now();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        refs.hash(&mut hasher);
+        hash_meta(&mut hasher, &common.join("config"), now)?;
+        let folder = common.join("worktrees");
+        let mut linked: Vec<PathBuf> = match fs::read_dir(&folder) {
+            Ok(entries) => {
+                // A worktree added or removed just now changes the folder.
+                if !settled(fs::metadata(&folder).ok()?.modified().ok()?, now) {
+                    return None;
+                }
+                entries.flatten().map(|e| e.path()).collect()
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(_) => return None,
+        };
+        linked.sort();
+        for dir in linked {
+            for name in ["HEAD", "locked", "gitdir", "commondir"] {
+                hash_meta(&mut hasher, &dir.join(name), now)?;
+            }
+            // The worktree's own `.git` file: a folder deleted outside Git becomes prunable.
+            if let Ok(target) = fs::read_to_string(dir.join("gitdir")) {
+                hash_meta(&mut hasher, Path::new(target.trim()), now)?;
+            }
+        }
+        Some(std::hash::Hasher::finish(&hasher))
+    }
+
     type Key = (PathBuf, &'static str, Vec<String>);
     type Entry = (Key, Stamp, Vec<u8>);
 
@@ -738,6 +778,21 @@ pub mod state_cache {
         }
         list.push((key, stamp, out.clone()));
         Ok(out)
+    }
+
+    /// Every ref with its object (`for-each-ref`), reused while `stamp` is unchanged.
+    pub fn refs_listing(repo: &Path, stamp: Option<Stamp>) -> GitResult<String> {
+        let args = ["for-each-ref", "--format=%(refname)%00%(objectname)"];
+        remembered(repo, "refs", &args, stamp, || runner::run_bytes(repo, args)).map(|out| String::from_utf8_lossy(&out).into_owned())
+    }
+
+    /// [`refs_listing`] with the stamp of `repo`'s ref files.
+    pub fn current_refs(repo: &Path) -> GitResult<String> {
+        let stamp = super::super::repo::git_dir(repo).ok().and_then(|gd| {
+            let common = super::super::graph::common_dir(repo).unwrap_or_else(|| gd.clone());
+            refs_stamp(&gd, &common)
+        });
+        refs_listing(repo, stamp)
     }
 
     /// Forgets every remembered output (tests that count Git processes).

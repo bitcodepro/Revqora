@@ -272,7 +272,8 @@ export const api = {
 
   repositoryBranchNames: (repo: string) => call<string[]>("repository_branch_names", { repo }),
   refs: (repo: string) => call<RefsSnapshot>("refs_snapshot", { repo }),
-  fetchBackground: (repo: string) => call<string>("fetch_background", { repo }),
+  /** `refsChanged` false: no ref moved, appeared or disappeared, so nothing new needs reading. */
+  fetchBackground: (repo: string) => call<{ output: string; refsChanged: boolean }>("fetch_background", { repo }),
   /** Cancels one Fetch, Pull or Push by its operation id, running or still queued; true when a running transfer was stopped. */
   cancelTransfer: (opId: string) => call<boolean>("cancel_transfer", { opId }),
   /** Tags that moved on the server; the last fetch kept the local versions. */

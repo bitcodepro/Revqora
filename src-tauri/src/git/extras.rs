@@ -155,9 +155,17 @@ pub fn parse_worktrees(raw: &str, current: &Path) -> Vec<Worktree> {
         .collect()
 }
 
+/// Every worktree. Each refresh asks for them, and they rarely change: the list is reused
+/// while no ref, worktree record or worktree location changed (see `worktrees_stamp`).
 pub fn worktrees(repo: &Path) -> GitResult<Vec<Worktree>> {
-    let raw = runner::run(repo, ["worktree", "list", "--porcelain", "-z"])?;
-    Ok(parse_worktrees(&raw, repo))
+    use super::operations::state_cache;
+    let args = ["worktree", "list", "--porcelain", "-z"];
+    let stamp = repo::git_dir(repo).ok().and_then(|gd| {
+        let common = super::graph::common_dir(repo).unwrap_or_else(|| gd.clone());
+        state_cache::worktrees_stamp(&gd, &common)
+    });
+    let raw = state_cache::remembered(repo, "worktrees", &args, stamp, || runner::run_bytes(repo, args))?;
+    Ok(parse_worktrees(&String::from_utf8_lossy(&raw), repo))
 }
 
 /// Adds a worktree at `path`: checks out `branch`, or creates `new_branch` from `start`.

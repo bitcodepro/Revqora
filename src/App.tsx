@@ -268,10 +268,12 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
 
 const quietFetch = createAutoFetch({
   fetch: defaultFetch,
-  refresh: (root) => {
+  refresh: async (root, changed) => {
     // A repository that is not open only needs its incoming and outgoing counts.
-    if (!useRepos.getState().tabs[root]) return scanRepositoryTracking([root]);
+    if (!useRepos.getState().tabs[root]) return changed ? scanRepositoryTracking([root]) : undefined;
     useRepos.getState().patch(root, { lastFetchedAt: Date.now(), fetchError: null });
+    // Most automatic fetches bring nothing: then branches, counts and history are as shown.
+    if (!changed) return;
     return useRepos.getState().refresh(root, { background: true, revalidate: true, info: true, status: true, refs: true });
   },
   failed: (root, e) => { if (useRepos.getState().tabs[root]) useRepos.getState().patch(root, { fetchError: errorMessage(e) }); },
