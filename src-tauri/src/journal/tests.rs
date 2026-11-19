@@ -373,6 +373,8 @@ fn precondition_reads_on_helper_threads_stay_in_the_operation_entry() {
     let f = Fixture::new();
     fs::write(f.root.join("file.txt"), "content\n").unwrap();
     let token = crate::git::status::status(&f.root).unwrap().state_token.unwrap();
+    // Unchanged index and refs are answered from memory; this test needs the Git processes.
+    operations::state_cache::forget();
     let op = f.log.begin(&f.root, "stage").unwrap();
     let id = op.context.id.clone();
     op.phase("running", &f.root);

@@ -7,12 +7,29 @@ import type { RefsSnapshot } from "./types";
 type BranchRead = { refs: RefsSnapshot } | { error: string };
 const reads = repositoryQueue();
 const inFlight = new Map<string, Promise<BranchRead>>();
+// Branches of closed repositories read for an Explorer search or filter. Typing, clearing and
+// typing again reuses them for a short while instead of reading every repository again.
+const recent = new Map<string, { at: number; read: BranchRead }>();
+const RECENT_MS = 20_000;
+
+function recentRead(root: string): BranchRead | undefined {
+  const entry = recent.get(root);
+  if (entry && Date.now() - entry.at < RECENT_MS) return entry.read;
+  recent.delete(root);
+  return undefined;
+}
 
 function readClosedBranches(root: string) {
+  const known = recentRead(root);
+  if (known) return Promise.resolve(known);
   const pending = inFlight.get(root);
   if (pending) return pending;
   const result = reads.run(root, () => api.refs(root))
-    .then(refs => ({ refs }), error => ({ error: errorMessage(error) }))
+    .then((refs): BranchRead => ({ refs }), (error): BranchRead => ({ error: errorMessage(error) }))
+    .then(read => {
+      if ("refs" in read) recent.set(root, { at: Date.now(), read });
+      return read;
+    })
     .finally(() => inFlight.delete(root));
   inFlight.set(root, result);
   return result;
@@ -43,7 +60,10 @@ export function useExplorerBranchReads(roots: string[]) {
   useEffect(() => {
     let cancelled = false;
     const requested = JSON.parse(closedKey) as string[];
-    setClosed(current => Object.fromEntries(requested.filter(root => current[root]).map(root => [root, current[root]])));
+    setClosed(current => Object.fromEntries(requested.flatMap(root => {
+      const read = current[root] ?? recentRead(root);
+      return read ? [[root, read]] : [];
+    })));
     // Schedule only the next few reads. Closing Explorer or clearing a filter
     // drops the rest of the batch before it reaches Git.
     let next = 0;

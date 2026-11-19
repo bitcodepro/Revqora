@@ -98,6 +98,7 @@ export function repositoryGitChanged(root: string): void {
 }
 
 const FOCUS_INTERVAL_MS = 10_000;
+const FOCUS_AWAY_MS = 30_000;
 const FIRST_SWEEP_MAX_DELAY_MS = 4_000;
 let stop: (() => void) | null = null;
 
@@ -140,19 +141,26 @@ export function startRepositoryTracking(): () => void {
     if (closed.length) scanClosed(closed);
     if (added.length || changed.length) void scanRepositoryTracking([...added, ...changed]);
   });
-  let lastFocus = Date.now();
+  let lastFocus = Date.now(), blurredAt: number | null = null;
+  // Reads every closed repository: only after the user was away long enough to have worked in
+  // other tools, not when focus returns from a dialog, a detached panel or a quick switch.
+  const onBlur = () => { blurredAt = Date.now(); };
   const onFocus = () => {
-    if (Date.now() - lastFocus < FOCUS_INTERVAL_MS) return;
+    const away = blurredAt === null ? 0 : Date.now() - blurredAt;
+    blurredAt = null;
+    if (away < FOCUS_AWAY_MS || Date.now() - lastFocus < FOCUS_INTERVAL_MS) return;
     lastFocus = Date.now();
     const tabs = useRepos.getState().tabs;
     scanClosed(all().filter(root => !repositorySidebarStatus(tabs[root])));
   };
+  window.addEventListener("blur", onBlur);
   window.addEventListener("focus", onFocus);
   stop = () => {
     window.clearTimeout(sweepTimer);
     unsubscribeShown();
     unsubscribeLibrary();
     unsubscribeRepos();
+    window.removeEventListener("blur", onBlur);
     window.removeEventListener("focus", onFocus);
     stop = null;
   };

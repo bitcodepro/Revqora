@@ -44,7 +44,9 @@ pub fn schedule(repo: &Path, force: bool) {
     if std::env::var_os("REVQORA_NO_AUTO_OPTIMIZE").is_some() {
         return;
     }
-    let key = repo.to_path_buf();
+    // Worktrees of one repository share its refs and objects: one slot for all of them.
+    let key = super::graph::common_dir(repo).unwrap_or_else(|| repo.to_path_buf());
+    let repo = repo.to_path_buf();
     {
         let mut map = slots().lock().unwrap_or_else(|e| e.into_inner());
         let slot = map.entry(key.clone()).or_default();
@@ -53,10 +55,11 @@ pub fn schedule(repo: &Path, force: bool) {
         }
         slot.running = true;
     }
+    let slot_key = key.clone();
     let spawned = std::thread::Builder::new().name("revqora-optimize".into()).spawn(move || {
         std::thread::sleep(SETTLE);
         let previous = slots().lock().unwrap_or_else(|e| e.into_inner()).get(&key).and_then(|s| s.graph_refs);
-        let written = runner::in_background(|| run(&key, previous));
+        let written = runner::in_background(|| run(&repo, previous));
         let mut map = slots().lock().unwrap_or_else(|e| e.into_inner());
         let slot = map.entry(key).or_default();
         slot.running = false;
@@ -67,7 +70,7 @@ pub fn schedule(repo: &Path, force: bool) {
     });
     if spawned.is_err() {
         let mut map = slots().lock().unwrap_or_else(|e| e.into_inner());
-        map.entry(repo.to_path_buf()).or_default().running = false;
+        map.entry(slot_key).or_default().running = false;
     }
 }
 
@@ -102,7 +105,11 @@ pub fn run(repo: &Path, previous: Option<Fingerprint>) -> Option<Fingerprint> {
     let config = runner::run(repo, ["config", "--get-regexp", r"^(gc\.auto|gc\.packrefs|gc\.writecommitgraph|core\.commitgraph)$"]).unwrap_or_default();
     let loose = count_loose_refs(&common.join("refs"), LOOSE_REF_LIMIT + 1);
     let fingerprint = ref_fingerprint(&common);
-    let plan = plan(&config, loose, super::graph::has_commit_graph(repo), fingerprint, previous);
+    let has_graph = super::graph::has_commit_graph(repo);
+    // First check in this process: a commit-graph written after every ref last changed is
+    // current, so a launch does not rewrite it for each repository.
+    let previous = previous.or_else(|| (has_graph && graph_newer_than_refs(&common)).then_some(fingerprint));
+    let plan = plan(&config, loose, has_graph, fingerprint, previous);
     if plan.pack_refs {
         let _ = runner::run(repo, ["pack-refs", "--all"]);
     }
@@ -134,6 +141,28 @@ fn count_loose_refs(dir: &Path, stop: usize) -> usize {
         }
     }
     count
+}
+
+/// Whether the commit-graph (single file or chain) is at least as new as every ref file.
+fn graph_newer_than_refs(common: &Path) -> bool {
+    let info = common.join("objects").join("info");
+    let modified = |path: &Path| std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+    let Some(graph) = modified(&info.join("commit-graphs").join("commit-graph-chain")).or_else(|| modified(&info.join("commit-graph"))) else {
+        return false;
+    };
+    let mut newest = modified(&common.join("packed-refs"));
+    let mut stack = vec![common.join("refs")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { return false };
+        for entry in entries.flatten() {
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(entry.path()),
+                Ok(_) => newest = newest.max(modified(&entry.path())),
+                Err(_) => return false,
+            }
+        }
+    }
+    newest.is_none_or(|refs| graph >= refs)
 }
 
 /// Ref fingerprint: a hash of every loose ref file (path, size, modification time) and HEAD,

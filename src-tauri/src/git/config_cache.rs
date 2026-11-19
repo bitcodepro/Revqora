@@ -149,6 +149,18 @@ pub fn run(repo: &Path, args: &[&str]) -> GitResult<String> {
     Ok(out.text())
 }
 
+/// Forgets the answers of `repo` and of every repository that shares its configuration file
+/// (its other worktrees). Global and system files are watched by their stamps.
+pub fn clear_repository(repo: &Path) {
+    CLEARS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let Some(shared) = super::graph::common_dir(repo).map(|common| common.join("config")) else {
+        entries().lock().clear();
+        return;
+    };
+    // Every entry whose answers read this repository's configuration file.
+    entries().lock().retain(|path, entry| path != repo && !entry.files.contains(&shared));
+}
+
 /// Forgets remembered answers (after Revqora itself changes configuration).
 pub fn clear() {
     CLEARS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

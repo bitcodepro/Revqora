@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, CircleAlert, FolderGit2, FolderPlus, Pencil, Unlink, X } from "lucide-react";
 import type { CSSProperties, MouseEvent, PointerEvent } from "react";
-import { repositoryIncoming, repositoryOutgoing, repositorySidebarStatus, useRepos, type RepoTab } from "../lib/store";
+import { repositoryIncoming, repositoryOutgoing, repositorySidebarStatus, useRepos, type ListedTab } from "../lib/store";
 import { changesOf, trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
 import { contextMenu } from "../lib/ui";
 import { bindingFor, matchesShortcut, prettyCombo } from "../lib/shortcuts";
@@ -33,7 +33,7 @@ export const matchesGroupShortcut = (e: React.KeyboardEvent) => !e.repeat &&
   ["group-create", "repo-remove-group", "repo-remove-all-groups"].some(id => matchesShortcut(e, id));
 
 export function RepositoryNavigationRow({ root, name, tab, current, selected, selection, groupId, createGroup, onClick, onPointerDown, onSelectionKeyDown, depth, explorer }:
-  { root: string; name: string; tab?: RepoTab; current: boolean; selected: boolean; selection: string[]; groupId?: string;
+  { root: string; name: string; tab?: ListedTab; current: boolean; selected: boolean; selection: string[]; groupId?: string;
     createGroup: () => void; onClick: (event: MouseEvent<HTMLButtonElement>) => void;
     onPointerDown: (event: PointerEvent<HTMLButtonElement>) => void; onSelectionKeyDown?: (event: React.KeyboardEvent) => void; depth?: number;
     explorer?: { id: string; focused: boolean; expanded: boolean; toggle: () => void; remove: () => void } }) {

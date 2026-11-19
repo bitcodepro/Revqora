@@ -10,7 +10,7 @@ import { selectExplorerBranches } from "../lib/explorerBranches";
 import type { BranchInfo, RefsSnapshot } from "../lib/types";
 import { basename } from "../lib/format";
 import { useSettings } from "../lib/settings";
-import { repositoryHasChanges, repositoryIncoming, repositoryOutgoing, shownHistoryBranch, useRepos } from "../lib/store";
+import { repositoryHasChanges, repositoryIncoming, repositoryOutgoing, shownHistoryBranch, useListedTabs, useRepos } from "../lib/store";
 import { changesOf, trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
 import { contextMenu, toast, useUi, type MenuItem } from "../lib/ui";
 import { bindingFor, matchesShortcut, prettyCombo } from "../lib/shortcuts";
@@ -67,7 +67,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const groups = useLibrary(s => s.groups), known = useLibrary(s => s.knownRoots);
   const activeGroup = useLibrary(s => s.activeGroupId), names = useLibrary(s => s.repositoryNames);
   const favorites = useLibrary(s => s.favorites), explorerOrder = useLibrary(s => s.explorerOrder);
-  const order = useRepos(s => s.order), tabs = useRepos(s => s.tabs), active = useRepos(s => s.active);
+  const order = useRepos(s => s.order), tabs = useListedTabs(), active = useRepos(s => s.active);
   const overview = useUi(s => s.repositoryOverview);
   const reveal = useUi(s => s.explorerReveal);
   const favoritesOnly = useSettings(s => s.explorerFavoritesOnly);

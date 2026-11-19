@@ -1687,7 +1687,11 @@ async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expe
             GitError::new("Another operation is running in this repository. Automatic fetch will try again at the next interval.").kind("repository-busy")
         );
     }
-    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_background", None, move || ops::fetch_background(&p(&repo))).await
+    // Below-normal priority, and stopped as soon as the user starts an operation here.
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_background", None, move || {
+        git::runner::in_background(|| git::operations::yielding(&p(&repo), || ops::fetch_background(&p(&repo))))
+    })
+    .await
 }
 
 /// Cancels the Fetch, Pull, Push or Push tag with operation id `op_id`, running or still queued. Runs at

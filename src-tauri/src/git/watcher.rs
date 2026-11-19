@@ -105,6 +105,73 @@ fn owned_paths(root: &Path, git_dir: &Path) -> Vec<PathBuf> {
     ignored
 }
 
+/// Folders of the working tree that Git ignores and that hold no tracked file (build output,
+/// logs, caches beyond the fixed list in `classify`). A change inside them cannot change the
+/// status, so it does not start a refresh. Answers are kept until a `.gitignore` or
+/// `info/exclude` changes; only the top folders (three levels) are checked.
+struct QuietFolders {
+    root: PathBuf,
+    known: std::collections::HashMap<String, bool>,
+}
+
+impl QuietFolders {
+    const DEPTH: usize = 3;
+
+    fn new(root: &Path) -> Self {
+        QuietFolders { root: root.to_path_buf(), known: Default::default() }
+    }
+
+    fn forget(&mut self) {
+        self.known.clear();
+    }
+
+    /// Whether the changed `path` lies in a quiet folder.
+    fn contains(&mut self, path: &Path) -> bool {
+        let Ok(rel) = path.strip_prefix(&self.root) else { return false };
+        let parts: Vec<String> = rel.parent().map(|dir| dir.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        let folders: Vec<String> = (1..=parts.len().min(Self::DEPTH)).map(|n| parts[..n].join("/")).collect();
+        let unknown: Vec<String> = folders.iter().filter(|f| !self.known.contains_key(*f)).cloned().collect();
+        if !unknown.is_empty() {
+            self.learn(&unknown);
+        }
+        folders.iter().any(|f| self.known.get(f).copied().unwrap_or(false))
+    }
+
+    fn learn(&mut self, folders: &[String]) {
+        for folder in folders {
+            self.known.insert(folder.clone(), false);
+        }
+        let input: Vec<u8> = folders.iter().flat_map(|f| format!("{f}/\0").into_bytes()).collect();
+        let Ok(out) = super::runner::exec_full(&self.root, ["check-ignore", "-z", "--stdin"], &[], Some(&input)) else { return };
+        if out.code > 1 {
+            return;
+        }
+        let ignored: Vec<String> =
+            out.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).trim_end_matches('/').to_owned()).collect();
+        if ignored.is_empty() {
+            return;
+        }
+        // An ignored folder can still hold tracked files, whose changes matter.
+        let mut args = vec!["ls-files".to_owned(), "-z".to_owned(), "--cached".to_owned(), "--".to_owned()];
+        args.extend(ignored.iter().map(|f| format!(":(literal){f}/")));
+        let Ok(tracked) = super::runner::exec_full(&self.root, &args, &[], None) else { return };
+        if !tracked.ok() {
+            return;
+        }
+        let tracked: Vec<String> = tracked.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect();
+        for folder in ignored {
+            let prefix = format!("{folder}/");
+            let quiet = !tracked.iter().any(|path| path.starts_with(&prefix));
+            self.known.insert(folder, quiet);
+        }
+    }
+}
+
+/// Whether `path` changes which files Git ignores.
+fn changes_ignore_rules(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == ".gitignore") || path.ends_with("info/exclude")
+}
+
 /// Milliseconds since the Unix epoch (the UI compares it with `Date.now()`).
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -116,6 +183,7 @@ where
     E: FnOnce() + Send + 'static,
 {
     let ignored = owned_paths(&root, &git_dir);
+    let mut quiet = QuietFolders::new(&root);
     let common = super::operations::repository_key(&root);
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher = notify::recommended_watcher(move |res| {
@@ -178,12 +246,15 @@ where
                 Ok(Ok(ev)) if !matches!(ev.kind, notify::EventKind::Access(_)) => {
                     let mut relevant = false;
                     for p in &ev.paths {
+                        if changes_ignore_rules(p) {
+                            quiet.forget();
+                        }
                         // Shared refs/config/stash live outside a linked worktree's git dir.
                         let metadata = if p.starts_with(&git_dir) { &git_dir } else { &common };
                         match classify_owned(&root, metadata, &ignored, p) {
                             Some(true) => (pending_git, relevant) = (true, true),
-                            Some(false) => (pending_wt, relevant) = (true, true),
-                            None => {}
+                            Some(false) if !quiet.contains(p) => (pending_wt, relevant) = (true, true),
+                            Some(false) | None => {}
                         }
                     }
                     if relevant {

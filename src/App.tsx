@@ -280,6 +280,9 @@ const quietFetch = createAutoFetch({
     || Object.values(useRepos.getState().tabs).some((t) => t.pendingMutations > 0),
 });
 
+/** Away from the window at least this long before focus reads the shown repository again. */
+const FOCUS_REFRESH_AFTER_MS = 3_000;
+
 /** Background fetches running at once (each waits on its own server). */
 const AUTO_FETCH_PARALLEL = 4;
 /** The first round starts shortly after launch instead of one interval later. */
@@ -319,9 +322,11 @@ function MainApp() {
     window.addEventListener("revqora:forge-accounts", resetPullRequestActivity);
     return () => window.removeEventListener("revqora:forge-accounts", resetPullRequestActivity);
   }, []);
-  const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
+  // Only what the shell itself needs: the active tab changes several times per refresh, and
+  // the shell (top bar, status bar, Explorer) must not re-render with it.
+  const activeView = useRepos((s) => (s.active ? s.tabs[s.active]?.view : undefined));
   const prAllRepositories = useSettings(s => s.prAllRepositories);
-  const combinedPulls = prAllRepositories && tab?.view === "pulls";
+  const combinedPulls = prAllRepositories && activeView === "pulls";
   const pending = useRepos((s) => Object.values(s.tabs).some((t) => t.pendingMutations > 0));
   const busy = useUi((s) => s.busy.length > 0 || s.repositoryOperations.some(op => op.command !== "fetch_background")) || pending;
   const [dropping, setDropping] = useState(false);
@@ -331,15 +336,10 @@ function MainApp() {
   if (!startup.current) startup.current = createStartupBarrier(setStartupPhase, error => toast.error(error, "Could not register repository opening"));
   const overview = useUi((s) => s.repositoryOverview);
   const historyMode = useSettings((s) => s.historyMode);
-  const layoutMode = workspaceMode(overview ? "overview" : tab?.view, historyMode);
+  const layoutMode = workspaceMode(overview ? "overview" : activeView, historyMode);
   const { layout } = useWorkspaceLayout(layoutMode);
   const { focusMode, repositoriesOpen } = layout;
   const explorerOpen = useSettings(s => s.explorerOpen);
-  const showMainChanges = (root: string, path?: string) => {
-    useUi.setState({ repositoryOverview: false });
-    useRepos.getState().patch(root, path ? { conflictPath: path, view: "changes", changeSel: { kind: "conflict", path } } : { view: "changes" });
-    window.focus();
-  };
 
   // Restore the tabs from the previous session.
   useLayoutEffect(() => {
@@ -381,10 +381,12 @@ function MainApp() {
     unsubs.push(listen<{ opId: string; line: string }>("op-progress", (e) => updateBusy(e.payload.opId, e.payload.line)));
     unsubs.push(listen<RepositoryOperation>("repository-operation", (e) => {
       updateRepositoryOperation(e.payload);
-      if ((e.payload.phase === "finished" || e.payload.phase === "failed") && !useRepos.getState().tabs[e.payload.repo]) {
-        // A repository that is not open (background fetch, an MCP client): update its counts.
+      if ((e.payload.phase === "finished" || e.payload.phase === "failed") && !useRepos.getState().tabs[e.payload.repo]
+        // Auto-fetch reads the counts of a repository that is not open itself (quietFetch).
+        && e.payload.command !== "fetch_background") {
+        // A repository that is not open (an MCP client): update its counts.
         void scanRepositoryTracking([e.payload.repo]);
-        if (e.payload.command !== "fetch_background") void scanRepositoryChanges([e.payload.repo]);
+        void scanRepositoryChanges([e.payload.repo]);
       }
       if (e.payload.command === "fetch_background") return;
       if (e.payload.phase === "finished" || e.payload.phase === "failed") {
@@ -423,19 +425,24 @@ function MainApp() {
   // Incoming and outgoing commits of the whole library, for the Explorer filters.
   useEffect(() => startRepositoryTracking(), []);
 
-  // Refresh when the window regains focus (changes made in other tools).
+  // Refresh when the window regains focus (changes made in other tools). The file watcher
+  // already reports those; this is the safety net for changes it cannot see. Parts read after
+  // the window lost focus are not read again, and a short switch (Alt+Tab and back) reads nothing.
   useEffect(() => {
-    let last = 0;
+    let last = 0, blurredAt: number | null = null;
+    const onBlur = () => { blurredAt = Date.now(); };
     const onFocus = () => {
-      const now = Date.now();
-      if (now - last < 1500) return;
+      const now = Date.now(), since = blurredAt;
+      blurredAt = null;
+      if (since === null || now - since < FOCUS_REFRESH_AFTER_MS || now - last < 1500) return;
       last = now;
       const a = useRepos.getState().active;
       // Background revalidation: commit previews stay, nothing flashes; real changes still update.
-      if (a) useRepos.getState().refresh(a, { info: true, status: true, refs: true, layers: true, background: true, revalidate: true });
+      if (a) useRepos.getState().refresh(a, { info: true, status: true, refs: true, layers: true, background: true, revalidate: true }, { since });
     };
+    window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    return () => { window.removeEventListener("blur", onBlur); window.removeEventListener("focus", onFocus); };
   }, []);
 
   // Global shortcuts (rebindable in Settings).
@@ -584,9 +591,9 @@ function MainApp() {
       <TopBar />
       <ActivityIndicator active={busy} />
       <div className="app-body">
-        {explorerOpen && !focusMode && !panels.explorer && <RepositoryExplorer onClose={() => useSettings.getState().set({ explorerOpen: false })}/>}
+        {explorerOpen && !focusMode && !panels.explorer && <RepositoryExplorer onClose={closeExplorer}/>}
         <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode}>{!panels.repositories && <RepositorySidebar />}</div>
-        <div className="workspace-host">{overview ? <RepositoryOverview /> : tab ? <RepositoryContent key={combinedPulls ? "all-pull-requests" : tab.root} tab={tab} combinedPulls={combinedPulls} /> : <Welcome />}</div>
+        <div className="workspace-host">{overview ? <RepositoryOverview /> : <ActiveRepositoryContent combinedPulls={combinedPulls} />}</div>
       </div>
       <StatusBar />
       <ContextMenuHost />
@@ -599,12 +606,35 @@ function MainApp() {
       {dropping && <div className="drop-hint">Drop a folder to open it</div>}
       <DetachedPanel id="explorer"><RepositoryExplorer onClose={() => attach("explorer")}/></DetachedPanel>
       <DetachedPanel id="repositories"><RepositorySidebar/></DetachedPanel>
-      <DetachedPanel id="branches">{tab?.info && <Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/>}</DetachedPanel>
-      <DetachedPanel id="history">{tab?.info && <GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/>}</DetachedPanel>
-      <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <CommitDetails key={tab.root} root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/> : null}</DetachedPanel>
-      <DetachedPanel id="pulls">{tab && (tab.info || prAllRepositories) && <Suspense fallback={null}><PullRequestsView key={prAllRepositories ? "all-pull-requests" : tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/></Suspense>}</DetachedPanel>
-      <DetachedPanel id="changes">{tab?.info && <ChangesView key={tab.root} tab={tab} onOpenConflict={path => showMainChanges(tab.root, path)}/>}</DetachedPanel>
-      <DetachedPanel id="worktrees">{tab?.info && <Suspense fallback={null}><WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/></Suspense>}</DetachedPanel>
+      <ActiveRepositoryPanels attach={attach} prAllRepositories={prAllRepositories} />
     </div></WorkspaceLayoutContext.Provider>
   );
+}
+
+const closeExplorer = () => useSettings.getState().set({ explorerOpen: false });
+
+function showMainChanges(root: string, path?: string) {
+  useUi.setState({ repositoryOverview: false });
+  useRepos.getState().patch(root, path ? { conflictPath: path, view: "changes", changeSel: { kind: "conflict", path } } : { view: "changes" });
+  window.focus();
+}
+
+/** The shown repository's workspace: the only part of the main window that follows every
+ *  change of the active tab. */
+function ActiveRepositoryContent({ combinedPulls }: { combinedPulls: boolean }) {
+  const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
+  return tab ? <RepositoryContent key={combinedPulls ? "all-pull-requests" : tab.root} tab={tab} combinedPulls={combinedPulls} /> : <Welcome />;
+}
+
+/** Panels of the shown repository that were moved to their own windows. */
+function ActiveRepositoryPanels({ attach, prAllRepositories }: { attach: (id: PanelId) => void; prAllRepositories: boolean }) {
+  const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
+  return <>
+    <DetachedPanel id="branches">{tab?.info && <Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/>}</DetachedPanel>
+    <DetachedPanel id="history">{tab?.info && <GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/>}</DetachedPanel>
+    <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <CommitDetails key={tab.root} root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/> : null}</DetachedPanel>
+    <DetachedPanel id="pulls">{tab && (tab.info || prAllRepositories) && <Suspense fallback={null}><PullRequestsView key={prAllRepositories ? "all-pull-requests" : tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/></Suspense>}</DetachedPanel>
+    <DetachedPanel id="changes">{tab?.info && <ChangesView key={tab.root} tab={tab} onOpenConflict={path => showMainChanges(tab.root, path)}/>}</DetachedPanel>
+    <DetachedPanel id="worktrees">{tab?.info && <Suspense fallback={null}><WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/></Suspense>}</DetachedPanel>
+  </>;
 }
