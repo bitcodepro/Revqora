@@ -4,17 +4,22 @@ This walkthrough uses `main` as the shared branch and `feature/login` as your wo
 
 ## 1. Install and open Revqora
 
-Install system Git, then download and extract the appropriate [Revqora release](https://github.com/bitcodepro/Revqora/releases). On Windows, run `revqora.exe` from the extracted folder, not from inside the ZIP. Use a writable folder and keep the package files together.
+Install system Git, then download the appropriate [Revqora release](https://github.com/bitcodepro/Revqora/releases). On Windows, use the per-user installer or extract the portable ZIP. For the ZIP, run `revqora.exe` from the extracted folder, not from inside the ZIP. Use a writable folder and keep the package files together.
 
 Revqora needs Git 2.30 or newer. Advanced history, stage-layer and restack operations need Git 2.40 or newer. Windows also needs WebView2 Runtime. If Git is missing, open **Settings → Detect again** after installing it.
 
 | Platform | Package and launch |
 | --- | --- |
-| Windows x64 | Extract `win-x64.zip` and open `revqora.exe`. |
+| Windows x64 | Run `win-x64-setup.exe` for a per-user installation and shortcuts, or extract the portable `win-x64.zip` and open `revqora.exe`. |
 | Linux x64 / ARM64 | Extract the matching `.tar.gz` and run `./revqora`. WebKitGTK 4.1 and the platform GTK/system libraries are required; the package is not an AppImage. |
 | macOS Intel / Apple Silicon | Extract the matching archive and open `Revqora.app`. Packages are ad-hoc signed, not notarized. |
 
 ## 2. Open or clone your repository
+
+The Windows installer and ZIP are unsigned; Windows may show a download or SmartScreen warning.
+The installer uses the existing per-user NSIS setup and folder context-menu integration.
+It does not import data from another portable copy. Application data still lives in `data`
+beside the executable, and in-app updates still use the ZIP. Back up `data` before uninstalling.
 
 - Already have a local folder? Press **Ctrl+O** and select it.
 - Have only a remote URL? Press **Ctrl+N**, search **Clone repository…**, and choose a destination folder.

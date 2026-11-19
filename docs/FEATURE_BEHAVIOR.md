@@ -99,6 +99,9 @@ Before opening or updating a PR:
 
 ## MCP and portable updates
 
+- [ ] Windows releases offer both the unchanged portable ZIP and a per-user NSIS `win-x64-setup.exe` installer, each with a SHA-256 checksum. The installer includes the same executable, README, notices, licenses and source manifest, creates shortcuts and the existing Open in Revqora folder context menu. No signing certificate is introduced; unsigned-download warnings may appear. No Git is bundled.
+- [ ] Installed Windows copies still keep application data beside the executable. In-app updates continue to use the portable ZIP and preserve `data`; installation does not migrate another portable copy's data. Before uninstalling, back up `data` and do not opt into removing application data if it should be kept.
+
 - [ ] MCP read results and errors distinguish completeness and failures. Confirmable actions respect the configured approval mode, report their final outcome and preserve repository state on cancellation.
 - [ ] MCP `create_pr` with approval opens the PR editor filled with the requested title, source and target branches, description and draft setting, and reports the created PR or the cancellation. `review_pr` with a review kind shows the kind and the complete message (scrollable, never cut) in the approval and submits exactly that review. `merge_pr` on Bitbucket Cloud is refused before any approval. Push and fetch results leave out Git's progress lines.
 - [ ] Update packages verify the checksum, release version and platform before replacing files. On Windows the helper waits for the exact desktop process to exit. A failed installation identifies the operation and path and rolls back changed files. If rollback fails, preserve its backup. Verify that the portable data directory and repositories survive.

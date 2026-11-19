@@ -378,7 +378,9 @@ jobs:
           pattern: Revqora-*
           path: dist/packages
           merge-multiple: true
-      - name: Check all five archive/checksum pairs
+      - name: Install installer inspection tool
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends 7zip
+      - name: Check five archives and Windows installer with checksums
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: python scripts/release.py verify --directory dist/packages --version "$VERSION" --commit "$GITHUB_SHA"
@@ -410,6 +412,8 @@ jobs:
           pattern: Revqora-*
           path: dist/packages
           merge-multiple: true
+      - name: Install installer inspection tool
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends 7zip
       - name: Verify packages, reserve immutable tag, upload draft and publish
         env:
           GH_TOKEN: ${{ github.token }}
