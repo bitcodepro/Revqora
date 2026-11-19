@@ -602,6 +602,19 @@ fn git_selection() -> Option<git::locate::GitSelection> {
     git::locate::selection()
 }
 
+/// Version of the Git Credential Manager in use, if any (checked once per selected Git).
+/// `revqoraToken` says that Revqora answers this repository's sign-in itself, before GCM.
+#[tauri::command]
+async fn credential_manager(repo: Option<String>) -> GitResult<Option<git::locate::CredentialManager>> {
+    blocking(move || {
+        Ok(git::locate::credential_manager().map(|mut gcm| {
+            gcm.revqora_token = repo.is_some_and(|repo| git_credentials::remembers(&p(&repo)));
+            gcm
+        }))
+    })
+    .await
+}
+
 /// Looks for git again (after the user installed or updated it).
 #[tauri::command]
 async fn git_configure(state: State<'_, AppState>) -> GitResult<git::locate::GitSelection> {
@@ -1568,7 +1581,7 @@ async fn fetch(
     op_id: String,
 ) -> GitResult<String> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch", Some(op_id.clone()), move || {
-        ops::fetch(&p(&repo), remote.as_deref(), prune, progress(&app, &op_id))
+        git::runner::transfers::for_operation(&op_id, || ops::fetch(&p(&repo), remote.as_deref(), prune, progress(&app, &op_id)))
     })
     .await
 }
@@ -1672,6 +1685,35 @@ async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expe
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_background", None, move || ops::fetch_background(&p(&repo))).await
 }
 
+/// Cancels the Fetch, Pull, Push or Push tag with operation id `op_id`, running or still queued. Runs at
+/// once (never queued behind the operation it stops). Other operations are not touched.
+/// Returns whether a running transfer was stopped.
+#[tauri::command]
+fn cancel_transfer(op_id: String) -> bool {
+    git::runner::transfers::cancel(&op_id)
+}
+
+/// Tags that moved on the server after a fetch; the local versions were kept.
+#[tauri::command]
+fn moved_tags(repo: String) -> GitResult<Vec<String>> {
+    ops::moved_tags(&p(&repo))
+}
+
+/// Replaces the moved tags with the server's versions.
+#[tauri::command]
+async fn update_moved_tags(recovery_consent: Option<String>, expected_state: Option<String>, app: AppHandle, repo: String, op_id: String) -> GitResult<String> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "update_moved_tags", Some(op_id.clone()), move || {
+        git::runner::transfers::for_operation(&op_id, || ops::update_moved_tags(&p(&repo), progress(&app, &op_id)))
+    })
+    .await
+}
+
+/// Forget saved login for a remote's address (after a failed sign-in, to use another account).
+#[tauri::command]
+async fn forget_saved_login(repo: String, remote: String) -> GitResult<()> {
+    blocking(move || ops::forget_saved_login(&p(&repo), &remote)).await
+}
+
 #[tauri::command]
 async fn pull(
     recovery_consent: Option<String>,
@@ -1683,7 +1725,7 @@ async fn pull(
     prune_remote: Option<bool>,
 ) -> GitResult<ops::PullOutcome> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || {
-        ops::pull_with_prune(&p(&repo), &mode, prune_remote.unwrap_or(true), progress(&app, &op_id))
+        git::runner::transfers::for_operation(&op_id, || ops::pull_with_prune(&p(&repo), &mode, prune_remote.unwrap_or(true), progress(&app, &op_id)))
     })
     .await
 }
@@ -1698,7 +1740,7 @@ async fn push(
     op_id: String,
 ) -> GitResult<String> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "push", Some(op_id.clone()), move || {
-        ops::push(&p(&repo), &opts, progress(&app, &op_id))
+        git::runner::transfers::for_operation(&op_id, || ops::push(&p(&repo), &opts, progress(&app, &op_id)))
     })
     .await
 }
@@ -1714,7 +1756,7 @@ async fn push_ref(
     op_id: String,
 ) -> GitResult<String> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "push_ref", Some(op_id.clone()), move || {
-        ops::push_ref(&p(&repo), &remote, &refspec, progress(&app, &op_id))
+        git::runner::transfers::for_operation(&op_id, || ops::push_ref(&p(&repo), &remote, &refspec, progress(&app, &op_id)))
     })
     .await
 }
@@ -3522,6 +3564,11 @@ pub fn run() {
             refs_snapshot,
             repository_branch_names,
             fetch_background,
+            cancel_transfer,
+            credential_manager,
+            moved_tags,
+            update_moved_tags,
+            forget_saved_login,
             squash_merged,
             branch_details,
             checkout,

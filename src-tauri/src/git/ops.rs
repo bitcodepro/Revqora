@@ -56,8 +56,20 @@ fn with_paths(repo: &Path, args: &[&str], paths: &[String]) -> GitResult<String>
     runner::run_env(repo, &a, &[("GIT_LITERAL_PATHSPECS", "1")], Some(&nul_join(paths)))
 }
 
+/// Paths with unmerged index entries, in index order. One `ls-files` instead of a full status
+/// (status, index and reference reads), which every merge used to run, fast-forwards included.
 fn conflicted(repo: &Path) -> Vec<String> {
-    status::status(repo).map(|s| s.files.into_iter().filter(|f| f.conflict.is_some()).map(|f| f.path).collect()).unwrap_or_default()
+    let Ok(raw) = runner::run_bytes(repo, ["ls-files", "--unmerged", "-z"]) else { return Vec::new() };
+    let mut paths: Vec<String> = Vec::new();
+    for entry in raw.split(|&b| b == 0) {
+        if let Some(tab) = entry.iter().position(|&b| b == b'\t') {
+            let path = String::from_utf8_lossy(&entry[tab + 1..]).into_owned();
+            if paths.last() != Some(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
 }
 
 fn head_oid(repo: &Path) -> Option<String> {
@@ -533,11 +545,194 @@ pub fn fetch(repo: &Path, remote: Option<&str>, prune: bool, on_line: impl FnMut
     }
     args.extend(prune_args(repo, remote, prune)?);
     args.push("--tags".into());
-    let out = runner::run_streaming(repo, &args, &LOG_TRACKING, on_line)?;
+    let out = settle_fetch(repo, remote, runner::run_streaming(repo, &args, &LOG_TRACKING, on_line))?;
     if prune {
         prune_tracking_separately(repo, remote, &LOG_TRACKING, None)?;
     }
+    repair_remote_heads(repo, remote, &out);
     Ok(out)
+}
+
+/// Turns what Git reported into the fetch's result.
+///
+/// * A tag that moved on the server makes Git fail the whole fetch ("would clobber existing
+///   tag"), although every branch was fetched. Every later fetch failed the same way. The fetch
+///   now succeeds, keeps the local tag, and names the tag (see [`update_tags_from_remote`]).
+/// * When some remotes of a fetch of all remotes fail, the result names the ones that were
+///   fetched and the ones that were not (kind `partial-fetch`) instead of one failure.
+fn settle_fetch(repo: &Path, remote: Option<&str>, result: GitResult<String>) -> GitResult<String> {
+    let (text, error) = match result {
+        Ok(out) => (out, None),
+        Err(error) if error.kind == "cancelled" => return Err(error),
+        Err(error) => (error.stderr.clone(), Some(error)),
+    };
+    let report = super::fetch_report::parse(&text);
+    let remotes = if report.clobbered.iter().any(|(_, from)| from.is_none()) || !report.failed.is_empty() { remotes_of(repo, remote)? } else { Vec::new() };
+    let only = remote.map(str::to_owned).or_else(|| (remotes.len() == 1).then(|| remotes[0].clone()));
+    let moved: Vec<(String, String)> =
+        report.clobbered.iter().filter_map(|(tag, from)| from.clone().or_else(|| only.clone()).map(|from| (tag.clone(), from))).collect();
+    // A fetch that failed outright (sign-in, network) says nothing about tags: keep the list.
+    if error.is_none() || report.trailing.is_none() {
+        super::fetch_report::record(repo, remote, &moved);
+    }
+    let with_notice = |mut text: String| {
+        if !moved.is_empty() {
+            if !text.ends_with('\n') && !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&super::fetch_report::notice(&moved));
+        }
+        text
+    };
+    let Some(error) = error else { return Ok(with_notice(text)) };
+    if report.failed.is_empty() && report.trailing.is_none() && !report.clobbered.is_empty() {
+        return Ok(with_notice(text));
+    }
+    if remote.is_none() && !report.failed.is_empty() && report.trailing.is_none() {
+        let fetched: Vec<&str> = remotes.iter().map(String::as_str).filter(|r| !report.failed.iter().any(|(failed, _)| failed == r)).collect();
+        if !fetched.is_empty() {
+            let failures: Vec<String> = report.failed.iter().map(|(name, problem)| format!("Could not fetch {name}: {problem}")).collect();
+            let mut partial = GitError::new(format!("Fetched {}. {}", fetched.join(", "), failures.join(" ")));
+            partial.kind = "partial-fetch".into();
+            partial.stderr = error.stderr;
+            partial.code = error.code;
+            partial.details = report.failed.iter().map(|(name, _)| name.clone()).collect();
+            return Err(partial);
+        }
+    }
+    Err(error)
+}
+
+/// Tags that moved on the server since they were fetched; the local versions were kept.
+pub fn moved_tags(repo: &Path) -> GitResult<Vec<String>> {
+    Ok(super::fetch_report::moved(repo).into_iter().map(|(tag, _)| tag).collect())
+}
+
+/// Replaces local tags with the server's versions (after [`moved_tags`] named them). The old
+/// targets stay in the tags' reflogs.
+pub fn update_tags_from_remote(repo: &Path, remote: &str, tags: &[String], on_line: impl FnMut(&str)) -> GitResult<String> {
+    if tags.is_empty() {
+        return Ok(String::new());
+    }
+    for tag in tags {
+        let valid = !tag.starts_with('-') && runner::exec(repo, ["check-ref-format", &format!("refs/tags/{tag}")])?.ok();
+        if !valid {
+            return Err(GitError::new(format!("{tag} is not a valid tag name.")).kind("invalid-argument"));
+        }
+    }
+    let specs: Vec<String> = tags.iter().map(|tag| format!("+refs/tags/{tag}:refs/tags/{tag}")).collect();
+    super::recovery::protect_transport(repo, false, Some(remote), None, false)?;
+    for spec in &specs {
+        super::recovery::protect_transport(repo, false, Some(remote), Some(spec), false)?;
+    }
+    let mut args: Vec<String> = ["fetch", "--progress", "--no-tags", "--no-prune", "--no-write-fetch-head", remote].map(String::from).to_vec();
+    args.extend(specs);
+    let env = [("GIT_CONFIG_COUNT", "1"), ("GIT_CONFIG_KEY_0", "core.logAllRefUpdates"), ("GIT_CONFIG_VALUE_0", "always")];
+    let out = runner::run_streaming(repo, &args, &env, on_line)?;
+    super::fetch_report::forget(repo, tags);
+    Ok(out)
+}
+
+/// Updates every moved tag from the remote that reported it.
+pub fn update_moved_tags(repo: &Path, mut on_line: impl FnMut(&str)) -> GitResult<String> {
+    let mut by_remote: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for (tag, remote) in super::fetch_report::moved(repo) {
+        by_remote.entry(remote).or_default().push(tag);
+    }
+    let mut out = String::new();
+    for (remote, tags) in by_remote {
+        out.push_str(&update_tags_from_remote(repo, &remote, &tags, &mut on_line)?);
+    }
+    Ok(out)
+}
+
+/// After the server deleted the branch its HEAD named (a renamed default branch, with prune),
+/// `refs/remotes/<remote>/HEAD` pointed nowhere. Point it at the server's current default
+/// branch. Only runs when the fetch deleted something. The ref changes only on the server's
+/// own answer: a failed query (network, sign-in) or a default branch that was not fetched
+/// leaves it as it was; it is removed only when the server answered and names no default
+/// branch (empty repository or detached HEAD).
+fn repair_remote_heads(repo: &Path, remote: Option<&str>, output: &str) {
+    if !output.contains("[deleted]") {
+        return;
+    }
+    let Ok(remotes) = remotes_of(repo, remote) else { return };
+    for name in remotes {
+        let head = format!("refs/remotes/{name}/HEAD");
+        let Ok(target) = runner::exec(repo, ["symbolic-ref", "-q", &head]) else { continue };
+        let target = target.text().trim().to_owned();
+        if target.is_empty() || runner::exec(repo, ["rev-parse", "--verify", "-q", &target]).is_ok_and(|out| out.ok()) {
+            continue;
+        }
+        let listing = match runner::exec(repo, ["ls-remote", "--symref", "--", &name, "HEAD"]) {
+            Ok(listing) if listing.ok() => listing.text(),
+            // No answer from the server is no evidence about its default branch.
+            _ => continue,
+        };
+        match listing.lines().find_map(|line| line.strip_prefix("ref: refs/heads/")?.strip_suffix("\tHEAD").map(str::to_owned)) {
+            Some(branch) => {
+                let tracking = format!("refs/remotes/{name}/{branch}");
+                if runner::exec(repo, ["rev-parse", "--verify", "-q", &tracking]).is_ok_and(|out| out.ok()) {
+                    let _ = runner::exec(repo, ["symbolic-ref", "-m", "Revqora: follow the remote's default branch", &head, &tracking]);
+                }
+            }
+            None => {
+                let _ = runner::exec(repo, ["symbolic-ref", "--delete", &head]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_failed_default_branch_query_keeps_the_remote_head() {
+    let fixture = tempfile::tempdir_in(crate::portable::temp_dir().unwrap()).unwrap();
+    let repo = fixture.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    runner::run(&repo, ["init", "-qb", "main"]).unwrap();
+    // The server cannot be reached (as after a network or sign-in failure).
+    let missing = fixture.path().join("missing.git");
+    runner::run(&repo, ["remote", "add", "origin", &missing.to_string_lossy()]).unwrap();
+    runner::run(&repo, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]).unwrap();
+    repair_remote_heads(&repo, Some("origin"), " - [deleted]         (none)     -> origin/main");
+    assert_eq!(runner::run(&repo, ["symbolic-ref", "refs/remotes/origin/HEAD"]).unwrap().trim(), "refs/remotes/origin/main");
+}
+
+/// Forget saved login: drops the saved sign-in for a remote's address from every configured
+/// credential helper (Git Credential Manager, the store, Revqora's own) by running
+/// `git credential reject`. A failed transfer never does this on its own (see
+/// `connection::guard_erase`); the user asks for it, for example to sign in with another account.
+pub fn forget_saved_login(repo: &Path, remote: &str) -> GitResult<()> {
+    if remote.starts_with('-') {
+        return Err(GitError::new("Choose a remote name that does not start with '-'.").kind("invalid-argument"));
+    }
+    let mut urls: Vec<String> = Vec::new();
+    for args in [["remote", "get-url", "--all", remote].as_slice(), ["remote", "get-url", "--push", "--all", remote].as_slice()] {
+        let out = runner::exec(repo, args)?;
+        if !out.ok() {
+            return Err(runner::to_error("git remote get-url", &out));
+        }
+        urls.extend(out.text().lines().map(str::trim).filter(|u| !u.is_empty()).map(str::to_owned));
+    }
+    urls.dedup();
+    let web: Vec<&String> = urls.iter().filter(|u| u.starts_with("https://") || u.starts_with("http://")).collect();
+    if web.is_empty() {
+        return Err(GitError::new(format!(
+            "{remote} does not use HTTPS, so there is no saved sign-in to forget. SSH keys are managed in Git connection settings."
+        ))
+        .kind("not-https"));
+    }
+    for url in web {
+        if url.contains(['\n', '\0']) {
+            continue;
+        }
+        let input = format!("url={url}\n\n");
+        let out = runner::exec_full(repo, ["credential", "reject"], &[], Some(input.as_bytes()))?;
+        if !out.ok() {
+            return Err(runner::to_error("git credential reject", &out));
+        }
+    }
+    Ok(())
 }
 
 pub fn is_shallow(repo: &Path) -> GitResult<bool> {
@@ -663,10 +858,12 @@ pub fn fetch_background_with_deadline(repo: &Path, timeout: std::time::Duration)
         || super::config_cache::run(repo, &["config", "--get", "core.sshCommand"]).map(|s| !s.trim().is_empty()).unwrap_or(false);
     let mut args: Vec<String> = ["fetch", "--all"].map(String::from).to_vec();
     args.extend(prune_args(repo, None, true)?);
-    args.extend(["--tags", "--quiet", "--no-write-fetch-head", "--no-auto-maintenance"].map(String::from));
+    // Not --quiet: it also hides the lines that name a moved tag or a failed remote, and the
+    // fetch then failed with only "exit code 1".
+    args.extend(["--tags", "--no-write-fetch-head", "--no-auto-maintenance"].map(String::from));
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let env = background_env(ssh_configured);
-    let out = runner::run_with_deadline(repo, &args, &env, timeout)?;
+    let out = settle_fetch(repo, None, runner::run_with_deadline(repo, &args, &env, timeout))?;
     prune_tracking_separately(repo, None, &env, Some(timeout))?;
     Ok(out)
 }
@@ -880,33 +1077,35 @@ fn name_autostash(repo: &Path, before: Option<&str>, name: &str) -> GitResult<()
 }
 
 fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
-    let before = status::status(repo)?;
+    // The status read already lists the index; compare that listing after the fetch.
+    let (before, index_before) = status::status_with_index(repo)?;
     let branch = before.branch.as_deref().ok_or_else(|| GitError::new("Choose a branch with an upstream before pulling."))?;
     let config_key = format!("branch.{branch}.merge");
-    let merges = runner::exec(repo, ["config", "--get-all", &config_key])?;
+    // Configuration answers are remembered between reads; `.git/config` is also part of
+    // the diff context token compared below.
+    let merges = super::config_cache::exec(repo, &["config", "--get-all", &config_key])?;
     let merge_text = merges.text();
     let configured: Vec<_> = merge_text.lines().filter(|s| !s.is_empty()).collect();
     if !merges.ok() || configured.len() != 1 {
         return Err(GitError::new("Configure one upstream for this branch before pulling."));
     }
     let remote_key = format!("branch.{branch}.remote");
-    let remote_config = runner::exec(repo, ["config", "--get", &remote_key])?;
+    let remote_config = super::config_cache::exec(repo, &["config", "--get", &remote_key])?;
     if !remote_config.ok() && remote_config.code != 1 {
         return Err(runner::to_error("git config branch remote", &remote_config));
     }
     let remote = if remote_config.ok() { remote_config.text() } else { "origin".into() };
     let remote = remote.trim();
     let prune = prune_remote && pull_can_prune(repo, remote)?;
-    let index_before = runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?;
     let unchanged = || -> GitResult<bool> {
-        let after = status::status(repo)?;
+        let (after, index_after) = status::status_with_index(repo)?;
         Ok(before.branch == after.branch
             && before.oid == after.oid
             && before.files == after.files
             && before.diff_context_token == after.diff_context_token
-            && runner::exec(repo, ["config", "--get-all", &config_key])?.text() == merge_text
-            && runner::exec(repo, ["config", "--get", &remote_key])?.text() == remote_config.text()
-            && index_before == runner::run_bytes(repo, ["ls-files", "--stage", "-v", "-z"])?)
+            && super::config_cache::exec(repo, &["config", "--get-all", &config_key])?.text() == merge_text
+            && super::config_cache::exec(repo, &["config", "--get", &remote_key])?.text() == remote_config.text()
+            && index_before == index_after)
     };
     let fork_point = if mode == "rebase" && before.oid.is_some() {
         let point = runner::exec(repo, ["merge-base", "--fork-point", "@{upstream}", "HEAD"])?;
@@ -1034,7 +1233,16 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
             }
         }
     } else {
-        merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, true)?
+        merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, true).map_err(|mut error| {
+            if error.kind == "diverged" {
+                // Git's own text is a hint list about pull.rebase configuration.
+                error.message = format!(
+                    "Your branch and {remote}/{} have diverged, so a fast-forward is not possible. Pull with merge or rebase.",
+                    configured[0].strip_prefix("refs/heads/").unwrap_or(configured[0])
+                );
+            }
+            error
+        })?
     };
     if recurse && !matches!(outcome.status.as_str(), "conflicts" | "stopped") {
         // Native `git pull` does this after a successful merge, including
@@ -1089,7 +1297,9 @@ pub fn push(repo: &Path, o: &PushOptions, on_line: impl FnMut(&str)) -> GitResul
         args.extend(lease_args(repo, o)?);
     }
     if o.tags {
+        // All or nothing: without --atomic a refused branch still published its tags.
         args.push("--tags".into());
+        args.push("--atomic".into());
     }
     if let Some(r) = &o.remote {
         args.push(r.clone());
@@ -1098,7 +1308,15 @@ pub fn push(repo: &Path, o: &PushOptions, on_line: impl FnMut(&str)) -> GitResul
             args.push(format!("refs/heads/{b}:refs/heads/{rb}"));
         }
     }
-    runner::run_streaming(repo, &args, &[], on_line)
+    let mut on_line = on_line;
+    match runner::run_streaming(repo, &args, &[], &mut on_line) {
+        // A server without atomic push support refuses before anything is sent.
+        Err(error) if o.tags && error.stderr.contains("does not support --atomic") => {
+            args.retain(|a| a != "--atomic");
+            runner::run_streaming(repo, &args, &[], &mut on_line)
+        }
+        result => result,
+    }
 }
 
 /// Lease arguments for a force push. With entries in the remote-tracking ref's reflog (it gets
@@ -1484,7 +1702,8 @@ fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autosta
         return Ok(OpOutcome { status: "upToDate".into(), conflicts: Vec::new(), message: format!("Already up to date with {target}.") });
     }
     let merging = gd.join("MERGE_HEAD").exists();
-    let conflicts = conflicted(repo);
+    // Only a merge that stopped or a squash can leave conflicts; a fast-forward skips the read.
+    let conflicts = if merging || strategy == "squash" { conflicted(repo) } else { Vec::new() };
     if strategy == "squash" && (out.ok() || !conflicts.is_empty()) {
         std::fs::write(super::storage::dir(repo)?.join("squash-target"), target)?;
         return Ok(OpOutcome {

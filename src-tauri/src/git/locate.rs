@@ -109,6 +109,7 @@ pub fn configure() -> GitSelection {
         ),
     };
     *STATE.write() = Some(State { exe, version, selection: selection.clone() });
+    *GCM.write() = None;
     selection
 }
 
@@ -131,6 +132,76 @@ pub fn version() -> (u32, u32, u32) {
 pub fn selection() -> Option<GitSelection> {
     ensure();
     STATE.read().as_ref().map(|s| s.selection.clone())
+}
+
+/// Oldest Git Credential Manager whose OAuth sign-in Bitbucket Cloud accepts from November 30,
+/// 2026. SSH, API tokens and app passwords are not affected.
+pub const GCM_MIN_FOR_BITBUCKET: (u32, u32, u32) = (3, 0, 0);
+
+/// The Git Credential Manager that Git runs, when the configured helper is GCM.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialManager {
+    pub version: String,
+    /// Older than [`GCM_MIN_FOR_BITBUCKET`]: Bitbucket sign-ins stop working.
+    pub outdated: bool,
+    pub min_version: String,
+    /// Revqora holds a token for the asked repository and answers its sign-in before GCM.
+    pub revqora_token: bool,
+}
+
+static GCM: RwLock<Option<Option<CredentialManager>>> = RwLock::new(None);
+
+/// Asks `git credential-manager --version` once per selected Git (GCM is a .NET program and
+/// takes about a second to start). None when GCM is not the configured helper or is missing.
+pub fn credential_manager() -> Option<CredentialManager> {
+    if let Some(known) = GCM.read().clone() {
+        return known;
+    }
+    let found = probe_credential_manager();
+    *GCM.write() = Some(found.clone());
+    found
+}
+
+fn probe_credential_manager() -> Option<CredentialManager> {
+    let git = exe();
+    let run = |args: &[&str]| -> Option<String> {
+        let mut c = Command::new(&git);
+        c.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).env("GCM_INTERACTIVE", "never").env("GIT_TERMINAL_PROMPT", "0");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000);
+        }
+        let mut child = c.spawn().ok()?;
+        let start = std::time::Instant::now();
+        while child.try_wait().ok()?.is_none() {
+            if start.elapsed() > std::time::Duration::from_secs(10) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let out = child.wait_with_output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    let helpers = run(&["config", "--get-all", "credential.helper"]).unwrap_or_default();
+    let uses_gcm = helpers.lines().any(|h| {
+        let h = h.trim().trim_matches('"').replace('\\', "/").to_ascii_lowercase();
+        h == "manager" || h == "manager-core" || h.contains("credential-manager") || h.ends_with("git-credential-manager.exe")
+    });
+    if !uses_gcm {
+        return None;
+    }
+    let version = run(&["credential-manager", "--version"])?;
+    let version = version.lines().next()?.split('+').next()?.trim().to_owned();
+    let parsed = parse_version(&version);
+    if parsed == (0, 0, 0) {
+        return None;
+    }
+    let (a, b, c) = GCM_MIN_FOR_BITBUCKET;
+    Some(CredentialManager { outdated: parsed < GCM_MIN_FOR_BITBUCKET, version, min_version: format!("{a}.{b}.{c}"), revqora_token: false })
 }
 
 #[cfg(test)]

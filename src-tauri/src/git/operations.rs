@@ -535,6 +535,13 @@ pub struct StateReads {
     references: Option<GitResult<String>>,
 }
 
+impl StateReads {
+    /// The `ls-files --stage -v -z` listing read for the token (whole index when no display path).
+    pub fn index(&self) -> Option<&[u8]> {
+        self.index.as_deref().ok()
+    }
+}
+
 pub fn state_reads(repo: &Path, display_path: Option<&str>) -> StateReads {
     // Cache-tree/stat extensions and packed-ref layout can change without changing
     // what the user staged. Compare semantic index entries and resolved refs instead.

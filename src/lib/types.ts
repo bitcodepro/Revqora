@@ -484,6 +484,15 @@ export interface GitSelection {
   minVersion: string;
 }
 
+/** Git Credential Manager in use. `outdated`: Bitbucket Cloud refuses it from November 30, 2026. */
+export interface CredentialManager {
+  version: string;
+  outdated: boolean;
+  minVersion: string;
+  /** Revqora answers the asked repository's sign-in with its own saved token, before GCM. */
+  revqoraToken: boolean;
+}
+
 export interface UpdateInfo {
   current: string;
   latest: string;

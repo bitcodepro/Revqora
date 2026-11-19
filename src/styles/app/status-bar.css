@@ -2,6 +2,13 @@
 .busy-item {
   animation: fadeIn 0.25s ease;
 }
+/* Fits the status bar's height; the transfer keeps showing its progress beside it. */
+.busy-item .busy-cancel {
+  height: 18px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 16px;
+}
 .busy-dot {
   width: 7px;
   height: 7px;

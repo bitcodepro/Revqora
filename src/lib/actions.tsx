@@ -1,8 +1,10 @@
 import { readableMergeMessage } from "./branchRef";
 import { plural } from "./format";
+import { bitbucketHttps } from "./bitbucketHttps";
 // High-level user actions: call the backend, report results, refresh state.
 import { open as openFolder } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage, isGitError, newOpId } from "./api";
+import { recordError } from "./errorLog";
 import { ALL, getTab, historyAfterSwitch, refreshAfterOperation, useRepos, type Parts } from "./store";
 import { endBusy, showDialog, startBusy, toast, useUi } from "./ui";
 import { GitMerge } from "lucide-react";
@@ -91,22 +93,115 @@ export async function act<T>(root: string, fn: () => Promise<T>, o: ActOptions<T
   }
 }
 
-async function remote<T>(root: string, label: string, fn: (opId: string) => Promise<T>, success?: (r: T) => string | null): Promise<T | undefined> {
+/** Cancel for one fetch, pull or push (by its operation id): stops its Git transfer, or ends it before it starts when it is still queued. */
+const cancelTransfer = (opId: string) => () => void api.cancelTransfer(opId).catch(() => undefined);
+
+/** Errors every fetch, pull and push can end with. Returns false for the caller's own cases.
+ *  `sends`: the transfer uploads (Push, Push tag); the server may have accepted it before Cancel stopped Git. */
+export function reportTransferError(root: string, e: unknown, label: string, remoteName?: string | null, sends = false): boolean {
+  if (!isGitError(e)) return false;
+  if (e.kind === "cancelled") {
+    toast.info(`${label} cancelled`, sends
+      ? "The server may already have received it before Git was stopped. Fetch to see what the server has now."
+      : "Your branches and files were not changed.");
+  } else if (e.kind === "auth") {
+    recordError("Authentication failed", e);
+    useUi.getState().toast({
+      kind: "error",
+      title: "Authentication failed — check your credentials or SSH key",
+      detail: `${e.message}\nYour saved sign-in was kept. To sign in with another account, forget it first.`,
+      action: { label: "Forget saved login", run: () => void forgetSavedLogin(root, remoteName ?? null) },
+    });
+  } else if (e.kind === "network-stalled") {
+    toast.error(e, `${label} stopped: the server is not responding`);
+  } else if (e.kind === "partial-fetch") {
+    toast.warning(`${label}: some remotes could not be fetched`, e.message);
+  } else return false;
+  return true;
+}
+
+/** Forget saved login: drops the saved sign-in for one remote (or every HTTPS remote) after asking. */
+export async function forgetSavedLogin(root: string, remoteName: string | null) {
+  const remotes = getTab(root)?.refs?.remotes ?? [];
+  const web = remotes.filter((r) => /^https?:\/\//i.test(r.fetchUrl) || /^https?:\/\//i.test(r.pushUrl));
+  const names = remoteName ? [remoteName] : web.map((r) => r.name);
+  if (!names.length) {
+    toast.info("No saved sign-in to forget", "These remotes use SSH. Manage SSH keys in Git connection settings.");
+    return;
+  }
+  const ok = await confirmDialog({
+    title: "Forget saved login?",
+    message: `Git forgets the saved sign-in for ${names.join(", ")}. It applies to every repository on the same server. The next fetch, pull or push asks you to sign in again.`,
+    confirm: "Forget saved login",
+  });
+  if (!ok) return;
+  try {
+    for (const name of names) await api.forgetSavedLogin(root, name);
+    toast.success("Saved sign-in forgotten", "Fetch, pull or push to sign in again.");
+  } catch (e) {
+    toast.error(e, "Could not forget the saved sign-in");
+  }
+}
+
+/** After a fetch: offer to take the server's version of tags that moved there. */
+async function offerMovedTags(root: string) {
+  let tags: string[];
+  try {
+    tags = await api.movedTags(root);
+  } catch {
+    return;
+  }
+  if (!tags.length) return;
+  const shown = tags.length > 5 ? `${tags.slice(0, 5).join(", ")} and ${tags.length - 5} more` : tags.join(", ");
+  useUi.getState().toast({
+    kind: "warning",
+    title: `${plural(tags.length, "tag")} changed on the server`,
+    detail: `Your local versions were kept: ${shown}. Update them to use the server's versions; the old targets stay in the tags' reflogs.`,
+    action: { label: "Update moved tags", run: () => void updateMovedTags(root) },
+  }, 20000);
+}
+
+export async function updateMovedTags(root: string) {
+  await remote(root, "Updating moved tags", (id) => api.updateMovedTags(root, id), () => "Moved tags updated");
+}
+
+const warnedCredentialManager = new Set<string>();
+
+/** Bitbucket Cloud refuses OAuth sign-in from Git Credential Manager older than 3.0.0 from November 30, 2026.
+ *  Warn once per session, only where GCM can be the one signing in: an HTTPS bitbucket.org remote, GCM configured
+ *  and older, and no token of Revqora's own answering first. SSH, API tokens and app passwords are not affected. */
+async function warnOutdatedCredentialManager(root: string, remoteName?: string | null) {
+  const remotes = (getTab(root)?.refs?.remotes ?? []).filter((r) => !remoteName || r.name === remoteName);
+  if (warnedCredentialManager.has("bitbucket") || !remotes.some((r) => bitbucketHttps(r.fetchUrl) || bitbucketHttps(r.pushUrl))) return;
+  try {
+    const gcm = await api.credentialManager(root);
+    if (gcm?.outdated && !gcm.revqoraToken && !warnedCredentialManager.has("bitbucket")) {
+      warnedCredentialManager.add("bitbucket");
+      toast.warning("Update Git Credential Manager",
+        `From November 30, 2026 Bitbucket stops accepting OAuth (browser) sign-in from Git Credential Manager older than ${gcm.minVersion}. Installed: ${gcm.version}. This matters only if you sign in to Bitbucket through Git Credential Manager with OAuth; SSH keys, API tokens and app passwords keep working. Update Git for Windows (it includes Git Credential Manager) or Git Credential Manager itself.`);
+    }
+  } catch {
+    // Asked again after the next transfer.
+  }
+}
+
+async function remote<T>(root: string, label: string, fn: (opId: string) => Promise<T>, success?: (r: T) => string | null, remoteName?: string | null, sends = false): Promise<T | undefined> {
   const opId = newOpId();
-  startBusy(opId, label);
+  startBusy(opId, label, cancelTransfer(opId));
   try {
     const r = await fn(opId);
     const msg = success?.(r);
     if (msg) toast.success(msg);
     return r;
   } catch (e) {
-    if (isGitError(e) && e.kind === "auth") toast.error(e, "Authentication failed — check your credentials or SSH key");
-    else if (isGitError(e) && e.kind === "rejected") toast.error(e, "Push rejected — pull first or force push");
+    if (reportTransferError(root, e, label, remoteName, sends)) return undefined;
+    if (isGitError(e) && e.kind === "rejected") toast.error(e, "Push rejected — pull first or force push");
     else toast.error(e, `${label} failed`);
     return undefined;
   } finally {
     endBusy(opId);
     await refreshAfterOperation(root, opId);
+    void warnOutdatedCredentialManager(root, remoteName);
   }
 }
 
@@ -206,8 +301,9 @@ export async function cloneRepo() {
 
 async function fetchRemotes(root: string, name: string | null, prune = true) {
   const out = await remote(root, name ? `Fetching ${name}` : "Fetching", (id) => api.fetch(root, name, prune, id),
-    () => name ? `Fetched ${name}` : "Fetched from all remotes");
+    () => name ? `Fetched ${name}` : "Fetched from all remotes", name);
   useRepos.getState().patch(root, out !== undefined ? { lastFetchedAt: Date.now(), fetchError: null } : { fetchError: "Fetch failed. Try Fetch again to sign in or see the error." });
+  if (out !== undefined) void offerMovedTags(root);
   return out;
 }
 
@@ -236,7 +332,7 @@ export async function pullBranch(root: string, target: PullTarget) {
 export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "rebase", expectedState?: string, pruneRemote?: boolean, target?: PullTarget) {
   const mode = modeOverride ?? useSettings.getState().pullMode;
   const opId = newOpId();
-  startBusy(opId, "Pulling");
+  startBusy(opId, "Pulling", cancelTransfer(opId));
   let diverged = false;
   let outcome: PullOutcome | undefined;
   try {
@@ -255,12 +351,13 @@ export async function pull(root: string, modeOverride?: "ff-only" | "merge" | "r
     if (isGitError(e) && e.kind === "ignored-collision" && (e as { declined?: boolean }).declined) toast.info("Pull cancelled", "Your local files were kept.");
     else if (isGitError(e) && e.kind === "ignored-collision") toast.error(e, "Pull stopped to protect local files");
     else if (isGitError(e) && e.kind === "partial-operation") toast.error(e, "Pull partially completed — review the repository and submodules");
-    else if (mode === "ff-only" && (msg.includes("not possible to fast-forward") || msg.includes("diverg"))) diverged = true;
-    else if (isGitError(e) && e.kind === "auth") toast.error(e, "Authentication failed — check your credentials or SSH key");
+    else if (mode === "ff-only" && ((isGitError(e) && e.kind === "diverged") || msg.includes("not possible to fast-forward") || msg.includes("diverg"))) diverged = true;
+    else if (reportTransferError(root, e, "Pull", target?.upstream.split("/")[0] ?? null)) { /* reported */ }
     else toast.error(e, "Pull failed");
   } finally {
     endBusy(opId);
     await refreshAfterOperation(root, opId);
+    void warnOutdatedCredentialManager(root, target?.upstream.split("/")[0] ?? null);
   }
   if (outcome) {
     if (outcome.status === "upstreamGone" && outcome.upstreamGone) {
@@ -332,14 +429,14 @@ export async function push(root: string) {
   const status = t2.status;
   const opts = await pushDialog({ branch, remotes: t2.refs?.remotes ?? [], upstream: status?.upstream ?? null, ahead: status?.ahead ?? 0, behind: status?.behind ?? 0 });
   if (!opts) return;
-  await remote(root, `Pushing ${branch}`, (id) => api.push(root, opts, id, status?.stateToken), () => `Pushed ${branch}`);
+  await remote(root, `Pushing ${branch}`, (id) => api.push(root, opts, id, status?.stateToken), () => `Pushed ${branch}`, opts.remote ?? null, true);
 }
 
 /** One-click push used after committing; asks only when needed. */
 export async function quickPush(root: string) {
   const tab = getTab(root);
   if (tab?.status?.upstream && tab.status.behind === 0) {
-    await remote(root, "Pushing", (id) => api.push(root, {}, id), () => "Pushed");
+    await remote(root, "Pushing", (id) => api.push(root, {}, id), () => "Pushed", null, true);
   } else {
     await push(root);
   }
@@ -602,7 +699,7 @@ export async function deleteTag(root: string, name: string) {
 
 export async function pushTag(root: string, name: string) {
   const r = getTab(root)?.refs?.remotes[0]?.name ?? "origin";
-  await remote(root, `Pushing tag ${name}`, (id) => api.pushRef(root, r, `refs/tags/${name}`, id), () => `Pushed tag ${name}`);
+  await remote(root, `Pushing tag ${name}`, (id) => api.pushRef(root, r, `refs/tags/${name}`, id), () => `Pushed tag ${name}`, r, true);
 }
 
 // ───────────── stash ─────────────

@@ -452,14 +452,209 @@ where
 }
 
 fn fail(args_desc: String, out: &Output) -> GitError {
-    let stderr = out.stderr.trim().to_string();
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = strip_ansi(out.stderr.trim());
+    let stdout = strip_ansi(String::from_utf8_lossy(&out.stdout).trim());
     let mut msg = clean_message(if stderr.is_empty() { &stdout } else { &stderr });
     if msg.is_empty() {
         msg = format!("{args_desc} failed with exit code {}", out.code);
     }
     let kind = classify(&format!("{stderr}\n{stdout}"));
+    if kind == "network-stalled" {
+        msg = "The server stopped sending data, so Git gave up. Check your network, VPN or proxy and try again.".into();
+    }
     GitError { message: msg, stderr: format!("{stderr}\n{stdout}").trim().to_string(), code: Some(out.code), kind, details: Vec::new() }
+}
+
+/// Removes terminal control sequences. Some servers (Bitbucket among them) colour their
+/// `remote:` messages; the escape codes used to show up as text such as `[38;5;226m`.
+pub fn strip_ansi(text: &str) -> String {
+    if !text.contains('\u{1b}') && !text.contains('\u{9b}') {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let csi = match c {
+            '\u{9b}' => true,
+            '\u{1b}' => match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    true
+                }
+                Some(']') => {
+                    // Operating system command: ends with BEL or ESC \.
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' || c == '\u{1b}' && chars.next_if_eq(&'\\').is_some() {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some(_) => {
+                    // Other escapes: intermediates (space../), then one final character.
+                    while chars.next_if(|c| (' '..='/').contains(c)).is_some() {}
+                    chars.next();
+                    continue;
+                }
+                None => continue,
+            },
+            _ => {
+                out.push(c);
+                continue;
+            }
+        };
+        if csi {
+            // Parameters and intermediates, then one final byte in @..~.
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Network transfers (fetch, push, ls-remote) that the user can cancel, by operation.
+///
+/// Cancel names one operation (the id the interface gave its Fetch, Pull or Push). Another
+/// operation of the same repository, running or queued, is never touched. An operation
+/// cancelled while it still waits in the queue ends as cancelled when its turn comes, before
+/// it changes anything.
+pub mod transfers {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use super::super::validation::process_tree::Tree;
+    use super::{GitError, GitResult};
+
+    struct Active {
+        id: u64,
+        operation: Option<String>,
+        repo: PathBuf,
+        tree: Arc<Tree>,
+        cancelled: Arc<AtomicBool>,
+    }
+
+    static ACTIVE: Mutex<Vec<Active>> = Mutex::new(Vec::new());
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    /// Operations the user cancelled that have not ended yet (or never started). Locked
+    /// after `ACTIVE` when both are needed.
+    static CANCELLED: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+    /// Remembered cancellations of operations that never run are dropped after this many.
+    const REMEMBERED: usize = 64;
+
+    thread_local! {
+        static OPERATION: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    fn key(repo: &Path) -> PathBuf {
+        std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_owned())
+    }
+
+    fn active() -> std::sync::MutexGuard<'static, Vec<Active>> {
+        ACTIVE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn cancelled() -> std::sync::MutexGuard<'static, VecDeque<String>> {
+        CANCELLED.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(in crate::git) fn cancelled_error() -> GitError {
+        GitError::new("Transfer cancelled.").kind("cancelled")
+    }
+
+    /// Runs operation `operation` on this thread: its network commands can be cancelled by
+    /// [`cancel`] with the same id. Fails as cancelled without running `f` when it was
+    /// cancelled while queued.
+    pub fn for_operation<T>(operation: &str, f: impl FnOnce() -> GitResult<T>) -> GitResult<T> {
+        struct Restore(Option<String>, String);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                OPERATION.with(|current| *current.borrow_mut() = self.0.take());
+                cancelled().retain(|id| id != &self.1);
+            }
+        }
+        if cancelled().iter().any(|id| id == operation) {
+            cancelled().retain(|id| id != operation);
+            return Err(cancelled_error());
+        }
+        let previous = OPERATION.with(|current| current.borrow_mut().replace(operation.to_owned()));
+        let _restore = Restore(previous, operation.to_owned());
+        f()
+    }
+
+    pub(in crate::git) struct Registration {
+        id: u64,
+        tree: Arc<Tree>,
+        cancelled: Arc<AtomicBool>,
+    }
+
+    impl Registration {
+        /// Ends the registration once the leader has exited; returns whether Cancel stopped it.
+        pub(in crate::git) fn finish(self) -> bool {
+            active().retain(|a| a.id != self.id);
+            let cancelled = self.cancelled.load(Ordering::Acquire);
+            if !cancelled {
+                self.tree.keep_descendants();
+            }
+            cancelled
+        }
+    }
+
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            active().retain(|a| a.id != self.id);
+        }
+    }
+
+    pub(in crate::git) fn register(repo: &Path, tree: Tree) -> Registration {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let tree = Arc::new(tree);
+        let operation = OPERATION.with(|current| current.borrow().clone());
+        let mut list = active();
+        // Cancel may have arrived between the operation's start and this command.
+        let stop = operation.as_ref().is_some_and(|op| cancelled().iter().any(|id| id == op));
+        let flag = Arc::new(AtomicBool::new(stop));
+        if stop {
+            tree.terminate();
+        }
+        list.push(Active { id, operation, repo: key(repo), tree: tree.clone(), cancelled: flag.clone() });
+        Registration { id, tree, cancelled: flag }
+    }
+
+    /// Cancels operation `operation`: stops its running transfer (with the helpers it started)
+    /// or, when it has not started yet, makes it end as cancelled when its turn comes. Returns
+    /// whether a running transfer was stopped.
+    pub fn cancel(operation: &str) -> bool {
+        let list = active();
+        {
+            let mut ids = cancelled();
+            if !ids.iter().any(|id| id == operation) {
+                if ids.len() >= REMEMBERED {
+                    ids.pop_front();
+                }
+                ids.push_back(operation.to_owned());
+            }
+        }
+        let mut stopped = false;
+        for transfer in list.iter().filter(|a| a.operation.as_deref() == Some(operation)) {
+            transfer.cancelled.store(true, Ordering::Release);
+            transfer.tree.terminate();
+            stopped = true;
+        }
+        stopped
+    }
+
+    /// Whether a transfer is running for `repo`.
+    pub fn running(repo: &Path) -> bool {
+        let key = key(repo);
+        active().iter().any(|a| a.repo == key)
+    }
 }
 
 fn clean_message(s: &str) -> String {
@@ -473,7 +668,11 @@ fn clean_message(s: &str) -> String {
 
 fn classify(s: &str) -> String {
     let l = s.to_lowercase();
-    if l.contains("would be overwritten") || l.contains("your local changes") {
+    if l.contains("operation too slow") {
+        "network-stalled".into()
+    } else if l.contains("not possible to fast-forward") {
+        "diverged".into()
+    } else if l.contains("would be overwritten") || l.contains("your local changes") {
         "dirty-worktree".into()
     } else if l.contains("conflict") {
         "conflict".into()
@@ -572,13 +771,21 @@ where
                 }
                 super::connection::finish(&mut c);
                 c.stdout(Stdio::piped()).stderr(Stdio::piped());
-                let mut child = c.spawn().map_err(|e| {
-                    if e.kind() == std::io::ErrorKind::NotFound {
-                        GitError::new("Git executable was not found. Install Git and make sure it is on PATH.").kind("git-missing")
-                    } else {
-                        GitError::from(e)
-                    }
-                })?;
+                // A transfer runs in its own process tree so Cancel can stop it (and the
+                // git-remote-https, ssh or credential helper it started).
+                let (mut child, registration) = if is_network(args) {
+                    let (child, tree) = super::validation::process_tree::spawn(&mut c)?;
+                    (child, Some(transfers::register(repo, tree)))
+                } else {
+                    let child = c.spawn().map_err(|e| {
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            GitError::new("Git executable was not found. Install Git and make sure it is on PATH.").kind("git-missing")
+                        } else {
+                            GitError::from(e)
+                        }
+                    })?;
+                    (child, None)
+                };
                 let mut out_pipe = child.stdout.take().expect("stdout piped");
                 let out_thread = std::thread::spawn(move || {
                     let mut buf = Vec::new();
@@ -592,7 +799,7 @@ where
                     let mut buf = Vec::new();
                     let mut flush = |buf: &mut Vec<u8>, collected: &mut String| {
                         if !buf.is_empty() {
-                            let line = String::from_utf8_lossy(buf).into_owned();
+                            let line = strip_ansi(&String::from_utf8_lossy(buf));
                             on_line(&line);
                             collected.push_str(&line);
                             collected.push('\n');
@@ -608,11 +815,25 @@ where
                     }
                     flush(&mut buf, &mut collected);
                 }
+                let cancelled = match registration {
+                    Some(registration) => {
+                        // Leave the leader unreaped until the registration is gone, so Cancel
+                        // can never signal a reused process ID.
+                        while !super::validation::process_tree::exited(&mut child)? {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        registration.finish()
+                    }
+                    None => false,
+                };
                 let status = child.wait()?;
                 let stdout = String::from_utf8_lossy(&out_thread.join().unwrap_or_default()).into_owned();
                 let out = Output { stdout: stdout.clone().into_bytes(), stderr: collected.clone(), code: status.code().unwrap_or(-1) };
                 if let Some(trace) = capture.as_mut() {
                     trace.finish(Some(out.code), &out.stdout, &out.stderr);
+                }
+                if cancelled && !out.ok() {
+                    return Err(transfers::cancelled_error());
                 }
                 if out.ok() {
                     Ok(format!("{stdout}{collected}"))
@@ -691,6 +912,22 @@ mod tests {
         // Network and filesystem errors must still be retried/handled as ordinary errors.
         assert_eq!(super::classify("fatal: Could not resolve host: example.com"), "error");
         assert_eq!(super::classify("fatal: unable to access repository: Permission denied"), "error");
+    }
+    #[test]
+    fn stalled_and_diverged_transfers_have_their_own_kinds() {
+        let stalled = "fatal: unable to access 'https://example.invalid/r.git/': Operation too slow. Less than 1000 bytes/sec transferred the last 60 seconds";
+        let err = super::to_error("git fetch", &super::Output { stdout: Vec::new(), stderr: stalled.into(), code: 128 });
+        assert_eq!(err.kind, "network-stalled");
+        assert!(err.message.starts_with("The server stopped sending data"), "{}", err.message);
+        assert_eq!(super::classify("hint: Diverging branches can't be fast-forwarded\nfatal: Not possible to fast-forward, aborting."), "diverged");
+    }
+    #[test]
+    fn terminal_codes_are_removed_from_git_text() {
+        assert_eq!(super::strip_ansi("remote: \u{1b}[38;5;226mPolicy: blocked\u{1b}[0m"), "remote: Policy: blocked");
+        assert_eq!(super::strip_ansi("\u{1b}]0;title\u{7}done \u{1b}]8;;https://x\u{1b}\\link\u{1b}]8;;\u{1b}\\"), "done link");
+        assert_eq!(super::strip_ansi("a\u{9b}31mb\u{1b}(Bc"), "abc");
+        assert_eq!(super::strip_ansi("plain text, 100% done"), "plain text, 100% done");
+        assert_eq!(super::strip_ansi("cut \u{1b}"), "cut ");
     }
     #[test]
     fn classifies_read_only_commands() {
