@@ -154,7 +154,8 @@ where
         let mut pending_wt = false;
         let mut first: Option<Instant> = None;
         let mut last: Option<Instant> = None;
-        // Wall-clock time of the burst's first change: reads that started later already see it.
+        // Wall-clock time of the burst's last change: only a read that started after it sees
+        // every change of the burst (one that started between two changes misses the second).
         let mut since: u64 = 0;
         loop {
             if stop_rx.try_recv().is_ok() {
@@ -170,28 +171,25 @@ where
                 Ok(Ok(ev)) if ev.need_rescan() => {
                     pending_git = true;
                     pending_wt = true;
-                    if first.is_none() {
-                        first = Some(Instant::now());
-                        since = now_ms();
-                    }
+                    first.get_or_insert_with(Instant::now);
                     last = Some(Instant::now());
+                    since = now_ms();
                 }
                 Ok(Ok(ev)) if !matches!(ev.kind, notify::EventKind::Access(_)) => {
+                    let mut relevant = false;
                     for p in &ev.paths {
                         // Shared refs/config/stash live outside a linked worktree's git dir.
                         let metadata = if p.starts_with(&git_dir) { &git_dir } else { &common };
                         match classify_owned(&root, metadata, &ignored, p) {
-                            Some(true) => pending_git = true,
-                            Some(false) => pending_wt = true,
+                            Some(true) => (pending_git, relevant) = (true, true),
+                            Some(false) => (pending_wt, relevant) = (true, true),
                             None => {}
                         }
                     }
-                    if pending_git || pending_wt {
-                        if first.is_none() {
-                            first = Some(Instant::now());
-                            since = now_ms();
-                        }
+                    if relevant {
+                        first.get_or_insert_with(Instant::now);
                         last = Some(Instant::now());
+                        since = now_ms();
                     }
                 }
                 Ok(Ok(_)) => {}
@@ -274,13 +272,54 @@ mod tests {
         runner::run(&root, ["branch", "external-branch"]).unwrap();
         phase("awaiting shared ref notification (10s deadline)");
         let since = rx.recv_timeout(Duration::from_secs(10)).expect("Shared refs did not refresh the linked worktree");
-        // The batch reports when its first change was seen, after the write began.
+        // The batch reports when its last change was seen, after the write began.
         assert!(since >= before && since <= super::now_ms(), "{before} <= {since}");
         phase("dropping watcher");
         drop(watcher);
         phase("removing fixture");
         tmp.close().unwrap();
         phase("complete");
+    }
+
+    #[test]
+    fn a_batch_reports_its_last_change_so_a_read_between_two_changes_is_not_enough() {
+        use super::watch;
+        use crate::git::runner;
+        use std::{fs, sync::mpsc, time::Duration};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        runner::run(&root, ["init", "-qb", "main"]).unwrap();
+        let git_dir = crate::git::repo::git_dir(&root).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let watcher = watch(
+            root.clone(),
+            git_dir,
+            move |_, worktree, since| {
+                if worktree {
+                    let _ = tx.send(since);
+                }
+            },
+            || {},
+        )
+        .unwrap();
+        // Let the watch settle, then make two changes inside one burst.
+        std::thread::sleep(Duration::from_millis(300));
+        while rx.try_recv().is_ok() {}
+        fs::write(root.join("first.txt"), b"1").unwrap();
+        std::thread::sleep(Duration::from_millis(40));
+        // A read that starts here sees the first change but not the second.
+        let read_started = super::now_ms();
+        std::thread::sleep(Duration::from_millis(5));
+        fs::write(root.join("second.txt"), b"2").unwrap();
+        let mut reported = vec![rx.recv_timeout(Duration::from_secs(10)).expect("The changes were not reported")];
+        while let Ok(since) = rx.recv_timeout(Duration::from_millis(600)) {
+            reported.push(since);
+        }
+        // The batch that ends the burst must not count the read above as fresh.
+        assert!(reported.last().is_some_and(|since| *since > read_started), "{read_started} vs {reported:?}");
+        drop(watcher);
+        tmp.close().unwrap();
     }
 
     #[cfg(windows)]

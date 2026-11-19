@@ -143,7 +143,7 @@ function markApplied(root: string, part: "status" | "info", at: number) {
   applied.set(root, { ...now, [part]: at });
   for (const check of [...(appliedWaiters.get(root) ?? [])]) check();
 }
-/** Resolves once status and info read at or after `since` are shown, or when `job` ends. */
+/** Resolves once status and info read after `since` are shown, or when `job` ends. */
 function waitApplied(root: string, since: number, job: Promise<void> | undefined): Promise<void> {
   return new Promise(resolve => {
     const waiters = appliedWaiters.get(root) ?? new Set<() => void>();
@@ -155,7 +155,8 @@ function waitApplied(root: string, since: number, job: Promise<void> | undefined
     };
     const check = () => {
       const shown = applied.get(root);
-      if ((shown?.status ?? Number.NEGATIVE_INFINITY) >= since && (shown?.info ?? Number.NEGATIVE_INFINITY) >= since) done();
+      // Like unreadParts: only a read that started after the change includes it.
+      if ((shown?.status ?? Number.NEGATIVE_INFINITY) > since && (shown?.info ?? Number.NEGATIVE_INFINITY) > since) done();
     };
     waiters.add(check);
     void (job ?? Promise.resolve()).catch(() => {}).finally(done);

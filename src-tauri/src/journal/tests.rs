@@ -388,8 +388,11 @@ fn precondition_reads_on_helper_threads_stay_in_the_operation_entry() {
     for expected in ["status", "ls-files", "for-each-ref", "add"] {
         assert!(commands.contains(&expected), "{expected} is missing from {commands:?}");
     }
-    assert_eq!(commands.first(), Some(&"status"));
+    // The precondition reads come before the change. Their own order is not fixed: the
+    // helpers start alongside `git status`, and a configuration read runs there whenever
+    // a writing command elsewhere (another test) cleared the remembered answers.
     assert_eq!(commands.last(), Some(&"add"));
+    assert_eq!(commands.iter().filter(|command| **command == "add").count(), 1, "{commands:?}");
     let mut sequences: Vec<i64> = detail.steps.iter().map(|step| step.sequence).collect();
     sequences.dedup();
     assert_eq!(sequences.len(), detail.steps.len(), "every command keeps its own sequence number");

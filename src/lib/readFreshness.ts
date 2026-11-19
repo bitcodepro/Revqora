@@ -6,15 +6,16 @@ export type ReadStamps = Partial<Record<ReadPart, number>>;
 
 /**
  * The parts of `parts` that still need a read for a change that happened at `since`
- * (`Date.now()` clock; the backend reports the same wall clock). A read that started at or
- * after the change already includes it, also while it is still running. A watcher burst
+ * (`Date.now()` clock; the backend reports the same wall clock). A read that started after
+ * the change already includes it, also while it is still running. A watcher burst
  * caused by Revqora's own Git writes, the operation's completion event and the caller that
  * waited for the operation therefore share one read instead of three. Null when every
  * requested part is covered. A Changes-only status (open diff fingerprint) covers a
  * working-file event, but not a full status request, which needs the mutation token.
  */
 export function unreadParts(stamps: ReadStamps | undefined, parts: Parts, since: number): Parts | null {
-  const fresh = (part: ReadPart) => (stamps?.[part] ?? Number.NEGATIVE_INFINITY) >= since;
+  // Strictly later: a read stamped in the same millisecond may have started before the change.
+  const fresh = (part: ReadPart) => (stamps?.[part] ?? Number.NEGATIVE_INFINITY) > since;
   const left: Parts = { ...parts };
   if (left.info && fresh("info")) left.info = false;
   if (left.status && (fresh("status") || (left.changesDisplay && fresh("changes")))) left.status = false;
