@@ -132,6 +132,17 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
     await dialog.getByText(`Group · ${name}`, { exact: true }).waitFor();
   }
   await dialog.getByRole("checkbox", { name: /^service-worker\b/ }).uncheck();
+  // Rescan finds a repository added meanwhile (checked) and keeps the unchecked one unchecked.
+  init("import-frontend/web-admin");
+  await dialog.getByRole("button", { name: "Rescan", exact: true }).click();
+  await dialog.getByText("5 of 6 selected", { exact: true }).waitFor();
+  await dialog.getByText("Rescanned: found 1 repository more.", { exact: true }).waitFor();
+  assert.equal(await dialog.getByRole("checkbox", { name: /^service-worker\b/ }).isChecked(), false);
+  assert.equal(await dialog.getByRole("checkbox", { name: /^web-admin\b/ }).isChecked(), true);
+  fs.rmSync(path.join(parent, "import-frontend", "web-admin"), { recursive: true, force: true });
+  await dialog.getByRole("button", { name: "Rescan", exact: true }).click();
+  await dialog.getByText("4 of 5 selected", { exact: true }).waitFor();
+  await dialog.getByText("Rescanned: 1 repository no longer found.", { exact: true }).waitFor();
   await shot?.("repository-folder-import-preview");
   await confirm(dialog, 4);
   for (const name of ["import-direct", "nested-repo", "service-api", "web-ui"]) await repoInOverview(name).waitFor();

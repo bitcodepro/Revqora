@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderGit2, FolderOpen, FolderSearch, Loader2 } from "lucide-react";
+import { FolderGit2, FolderOpen, FolderSearch, Loader2, RefreshCw } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { basename } from "../lib/format";
 import { planFolderGroups, repositoryKey, useLibrary } from "../lib/repositoryLibrary";
 import { folderGroupTree } from "../lib/folderGroupTree";
+import { rescanSelection, rescanSummary } from "../lib/folderRescan";
 import { visibleTree } from "../lib/libraryTree";
 import { useRepos } from "../lib/store";
 import type { RepositoryFolderScan } from "../lib/types";
@@ -48,6 +49,7 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
   const [selected, setSelected] = useState(new Set<string>());
   const [createGroups, setCreateGroups] = useState(true);
   const [error, setError] = useState("");
+  const [rescanNote, setRescanNote] = useState("");
   const repositories = scan?.repositories ?? [];
   const allRoots = repositories.map(repo => repo.root);
   const relativePaths = new Map(repositories.map(repo => [repo.root, repo.relativePath]));
@@ -88,8 +90,12 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     setStopped(true);
   }
 
-  async function scanFolder(folder: string) {
+  /** `rescan`: the folder again after changes on disk. Repositories the user unchecked stay
+   *  unchecked, new ones are checked, and a note says what changed. */
+  async function scanFolder(folder: string, rescan = false) {
     if (!folder.trim() || pendingScan.current) return;
+    const before = rescan && scan ? { known: new Set(scan.repositories.map(repo => repo.root)), selected: new Set(selected) } : null;
+    setRescanNote("");
     const request = api.repoPrepareFolderScan();
     pendingScan.current = request;
     setPath(folder);
@@ -104,7 +110,9 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
       const result = await api.repoScanFolder(id, folder, includeGenerated);
       if (pendingScan.current !== request) return;
       setScan(result);
-      setSelected(new Set(result.repositories.map(repo => repo.root)));
+      const roots = result.repositories.map(repo => repo.root);
+      setSelected(before ? rescanSelection(roots, before) : new Set(roots));
+      if (before) setRescanNote(rescanSummary(roots, before));
     } catch (cause) {
       if (pendingScan.current === request) setError(errorMessage(cause));
     } finally {
@@ -147,6 +155,9 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     }
   }
 
+  const rescanButton = <button type="button" className="btn sm" disabled={scanning} title="Scan the folder again to find repositories added or removed since"
+    onClick={() => void scanFolder(path, true)}><RefreshCw size={13} /> Rescan</button>;
+
   return <Modal title="Import repositories from a folder" icon={<FolderSearch size={20} />} wide
     subtitle="Find Git repositories, review what to include, and open them together."
     onClose={close} onSubmit={submit}
@@ -160,7 +171,7 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
       <label htmlFor="repository-import-path">Parent folder</label>
       <div className="workspace-editor-filters">
         <input id="repository-import-path" className="input" placeholder="Enter a folder path" value={path} disabled={scanning}
-          onChange={(event) => { setPath(event.target.value); setScan(null); setSelected(new Set()); setError(""); setStopped(false); }} />
+          onChange={(event) => { setPath(event.target.value); setScan(null); setSelected(new Set()); setError(""); setStopped(false); setRescanNote(""); }} />
         <button type="button" className="btn" disabled={scanning} onClick={() => void browse()}><FolderOpen size={15} /> Browse…</button>
       </div>
     </div>
@@ -177,17 +188,21 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     {stopped && <p className="batch-note" role="status">Scan stopped.</p>}
     {error && <p className="red workspace-editor-error" role="alert">{error}</p>}
     {scan && <>
+      {rescanNote && <p className="batch-note" role="status">{rescanNote}</p>}
       {scan.excluded > 0 && <p className="batch-note" role="status">Skipped {scan.excluded} dependency or cache folders.</p>}
       {scan.skipped > 0 && <p className="batch-note" role="status">Skipped {scan.skipped} linked, inaccessible, or invalid entries.</p>}
-      {!scan.repositories.length ? <div className="cg-empty">No Git working copies found in this folder.</div> : <>
+      {!scan.repositories.length ? <div className="cg-empty">No Git working copies found in this folder. {rescanButton}</div> : <>
         <label className="repository-import-option">
           <input type="checkbox" checked={createGroups} onChange={(event) => setCreateGroups(event.target.checked)} /> Recreate the folder tree in Explorer
         </label>
         <div className="workspace-editor-selection">
           <span className="batch-note">{selectedCount} of {scan.repositories.length} selected</span>
-          <button type="button" className="btn sm" onClick={() => select(scan.repositories.map((repo) => repo.root), selectedCount !== scan.repositories.length)}>
-            {selectedCount === scan.repositories.length ? "Clear all" : "Select all"}
-          </button>
+          <span className="workspace-editor-filters">
+            {rescanButton}
+            <button type="button" className="btn sm" onClick={() => select(scan.repositories.map((repo) => repo.root), selectedCount !== scan.repositories.length)}>
+              {selectedCount === scan.repositories.length ? "Clear all" : "Select all"}
+            </button>
+          </span>
         </div>
         <div className="library-list workspace-editor-list">
           {visibleTree(preview, () => true, () => false, false).map(({entry, depth}) => {
