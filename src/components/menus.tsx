@@ -159,22 +159,30 @@ function branchRemoteItems(root: string, reference: string, kind: "local" | "rem
     ? branch?.upstream ? [branch] : []
     : local.filter(candidate => candidate.upstreamFullName === reference && candidate.upstream);
   const checkedOut = targets.find(target => target.name === current);
-  const others = targets.filter(target => target !== checkedOut).map(target => target.fullName);
+  const others = targets.filter(target => target !== checkedOut);
   const missing = kind === "local" ? "Set an upstream first" : "No local branch tracks it";
+  // Several local branches tracking one remote branch: the user picks one. Only Pull offers all
+  // of them, under an explicit name; pushing them all would send several branches to one ref.
+  const each = (action: SyncKind): MenuItem[] => others.map(target => ({ label: target.name, onClick: sync(action, [target.fullName]) }));
   let pullItem: MenuItem = { label: "Pull", icon: <ArrowDown size={I} />, shortcut: "branch-pull" };
   if (checkedOut) {
     const upstream = checkedOut.upstream!;
     pullItem = { ...pullItem, onClick: run(repo => void A.pullBranch(repo, { branch: checkedOut.name, upstream })) };
-  } else if (others.length) {
-    pullItem = { ...pullItem, onClick: sync("pull", others) };
+  } else if (others.length === 1) {
+    pullItem = { ...pullItem, onClick: sync("pull", [others[0]!.fullName]) };
+  } else if (others.length > 1) {
+    pullItem = { label: "Pull into", icon: pullItem.icon, children: [...each("pull"), { separator: true },
+      { label: `Pull all ${others.length} tracking branches`, onClick: sync("pull", others.map(target => target.fullName)) }] };
   } else {
     pullItem = { ...pullItem, disabled: true, hint: missing };
   }
   let pushItem: MenuItem = { label: "Push", icon: <CloudUpload size={I} /> };
   if (checkedOut || (kind === "local" && reference === `refs/heads/${current}`)) {
     pushItem = { ...pushItem, label: "Push…", onClick: run(repo => A.push(repo)) };
-  } else if (others.length) {
-    pushItem = { ...pushItem, onClick: sync("push", others) };
+  } else if (others.length === 1) {
+    pushItem = { ...pushItem, onClick: sync("push", [others[0]!.fullName]) };
+  } else if (others.length > 1) {
+    pushItem = { ...pushItem, label: "Push from", children: each("push") };
   } else {
     pushItem = { ...pushItem, disabled: true, hint: missing };
   }
