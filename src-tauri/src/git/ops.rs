@@ -1,7 +1,7 @@
 //! Mutating operations: staging, committing, branches, merge/rebase/cherry-pick,
 //! history rewriting, stash and remotes.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -1429,7 +1429,7 @@ pub fn pull_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
     if let Some((branch, oid, behind, target)) = current {
         match current_branch_blocked(repo, &oid, &target)? {
             Some(reason) => result.skipped.push(BranchSkip { branch, reason }),
-            None => match fast_forward_current(repo, &target, &mut on_line) {
+            None => match fast_forward_current(repo, &oid, &target, &mut on_line) {
                 Ok(()) => result.updated.push(BranchUpdate { branch, commits: behind, current: true }),
                 Err(error) => result.skipped.push(BranchSkip { branch, reason: error.message }),
             },
@@ -1534,7 +1534,7 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
 
 /// Moves the checked-out branch exactly to `target`, a verified descendant of HEAD. Local
 /// changes stay where they are (they touch none of the incoming files), so nothing is stashed.
-fn fast_forward_current(repo: &Path, target: &str, on_line: &mut impl FnMut(&str)) -> GitResult<()> {
+fn fast_forward_current(repo: &Path, oid: &str, target: &str, on_line: &mut impl FnMut(&str)) -> GitResult<()> {
     let recurse = super::config_cache::exec(repo, &["config", "--bool", "--get", "submodule.recurse"])?;
     if !recurse.ok() && recurse.code != 1 {
         return Err(runner::to_error("git config submodule.recurse", &recurse));
@@ -1544,8 +1544,11 @@ fn fast_forward_current(repo: &Path, target: &str, on_line: &mut impl FnMut(&str
         super::pull_guard::submodules(repo, target, "ff-only")?;
     }
     // The recovery checkpoint a single Pull takes first, only when files will change: most
-    // repositories have nothing to pull, and a checkpoint each would bury the list.
-    super::recovery::automatic(repo, "pull_branches", true, false)?;
+    // repositories have nothing to pull, and a checkpoint each would bury the list. When ignored
+    // files are in the way of the incoming commits, their checkpoint is that one.
+    if !protect_ignored_files(repo, "pull_branches", Some(oid), target)? {
+        super::recovery::automatic(repo, "pull_branches", true, false)?;
+    }
     let outcome = merge_start_with_autostash(repo, target, "ff-only", false)?;
     if !matches!(outcome.status.as_str(), "done" | "fastForward") {
         return Err(GitError::new(outcome.message));
@@ -1555,6 +1558,47 @@ fn fast_forward_current(repo: &Path, target: &str, on_line: &mut impl FnMut(&str
         runner::run_streaming(repo, &args, &[], on_line)?;
     }
     Ok(())
+}
+
+/// Paths integrating `target` into `head` can write: every path that differs between them and,
+/// for a rebase, the paths of the local commits that are replayed (`target...head`).
+fn integration_paths(repo: &Path, head: Option<&str>, target: &str) -> GitResult<Vec<String>> {
+    let names = |args: &[&str]| -> GitResult<Option<Vec<String>>> {
+        let out = runner::exec(repo, args)?;
+        if !out.ok() {
+            return Ok(None);
+        }
+        let text = super::workspace_files::path_list(&out.stdout)?;
+        Ok(Some(text.split('\0').filter(|p| !p.is_empty()).map(str::to_owned).collect()))
+    };
+    let all_of = |rev: &str| names(&["ls-tree", "-r", "-z", "--name-only", "--end-of-options", rev]);
+    let Some(head) = head else {
+        return all_of(target)?.ok_or_else(|| GitError::new("Listing the incoming files failed."));
+    };
+    let mut paths: BTreeSet<String> = names(&["diff", "--name-only", "--no-renames", "-z", head, target, "--"])?
+        .ok_or_else(|| GitError::new("Listing the incoming changes failed."))?
+        .into_iter()
+        .collect();
+    // Unrelated histories have no merge base: then every local file may be written.
+    let local = match names(&["diff", "--name-only", "--no-renames", "-z", &format!("{target}...{head}"), "--"])? {
+        Some(local) => local,
+        None => all_of(head)?.unwrap_or_default(),
+    };
+    paths.extend(local);
+    Ok(paths.into_iter().collect())
+}
+
+/// Saves the individual ignored files in the way of integrating `target` (see
+/// [`super::recovery::watch_ignored_for`]). Returns true when that created a checkpoint.
+fn protect_ignored_files(repo: &Path, command: &str, head: Option<&str>, target: &str) -> GitResult<bool> {
+    if head == Some(target) {
+        return Ok(false);
+    }
+    let paths = integration_paths(repo, head, target)?;
+    if paths.is_empty() {
+        return Ok(false);
+    }
+    super::recovery::watch_ignored_for(repo, command, &paths)
 }
 
 /// Why Pull all leaves the checked-out branch alone, if it does.
@@ -1724,6 +1768,8 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
             );
         }
     }
+    // Now that the target is known: save the ignored files in the way of what this pull writes.
+    protect_ignored_files(repo, "pull", before.oid.as_deref(), targets[0])?;
     let mut outcome = if mode == "rebase" {
         let can_ff = match before.oid.as_deref() {
             Some(head) => {
