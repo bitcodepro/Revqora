@@ -89,6 +89,13 @@
 .delete-branch-option input { flex: none; margin-top: 3px; accent-color: var(--accent); }
 .delete-branch-error { white-space: pre-wrap; overflow-wrap: anywhere; }
 .commit-preview-actions .details-hide { position: static; margin: 0; }
+.commit-preview-actions .commit-maximize { padding: 0 6px; }
+.commit-preview-actions .commit-maximize.active { color: var(--accent); }
+/* The open commit expanded over the commit list (App: maximized). */
+.columns-history.columns-maximized { grid-template-columns: minmax(0, 1fr); }
+.columns-maximized > .details.columns-details { grid-column: 1; }
+.history.history-maximized > :not(.details) { display: none; }
+.history.history-maximized > .details { flex: 1; min-height: 0; }
 .commit-message { min-width: 0; font-size: var(--fs); line-height: 1.65; overflow-wrap: anywhere; }
 .commit-message > h2 { margin: 0 0 20px; font-size: var(--fs-xl); line-height: 1.5; white-space: pre-wrap; }
 .commit-message-body p { margin: 0 0 16px; white-space: pre-wrap; }

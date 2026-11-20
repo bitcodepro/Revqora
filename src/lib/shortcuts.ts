@@ -106,6 +106,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "repositoriesPanel", label: "Toggle repositories panel", description: "Show or hide the repository sidebar.", default: "Ctrl+Alt+R" },
   { id: "branchesPanel", label: "Toggle branches panel", description: "Show or hide the branches sidebar.", default: "Ctrl+Alt+B" },
   { id: "focusMode", label: "Focus on code", description: "Toggle the layout that gives code more space.", default: "Ctrl+Shift+Enter" },
+  { id: "commitMaximize", label: "Maximize commit details", description: "Expand the open commit to the whole window, hiding Explorer, Repositories, Branches and the commit list. Press again to restore the layout.", default: "" },
   { id: "fetch", label: "Fetch", description: "Download remote refs and objects without updating your branch.", default: "Ctrl+Shift+F" },
   { id: "pull", label: "Pull", description: "Bring changes from the upstream into your current branch.", default: "Ctrl+Shift+ArrowDown" },
   { id: "push", label: "Push", description: "Publish local changes to the remote.", default: "Ctrl+Shift+ArrowUp" },

@@ -13,7 +13,7 @@ import { Columns3, FilePlus2, GitCommitHorizontal, GitGraph, GitPullRequest, Max
 import { noteOperationEnd, rememberOperationRefresh, retryRepositoryWatch, useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, toggledThemePref, useSettings } from "./lib/settings";
 import { applyTheme } from "./lib/themeApply";
-import { closeOverlay, openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
+import { closeOverlay, openOverlay, toast, toggleCommitMaximized, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
 import { actionFor, matchesShortcut, PANEL_NAMES, shortcutTitle } from "./lib/shortcuts";
 import { settingsDialog } from "./components/dialogs";
 import { repoToolsDialog } from "./components/RepoTools";
@@ -139,7 +139,13 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
   useEffect(() => setCw(layout.historyListWidth), [mode, layout.historyListWidth]);
   const branchesOpen = layout.branchesOpen;
   const focusMode = layout.focusMode;
-  const showBranches = branchesOpen && !focusMode && !panels.branches;
+  // The open commit expanded to the whole workspace (see toggleCommitMaximized).
+  const commitMaximized = useUi(s => s.commitMaximized);
+  const maximized = commitMaximized && tab.view === "history" && !panels.commit && !!tab.selected && tab.selected !== WORKTREE;
+  // Closing the commit or leaving History restores the layout, so the next commit opens normally.
+  useEffect(() => { if (commitMaximized && !maximized) toggleCommitMaximized(false); }, [commitMaximized, maximized]);
+  const maximize = { on: maximized, toggle: () => toggleCommitMaximized() };
+  const showBranches = branchesOpen && !focusMode && !maximized && !panels.branches;
   const changesCount = tab.status?.files.length ?? 0;
   const [forgeKind, setForgeKind] = useState<string | null>(null);
   const remotesKey = repositoryRemotesKey(tab);
@@ -173,7 +179,7 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
       <div className="branches-slot" hidden={!showBranches}>{!panels.branches && tab.info && <Sidebar key={root} tab={tab} />}</div>
       {showBranches && <Splitter dir="v" style={{ left: sw }} onDrag={(d) => setSw((w) => Math.max(180, Math.min(420, w + d)))} onEnd={() => setLayout({ sidebarWidth: sw })} />}
       <div className="main">
-        <div className="main-head">
+        <div className="main-head" hidden={maximized}>
           <div className="view-tabs">
             <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onContextMenu={historyMenu} onClick={() => patch(root, { view: "history" })} title={shortcutTitle("History", "history")}>
               <GitCommitHorizontal size={15} /> History
@@ -208,21 +214,21 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
             onClick={() => void A.stashApply(root, latestSwitchStash.index, true, latestSwitchStash.oid)}>Restore stash</button>
         </div>}
         {tab.view === "history" && historyMode === "review" ? (
-          <div className={`review ${focusMode && commitSelected ? "review-focused" : ""}`} style={{ gridTemplateRows: focusMode || !commitSelected ? "minmax(0, 1fr)" : `minmax(100px, min(${rh}px, 45%)) minmax(0, 1fr)` }}>
-            <div className="review-list" hidden={focusMode && !!commitSelected}>
+          <div className={`review ${(focusMode || maximized) && commitSelected ? "review-focused" : ""}`} style={{ gridTemplateRows: focusMode || maximized || !commitSelected ? "minmax(0, 1fr)" : `minmax(100px, min(${rh}px, 45%)) minmax(0, 1fr)` }}>
+            <div className="review-list" hidden={(focusMode || maximized) && !!commitSelected}>
               {historyList(true)}
             </div>
-            {!focusMode && commitSelected && <div className="review-resizer"><Splitter dir="h" onDrag={(d) => setRh((h) => Math.max(100, Math.min(400, h + d)))} onEnd={() => setLayout({ reviewListHeight: rh })} /></div>}
+            {!focusMode && !maximized && commitSelected && <div className="review-resizer"><Splitter dir="h" onDrag={(d) => setRh((h) => Math.max(100, Math.min(400, h + d)))} onEnd={() => setLayout({ reviewListHeight: rh })} /></div>}
             {commitSelected && <div key="commit-preview" className="details review-details">
-              <CommitDetails root={root} oid={commitSelected} onClose={closePreview} />
+              <CommitDetails root={root} oid={commitSelected} onClose={closePreview} maximize={maximize} />
             </div>}
           </div>
         ) : tab.view === "history" && historyMode === "columns" ? (
-          <div className="columns-history" style={{ ["--history-list-w" as string]: `${cw}px` }}>
-            <div className="columns-commits">{historyList(true)}</div>
-            <Splitter dir="v" style={{ left: "var(--history-list-size)" }} onDrag={(d) => setCw((w) => Math.max(180, Math.min(600, w + d)))} onEnd={() => setLayout({ historyListWidth: cw })} />
+          <div className={`columns-history ${maximized ? "columns-maximized" : ""}`} style={{ ["--history-list-w" as string]: `${cw}px` }}>
+            <div className="columns-commits" hidden={maximized}>{historyList(true)}</div>
+            {!maximized && <Splitter dir="v" style={{ left: "var(--history-list-size)" }} onDrag={(d) => setCw((w) => Math.max(180, Math.min(600, w + d)))} onEnd={() => setLayout({ historyListWidth: cw })} />}
             {commitSelected ? (
-              <div key="commit-preview" className="details columns-details"><CommitDetails root={root} oid={commitSelected} compactMeta onClose={closePreview} /></div>
+              <div key="commit-preview" className="details columns-details"><CommitDetails root={root} oid={commitSelected} compactMeta onClose={closePreview} maximize={maximize} /></div>
             ) : (
               <div className="empty columns-placeholder">
                 <span className="big"><GitCommitHorizontal size={24} /></span>
@@ -231,13 +237,13 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
             )}
           </div>
         ) : tab.view === "history" ? (
-          <div className="history">
+          <div className={`history ${maximized ? "history-maximized" : ""}`}>
             {historyList(false)}
             {commitSelected && (
               <>
-                <Splitter dir="h" onDrag={(d) => setDh((h) => Math.max(160, Math.min(window.innerHeight - 260, h - d)))} onEnd={() => setLayout({ detailsHeight: dh })} />
-                <div className="details" style={{ height: dh }}>
-                  <CommitDetails root={root} oid={commitSelected} onClose={() => patch(root, { selected: null, multi: [] })} />
+                {!maximized && <Splitter dir="h" onDrag={(d) => setDh((h) => Math.max(160, Math.min(window.innerHeight - 260, h - d)))} onEnd={() => setLayout({ detailsHeight: dh })} />}
+                <div className="details" style={maximized ? undefined : { height: dh }}>
+                  <CommitDetails root={root} oid={commitSelected} onClose={() => patch(root, { selected: null, multi: [] })} maximize={maximize} />
                 </div>
               </>
             )}
@@ -342,6 +348,8 @@ function MainApp() {
   const { layout } = useWorkspaceLayout(layoutMode);
   const { focusMode, repositoriesOpen } = layout;
   const explorerOpen = useSettings(s => s.explorerOpen);
+  // RepoWorkspace clears the flag when no commit is open in History; the overview never shows one.
+  const commitMaximized = useUi(s => s.commitMaximized) && !overview;
 
   // Restore the tabs from the previous session.
   useLayoutEffect(() => {
@@ -484,6 +492,11 @@ function MainApp() {
         repositoriesPanel: () => toggleSidebar("repositories"),
         branchesPanel: () => toggleSidebar("branches"),
         focusMode: () => useSettings.getState().setLayout(mode, { focusMode: !layout.focusMode }),
+        commitMaximize: () => {
+          // Restoring always works; expanding needs a commit open in History of the main window.
+          const open = !useUi.getState().repositoryOverview && t?.view === "history" && !!t.selected && t.selected !== WORKTREE && !panels.commit;
+          if (useUi.getState().commitMaximized || open) toggleCommitMaximized();
+        },
         history: () => a && st.patch(a, { view: "history" }),
         changes: () => a && st.patch(a, { view: "changes" }),
         pulls: () => a && st.patch(a, { view: "pulls" }),
@@ -593,8 +606,8 @@ function MainApp() {
       <TopBar />
       <ActivityIndicator active={busy} />
       <div className="app-body">
-        {explorerOpen && !focusMode && !panels.explorer && <RepositoryExplorer onClose={closeExplorer}/>}
-        <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode}>{!panels.repositories && <RepositorySidebar />}</div>
+        {explorerOpen && !focusMode && !commitMaximized && !panels.explorer && <RepositoryExplorer onClose={closeExplorer}/>}
+        <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode || commitMaximized}>{!panels.repositories && <RepositorySidebar />}</div>
         <div className="workspace-host">{overview ? <RepositoryOverview /> : <ActiveRepositoryContent combinedPulls={combinedPulls} />}</div>
       </div>
       <StatusBar />

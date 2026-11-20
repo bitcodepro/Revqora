@@ -39,13 +39,16 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
     const settings = useSettings.getState();
     const mode = workspaceMode(overview && id !== "branches" ? "overview" : tab?.view, settings.historyMode);
     const layout = settings.layouts[mode];
+    // Showing a panel ends the maximized commit; the panel then appears in its usual place.
+    const maximized = useUi.getState().commitMaximized;
+    if (maximized) useUi.setState({ commitMaximized: false });
     if (id === "explorer") {
-      settings.set({ explorerOpen: show || layout.focusMode || !settings.explorerOpen });
+      settings.set({ explorerOpen: show || maximized || layout.focusMode || !settings.explorerOpen });
       if (layout.focusMode) settings.setLayout(mode, { focusMode: false });
     } else if (id === "repositories") {
-      settings.setLayout(mode, { repositoriesOpen: show || layout.focusMode || !layout.repositoriesOpen, focusMode: false });
+      settings.setLayout(mode, { repositoriesOpen: show || maximized || layout.focusMode || !layout.repositoriesOpen, focusMode: false });
     } else {
-      settings.setLayout(mode, { branchesOpen: show || overview || layout.focusMode || !layout.branchesOpen, focusMode: false });
+      settings.setLayout(mode, { branchesOpen: show || overview || maximized || layout.focusMode || !layout.branchesOpen, focusMode: false });
       if (overview) useUi.setState({ repositoryOverview: false });
     }
   }, []);
