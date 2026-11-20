@@ -387,3 +387,45 @@ fn pull_of_chosen_branches_reports_a_remote_that_fails_and_pulls_the_others() {
     let (_, reason) = reasons.iter().find(|(branch, _)| branch == "from-fork").expect("reported");
     assert!(reason.starts_with("Could not fetch fork"), "{reason}");
 }
+
+#[test]
+fn push_of_several_branches_with_push_default_matching_never_recreates_a_deleted_remote_branch() {
+    let f = fixture();
+    let remote = f.work.parent().unwrap().join("remote.git");
+    git(&f.work, &["config", "push.default", "matching"]);
+    git(&f.work, &["push", "-q", "origin", "origin/main:refs/heads/kept"]);
+    git(&f.work, &["fetch", "-q", "origin"]);
+    git(&f.work, &["branch", "-q", "--track", "kept", "origin/kept"]);
+    commit_on(&f.work, "kept", "kept.txt");
+    // Deleted on the server; this clone still has origin/ahead from its last fetch.
+    git(&remote, &["branch", "-qD", "ahead"]);
+
+    let result = ops::push_branches(&f.work, None, |_| {}).unwrap();
+
+    assert_eq!(result.updated.iter().map(|u| u.branch.as_str()).collect::<Vec<_>>(), ["kept"]);
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/kept"]), tip(&f.work, "kept"));
+    assert!(runner::exec(&remote, ["rev-parse", "--verify", "--quiet", "refs/heads/ahead"]).unwrap().stdout.is_empty(), "ahead stays deleted");
+    let reasons = skipped(&result);
+    let (_, reason) = reasons.iter().find(|(name, _)| name == "ahead").expect("reported");
+    assert!(reason.contains("matching"), "{reason}");
+}
+
+#[test]
+fn pull_all_never_moves_a_branch_to_a_remote_that_fetch_all_skips() {
+    let f = fixture();
+    let remote = f.work.parent().unwrap().join("remote.git");
+    git(&f.work, &["remote", "add", "up", remote.to_str().unwrap()]);
+    git(&f.work, &["fetch", "-q", "up"]);
+    git(&f.work, &["branch", "-q", "from-up", "up/main~1"]);
+    git(&f.work, &["branch", "-q", "--set-upstream-to", "up/main", "from-up"]);
+    let before = tip(&f.work, "from-up");
+    git(&f.work, &["config", "remote.up.skipFetchAll", "true"]);
+
+    let result = ops::pull_all_branches(&f.work, |_| {}).unwrap();
+
+    assert_eq!(tip(&f.work, "from-up"), before, "up/main is as old as its last fetch");
+    let reasons = skipped(&result);
+    let (_, reason) = reasons.iter().find(|(name, _)| name == "from-up").expect("reported");
+    assert!(reason.contains("skipFetchAll"), "{reason}");
+    assert!(result.updated.iter().any(|u| u.branch == "feature"), "origin's branches are still pulled");
+}

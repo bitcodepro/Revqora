@@ -1469,6 +1469,12 @@ pub fn pull_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
                 }
                 Err(error) => return Err(error),
             }
+            // `git fetch --all` leaves these out: their remote-tracking branches are as old as
+            // their last fetch, so their branches are never moved there.
+            for remote in skipped_by_fetch_all(repo)? {
+                let reason = format!("Fetch all skips {remote} (remote.{remote}.skipFetchAll). Pull this branch on its own to fetch it first.");
+                unfetched.push((remote, reason));
+            }
             None
         }
         Some(branches) => {
@@ -1522,7 +1528,7 @@ pub fn pull_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
         };
         match blocked {
             Some(reason) => result.skipped.push(BranchSkip { branch, reason }),
-            None => match fast_forward_current(repo, &oid, &target, &mut on_line) {
+            None => match fast_forward_current(repo, &name, &oid, &target, &mut on_line) {
                 Ok(()) => result.updated.push(BranchUpdate { branch, commits: behind, current: true }),
                 Err(error) if error.kind == "cancelled" => return Err(error),
                 Err(error) => result.skipped.push(BranchSkip { branch, reason: error.message }),
@@ -1530,6 +1536,24 @@ pub fn pull_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
         }
     }
     Ok(result)
+}
+
+/// Remotes `git fetch --all` skips: `remote.<name>.skipFetchAll`, or its older synonym
+/// `skipDefaultUpdate`; the last value set wins.
+fn skipped_by_fetch_all(repo: &Path) -> GitResult<Vec<String>> {
+    let out = super::config_cache::exec(repo, &["config", "--bool", "--get-regexp", r"^remote\..*\.(skipfetchall|skipdefaultupdate)$"])?;
+    if !out.ok() && out.code != 1 {
+        return Err(runner::to_error("git config --get-regexp", &out));
+    }
+    let mut skip: BTreeMap<String, bool> = BTreeMap::new();
+    for line in out.text().lines() {
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        let remote = key.strip_prefix("remote.").and_then(|k| k.strip_suffix(".skipfetchall").or_else(|| k.strip_suffix(".skipdefaultupdate")));
+        if let Some(remote) = remote {
+            skip.insert(remote.to_owned(), value.trim() == "true");
+        }
+    }
+    Ok(skip.into_iter().filter(|(_, skipped)| *skipped).map(|(remote, _)| remote).collect())
 }
 
 enum PullOne {
@@ -1657,6 +1681,8 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
     let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
     let head = head.ok().then(|| head.text().trim().to_owned());
     let mut by_remote: BTreeMap<String, Vec<(LocalBranch, usize)>> = BTreeMap::new();
+    // `--force-with-lease` values by branch, for `push.default=matching`.
+    let mut leases: HashMap<String, String> = HashMap::new();
     let rules = PushRules::read(repo)?;
     let listed = local_branches(repo)?;
     if let Some(only) = &only {
@@ -1702,6 +1728,19 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
             skip(reason);
             continue;
         }
+        // `push.default=matching` only updates branches the remote still has. An explicit
+        // refspec would create one deleted there whose remote-tracking branch is still here, so
+        // each push carries a lease on the remote-tracking commit, a commit this branch contains.
+        if rules.default == "matching" {
+            let tracking = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{}^{{commit}}", local.upstream)])?;
+            let tracking = if tracking.ok() { tracking.text().trim().to_owned() } else { String::new() };
+            let contained = !tracking.is_empty() && runner::exec(repo, ["merge-base", "--is-ancestor", &tracking, &local.oid])?.ok();
+            if !contained {
+                skip("The remote branch changed since the last fetch. Fetch, then push again.".into());
+                continue;
+            }
+            leases.insert(local.name.clone(), tracking);
+        }
         by_remote.entry(local.remote.clone()).or_default().push((local, ahead));
     }
     // Two branches pushed to one remote branch make Git refuse the whole push.
@@ -1734,7 +1773,11 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
             Ok(()) => {
                 // Only the listed branches: `push.followTags` would also publish annotated tags
                 // that the report never shows.
-                let mut args = vec!["push".to_string(), "--progress".into(), "--no-follow-tags".into(), remote.clone()];
+                let mut args = vec!["push".to_string(), "--progress".into(), "--no-follow-tags".into()];
+                // The lease only lets the push through while the remote branch is still at the
+                // checked commit, which the pushed commit contains: never a forced update.
+                args.extend(list.iter().filter_map(|(b, _)| leases.get(&b.name).map(|oid| format!("--force-with-lease={}:{oid}", b.remote_ref))));
+                args.push(remote.clone());
                 args.extend(specs);
                 match runner::run_streaming(repo, &args, &[], &mut on_line) {
                     Ok(_) => None,
@@ -1752,6 +1795,9 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
                 continue;
             }
             let reason = match &error {
+                Some(error) if leases.contains_key(&local.name) && (error.message.contains("stale info") || error.stderr.contains("stale info")) => {
+                    format!("{} no longer has this branch at the commit fetched last (push.default is \"matching\": Git only updates branches both sides have). Fetch, then push again.", local.remote)
+                }
                 // "[remote rejected]" is a hook or a protection rule, not missing commits.
                 Some(error) if error.kind == "rejected" && !error.message.contains("remote rejected") && !error.stderr.contains("remote rejected") => {
                     "The remote branch has commits this branch lacks. Pull it first.".to_owned()
@@ -1771,7 +1817,7 @@ fn first_line(text: &str, fallback: &str) -> String {
 
 /// Moves the checked-out branch exactly to `target`, a verified descendant of HEAD. Local
 /// changes stay where they are (they touch none of the incoming files), so nothing is stashed.
-fn fast_forward_current(repo: &Path, oid: &str, target: &str, on_line: &mut impl FnMut(&str)) -> GitResult<()> {
+fn fast_forward_current(repo: &Path, name: &str, oid: &str, target: &str, on_line: &mut impl FnMut(&str)) -> GitResult<()> {
     let recurse = super::config_cache::exec(repo, &["config", "--bool", "--get", "submodule.recurse"])?;
     if !recurse.ok() && recurse.code != 1 {
         return Err(runner::to_error("git config submodule.recurse", &recurse));
@@ -1786,7 +1832,9 @@ fn fast_forward_current(repo: &Path, oid: &str, target: &str, on_line: &mut impl
     if !protect_ignored_files(repo, "pull_branches", Some(oid), target)? {
         super::recovery::automatic(repo, "pull_branches", true, false)?;
     }
-    let outcome = merge_start_with_autostash(repo, target, "ff-only", false)?;
+    // `git merge` moves whatever HEAD names: the checks above took time, so the branch and its
+    // commit are checked again right before Git runs.
+    let outcome = merge_run(repo, target, "ff-only", false, Some((name, oid)))?;
     if !matches!(outcome.status.as_str(), "done" | "fastForward") {
         return Err(GitError::new(outcome.message));
     }
@@ -1843,14 +1891,8 @@ fn current_branch_blocked(repo: &Path, name: &str, oid: &str, target: &str) -> G
     if repo::op_state(repo, &repo::git_dir(repo)?).kind != "none" {
         return Ok(Some("An operation is in progress. Finish or abort it first.".into()));
     }
-    // The same branch must still be checked out: a fast-forward moves whatever HEAD names.
-    let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
-    if !head.ok() || head.text().trim() != name {
-        return Ok(Some("Another branch was checked out meanwhile.".into()));
-    }
-    // HEAD must still be the commit the counts were made for.
-    if runner::run(repo, ["rev-parse", "HEAD"])?.trim() != oid {
-        return Ok(Some("The branch changed meanwhile.".into()));
+    if let Some(reason) = head_moved(repo, name, oid)? {
+        return Ok(Some(reason));
     }
     let names = |args: &[&str]| -> GitResult<std::collections::HashSet<String>> {
         Ok(runner::run(repo, args)?.split('\0').filter(|s| !s.is_empty()).map(str::to_owned).collect())
@@ -1873,6 +1915,19 @@ fn current_branch_blocked(repo: &Path, name: &str, oid: &str, target: &str) -> G
     let shown: Vec<&str> = touched.iter().take(3).map(|s| s.as_str()).collect();
     let more = if touched.len() > 3 { format!(" and {} more", touched.len() - 3) } else { String::new() };
     Ok(Some(format!("Local changes in files the incoming commits change: {}{more}.", shown.join(", "))))
+}
+
+/// Why HEAD is no longer branch `name` (a full ref) at `oid`, if it is not: a fast-forward
+/// moves whatever HEAD names, and another branch may point at the same commit.
+fn head_moved(repo: &Path, name: &str, oid: &str) -> GitResult<Option<String>> {
+    let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
+    if !head.ok() || head.text().trim() != name {
+        return Ok(Some("Another branch was checked out meanwhile.".into()));
+    }
+    if runner::run(repo, ["rev-parse", "HEAD"])?.trim() != oid {
+        return Ok(Some("The branch changed meanwhile.".into()));
+    }
+    Ok(None)
 }
 
 /// "Revqora: changes on <branch> saved before pull", so the stash list says what a kept copy is.
@@ -2037,6 +2092,10 @@ fn pull_unsaved(
             None => true,
         };
         if can_ff {
+            if !unchanged()? {
+                return Err(GitError::new("Pull stopped because the current branch or working tree changed meanwhile. Review it before pulling again.")
+                    .kind("stale-operation"));
+            }
             set_aside()?;
             let mut result = merge_start_with_autostash(repo, targets[0], "ff-only", true)?;
             // Preserve the rebase-Pull API's success status, including when
@@ -2080,6 +2139,10 @@ fn pull_unsaved(
             }
         }
     } else {
+        if !unchanged()? {
+            return Err(GitError::new("Pull stopped because the current branch or working tree changed meanwhile. Review it before pulling again.")
+                .kind("stale-operation"));
+        }
         set_aside()?;
         merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, true).map_err(|mut error| {
             if error.kind == "diverged" {
@@ -2521,6 +2584,11 @@ pub fn merge_start(repo: &Path, target: &str, strategy: &str) -> GitResult<OpOut
 }
 
 fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autostash: bool) -> GitResult<OpOutcome> {
+    merge_run(repo, target, strategy, autostash, None)
+}
+
+/// `expect`: the branch (full ref) and commit HEAD must still be right before Git runs.
+fn merge_run(repo: &Path, target: &str, strategy: &str, autostash: bool, expect: Option<(&str, &str)>) -> GitResult<OpOutcome> {
     let gd = repo::git_dir(repo)?;
     let before = head_oid(repo);
     guard_ignored_merge(repo, target, before.as_deref())?;
@@ -2544,6 +2612,11 @@ fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autosta
         }
     }
     args.push(target);
+    if let Some((name, oid)) = expect {
+        if let Some(reason) = head_moved(repo, name, oid)? {
+            return Err(GitError::new(reason).kind("stale-operation"));
+        }
+    }
     let out = runner::exec(repo, &args)?;
     let text = format!("{}\n{}", out.text(), out.stderr);
     if out.ok() && !gd.join("MERGE_HEAD").exists() && autostash_conflict(repo, &text) {
@@ -4010,4 +4083,28 @@ fn saved_changes_never_overwrite_work_staged_meanwhile() {
 "
     );
     assert!(!runner::run(repo, ["stash", "list"]).unwrap().is_empty(), "the saved changes stay in Stashes");
+}
+
+#[cfg(test)]
+#[test]
+fn a_fast_forward_never_moves_another_branch_checked_out_at_the_same_commit() {
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = fixture.path();
+    for args in [&["init", "-qb", "main"][..], &["config", "user.name", "T"], &["config", "user.email", "t@example.com"]] {
+        runner::run(repo, args).unwrap();
+    }
+    runner::run(repo, ["commit", "-q", "--allow-empty", "-m", "base"]).unwrap();
+    let base = runner::run(repo, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+    runner::run(repo, ["commit", "-q", "--allow-empty", "-m", "incoming"]).unwrap();
+    let incoming = runner::run(repo, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+    runner::run(repo, ["reset", "-q", "--hard", &base]).unwrap();
+    // Another tool switches to a branch at the same commit after Pull all checked `main`.
+    runner::run(repo, ["switch", "-qc", "other"]).unwrap();
+    let error = merge_run(repo, &incoming, "ff-only", false, Some(("refs/heads/main", &base))).unwrap_err();
+    assert_eq!(error.message, "Another branch was checked out meanwhile.");
+    assert_eq!(runner::run(repo, ["rev-parse", "other"]).unwrap().trim(), base);
+    runner::run(repo, ["switch", "-q", "main"]).unwrap();
+    let outcome = merge_run(repo, &incoming, "ff-only", false, Some(("refs/heads/main", &base))).unwrap();
+    assert_eq!(outcome.status, "fastForward");
+    assert_eq!(runner::run(repo, ["rev-parse", "main"]).unwrap().trim(), incoming);
 }

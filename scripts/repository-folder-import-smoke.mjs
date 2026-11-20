@@ -66,9 +66,14 @@ async function checkFolderScanProgress(page, dialog) {
     await page.waitForFunction(() => window.__folderScanProbe.counts.cancel > 0);
     assert.deepEqual(await page.evaluate(() => window.__folderScanProbe.counts),
       { prepare: 1, scan: 1, cancel: 1, submit: 1 }, "Stop must not submit the form or start a second scan");
-    const stopped = dialog.getByText("Scan stopped.", { exact: true });
-    await stopped.waitFor();
+    // The scan ends in the backend first: until then the dialog says so and starts nothing else.
+    const stopping = dialog.getByRole("button", { name: "Stopping…", exact: true });
+    await stopping.waitFor();
+    assert(await stopping.isDisabled(), "A stopping scan cannot be stopped or restarted twice");
+    await dialog.getByText("Stopping the scan…", { exact: true }).waitFor();
+    assert.equal(await dialog.getByText("Scan stopped.", { exact: true }).count(), 0);
     await page.evaluate(() => window.__folderScanProbe.release());
+    const stopped = dialog.getByText("Scan stopped.", { exact: true });
     await stopped.waitFor();
     assert.equal(await dialog.getByRole("button", { name: /^Import \d+ repositor/ }).count(), 0);
   } finally {
@@ -159,6 +164,9 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
     await dialog.getByRole("button", { name: "Rescan", exact: true }).click();
     await page.waitForFunction(() => window.__rescanHold.held() === 1);
     await dialog.getByRole("button", { name: "Stop scan", exact: true }).click();
+    await dialog.getByRole("button", { name: "Stopping…", exact: true }).waitFor();
+    assert(await dialog.getByRole("button", { name: "Rescan", exact: true }).isDisabled(), "No new Rescan while the stopped one still runs");
+    await page.evaluate(() => window.__rescanHold.finish());
     await dialog.getByText("Rescan stopped. The previous list is kept.", { exact: true }).waitFor();
     await dialog.getByText("4 of 5 selected", { exact: true }).waitFor();
     assert.equal(await dialog.getByRole("checkbox", { name: /^service-worker\b/ }).isChecked(), false);

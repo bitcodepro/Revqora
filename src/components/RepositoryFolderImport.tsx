@@ -18,7 +18,7 @@ export function repositoryFolderImportDialog() {
 
 /** Live counts of a running scan: how many folders were read, how many repositories were found
  *  and which folder is being read, so a long scan visibly moves. */
-function FolderScanProgress({ scanId }: { scanId: number | null }) {
+function FolderScanProgress({ scanId, stopping }: { scanId: number | null; stopping: boolean }) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [progress, setProgress] = useState<RepositoryFolderScanProgress | null>(null);
   useEffect(() => {
@@ -38,7 +38,7 @@ function FolderScanProgress({ scanId }: { scanId: number | null }) {
     <Loader2 className="spin" size={16} aria-hidden="true" />
     <div className="repository-import-progress-text">
       <div>
-        Looking for Git repositories…
+        {stopping ? "Stopping the scan…" : "Looking for Git repositories…"}
         {progress && <span className="batch-note" aria-hidden="true">{scanCounts(progress)}</span>}
         {elapsedSeconds > 0 && <span className="batch-note" aria-hidden="true">{elapsedSeconds}s elapsed</span>}
       </div>
@@ -62,6 +62,10 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
   const [path, setPath] = useState("");
   const [scanning, setScanning] = useState(false);
   const [stopped, setStopped] = useState(false);
+  // Stop was pressed: the scan still runs until the backend has ended it, and no other scan
+  // starts before that.
+  const [stopping, setStopping] = useState(false);
+  const stopRequested = useRef<Promise<number> | null>(null);
   const [includeGenerated, setIncludeGenerated] = useState(false);
   const pendingScan = useRef<Promise<number> | null>(null);
   const [scanId, setScanId] = useState<number | null>(null);
@@ -108,10 +112,11 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
   }
 
   function stopScan() {
-    cancelFolderScan(pendingScan.current);
-    pendingScan.current = null;
-    setScanning(false);
-    setStopped(true);
+    const request = pendingScan.current;
+    if (!request || stopRequested.current === request) return;
+    stopRequested.current = request;
+    cancelFolderScan(request);
+    setStopping(true);
   }
 
   /** `rescan`: the folder again after changes on disk. The current list and selection stay
@@ -132,11 +137,12 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
       setSelected(new Set());
     }
     try {
+      const current = () => pendingScan.current === request && stopRequested.current !== request;
       const id = await request;
-      if (pendingScan.current !== request) return;
+      if (!current()) return;
       setScanId(id);
       const result = await api.repoScanFolder(id, folder, includeGenerated);
-      if (pendingScan.current !== request) return;
+      if (!current()) return;
       setScan(result);
       const roots = result.repositories.map(repo => repo.root);
       if (known) {
@@ -145,11 +151,16 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
         setRescanNote(rescanSummary(roots, known));
       } else setSelected(new Set(roots));
     } catch (cause) {
-      if (pendingScan.current === request) setError(errorMessage(cause));
+      if (pendingScan.current === request && stopRequested.current !== request) setError(errorMessage(cause));
     } finally {
       if (pendingScan.current === request) {
         pendingScan.current = null;
         setScanning(false);
+        if (stopRequested.current === request) {
+          stopRequested.current = null;
+          setStopping(false);
+          setStopped(true);
+        }
       }
     }
   }
@@ -194,7 +205,7 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     onClose={close} onSubmit={submit}
     footer={<>
       <button type="button" className="btn" onClick={close}>Cancel</button>
-      {scanning ? <button type="button" className="btn" onClick={event => { event.preventDefault(); stopScan(); }}>Stop scan</button>
+      {scanning ? <button type="button" className="btn" disabled={stopping} onClick={event => { event.preventDefault(); stopScan(); }}>{stopping ? "Stopping…" : "Stop scan"}</button>
         : scan ? <button type="submit" className="btn primary" disabled={!selectedCount}>Import {selectedCount} {selectedCount === 1 ? "repository" : "repositories"}</button>
         : <button type="submit" className="btn primary" disabled={!path.trim()}>Scan folder</button>}
     </>}>
@@ -215,7 +226,7 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
         setError("");
       }} /> Include ignored, build, dependency and cache folders
     </label>
-    {scanning && <FolderScanProgress key={scanId ?? "preparing"} scanId={scanId} />}
+    {scanning && <FolderScanProgress key={scanId ?? "preparing"} scanId={scanId} stopping={stopping} />}
     {stopped && <p className="batch-note" role="status">{scan ? "Rescan stopped. The previous list is kept." : "Scan stopped."}</p>}
     {error && <p className="red workspace-editor-error" role="alert">{error}</p>}
     {scan && <>

@@ -346,6 +346,38 @@ pub(super) fn run_with_deadline(repo: &Path, args: &[&str], env: &[(&str, &str)]
     }
 }
 
+/// A read-only command outside any open repository (a folder scan) that ends, with its
+/// descendants, as soon as `stop` is set: it then fails with kind `cancelled`.
+pub(crate) fn exec_until(dir: &Path, args: &[&str], stop: &std::sync::atomic::AtomicBool) -> GitResult<Output> {
+    use super::validation::{poll_process, process_tree, ProcessState};
+    use std::sync::atomic::Ordering;
+
+    debug_assert!(is_read_only(args));
+    let mut c = command(dir);
+    c.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let (mut child, tree) = process_tree::spawn(&mut c)?;
+    let stdout_pipe = child.stdout.take().expect("stdout piped");
+    let stderr_pipe = child.stderr.take().expect("stderr piped");
+    let out_thread = std::thread::spawn(move || capture_bytes(stdout_pipe, None));
+    let err_thread = std::thread::spawn(move || capture_bytes(stderr_pipe, Some(128 * 1024)));
+    let stopped = loop {
+        match poll_process(&mut child, stop.load(Ordering::Relaxed), false)? {
+            ProcessState::Exited => break false,
+            ProcessState::Cancelled => break true,
+            _ => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    // Descendants can still hold the output pipes when the Git leader exits.
+    tree.terminate();
+    let status = child.wait()?;
+    let stdout = out_thread.join().unwrap_or_else(|_| Err(std::io::Error::other("Git stdout reader failed")))?;
+    let stderr = err_thread.join().unwrap_or_else(|_| Err(std::io::Error::other("Git stderr reader failed")))?;
+    if stopped {
+        return Err(GitError::new("Stopped.").kind("cancelled"));
+    }
+    Ok(Output { stdout, stderr: String::from_utf8_lossy(&stderr).into_owned(), code: status.code().unwrap_or(-1) })
+}
+
 fn wait_for_deadline(child: &mut std::process::Child, timeout: Duration) -> GitResult<()> {
     use super::validation::{poll_process, ProcessState};
 

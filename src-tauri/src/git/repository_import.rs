@@ -151,6 +151,10 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool,
         return Err(GitError::new("Choose a folder directly to scan it for repositories."));
     }
 
+    // A folder below the top of a working copy: that working copy's ignore rules apply from the
+    // start, as they would had the scan begun at its top.
+    let enclosing =
+        if include_generated || root.join(".git").exists() || repo::discover(root).is_err() { None } else { ignored_folders(root, cancelled)?.map(Arc::new) };
     let workers = thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 8);
     let mut result = thread::scope(|scope| -> GitResult<FolderScan> {
         let (queue, jobs) = mpsc::channel::<(PathBuf, Option<Ignored>)>();
@@ -170,7 +174,7 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool,
         }
         drop(finished);
 
-        let mut pending = vec![(root.to_path_buf(), None)];
+        let mut pending = vec![(root.to_path_buf(), enclosing)];
         let mut active = 0;
         let mut result = FolderScan::default();
         loop {
@@ -269,7 +273,7 @@ fn scan_folder(root: &Path, folder: &Path, inherited: Option<Ignored>, include_g
             result.repository = Some(FoundRepository { root: found_root, relative_path, workspace_folder });
             // Inside a working copy its own ignore rules apply, not those of a repository around it.
             if !include_generated {
-                ignored = ignored_folders(folder).map(Arc::new);
+                ignored = ignored_folders(folder, cancelled)?.map(Arc::new);
             }
         } else {
             result.skipped += 1;
@@ -285,14 +289,20 @@ fn scan_folder(root: &Path, folder: &Path, inherited: Option<Ignored>, include_g
     Ok(result)
 }
 
-/// Folders `folder`'s working copy ignores, collapsed to the topmost ignored folder.
-fn ignored_folders(folder: &Path) -> Option<HashSet<PathBuf>> {
-    let out = runner::exec(folder, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]).ok()?;
+/// Folders below `folder` that its working copy ignores, collapsed to the topmost ignored
+/// folder (Git lists them relative to `folder`, also when it is below the top of the working
+/// copy). Stopping the scan stops Git too.
+fn ignored_folders(folder: &Path, cancelled: &AtomicBool) -> GitResult<Option<HashSet<PathBuf>>> {
+    let out = match runner::exec_until(folder, &["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], cancelled) {
+        Ok(out) => out,
+        Err(error) if error.kind == "cancelled" => return Err(cancelled_scan()),
+        Err(_) => return Ok(None),
+    };
     if !out.ok() {
-        return None;
+        return Ok(None);
     }
     let listed = out.stdout.split(|byte| *byte == 0).filter_map(|entry| std::str::from_utf8(entry).ok()?.strip_suffix('/'));
-    Some(listed.filter(|path| !path.is_empty()).map(|path| path.split('/').fold(folder.to_path_buf(), |full, part| full.join(part))).collect())
+    Ok(Some(listed.filter(|path| !path.is_empty()).map(|path| path.split('/').fold(folder.to_path_buf(), |full, part| full.join(part))).collect()))
 }
 
 fn is_cache_tag(path: &Path) -> bool {
@@ -468,6 +478,13 @@ mod tests {
         let full = scan(root, true, &AtomicBool::new(false), &ScanProgress::default()).unwrap();
         assert_eq!(full.repositories.len(), 4);
         assert_eq!(full.excluded, 0);
+
+        // Starting below the top of the working copy: its rules still apply.
+        let below = search(&app.join("src")).unwrap();
+        assert!(below.repositories.is_empty(), "{:?}", below.repositories.iter().map(|r| &r.relative_path).collect::<Vec<_>>());
+        assert_eq!(below.excluded, 2);
+        let below_full = scan(&app.join("src"), true, &AtomicBool::new(false), &ScanProgress::default()).unwrap();
+        assert_eq!(below_full.repositories.len(), 1);
     }
 
     #[cfg(unix)]

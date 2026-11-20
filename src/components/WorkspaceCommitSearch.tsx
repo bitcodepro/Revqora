@@ -106,7 +106,8 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
       <button type="button" className="btn sm ghost" onClick={() => setAll(!allCollapsed)}>
         {allCollapsed ? <><ChevronsUpDown size={13} /> Expand all</> : <><ChevronsDownUp size={13} /> Collapse all</>}
       </button>
-      <button type="button" className="btn sm ghost" onClick={() => void copyText(groupText(shown), "Search results copied")}><Copy size={13} /> Copy all results</button>
+      <button type="button" className="btn sm ghost" title={`Copies the matches loaded so far${completed < roots.length ? ", while other repositories are still searched" : ""}. Show more matches loads more.`}
+        onClick={() => void copyText(groupText(shown), "Loaded results copied")}><Copy size={13} /> Copy loaded results</button>
     </div>}
     {shown.map((root) => {
       const result = repositories[root];
@@ -120,7 +121,7 @@ function WorkspaceCommitSearch({ initialQuery, initialMode, close }: { initialQu
           </button>
           <h4 className="selectable" title={root}>{name}</h4>
           <span className="faint selectable">{result.error && !result.hits.length ? "Search failed" : count}</span>
-          <button type="button" className="icon-btn" aria-label={`Copy results from ${name}`} title="Copy this repository's matches" onClick={() => void copyText(groupText([root]), "Search results copied")}><Copy size={13} /></button>
+          <button type="button" className="icon-btn" aria-label={`Copy loaded results from ${name}`} title="Copy this repository's loaded matches" onClick={() => void copyText(groupText([root]), "Search results copied")}><Copy size={13} /></button>
         </div>
         {!folded && <>
         {result.error && <p className="batch-note amber selectable" role="alert">{result.error}</p>}

@@ -46,7 +46,7 @@ import { highlightBranch, jumpToCommit } from "./GraphView";
 import { useGraphDrag } from "./GraphDrop";
 import { confirmDialog, promptDialog } from "./dialogs";
 import { branchConnection, branchPairs } from "../lib/branchPresentation";
-import {sidebarBranchesKey,sidebarBranchPreferences,selectSidebarBranches} from "../lib/sidebarBranches";
+import {branchesInFolder,sidebarBranchesKey,sidebarBranchPreferences,selectSidebarBranches} from "../lib/sidebarBranches";
 import {loadBranchPreferences,preferencesKey} from "../lib/branchManager";
 import { matchesShortcut } from "../lib/shortcuts";
 import { renameRemoteBranch } from "./RemoteRename";
@@ -75,11 +75,6 @@ function buildTree(branches: BranchInfo[], strip = 0, flat=false): TreeNode {
     });
   }
   return root;
-}
-
-/** Every branch in a branch folder, subfolders included. */
-function branchesUnder(node: TreeNode): string[] {
-  return [...node.children.values()].flatMap(child => child.branch ? [child.branch.fullName] : branchesUnder(child));
 }
 
 function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
@@ -335,7 +330,7 @@ All changes of this branch are already in ${current ?? "the current branch"} (sq
       const open = isOpen(key);
       return [
         <div key={key} className="sb-item" style={{ paddingLeft: pad }} onClick={() => setOpenDirs((o) => ({ ...o, [key]: !open }))}
-          onContextMenu={(e) => contextMenu(e, branchFolderSyncMenu(root, branchesUnder(n), kind === "remote"))}>
+          onContextMenu={(e) => contextMenu(e, branchFolderSyncMenu(root, branchesInFolder((kind === "remote" ? refs?.remote : refs?.local) ?? [], `${prefix}${n.path}`), kind === "remote"))}>
           {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           <Folder size={13} style={{ flex: "none", color: "var(--text-faint)" }} />
           <span className="label">{n.name}</span>

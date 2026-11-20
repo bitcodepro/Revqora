@@ -21,7 +21,8 @@ function recentRead(root: string): BranchRead | undefined {
   return undefined;
 }
 
-function readClosedBranches(root: string) {
+/** Branches of a closed repository, reused for a short while (exported for tests). */
+export function readClosedBranches(root: string) {
   const known = recentRead(root);
   if (known) return Promise.resolve(known);
   const pending = inFlight.get(root);
@@ -30,7 +31,8 @@ function readClosedBranches(root: string) {
   const result = reads.run(root, () => api.refs(root))
     .then((refs): BranchRead => ({ refs }), (error): BranchRead => ({ error: errorMessage(error) }))
     .then(read => {
-      if ("refs" in read && generations.get(root) === generation) recent.set(root, { at: Date.now(), read });
+      // A repository that never changed has no generation yet: 0, as when the read started.
+      if ("refs" in read && (generations.get(root) ?? 0) === generation) recent.set(root, { at: Date.now(), read });
       return read;
     })
     .finally(() => inFlight.delete(root));
