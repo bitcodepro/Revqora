@@ -1296,17 +1296,13 @@ export function GraphView({
         </button>}
         {incoming > 0 && <span className="pill" title="Fetched commits waiting for Pull">{incoming.toLocaleString()} incoming · Pull to apply</span>}
         <div className="spacer" />
-        <span className="faint" style={{ fontSize: "var(--fs-xs)" }}>
+        {/* A slot of fixed width (up to "1,000,000+ commits" and the loading mark): a wrapped
+            toolbar would otherwise move the graph up and down while history pages load. */}
+        <span className="faint graph-commit-count" aria-busy={tab.graphLoading || undefined}>
           {total
             ? `${commitCount.toLocaleString()}${summary?.commitCount == null && moreHistory ? "+" : ""} commits`
             : ""}
-          {tab.graphLoading && (
-            <Loader2
-              size={12}
-              className="spin"
-              style={{ marginLeft: 6, verticalAlign: -2 }}
-            />
-          )}
+          <Loader2 size={12} className={tab.graphLoading ? "spin" : "graph-commit-count-idle"} aria-hidden />
         </span>
       </div>
       {cgMissing && (

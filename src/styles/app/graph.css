@@ -12,6 +12,13 @@
   flex: 1;
 }
 .graph-toolbar { flex-wrap: wrap; flex-shrink: 0; min-width: 0; }
+/* Same width for every count and with or without the loading mark: "1,000,000+ commits". */
+.graph-commit-count {
+  flex: none; display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px;
+  min-width: calc(19ch + 18px); white-space: nowrap; font-size: var(--fs-xs); font-variant-numeric: tabular-nums;
+}
+.graph-commit-count > svg { flex: none; }
+.graph-commit-count-idle { visibility: hidden; }
 .branch-switch-stash { flex: none; flex-wrap: wrap; gap: 8px; padding: 6px 12px; background: var(--bg-elev2); border-bottom: 1px solid var(--border-soft); }
 .workspace-search-controls { flex: none; flex-wrap: wrap; gap: 8px; }
 .workspace-search-controls > .input-wrap { flex: 1 1 14em; min-width: 0; }
