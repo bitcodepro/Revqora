@@ -860,7 +860,9 @@ pub fn fetch_background(repo: &Path) -> GitResult<BackgroundFetch> {
     // Usually remembered from the last status read: no Git process while the ref files keep
     // their size and time, and none afterwards when the fetch changed nothing.
     let before = super::operations::state_cache::current_refs(repo).ok();
-    let output = fetch_background_with_deadline(repo, std::time::Duration::from_secs(30))?;
+    // A stalled transfer ends sooner (GIT_HTTP_LOW_SPEED_*, ssh ConnectTimeout); the limit only
+    // stops a fetch that keeps going too long, so a large one over a slow link can finish.
+    let output = fetch_background_with_deadline(repo, std::time::Duration::from_secs(90))?;
     let after = super::operations::state_cache::current_refs(repo).ok();
     Ok(BackgroundFetch { output, refs_changed: before.is_none() || before != after })
 }
@@ -1094,7 +1096,17 @@ pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, on_line: imp
         let dirty = runner::exec(repo, ["diff", "HEAD", "--quiet", "--ignore-submodules=dirty"]).map(|out| out.code == 1);
         (name.join().unwrap_or_else(|_| Err(GitError::new("Reading the current branch failed."))), dirty)
     });
-    let (name, dirty) = (name?, dirty?);
+    let (name, mut dirty) = (name?, dirty?);
+    // Files Git calls modified although they are byte for byte the staged version: line-ending
+    // rules (`text`, `eol`) the committed file does not follow. No checkout or stash makes them
+    // clean, so Git would stop the pull on "local changes would be overwritten" and leave an
+    // autostash behind. They hold nothing to keep: while the pull runs, Git reads them as
+    // stored, and the incoming version replaces them.
+    RawLineEndings::clear_stale(repo)?;
+    let _raw = if dirty { RawLineEndings::apply(repo, &line_endings_only(repo)?)? } else { None };
+    if _raw.is_some() {
+        dirty = runner::exec(repo, ["diff", "HEAD", "--quiet", "--ignore-submodules=dirty"])?.code == 1;
+    }
     // Staged work is set aside only right before the pull integrates, after its recovery
     // checkpoint: that checkpoint must hold the staging as the user left it.
     let mut saved = None;
@@ -1120,6 +1132,107 @@ pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, on_line: imp
             }
             Err(error)
         }
+    }
+}
+
+const RAW_BEGIN: &str = "# revqora: a pull is running; these files are read as stored (removed afterwards)";
+const RAW_END: &str = "# revqora: end";
+
+/// Tracked files whose only difference is the line-ending rules: unstaged, same mode, and the
+/// working file is byte for byte the staged blob.
+fn line_endings_only(repo: &Path) -> GitResult<Vec<String>> {
+    let out = runner::exec(repo, ["diff", "--raw", "-z", "--no-abbrev", "--diff-filter=M", "--ignore-submodules=all", "--no-renames"])?;
+    if !out.ok() {
+        return Ok(Vec::new());
+    }
+    let text = out.text();
+    let mut fields = runner::split_nul(&text);
+    let mut candidates = Vec::new();
+    while let (Some(meta), Some(path)) = (fields.next(), fields.next()) {
+        let meta: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
+        // An attributes pattern cannot hold these safely; such files stay as Git sees them.
+        let plain = !path.is_empty() && !path.contains(['"', '\\', '*', '?', '[', '\n', '\r']);
+        if meta.len() >= 3 && meta[0] == meta[1] && meta[0] != "160000" && plain {
+            candidates.push((path.to_owned(), meta[2].to_owned()));
+        }
+    }
+    if candidates.is_empty() || candidates.len() > 5000 {
+        return Ok(Vec::new());
+    }
+    let input: String = candidates.iter().map(|(path, _)| format!("{path}\n")).collect();
+    let hashed = runner::exec_full(repo, ["hash-object", "--no-filters", "--stdin-paths"], &[], Some(input.as_bytes()))?;
+    if !hashed.ok() {
+        return Ok(Vec::new());
+    }
+    let hashed = hashed.text();
+    Ok(candidates.into_iter().zip(hashed.lines()).filter(|((_, staged), worktree)| staged == worktree.trim()).map(|((path, _), _)| path).collect())
+}
+
+/// While alive, `<git dir>/info/attributes` (which overrides `.gitattributes`) reads the given
+/// files without line-ending rules. Dropping it puts the file back as it was; a block a crash
+/// left behind is removed by the next pull.
+struct RawLineEndings {
+    file: PathBuf,
+    before: Option<Vec<u8>>,
+}
+
+impl RawLineEndings {
+    fn attributes_file(repo: &Path) -> GitResult<PathBuf> {
+        let path = PathBuf::from(runner::run(repo, ["rev-parse", "--git-path", "info/attributes"])?.trim());
+        Ok(if path.is_absolute() { path } else { repo.join(path) })
+    }
+
+    fn clear_stale(repo: &Path) -> GitResult<()> {
+        let file = Self::attributes_file(repo)?;
+        let Ok(text) = std::fs::read_to_string(&file) else { return Ok(()) };
+        if !text.contains(RAW_BEGIN) {
+            return Ok(());
+        }
+        let mut kept = String::new();
+        let mut inside = false;
+        for line in text.split_inclusive('\n') {
+            let bare = line.trim_end();
+            if bare == RAW_BEGIN {
+                inside = true;
+            } else if inside && bare == RAW_END {
+                inside = false;
+            } else if !inside {
+                kept.push_str(line);
+            }
+        }
+        std::fs::write(&file, kept).map_err(|e| GitError::new(format!("Could not update {}: {e}", file.display())))
+    }
+
+    fn apply(repo: &Path, paths: &[String]) -> GitResult<Option<RawLineEndings>> {
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        let file = Self::attributes_file(repo)?;
+        let before = std::fs::read(&file).ok();
+        let mut text = before.clone().unwrap_or_default();
+        if !text.is_empty() && !text.ends_with(b"\n") {
+            text.push(b'\n');
+        }
+        text.extend_from_slice(format!("{RAW_BEGIN}\n").as_bytes());
+        for path in paths {
+            text.extend_from_slice(format!("\"/{path}\" -text -eol -crlf\n").as_bytes());
+        }
+        text.extend_from_slice(format!("{RAW_END}\n").as_bytes());
+        let error = |e: std::io::Error| GitError::new(format!("Could not update {}: {e}", file.display()));
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(error)?;
+        }
+        std::fs::write(&file, text).map_err(error)?;
+        Ok(Some(RawLineEndings { file, before }))
+    }
+}
+
+impl Drop for RawLineEndings {
+    fn drop(&mut self) {
+        let _ = match &self.before {
+            Some(before) => std::fs::write(&self.file, before),
+            None => std::fs::remove_file(&self.file),
+        };
     }
 }
 

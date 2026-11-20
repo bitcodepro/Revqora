@@ -12,6 +12,15 @@ it("keeps unavailable saved folders out of the application error log", () => {
   expect(invoke).not.toHaveBeenCalled();
 });
 
+it("keeps requests a newer one replaced and the user's Cancel out of the error log", () => {
+  vi.stubGlobal("window", {});
+  vi.mocked(invoke).mockClear();
+  recordError("graph_load", { kind: "superseded", message: "A newer history request replaced this one." }, "repo");
+  recordError("fetch", { kind: "cancelled", message: "Transfer cancelled." }, "repo");
+  recordError("repo_scan_folder", { kind: "scan-cancelled", message: "Folder scan stopped." });
+  expect(invoke).not.toHaveBeenCalled();
+});
+
 it("records a status failure once and waits for it before opening the log", async () => {
   vi.stubGlobal("window", {});
   let finish!: () => void;

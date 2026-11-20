@@ -213,6 +213,36 @@ fn staged_work_saved_before_a_paused_rebase_comes_back_after_abort() {
 }
 
 #[test]
+fn pull_updates_files_only_line_ending_rules_call_modified() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (_keep, _server, me, colleague) = shared_remote();
+        // Committed with CRLF, then a rule that stores text with LF: Git calls the untouched
+        // files modified, and no checkout or stash changes that.
+        fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        colleague.commit_all("crlf");
+        colleague.git(&["push", "-q", "origin", "main"]);
+        me.git(&["pull", "-q", "--ff-only"]);
+        fs::write(me.p().join(".git/info/attributes"), "* text\n").unwrap();
+        me.git(&["config", "core.eol", "lf"]);
+        me.write("a.txt", "my real edit\n");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(me.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        assert!(me.git(&["status", "--porcelain"]).contains(" M crlf.txt"), "{mode}: line endings alone make it modified");
+        fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\nthree\r\n").unwrap();
+        let theirs = colleague.commit_all("three");
+        colleague.git(&["push", "-q", "origin", "main"]);
+
+        let out = ops::pull(me.p(), mode, |_| {}).unwrap();
+        assert!(matches!(out.status.as_str(), "done" | "fastForward"), "{mode}: {out:?}");
+        assert_eq!(me.git(&["rev-parse", "HEAD"]).trim(), theirs, "{mode}");
+        assert_eq!(fs::read(me.p().join("crlf.txt")).unwrap(), b"one\r\ntwo\r\nthree\r\n", "{mode}: the incoming version");
+        assert_eq!(fs::read_to_string(me.p().join("a.txt")).unwrap(), "my real edit\n", "{mode}: a real edit is kept");
+        assert!(me.git(&["stash", "list"]).is_empty(), "{mode}: nothing left behind");
+        assert_eq!(fs::read_to_string(me.p().join(".git/info/attributes")).unwrap(), "* text\n", "{mode}: the rules are as before");
+    }
+}
+
+#[test]
 fn a_conflicting_autostash_is_reported_not_shown_as_success() {
     let (_keep, _server, me, colleague) = shared_remote();
     colleague.write("a.txt", "their line\n");

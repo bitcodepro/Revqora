@@ -9,13 +9,15 @@ export interface ErrorLogEntry {
   count: number;
 }
 
+const NOT_FAILURES = new Set(["repository-folder-unavailable", "superseded", "cancelled", "scan-cancelled"]);
 const reported = new WeakSet<object>();
 const writes = new Set<Promise<unknown>>();
 
 export function recordError(source: string, error: unknown, repository?: string) {
   if (typeof window === "undefined") return;
   const value = typeof error === "object" && error !== null ? error as Record<string, unknown> : null;
-  if (value?.kind === "repository-folder-unavailable") return;
+  // Not failures: a closed repository folder, a request a newer one replaced, the user's Cancel.
+  if (typeof value?.kind === "string" && NOT_FAILURES.has(value.kind)) return;
   if (value && reported.has(value)) return;
   if (value) reported.add(value);
   const code = typeof value?.kind === "string" ? value.kind : error instanceof Error ? error.name : "error";

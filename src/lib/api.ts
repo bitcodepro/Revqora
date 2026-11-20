@@ -84,7 +84,8 @@ const invokeWithErrorLog = async <T>(command: string, args?: Record<string, unkn
   try {
     return await invoke<T>(command, args);
   } catch (error) {
-    recordError(command, error, typeof args?.repo === "string" ? args.repo : undefined);
+    // Automatic fetches log for themselves: once per lasting problem, not once per round.
+    if (command !== "fetch_background") recordError(command, error, typeof args?.repo === "string" ? args.repo : undefined);
     throw error;
   }
 };

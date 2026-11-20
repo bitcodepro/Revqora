@@ -304,11 +304,16 @@ function useAutoFetch() {
     const { active, order } = useRepos.getState();
     const library = useSettings.getState().autoFetchLibrary ? useLibrary.getState().knownRoots : [];
     const roots = uniqueRoots([...(active ? [active] : []), ...order, ...library]);
+    // Two fetches the network ended in one round: the connection is down (VPN, sleep, no
+    // network). The rest of the round would only time out too; the next round tries again.
+    let networkFailures = 0;
     await fetchRound(roots, async root => {
       const tab = useRepos.getState().tabs[root];
       // An open repository is fetched once it has loaded.
-      if (!tab || tab.info) await quietFetch(root);
-    }, current, AUTO_FETCH_PARALLEL);
+      if (!tab || tab.info) {
+        if (await quietFetch(root) === "transient") networkFailures++;
+      }
+    }, () => current() && networkFailures < 2, AUTO_FETCH_PARALLEL);
   }, false, undefined, FIRST_AUTO_FETCH_MS);
 }
 

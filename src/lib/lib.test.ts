@@ -144,6 +144,35 @@ describe("background fetch", () => {
     expect(calls).toBe(1);
   });
 
+  it("backs off a repository the network keeps failing and logs it once, not every round", async () => {
+    const logged: string[] = [];
+    let calls = 0;
+    const timeout = { message: "Git exceeded its 30 second time limit.", kind: "git-timeout", stderr: "", code: null, details: [] };
+    const quietFetch = createAutoFetch({
+      fetch: async () => { calls++; throw timeout; },
+      refresh: async () => {},
+      busy: () => false,
+      log: (_root, error) => logged.push((error as { message: string }).message),
+    });
+    const rounds: string[] = [];
+    for (let round = 0; round < 12; round++) rounds.push(await quietFetch("/repo"));
+    // Tried in rounds 1, 2, 4 and 8, then every 8th: never every round while the network is down.
+    expect(rounds.slice(0, 8)).toEqual(["transient", "transient", "skipped", "transient", "skipped", "skipped", "skipped", "transient"]);
+    expect(calls).toBe(4);
+    expect(logged).toEqual(["Automatic fetch failed 3 times in a row. Last error: Git exceeded its 30 second time limit."]);
+    // Other failures are logged once per message.
+    const broken = createAutoFetch({
+      fetch: async () => { throw { message: "fatal: bad config", kind: "error", stderr: "", code: 128, details: [] }; },
+      refresh: async () => {},
+      busy: () => false,
+      log: (_root, error) => logged.push((error as { message: string }).message),
+    });
+    logged.length = 0;
+    expect(await broken("/repo")).toBe("failed");
+    expect(await broken("/repo")).toBe("failed");
+    expect(logged).toEqual(["fatal: bad config"]);
+  });
+
   it("fetches a library of 40 repositories four at a time and stops when the round ends", async () => {
     let running = 0, peak = 0;
     const fetched: string[] = [];

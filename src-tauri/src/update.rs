@@ -588,31 +588,91 @@ fn swap_entries(
     Ok(())
 }
 
-/// Removes what a previous update left behind (the old exe may still be locked for a moment).
+/// Starts in a row that could not remove the leftovers of an update, beside the app.
+const CLEANUP_FAILURES: &str = ".revqora-update-cleanup";
+/// Starts in a row with leftovers that could not be removed before the error log names them.
+const CLEANUP_REPORT_AFTER: u32 = 3;
+
+/// Removes what a previous update left behind. The old exe can stay locked for a while after it
+/// exited (an antivirus scan, a WebView2 process still closing): cleanup keeps trying in the
+/// background for about five minutes and clears read-only attributes. Nothing in the folder is
+/// needed any more, so a folder that is still there is only reported after it outlived
+/// [`CLEANUP_REPORT_AFTER`] starts; every start tries again.
 pub fn cleanup(root: &Path) {
-    let _lease = match UpdateLease::acquire(root) {
-        Ok(lease) => lease,
-        Err(error) => {
-            if error.kind != "update-busy" {
-                let _ = crate::error_log::record("update.cleanup", &error.kind, &error.message);
-            }
-            return;
-        }
-    };
+    let waits: Vec<Duration> = std::iter::repeat_n(Duration::from_millis(500), 20).chain(std::iter::repeat_n(Duration::from_secs(30), 10)).collect();
+    cleanup_with(root, &waits);
+}
+
+fn cleanup_with(root: &Path, waits: &[Duration]) {
     let staging = root.join(STAGING);
-    if staging.join("rollback-incomplete").exists() || staging.join(PENDING).exists() {
-        return;
-    }
-    for attempt in 0..20 {
-        match fs::remove_dir_all(&staging) {
-            Ok(()) => return,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-            Err(error) if attempt == 19 => {
-                let error = update_io("Clean up update files", &staging, error);
-                let _ = crate::error_log::record("update.cleanup", &error.kind, &error.message);
+    let mut last = None;
+    for attempt in 0..=waits.len() {
+        {
+            // Released while waiting, so an update can start meanwhile.
+            let _lease = match UpdateLease::acquire(root) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    if error.kind != "update-busy" {
+                        let _ = crate::error_log::record("update.cleanup", &error.kind, &error.message);
+                    }
+                    return;
+                }
+            };
+            if staging.join("rollback-incomplete").exists() || staging.join(PENDING).exists() {
+                return;
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(500)),
+            match remove_leftovers(&staging) {
+                Ok(()) => {
+                    let _ = fs::remove_file(root.join(CLEANUP_FAILURES));
+                    return;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let _ = fs::remove_file(root.join(CLEANUP_FAILURES));
+                    return;
+                }
+                Err(error) => last = Some(error),
+            }
         }
+        if let Some(wait) = waits.get(attempt) {
+            std::thread::sleep(*wait);
+        }
+    }
+    let Some(error) = last else { return };
+    let failures = fs::read_to_string(root.join(CLEANUP_FAILURES)).ok().and_then(|text| text.trim().parse::<u32>().ok()).unwrap_or(0) + 1;
+    let _ = fs::write(root.join(CLEANUP_FAILURES), failures.to_string());
+    if failures >= CLEANUP_REPORT_AFTER {
+        let mut error = update_io("Clean up update files", &staging, error);
+        error.message = format!(
+            "{} The folder holds only the files an update replaced; it could not be removed for {failures} starts in a row. Close programs that may keep its files open, or delete it.",
+            error.message
+        );
+        let _ = crate::error_log::record("update.cleanup", &error.kind, &error.message);
+    }
+}
+
+/// Removes `staging`, also when files in it are read-only (Windows refuses to delete them).
+fn remove_leftovers(staging: &Path) -> std::io::Result<()> {
+    match fs::remove_dir_all(staging) {
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            make_writable(staging);
+            fs::remove_dir_all(staging)
+        }
+        result => result,
+    }
+}
+
+fn make_writable(path: &Path) {
+    let Ok(metadata) = fs::symlink_metadata(path) else { return };
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path).into_iter().flatten().flatten() {
+            make_writable(&entry.path());
+        }
+    }
+    let mut permissions = metadata.permissions();
+    if permissions.readonly() && !metadata.file_type().is_symlink() {
+        #[allow(clippy::permissions_set_readonly_false)] // Only the update's own leftovers, before deleting them.
+        permissions.set_readonly(false);
+        let _ = fs::set_permissions(path, permissions);
     }
 }
 
@@ -712,6 +772,22 @@ mod tests {
         ] {
             assert!(!trusted_url(value), "{value}");
         }
+    }
+
+    #[test]
+    fn cleanup_removes_read_only_leftovers_and_reports_only_lasting_ones() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let old = root.join(STAGING).join("old");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("revqora.exe"), "old").unwrap();
+        let mut permissions = fs::metadata(old.join("revqora.exe")).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(old.join("revqora.exe"), permissions).unwrap();
+        fs::write(root.join(CLEANUP_FAILURES), "2").unwrap();
+        cleanup_with(root, &[]);
+        assert!(!root.join(STAGING).exists(), "read-only leftovers are removed");
+        assert!(!root.join(CLEANUP_FAILURES).exists(), "the count of failed starts is reset");
     }
 
     #[test]
