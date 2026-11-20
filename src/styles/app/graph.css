@@ -25,7 +25,11 @@
 .workspace-search-controls > select { flex: 0 1 13em; min-width: 0; width: 13em; max-width: 100%; }
 .workspace-search-group { flex: none; border: 1px solid var(--border); border-radius: var(--radius); margin-top: 8px; overflow: hidden; background: var(--bg-elev); }
 .workspace-search-group h4, .workspace-search-group p { margin: 0; padding: 8px 10px; }
-.workspace-search-group h4 { background: var(--bg-elev2); color: var(--text); }
+.workspace-search-tools { flex: none; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.workspace-search-group-head { gap: 4px; padding: 2px 4px; background: var(--bg-elev2); cursor: pointer; }
+.workspace-search-group-head h4 { flex: 0 1 auto; min-width: 0; padding: 6px 4px; color: var(--text); overflow-wrap: anywhere; cursor: text; }
+.workspace-search-group-head > .faint { flex: 1 1 auto; font-size: 12px; cursor: text; }
+.workspace-search-hit { cursor: pointer; }
 .workspace-search-hit {
   display: grid;
   gap: 4px;

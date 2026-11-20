@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { relativeTime } from "./format";
 import type { CommitSearchHit, CommitSearchPage } from "./types";
-import { exclusiveLoads, loadRepositoryMatches, mergeHits, prioritizeRoots, searchRepositories, type RepositorySearchResult } from "./workspaceSearch";
+import { exclusiveLoads, loadRepositoryMatches, mergeHits, prioritizeRoots, searchHitText, searchRepositories, searchResultsText, type RepositorySearchResult } from "./workspaceSearch";
 
 const hit = (oid: string, authorTime: number): CommitSearchHit => ({ oid, subject: oid, author: "A", authorTime, refs: "" });
 const page = (commits: CommitSearchHit[], nextCursor: string | null = null): CommitSearchPage =>
@@ -122,5 +123,19 @@ describe("workspace commit search", () => {
     gate.resolve(page([hit("x", 1)]));
     await search;
     expect(loads.busy("r")).toBe(false);
+  });
+});
+
+describe("copied search results", () => {
+  const now = 1_000_000;
+  const match: CommitSearchHit = { oid: "a".repeat(40), subject: "Fix login", author: "Ann", authorTime: now - 7200, refs: "main" };
+  const age = relativeTime(now - 7200, now);
+  it("copies a match with its full hash, author, age and refs", () => {
+    expect(searchHitText(match, now)).toBe(`Fix login\n${"a".repeat(40)} · Ann · ${age} · main`);
+    expect(searchHitText({ ...match, subject: "", refs: "" }, now)).toBe(`(no commit message)\n${"a".repeat(40)} · Ann · ${age}`);
+  });
+  it("copies every repository name with its matches and errors", () => {
+    expect(searchResultsText([{ name: "api", hits: [match] }, { name: "web", hits: [], error: "Search failed" }], now))
+      .toBe(`api\n\n${searchHitText(match, now)}\n\n\nweb\n\nSearch failed`);
   });
 });
