@@ -20,7 +20,7 @@ import { repoToolsDialog } from "./components/RepoTools";
 import { Onboarding } from "./components/Onboarding";
 import { GitMissing } from "./components/GitMissing";
 import * as A from "./lib/actions";
-import { api, errorMessage } from "./lib/api";
+import { api, errorMessage, isGitError } from "./lib/api";
 import { WORKTREE } from "./lib/types";
 import { CommandPalette, OpBanner, paletteShortcut, StatusBar, TopBar, Welcome } from "./components/Shell";
 import { ContextMenuHost, DialogHost, Splitter, ToastHost } from "./components/Overlays";
@@ -32,7 +32,7 @@ import { ChangesView } from "./components/ChangesView";
 import { AskpassHost } from "./components/Askpass";
 import { branchCommitCompare } from "./components/BranchCommitCompare";
 import { startUpdateChecks } from "./lib/update";
-import { createAutoFetch, defaultFetch, fetchRound } from "./lib/autofetch";
+import { autoFetchRound, createAutoFetch, defaultFetch, urlHost } from "./lib/autofetch";
 import { useBackgroundPoll } from "./lib/backgroundPolling";
 import { checkPullRequestActivity, resetPullRequestActivity } from "./lib/prTracking";
 import { refreshRepositoryView } from "./lib/prRefresh";
@@ -283,6 +283,11 @@ const quietFetch = createAutoFetch({
     return useRepos.getState().refresh(root, { background: true, revalidate: true, info: true, status: true, refs: true });
   },
   failed: (root, e) => { if (useRepos.getState().tabs[root]) useRepos.getState().patch(root, { fetchError: errorMessage(e) }); },
+  serverOf: root => {
+    const remotes = useRepos.getState().tabs[root]?.refs?.remotes ?? [];
+    const remote = remotes.find(r => r.name === "origin") ?? remotes[0];
+    return remote ? urlHost(remote.fetchUrl) : null;
+  },
   // Other background fetches of the same round do not count as the user's work.
   busy: () => useUi.getState().busy.length > 0 || useUi.getState().repositoryOperations.some(op => op.command !== "fetch_background")
     || Object.values(useRepos.getState().tabs).some((t) => t.pendingMutations > 0),
@@ -304,16 +309,11 @@ function useAutoFetch() {
     const { active, order } = useRepos.getState();
     const library = useSettings.getState().autoFetchLibrary ? useLibrary.getState().knownRoots : [];
     const roots = uniqueRoots([...(active ? [active] : []), ...order, ...library]);
-    // Two fetches the network ended in one round: the connection is down (VPN, sleep, no
-    // network). The rest of the round would only time out too; the next round tries again.
-    let networkFailures = 0;
-    await fetchRound(roots, async root => {
+    await autoFetchRound(roots, quietFetch, root => {
       const tab = useRepos.getState().tabs[root];
       // An open repository is fetched once it has loaded.
-      if (!tab || tab.info) {
-        if (await quietFetch(root) === "transient") networkFailures++;
-      }
-    }, () => current() && networkFailures < 2, AUTO_FETCH_PARALLEL);
+      return !tab || !!tab.info;
+    }, current, AUTO_FETCH_PARALLEL);
   }, false, undefined, FIRST_AUTO_FETCH_MS);
 }
 
@@ -365,7 +365,16 @@ function MainApp() {
       void restoreRepositorySession();
       const initial = useRepos.getState().selectionVersion;
       const paths = await api.startupPaths().catch(() => [] as string[]);
-      if (paths.length) void useRepos.getState().openMany(paths, useRepos.getState().selectionVersion === initial ? paths.at(-1) : undefined);
+      if (paths.length) {
+        void useRepos.getState().openMany(paths, useRepos.getState().selectionVersion === initial ? paths.at(-1) : undefined).then(results => {
+          // A folder named on the command line that is not a repository: offer to find the
+          // repositories inside it, as opening it from the window does.
+          const named = uniqueRoots(paths);
+          results.forEach((result, index) => {
+            if (result.status === "rejected" && isGitError(result.reason) && result.reason.kind === "not-a-repo") void A.openRepoPath(named[index]);
+          });
+        });
+      }
     })().then(() => startup.current!.restored(), error => toast.error(error, "Could not restore repository session"));
   }, []);
 

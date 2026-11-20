@@ -7,6 +7,8 @@ export interface AutoFetchDeps {
   refresh: (root: string, changed: boolean) => Promise<unknown>;
   busy: () => boolean;
   failed?: (root: string, error: unknown) => void;
+  /** The server a repository fetches from, when known (an open repository's remotes). */
+  serverOf?: (root: string) => string | null;
   /** Writes a failure to the error log (tests replace it). */
   log?: (root: string, error: unknown) => void;
 }
@@ -22,27 +24,44 @@ export const LOG_AFTER_FAILURES = 3;
  *  repository and round. */
 export function transientFetchFailure(error: unknown): boolean {
   if (!isGitError(error)) return false;
-  if (["git-timeout", "network-stalled", "cancelled", "repository-busy"].includes(error.kind)) return true;
+  if (["git-timeout", "network-stalled", "server-unavailable", "cancelled", "repository-busy"].includes(error.kind)) return true;
   return /could not resolve host|failed to connect|couldn't connect|connection (was )?(reset|refused|timed out|closed)|timed out|operation too slow|network is unreachable|unable to access|early eof|ssl/i.test(error.message);
 }
 
 const defaultLog = (root: string, error: unknown) => recordError("fetch_background", error, root);
+
+/** The host of a remote URL (`https://host/…`, `ssh://user@host:22/…`, `user@host:path`). */
+export function urlHost(url: string): string | null {
+  const match = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?(\[[^\]]+\]|[^/:?#]+)/i.exec(url) ?? /^(?:[^@/\\:]+@)?([^/\\:]+):(?!\/\/)/.exec(url);
+  return match && !/^[a-z]$/i.test(match[1]) ? match[1].toLowerCase() : null;
+}
+
+/** The server a failed fetch names: the URL Git could not reach, or the host it could not resolve or connect to. */
+export function failedServer(error: unknown): string | null {
+  const message = isGitError(error) ? `${error.message}\n${error.stderr ?? ""}` : String(error ?? "");
+  const url = /'([a-z][a-z0-9+.-]*:\/\/[^']+)'/i.exec(message);
+  if (url) return urlHost(url[1]);
+  const host = /(?:could not resolve host|connect to host|could not resolve hostname)[:\s]+([a-z0-9.-]+)/i.exec(message);
+  return host ? host[1].toLowerCase() : null;
+}
 
 /**
  * Background fetch for the open repositories. Uses the noninteractive backend command (no
  * credential prompts), never runs twice at once for a repository, and stops for a repository
  * after an authentication failure until the app restarts.
  *
- * A repository whose fetch the network ended waits longer each time (the next round, then 1,
- * 3 and at most 7 rounds skipped); it goes to the error log once after
+ * A repository whose fetch the network or its server ended waits longer each time (the next
+ * round, then 1 and at most 3 rounds skipped); it goes to the error log once after
  * {@link LOG_AFTER_FAILURES} such failures in a row. Other failures are logged once per message.
  */
 export function createAutoFetch(deps: AutoFetchDeps) {
   const inFlight = new Set<string>();
   const disabled = new Set<string>();
   const failures = new Map<string, { count: number; skip: number; logged: string | null }>();
+  // Learned from failures, for repositories that are not open.
+  const servers = new Map<string, string>();
   const log = deps.log ?? defaultLog;
-  return async function quietFetch(root: string): Promise<AutoFetchResult> {
+  const quietFetch = async function quietFetch(root: string): Promise<AutoFetchResult> {
     if (disabled.has(root) || inFlight.has(root) || deps.busy()) return "skipped";
     const failure = failures.get(root);
     if (failure && failure.skip > 0) {
@@ -59,12 +78,14 @@ export function createAutoFetch(deps: AutoFetchDeps) {
       // The repository was busy with another operation: not a failure, try at the next interval.
       if (isGitError(e) && e.kind === "repository-busy") return "skipped";
       deps.failed?.(root, e);
+      const server = failedServer(e);
+      if (server) servers.set(root, server);
       if (isGitError(e) && e.kind === "auth") disabled.add(root);
       const state = failures.get(root) ?? { count: 0, skip: 0, logged: null };
       failures.set(root, state);
       state.count++;
       if (transientFetchFailure(e)) {
-        state.skip = Math.min(7, 2 ** (state.count - 1) - 1);
+        state.skip = Math.min(3, 2 ** (state.count - 1) - 1);
         if (state.count === LOG_AFTER_FAILURES) log(root, withMessage(e, `Automatic fetch failed ${LOG_AFTER_FAILURES} times in a row. Last error: ${errorMessage(e)}`));
         return "transient";
       }
@@ -78,6 +99,37 @@ export function createAutoFetch(deps: AutoFetchDeps) {
       inFlight.delete(root);
     }
   };
+  /** The server `root` fetches from, if known. */
+  const server = (root: string) => deps.serverOf?.(root) ?? servers.get(root) ?? null;
+  return Object.assign(quietFetch, { server });
+}
+
+/** Failures in one round before the rest of a server's repositories wait for the next round. */
+export const SERVER_FAILURES_PER_ROUND = 2;
+
+/**
+ * One automatic fetch round. A server that failed twice (down, answering 502, unreachable)
+ * is not asked again this round, and its other repositories wait; repositories on other
+ * servers are still fetched. Two failures that name no server (time limits) mean the
+ * connection itself is down: the round ends.
+ */
+export async function autoFetchRound(
+  roots: string[],
+  quietFetch: ((root: string) => Promise<AutoFetchResult>) & { server: (root: string) => string | null },
+  eligible: (root: string) => boolean,
+  current: () => boolean,
+  parallel: number,
+): Promise<void> {
+  const failedServers = new Map<string, number>();
+  let unknown = 0;
+  const down = (server: string | null) => !!server && (failedServers.get(server) ?? 0) >= SERVER_FAILURES_PER_ROUND;
+  await fetchRound(roots, async root => {
+    if (!eligible(root) || down(quietFetch.server(root))) return;
+    if (await quietFetch(root) !== "transient") return;
+    const server = quietFetch.server(root);
+    if (server) failedServers.set(server, (failedServers.get(server) ?? 0) + 1);
+    else unknown++;
+  }, () => current() && unknown < SERVER_FAILURES_PER_ROUND, parallel);
 }
 
 function withMessage(error: unknown, message: string) {

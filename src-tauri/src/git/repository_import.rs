@@ -149,6 +149,9 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool,
     if !metadata.is_dir() || path_is_link(&metadata) {
         return Err(GitError::new("Choose a folder directly to scan it for repositories."));
     }
+    // Every path found is this one plus folder names read from disk: written once without
+    // `.`, `..` or a trailing separator, they come out as Git itself would name them.
+    let root = &plain_root(root);
 
     // A folder below the top of a working copy: that working copy's ignore rules apply from the
     // start, as they would had the scan begun at its top.
@@ -278,7 +281,8 @@ fn scan_folder(root: &Path, folder: &Path, inherited: Option<Ignored>, include_g
             let relative_path = folder.strip_prefix(root).ok().and_then(Path::to_str).unwrap_or(&found_root).to_owned();
             result.repository = Some(FoundRepository { root: found_root, relative_path, workspace_folder });
             // Inside a working copy its own ignore rules apply, not those of a repository around it.
-            if !include_generated {
+            // Without subfolders there is nothing they could exclude: no Git process.
+            if !include_generated && !result.children.is_empty() {
                 ignored = ignored_folders(folder, cancelled)?.map(Arc::new);
             }
         } else {
@@ -316,12 +320,44 @@ fn is_cache_tag(path: &Path) -> bool {
     fs::File::open(path).and_then(|mut file| file.read_exact(&mut start)).is_ok() && start == CACHE_TAG_SIGNATURE
 }
 
+#[cfg(windows)]
+fn plain_root(root: &Path) -> PathBuf {
+    std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf()).components().collect()
+}
+
+#[cfg(not(windows))]
+fn plain_root(root: &Path) -> PathBuf {
+    fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+}
+
+/// `folder` is the top of a working copy: its `.git` is a Git directory, or a file naming one
+/// (`gitdir: …`, a linked worktree or a submodule), with what Git itself requires of one
+/// (HEAD, objects and refs, the shared ones for a worktree). Read from disk without a Git
+/// process: a scan can find hundreds of repositories, and starting processes is what made it
+/// slow.
 fn exact_repository(folder: &Path) -> Option<String> {
-    let root = repo::discover(folder).ok()?;
-    if fs::canonicalize(folder).ok()? != fs::canonicalize(&root).ok()? {
+    let dot = folder.join(".git");
+    let git_dir = if fs::metadata(&dot).ok()?.is_dir() {
+        dot
+    } else {
+        let text = fs::read_to_string(&dot).ok()?;
+        let target = text.trim_start_matches('\u{feff}').lines().next()?.strip_prefix("gitdir:")?.trim();
+        if target.is_empty() {
+            return None;
+        }
+        folder.join(target)
+    };
+    if !git_dir.join("HEAD").is_file() {
         return None;
     }
-    root.to_str().map(str::to_owned)
+    let common = match fs::read_to_string(git_dir.join("commondir")) {
+        Ok(text) if !text.trim().is_empty() => git_dir.join(text.trim()),
+        _ => git_dir,
+    };
+    if !common.join("objects").is_dir() || !common.join("refs").is_dir() {
+        return None;
+    }
+    folder.to_str().map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -378,6 +414,25 @@ mod tests {
         let found = search(&root.join("projects")).unwrap().repositories;
         assert_eq!(found.len(), 1);
         assert!(Path::new(found[0].workspace_folder.as_deref().unwrap()).ends_with("projects"));
+    }
+
+    #[test]
+    fn recognizes_linked_worktrees_and_skips_broken_git_files() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        init(&root.join("main"));
+        runner::run(&root.join("main"), ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base"]).unwrap();
+        runner::run(&root.join("main"), ["worktree", "add", "-q", root.join("linked").to_str().unwrap()]).unwrap();
+        fs::create_dir(root.join("moved")).unwrap();
+        fs::write(root.join("moved/.git"), "gitdir: ../nowhere/.git/worktrees/moved\n").unwrap();
+        let result = search(root).unwrap();
+        let names: Vec<_> = result.repositories.iter().map(|repo| Path::new(&repo.root).file_name().unwrap().to_str().unwrap().to_owned()).collect();
+        assert_eq!(names, ["linked", "main"]);
+        assert_eq!(result.skipped, 1);
+        for repo in &result.repositories {
+            assert_eq!(Path::new(&repo.root), Path::new(&repo.root).components().collect::<PathBuf>(), "{}", repo.root);
+            assert!(crate::git::repo::discover(Path::new(&repo.root)).is_ok(), "{}", repo.root);
+        }
     }
 
     #[test]

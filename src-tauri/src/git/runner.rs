@@ -547,6 +547,8 @@ fn fail(args_desc: String, out: &Output) -> GitError {
     let kind = classify(&format!("{stderr}\n{stdout}"));
     if kind == "network-stalled" {
         msg = "The server stopped sending data, so Git gave up. Check your network, VPN or proxy and try again.".into();
+    } else if kind == "server-unavailable" {
+        msg.push_str("\nThe server answered with an error of its own (HTTP 5xx): it is down, restarting or overloaded. Try again later.");
     }
     GitError { message: msg, stderr: format!("{stderr}\n{stdout}").trim().to_string(), code: Some(out.code), kind, details: Vec::new() }
 }
@@ -761,6 +763,9 @@ fn classify(s: &str) -> String {
     let l = s.to_lowercase();
     if l.contains("operation too slow") {
         "network-stalled".into()
+    } else if l.contains("the requested url returned error: 5") {
+        // curl's report of an HTTP 5xx answer: the server (or a proxy in front of it) failed.
+        "server-unavailable".into()
     } else if l.contains("not possible to fast-forward") {
         "diverged".into()
     } else if l.contains("would be overwritten") || l.contains("your local changes") {
@@ -1011,6 +1016,11 @@ mod tests {
         assert_eq!(err.kind, "network-stalled");
         assert!(err.message.starts_with("The server stopped sending data"), "{}", err.message);
         assert_eq!(super::classify("hint: Diverging branches can't be fast-forwarded\nfatal: Not possible to fast-forward, aborting."), "diverged");
+        let down = "fatal: unable to access 'https://git.example.invalid/team/api.git/': The requested URL returned error: 502";
+        let err = super::to_error("git fetch", &super::Output { stdout: Vec::new(), stderr: down.into(), code: 128 });
+        assert_eq!(err.kind, "server-unavailable");
+        assert!(err.message.starts_with("unable to access 'https://git.example.invalid/team/api.git/'") && err.message.contains("HTTP 5xx"), "{}", err.message);
+        assert_eq!(super::classify("fatal: unable to access 'https://x/r.git/': The requested URL returned error: 403"), "error");
     }
     #[test]
     fn terminal_codes_are_removed_from_git_text() {

@@ -12,8 +12,9 @@ import type { RepositoryFolderScan, RepositoryFolderScanProgress } from "../lib/
 import { showDialog, useUi, toast } from "../lib/ui";
 import { Modal } from "./Modal";
 
-export function repositoryFolderImportDialog() {
-  return showDialog<void>((close) => <RepositoryFolderImport close={close} />);
+/** `folder`: scan it right away (a folder opened as a repository that holds repositories). */
+export function repositoryFolderImportDialog(folder?: string) {
+  return showDialog<void>((close) => <RepositoryFolderImport close={close} initialFolder={folder} />);
 }
 
 /** Live counts of a running scan: how many folders were read, how many repositories were found
@@ -57,9 +58,9 @@ function cancelFolderScan(request: Promise<number> | null) {
   void request?.then(api.repoCancelFolderScan).catch(() => undefined);
 }
 
-function RepositoryFolderImport({ close }: { close: () => void }) {
+function RepositoryFolderImport({ close, initialFolder }: { close: () => void; initialFolder?: string }) {
   const groups = useLibrary(s => s.groups);
-  const [path, setPath] = useState("");
+  const [path, setPath] = useState(initialFolder ?? "");
   const [scanning, setScanning] = useState(false);
   const [stopped, setStopped] = useState(false);
   // Stop was pressed: the scan still runs until the backend has ended it, and no other scan
@@ -73,6 +74,8 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     cancelFolderScan(pendingScan.current);
     pendingScan.current = null;
   }, []);
+  // Opened for a folder that is not a repository itself: look inside it at once.
+  useEffect(() => { if (initialFolder) void scanFolder(initialFolder); }, []);
   const [scan, setScan] = useState<RepositoryFolderScan | null>(null);
   const [selected, setSelected] = useState(new Set<string>());
   const [createGroups, setCreateGroups] = useState(true);

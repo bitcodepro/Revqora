@@ -3,7 +3,7 @@ import { applyResolution, findLines, parseConflicts, resolveAll } from "./confli
 import { wordDiff } from "./worddiff";
 import { initials, relativeTime } from "./format";
 import { visibleUpdate } from "./update";
-import { createAutoFetch, fetchRound } from "./autofetch";
+import { autoFetchRound, createAutoFetch, failedServer, fetchRound, urlHost } from "./autofetch";
 import type { UpdateInfo } from "./types";
 
 const SAMPLE = `top
@@ -156,9 +156,9 @@ describe("background fetch", () => {
     });
     const rounds: string[] = [];
     for (let round = 0; round < 12; round++) rounds.push(await quietFetch("/repo"));
-    // Tried in rounds 1, 2, 4 and 8, then every 8th: never every round while the network is down.
-    expect(rounds.slice(0, 8)).toEqual(["transient", "transient", "skipped", "transient", "skipped", "skipped", "skipped", "transient"]);
-    expect(calls).toBe(4);
+    // Tried in rounds 1, 2, 4, 8 and 12, then every 4th: never every round while the network is down.
+    expect(rounds).toEqual(["transient", "transient", "skipped", "transient", "skipped", "skipped", "skipped", "transient", "skipped", "skipped", "skipped", "transient"]);
+    expect(calls).toBe(5);
     expect(logged).toEqual(["Automatic fetch failed 3 times in a row. Last error: Git exceeded its 30 second time limit."]);
     // Other failures are logged once per message.
     const broken = createAutoFetch({
@@ -171,6 +171,58 @@ describe("background fetch", () => {
     expect(await broken("/repo")).toBe("failed");
     expect(await broken("/repo")).toBe("failed");
     expect(logged).toEqual(["fatal: bad config"]);
+  });
+
+  it("skips a server that keeps failing for the rest of a round and still fetches the others", async () => {
+    const down = (root: string) => ({ message: `unable to access 'https://git.example.invalid/team/${root.slice(1)}.git/': The requested URL returned error: 502`, kind: "server-unavailable", stderr: "", code: 128, details: [] });
+    const attempts: string[] = [];
+    const quietFetch = createAutoFetch({
+      fetch: async root => { attempts.push(root); if (root.startsWith("/down")) throw down(root); return { refsChanged: false }; },
+      refresh: async () => {},
+      busy: () => false,
+      log: () => {},
+    });
+    const roots = ["/down-1", "/down-2", "/down-3", "/down-4", "/up-1", "/up-2"];
+    // First round: no server is known yet; each failure names it.
+    await autoFetchRound(roots, quietFetch, () => true, () => true, 1);
+    expect(attempts).toEqual(roots);
+    expect(quietFetch.server("/down-4")).toBe("git.example.invalid");
+    // Next round: two failures, then the rest of that server waits; the other server is fetched.
+    attempts.length = 0;
+    await autoFetchRound(roots, quietFetch, () => true, () => true, 1);
+    expect(attempts).toEqual(["/down-1", "/down-2", "/up-1", "/up-2"]);
+    // A server known from the open repository's remote is skipped before it is tried.
+    const known = createAutoFetch({
+      fetch: async root => { attempts.push(root); throw down(root); },
+      refresh: async () => {},
+      busy: () => false,
+      log: () => {},
+      serverOf: () => "git.example.invalid",
+    });
+    attempts.length = 0;
+    await autoFetchRound(["/down-5", "/down-6", "/down-7"], known, () => true, () => true, 1);
+    expect(attempts).toEqual(["/down-5", "/down-6"]);
+    // Time limits name no server: two of them end the round.
+    const offline = createAutoFetch({
+      fetch: async root => { attempts.push(root); throw { message: "Git exceeded its 90 second time limit.", kind: "git-timeout", stderr: "", code: null, details: [] }; },
+      refresh: async () => {},
+      busy: () => false,
+      log: () => {},
+    });
+    attempts.length = 0;
+    await autoFetchRound(["/a", "/b", "/c"], offline, () => true, () => true, 1);
+    expect(attempts).toEqual(["/a", "/b"]);
+  });
+
+  it("reads the server of remote URLs and fetch failures", () => {
+    expect(urlHost("https://gitea.example.com/team/api.git")).toBe("gitea.example.com");
+    expect(urlHost("ssh://git@Host.example:2222/team/api.git")).toBe("host.example");
+    expect(urlHost("git@bitbucket.org:team/api.git")).toBe("bitbucket.org");
+    expect(urlHost("C:\\repos\\api")).toBeNull();
+    expect(urlHost("/srv/git/api.git")).toBeNull();
+    expect(failedServer({ message: "Could not resolve host: gitea.example.com", kind: "error", stderr: "", code: 128, details: [] })).toBe("gitea.example.com");
+    expect(failedServer({ message: "ssh: connect to host git.example.com port 22: Connection timed out", kind: "error", stderr: "", code: 128, details: [] })).toBe("git.example.com");
+    expect(failedServer({ message: "Git exceeded its 90 second time limit.", kind: "git-timeout", stderr: "", code: null, details: [] })).toBeNull();
   });
 
   it("fetches a library of 40 repositories four at a time and stops when the round ends", async () => {

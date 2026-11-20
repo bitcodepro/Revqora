@@ -3350,7 +3350,37 @@ fn update_restart(app: AppHandle) -> GitResult<()> {
 /// Folders passed on the command line (`revqora <path>`), opened at startup.
 #[tauri::command]
 fn startup_paths() -> Vec<String> {
-    std::env::args().skip(1).filter(|a| !a.starts_with('-') && std::path::Path::new(a).is_dir()).collect()
+    launch_paths(std::env::args().skip(1), &std::env::current_dir().unwrap_or_default())
+}
+
+/// Folders named on a command line (`revqora .`, `revqora ..\api`): relative ones are resolved
+/// against the folder the command ran in, so a repository is never opened as ".".
+fn launch_paths(args: impl IntoIterator<Item = String>, cwd: &std::path::Path) -> Vec<String> {
+    args.into_iter()
+        .filter(|arg| !arg.starts_with('-'))
+        .filter_map(|arg| {
+            let path = std::path::Path::new(&arg);
+            let path = if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) };
+            let path = std::path::absolute(&path).ok()?;
+            path.is_dir().then(|| path.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[test]
+fn command_line_folders_are_resolved_against_the_folder_the_command_ran_in() {
+    let fixture = tempfile::tempdir().unwrap();
+    let cwd = std::path::absolute(fixture.path()).unwrap();
+    std::fs::create_dir(cwd.join("api")).unwrap();
+    let paths = launch_paths([".", "api", "--flag", "missing", "./api/../api"].map(String::from), &cwd);
+    let api = cwd.join("api").to_string_lossy().into_owned();
+    if cfg!(windows) {
+        assert_eq!(paths, [cwd.to_string_lossy().into_owned(), api.clone(), api]);
+    } else {
+        assert_eq!(paths.len(), 3);
+        assert!(paths.iter().all(|path| std::path::Path::new(path).is_absolute()), "{paths:?}");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3398,8 +3428,9 @@ pub fn run() {
     // A second launch (e.g. "Open in Revqora" from Explorer) opens its folders as tabs in the
     // running window. Tests set REVQORA_MULTI_INSTANCE to run isolated copies side by side.
     if std::env::var_os("REVQORA_MULTI_INSTANCE").is_none() {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            let paths: Vec<String> = argv.into_iter().skip(1).filter(|a| !a.starts_with('-') && std::path::Path::new(a).is_dir()).collect();
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            // The second launch's own folder, not this process's.
+            let paths = launch_paths(argv.into_iter().skip(1), std::path::Path::new(&cwd));
             let _ = app.emit("open-paths", paths);
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();

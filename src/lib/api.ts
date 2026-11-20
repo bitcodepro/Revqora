@@ -80,12 +80,20 @@ export function errorMessage(e: unknown): string {
   return String(e);
 }
 
+/** A folder that is not a repository where the window already deals with it: opening one
+ *  offers to find the repositories inside it or to create one, and Explorer's background counts
+ *  show none for it (opening it reports the problem). */
+const NOT_A_REPOSITORY_HANDLED = new Set(["repo_open", "repository_branch_tracking", "repository_change_count"]);
+function answeredInWindow(command: string, error: unknown) {
+  return NOT_A_REPOSITORY_HANDLED.has(command) && typeof error === "object" && error !== null && (error as { kind?: unknown }).kind === "not-a-repo";
+}
+
 const invokeWithErrorLog = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
   try {
     return await invoke<T>(command, args);
   } catch (error) {
     // Automatic fetches log for themselves: once per lasting problem, not once per round.
-    if (command !== "fetch_background") recordError(command, error, typeof args?.repo === "string" ? args.repo : undefined);
+    if (command !== "fetch_background" && !answeredInWindow(command, error)) recordError(command, error, typeof args?.repo === "string" ? args.repo : undefined);
     throw error;
   }
 };

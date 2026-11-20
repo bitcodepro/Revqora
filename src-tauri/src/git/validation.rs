@@ -442,6 +442,26 @@ pub(super) mod process_tree {
     pub fn exited(child: &mut Child) -> std::io::Result<bool> {
         Ok(child.try_wait()?.is_some())
     }
+    #[link(name = "ntdll", kind = "raw-dylib")]
+    unsafe extern "system" {
+        /// Opens the next thread of a process (the first with `thread` null). In ntdll since
+        /// Windows Vista.
+        fn NtGetNextThread(process: HANDLE, thread: HANDLE, access: u32, attributes: u32, flags: u32, next: *mut HANDLE) -> i32;
+    }
+    /// Resumes the only thread of a process created suspended, without a snapshot of every
+    /// thread in the system: that snapshot takes tens of milliseconds on a busy machine and
+    /// snapshots run one at a time, so parallel Git commands (a folder scan, automatic fetch of
+    /// several repositories) waited on each other. `None`: use the snapshot instead.
+    unsafe fn resume_first_thread(process: HANDLE) -> Option<(u32, u32)> {
+        let mut thread: HANDLE = std::ptr::null_mut();
+        if NtGetNextThread(process, std::ptr::null_mut(), THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION, 0, 0, &mut thread) < 0 || thread.is_null() {
+            return None;
+        }
+        let thread = OwnedHandle(thread);
+        let id = GetThreadId(thread.0);
+        let previous_count = ResumeThread(thread.0);
+        (id != 0 && previous_count != u32::MAX).then_some((id, previous_count))
+    }
     pub fn spawn(cmd: &mut Command) -> GitResult<(Child, Tree)> {
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -466,6 +486,9 @@ pub(super) mod process_tree {
                 if AssignProcessToJobObject(job, child.as_raw_handle()) == 0 {
                     let error = std::io::Error::last_os_error();
                     return Err(process_error("AssignProcessToJobObject", cmd, error));
+                }
+                if let Some(resumed) = resume_first_thread(child.as_raw_handle()) {
+                    return Ok(resumed);
                 }
                 let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
                 if snap == INVALID_HANDLE_VALUE {
