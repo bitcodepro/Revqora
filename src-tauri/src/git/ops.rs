@@ -1337,22 +1337,30 @@ fn fetch_chosen(
         let mut refs: Vec<String> = items.iter().map(|(_, on_remote, _)| on_remote.clone()).collect();
         refs.sort();
         refs.dedup();
-        let missing: Vec<String> = match fetch_refs(repo, &remote, &refs, on_line) {
-            Ok(()) => Vec::new(),
-            // One deleted branch fails the whole fetch: fetch the others one by one.
-            Err(error) if missing_remote_ref(&error) => {
-                let mut missing = Vec::new();
-                for reference in &refs {
-                    match fetch_refs(repo, &remote, std::slice::from_ref(reference), on_line) {
-                        Ok(()) => {}
-                        Err(error) if missing_remote_ref(&error) => missing.push(reference.clone()),
-                        Err(error) => return Err(error),
+        // One deleted branch fails the whole fetch, and Git names only the first one it misses:
+        // leave that one out and fetch the rest again (one more round trip per deleted branch).
+        // Should Git not name it, fetch the rest one by one.
+        let mut missing: Vec<String> = Vec::new();
+        let mut rest = refs.clone();
+        while !rest.is_empty() {
+            let error = match fetch_refs(repo, &remote, &rest, on_line) {
+                Ok(()) => break,
+                Err(error) if missing_remote_ref(&error) => error,
+                Err(error) => return Err(error),
+            };
+            match missing_remote_name(&error).and_then(|name| rest.iter().position(|r| *r == name)) {
+                Some(at) => missing.push(rest.remove(at)),
+                None => {
+                    for reference in std::mem::take(&mut rest) {
+                        match fetch_refs(repo, &remote, std::slice::from_ref(&reference), on_line) {
+                            Ok(()) => {}
+                            Err(error) if missing_remote_ref(&error) => missing.push(reference),
+                            Err(error) => return Err(error),
+                        }
                     }
                 }
-                missing
             }
-            Err(error) => return Err(error),
-        };
+        }
         for (shown, on_remote, local) in items {
             if missing.contains(&on_remote) {
                 result.skipped.push(BranchSkip { branch: shown, reason: format!("The branch no longer exists on {remote}.") });
@@ -1372,6 +1380,14 @@ fn fetch_refs(repo: &Path, remote: &str, refs: &[String], on_line: &mut impl FnM
 
 fn missing_remote_ref(error: &GitError) -> bool {
     error.stderr.contains("couldn't find remote ref") || error.message.contains("couldn't find remote ref")
+}
+
+/// The ref named in "couldn't find remote ref <name>".
+fn missing_remote_name(error: &GitError) -> Option<String> {
+    [&error.stderr, &error.message].into_iter().find_map(|text| {
+        let (_, after) = text.split_once("couldn't find remote ref ")?;
+        after.lines().next().map(|name| name.trim().to_owned()).filter(|name| !name.is_empty())
+    })
 }
 
 /// Fetch for chosen branches (see [`chosen_branches`]): only their upstreams are fetched.
@@ -2011,10 +2027,13 @@ fn lease_args(repo: &Path, o: &PushOptions) -> GitResult<Vec<String>> {
         runner::run(repo, ["rev-parse", "--verify", "--quiet", &format!("{tracking}^{{commit}}")]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     // A fresh clone may leave an empty reflog file; only real entries make the check meaningful.
     let has_reflog = runner::run(repo, ["reflog", "show", "--format=%H", "-n", "1", &tracking]).map(|out| !out.trim().is_empty()).unwrap_or(false);
+    // Git's `--force-if-includes` looks for a local branch named like the remote branch, so it
+    // refuses every push from `main` to `feature/x`. Revqora checks the same proof itself then.
+    let renamed = rb != b.as_str();
     // Without tracking reflog entries (fresh clone, or expired/cleared reflogs) the remote tip
     // may have been fetched by anyone. Only lease on it with independent proof that it was part
     // of the local branch: an ancestor of the branch or of one of its reflog entries.
-    if let (Some(oid), false) = (&tip, has_reflog) {
+    if let (Some(oid), true) = (&tip, !has_reflog || renamed) {
         if !integrated_locally(repo, b, oid)? {
             return Err(GitError::new(format!(
                 "The remote branch has commits that were never part of your local {b}, and Git's history cannot show whether you reviewed them. Pull (or merge {remote}/{rb}) first, then force push."
@@ -2024,7 +2043,7 @@ fn lease_args(repo: &Path, o: &PushOptions) -> GitResult<Vec<String>> {
     }
     Ok(match tip {
         // Refname-only form: an explicit expected value would turn --force-if-includes off.
-        Some(_) if has_reflog => vec![format!("--force-with-lease=refs/heads/{rb}"), "--force-if-includes".into()],
+        Some(_) if has_reflog && !renamed => vec![format!("--force-with-lease=refs/heads/{rb}"), "--force-if-includes".into()],
         Some(oid) => vec![format!("--force-with-lease=refs/heads/{rb}:{oid}")],
         None => vec![format!("--force-with-lease=refs/heads/{rb}:")],
     })

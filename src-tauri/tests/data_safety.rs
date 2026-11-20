@@ -98,6 +98,53 @@ fn force_push_of_my_own_rewrite_still_works() {
     assert_eq!(runner::run(&server, ["rev-parse", "main"]).unwrap().trim(), mine);
 }
 
+/// Local `main` pushed to the remote branch `team/main` (another name).
+fn renamed_force_push() -> PushOptions {
+    PushOptions {
+        remote: Some("origin".into()),
+        branch: Some("main".into()),
+        remote_branch: Some("team/main".into()),
+        force_with_lease: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn force_push_to_a_branch_with_another_name_works_after_my_own_rewrite() {
+    // Git's --force-if-includes looks for a local branch named like the remote one and refused
+    // every such push ("remote ref updated since checkout").
+    let (_keep, server, me, _colleague) = shared_remote();
+    me.write("c.txt", "first try\n");
+    me.commit_all("feature");
+    me.git(&["push", "-q", "origin", "main:refs/heads/team/main"]);
+    me.git(&["fetch", "-q", "origin"]);
+    me.write("c.txt", "second try\n");
+    me.git(&["commit", "-q", "-a", "--amend", "-m", "feature (amended)"]);
+    let mine = me.git(&["rev-parse", "HEAD"]).trim().to_string();
+    ops::push(me.p(), &renamed_force_push(), |_| {}).unwrap();
+    assert_eq!(runner::run(&server, ["rev-parse", "team/main"]).unwrap().trim(), mine);
+}
+
+#[test]
+fn force_push_to_a_branch_with_another_name_never_overwrites_a_fetched_colleague_commit() {
+    let (_keep, server, me, colleague) = shared_remote();
+    me.git(&["push", "-q", "origin", "main:refs/heads/team/main"]);
+    me.git(&["fetch", "-q", "origin"]);
+    me.write("a.txt", "base, reworded by me\n");
+    me.git(&["commit", "-q", "-a", "--amend", "-m", "base (amended)"]);
+    colleague.git(&["fetch", "-q", "origin"]);
+    colleague.git(&["checkout", "-q", "-b", "team", "origin/team/main"]);
+    colleague.write("b.txt", "colleague work\n");
+    let theirs = colleague.commit_all("colleague");
+    colleague.git(&["push", "-q", "origin", "team:refs/heads/team/main"]);
+    // The background fetch moves origin/team/main to their commit, which I never saw.
+    ops::fetch_background(me.p()).unwrap();
+    assert_eq!(me.git(&["rev-parse", "origin/team/main"]).trim(), theirs);
+    let err = ops::push(me.p(), &renamed_force_push(), |_| {}).unwrap_err();
+    assert_eq!(err.kind, "lease-unverifiable", "{}", err.message);
+    assert_eq!(runner::run(&server, ["rev-parse", "team/main"]).unwrap().trim(), theirs, "their commit stays on the server");
+}
+
 #[test]
 fn amend_and_force_push_after_my_own_push_works() {
     let (_keep, server, me, _colleague) = shared_remote();
