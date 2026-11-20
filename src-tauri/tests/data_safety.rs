@@ -243,6 +243,71 @@ fn pull_updates_files_only_line_ending_rules_call_modified() {
 }
 
 #[test]
+fn pull_keeps_line_ending_rules_for_the_files_it_writes_and_others_edits_of_the_rules() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (_keep, _server, me, colleague) = shared_remote();
+        fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        colleague.commit_all("crlf stored as is");
+        colleague.git(&["push", "-q", "origin", "main"]);
+        me.git(&["pull", "-q", "--ff-only"]);
+        // This clone checks text out with CRLF and stores it with LF: the file committed with
+        // CRLF is "modified" by the rule alone.
+        fs::write(me.p().join(".git/info/attributes"), "*.txt text eol=crlf\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(me.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        assert!(me.git(&["status", "--porcelain"]).contains(" M crlf.txt"), "{mode}");
+        // The colleague fixes the file: stored with LF from now on.
+        fs::write(colleague.p().join("crlf.txt"), "one\ntwo\nthree\n").unwrap();
+        let theirs = colleague.commit_all("normalized");
+        colleague.git(&["push", "-q", "origin", "main"]);
+        // Another tool adds a rule while the pull runs (a hook stands in for it).
+        let hooks = me.p().join(".git/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        let hook = if mode == "rebase" { "post-rewrite" } else { "post-merge" };
+        fs::write(hooks.join(hook), "#!/bin/sh\nprintf '*.bin binary\\n' >> .git/info/attributes\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(hooks.join(hook), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let out = ops::pull(me.p(), mode, |_| {}).unwrap();
+        assert!(matches!(out.status.as_str(), "done" | "fastForward"), "{mode}: {out:?}");
+        assert_eq!(me.git(&["rev-parse", "HEAD"]).trim(), theirs, "{mode}");
+        assert_eq!(fs::read(me.p().join("crlf.txt")).unwrap(), b"one\r\ntwo\r\nthree\r\n", "{mode}: checked out as the rule says");
+        let status = me.git(&["status", "--porcelain"]);
+        assert!(status.trim().is_empty(), "{mode}: clean, not {status}");
+        let rules = fs::read_to_string(me.p().join(".git/info/attributes")).unwrap();
+        if mode != "rebase" || rules.contains("*.bin") {
+            assert_eq!(rules, "*.txt text eol=crlf\n*.bin binary\n", "{mode}: the other tool's rule stays, the pull's block is gone");
+        } else {
+            assert_eq!(rules, "*.txt text eol=crlf\n", "{mode}");
+        }
+    }
+}
+
+#[test]
+fn a_failed_pull_takes_out_only_its_own_line_ending_block() {
+    let (_keep, _server, me, colleague) = shared_remote();
+    fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+    colleague.commit_all("crlf");
+    colleague.git(&["push", "-q", "origin", "main"]);
+    me.git(&["pull", "-q", "--ff-only"]);
+    fs::write(me.p().join(".git/info/attributes"), "* text\n").unwrap();
+    me.git(&["config", "core.eol", "lf"]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(me.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+    me.git(&["remote", "set-url", "origin", me.p().join("no-such-server.git").to_str().unwrap()]);
+    assert!(ops::pull(me.p(), "ff-only", |_| {}).is_err());
+    assert_eq!(fs::read_to_string(me.p().join(".git/info/attributes")).unwrap(), "* text\n");
+    // Without a rules file before, none is left behind either.
+    fs::remove_file(me.p().join(".git/info/attributes")).unwrap();
+    fs::write(me.p().join(".gitattributes"), "* text\n").unwrap();
+    let _ = ops::pull(me.p(), "ff-only", |_| {});
+    assert!(!me.p().join(".git/info/attributes").exists());
+}
+
+#[test]
 fn a_conflicting_autostash_is_reported_not_shown_as_success() {
     let (_keep, _server, me, colleague) = shared_remote();
     colleague.write("a.txt", "their line\n");

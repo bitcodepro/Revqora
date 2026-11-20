@@ -1103,8 +1103,8 @@ pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, on_line: imp
     // autostash behind. They hold nothing to keep: while the pull runs, Git reads them as
     // stored, and the incoming version replaces them.
     RawLineEndings::clear_stale(repo)?;
-    let _raw = if dirty { RawLineEndings::apply(repo, &line_endings_only(repo)?)? } else { None };
-    if _raw.is_some() {
+    let mut raw = if dirty { RawLineEndings::apply(repo, line_endings_only(repo)?)? } else { None };
+    if raw.is_some() {
         dirty = runner::exec(repo, ["diff", "HEAD", "--quiet", "--ignore-submodules=dirty"])?.code == 1;
     }
     // Staged work is set aside only right before the pull integrates, after its recovery
@@ -1116,7 +1116,13 @@ pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, on_line: imp
         top = stash_top(repo)?;
         Ok(())
     };
-    match pull_unsaved(repo, mode, prune_remote, set_aside, on_line) {
+    let pulled = pull_unsaved(repo, mode, prune_remote, set_aside, on_line);
+    // The rules apply again, also to the files the pull wrote meanwhile, before anything else
+    // touches the working tree.
+    if let Some(raw) = raw.take() {
+        raw.finish(repo);
+    }
+    match pulled {
         Ok(mut outcome) => {
             let set_aside = dirty && matches!(outcome.operation.status.as_str(), "done" | "fastForward");
             name_autostash(repo, top.as_deref(), &name)?;
@@ -1139,8 +1145,8 @@ const RAW_BEGIN: &str = "# revqora: a pull is running; these files are read as s
 const RAW_END: &str = "# revqora: end";
 
 /// Tracked files whose only difference is the line-ending rules: unstaged, same mode, and the
-/// working file is byte for byte the staged blob.
-fn line_endings_only(repo: &Path) -> GitResult<Vec<String>> {
+/// working file is byte for byte the staged blob. Each with that blob.
+fn line_endings_only(repo: &Path) -> GitResult<Vec<(String, String)>> {
     let out = runner::exec(repo, ["diff", "--raw", "-z", "--no-abbrev", "--diff-filter=M", "--ignore-submodules=all", "--no-renames"])?;
     if !out.ok() {
         return Ok(Vec::new());
@@ -1165,15 +1171,21 @@ fn line_endings_only(repo: &Path) -> GitResult<Vec<String>> {
         return Ok(Vec::new());
     }
     let hashed = hashed.text();
-    Ok(candidates.into_iter().zip(hashed.lines()).filter(|((_, staged), worktree)| staged == worktree.trim()).map(|((path, _), _)| path).collect())
+    Ok(candidates.into_iter().zip(hashed.lines()).filter(|((_, staged), worktree)| staged == worktree.trim()).map(|(entry, _)| entry).collect())
 }
 
 /// While alive, `<git dir>/info/attributes` (which overrides `.gitattributes`) reads the given
-/// files without line-ending rules. Dropping it puts the file back as it was; a block a crash
-/// left behind is removed by the next pull.
+/// files without line-ending rules. Ending it removes only its own marked block, so whatever
+/// else wrote to the file meanwhile stays; a block a crash left behind is removed by the next
+/// pull.
 struct RawLineEndings {
     file: PathBuf,
-    before: Option<Vec<u8>>,
+    /// The file did not exist before: once the block is gone and nothing else was written, it
+    /// is removed again.
+    created: bool,
+    /// Each file and its staged blob before the pull.
+    paths: Vec<(String, String)>,
+    ended: bool,
 }
 
 impl RawLineEndings {
@@ -1184,37 +1196,54 @@ impl RawLineEndings {
 
     fn clear_stale(repo: &Path) -> GitResult<()> {
         let file = Self::attributes_file(repo)?;
-        let Ok(text) = std::fs::read_to_string(&file) else { return Ok(()) };
-        if !text.contains(RAW_BEGIN) {
-            return Ok(());
-        }
-        let mut kept = String::new();
-        let mut inside = false;
-        for line in text.split_inclusive('\n') {
-            let bare = line.trim_end();
-            if bare == RAW_BEGIN {
-                inside = true;
-            } else if inside && bare == RAW_END {
-                inside = false;
-            } else if !inside {
-                kept.push_str(line);
-            }
-        }
-        std::fs::write(&file, kept).map_err(|e| GitError::new(format!("Could not update {}: {e}", file.display())))
+        Self::remove_block(&file, false).map_err(|e| GitError::new(format!("Could not update {}: {e}", file.display())))
     }
 
-    fn apply(repo: &Path, paths: &[String]) -> GitResult<Option<RawLineEndings>> {
+    /// Takes the marked block out of the file as it is now: lines other tools or the user wrote
+    /// while the pull ran are kept. Bytes, so a file in any encoding survives.
+    fn remove_block(file: &Path, created: bool) -> std::io::Result<()> {
+        let text = match std::fs::read(file) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let (begin, end) = (RAW_BEGIN.as_bytes(), RAW_END.as_bytes());
+        let bare = |line: &[u8]| line.trim_ascii_end().to_vec();
+        if !text.split(|b| *b == b'\n').any(|line| bare(line) == begin) {
+            return Ok(());
+        }
+        let mut kept = Vec::with_capacity(text.len());
+        let mut inside = false;
+        for line in text.split_inclusive(|b| *b == b'\n') {
+            let line_bare = bare(line);
+            if line_bare == begin {
+                inside = true;
+            } else if inside && line_bare == end {
+                inside = false;
+            } else if !inside {
+                kept.extend_from_slice(line);
+            }
+        }
+        if created && kept.iter().all(u8::is_ascii_whitespace) {
+            std::fs::remove_file(file)
+        } else {
+            std::fs::write(file, kept)
+        }
+    }
+
+    fn apply(repo: &Path, paths: Vec<(String, String)>) -> GitResult<Option<RawLineEndings>> {
         if paths.is_empty() {
             return Ok(None);
         }
         let file = Self::attributes_file(repo)?;
         let before = std::fs::read(&file).ok();
-        let mut text = before.clone().unwrap_or_default();
+        let created = before.is_none();
+        let mut text = before.unwrap_or_default();
         if !text.is_empty() && !text.ends_with(b"\n") {
             text.push(b'\n');
         }
         text.extend_from_slice(format!("{RAW_BEGIN}\n").as_bytes());
-        for path in paths {
+        for (path, _) in &paths {
             text.extend_from_slice(format!("\"/{path}\" -text -eol -crlf\n").as_bytes());
         }
         text.extend_from_slice(format!("{RAW_END}\n").as_bytes());
@@ -1223,16 +1252,80 @@ impl RawLineEndings {
             std::fs::create_dir_all(dir).map_err(error)?;
         }
         std::fs::write(&file, text).map_err(error)?;
-        Ok(Some(RawLineEndings { file, before }))
+        Ok(Some(RawLineEndings { file, created, paths, ended: false }))
+    }
+
+    /// Removes the block, then writes again, with the real rules, the files the pull replaced
+    /// while they were read as stored: Git wrote those without line-ending conversion, so a rule
+    /// such as `eol=crlf` would otherwise not hold for them. Files the pull did not change, or
+    /// that are in conflict or edited since, stay as they are.
+    fn finish(mut self, repo: &Path) {
+        self.ended = true;
+        if Self::remove_block(&self.file, self.created).is_err() {
+            return;
+        }
+        let _ = Self::reconvert(repo, &self.paths);
+    }
+
+    fn reconvert(repo: &Path, paths: &[(String, String)]) -> GitResult<()> {
+        let before: std::collections::HashMap<&str, &str> = paths.iter().map(|(path, blob)| (path.as_str(), blob.as_str())).collect();
+        let mut args = vec!["ls-files", "--stage", "-z", "--"];
+        args.extend(before.keys().copied());
+        let listed = runner::exec(repo, &args)?;
+        if !listed.ok() {
+            return Ok(());
+        }
+        // Stage 0 only (a conflict is the user's to resolve), with a new blob.
+        let mut changed: Vec<(String, String)> = Vec::new();
+        let mut conflicted = std::collections::HashSet::new();
+        for entry in runner::split_nul(&listed.text()) {
+            let Some((meta, path)) = entry.split_once('\t') else { continue };
+            let meta: Vec<&str> = meta.split(' ').collect();
+            if meta.len() < 3 {
+                continue;
+            }
+            if meta[2] != "0" {
+                conflicted.insert(path.to_owned());
+            } else if before.get(path).is_some_and(|old| *old != meta[1]) {
+                changed.push((path.to_owned(), meta[1].to_owned()));
+            }
+        }
+        changed.retain(|(path, _)| !conflicted.contains(path) && repo.join(path).is_file());
+        if changed.is_empty() {
+            return Ok(());
+        }
+        // Written as stored means the working file is byte for byte the new blob.
+        let input: String = changed.iter().map(|(path, _)| format!("{path}\n")).collect();
+        let hashed = runner::exec_full(repo, ["hash-object", "--no-filters", "--stdin-paths"], &[], Some(input.as_bytes()))?;
+        if !hashed.ok() {
+            return Ok(());
+        }
+        let raw: Vec<&str> =
+            changed.iter().zip(hashed.text().lines()).filter(|((_, blob), worktree)| blob == worktree.trim()).map(|((path, _), _)| path.as_str()).collect();
+        // Git rewrites only entries whose file looks changed to it: an older modification time
+        // marks them so, without touching their bytes.
+        for path in &raw {
+            if let Ok(file) = std::fs::File::options().write(true).open(repo.join(path)) {
+                let stamp = file.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.checked_sub(std::time::Duration::from_secs(2)));
+                if let Some(stamp) = stamp {
+                    let _ = file.set_modified(stamp);
+                }
+            }
+        }
+        let raw: String = raw.iter().map(|path| format!("{path}\0")).collect();
+        if !raw.is_empty() {
+            runner::exec_full(repo, ["checkout-index", "--force", "--index", "-z", "--stdin"], &[], Some(raw.as_bytes()))?;
+        }
+        Ok(())
     }
 }
 
 impl Drop for RawLineEndings {
+    /// Only when `finish` never ran (a panic): the block must not outlive the pull.
     fn drop(&mut self) {
-        let _ = match &self.before {
-            Some(before) => std::fs::write(&self.file, before),
-            None => std::fs::remove_file(&self.file),
-        };
+        if !self.ended {
+            let _ = Self::remove_block(&self.file, self.created);
+        }
     }
 }
 
