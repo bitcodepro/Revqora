@@ -117,7 +117,6 @@ pub struct FolderScan {
 
 #[derive(Default)]
 struct FolderContents {
-    folder: PathBuf,
     children: Vec<PathBuf>,
     /// The ignored folders that apply to `children`.
     ignored: Option<Ignored>,
@@ -153,6 +152,7 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool,
 
     // A folder below the top of a working copy: that working copy's ignore rules apply from the
     // start, as they would had the scan begun at its top.
+    set_current(progress, root);
     let enclosing =
         if include_generated || root.join(".git").exists() || repo::discover(root).is_err() { None } else { ignored_folders(root, cancelled)?.map(Arc::new) };
     let workers = thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 8);
@@ -166,6 +166,9 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool,
             scope.spawn(move || loop {
                 let job = jobs.lock().recv();
                 let Ok((folder, ignored)) = job else { break };
+                // The folder a worker reads now, not the last one finished: a large folder or
+                // its `git ls-files` can take a while.
+                set_current(progress, &folder);
                 let contents = scan_folder(root, &folder, ignored, include_generated, cancelled);
                 if finished.send(contents).is_err() {
                     break;
@@ -189,9 +192,6 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool,
             let contents = folders.recv().map_err(|_| GitError::new("Folder scan workers stopped."))??;
             active -= 1;
             progress.folders.fetch_add(1, Ordering::Relaxed);
-            if let Some(path) = contents.folder.to_str() {
-                path.clone_into(&mut progress.current.lock());
-            }
             if contents.repository.is_some() {
                 progress.repositories.fetch_add(1, Ordering::Relaxed);
             }
@@ -207,9 +207,15 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool,
     Ok(result)
 }
 
+fn set_current(progress: &ScanProgress, folder: &Path) {
+    if let Some(path) = folder.to_str() {
+        path.clone_into(&mut progress.current.lock());
+    }
+}
+
 fn scan_folder(root: &Path, folder: &Path, inherited: Option<Ignored>, include_generated: bool, cancelled: &AtomicBool) -> GitResult<FolderContents> {
     check_cancelled(cancelled)?;
-    let mut result = FolderContents { folder: folder.to_path_buf(), ..FolderContents::default() };
+    let mut result = FolderContents::default();
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
         Err(error) if folder == root => return Err(error.into()),
@@ -421,6 +427,7 @@ mod tests {
         let (token, progress) = scans.start(next).unwrap();
         assert!(scan(fixture.path(), false, &token, &progress).is_ok());
         assert_eq!(scans.progress(next).unwrap().folders, 1);
+        assert_eq!(scans.progress(next).unwrap().current, fixture.path().to_str().unwrap(), "the folder being read is named from the start");
         scans.finish(next);
         assert!(scans.start(next).is_err());
         assert!(scans.progress(next).is_none());

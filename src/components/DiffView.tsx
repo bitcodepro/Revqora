@@ -38,6 +38,7 @@ import { movedLines } from "../lib/movedLines";
 import { changeBlocks, lineRange } from "../lib/lineSelection";
 import { submodulePointers } from "../lib/submodulePointer";
 import { SubmoduleSummary } from "./SubmoduleSummary";
+import { lineEndingsNote } from "../lib/lineEndings";
 
 export type DiffMode = "unstaged" | "staged" | "readonly" | "pick";
 export type LineAction = "stage" | "unstage" | "discard" | "apply" | "stash";
@@ -689,7 +690,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     body = root && images ? <TextDiffPreview key={JSON.stringify([root, path])} root={root}
       revision={diff.hash} before={diff.isNew ? null : images.old} after={diff.isDeleted ? null : images.new} fallback={fallback} /> : fallback;
   } else if (diff.hunks.length === 0) {
-    body = <div className="empty">{diff.previewLimited ? "No complete changed line fits in the preview." : diff.oldMode !== diff.newMode ? "Only the file mode changed." : sourceOptions && s.ignoreWhitespace ? "Only whitespace changed." : "No textual changes."}</div>;
+    body = <div className="empty">{diff.previewLimited ? "No complete changed line fits in the preview." : diff.oldMode !== diff.newMode ? "Only the file mode changed." : diff.lineEndings ? lineEndingsNote(diff.lineEndings) : sourceOptions && s.ignoreWhitespace ? "Only whitespace changed." : "No textual changes."}</div>;
   } else if (virtual) {
     // Very long diffs: fixed-height rows, only the visible window is rendered.
     const first = Math.max(0, Math.floor(scroll / rowH) - 30);

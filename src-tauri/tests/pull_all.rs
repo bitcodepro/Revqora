@@ -429,3 +429,30 @@ fn pull_all_never_moves_a_branch_to_a_remote_that_fetch_all_skips() {
     assert!(reason.contains("skipFetchAll"), "{reason}");
     assert!(result.updated.iter().any(|u| u.branch == "feature"), "origin's branches are still pulled");
 }
+
+#[test]
+fn push_with_push_default_matching_never_rewrites_history_that_replace_refs_disguise() {
+    let f = fixture();
+    let remote = f.work.parent().unwrap().join("remote.git");
+    git(&f.work, &["config", "push.default", "matching"]);
+    // Published with two commits, so the rewrite can start from the first.
+    git(&f.work, &["fetch", "-q", "origin"]);
+    git(&f.work, &["push", "-q", "origin", "origin/main:refs/heads/kept"]);
+    git(&f.work, &["fetch", "-q", "origin"]);
+    let published = tip(&f.work, "origin/kept");
+    // A rewritten branch: it no longer contains the published commit...
+    git(&f.work, &["checkout", "-q", "-b", "kept", "origin/kept~1"]);
+    git(&f.work, &["branch", "-q", "--set-upstream-to", "origin/kept"]);
+    let rewritten = commit(&f.work, "rewritten.txt", "rewritten\n");
+    git(&f.work, &["checkout", "-q", "main"]);
+    // ...but a replace ref grafts it onto that commit, so it looks like a fast-forward.
+    git(&f.work, &["replace", "--graft", &rewritten, &published]);
+    assert!(runner::exec(&f.work, ["merge-base", "--is-ancestor", "origin/kept", "kept"]).unwrap().ok(), "Git sees a fast-forward");
+
+    let result = ops::push_branches(&f.work, Some(&["refs/heads/kept".to_owned()]), |_| {}).unwrap();
+
+    assert!(result.updated.is_empty());
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/kept"]), published, "the published history stays");
+    let reasons = skipped(&result);
+    assert!(reasons[0].1.contains("replace refs"), "{reasons:?}");
+}

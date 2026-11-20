@@ -162,6 +162,8 @@ export interface FileDiff {
   hash: string;
   stageSnapshot?: number;
   empty: boolean;
+  /** Only the line endings differ between the index and the working copy. */
+  lineEndings?: { stored: string; working: string };
 }
 
 export interface DiffOptions {

@@ -39,8 +39,8 @@ function FolderScanProgress({ scanId, stopping }: { scanId: number | null; stopp
     <div className="repository-import-progress-text">
       <div>
         {stopping ? "Stopping the scan…" : "Looking for Git repositories…"}
-        {progress && <span className="batch-note" aria-hidden="true">{scanCounts(progress)}</span>}
-        {elapsedSeconds > 0 && <span className="batch-note" aria-hidden="true">{elapsedSeconds}s elapsed</span>}
+        {progress && <span className="batch-note repository-import-counts" aria-hidden="true">{scanCounts(progress)}</span>}
+        {elapsedSeconds > 0 && <span className="batch-note repository-import-elapsed" aria-hidden="true">{elapsedSeconds}s elapsed</span>}
       </div>
       {progress?.current && <div className="repository-import-current mono" title={progress.current} aria-hidden="true"><bdi>{progress.current}</bdi></div>}
     </div>

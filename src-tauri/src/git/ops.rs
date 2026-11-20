@@ -1683,6 +1683,10 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
     let mut by_remote: BTreeMap<String, Vec<(LocalBranch, usize)>> = BTreeMap::new();
     // `--force-with-lease` values by branch, for `push.default=matching`.
     let mut leases: HashMap<String, String> = HashMap::new();
+    // History as it really is: no replace refs, no grafts (a graft file that does not exist).
+    let no_grafts = repo::git_dir(repo)?.join("revqora-no-grafts");
+    let no_grafts = no_grafts.to_string_lossy().into_owned();
+    let real_history = [("GIT_NO_REPLACE_OBJECTS", "1"), ("GIT_GRAFT_FILE", no_grafts.as_str())];
     let rules = PushRules::read(repo)?;
     let listed = local_branches(repo)?;
     if let Some(only) = &only {
@@ -1731,12 +1735,22 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
         // `push.default=matching` only updates branches the remote still has. An explicit
         // refspec would create one deleted there whose remote-tracking branch is still here, so
         // each push carries a lease on the remote-tracking commit, a commit this branch contains.
+        // The lease lets a forced update through, so containment is decided on the commits as
+        // they are: replace refs and grafts can make a rewritten history look like a fast-forward.
         if rules.default == "matching" {
             let tracking = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{}^{{commit}}", local.upstream)])?;
-            let tracking = if tracking.ok() { tracking.text().trim().to_owned() } else { String::new() };
-            let contained = !tracking.is_empty() && runner::exec(repo, ["merge-base", "--is-ancestor", &tracking, &local.oid])?.ok();
-            if !contained {
-                skip("The remote branch changed since the last fetch. Fetch, then push again.".into());
+            if !tracking.ok() {
+                skip("The upstream branch was deleted on the remote.".into());
+                continue;
+            }
+            let tracking = tracking.text().trim().to_owned();
+            let contained = runner::exec_full(repo, ["merge-base", "--is-ancestor", &tracking, &local.oid], &real_history, None)?;
+            if !contained.ok() && contained.code != 1 {
+                return Err(runner::to_error("git merge-base", &contained));
+            }
+            if !contained.ok() {
+                let upstream = local.upstream.strip_prefix("refs/remotes/").unwrap_or(&local.upstream);
+                skip(format!("It does not contain {upstream} (Git replace refs and grafts are not counted). Pull it first."));
                 continue;
             }
             leases.insert(local.name.clone(), tracking);
@@ -1779,7 +1793,8 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
                 args.extend(list.iter().filter_map(|(b, _)| leases.get(&b.name).map(|oid| format!("--force-with-lease={}:{oid}", b.remote_ref))));
                 args.push(remote.clone());
                 args.extend(specs);
-                match runner::run_streaming(repo, &args, &[], &mut on_line) {
+                // Git's own fast-forward check before sending sees the same real history.
+                match runner::run_streaming(repo, &args, &real_history, &mut on_line) {
                     Ok(_) => None,
                     Err(error) if error.kind == "cancelled" => return Err(error),
                     Err(error) => Some(error),

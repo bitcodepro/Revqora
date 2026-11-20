@@ -57,9 +57,10 @@ async function checkFolderScanProgress(page, dialog) {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await icon.waitFor({ state: "hidden" });
     await progress.getByText(/^[1-9]\d*s elapsed$/).waitFor();
-    const elapsed = await progress.locator(".batch-note").textContent();
+    // The folder counts and the timer are both notes: read the timer only.
+    const elapsed = await progress.locator(".repository-import-elapsed").textContent();
     await page.waitForFunction(previous => {
-      const value = document.querySelector(".repository-import-progress .batch-note")?.textContent;
+      const value = document.querySelector(".repository-import-progress .repository-import-elapsed")?.textContent;
       return value && value !== previous;
     }, elapsed);
     await dialog.getByRole("button", { name: "Stop scan", exact: true }).click();
