@@ -7,6 +7,9 @@ import { showDialog, toast } from "../lib/ui";
 const PROJECT = "https://github.com/bitcodepro/Revqora";
 const openLink = (url: string) => void api.openPath(url).catch((error) => toast.error(error, "Could not open link"));
 
+/** Opens a new GitHub issue for Revqora (About and the command palette). */
+export const reportIssue = () => openLink(`${PROJECT}/issues/new`);
+
 export function aboutDialog() {
   return showDialog<void>((close) => <AboutBody close={close} />);
 }
@@ -30,7 +33,7 @@ function AboutBody({ close }: { close: () => void }) {
       <div className="about-links">
         <button type="button" className="btn" onClick={() => openLink(`${PROJECT}#readme`)}><BookOpen size={14} />User guide</button>
         <button type="button" className="btn" onClick={() => openLink(PROJECT)}><CodeXml size={14} />Source code</button>
-        <button type="button" className="btn" onClick={() => openLink(`${PROJECT}/issues/new`)}><MessageSquare size={14} />Report an issue</button>
+        <button type="button" className="btn" onClick={reportIssue}><MessageSquare size={14} />Report an issue</button>
       </div>
     </Modal>
   );

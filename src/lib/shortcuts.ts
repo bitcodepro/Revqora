@@ -30,6 +30,7 @@ const unassignedCommands: [id: string, label: string, description: string][] = [
   ["git-connections", "Git connection settings", "Choose how Git authenticates for this repository."],
   ["check-updates", "Check for updates", "Check for a new version of Revqora now."],
   ["about", "About Revqora", "Show the app version and project information."],
+  ["report-issue", "Report an issue", "Open a new Revqora issue on GitHub in the browser."],
   ["fetch-all", "Fetch all repositories", "Fetch remote updates for every listed repository."],
   ["pull-all", "Pull all repositories", "Fetch, then fast-forward every branch with incoming commits, in every listed repository."],
   ["push-all", "Push all repositories", "Push every branch with commits its upstream lacks, in every listed repository."],
