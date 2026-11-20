@@ -656,10 +656,15 @@ fn repo_prepare_folder_scan(state: State<'_, AppState>) -> u32 {
 
 #[tauri::command]
 async fn repo_scan_folder(state: State<'_, AppState>, scan_id: u32, path: String, include_generated: bool) -> GitResult<git::repository_import::FolderScan> {
-    let cancelled = state.folder_scans.start(scan_id)?;
-    let result = blocking(move || git::repository_import::scan(&p(&path), include_generated, &cancelled)).await;
+    let (cancelled, progress) = state.folder_scans.start(scan_id)?;
+    let result = blocking(move || git::repository_import::scan(&p(&path), include_generated, &cancelled, &progress)).await;
     state.folder_scans.finish(scan_id);
     result
+}
+
+#[tauri::command]
+fn repo_folder_scan_progress(state: State<'_, AppState>, scan_id: u32) -> Option<git::repository_import::FolderScanProgress> {
+    state.folder_scans.progress(scan_id)
 }
 
 #[tauri::command]
@@ -3566,6 +3571,7 @@ pub fn run() {
             repo_open,
             repo_prepare_folder_scan,
             repo_scan_folder,
+            repo_folder_scan_progress,
             repo_cancel_folder_scan,
             repo_init,
             repo_clone,

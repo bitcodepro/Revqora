@@ -1,5 +1,5 @@
 import type { BranchCleanupRequest, BranchCleanupSelection, BranchCleanupReview, BranchCleanupReport } from "./types";
-import type { RepositoryFolderScan } from "./types";
+import type { RepositoryFolderScan, RepositoryFolderScanProgress } from "./types";
 import type { BlameOptions, HistoryFilters } from "./types";
 import type { RebaseItem, StudioReview, StudioReport, StudioComparison, ValidationReport } from "./types";
 import type { ExternalTools, FolderHistoryEntry, LineHistoryEntry, IgnoredFiles, IgnoreKind, IgnorePreview, IgnoreResult, IgnoreScope, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
@@ -181,6 +181,7 @@ export const api = {
   repoOpen: (path: string) => call<RepoInfo>("repo_open", { path }),
   repoPrepareFolderScan: () => call<number>("repo_prepare_folder_scan"),
   repoScanFolder: (scanId: number, path: string, includeGenerated: boolean) => call<RepositoryFolderScan>("repo_scan_folder", { scanId, path, includeGenerated }),
+  repoFolderScanProgress: (scanId: number) => call<RepositoryFolderScanProgress | null>("repo_folder_scan_progress", { scanId }),
   repoCancelFolderScan: (scanId: number) => call<void>("repo_cancel_folder_scan", { scanId }),
   repositorySidebarStatus: (repo: string) => call<StatusSummary>("repository_sidebar_status", { repo }),
   repositoryBranchTracking: (repo: string) => call<BranchTracking>("repository_branch_tracking", { repo }),

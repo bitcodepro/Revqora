@@ -8,7 +8,7 @@ import { folderGroupTree } from "../lib/folderGroupTree";
 import { rescanSelection, rescanSummary } from "../lib/folderRescan";
 import { visibleTree } from "../lib/libraryTree";
 import { useRepos } from "../lib/store";
-import type { RepositoryFolderScan } from "../lib/types";
+import type { RepositoryFolderScan, RepositoryFolderScanProgress } from "../lib/types";
 import { showDialog, useUi, toast } from "../lib/ui";
 import { Modal } from "./Modal";
 
@@ -16,18 +16,41 @@ export function repositoryFolderImportDialog() {
   return showDialog<void>((close) => <RepositoryFolderImport close={close} />);
 }
 
-function FolderScanProgress() {
+/** Live counts of a running scan: how many folders were read, how many repositories were found
+ *  and which folder is being read, so a long scan visibly moves. */
+function FolderScanProgress({ scanId }: { scanId: number | null }) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [progress, setProgress] = useState<RepositoryFolderScanProgress | null>(null);
   useEffect(() => {
     const started = performance.now();
     const timer = window.setInterval(() => setElapsedSeconds(Math.floor((performance.now() - started) / 1_000)), 1_000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    if (scanId === null) return;
+    let active = true;
+    const poll = () => void api.repoFolderScanProgress(scanId).then(next => { if (active && next) setProgress(next); }, () => undefined);
+    poll();
+    const timer = window.setInterval(poll, 250);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [scanId]);
   return <div className="loading-status repository-import-progress" role="status">
     <Loader2 className="spin" size={16} aria-hidden="true" />
-    Looking for Git repositories…
-    {elapsedSeconds > 0 && <span className="batch-note" aria-hidden="true">{elapsedSeconds}s elapsed</span>}
+    <div className="repository-import-progress-text">
+      <div>
+        Looking for Git repositories…
+        {progress && <span className="batch-note" aria-hidden="true">{scanCounts(progress)}</span>}
+        {elapsedSeconds > 0 && <span className="batch-note" aria-hidden="true">{elapsedSeconds}s elapsed</span>}
+      </div>
+      {progress?.current && <div className="repository-import-current mono" title={progress.current} aria-hidden="true"><bdi>{progress.current}</bdi></div>}
+    </div>
   </div>;
+}
+
+export function scanCounts(progress: Pick<RepositoryFolderScanProgress, "folders" | "repositories">): string {
+  const folders = `${progress.folders.toLocaleString("en-US")} ${progress.folders === 1 ? "folder" : "folders"} checked`;
+  const found = `${progress.repositories.toLocaleString("en-US")} ${progress.repositories === 1 ? "repository" : "repositories"} found`;
+  return `${folders} · ${found}`;
 }
 
 function cancelFolderScan(request: Promise<number> | null) {
@@ -41,6 +64,7 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
   const [stopped, setStopped] = useState(false);
   const [includeGenerated, setIncludeGenerated] = useState(false);
   const pendingScan = useRef<Promise<number> | null>(null);
+  const [scanId, setScanId] = useState<number | null>(null);
   useEffect(() => () => {
     cancelFolderScan(pendingScan.current);
     pendingScan.current = null;
@@ -110,6 +134,7 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     try {
       const id = await request;
       if (pendingScan.current !== request) return;
+      setScanId(id);
       const result = await api.repoScanFolder(id, folder, includeGenerated);
       if (pendingScan.current !== request) return;
       setScan(result);
@@ -188,14 +213,14 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
         setSelected(new Set());
         setStopped(false);
         setError("");
-      }} /> Include dependency and cache folders
+      }} /> Include ignored, build, dependency and cache folders
     </label>
-    {scanning && <FolderScanProgress />}
+    {scanning && <FolderScanProgress key={scanId ?? "preparing"} scanId={scanId} />}
     {stopped && <p className="batch-note" role="status">{scan ? "Rescan stopped. The previous list is kept." : "Scan stopped."}</p>}
     {error && <p className="red workspace-editor-error" role="alert">{error}</p>}
     {scan && <>
       {rescanNote && <p className="batch-note" role="status">{rescanNote}</p>}
-      {scan.excluded > 0 && <p className="batch-note" role="status">Skipped {scan.excluded} dependency or cache folders.</p>}
+      {scan.excluded > 0 && <p className="batch-note" role="status">Skipped {scan.excluded.toLocaleString("en-US")} ignored, build, dependency or cache {scan.excluded === 1 ? "folder" : "folders"}.</p>}
       {scan.skipped > 0 && <p className="batch-note" role="status">Skipped {scan.skipped} linked, inaccessible, or invalid entries.</p>}
       {!scan.repositories.length ? <div className="cg-empty">No Git working copies found in this folder. {rescanButton}</div> : <>
         <label className="repository-import-option">

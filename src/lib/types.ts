@@ -1048,6 +1048,13 @@ export interface RepositoryFolderScan {
   skipped: number;
   excluded: number;
 }
+
+/** A running folder scan: folders read so far, working copies found, the folder read last. */
+export interface RepositoryFolderScanProgress {
+  folders: number;
+  repositories: number;
+  current: string;
+}
 export type CloneFilter = "none" | "blob:none" | "tree:0";
 /** Optional clone arguments; see `ops::CloneOptions`. */
 export interface CloneOptions { branch: string | null; depth: number | null; noSingleBranch: boolean; filter: CloneFilter; recurseSubmodules: boolean; shallowSubmodules: boolean; sparse: boolean; sparseFolders: string[] }

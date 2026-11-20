@@ -1,9 +1,10 @@
 //! Discover working copies, including repositories nested in other working copies.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 
@@ -12,9 +13,45 @@ use serde::Serialize;
 
 use super::ops::path_is_link;
 use super::repo;
-use super::runner::{GitError, GitResult};
+use super::runner::{self, GitError, GitResult};
 
-const GENERATED_FOLDERS: &[&str] = &["node_modules", ".pnpm-store", ".venv", "__pycache__", ".cache", ".next", ".nuxt", ".turbo", ".gradle"];
+const GENERATED_FOLDERS: &[&str] = &["node_modules", ".pnpm-store", ".venv", "__pycache__", ".cache", ".next", ".nuxt", ".turbo", ".gradle", ".build"];
+
+/// Folders the enclosing working copy ignores (`bin`, `obj`, `target`, `dist`…), as the scan
+/// spells their paths. Build output can hold hundreds of thousands of folders and test
+/// repositories the user never works in.
+type Ignored = Arc<HashSet<PathBuf>>;
+/// A folder holding this file is a cache (Cache Directory Tagging Specification): Cargo writes it
+/// into every `target`, and other build tools into theirs. Such folders can hold hundreds of
+/// thousands of subfolders and never a repository the user works in.
+const CACHE_TAG: &str = "CACHEDIR.TAG";
+const CACHE_TAG_SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
+
+/// What a running scan has done so far, read by the dialog while it waits.
+#[derive(Default, Debug)]
+pub(crate) struct ScanProgress {
+    folders: AtomicU64,
+    repositories: AtomicU32,
+    current: Mutex<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderScanProgress {
+    pub folders: u64,
+    pub repositories: u32,
+    pub current: String,
+}
+
+impl ScanProgress {
+    fn snapshot(&self) -> FolderScanProgress {
+        FolderScanProgress {
+            folders: self.folders.load(Ordering::Relaxed),
+            repositories: self.repositories.load(Ordering::Relaxed),
+            current: self.current.lock().clone(),
+        }
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct FolderScans {
@@ -25,6 +62,7 @@ pub(crate) struct FolderScans {
 #[derive(Default)]
 struct ScanJob {
     cancelled: Arc<AtomicBool>,
+    progress: Arc<ScanProgress>,
     started: bool,
 }
 
@@ -35,14 +73,19 @@ impl FolderScans {
         id
     }
 
-    pub(crate) fn start(&self, id: u32) -> GitResult<Arc<AtomicBool>> {
+    pub(crate) fn start(&self, id: u32) -> GitResult<(Arc<AtomicBool>, Arc<ScanProgress>)> {
         let mut jobs = self.jobs.lock();
         let job = jobs.get_mut(&id).ok_or_else(cancelled_scan)?;
         if job.started {
             return Err(GitError::new("Folder scan is already running."));
         }
         job.started = true;
-        Ok(job.cancelled.clone())
+        Ok((job.cancelled.clone(), job.progress.clone()))
+    }
+
+    /// Progress of a running scan; None once it finished or was cancelled.
+    pub(crate) fn progress(&self, id: u32) -> Option<FolderScanProgress> {
+        self.jobs.lock().get(&id).map(|job| job.progress.snapshot())
     }
 
     pub(crate) fn cancel(&self, id: u32) {
@@ -74,7 +117,10 @@ pub struct FolderScan {
 
 #[derive(Default)]
 struct FolderContents {
+    folder: PathBuf,
     children: Vec<PathBuf>,
+    /// The ignored folders that apply to `children`.
+    ignored: Option<Ignored>,
     repository: Option<FoundRepository>,
     skipped: usize,
     excluded: usize,
@@ -95,7 +141,7 @@ fn named(actual: &str, expected: &str) -> bool {
     actual == expected || cfg!(windows) && actual.eq_ignore_ascii_case(expected)
 }
 
-pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool) -> GitResult<FolderScan> {
+pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool, progress: &ScanProgress) -> GitResult<FolderScan> {
     check_cancelled(cancelled)?;
     if !root.is_absolute() {
         return Err(GitError::new("Choose an absolute folder path."));
@@ -107,7 +153,7 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool)
 
     let workers = thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 8);
     let mut result = thread::scope(|scope| -> GitResult<FolderScan> {
-        let (queue, jobs) = mpsc::channel::<PathBuf>();
+        let (queue, jobs) = mpsc::channel::<(PathBuf, Option<Ignored>)>();
         let jobs = Arc::new(Mutex::new(jobs));
         let (finished, folders) = mpsc::channel();
         for _ in 0..workers {
@@ -115,8 +161,8 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool)
             let finished = finished.clone();
             scope.spawn(move || loop {
                 let job = jobs.lock().recv();
-                let Ok(folder) = job else { break };
-                let contents = scan_folder(root, &folder, include_generated, cancelled);
+                let Ok((folder, ignored)) = job else { break };
+                let contents = scan_folder(root, &folder, ignored, include_generated, cancelled);
                 if finished.send(contents).is_err() {
                     break;
                 }
@@ -124,7 +170,7 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool)
         }
         drop(finished);
 
-        let mut pending = vec![root.to_path_buf()];
+        let mut pending = vec![(root.to_path_buf(), None)];
         let mut active = 0;
         let mut result = FolderScan::default();
         loop {
@@ -138,7 +184,15 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool)
             }
             let contents = folders.recv().map_err(|_| GitError::new("Folder scan workers stopped."))??;
             active -= 1;
-            pending.extend(contents.children);
+            progress.folders.fetch_add(1, Ordering::Relaxed);
+            if let Some(path) = contents.folder.to_str() {
+                path.clone_into(&mut progress.current.lock());
+            }
+            if contents.repository.is_some() {
+                progress.repositories.fetch_add(1, Ordering::Relaxed);
+            }
+            let ignored = contents.ignored;
+            pending.extend(contents.children.into_iter().map(|child| (child, ignored.clone())));
             result.repositories.extend(contents.repository);
             result.skipped += contents.skipped;
             result.excluded += contents.excluded;
@@ -149,9 +203,9 @@ pub(crate) fn scan(root: &Path, include_generated: bool, cancelled: &AtomicBool)
     Ok(result)
 }
 
-fn scan_folder(root: &Path, folder: &Path, include_generated: bool, cancelled: &AtomicBool) -> GitResult<FolderContents> {
+fn scan_folder(root: &Path, folder: &Path, inherited: Option<Ignored>, include_generated: bool, cancelled: &AtomicBool) -> GitResult<FolderContents> {
     check_cancelled(cancelled)?;
-    let mut result = FolderContents::default();
+    let mut result = FolderContents { folder: folder.to_path_buf(), ..FolderContents::default() };
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
         Err(error) if folder == root => return Err(error.into()),
@@ -161,6 +215,7 @@ fn scan_folder(root: &Path, folder: &Path, include_generated: bool, cancelled: &
         }
     };
     let mut has_git = false;
+    let mut cache_tag = false;
     for entry in entries {
         check_cancelled(cancelled)?;
         let Ok(entry) = entry else {
@@ -176,6 +231,10 @@ fn scan_folder(root: &Path, folder: &Path, include_generated: bool, cancelled: &
             result.skipped += 1;
             continue;
         };
+        if kind.is_file() && name.to_str().is_some_and(|name| named(name, CACHE_TAG)) {
+            cache_tag = true;
+            continue;
+        }
         if kind.is_symlink() {
             result.skipped += 1;
         } else if kind.is_dir() {
@@ -197,16 +256,48 @@ fn scan_folder(root: &Path, folder: &Path, include_generated: bool, cancelled: &
         }
     }
     check_cancelled(cancelled)?;
+    // A tagged cache folder (a Rust `target`, for example): its subfolders are never walked.
+    if cache_tag && !include_generated && folder != root && is_cache_tag(&folder.join(CACHE_TAG)) {
+        result.children.clear();
+        result.excluded += 1;
+    }
+    let mut ignored = inherited;
     if has_git {
         if let Some(found_root) = exact_repository(folder) {
             let workspace_folder = Path::new(&found_root).parent().and_then(Path::to_str).map(str::to_owned);
             let relative_path = folder.strip_prefix(root).ok().and_then(Path::to_str).unwrap_or(&found_root).to_owned();
             result.repository = Some(FoundRepository { root: found_root, relative_path, workspace_folder });
+            // Inside a working copy its own ignore rules apply, not those of a repository around it.
+            if !include_generated {
+                ignored = ignored_folders(folder).map(Arc::new);
+            }
         } else {
             result.skipped += 1;
         }
     }
+    if let Some(set) = ignored.as_ref().filter(|set| !set.is_empty()) {
+        // An ignored folder that is itself a working copy (a clone kept inside another) is still found.
+        let before = result.children.len();
+        result.children.retain(|child| !set.contains(child) || child.join(".git").exists());
+        result.excluded += before - result.children.len();
+    }
+    result.ignored = ignored;
     Ok(result)
+}
+
+/// Folders `folder`'s working copy ignores, collapsed to the topmost ignored folder.
+fn ignored_folders(folder: &Path) -> Option<HashSet<PathBuf>> {
+    let out = runner::exec(folder, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]).ok()?;
+    if !out.ok() {
+        return None;
+    }
+    let listed = out.stdout.split(|byte| *byte == 0).filter_map(|entry| std::str::from_utf8(entry).ok()?.strip_suffix('/'));
+    Some(listed.filter(|path| !path.is_empty()).map(|path| path.split('/').fold(folder.to_path_buf(), |full, part| full.join(part))).collect())
+}
+
+fn is_cache_tag(path: &Path) -> bool {
+    let mut start = [0; CACHE_TAG_SIGNATURE.len()];
+    fs::File::open(path).and_then(|mut file| file.read_exact(&mut start)).is_ok() && start == CACHE_TAG_SIGNATURE
 }
 
 fn exact_repository(folder: &Path) -> Option<String> {
@@ -223,7 +314,7 @@ mod tests {
     use crate::git::runner;
 
     fn search(path: &Path) -> GitResult<FolderScan> {
-        scan(path, false, &AtomicBool::new(false))
+        scan(path, false, &AtomicBool::new(false), &ScanProgress::default())
     }
 
     fn init(path: &Path) {
@@ -295,7 +386,7 @@ mod tests {
         let result = search(root).unwrap();
         assert_eq!(result.repositories.len(), 1);
         assert_eq!(result.excluded, 2);
-        let full = scan(root, true, &AtomicBool::new(false)).unwrap();
+        let full = scan(root, true, &AtomicBool::new(false), &ScanProgress::default()).unwrap();
         assert_eq!(full.repositories.len(), 3);
         assert_eq!(full.excluded, 0);
         assert_eq!(search(&root.join("project/node_modules")).unwrap().repositories.len(), 1);
@@ -310,16 +401,73 @@ mod tests {
         assert_eq!(scans.start(prepared).unwrap_err().kind, "scan-cancelled");
 
         let running = scans.prepare();
-        let cancelled = scans.start(running).unwrap();
+        let (cancelled, progress) = scans.start(running).unwrap();
         assert!(scans.start(running).is_err());
         scans.cancel(running);
-        assert_eq!(scan(fixture.path(), false, &cancelled).err().unwrap().kind, "scan-cancelled");
+        assert!(scans.progress(running).is_none());
+        assert_eq!(scan(fixture.path(), false, &cancelled, &progress).err().unwrap().kind, "scan-cancelled");
 
         let next = scans.prepare();
-        let token = scans.start(next).unwrap();
-        assert!(scan(fixture.path(), false, &token).is_ok());
+        let (token, progress) = scans.start(next).unwrap();
+        assert!(scan(fixture.path(), false, &token, &progress).is_ok());
+        assert_eq!(scans.progress(next).unwrap().folders, 1);
         scans.finish(next);
         assert!(scans.start(next).is_err());
+        assert!(scans.progress(next).is_none());
+    }
+
+    #[test]
+    fn tagged_cache_folders_are_not_walked_unless_requested() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        init(&root.join("app"));
+        let target = root.join("app/target");
+        init(&target.join("debug/build/vendored"));
+        fs::write(target.join(CACHE_TAG), "Signature: 8a477f597d28d172789f06886806bc55\n# Cargo build cache\n").unwrap();
+        // A file with that name but without the signature is not a cache tag.
+        init(&root.join("notes/project"));
+        fs::write(root.join("notes").join(CACHE_TAG), "my notes").unwrap();
+
+        let progress = ScanProgress::default();
+        let result = scan(root, false, &AtomicBool::new(false), &progress).unwrap();
+        let names: Vec<_> = result.repositories.iter().map(|repo| Path::new(&repo.root).file_name().unwrap().to_str().unwrap().to_owned()).collect();
+        assert_eq!(names, ["app", "project"]);
+        assert_eq!(result.excluded, 1);
+        let snapshot = progress.snapshot();
+        assert_eq!(snapshot.repositories, 2);
+        assert!(snapshot.folders >= 5, "{}", snapshot.folders);
+        assert!(!snapshot.current.is_empty());
+
+        let full = scan(root, true, &AtomicBool::new(false), &ScanProgress::default()).unwrap();
+        assert_eq!(full.repositories.len(), 3);
+        // Chosen directly, the cache folder itself is scanned.
+        assert_eq!(search(&target).unwrap().repositories.len(), 1);
+    }
+
+    #[test]
+    fn folders_a_repository_ignores_are_not_walked_unless_requested() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let app = root.join("app");
+        init(&app);
+        fs::write(app.join(".gitignore"), "bin/\nobj/\nvendor/\n").unwrap();
+        // .NET test output with test repositories inside: never walked.
+        init(&app.join("src/Tests/bin/Release/work/fixture"));
+        fs::create_dir_all(app.join("src/Tests/obj/Debug")).unwrap();
+        fs::write(app.join("src/Tests/obj/Debug/Tests.dll"), "build output").unwrap();
+        fs::write(app.join("src/Tests/Tests.cs"), "source").unwrap();
+        // A clone kept in an ignored folder is a working copy of its own and stays.
+        init(&app.join("vendor"));
+        init(&app.join("tools/helper"));
+
+        let result = search(root).unwrap();
+        let names: Vec<_> = result.repositories.iter().map(|repo| repo.relative_path.replace('\\', "/")).collect();
+        assert_eq!(names, ["app", "app/tools/helper", "app/vendor"]);
+        assert_eq!(result.excluded, 2);
+
+        let full = scan(root, true, &AtomicBool::new(false), &ScanProgress::default()).unwrap();
+        assert_eq!(full.repositories.len(), 4);
+        assert_eq!(full.excluded, 0);
     }
 
     #[cfg(unix)]
