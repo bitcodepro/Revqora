@@ -7,13 +7,24 @@ const ICONS: Record<SyncKind, React.ReactNode> = {
 };
 const VERBS: Record<SyncKind, string> = { fetch: "Fetch", pull: "Pull", push: "Push" };
 
-/** Fetch, Pull and Push items for `targets`, labelled "<Verb> <what>". */
+/** Pull and Push need a local branch: remote-tracking branches of a selection are left out. */
+export function localTargets(targets: SyncTarget[]): SyncTarget[] {
+  return targets.flatMap(target => {
+    if (!target.branches) return [target];
+    const branches = target.branches.filter(branch => !branch.startsWith("refs/remotes/"));
+    return branches.length ? [{ ...target, branches }] : [];
+  });
+}
+
+/** Fetch, Pull and Push items for `targets`, labelled "<Verb> <what>". Pull and Push act on the
+ *  local branches only; with remote branches alone they are disabled. */
 function syncMenu(targets: SyncTarget[], what: string): MenuItem[] {
-  const empty = !targets.length;
-  return (["fetch", "pull", "push"] as const).map((kind): MenuItem => ({
-    label: `${VERBS[kind]} ${what}`, icon: ICONS[kind], disabled: empty, hint: empty ? "Nothing to sync" : undefined,
-    onClick: () => void syncRepositories(kind, targets),
-  }));
+  const local = localTargets(targets);
+  return (["fetch", "pull", "push"] as const).map((kind): MenuItem => {
+    const chosen = kind === "fetch" ? targets : local;
+    const hint = !targets.length ? "Nothing to sync" : !chosen.length ? "Remote branches can only be fetched" : undefined;
+    return { label: `${VERBS[kind]} ${what}`, icon: ICONS[kind], disabled: !chosen.length, hint, onClick: () => void syncRepositories(kind, chosen) };
+  });
 }
 
 /** What a right-click acts on: folders and repositories with every branch, branches on their own. */

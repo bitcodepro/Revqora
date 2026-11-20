@@ -1,7 +1,7 @@
 //! Mutating operations: staging, committing, branches, merge/rebase/cherry-pick,
 //! history rewriting, stash and remotes.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -1333,34 +1333,17 @@ fn fetch_chosen(
     }
     let mut fetched = HashSet::new();
     for (remote, items) in by_remote {
-        super::recovery::protect_transport(repo, false, Some(&remote), None, false)?;
-        let mut refs: Vec<String> = items.iter().map(|(_, on_remote, _)| on_remote.clone()).collect();
-        refs.sort();
-        refs.dedup();
-        // One deleted branch fails the whole fetch, and Git names only the first one it misses:
-        // leave that one out and fetch the rest again (one more round trip per deleted branch).
-        // Should Git not name it, fetch the rest one by one.
-        let mut missing: Vec<String> = Vec::new();
-        let mut rest = refs.clone();
-        while !rest.is_empty() {
-            let error = match fetch_refs(repo, &remote, &rest, on_line) {
-                Ok(()) => break,
-                Err(error) if missing_remote_ref(&error) => error,
-                Err(error) => return Err(error),
-            };
-            match missing_remote_name(&error).and_then(|name| rest.iter().position(|r| *r == name)) {
-                Some(at) => missing.push(rest.remove(at)),
-                None => {
-                    for reference in std::mem::take(&mut rest) {
-                        match fetch_refs(repo, &remote, std::slice::from_ref(&reference), on_line) {
-                            Ok(()) => {}
-                            Err(error) if missing_remote_ref(&error) => missing.push(reference),
-                            Err(error) => return Err(error),
-                        }
-                    }
-                }
+        // A remote that cannot be reached (sign-in, network, a removed fork) only stops its own
+        // branches: they are reported and the other remotes are still fetched.
+        let missing = match fetch_remote_refs(repo, &remote, &items, on_line) {
+            Ok(missing) => missing,
+            Err(error) if error.kind == "cancelled" => return Err(error),
+            Err(error) => {
+                let reason = format!("Could not fetch {remote}: {}", first_line(&error.message, "the fetch failed."));
+                result.skipped.extend(items.into_iter().map(|(branch, _, _)| BranchSkip { branch, reason: reason.clone() }));
+                continue;
             }
-        }
+        };
         for (shown, on_remote, local) in items {
             if missing.contains(&on_remote) {
                 result.skipped.push(BranchSkip { branch: shown, reason: format!("The branch no longer exists on {remote}.") });
@@ -1370,6 +1353,39 @@ fn fetch_chosen(
         }
     }
     Ok(fetched)
+}
+
+/// Fetches the remote branches of `items` from `remote`; returns those the remote no longer has.
+fn fetch_remote_refs(repo: &Path, remote: &str, items: &[(String, String, Option<String>)], on_line: &mut impl FnMut(&str)) -> GitResult<Vec<String>> {
+    super::recovery::protect_transport(repo, false, Some(remote), None, false)?;
+    let mut refs: Vec<String> = items.iter().map(|(_, on_remote, _)| on_remote.clone()).collect();
+    refs.sort();
+    refs.dedup();
+    // One deleted branch fails the whole fetch, and Git names only the first one it misses:
+    // leave that one out and fetch the rest again (one more round trip per deleted branch).
+    // Should Git not name it, fetch the rest one by one.
+    let mut missing: Vec<String> = Vec::new();
+    let mut rest = refs;
+    while !rest.is_empty() {
+        let error = match fetch_refs(repo, remote, &rest, on_line) {
+            Ok(()) => break,
+            Err(error) if missing_remote_ref(&error) => error,
+            Err(error) => return Err(error),
+        };
+        match missing_remote_name(&error).and_then(|name| rest.iter().position(|r| *r == name)) {
+            Some(at) => missing.push(rest.remove(at)),
+            None => {
+                for reference in std::mem::take(&mut rest) {
+                    match fetch_refs(repo, remote, std::slice::from_ref(&reference), on_line) {
+                        Ok(()) => {}
+                        Err(error) if missing_remote_ref(&error) => missing.push(reference),
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        }
+    }
+    Ok(missing)
 }
 
 fn fetch_refs(repo: &Path, remote: &str, refs: &[String], on_line: &mut impl FnMut(&str)) -> GitResult<()> {
@@ -1428,9 +1444,31 @@ pub fn pull_all_branches(repo: &Path, on_line: impl FnMut(&str)) -> GitResult<Br
 /// - Diverged branches are reported, never changed.
 pub fn pull_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl FnMut(&str)) -> GitResult<BranchesSync> {
     let mut result = BranchesSync::default();
+    // Remotes a Pull all could not fetch: their branches keep stale remote-tracking branches,
+    // are reported and never moved; the other remotes' branches are still pulled.
+    let mut unfetched: Vec<(String, String)> = Vec::new();
     let only = match branches {
         None => {
-            fetch(repo, None, true, &mut on_line)?;
+            match fetch(repo, None, true, &mut on_line) {
+                Ok(_) => {}
+                Err(error) if error.kind == "partial-fetch" => {
+                    let problems: HashMap<&str, &str> = error
+                        .message
+                        .split("Could not fetch ")
+                        .skip(1)
+                        .filter_map(|part| part.split_once(": "))
+                        .map(|(name, problem)| (name, problem.trim()))
+                        .collect();
+                    for remote in &error.details {
+                        let problem = problems.get(remote.as_str()).copied().unwrap_or("the fetch failed.");
+                        let reason = format!("Could not fetch {remote}: {problem}");
+                        // Named even when none of its branches had incoming commits.
+                        result.skipped.push(BranchSkip { branch: format!("{remote} (remote)"), reason: reason.clone() });
+                        unfetched.push((remote.clone(), reason));
+                    }
+                }
+                Err(error) => return Err(error),
+            }
             None
         }
         Some(branches) => {
@@ -1453,49 +1491,40 @@ pub fn pull_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
     let busy = busy_branches(repo)?.operations;
     let mut current = None;
     for local in local_branches(repo)? {
-        let LocalBranch { name, oid, upstream, track, worktree, .. } = &local;
+        let LocalBranch { name, upstream, track, .. } = &local;
         // Branches without an upstream were reported by the fetch of chosen branches.
         if only.as_ref().is_some_and(|only| !only.contains(name)) || upstream.is_empty() {
             continue;
         }
-        let branch = local.short();
         // The listing only picks candidates; every decision below uses the exact commit.
         if !track_counts(track).is_some_and(|(_, behind)| behind > 0) {
             continue;
         }
-        let target = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{upstream}^{{commit}}")])?;
-        if !target.ok() {
+        if let Some((_, reason)) = unfetched.iter().find(|(remote, _)| *remote == local.remote) {
+            result.skipped.push(BranchSkip { branch: local.short(), reason: reason.clone() });
             continue;
         }
-        let target = target.text().trim().to_owned();
-        let (ahead, behind) = ahead_behind(repo, oid, &target)?;
-        if behind == 0 {
-            continue;
-        }
-        if ahead > 0 {
-            let reason = format!("Diverged: {ahead} local and {behind} incoming commits. Pull it on its own to merge or rebase.");
-            result.skipped.push(BranchSkip { branch, reason });
-        } else if busy.contains(name) {
-            result.skipped.push(BranchSkip { branch, reason: "A rebase or bisect in progress works on this branch. Finish or abort it first.".into() });
-        } else if head.as_deref() == Some(name.as_str()) {
-            current = Some((name.clone(), branch, oid.clone(), behind, target));
-        } else if !worktree.is_empty() {
-            result.skipped.push(BranchSkip { branch, reason: format!("Checked out in the worktree {worktree}.") });
-        } else if let Some(reason) = busy_now(repo, name)? {
-            // Checked out or taken by a rebase since the listing: moving the ref would leave
-            // that worktree's files behind.
-            result.skipped.push(BranchSkip { branch, reason });
-        } else if runner::exec(repo, ["update-ref", "-m", "pull: fast-forward (Pull all)", name, &target, oid])?.ok() {
-            result.updated.push(BranchUpdate { branch, commits: behind, current: false });
-        } else {
-            result.skipped.push(BranchSkip { branch, reason: "The branch changed meanwhile.".into() });
+        // A failure on one branch is reported for it; branches already moved stay in the report.
+        match pull_one(repo, &local, head.as_deref(), &busy) {
+            Ok(PullOne::Nothing) => {}
+            Ok(PullOne::Moved(behind)) => result.updated.push(BranchUpdate { branch: local.short(), commits: behind, current: false }),
+            Ok(PullOne::Skipped(reason)) => result.skipped.push(BranchSkip { branch: local.short(), reason }),
+            Ok(PullOne::Current(behind, target)) => current = Some((local.name.clone(), local.short(), local.oid.clone(), behind, target)),
+            Err(error) if error.kind == "cancelled" => return Err(error),
+            Err(error) => result.skipped.push(BranchSkip { branch: local.short(), reason: first_line(&error.message, "The pull failed.") }),
         }
     }
     if let Some((name, branch, oid, behind, target)) = current {
-        match current_branch_blocked(repo, &name, &oid, &target)? {
+        let blocked = match current_branch_blocked(repo, &name, &oid, &target) {
+            Ok(blocked) => blocked,
+            Err(error) if error.kind == "cancelled" => return Err(error),
+            Err(error) => Some(first_line(&error.message, "The pull failed.")),
+        };
+        match blocked {
             Some(reason) => result.skipped.push(BranchSkip { branch, reason }),
             None => match fast_forward_current(repo, &oid, &target, &mut on_line) {
                 Ok(()) => result.updated.push(BranchUpdate { branch, commits: behind, current: true }),
+                Err(error) if error.kind == "cancelled" => return Err(error),
                 Err(error) => result.skipped.push(BranchSkip { branch, reason: error.message }),
             },
         }
@@ -1503,10 +1532,115 @@ pub fn pull_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
     Ok(result)
 }
 
+enum PullOne {
+    Nothing,
+    Moved(usize),
+    Skipped(String),
+    /// The checked-out branch: fast-forwarded last, to this commit.
+    Current(usize, String),
+}
+
+/// Decides and, for a branch that is not checked out, performs the fast-forward of one branch
+/// of a Pull of several branches.
+fn pull_one(repo: &Path, local: &LocalBranch, head: Option<&str>, busy: &HashSet<String>) -> GitResult<PullOne> {
+    let LocalBranch { name, oid, upstream, worktree, .. } = local;
+    let target = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{upstream}^{{commit}}")])?;
+    if !target.ok() {
+        return Ok(PullOne::Nothing);
+    }
+    let target = target.text().trim().to_owned();
+    let (ahead, behind) = ahead_behind(repo, oid, &target)?;
+    Ok(if behind == 0 {
+        PullOne::Nothing
+    } else if ahead > 0 {
+        PullOne::Skipped(format!("Diverged: {ahead} local and {behind} incoming commits. Pull it on its own to merge or rebase."))
+    } else if busy.contains(name) {
+        PullOne::Skipped("A rebase or bisect in progress works on this branch. Finish or abort it first.".into())
+    } else if head == Some(name.as_str()) {
+        PullOne::Current(behind, target)
+    } else if !worktree.is_empty() {
+        PullOne::Skipped(format!("Checked out in the worktree {worktree}."))
+    } else if let Some(reason) = busy_now(repo, name)? {
+        // Checked out or taken by a rebase since the listing: moving the ref would leave
+        // that worktree's files behind.
+        PullOne::Skipped(reason)
+    } else if runner::exec(repo, ["update-ref", "-m", "pull: fast-forward (Pull all)", name, &target, oid])?.ok() {
+        PullOne::Moved(behind)
+    } else {
+        PullOne::Skipped("The branch changed meanwhile.".into())
+    })
+}
+
+/// The settings that decide where a plain `git push` sends a branch.
+#[derive(Default)]
+struct PushRules {
+    /// `push.default` ("simple" when unset).
+    default: String,
+    /// `remote.pushDefault`.
+    push_default: Option<String>,
+    /// `branch.<name>.pushRemote`, by branch name.
+    push_remote: HashMap<String, String>,
+    /// Remotes with `remote.<name>.push` refspecs.
+    mapped: HashSet<String>,
+}
+
+impl PushRules {
+    fn read(repo: &Path) -> GitResult<Self> {
+        let out =
+            super::config_cache::exec(repo, &["config", "--get-regexp", r"^(push\.default|remote\.pushdefault|branch\..*\.pushremote|remote\..*\.push)$"])?;
+        if !out.ok() && out.code != 1 {
+            return Err(runner::to_error("git config --get-regexp", &out));
+        }
+        let mut rules = PushRules { default: "simple".into(), ..PushRules::default() };
+        for line in out.text().lines() {
+            let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+            let value = value.trim().to_owned();
+            if key == "push.default" {
+                rules.default = value.to_ascii_lowercase();
+            } else if key == "remote.pushdefault" {
+                rules.push_default = Some(value);
+            } else if let Some(branch) = key.strip_prefix("branch.").and_then(|k| k.strip_suffix(".pushremote")) {
+                rules.push_remote.insert(branch.to_owned(), value);
+            } else if let Some(remote) = key.strip_prefix("remote.").and_then(|k| k.strip_suffix(".push")) {
+                rules.mapped.insert(remote.to_owned());
+            }
+        }
+        Ok(rules)
+    }
+
+    /// Why a plain `git push` of `branch` would not go to its upstream, if it would not. Push
+    /// of several branches only sends a branch where Git itself would send it.
+    fn elsewhere(&self, branch: &LocalBranch) -> Option<String> {
+        let short = branch.short();
+        let target = self.push_remote.get(&short).or(self.push_default.as_ref()).unwrap_or(&branch.remote);
+        if *target != branch.remote {
+            return Some(format!("Pushes of this branch go to {target}, not to its upstream on {}. Push it on its own with Push….", branch.remote));
+        }
+        if self.mapped.contains(&branch.remote) {
+            return Some(format!("{} has its own push rules (remote.{}.push). Push it on its own with Push….", branch.remote, branch.remote));
+        }
+        let same_name = branch.remote_ref == format!("refs/heads/{short}");
+        match self.default.as_str() {
+            "upstream" | "tracking" => None,
+            "nothing" => Some("push.default is \"nothing\": Git pushes no branch without a destination. Push it on its own with Push….".into()),
+            _ if same_name => None,
+            _ => {
+                let upstream = branch.upstream.strip_prefix("refs/remotes/").unwrap_or(&branch.upstream);
+                Some(format!("Its upstream {upstream} has another name, so Git would not push it there. Push it on its own with Push… to choose."))
+            }
+        }
+    }
+}
+
 /// Push for chosen branches, or for every local branch with `None`: each branch with commits
 /// its upstream lacks goes to that upstream (one `git push` per remote, never forced). A branch
 /// whose upstream has commits it lacks is reported instead; so is a branch the remote refused.
 /// Branches without an upstream are only reported when they were chosen.
+///
+/// A branch is only sent where a plain `git push` would send it (same name, or
+/// `push.default=upstream`; no other push remote; no push refspecs), and exactly at the commit
+/// that was checked. Several branches with one destination are reported, not pushed: Git would
+/// refuse the whole push. A remote that fails leaves the other remotes' branches to be pushed.
 pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl FnMut(&str)) -> GitResult<BranchesSync> {
     let mut result = BranchesSync::default();
     let only = match branches {
@@ -1523,6 +1657,7 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
     let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
     let head = head.ok().then(|| head.text().trim().to_owned());
     let mut by_remote: BTreeMap<String, Vec<(LocalBranch, usize)>> = BTreeMap::new();
+    let rules = PushRules::read(repo)?;
     let listed = local_branches(repo)?;
     if let Some(only) = &only {
         for name in only.iter().filter(|name| !listed.iter().any(|b| &b.name == *name)) {
@@ -1544,6 +1679,10 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
             continue;
         }
         if local.remote == "." {
+            if chosen {
+                let upstream = local.remote_ref.strip_prefix("refs/heads/").unwrap_or(&local.remote_ref);
+                skip(format!("It tracks the local branch {upstream}: nothing goes to a remote."));
+            }
             continue;
         }
         let Some((ahead, behind)) = track_counts(&local.track) else {
@@ -1559,44 +1698,75 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
             skip(format!("Diverged: {ahead} local and {behind} incoming commits. Pull it first."));
             continue;
         }
+        if let Some(reason) = rules.elsewhere(&local) {
+            skip(reason);
+            continue;
+        }
         by_remote.entry(local.remote.clone()).or_default().push((local, ahead));
     }
+    // Two branches pushed to one remote branch make Git refuse the whole push.
+    for (remote, list) in &mut by_remote {
+        let mut destinations: HashMap<String, usize> = HashMap::new();
+        for (local, _) in list.iter() {
+            *destinations.entry(local.remote_ref.clone()).or_default() += 1;
+        }
+        list.retain(|(local, _)| {
+            let shared = destinations[&local.remote_ref];
+            if shared > 1 {
+                let target = local.remote_ref.strip_prefix("refs/heads/").unwrap_or(&local.remote_ref);
+                let reason = format!("{shared} local branches push to {remote}/{target}. Push one of them on its own.");
+                result.skipped.push(BranchSkip { branch: local.short(), reason });
+            }
+            shared == 1
+        });
+    }
+    by_remote.retain(|_, list| !list.is_empty());
     // The checkpoint a single Push takes first, only when something will be sent: most
     // repositories have nothing to push, and a checkpoint each would bury the list.
     if !by_remote.is_empty() {
         super::recovery::automatic(repo, "push_branches", false, false)?;
     }
     for (remote, list) in by_remote {
-        let specs: Vec<String> = list.iter().map(|(b, _)| format!("{}:{}", b.name, b.remote_ref)).collect();
-        for spec in &specs {
-            super::recovery::protect_transport(repo, true, Some(&remote), Some(spec), false)?;
-        }
-        // Only the listed branches: `push.followTags` would also publish annotated tags that
-        // the report never shows.
-        let mut args = vec!["push".to_string(), "--progress".into(), "--no-follow-tags".into(), remote.clone()];
-        args.extend(specs);
-        let error = match runner::run_streaming(repo, &args, &[], &mut on_line) {
-            Ok(_) => None,
-            Err(error) if error.kind == "cancelled" => return Err(error),
+        // The exact commit that was checked: a branch that moves meanwhile sends nothing unseen.
+        let specs: Vec<String> = list.iter().map(|(b, _)| format!("{}:{}", b.oid, b.remote_ref)).collect();
+        let error = match specs.iter().try_for_each(|spec| super::recovery::protect_transport(repo, true, Some(&remote), Some(spec), false)) {
             Err(error) => Some(error),
+            Ok(()) => {
+                // Only the listed branches: `push.followTags` would also publish annotated tags
+                // that the report never shows.
+                let mut args = vec!["push".to_string(), "--progress".into(), "--no-follow-tags".into(), remote.clone()];
+                args.extend(specs);
+                match runner::run_streaming(repo, &args, &[], &mut on_line) {
+                    Ok(_) => None,
+                    Err(error) if error.kind == "cancelled" => return Err(error),
+                    Err(error) => Some(error),
+                }
+            }
         };
         // Git moves the remote-tracking branch of every branch the remote accepted.
         for (local, ahead) in list {
-            let tip = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &local.upstream])?;
-            if tip.ok() && tip.text().trim() == local.oid {
+            let tip = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &local.upstream]);
+            if tip.as_ref().is_ok_and(|tip| tip.ok() && tip.text().trim() == local.oid) {
                 let current = head.as_deref() == Some(local.name.as_str());
                 result.updated.push(BranchUpdate { branch: local.short(), commits: ahead, current });
                 continue;
             }
             let reason = match &error {
-                Some(error) if error.kind == "rejected" => "The remote branch has commits this branch lacks. Pull it first.".to_owned(),
-                Some(error) => error.message.lines().find(|l| !l.trim().is_empty()).unwrap_or("The push failed.").trim().to_owned(),
+                // "[remote rejected]" is a hook or a protection rule, not missing commits.
+                Some(error) if error.kind == "rejected" && !error.message.contains("remote rejected") && !error.stderr.contains("remote rejected") => {
+                    "The remote branch has commits this branch lacks. Pull it first.".to_owned()
+                }
+                Some(error) => first_line(&error.message, "The push failed."),
                 None => "The remote branch did not move.".to_owned(),
             };
             result.skipped.push(BranchSkip { branch: local.short(), reason });
         }
     }
     Ok(result)
+}
+
+fn first_line(text: &str, fallback: &str) -> String {
+    text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or(fallback).to_owned()
 }
 
 /// Moves the checked-out branch exactly to `target`, a verified descendant of HEAD. Local

@@ -275,3 +275,115 @@ fn push_of_chosen_branches_sends_no_tags_even_with_push_follow_tags() {
     assert_eq!(git(&remote, &["rev-parse", "refs/heads/ahead"]), tip(&f.work, "ahead"));
     assert_eq!(git(&remote, &["tag", "--list"]), "", "only the listed branches are sent");
 }
+
+fn skipped(result: &ops::BranchesSync) -> Vec<(String, String)> {
+    let mut list: Vec<_> = result.skipped.iter().map(|s| (s.branch.clone(), s.reason.clone())).collect();
+    list.sort();
+    list
+}
+
+#[test]
+fn push_of_several_branches_never_sends_a_branch_to_an_upstream_with_another_name() {
+    let f = fixture();
+    let remote = f.work.parent().unwrap().join("remote.git");
+    let main_before = git(&remote, &["rev-parse", "refs/heads/main"]);
+    // `git checkout -b topic origin/main` makes origin/main its upstream; plain `git push`
+    // refuses to send it there (push.default=simple).
+    git(&f.work, &["checkout", "-q", "-b", "topic", "origin/main"]);
+    commit(&f.work, "topic.txt", "topic\n");
+    git(&f.work, &["checkout", "-q", "main"]);
+
+    let result = ops::push_branches(&f.work, None, |_| {}).unwrap();
+
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/main"]), main_before, "main on the remote is untouched");
+    assert_eq!(result.updated.iter().map(|u| u.branch.as_str()).collect::<Vec<_>>(), ["ahead"]);
+    let reasons = skipped(&result);
+    let topic = reasons.iter().find(|(branch, _)| branch == "topic").expect("topic is reported");
+    assert!(topic.1.contains("another name"), "{}", topic.1);
+
+    // A push remote other than the upstream's: left to the Push dialog too.
+    git(&f.work, &["config", "branch.ahead.pushRemote", "fork"]);
+    commit_on(&f.work, "ahead", "more.txt");
+    let result = ops::push_branches(&f.work, Some(&["refs/heads/ahead".to_owned()]), |_| {}).unwrap();
+    assert!(result.updated.is_empty());
+    assert!(skipped(&result)[0].1.contains("go to fork"), "{:?}", skipped(&result));
+}
+
+fn commit_on(dir: &Path, branch: &str, file: &str) {
+    git(dir, &["checkout", "-q", branch]);
+    commit(dir, file, "more\n");
+    git(dir, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn push_of_several_branches_with_one_destination_reports_them_and_pushes_the_rest() {
+    let f = fixture();
+    let remote = f.work.parent().unwrap().join("remote.git");
+    let main_before = git(&remote, &["rev-parse", "refs/heads/main"]);
+    // With push.default=upstream Git would send both to main: it refuses the whole push.
+    git(&f.work, &["config", "push.default", "upstream"]);
+    for branch in ["one", "two"] {
+        git(&f.work, &["checkout", "-q", "-b", branch, "origin/main"]);
+        commit(&f.work, &format!("{branch}.txt"), "x\n");
+    }
+    git(&f.work, &["checkout", "-q", "main"]);
+
+    let result = ops::push_branches(&f.work, None, |_| {}).unwrap();
+
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/main"]), main_before);
+    assert_eq!(result.updated.iter().map(|u| u.branch.as_str()).collect::<Vec<_>>(), ["ahead"], "the unrelated branch is still pushed");
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/ahead"]), tip(&f.work, "ahead"));
+    let reasons = skipped(&result);
+    for branch in ["one", "two"] {
+        let (_, reason) = reasons.iter().find(|(name, _)| name == branch).expect("reported");
+        assert!(reason.contains("2 local branches push to origin/main"), "{reason}");
+    }
+}
+
+#[test]
+fn push_of_a_chosen_branch_that_tracks_a_local_branch_says_why_nothing_was_sent() {
+    let f = fixture();
+    git(&f.work, &["checkout", "-q", "-b", "local-child", "--track", "main"]);
+    commit(&f.work, "child.txt", "child\n");
+    git(&f.work, &["checkout", "-q", "main"]);
+
+    let result = ops::push_branches(&f.work, Some(&["refs/heads/local-child".to_owned()]), |_| {}).unwrap();
+
+    assert!(result.updated.is_empty());
+    assert_eq!(skipped(&result), [("local-child".to_owned(), "It tracks the local branch main: nothing goes to a remote.".to_owned())]);
+}
+
+#[test]
+fn pull_all_still_pulls_branches_of_remotes_that_were_fetched_when_one_remote_fails() {
+    let f = fixture();
+    let dead = f.work.parent().unwrap().join("removed-fork.git");
+    git(&f.work, &["remote", "add", "fork", dead.to_str().unwrap()]);
+
+    let result = ops::pull_all_branches(&f.work, |_| {}).unwrap();
+
+    let mut updated: Vec<_> = result.updated.iter().map(|u| u.branch.as_str()).collect();
+    updated.sort();
+    assert_eq!(updated, ["feature", "main"]);
+    assert_eq!(tip(&f.work, "feature"), tip(&f.other, "feature"));
+    let reasons = skipped(&result);
+    let fork = reasons.iter().find(|(branch, _)| branch == "fork (remote)").expect("the failed remote is named");
+    assert!(fork.1.starts_with("Could not fetch fork"), "{}", fork.1);
+}
+
+#[test]
+fn pull_of_chosen_branches_reports_a_remote_that_fails_and_pulls_the_others() {
+    let f = fixture();
+    let dead = f.work.parent().unwrap().join("removed-fork.git");
+    git(&f.work, &["remote", "add", "fork", dead.to_str().unwrap()]);
+    git(&f.work, &["branch", "-q", "from-fork", "main"]);
+    git(&f.work, &["config", "branch.from-fork.remote", "fork"]);
+    git(&f.work, &["config", "branch.from-fork.merge", "refs/heads/main"]);
+
+    let chosen = ["refs/heads/feature".to_owned(), "refs/heads/from-fork".to_owned()];
+    let result = ops::pull_branches(&f.work, Some(&chosen), |_| {}).unwrap();
+
+    assert_eq!(result.updated.iter().map(|u| u.branch.as_str()).collect::<Vec<_>>(), ["feature"]);
+    let reasons = skipped(&result);
+    let (_, reason) = reasons.iter().find(|(branch, _)| branch == "from-fork").expect("reported");
+    assert!(reason.starts_with("Could not fetch fork"), "{reason}");
+}

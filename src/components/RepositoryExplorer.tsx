@@ -64,7 +64,9 @@ function storedAuthorQuery(root: string): string {
   return query;
 }
 
-export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
+/** `hidden` keeps Explorer mounted while out of view (a maximized commit), so its search, filters,
+ *  expanded rows, selection and scroll position are all still there when it comes back. */
+export function RepositoryExplorer({ onClose, hidden = false }: { onClose: () => void; hidden?: boolean }) {
   const groups = useLibrary(s => s.groups), known = useLibrary(s => s.knownRoots);
   const activeGroup = useLibrary(s => s.activeGroupId), names = useLibrary(s => s.repositoryNames);
   const favorites = useLibrary(s => s.favorites), explorerOrder = useLibrary(s => s.explorerOrder);
@@ -272,7 +274,9 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const syncSelection = (entry: ExplorerEntry): SyncSelection => {
     const rows = selection.includes(entry.id) ? selectedRows : [entry];
     return {
-      folders: rows.flatMap(row => row.kind === "group" ? [groupRepositoryRoots(groups, row.id)] : []),
+      // The same spelling as the repository rows (the open tab's path), so an open repository is
+      // refreshed after the sync, not treated as closed.
+      folders: rows.flatMap(row => row.kind === "group" ? [groupRepositoryRoots(groups, row.id).map(root => canonical.get(repositoryKey(root)) ?? root)] : []),
       repositories: rows.flatMap(row => row.kind === "repository" ? [row.root] : []),
       branches: rows.flatMap(row => row.kind === "branch" ? [{ root: row.root, branches: [row.branch.fullName] }] : []),
     };
@@ -313,7 +317,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   };
   const panelMenu = usePanelTitleMenu("explorer", rootMenu);
 
-  return <aside ref={navigation.panel} className="repository-sidebar explorer-sidebar" aria-label="Explorer" style={{
+  return <aside ref={navigation.panel} hidden={hidden} className="repository-sidebar explorer-sidebar" aria-label="Explorer" style={{
     width, "--explorer-folder-hover-dark": hoverColor("dark"), "--explorer-folder-hover-light": hoverColor("light"),
   } as CSSProperties} onKeyDown={event => {
     if (event.defaultPrevented || (event.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;

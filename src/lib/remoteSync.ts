@@ -5,6 +5,7 @@ import { api, errorMessage, newOpId } from "./api";
 import { fetchRound } from "./autofetch";
 import { basename } from "./format";
 import { repositoryKey, uniqueRoots, useLibrary } from "./repositoryLibrary";
+import { invalidateExplorerBranches } from "./explorerBranchReads";
 import { scanRepositoryTracking, trackingOf, useRepositoryTracking } from "./repositoryTracking";
 import { repositoryIncoming, useRepos } from "./store";
 import type { BranchesSync } from "./types";
@@ -79,7 +80,7 @@ export async function syncRepositories(kind: SyncKind, requested: SyncTarget[]) 
       }
       await (open()
         ? useRepos.getState().refresh(root, { info: true, status: true, refs: true, graph: useRepos.getState().active === root })
-        : scanRepositoryTracking([root])).catch(() => {});
+        : scanRepositoryTracking([root]).finally(() => invalidateExplorerBranches([root]))).catch(() => {});
       outcomes.push(outcome);
       useUi.setState((s) => ({ busy: s.busy.map((b) => b.id === id ? { ...b, label: `${label} ${what} (${outcomes.length}/${targets.length})`, line: "" } : b) }));
     }, () => true, 4);

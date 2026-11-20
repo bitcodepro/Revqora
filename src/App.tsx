@@ -606,7 +606,7 @@ function MainApp() {
       <TopBar />
       <ActivityIndicator active={busy} />
       <div className="app-body">
-        {explorerOpen && !focusMode && !commitMaximized && !panels.explorer && <RepositoryExplorer onClose={closeExplorer}/>}
+        {explorerOpen && !focusMode && !panels.explorer && <RepositoryExplorer onClose={closeExplorer} hidden={commitMaximized}/>}
         <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode || commitMaximized}>{!panels.repositories && <RepositorySidebar />}</div>
         <div className="workspace-host">{overview ? <RepositoryOverview /> : <ActiveRepositoryContent combinedPulls={combinedPulls} />}</div>
       </div>
