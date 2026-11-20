@@ -28,3 +28,5 @@
   color: var(--text);
   font-size: var(--fs-lg);
 }
+.view-error-message { max-width: min(640px, 90%); margin: 0; font-family: var(--font-mono); font-size: var(--fs-sm, 12px); color: var(--text-dim); overflow-wrap: anywhere; white-space: pre-wrap; }
+.view-error p { margin: 0; }

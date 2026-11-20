@@ -9,7 +9,10 @@ export interface ErrorLogEntry {
   count: number;
 }
 
-const NOT_FAILURES = new Set(["repository-folder-unavailable", "superseded", "cancelled", "scan-cancelled"]);
+// Answers, not failures: a closed repository folder, a request a newer one replaced, the user's
+// Cancel, a request refused because the repository changed meanwhile (nothing was done; the
+// window or the MCP client asks again), and a pull request read without an API connection.
+const NOT_FAILURES = new Set(["repository-folder-unavailable", "superseded", "cancelled", "scan-cancelled", "stale-operation", "pr-connection-required"]);
 const reported = new WeakSet<object>();
 const writes = new Set<Promise<unknown>>();
 

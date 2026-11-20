@@ -10,6 +10,7 @@ import { endBusy, showDialog, startBusy, toast, useUi } from "./ui";
 import { GitMerge } from "lucide-react";
 import { Modal } from "../components/Modal";
 import { DeleteBranchDialog, type DeleteBranchOutcome } from "../components/DeleteBranchDialog";
+import { repositoryFolderImportDialog } from "../components/RepositoryFolderImport";
 import { useSettings } from "./settings";
 import { repositoryKey } from "./repositoryLibrary";
 import type { OpOutcome, PullOutcome, SwitchChoice, SwitchOutcome } from "./types";
@@ -266,7 +267,6 @@ export async function openRepoPath(path: string) {
         </Modal>
       ));
       if (choice === "find") {
-        const { repositoryFolderImportDialog } = await import("../components/RepositoryFolderImport");
         await repositoryFolderImportDialog(path);
       } else if (choice === "init") {
         try {

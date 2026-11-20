@@ -274,14 +274,119 @@ fn error_reason(code: &str) -> (&'static str, bool) {
     }
 }
 
+/// One message from the client, or a message too large to read, already skipped.
+enum Incoming {
+    Line(Vec<u8>),
+    /// The id when the message starts with it (see [`leading_id`]), otherwise null.
+    Oversized(Value),
+    End,
+}
+
+/// Reads one message. A message over `limit` is not kept in memory: the rest of its line is
+/// read and dropped, so the next message is read as usual and the session goes on.
+fn next_message(reader: &mut impl BufRead, limit: usize) -> io::Result<Incoming> {
+    let mut line = Vec::new();
+    if io::Read::take(&mut *reader, (limit + 1) as u64).read_until(b'\n', &mut line)? == 0 {
+        return Ok(Incoming::End);
+    }
+    if line.len() > limit {
+        let id = leading_id(&line);
+        if line.last() != Some(&b'\n') {
+            loop {
+                let buffer = reader.fill_buf()?;
+                if buffer.is_empty() {
+                    break;
+                }
+                match buffer.iter().position(|byte| *byte == b'\n') {
+                    Some(end) => {
+                        reader.consume(end + 1);
+                        break;
+                    }
+                    None => {
+                        let read = buffer.len();
+                        reader.consume(read);
+                    }
+                }
+            }
+        }
+        return Ok(Incoming::Oversized(id));
+    }
+    if line.last() != Some(&b'\n') {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Incomplete MCP message."));
+    }
+    Ok(Incoming::Line(line))
+}
+
+/// The request id of a message cut short, when it is certain: one of the first members of the
+/// top-level object, after members whose values are plain strings, numbers, booleans or null.
+/// Clients write `{"jsonrpc":"2.0","id":…`; anything else gets a null id.
+fn leading_id(prefix: &[u8]) -> Value {
+    let mut at = 0;
+    let skip = |at: &mut usize| {
+        while prefix.get(*at).is_some_and(u8::is_ascii_whitespace) {
+            *at += 1;
+        }
+    };
+    // A string without escapes, or a number or literal: its bytes and whether it was a string.
+    let scalar = |at: &mut usize| -> Option<(&[u8], bool)> {
+        if prefix.get(*at) == Some(&b'"') {
+            let start = *at + 1;
+            let end = start + prefix.get(start..)?.iter().take(256).position(|b| *b == b'"' || *b == b'\\')?;
+            if prefix[end] != b'"' {
+                return None;
+            }
+            *at = end + 1;
+            return Some((&prefix[start..end], true));
+        }
+        let start = *at;
+        while prefix.get(*at).is_some_and(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'+' | b'.')) && *at - start < 32 {
+            *at += 1;
+        }
+        (*at > start).then(|| (&prefix[start..*at], false))
+    };
+    skip(&mut at);
+    if prefix.get(at) != Some(&b'{') {
+        return Value::Null;
+    }
+    at += 1;
+    for _ in 0..4 {
+        skip(&mut at);
+        let Some((key, true)) = scalar(&mut at) else { return Value::Null };
+        skip(&mut at);
+        if prefix.get(at) != Some(&b':') {
+            return Value::Null;
+        }
+        at += 1;
+        skip(&mut at);
+        let Some((value, quoted)) = scalar(&mut at) else { return Value::Null };
+        if key == b"id" {
+            let text = String::from_utf8_lossy(value).into_owned();
+            return if quoted { Value::String(text) } else { text.parse::<i64>().map(Value::from).unwrap_or(Value::Null) };
+        }
+        skip(&mut at);
+        if prefix.get(at) != Some(&b',') {
+            return Value::Null;
+        }
+        at += 1;
+    }
+    Value::Null
+}
+
 fn run(reader: &mut impl BufRead, writer: &mut impl Write, app_version: &str, dispatch: impl Fn(&ToolCall) -> super::Reply) -> io::Result<()> {
     let mut protocol = Protocol { app_version, version: None, ready: false };
     loop {
-        let line = match transport::frame(reader, INPUT_LIMIT) {
-            Ok(Some(line)) => line,
-            Ok(None) => return Ok(()),
+        let line = match next_message(reader, INPUT_LIMIT) {
+            Ok(Incoming::Line(line)) => line,
+            Ok(Incoming::End) => return Ok(()),
+            Ok(Incoming::Oversized(id)) => {
+                // The session goes on: one oversized request must not cut off the client.
+                let message =
+                    format!("The MCP message is larger than {} KB and was not read. Send smaller requests (fewer paths, shorter text).", INPUT_LIMIT / 1024);
+                transport::write(writer, &rpc_error(id, -32600, &message), OUTPUT_LIMIT)?;
+                continue;
+            }
             Err(error) => {
-                transport::write(writer, &rpc_error(Value::Null, -32700, "Invalid or oversized MCP message."), OUTPUT_LIMIT)?;
+                transport::write(writer, &rpc_error(Value::Null, -32700, "Invalid or incomplete MCP message."), OUTPUT_LIMIT)?;
                 return Err(error);
             }
         };
@@ -346,6 +451,43 @@ mod tests {
         assert_eq!(responses[6]["result"]["isError"], false);
         assert_eq!(responses[7]["result"]["isError"], false);
         assert_eq!(responses[8]["result"]["isError"], true);
+    }
+
+    #[test]
+    fn an_oversized_message_is_answered_and_the_session_goes_on() {
+        let big = "x".repeat(INPUT_LIMIT + 10);
+        let input = [
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}).to_string(),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}).to_string(),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"search_commits","arguments":{{"repository":"r","query":"{big}"}}}}}}"#
+            ),
+            format!(r#"{{"jsonrpc":"2.0", "id" : "seven","method":"tools/call","params":{{"q":"{big}"}}}}"#),
+            format!(r#"{{"method":"tools/call","params":{{"id":3,"q":"{big}"}},"id":8}}"#),
+            json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"list_repositories"}}).to_string(),
+        ]
+        .join("\n")
+            + "\n";
+        let mut output = Vec::new();
+        run(&mut input.as_bytes(), &mut output, "9.8.7", |_| Ok(json!({"active":"fixture"}))).unwrap();
+        let responses: Vec<Value> =
+            output.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()).map(|line| serde_json::from_slice(line).unwrap()).collect();
+        assert_eq!(responses.len(), 5);
+        assert_eq!(responses[1]["id"], 7);
+        assert_eq!(responses[1]["error"]["code"], -32600);
+        assert_eq!(responses[2]["id"], "seven");
+        // `id` only inside params, before the real one: not trusted.
+        assert_eq!(responses[3]["id"], Value::Null);
+        assert_eq!(responses[4]["id"], 9);
+        assert_eq!(responses[4]["result"]["isError"], false);
+    }
+
+    #[test]
+    fn a_message_cut_off_at_the_end_still_ends_the_session() {
+        let input =
+            format!("{}\n{{\"jsonrpc\":\"2.0\",\"id\":2", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}));
+        let mut output = Vec::new();
+        assert!(run(&mut input.as_bytes(), &mut output, "9.8.7", |_| Ok(json!({}))).is_err());
     }
 
     #[test]

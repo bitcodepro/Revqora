@@ -24,6 +24,7 @@ import { api, errorMessage, isGitError } from "./lib/api";
 import { WORKTREE } from "./lib/types";
 import { CommandPalette, OpBanner, paletteShortcut, StatusBar, TopBar, Welcome } from "./components/Shell";
 import { ContextMenuHost, DialogHost, Splitter, ToastHost } from "./components/Overlays";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { bindingFor, prettyCombo } from "./lib/shortcuts";
 import { Sidebar } from "./components/Sidebar";
 import { GraphView } from "./components/GraphView";
@@ -617,24 +618,24 @@ function MainApp() {
 
   return (
     <WorkspaceLayoutContext.Provider value={layoutMode}><div className="app" data-app-startup={startupPhase} aria-busy={startupPhase !== "ready"}>
-      <TopBar />
+      <ErrorBoundary area="Toolbar" quiet><TopBar /></ErrorBoundary>
       <ActivityIndicator active={busy} />
       <div className="app-body">
-        {explorerOpen && !focusMode && !panels.explorer && <RepositoryExplorer onClose={closeExplorer} hidden={commitMaximized}/>}
-        <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode || commitMaximized}>{!panels.repositories && <RepositorySidebar />}</div>
-        <div className="workspace-host">{overview ? <RepositoryOverview /> : <ActiveRepositoryContent combinedPulls={combinedPulls} />}</div>
+        {explorerOpen && !focusMode && !panels.explorer && <ErrorBoundary area="Explorer"><RepositoryExplorer onClose={closeExplorer} hidden={commitMaximized}/></ErrorBoundary>}
+        <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode || commitMaximized}>{!panels.repositories && <ErrorBoundary area="Repositories"><RepositorySidebar /></ErrorBoundary>}</div>
+        <div className="workspace-host">{overview ? <ErrorBoundary area="Repository overview"><RepositoryOverview /></ErrorBoundary> : <ActiveRepositoryContent combinedPulls={combinedPulls} />}</div>
       </div>
-      <StatusBar />
-      <ContextMenuHost />
-      <DialogHost />
-      <CommandPalette />
-      <ToastHost />
-      <AskpassHost />
+      <ErrorBoundary area="Status bar" quiet><StatusBar /></ErrorBoundary>
+      <ErrorBoundary area="Menu" quiet><ContextMenuHost /></ErrorBoundary>
+      <ErrorBoundary area="Dialog" quiet><DialogHost /></ErrorBoundary>
+      <ErrorBoundary area="Command palette" quiet><CommandPalette /></ErrorBoundary>
+      <ErrorBoundary area="Notifications" quiet><ToastHost /></ErrorBoundary>
+      <ErrorBoundary area="Sign-in prompt" quiet><AskpassHost /></ErrorBoundary>
       <GitMissing />
-      <Onboarding />
+      <ErrorBoundary area="Welcome" quiet><Onboarding /></ErrorBoundary>
       {dropping && <div className="drop-hint">Drop a folder to open it</div>}
-      <DetachedPanel id="explorer"><RepositoryExplorer onClose={() => attach("explorer")}/></DetachedPanel>
-      <DetachedPanel id="repositories"><RepositorySidebar/></DetachedPanel>
+      <DetachedPanel id="explorer"><ErrorBoundary area="Explorer"><RepositoryExplorer onClose={() => attach("explorer")}/></ErrorBoundary></DetachedPanel>
+      <DetachedPanel id="repositories"><ErrorBoundary area="Repositories"><RepositorySidebar/></ErrorBoundary></DetachedPanel>
       <ActiveRepositoryPanels attach={attach} prAllRepositories={prAllRepositories} />
     </div></WorkspaceLayoutContext.Provider>
   );
@@ -652,18 +653,20 @@ function showMainChanges(root: string, path?: string) {
  *  change of the active tab. */
 function ActiveRepositoryContent({ combinedPulls }: { combinedPulls: boolean }) {
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
-  return tab ? <RepositoryContent key={combinedPulls ? "all-pull-requests" : tab.root} tab={tab} combinedPulls={combinedPulls} /> : <Welcome />;
+  return <ErrorBoundary area="This view" resetKey={tab?.root}>
+    {tab ? <RepositoryContent key={combinedPulls ? "all-pull-requests" : tab.root} tab={tab} combinedPulls={combinedPulls} /> : <Welcome />}
+  </ErrorBoundary>;
 }
 
 /** Panels of the shown repository that were moved to their own windows. */
 function ActiveRepositoryPanels({ attach, prAllRepositories }: { attach: (id: PanelId) => void; prAllRepositories: boolean }) {
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   return <>
-    <DetachedPanel id="branches">{tab?.info && <Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/>}</DetachedPanel>
-    <DetachedPanel id="history">{tab?.info && <GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/>}</DetachedPanel>
-    <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <CommitDetails key={tab.root} root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/> : null}</DetachedPanel>
-    <DetachedPanel id="pulls">{tab && (tab.info || prAllRepositories) && <Suspense fallback={null}><PullRequestsView key={prAllRepositories ? "all-pull-requests" : tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/></Suspense>}</DetachedPanel>
-    <DetachedPanel id="changes">{tab?.info && <ChangesView key={tab.root} tab={tab} onOpenConflict={path => showMainChanges(tab.root, path)}/>}</DetachedPanel>
-    <DetachedPanel id="worktrees">{tab?.info && <Suspense fallback={null}><WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/></Suspense>}</DetachedPanel>
+    <DetachedPanel id="branches">{tab?.info && <ErrorBoundary area="Branches" resetKey={tab.root}><Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/></ErrorBoundary>}</DetachedPanel>
+    <DetachedPanel id="history">{tab?.info && <ErrorBoundary area="History" resetKey={tab.root}><GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/></ErrorBoundary>}</DetachedPanel>
+    <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <ErrorBoundary area="Commit details" resetKey={tab.selected}><CommitDetails key={tab.root} root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/></ErrorBoundary> : null}</DetachedPanel>
+    <DetachedPanel id="pulls">{tab && (tab.info || prAllRepositories) && <ErrorBoundary area="Pull requests" resetKey={tab.root}><Suspense fallback={null}><PullRequestsView key={prAllRepositories ? "all-pull-requests" : tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/></Suspense></ErrorBoundary>}</DetachedPanel>
+    <DetachedPanel id="changes">{tab?.info && <ErrorBoundary area="Changes" resetKey={tab.root}><ChangesView key={tab.root} tab={tab} onOpenConflict={path => showMainChanges(tab.root, path)}/></ErrorBoundary>}</DetachedPanel>
+    <DetachedPanel id="worktrees">{tab?.info && <ErrorBoundary area="Worktrees" resetKey={tab.root}><Suspense fallback={null}><WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/></Suspense></ErrorBoundary>}</DetachedPanel>
   </>;
 }

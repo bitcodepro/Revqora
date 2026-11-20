@@ -27,6 +27,11 @@ interface Outcome extends SyncTarget {
 
 let running = false;
 
+/** Repositories worked on at once. Each mostly waits on its server, so a long list goes about
+ *  twice as fast as with four, and eight connections stay polite to one server. Automatic
+ *  fetches in the background keep to four. */
+export const SYNC_PARALLEL = 8;
+
 /** Every repository in the list: the open ones and the library's closed ones. */
 export function listedRoots() {
   return uniqueRoots([...useRepos.getState().order, ...useLibrary.getState().knownRoots]);
@@ -48,7 +53,7 @@ export function mergeTargets(targets: SyncTarget[]): SyncTarget[] {
   return [...merged.values()].filter((target) => !target.branches || target.branches.length);
 }
 
-/** Four repositories at a time; one failing never stops the rest. */
+/** `SYNC_PARALLEL` repositories at a time; one failing never stops the rest. */
 export async function syncRepositories(kind: SyncKind, requested: SyncTarget[]) {
   const targets = mergeTargets(requested);
   if (!targets.length) return;
@@ -83,7 +88,7 @@ export async function syncRepositories(kind: SyncKind, requested: SyncTarget[]) 
         : scanRepositoryTracking([root]).finally(() => invalidateExplorerBranches([root]))).catch(() => {});
       outcomes.push(outcome);
       useUi.setState((s) => ({ busy: s.busy.map((b) => b.id === id ? { ...b, label: `${label} ${what} (${outcomes.length}/${targets.length})`, line: "" } : b) }));
-    }, () => true, 4);
+    }, () => true, SYNC_PARALLEL);
   } finally {
     endBusy(id);
     running = false;
