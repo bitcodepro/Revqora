@@ -32,6 +32,7 @@ import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import type { BranchInfo } from "../lib/types";
 import { loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { contextMenu, copyText, openOverlay, useUi } from "../lib/ui";
+import { branchFolderSyncMenu, selectionSyncMenu } from "./RemoteSyncMenus";
 import * as A from "../lib/actions";
 import { api } from "../lib/api";
 import { basename, joinPath, relativeTime } from "../lib/format";
@@ -74,6 +75,11 @@ function buildTree(branches: BranchInfo[], strip = 0, flat=false): TreeNode {
     });
   }
   return root;
+}
+
+/** Every branch in a branch folder, subfolders included. */
+function branchesUnder(node: TreeNode): string[] {
+  return [...node.children.values()].flatMap(child => child.branch ? [child.branch.fullName] : branchesUnder(child));
 }
 
 function sortedChildren(n: TreeNode,recent=false): TreeNode[] {
@@ -295,6 +301,8 @@ function SidebarView({ tab, onHide }: SidebarProps) {
             }}
             onContextMenu={(e) =>
               contextMenu(e, selected.length > 1 && selectedSet.has(b.fullName) ? [
+                ...selectionSyncMenu({ folders: [], repositories: [], branches: selected.map(branch => ({ root, branches: [branch.fullName] })) }),
+                { separator: true },
                 { label: `Delete ${selected.length} branches…`, icon: <Trash2 size={14} />, danger: true, disabled: selected.length > 50,
                   hint: selected.length > 50 ? "Select up to 50" : undefined, onClick: () => void deleteSelected() },
                 { label: "Clear selection", onClick: clearSelection },
@@ -326,7 +334,8 @@ All changes of this branch are already in ${current ?? "the current branch"} (sq
       const key = `${kind}:${prefix}${n.path}`;
       const open = isOpen(key);
       return [
-        <div key={key} className="sb-item" style={{ paddingLeft: pad }} onClick={() => setOpenDirs((o) => ({ ...o, [key]: !open }))}>
+        <div key={key} className="sb-item" style={{ paddingLeft: pad }} onClick={() => setOpenDirs((o) => ({ ...o, [key]: !open }))}
+          onContextMenu={(e) => contextMenu(e, branchFolderSyncMenu(root, branchesUnder(n), kind === "remote"))}>
           {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           <Folder size={13} style={{ flex: "none", color: "var(--text-faint)" }} />
           <span className="label">{n.name}</span>

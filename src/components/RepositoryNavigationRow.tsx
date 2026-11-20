@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight, CircleAlert, FolderGit2, FolderPlus, Pencil,
 import type { CSSProperties, MouseEvent, PointerEvent } from "react";
 import { repositoryIncoming, repositoryOutgoing, repositorySidebarStatus, useRepos, type ListedTab } from "../lib/store";
 import { changesOf, trackingOf, useRepositoryTracking } from "../lib/repositoryTracking";
-import { contextMenu } from "../lib/ui";
+import { contextMenu, type MenuItem } from "../lib/ui";
 import { bindingFor, matchesShortcut, prettyCombo } from "../lib/shortcuts";
 import { FavoriteButton, openLibraryRepository, renameRepositoryDialog } from "./RepositoryLibrary";
 import { repositoryMembershipMenu } from "./LibraryMenus";
@@ -16,8 +16,8 @@ export function activateRepository(root: string) {
   else void openLibraryRepository(root);
 }
 
-export const repositoryMenu = (root: string, name: string, roots: string[], groupId: string | undefined, createGroup: () => void) => [
-  ...repositorySyncMenu(roots),
+export const repositoryMenu = (root: string, name: string, roots: string[], groupId: string | undefined, createGroup: () => void, sync = repositorySyncMenu(roots)) => [
+  ...sync,
   { separator: true },
   { label: "Create group", shortcut: "group-create", icon: <FolderPlus size={14}/>, onClick: createGroup },
   ...repositoryMembershipMenu(roots, groupId),
@@ -35,8 +35,10 @@ export function renameRepositoryOnKey(e: React.KeyboardEvent, root: string) {
 export const matchesGroupShortcut = (e: React.KeyboardEvent) => !e.repeat &&
   ["group-create", "repo-remove-group", "repo-remove-all-groups"].some(id => matchesShortcut(e, id));
 
-export function RepositoryNavigationRow({ root, name, tab, current, selected, selection, groupId, createGroup, onClick, onPointerDown, onSelectionKeyDown, depth, explorer }:
+export function RepositoryNavigationRow({ root, name, tab, current, selected, selection, groupId, createGroup, onClick, onPointerDown, onSelectionKeyDown, depth, explorer, syncMenu }:
   { root: string; name: string; tab?: ListedTab; current: boolean; selected: boolean; selection: string[]; groupId?: string;
+    /** Fetch, Pull and Push items for the whole selection (Explorer: folders, repositories and branches). */
+    syncMenu?: () => MenuItem[];
     createGroup: () => void; onClick: (event: MouseEvent<HTMLButtonElement>) => void;
     onPointerDown: (event: PointerEvent<HTMLButtonElement>) => void; onSelectionKeyDown?: (event: React.KeyboardEvent) => void; depth?: number;
     explorer?: { id: string; focused: boolean; expanded: boolean; toggle: () => void; remove: () => void } }) {
@@ -45,7 +47,7 @@ export function RepositoryNavigationRow({ root, name, tab, current, selected, se
   const tracking = useRepositoryTracking(s => status ? undefined : trackingOf(s.byKey, root));
   const changes = useRepositoryTracking(s => status ? undefined : changesOf(s.changes, root));
   const menu = () => [
-    ...repositoryMenu(root, name, selection, groupId, createGroup),
+    ...repositoryMenu(root, name, selection, groupId, createGroup, syncMenu?.()),
     ...(explorer ? [{ separator: true as const }, {
       label: "Remove from Explorer", icon: <Unlink size={14}/>, shortcut: "repo-remove-explorer", onClick: explorer.remove,
     }] : []),

@@ -18,7 +18,7 @@ import { useNavigationSelection } from "../lib/navigationSelection";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { usePanelTitleMenu, usePanelWindows } from "./PanelWindows";
 import { ExplorerBranchRow } from "./ExplorerBranchRow";
-import { branchSyncMenu, folderSyncMenu } from "./RemoteSyncMenus";
+import { selectionSyncMenu, type SyncSelection } from "./RemoteSyncMenus";
 import { deleteGroupsDialog, groupCreationMenu, groupEditorDialog, renameGroupDialog } from "./RepositoryLibrary";
 import { activateRepository, RepositoryNavigationRow } from "./RepositoryNavigationRow";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
@@ -267,12 +267,19 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     (selection.includes(entry.id)
       ? selectedRows.filter(row => row.kind === "repository") : [entry])
       .map(row => ({ root: row.root, groupId: row.parentId }));
-  /** Fetch, Pull and Push for the selected branches, when this branch is one of several. */
-  const branchSelectionMenu = (entry: ExplorerEntry): MenuItem[] => {
-    const chosen = selection.includes(entry.id) ? selectedRows.flatMap(row => row.kind === "branch" ? [row] : []) : [];
-    if (chosen.length < 2) return [];
-    return [...branchSyncMenu(chosen.map(row => ({ root: row.root, branches: [row.branch.fullName] }))), { separator: true }];
+  /** What Fetch, Pull and Push act on from this row: the whole selection when the row is part of
+   *  it (folders, repositories and branches together), otherwise the row. */
+  const syncSelection = (entry: ExplorerEntry): SyncSelection => {
+    const rows = selection.includes(entry.id) ? selectedRows : [entry];
+    return {
+      folders: rows.flatMap(row => row.kind === "group" ? [groupRepositoryRoots(groups, row.id)] : []),
+      repositories: rows.flatMap(row => row.kind === "repository" ? [row.root] : []),
+      branches: rows.flatMap(row => row.kind === "branch" ? [{ root: row.root, branches: [row.branch.fullName] }] : []),
+    };
   };
+  /** A branch's own menu has Fetch, Pull and Push; a selection of several adds them for all of it. */
+  const branchSelectionMenu = (entry: ExplorerEntry): MenuItem[] =>
+    selection.includes(entry.id) && selectedRows.length > 1 ? [...selectionSyncMenu(syncSelection(entry)), { separator: true }] : [];
   const remove = async (ids: string[]) => { if (await deleteGroupsDialog(ids)) clearSelection(); };
   const rootMenu: MenuItem[] = [
     ...groupCreationMenu(),
@@ -281,7 +288,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const groupMenu = (group: RepositoryGroup): MenuItem[] => {
     const ids = groupIds(group.id);
     return [
-      ...folderSyncMenu(uniqueRoots(ids.flatMap(id => groupRepositoryRoots(groups, id))), ids.length),
+      ...selectionSyncMenu(syncSelection({ kind: "group", id: group.id, parentId: group.parentId, name: group.name, group })),
       { separator: true },
       ...groupCreationMenu(group),
       ...(ids.length > 1 ? [{ label: "Group selected groups", shortcut: "group-selected", icon: <FolderPlus size={14}/>,
@@ -378,7 +385,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
               clearSelection();
               setFocusedEntry(null);
             } }} current={entry.root === active && !overview} selected={selection.includes(entry.id)} groupId={entry.parentId ?? undefined}
-            selection={uniqueRoots(items.map(item => item.root))}
+            selection={uniqueRoots(items.map(item => item.root))} syncMenu={() => selectionSyncMenu(syncSelection(entry))}
             createGroup={() => void groupEditorDialog({ roots: uniqueRoots(items.map(item => item.root)), parentId: entry.parentId, onCreated: clearSelection })}
             onPointerDown={event => repositoryDrag.start(event, items)}
             onClick={event => {
