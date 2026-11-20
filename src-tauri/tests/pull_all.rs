@@ -97,6 +97,31 @@ fn pull_all_fast_forwards_every_branch_that_only_lacks_incoming_commits() {
     assert_eq!(recovery::list(&f.work).unwrap().checkpoints.len(), checkpoints, "no checkpoint when nothing changes");
 }
 
+/// Branches are moved one after another: a branch that tracks a local branch is checked after
+/// that branch moved, and follows it to the commits that just came in.
+#[test]
+fn pull_all_moves_a_branch_that_tracks_a_local_branch_after_that_branch_moved() {
+    let f = fixture();
+    // stack: one commit on the remote; zz-on-stack tracks the local stack, one commit behind it.
+    git(&f.other, &["checkout", "-q", "-B", "stack", "origin/main"]);
+    commit(&f.other, "stack.txt", "one\n");
+    git(&f.other, &["push", "-q", "origin", "stack"]);
+    git(&f.work, &["fetch", "-q", "origin"]);
+    git(&f.work, &["branch", "-q", "--track", "stack", "origin/stack"]);
+    git(&f.work, &["branch", "-q", "zz-on-stack", "stack~1"]);
+    git(&f.work, &["branch", "-q", "--set-upstream-to", "stack", "zz-on-stack"]);
+    // Then the remote's stack moves on.
+    commit(&f.other, "stack.txt", "two\n");
+    git(&f.other, &["push", "-q", "origin", "stack"]);
+
+    let result = ops::pull_all_branches(&f.work, |_| {}).unwrap();
+
+    assert_eq!(tip(&f.work, "stack"), tip(&f.other, "stack"));
+    assert_eq!(tip(&f.work, "zz-on-stack"), tip(&f.other, "stack"), "{:?} {:?}", result.updated, result.skipped);
+    let follows = result.updated.iter().find(|u| u.branch == "zz-on-stack").expect("reported as updated");
+    assert_eq!(follows.commits, 2);
+}
+
 #[test]
 fn pull_all_leaves_the_checked_out_branch_when_local_changes_touch_incoming_files() {
     let f = fixture();
@@ -428,6 +453,36 @@ fn pull_all_never_moves_a_branch_to_a_remote_that_fetch_all_skips() {
     let (_, reason) = reasons.iter().find(|(name, _)| name == "from-up").expect("reported");
     assert!(reason.contains("skipFetchAll"), "{reason}");
     assert!(result.updated.iter().any(|u| u.branch == "feature"), "origin's branches are still pulled");
+}
+
+/// Grafts are not counted either, wherever a graft file is.
+#[test]
+fn push_with_push_default_matching_never_rewrites_history_that_a_graft_file_disguises() {
+    let f = fixture();
+    let remote = f.work.parent().unwrap().join("remote.git");
+    git(&f.work, &["config", "push.default", "matching"]);
+    git(&f.work, &["fetch", "-q", "origin"]);
+    git(&f.work, &["push", "-q", "origin", "origin/main:refs/heads/kept"]);
+    git(&f.work, &["fetch", "-q", "origin"]);
+    let published = tip(&f.work, "origin/kept");
+    git(&f.work, &["checkout", "-q", "-b", "kept", "origin/kept~1"]);
+    git(&f.work, &["branch", "-q", "--set-upstream-to", "origin/kept"]);
+    let rewritten = commit(&f.work, "rewritten.txt", "rewritten\n");
+    git(&f.work, &["checkout", "-q", "main"]);
+    // Graft files where Git and earlier versions of Revqora look for them.
+    let git_dir = f.work.join(".git");
+    for file in [git_dir.join("info").join("grafts"), git_dir.join("revqora-no-grafts")] {
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, format!("{rewritten} {published}\n")).unwrap();
+    }
+    assert!(runner::exec(&f.work, ["merge-base", "--is-ancestor", "origin/kept", "kept"]).unwrap().ok(), "Git sees a fast-forward");
+
+    let result = ops::push_branches(&f.work, Some(&["refs/heads/kept".to_owned()]), |_| {}).unwrap();
+
+    assert!(result.updated.is_empty());
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/kept"]), published, "the published history stays");
+    let reasons = skipped(&result);
+    assert!(reasons[0].1.contains("grafts"), "{reasons:?}");
 }
 
 #[test]

@@ -136,6 +136,21 @@ fn line_endings(repo: &Path, path: &str) -> Option<LineEndings> {
     (text_eol(&stored) && text_eol(&working) && stored != working).then_some(LineEndings { stored, working })
 }
 
+/// [`line_endings`], when the diff shown hides no other change: with whitespace or blank lines
+/// ignored, an indentation change also leaves no changed line, so Git compares the file again
+/// with only the carriage returns at line ends ignored.
+fn shown_line_endings(repo: &Path, path: &str, opts: &DiffOptions) -> Option<LineEndings> {
+    let found = line_endings(repo, path)?;
+    if opts.ignore_whitespace || opts.ignore_blank_lines {
+        let literal = format!(":(literal){path}");
+        let out = runner::exec(repo, ["diff", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-cr-at-eol", "--", &literal]).ok()?;
+        if out.code != 0 {
+            return None;
+        }
+    }
+    Some(found)
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffOptions {
@@ -498,7 +513,7 @@ pub fn working_diff_view(
     // Pick the file entry matching the path (renames can produce one entry).
     let pick = files.iter().find(|f| f.new_path.as_deref() == Some(path)).or_else(|| files.first());
     let Some(file) = pick else {
-        let line_endings = (side == WorkSide::Unstaged && !untracked && !preview_limited).then(|| line_endings(repo, path)).flatten();
+        let line_endings = (side == WorkSide::Unstaged && !untracked && !preview_limited).then(|| shown_line_endings(repo, path, opts)).flatten();
         return Ok(FileDiff {
             path: path.to_string(),
             hash,
@@ -514,7 +529,7 @@ pub fn working_diff_view(
     display.preview_limited = preview_limited;
     display.empty &= !preview_limited;
     if side == WorkSide::Unstaged && !untracked && !preview_limited && display.hunks.is_empty() && !display.binary && display.old_mode == display.new_mode {
-        display.line_endings = line_endings(repo, path);
+        display.line_endings = shown_line_endings(repo, path, opts);
     }
     if side == WorkSide::Unstaged
         && !preview_limited
@@ -831,6 +846,14 @@ mod tests {
         let b = working_diff_view(repo, "B.cs", WorkSide::Unstaged, None, false, &opts, false).unwrap();
         assert!(!b.hunks.is_empty());
         assert_eq!(b.line_endings, None, "a real change is shown as one");
+        // Whitespace ignored: line endings alone still say so; with an indentation change they do not.
+        let ignoring = DiffOptions { ignore_whitespace: true, ignore_blank_lines: true, ..DiffOptions::default() };
+        let a = working_diff_view(repo, "A.cs", WorkSide::Unstaged, None, false, &ignoring, false).unwrap();
+        assert_eq!(a.line_endings, Some(LineEndings { stored: "lf".into(), working: "crlf".into() }));
+        std::fs::write(repo.join("A.cs"), "class A {\r\n    \r\n\t}\r\n").unwrap();
+        let a = working_diff_view(repo, "A.cs", WorkSide::Unstaged, None, false, &ignoring, false).unwrap();
+        assert!(a.hunks.is_empty(), "the options hide the change");
+        assert_eq!(a.line_endings, None, "not only the line endings changed");
     }
 
     const SAMPLE: &str = "diff --git a/f.txt b/f.txt\nindex 111..222 100644\n--- a/f.txt\n+++ b/f.txt\n@@ -1,4 +1,4 @@\n a\n-b\n+B\n c\n-d\n+D\n";

@@ -372,7 +372,7 @@ function MainApp() {
           // repositories inside it, as opening it from the window does.
           const named = uniqueRoots(paths);
           results.forEach((result, index) => {
-            if (result.status === "rejected" && isGitError(result.reason) && result.reason.kind === "not-a-repo") void A.openRepoPath(named[index]);
+            if (result.status === "rejected" && isGitError(result.reason) && result.reason.kind === "not-a-repo") void A.offerNotRepository(named[index]);
           });
         });
       }

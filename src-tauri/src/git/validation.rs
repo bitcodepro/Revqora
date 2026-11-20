@@ -360,6 +360,10 @@ pub(super) mod process_tree {
         /// Dropping a Unix tree never kills it.
         pub fn keep_descendants(&self) {}
     }
+    /// [`spawn`] for a Git process.
+    pub fn spawn_git(cmd: &mut Command) -> GitResult<(Child, Tree)> {
+        spawn(cmd)
+    }
     pub fn spawn(cmd: &mut Command) -> GitResult<(Child, Tree)> {
         cmd.process_group(0);
         let child = cmd.spawn().map_err(|e| process_error("Command::spawn", cmd, e))?;
@@ -462,7 +466,17 @@ pub(super) mod process_tree {
         let previous_count = ResumeThread(thread.0);
         (id != 0 && previous_count != u32::MAX).then_some((id, previous_count))
     }
+    /// A command of the user's (validation, agents) starts with a hidden console, which the
+    /// programs it starts share.
     pub fn spawn(cmd: &mut Command) -> GitResult<(Child, Tree)> {
+        spawn_with(cmd, CREATE_NO_WINDOW)
+    }
+    /// A Git process starts as every Git process does (see `runner::git_creation_flags`),
+    /// also at below-normal priority in the background.
+    pub fn spawn_git(cmd: &mut Command) -> GitResult<(Child, Tree)> {
+        spawn_with(cmd, crate::git::runner::git_creation_flags())
+    }
+    fn spawn_with(cmd: &mut Command, flags: u32) -> GitResult<(Child, Tree)> {
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if job.is_null() {
@@ -481,7 +495,7 @@ pub(super) mod process_tree {
                 return Err(process_error("SetInformationJobObject", cmd, error));
             }
             // Assign before any user code can create descendants.
-            let mut child = cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED).spawn().map_err(|e| process_error("Command::spawn", cmd, e))?;
+            let mut child = cmd.creation_flags(flags | CREATE_SUSPENDED).spawn().map_err(|e| process_error("Command::spawn", cmd, e))?;
             let resumed = (|| {
                 if AssignProcessToJobObject(job, child.as_raw_handle()) == 0 {
                     let error = std::io::Error::last_os_error();

@@ -25,6 +25,9 @@ export const LOG_AFTER_FAILURES = 3;
 export function transientFetchFailure(error: unknown): boolean {
   if (!isGitError(error)) return false;
   if (["git-timeout", "network-stalled", "server-unavailable", "cancelled", "repository-busy"].includes(error.kind)) return true;
+  // The server answered: a refused sign-in, no permission or no such repository (HTTP 4xx) is
+  // not the network, although Git's message also says "unable to access".
+  if (/returned error: 4\d\d\b/i.test(error.message)) return false;
   return /could not resolve host|failed to connect|couldn't connect|connection (was )?(reset|refused|timed out|closed)|timed out|operation too slow|network is unreachable|unable to access|early eof|ssl/i.test(error.message);
 }
 
@@ -52,14 +55,18 @@ export function failedServer(error: unknown): string | null {
  *
  * A repository whose fetch the network or its server ended waits longer each time (the next
  * round, then 1 and at most 3 rounds skipped); it goes to the error log once after
- * {@link LOG_AFTER_FAILURES} such failures in a row. Other failures are logged once per message.
+ * {@link LOG_AFTER_FAILURES} such failures in a row. Other failures are logged once per message,
+ * and end such a row.
  */
 export function createAutoFetch(deps: AutoFetchDeps) {
   const inFlight = new Set<string>();
   const disabled = new Set<string>();
-  const failures = new Map<string, { count: number; skip: number; logged: string | null }>();
+  // `network`: network failures in a row (another failure ends the row).
+  const failures = new Map<string, { network: number; skip: number; logged: string | null }>();
   // Learned from failures, for repositories that are not open.
   const servers = new Map<string, string>();
+  // The server the last failure of a repository named (its remotes can be on several servers).
+  const named = new Map<string, string>();
   const log = deps.log ?? defaultLog;
   const quietFetch = async function quietFetch(root: string): Promise<AutoFetchResult> {
     if (disabled.has(root) || inFlight.has(root) || deps.busy()) return "skipped";
@@ -69,6 +76,7 @@ export function createAutoFetch(deps: AutoFetchDeps) {
       return "skipped";
     }
     inFlight.add(root);
+    named.delete(root);
     try {
       const result = await deps.fetch(root);
       failures.delete(root);
@@ -79,16 +87,21 @@ export function createAutoFetch(deps: AutoFetchDeps) {
       if (isGitError(e) && e.kind === "repository-busy") return "skipped";
       deps.failed?.(root, e);
       const server = failedServer(e);
-      if (server) servers.set(root, server);
+      if (server) {
+        servers.set(root, server);
+        named.set(root, server);
+      }
       if (isGitError(e) && e.kind === "auth") disabled.add(root);
-      const state = failures.get(root) ?? { count: 0, skip: 0, logged: null };
+      const state = failures.get(root) ?? { network: 0, skip: 0, logged: null };
       failures.set(root, state);
-      state.count++;
       if (transientFetchFailure(e)) {
-        state.skip = Math.min(3, 2 ** (state.count - 1) - 1);
-        if (state.count === LOG_AFTER_FAILURES) log(root, withMessage(e, `Automatic fetch failed ${LOG_AFTER_FAILURES} times in a row. Last error: ${errorMessage(e)}`));
+        state.network++;
+        state.skip = Math.min(3, 2 ** (state.network - 1) - 1);
+        if (state.network === LOG_AFTER_FAILURES) log(root, withMessage(e, `Automatic fetch failed ${LOG_AFTER_FAILURES} times in a row. Last error: ${errorMessage(e)}`));
         return "transient";
       }
+      state.network = 0;
+      state.skip = 0;
       const message = errorMessage(e);
       if (state.logged !== message) {
         state.logged = message;
@@ -101,7 +114,10 @@ export function createAutoFetch(deps: AutoFetchDeps) {
   };
   /** The server `root` fetches from, if known. */
   const server = (root: string) => deps.serverOf?.(root) ?? servers.get(root) ?? null;
-  return Object.assign(quietFetch, { server });
+  /** The server the last failed fetch of `root` could not reach: the one Git named, else the one
+   *  `root` fetches from. A failure on a mirror counts for the mirror's server, not for origin's. */
+  const failedAt = (root: string) => named.get(root) ?? server(root);
+  return Object.assign(quietFetch, { server, failedAt });
 }
 
 /** Failures in one round before the rest of a server's repositories wait for the next round. */
@@ -115,7 +131,7 @@ export const SERVER_FAILURES_PER_ROUND = 2;
  */
 export async function autoFetchRound(
   roots: string[],
-  quietFetch: ((root: string) => Promise<AutoFetchResult>) & { server: (root: string) => string | null },
+  quietFetch: ((root: string) => Promise<AutoFetchResult>) & { server: (root: string) => string | null; failedAt?: (root: string) => string | null },
   eligible: (root: string) => boolean,
   current: () => boolean,
   parallel: number,
@@ -126,7 +142,7 @@ export async function autoFetchRound(
   await fetchRound(roots, async root => {
     if (!eligible(root) || down(quietFetch.server(root))) return;
     if (await quietFetch(root) !== "transient") return;
-    const server = quietFetch.server(root);
+    const server = (quietFetch.failedAt ?? quietFetch.server)(root);
     if (server) failedServers.set(server, (failedServers.get(server) ?? 0) + 1);
     else unknown++;
   }, () => current() && unknown < SERVER_FAILURES_PER_ROUND, parallel);

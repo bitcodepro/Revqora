@@ -340,18 +340,22 @@ fn exact_repository(folder: &Path) -> Option<String> {
     let git_dir = if fs::metadata(&dot).ok()?.is_dir() {
         dot
     } else {
-        let text = fs::read_to_string(&dot).ok()?;
+        let text = small_text(&dot)?;
         let target = text.trim_start_matches('\u{feff}').lines().next()?.strip_prefix("gitdir:")?.trim();
         if target.is_empty() {
             return None;
         }
         folder.join(target)
     };
-    if !git_dir.join("HEAD").is_file() {
+    // As Git checks it: a symbolic ref to refs/ or a commit id.
+    let head = small_text(&git_dir.join("HEAD"))?;
+    let head = head.trim();
+    let id = matches!(head.len(), 40 | 64) && head.bytes().all(|b| b.is_ascii_hexdigit());
+    if !head.starts_with("ref: refs/") && !id {
         return None;
     }
-    let common = match fs::read_to_string(git_dir.join("commondir")) {
-        Ok(text) if !text.trim().is_empty() => git_dir.join(text.trim()),
+    let common = match small_text(&git_dir.join("commondir")) {
+        Some(text) if !text.trim().is_empty() => git_dir.join(text.trim()),
         _ => git_dir,
     };
     if !common.join("objects").is_dir() || !common.join("refs").is_dir() {
@@ -360,10 +364,63 @@ fn exact_repository(folder: &Path) -> Option<String> {
     folder.to_str().map(str::to_owned)
 }
 
+/// The text of a small regular file. Anything else (a pipe or device that could block the scan,
+/// a large file) is None.
+fn small_text(file: &Path) -> Option<String> {
+    let meta = fs::metadata(file).ok()?;
+    if !meta.is_file() || meta.len() > 4096 {
+        return None;
+    }
+    let mut text = String::new();
+    fs::File::open(file).ok()?.take(4096).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::git::runner;
+
+    #[test]
+    fn a_git_directory_with_an_empty_or_odd_head_is_not_a_repository() {
+        let fixture = tempfile::tempdir().unwrap();
+        let folder = fixture.path().join("work");
+        let git_dir = folder.join(".git");
+        for dir in ["objects", "refs"] {
+            fs::create_dir_all(git_dir.join(dir)).unwrap();
+        }
+        let sha256 = "a".repeat(64);
+        for (head, repository) in
+            [("", false), ("garbage\n", false), ("ref: refs/heads/main\n", true), ("0123456789abcdef0123456789abcdef01234567\n", true), (sha256.as_str(), true)]
+        {
+            fs::write(git_dir.join("HEAD"), head).unwrap();
+            assert_eq!(exact_repository(&folder).is_some(), repository, "{head:?}");
+        }
+        // A `.git` file that is not small is not read.
+        fs::remove_dir_all(&git_dir).unwrap();
+        fs::write(&git_dir, format!("gitdir: {}\n", "x".repeat(8192))).unwrap();
+        assert!(exact_repository(&folder).is_none());
+    }
+
+    /// A pipe named `.git` or `commondir` would block a read until something writes to it.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_in_place_of_git_files_does_not_block_the_scan() {
+        let fixture = tempfile::tempdir().unwrap();
+        let folder = fixture.path().join("work");
+        fs::create_dir_all(&folder).unwrap();
+        let fifo = |path: &Path| assert!(std::process::Command::new("mkfifo").arg(path).status().unwrap().success());
+        fifo(&folder.join(".git"));
+        assert!(exact_repository(&folder).is_none());
+        fs::remove_file(folder.join(".git")).unwrap();
+        let git_dir = folder.join(".git");
+        for dir in ["objects", "refs"] {
+            fs::create_dir_all(git_dir.join(dir)).unwrap();
+        }
+        fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fifo(&git_dir.join("commondir"));
+        assert!(exact_repository(&folder).is_some(), "an unreadable commondir counts as none");
+    }
 
     fn search(path: &Path) -> GitResult<FolderScan> {
         scan(path, false, &AtomicBool::new(false), &ScanProgress::default())

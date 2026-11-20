@@ -286,6 +286,50 @@ fn pull_keeps_line_ending_rules_for_the_files_it_writes_and_others_edits_of_the_
     }
 }
 
+/// A file the pull wrote as stored, then edited before the line endings are restored: the edit
+/// stays. And a rules file the pull cannot clean up afterwards is reported, not passed over.
+#[test]
+fn pull_keeps_an_edit_saved_after_it_wrote_a_file_and_reports_rules_it_could_not_remove() {
+    for broken in [false, true] {
+        let (_keep, _server, me, colleague) = shared_remote();
+        fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        colleague.commit_all("crlf stored as is");
+        colleague.git(&["push", "-q", "origin", "main"]);
+        me.git(&["pull", "-q", "--ff-only"]);
+        fs::write(me.p().join(".git/info/attributes"), "*.txt text eol=crlf\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(me.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        fs::write(colleague.p().join("crlf.txt"), "one\ntwo\nthree\n").unwrap();
+        colleague.commit_all("normalized");
+        colleague.git(&["push", "-q", "origin", "main"]);
+        // Runs after Git wrote the file, before the pull restores line endings: an editor saves,
+        // or the rules file cannot be written any more.
+        let hooks = me.p().join(".git/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        let script = if broken {
+            "#!/bin/sh\nrm -f .git/info/attributes && mkdir .git/info/attributes\n"
+        } else {
+            "#!/bin/sh\nprintf 'saved by an editor\\n' > crlf.txt\n"
+        };
+        fs::write(hooks.join("post-merge"), script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(hooks.join("post-merge"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let out = ops::pull(me.p(), "ff-only", |_| {}).unwrap();
+
+        if broken {
+            assert!(out.message.contains("could not remove its temporary line-ending rules"), "{out:?}");
+            fs::remove_dir_all(me.p().join(".git/info/attributes")).unwrap();
+        } else {
+            assert_eq!(fs::read_to_string(me.p().join("crlf.txt")).unwrap(), "saved by an editor\n", "the edit stays");
+            assert!(!out.message.contains("line endings"), "{out:?}");
+        }
+    }
+}
+
 #[test]
 fn a_failed_pull_takes_out_only_its_own_line_ending_block() {
     let (_keep, _server, me, colleague) = shared_remote();

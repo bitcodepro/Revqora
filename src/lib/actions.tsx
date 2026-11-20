@@ -251,34 +251,40 @@ export async function openRepoPath(path: string) {
     if (isGitError(e) && e.kind === "repository-folder-unavailable") {
       toast.warning("Repository folder unavailable", e.message);
     } else if (isGitError(e) && e.kind === "not-a-repo") {
-      // No tab for a folder that is not a repository: it would only show the error.
-      const failed = useRepos.getState().order.find(root => repositoryKey(root) === repositoryKey(path));
-      if (failed && !useRepos.getState().tabs[failed]?.info) useRepos.getState().close(failed);
-      // Usually a folder that holds repositories: finding them comes first, a new repository
-      // around them would be a surprise.
-      const choice = await showDialog<"find" | "init" | null>((close) => (
-        <Modal title="Not a Git repository" onClose={() => close(null)}
-          footer={<>
-            <button type="button" className="btn" onClick={() => close(null)}>Cancel</button>
-            <button type="button" className="btn" onClick={() => close("init")}>Initialize here</button>
-            <button type="button" className="btn primary" autoFocus onClick={() => close("find")}>Find repositories</button>
-          </>}>
-          <p>{path} is not a Git repository. Find the repositories inside it, or create a new repository in this folder.</p>
-        </Modal>
-      ));
-      if (choice === "find") {
-        await repositoryFolderImportDialog(path);
-      } else if (choice === "init") {
-        try {
-          await api.repoInit(path);
-          await useRepos.getState().open(path);
-          toast.success("Repository initialized");
-        } catch (e2) {
-          toast.error(e2);
-        }
-      }
+      await offerNotRepository(path);
     } else {
       toast.error(e, "Cannot open repository");
+    }
+  }
+}
+
+/** `path` turned out not to be a repository: it gets no tab (that would only show the error),
+ *  and finding the repositories inside it or creating one there is offered. It is not opened
+ *  again, so a folder named on the command line leaves the selected repository as it is. */
+export async function offerNotRepository(path: string) {
+  const failed = useRepos.getState().order.find(root => repositoryKey(root) === repositoryKey(path));
+  if (failed && !useRepos.getState().tabs[failed]?.info) useRepos.getState().close(failed);
+  // Usually a folder that holds repositories: finding them comes first, a new repository
+  // around them would be a surprise.
+  const choice = await showDialog<"find" | "init" | null>((close) => (
+    <Modal title="Not a Git repository" onClose={() => close(null)}
+      footer={<>
+        <button type="button" className="btn" onClick={() => close(null)}>Cancel</button>
+        <button type="button" className="btn" onClick={() => close("init")}>Initialize here</button>
+        <button type="button" className="btn primary" autoFocus onClick={() => close("find")}>Find repositories</button>
+      </>}>
+      <p>{path} is not a Git repository. Find the repositories inside it, or create a new repository in this folder.</p>
+    </Modal>
+  ));
+  if (choice === "find") {
+    await repositoryFolderImportDialog(path);
+  } else if (choice === "init") {
+    try {
+      await api.repoInit(path);
+      await useRepos.getState().open(path);
+      toast.success("Repository initialized");
+    } catch (e) {
+      toast.error(e);
     }
   }
 }

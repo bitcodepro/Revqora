@@ -9,6 +9,9 @@ interface Props {
   resetKey?: unknown;
   /** Hidden areas (notifications, dialogs, menus) recover by themselves, without a message. */
   quiet?: boolean;
+  /** Ends the area instead of drawing it again (a dialog answered with nothing): called once,
+   *  after the error is logged. */
+  onError?: (error: Error) => void;
   children: ReactNode;
 }
 
@@ -30,6 +33,10 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: unknown) {
     recordError("JavaScript", error);
+    if (this.props.onError) {
+      this.props.onError(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
     // A quiet area draws itself afresh a moment later. One failing again and again stays empty
     // for a minute, then tries again.
     const now = Date.now();

@@ -213,7 +213,7 @@ fn helpers_first(root: &Path, command: &mut Command) {
     // Revqora may answer with a login a configured helper gave it earlier in this session: then
     // each `store` first asks Revqora whether it is exactly that login (see [`guard`]).
     let check_kept = first && crate::git_credentials::holds_helper_logins(root);
-    let Ok(out) = super::config_cache::exec(root, &["config", "--show-scope", "-z", "--get-regexp", r"^credential\..*helper$"]) else { return };
+    let Ok(out) = super::config_cache::exec(root, &HELPERS_READ) else { return };
     if !out.ok() && out.code != 1 {
         return;
     }
@@ -299,10 +299,15 @@ pub fn stall_seconds() -> u64 {
     std::env::var("REVQORA_TRANSFER_STALL_SECONDS").ok().and_then(|v| v.trim().parse().ok()).filter(|&v| v > 0).unwrap_or(60)
 }
 
+/// The configured credential helpers, with their scope (see [`helpers_first`]).
+pub(crate) const HELPERS_READ: [&str; 5] = ["config", "--show-scope", "-z", "--get-regexp", r"^credential\..*helper$"];
+/// Stall limits the user configured (see [`stall_limit`]).
+pub(crate) const STALL_READ: [&str; 3] = ["config", "--get-regexp", r"^http\..*lowspeed(limit|time)$"];
+
 /// Adds the stall limit unless the user configured one (for all hosts or for one URL).
 /// Background fetches set the stricter `GIT_HTTP_LOW_SPEED_*` variables, which Git prefers.
 fn stall_limit(root: &Path, command: &mut Command) {
-    let configured = super::config_cache::exec(root, &["config", "--get-regexp", r"^http\..*lowspeed(limit|time)$"]).is_ok_and(|out| out.ok());
+    let configured = super::config_cache::exec(root, &STALL_READ).is_ok_and(|out| out.ok());
     if !configured {
         command.args(["-c", "http.lowSpeedLimit=1000", "-c", &format!("http.lowSpeedTime={}", stall_seconds())]);
     }
@@ -337,6 +342,14 @@ pub fn apply(root: &Path, command: &mut Command, selected: Option<&Options>, arg
         saved = read(root)?;
         &saved.options
     };
+    // The two settings a transfer reads below, side by side.
+    if network {
+        let mut reads = vec![STALL_READ.map(String::from).to_vec()];
+        if matches!(options.https, Https::Browser | Https::Auto) {
+            reads.push(HELPERS_READ.map(String::from).to_vec());
+        }
+        super::config_cache::warm(root, reads);
+    }
     if options.https == Https::Browser {
         // Explicit opt-in; background/API callers override these variables back
         // to noninteractive after transport setup. No global Git config edits.

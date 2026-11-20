@@ -935,21 +935,29 @@ pub fn complete_workspace(root: &Path, command: &str, label: &str, expected: &st
 fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignored: bool, expected: Option<&str>, capture: Capture<'_>) -> GitResult<Summary> {
     // Capture is a mutation: pinning objects must never occur in a read path.
     let _lock = lock(root)?;
-    let root = fs::canonicalize(repo::discover(root)?)?;
-    // The file name check, the status and the reference list are independent reads: run them
-    // side by side (each Git start costs 60–150 ms on Windows). The helpers join the caller's
-    // repository transaction.
+    let top = fs::canonicalize(repo::discover(root)?)?;
+    // Git runs in the folder as the caller names it when that is the top folder: what is
+    // remembered per folder (Git directory, configuration answers, state reads) then applies,
+    // instead of being read again for the `\\?\` spelling of the same folder.
+    let root = if fs::canonicalize(root).is_ok_and(|named| named == top) { root.to_path_buf() } else { top.clone() };
+    // The file name check, the status, the reference list and the sparse checkout settings are
+    // independent reads: run them side by side (each Git start costs 60–150 ms on Windows). The
+    // helpers join the caller's repository transaction.
     let parent = operations::Inherited::of(&root);
-    let (names, before, saved_refs) = std::thread::scope(|scope| {
+    let (names, before, saved_refs, sparse) = std::thread::scope(|scope| {
         let names =
             workspace.then(|| scope.spawn(|| parent.run(|| runner::run_bytes(&root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]))));
         let saved_refs = scope.spawn(|| parent.run(|| refs(&root)));
+        let sparse = workspace.then(|| {
+            scope.spawn(|| parent.run(|| operations::each(&root, vec!["core.sparseCheckout", "core.sparseCheckoutCone"], |key| config_bool(&root, key))))
+        });
         let before = status::status(&root);
         let joined = |name: &str| fail(format!("Reading {name} for the checkpoint failed."));
         (
             names.map(|handle| handle.join().unwrap_or_else(|_| Err(joined("the file names")))),
             before,
             saved_refs.join().unwrap_or_else(|_| Err(joined("the references"))),
+            sparse.map(|handle| handle.join().unwrap_or_else(|_| vec![Err(joined("the sparse checkout settings"))])),
         )
     });
     if let Some(filenames) = names {
@@ -987,7 +995,7 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
             created_at: crate::journal::now(),
             command: command.into(),
             label: label.chars().take(128).collect(),
-            source_root: display_path(&root),
+            source_root: display_path(&top),
             branch: before.branch.clone(),
             head: before.oid.clone(),
             workspace,
@@ -1041,8 +1049,9 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
             let sha256 = copy_file(&source, &folder.path().join("meta").join(&name), &mut budget)?;
             cp.index_files.push(IndexFile { name, sha256 });
         }
-        cp.sparse = config_bool(&root, "core.sparseCheckout")?;
-        cp.sparse_cone = config_bool(&root, "core.sparseCheckoutCone")?;
+        let mut sparse = sparse.unwrap_or_default().into_iter();
+        cp.sparse = sparse.next().unwrap_or(Ok(false))?;
+        cp.sparse_cone = sparse.next().unwrap_or(Ok(false))?;
         if cp.sparse && gd.join("info/sparse-checkout").is_file() {
             cp.sparse_patterns = Some(fs::read_to_string(gd.join("info/sparse-checkout"))?);
         }

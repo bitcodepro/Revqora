@@ -6,6 +6,7 @@ import type { AskpassRequest, ForgeAccountsSnapshot } from "../lib/types";
 import { bitbucketPromptKind } from "../lib/bitbucketCredentials";
 import {gitHttpsPrompt,gitAccountMatches} from "../lib/gitCredentials";
 import { Modal } from "./Modal";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { toast } from "../lib/ui";
 
 /** Answers credential / passphrase / host-key prompts that git and ssh send to Revqora. */
@@ -25,7 +26,15 @@ export function AskpassHost() {
     api.askpassRespond(current.id, value, remember, email).catch(() => {});
     setQueue((q) => q.slice(1));
   };
-  return <AskpassDialog key={current.id} req={current} onAnswer={answer} onAnswered={() => setQueue(q => q.filter(item => item.id !== current.id))} />;
+  // A prompt that fails to draw is answered with nothing (Git stops asking and reports it), on
+  // its own: Git does not wait for an answer that never comes, and the requests behind it stay.
+  const failed = () => {
+    answer(null);
+    toast.warning("A sign-in prompt could not be shown", "Git's request was cancelled. The error is in the error log.");
+  };
+  return <ErrorBoundary key={current.id} area="Sign-in prompt" quiet onError={failed}>
+    <AskpassDialog req={current} onAnswer={answer} onAnswered={() => setQueue(q => q.filter(item => item.id !== current.id))} />
+  </ErrorBoundary>;
 }
 
 /** Splits an OpenSSH host-key prompt into the explanation and the question. */

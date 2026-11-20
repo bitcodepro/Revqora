@@ -113,12 +113,25 @@ pub fn command(repo: &Path) -> Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
-        let priority = if BACKGROUND.with(std::cell::Cell::get) { BELOW_NORMAL_PRIORITY_CLASS } else { 0 };
-        c.creation_flags(CREATE_NO_WINDOW | priority);
+        c.creation_flags(git_creation_flags());
     }
     c
+}
+
+/// How Git processes start on Windows: without a console, at below-normal priority inside
+/// [`in_background`].
+///
+/// `CREATE_NO_WINDOW` gives every process a hidden console of its own, and starting its console
+/// host made each Git command about 25 ms slower (a Pull runs about 60). Without a console, Git
+/// starts its own helpers (remote helpers, ssh, credential helpers, hooks) with
+/// `DETACHED_PROCESS` as well, which is how Git for Windows runs them from any program without
+/// a console, so no window opens. Every output stream is a pipe or null.
+#[cfg(windows)]
+pub(crate) fn git_creation_flags() -> u32 {
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+    let priority = if BACKGROUND.with(std::cell::Cell::get) { BELOW_NORMAL_PRIORITY_CLASS } else { 0 };
+    DETACHED_PROCESS | priority
 }
 
 thread_local! {
@@ -355,7 +368,7 @@ pub(crate) fn exec_until(dir: &Path, args: &[&str], stop: &std::sync::atomic::At
     debug_assert!(is_read_only(args));
     let mut c = command(dir);
     c.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let (mut child, tree) = process_tree::spawn(&mut c)?;
+    let (mut child, tree) = process_tree::spawn_git(&mut c)?;
     let stdout_pipe = child.stdout.take().expect("stdout piped");
     let stderr_pipe = child.stderr.take().expect("stderr piped");
     let out_thread = std::thread::spawn(move || capture_bytes(stdout_pipe, None));
@@ -462,7 +475,7 @@ where
                 };
                 let (mut child, tree) = if timeout.is_some() {
                     c.stdin(Stdio::null());
-                    let (child, tree) = super::validation::process_tree::spawn(&mut c)?;
+                    let (child, tree) = super::validation::process_tree::spawn_git(&mut c)?;
                     (child, Some(tree))
                 } else {
                     (c.spawn().map_err(spawn_error)?, None)
@@ -870,7 +883,7 @@ where
                 // A transfer runs in its own process tree so Cancel can stop it (and the
                 // git-remote-https, ssh or credential helper it started).
                 let (mut child, registration) = if is_network(args) {
-                    let (child, tree) = super::validation::process_tree::spawn(&mut c)?;
+                    let (child, tree) = super::validation::process_tree::spawn_git(&mut c)?;
                     (child, Some(transfers::register(repo, tree)))
                 } else {
                     let child = c.spawn().map_err(|e| {

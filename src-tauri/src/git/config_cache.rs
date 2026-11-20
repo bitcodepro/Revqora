@@ -215,6 +215,24 @@ fn fresh(repo: &Path, key: &[String]) -> Option<Output> {
     valid(repo, entry).then(|| out.clone())
 }
 
+/// Reads several configuration answers side by side, so that the reads an operation makes one
+/// after another find them remembered. Answers already remembered are not read again; a
+/// failure is left for the later read, which reports it.
+pub fn warm(repo: &Path, queries: Vec<Vec<String>>) {
+    let missing: Vec<Vec<String>> = queries.into_iter().filter(|query| fresh(repo, query).is_none()).collect();
+    if missing.len() < 2 {
+        return;
+    }
+    // Learn the configuration files once instead of in every helper.
+    if learn(repo).is_none() {
+        return;
+    }
+    super::operations::each(repo, missing, |query| {
+        let args: Vec<&str> = query.iter().map(String::as_str).collect();
+        let _ = exec(repo, &args);
+    });
+}
+
 /// `run` over [`exec`]: fails on a non-zero exit.
 pub fn run(repo: &Path, args: &[&str]) -> GitResult<String> {
     let out = exec(repo, args)?;

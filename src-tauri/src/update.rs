@@ -588,7 +588,8 @@ fn swap_entries(
     Ok(())
 }
 
-/// Starts in a row that could not remove the leftovers of an update, beside the app.
+/// Starts in a row that could not remove the leftovers of an update, beside the app: the count,
+/// then ` reported` once the error log named them.
 const CLEANUP_FAILURES: &str = ".revqora-update-cleanup";
 /// Starts in a row with leftovers that could not be removed before the error log names them.
 const CLEANUP_REPORT_AFTER: u32 = 3;
@@ -597,7 +598,8 @@ const CLEANUP_REPORT_AFTER: u32 = 3;
 /// exited (an antivirus scan, a WebView2 process still closing): cleanup keeps trying in the
 /// background for about five minutes and clears read-only attributes. Nothing in the folder is
 /// needed any more, so a folder that is still there is only reported after it outlived
-/// [`CLEANUP_REPORT_AFTER`] starts; every start tries again.
+/// [`CLEANUP_REPORT_AFTER`] starts; every start tries again. A start counts at its first failed
+/// try, so starts that end before the tries do still count.
 pub fn cleanup(root: &Path) {
     let waits: Vec<Duration> = std::iter::repeat_n(Duration::from_millis(500), 20).chain(std::iter::repeat_n(Duration::from_secs(30), 10)).collect();
     cleanup_with(root, &waits);
@@ -605,7 +607,7 @@ pub fn cleanup(root: &Path) {
 
 fn cleanup_with(root: &Path, waits: &[Duration]) {
     let staging = root.join(STAGING);
-    let mut last = None;
+    let mut counted = false;
     for attempt in 0..=waits.len() {
         {
             // Released while waiting, so an update can start meanwhile.
@@ -630,18 +632,28 @@ fn cleanup_with(root: &Path, waits: &[Duration]) {
                     let _ = fs::remove_file(root.join(CLEANUP_FAILURES));
                     return;
                 }
-                Err(error) => last = Some(error),
+                Err(error) if !counted => {
+                    counted = true;
+                    count_failed_start(root, &staging, error);
+                }
+                Err(_) => {}
             }
         }
         if let Some(wait) = waits.get(attempt) {
             std::thread::sleep(*wait);
         }
     }
-    let Some(error) = last else { return };
-    let failures = fs::read_to_string(root.join(CLEANUP_FAILURES)).ok().and_then(|text| text.trim().parse::<u32>().ok()).unwrap_or(0) + 1;
-    let _ = fs::write(root.join(CLEANUP_FAILURES), failures.to_string());
-    if failures >= CLEANUP_REPORT_AFTER {
-        let mut error = update_io("Clean up update files", &staging, error);
+}
+
+/// Counts a start whose cleanup failed; the error log names the folder once, when it outlived
+/// [`CLEANUP_REPORT_AFTER`] starts.
+fn count_failed_start(root: &Path, staging: &Path, error: std::io::Error) {
+    let state = fs::read_to_string(root.join(CLEANUP_FAILURES)).unwrap_or_default();
+    let failures = state.split_whitespace().next().and_then(|count| count.parse::<u32>().ok()).unwrap_or(0) + 1;
+    let report = failures >= CLEANUP_REPORT_AFTER && !state.contains("reported");
+    let _ = fs::write(root.join(CLEANUP_FAILURES), if report || state.contains("reported") { format!("{failures} reported") } else { failures.to_string() });
+    if report {
+        let mut error = update_io("Clean up update files", staging, error);
         error.message = format!(
             "{} The folder holds only the files an update replaced; it could not be removed for {failures} starts in a row. Close programs that may keep its files open, or delete it.",
             error.message
@@ -788,6 +800,32 @@ mod tests {
         cleanup_with(root, &[]);
         assert!(!root.join(STAGING).exists(), "read-only leftovers are removed");
         assert!(!root.join(CLEANUP_FAILURES).exists(), "the count of failed starts is reset");
+    }
+
+    /// The app may close before the tries end: the start is counted at its first failure, and the
+    /// folder is reported once.
+    #[test]
+    fn a_failed_cleanup_counts_the_start_before_its_tries_end() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().to_path_buf();
+        // A file where the folder belongs cannot be removed as one.
+        fs::write(root.join(STAGING), "not a folder").unwrap();
+        fs::write(root.join(CLEANUP_FAILURES), "2").unwrap();
+        let trying = {
+            let root = root.clone();
+            std::thread::spawn(move || cleanup_with(&root, &[Duration::from_secs(3)]))
+        };
+        let state = || fs::read_to_string(root.join(CLEANUP_FAILURES)).unwrap();
+        let started = std::time::Instant::now();
+        while state() == "2" && started.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!trying.is_finished(), "still trying");
+        assert_eq!(state(), "3 reported");
+        trying.join().unwrap();
+        assert_eq!(state(), "3 reported", "one start counts once");
+        cleanup_with(&root, &[]);
+        assert_eq!(state(), "4 reported", "reported once");
     }
 
     #[test]

@@ -3,7 +3,7 @@ import { applyResolution, findLines, parseConflicts, resolveAll } from "./confli
 import { wordDiff } from "./worddiff";
 import { initials, relativeTime } from "./format";
 import { visibleUpdate } from "./update";
-import { autoFetchRound, createAutoFetch, failedServer, fetchRound, urlHost } from "./autofetch";
+import { autoFetchRound, createAutoFetch, failedServer, fetchRound, transientFetchFailure, urlHost } from "./autofetch";
 import type { UpdateInfo } from "./types";
 
 const SAMPLE = `top
@@ -212,6 +212,58 @@ describe("background fetch", () => {
     attempts.length = 0;
     await autoFetchRound(["/a", "/b", "/c"], offline, () => true, () => true, 1);
     expect(attempts).toEqual(["/a", "/b"]);
+  });
+
+  it("counts a mirror's failure for the mirror's server and keeps fetching the others of origin's server", async () => {
+    const attempts: string[] = [];
+    const mirror = (root: string) => ({ message: `unable to access 'https://mirror.example.invalid/${root.slice(1)}.git/': Could not resolve host: mirror.example.invalid`, kind: "error", stderr: "", code: 128, details: [] });
+    const quietFetch = createAutoFetch({
+      fetch: async root => { attempts.push(root); if (root.startsWith("/mirror")) throw mirror(root); return { refsChanged: false }; },
+      refresh: async () => {},
+      busy: () => false,
+      log: () => {},
+      // Every repository's origin is on the same server.
+      serverOf: () => "git.example.invalid",
+    });
+    const roots = ["/mirror-1", "/mirror-2", "/repo-1", "/repo-2", "/repo-3"];
+    await autoFetchRound(roots, quietFetch, () => true, () => true, 1);
+    expect(attempts).toEqual(roots);
+    expect(quietFetch.failedAt("/mirror-1")).toBe("mirror.example.invalid");
+    expect(quietFetch.failedAt("/repo-1")).toBe("git.example.invalid");
+  });
+
+  it("does not take a refused sign-in or permission for the network", async () => {
+    const forbidden = { message: "fatal: unable to access 'https://git.example.invalid/team/api.git/': The requested URL returned error: 403", kind: "error", stderr: "", code: 128, details: [] };
+    const unavailable = { ...forbidden, message: forbidden.message.replace("403", "503") };
+    expect(transientFetchFailure(forbidden)).toBe(false);
+    expect(transientFetchFailure({ ...forbidden, message: forbidden.message.replace("403", "404") })).toBe(false);
+    expect(transientFetchFailure(unavailable)).toBe(true);
+    const logged: string[] = [];
+    const quietFetch = createAutoFetch({ fetch: async () => { throw forbidden; }, refresh: async () => {}, busy: () => false, log: (_root, error) => logged.push((error as { message: string }).message) });
+    expect(await quietFetch("/repo")).toBe("failed");
+    expect(logged).toEqual([forbidden.message]);
+  });
+
+  it("counts network failures in a row apart from other failures", async () => {
+    const timeout = { message: "Git exceeded its 30 second time limit.", kind: "git-timeout", stderr: "", code: null, details: [] };
+    const broken = { message: "fatal: bad config", kind: "error", stderr: "", code: 128, details: [] };
+    const logged: string[] = [];
+    const answers: unknown[] = [broken, timeout, timeout, broken, timeout, timeout, timeout];
+    const quietFetch = createAutoFetch({
+      fetch: async () => { throw answers.shift(); },
+      refresh: async () => {},
+      busy: () => false,
+      log: (_root, error) => logged.push((error as { message: string }).message),
+    });
+    const results: string[] = [];
+    // Skipped rounds (the backoff) are left out of the answers.
+    while (answers.length) {
+      const result = await quietFetch("/repo");
+      if (result !== "skipped") results.push(result);
+    }
+    expect(results).toEqual(["failed", "transient", "transient", "failed", "transient", "transient", "transient"]);
+    // Neither two network failures after another failure nor a row broken by one is three in a row.
+    expect(logged).toEqual(["fatal: bad config", "Automatic fetch failed 3 times in a row. Last error: Git exceeded its 30 second time limit."]);
   });
 
   it("reads the server of remote URLs and fetch failures", () => {

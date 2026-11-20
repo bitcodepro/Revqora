@@ -84,6 +84,34 @@ impl Inherited {
     }
 }
 
+/// Runs `f` for every item side by side and returns the results in order: the first item on
+/// this thread, the others on helper threads inside this thread's repository transaction (see
+/// [`Inherited`]). For Git reads that wait for nothing else: each Git start costs tens of
+/// milliseconds on Windows, and an operation that reads one thing after another adds them up.
+pub fn each<I: Send, T: Send>(repo: &Path, items: Vec<I>, f: impl Fn(I) -> T + Sync) -> Vec<T> {
+    let parent = Inherited::of(repo);
+    let mut items = items.into_iter();
+    let Some(first) = items.next() else { return Vec::new() };
+    std::thread::scope(|scope| {
+        let (parent, f) = (&parent, &f);
+        let helpers: Vec<_> = items.map(|item| scope.spawn(move || parent.run(|| f(item)))).collect();
+        let mut results = vec![f(first)];
+        results.extend(helpers.into_iter().map(|helper| helper.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))));
+        results
+    })
+}
+
+/// Two independent reads side by side (see [`each`]): `helper` on a helper thread inside this
+/// thread's repository transaction, `here` on this thread.
+pub fn both<A: Send, B>(repo: &Path, helper: impl FnOnce() -> A + Send, here: impl FnOnce() -> B) -> (A, B) {
+    let parent = Inherited::of(repo);
+    std::thread::scope(|scope| {
+        let helper = scope.spawn(|| parent.run(helper));
+        let here = here();
+        (helper.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)), here)
+    })
+}
+
 fn canonical(path: &Path) -> PathBuf {
     let p =
         fs::canonicalize(path).unwrap_or_else(|_| if path.is_absolute() { path.to_owned() } else { std::env::current_dir().unwrap_or_default().join(path) });
@@ -452,9 +480,9 @@ pub(super) fn external_attribute_files(repo: &Path) -> GitResult<Vec<PathBuf>> {
     let mut paths = Vec::new();
     if runner::version_at_least(2, 42) {
         // Git resolves configured paths, ~/ and its platform-specific defaults.
-        // Query only these variables: `var -l` also exposes arbitrary config.
-        for name in ["GIT_ATTR_GLOBAL", "GIT_ATTR_SYSTEM"] {
-            let out = super::config_cache::exec(repo, &["var", name])?;
+        // Query only these variables: `var -l` also exposes arbitrary config. Both side by side.
+        for out in each(repo, vec!["GIT_ATTR_GLOBAL", "GIT_ATTR_SYSTEM"], |name| super::config_cache::exec(repo, &["var", name])) {
+            let out = out?;
             if out.ok() {
                 let value = out.text();
                 let value = value.strip_suffix('\n').unwrap_or(&value).trim_end_matches('\r');
