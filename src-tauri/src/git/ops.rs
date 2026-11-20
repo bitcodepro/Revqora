@@ -1151,25 +1151,54 @@ fn track_counts(track: &str) -> Option<(usize, usize)> {
     Some((count("ahead "), count("behind ")))
 }
 
-/// Pull all for one repository: fetches every remote, then fast-forwards every local branch
-/// that only lacks commits of its upstream. Never merges, rebases or creates a commit.
+/// Local and incoming commits between `oid` and exactly `target` (`rev-list --left-right`).
+fn ahead_behind(repo: &Path, oid: &str, target: &str) -> GitResult<(usize, usize)> {
+    let counts = runner::run(repo, ["rev-list", "--left-right", "--count", &format!("{oid}...{target}")])?;
+    let mut parts = counts.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(0));
+    Ok((parts.next().unwrap_or(0), parts.next().unwrap_or(0)))
+}
+
+/// Branches an unfinished rebase or bisect in any worktree of the repository works on. Their
+/// worktree's HEAD is detached meanwhile, so `%(worktreepath)` does not name them.
+fn branches_in_operations(repo: &Path) -> GitResult<std::collections::HashSet<String>> {
+    let git_dir = repo::git_dir(repo)?;
+    let common = super::graph::common_dir(repo).unwrap_or_else(|| git_dir.clone());
+    let mut dirs = vec![common.clone()];
+    if let Ok(entries) = std::fs::read_dir(common.join("worktrees")) {
+        dirs.extend(entries.flatten().map(|entry| entry.path()));
+    }
+    let mut busy = std::collections::HashSet::new();
+    for dir in dirs {
+        for file in ["rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"] {
+            let Ok(text) = std::fs::read_to_string(dir.join(file)) else { continue };
+            let name = text.trim();
+            if name.is_empty() || name == "detached HEAD" {
+                continue;
+            }
+            busy.insert(if name.starts_with("refs/") { name.to_owned() } else { format!("refs/heads/{name}") });
+        }
+    }
+    Ok(busy)
+}
+
+/// Pull all for one repository: fetches every remote once, then fast-forwards every local
+/// branch that only lacks commits of its upstream. Never merges, rebases or creates a commit.
 ///
-/// - The checked-out branch goes through [`pull_with_prune`] (fast-forward only), with its
-///   protection of local changes and ignored files. It is left alone while an operation or a
-///   conflict is in progress, or when local changes touch files the incoming commits change.
+/// Each branch moves exactly to the upstream commit that was checked: its ancestry is verified
+/// for that commit, and nothing is fetched again before the update.
+/// - The checked-out branch is fast-forwarded (`merge --ff-only`, with the regular protection of
+///   ignored files) when no local change touches a file the incoming commits change. It is left
+///   alone while an operation or a conflict is in progress.
 /// - Other branches only move their ref (`update-ref` with the old commit, so a branch that
-///   changed meanwhile is not overwritten). A branch checked out in another worktree is left
-///   for that worktree.
+///   changed meanwhile is not overwritten). A branch checked out in another worktree, or being
+///   rebased or bisected in any worktree, is left as it is.
 /// - Diverged branches are reported, never changed.
 pub fn pull_all_branches(repo: &Path, mut on_line: impl FnMut(&str)) -> GitResult<BranchesPull> {
     fetch(repo, None, true, &mut on_line)?;
     let mut result = BranchesPull::default();
     let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
     let head = head.ok().then(|| head.text().trim().to_owned());
-    let oids: std::collections::HashMap<String, String> = runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)"])?
-        .lines()
-        .filter_map(|line| line.split_once('\0').map(|(name, oid)| (name.to_owned(), oid.to_owned())))
-        .collect();
+    let busy = branches_in_operations(repo)?;
     let branches =
         runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(worktreepath)", "refs/heads"])?;
     let mut current = None;
@@ -1177,44 +1206,79 @@ pub fn pull_all_branches(repo: &Path, mut on_line: impl FnMut(&str)) -> GitResul
         let fields: Vec<&str> = line.split('\0').collect();
         let [name, oid, upstream, track, worktree] = fields[..] else { continue };
         let branch = name.strip_prefix("refs/heads/").unwrap_or(name).to_owned();
-        let Some((ahead, behind)) = track_counts(track) else { continue };
-        let Some(target) = oids.get(upstream).filter(|_| !upstream.is_empty() && behind > 0) else { continue };
+        // The listing only picks candidates; every decision below uses the exact commit.
+        if upstream.is_empty() || !track_counts(track).is_some_and(|(_, behind)| behind > 0) {
+            continue;
+        }
+        let target = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{upstream}^{{commit}}")])?;
+        if !target.ok() {
+            continue;
+        }
+        let target = target.text().trim().to_owned();
+        let (ahead, behind) = ahead_behind(repo, oid, &target)?;
+        if behind == 0 {
+            continue;
+        }
         if ahead > 0 {
             let reason = format!("Diverged: {ahead} local and {behind} incoming commits. Pull it on its own to merge or rebase.");
             result.skipped.push(BranchSkip { branch, reason });
+        } else if busy.contains(name) {
+            result.skipped.push(BranchSkip { branch, reason: "A rebase or bisect in progress works on this branch. Finish or abort it first.".into() });
         } else if head.as_deref() == Some(name) {
-            current = Some((branch, behind, target.clone()));
+            current = Some((branch, oid.to_owned(), behind, target));
         } else if !worktree.is_empty() {
             result.skipped.push(BranchSkip { branch, reason: format!("Checked out in the worktree {worktree}.") });
-        } else if runner::exec(repo, ["update-ref", "-m", "pull: fast-forward (Pull all)", name, target, oid])?.ok() {
+        } else if runner::exec(repo, ["update-ref", "-m", "pull: fast-forward (Pull all)", name, &target, oid])?.ok() {
             result.updated.push(BranchUpdate { branch, commits: behind, current: false });
         } else {
             result.skipped.push(BranchSkip { branch, reason: "The branch changed meanwhile.".into() });
         }
     }
-    if let Some((branch, behind, target)) = current {
-        match current_branch_blocked(repo, &target)? {
+    if let Some((branch, oid, behind, target)) = current {
+        match current_branch_blocked(repo, &oid, &target)? {
             Some(reason) => result.skipped.push(BranchSkip { branch, reason }),
-            None => {
-                // The recovery checkpoint a single Pull takes first, only when files will change:
-                // most repositories have nothing to pull, and a checkpoint each would bury the list.
-                super::recovery::automatic(repo, "pull_all_branches", true, false)?;
-                let outcome = pull_with_prune(repo, "ff-only", true, &mut on_line)?;
-                match outcome.operation.status.as_str() {
-                    "done" | "fastForward" => result.updated.push(BranchUpdate { branch, commits: behind, current: true }),
-                    "upToDate" => {}
-                    _ => result.skipped.push(BranchSkip { branch, reason: outcome.operation.message.clone() }),
-                }
-            }
+            None => match fast_forward_current(repo, &target, &mut on_line) {
+                Ok(()) => result.updated.push(BranchUpdate { branch, commits: behind, current: true }),
+                Err(error) => result.skipped.push(BranchSkip { branch, reason: error.message }),
+            },
         }
     }
     Ok(result)
 }
 
+/// Moves the checked-out branch exactly to `target`, a verified descendant of HEAD. Local
+/// changes stay where they are (they touch none of the incoming files), so nothing is stashed.
+fn fast_forward_current(repo: &Path, target: &str, on_line: &mut impl FnMut(&str)) -> GitResult<()> {
+    let recurse = super::config_cache::exec(repo, &["config", "--bool", "--get", "submodule.recurse"])?;
+    if !recurse.ok() && recurse.code != 1 {
+        return Err(runner::to_error("git config submodule.recurse", &recurse));
+    }
+    let recurse = recurse.ok() && recurse.text().trim() == "true";
+    if recurse {
+        super::pull_guard::submodules(repo, target, "ff-only")?;
+    }
+    // The recovery checkpoint a single Pull takes first, only when files will change: most
+    // repositories have nothing to pull, and a checkpoint each would bury the list.
+    super::recovery::automatic(repo, "pull_all_branches", true, false)?;
+    let outcome = merge_start_with_autostash(repo, target, "ff-only", false)?;
+    if !matches!(outcome.status.as_str(), "done" | "fastForward") {
+        return Err(GitError::new(outcome.message));
+    }
+    if recurse {
+        let args = ["submodule", "update", "--recursive", "--checkout"].map(String::from);
+        runner::run_streaming(repo, &args, &[], on_line)?;
+    }
+    Ok(())
+}
+
 /// Why Pull all leaves the checked-out branch alone, if it does.
-fn current_branch_blocked(repo: &Path, target: &str) -> GitResult<Option<String>> {
+fn current_branch_blocked(repo: &Path, oid: &str, target: &str) -> GitResult<Option<String>> {
     if repo::op_state(repo, &repo::git_dir(repo)?).kind != "none" {
         return Ok(Some("An operation is in progress. Finish or abort it first.".into()));
+    }
+    // HEAD must still be the commit the counts were made for.
+    if runner::run(repo, ["rev-parse", "HEAD"])?.trim() != oid {
+        return Ok(Some("The branch changed meanwhile.".into()));
     }
     let names = |args: &[&str]| -> GitResult<std::collections::HashSet<String>> {
         Ok(runner::run(repo, args)?.split('\0').filter(|s| !s.is_empty()).map(str::to_owned).collect())
@@ -1227,7 +1291,7 @@ fn current_branch_blocked(repo: &Path, target: &str) -> GitResult<Option<String>
     if changed.is_empty() && untracked.is_empty() {
         return Ok(None);
     }
-    let incoming = names(&["diff", "--name-only", "-z", "--no-renames", "HEAD", target])?;
+    let incoming = names(&["diff", "--name-only", "-z", "--no-renames", oid, target])?;
     let mut touched: Vec<&String> = incoming.iter().filter(|path| changed.contains(*path) || untracked.contains(*path)).collect();
     if touched.is_empty() {
         // The incoming commits change other files: the local changes stay as they are.

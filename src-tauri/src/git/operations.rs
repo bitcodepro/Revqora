@@ -725,6 +725,9 @@ pub mod state_cache {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         refs.hash(&mut hasher);
         hash_meta(&mut hasher, &common.join("config"), now)?;
+        // With extensions.worktreeConfig, core.bare and core.worktree can live per worktree.
+        hash_meta(&mut hasher, &common.join("config.worktree"), now)?;
+        hash_meta(&mut hasher, &gd.join("config.worktree"), now)?;
         let folder = common.join("worktrees");
         let mut linked: Vec<PathBuf> = match fs::read_dir(&folder) {
             Ok(entries) => {
@@ -739,7 +742,7 @@ pub mod state_cache {
         };
         linked.sort();
         for dir in linked {
-            for name in ["HEAD", "locked", "gitdir", "commondir"] {
+            for name in ["HEAD", "locked", "gitdir", "commondir", "config.worktree"] {
                 hash_meta(&mut hasher, &dir.join(name), now)?;
             }
             // The worktree's own `.git` file: a folder deleted outside Git becomes prunable.

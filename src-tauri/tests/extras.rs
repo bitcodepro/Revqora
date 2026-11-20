@@ -79,6 +79,16 @@ fn the_remembered_worktree_list_follows_commits_locks_and_deleted_folders() {
     settle();
     assert!(!other(&r).locked);
 
+    // Per-worktree configuration (extensions.worktreeConfig) can make the main worktree bare.
+    runner::run(&r, ["config", "extensions.worktreeConfig", "true"]).unwrap();
+    settle();
+    let main = |r: &Path| extras::worktrees(r).unwrap().into_iter().find(|w| w.is_current).unwrap();
+    assert!(!main(&r).bare);
+    runner::run(&r, ["config", "--worktree", "core.bare", "true"]).unwrap();
+    settle();
+    assert!(extras::worktrees(&r).unwrap().iter().any(|w| w.bare), "config.worktree is part of the remembered list");
+    runner::run(&r, ["config", "--worktree", "--unset", "core.bare"]).unwrap();
+
     fs::remove_dir_all(&wt).unwrap();
     assert!(other(&r).prunable, "a worktree folder deleted outside Git is prunable at once");
 }

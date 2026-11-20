@@ -143,6 +143,28 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
   await dialog.getByRole("button", { name: "Rescan", exact: true }).click();
   await dialog.getByText("4 of 5 selected", { exact: true }).waitFor();
   await dialog.getByText("Rescanned: 1 repository no longer found.", { exact: true }).waitFor();
+  // A stopped rescan keeps the list and the selection it replaced.
+  await dialog.evaluate(() => {
+    const scanUrl = window.__TAURI_INTERNALS__.convertFileSrc("repo_scan_folder", "ipc");
+    const original = window.fetch;
+    const held = [];
+    window.fetch = (input, init) => {
+      const response = original(input, init);
+      if ((input?.url ?? input) !== scanUrl) return response;
+      return new Promise(resolve => held.push(() => resolve(response)));
+    };
+    window.__rescanHold = { held: () => held.length, finish() { window.fetch = original; held.splice(0).forEach(release => release()); } };
+  });
+  try {
+    await dialog.getByRole("button", { name: "Rescan", exact: true }).click();
+    await page.waitForFunction(() => window.__rescanHold.held() === 1);
+    await dialog.getByRole("button", { name: "Stop scan", exact: true }).click();
+    await dialog.getByText("Rescan stopped. The previous list is kept.", { exact: true }).waitFor();
+    await dialog.getByText("4 of 5 selected", { exact: true }).waitFor();
+    assert.equal(await dialog.getByRole("checkbox", { name: /^service-worker\b/ }).isChecked(), false);
+  } finally {
+    await page.evaluate(() => window.__rescanHold?.finish());
+  }
   await shot?.("repository-folder-import-preview");
   await confirm(dialog, 4);
   for (const name of ["import-direct", "nested-repo", "service-api", "web-ui"]) await repoInOverview(name).waitFor();

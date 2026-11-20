@@ -90,11 +90,12 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     setStopped(true);
   }
 
-  /** `rescan`: the folder again after changes on disk. Repositories the user unchecked stay
-   *  unchecked, new ones are checked, and a note says what changed. */
+  /** `rescan`: the folder again after changes on disk. The current list and selection stay
+   *  until the new result arrives (a stopped or failed rescan keeps them); then repositories the
+   *  user unchecked stay unchecked, new ones are checked, and a note says what changed. */
   async function scanFolder(folder: string, rescan = false) {
     if (!folder.trim() || pendingScan.current) return;
-    const before = rescan && scan ? { known: new Set(scan.repositories.map(repo => repo.root)), selected: new Set(selected) } : null;
+    const known = rescan && scan ? new Set(scan.repositories.map(repo => repo.root)) : null;
     setRescanNote("");
     const request = api.repoPrepareFolderScan();
     pendingScan.current = request;
@@ -102,8 +103,10 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
     setScanning(true);
     setStopped(false);
     setError("");
-    setScan(null);
-    setSelected(new Set());
+    if (!known) {
+      setScan(null);
+      setSelected(new Set());
+    }
     try {
       const id = await request;
       if (pendingScan.current !== request) return;
@@ -111,8 +114,11 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
       if (pendingScan.current !== request) return;
       setScan(result);
       const roots = result.repositories.map(repo => repo.root);
-      setSelected(before ? rescanSelection(roots, before) : new Set(roots));
-      if (before) setRescanNote(rescanSummary(roots, before));
+      if (known) {
+        // The selection as it is now: the list stayed usable during the rescan.
+        setSelected(current => rescanSelection(roots, { known, selected: current }));
+        setRescanNote(rescanSummary(roots, known));
+      } else setSelected(new Set(roots));
     } catch (cause) {
       if (pendingScan.current === request) setError(errorMessage(cause));
     } finally {
@@ -185,7 +191,7 @@ function RepositoryFolderImport({ close }: { close: () => void }) {
       }} /> Include dependency and cache folders
     </label>
     {scanning && <FolderScanProgress />}
-    {stopped && <p className="batch-note" role="status">Scan stopped.</p>}
+    {stopped && <p className="batch-note" role="status">{scan ? "Rescan stopped. The previous list is kept." : "Scan stopped."}</p>}
     {error && <p className="red workspace-editor-error" role="alert">{error}</p>}
     {scan && <>
       {rescanNote && <p className="batch-note" role="status">{rescanNote}</p>}

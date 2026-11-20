@@ -113,3 +113,22 @@ fn pull_all_leaves_the_checked_out_branch_when_local_changes_touch_incoming_file
     assert_eq!(tip(&f.work, "feature"), tip(&f.other, "feature"));
     assert!(result.updated.iter().all(|u| !u.current));
 }
+
+#[test]
+fn pull_all_leaves_a_branch_that_another_worktree_is_rebasing() {
+    // During a rebase the worktree's HEAD is detached, so only the rebase state names the branch.
+    let f = fixture();
+    let linked = tip(&f.work, "linked");
+    let stopped = runner::exec(&f.linked, ["-c", "core.editor=true", "rebase", "--exec", "exit 1", "--root"]).unwrap();
+    assert!(!stopped.ok(), "the rebase stops at the failing exec");
+    assert_ne!(runner::exec(&f.linked, ["symbolic-ref", "-q", "HEAD"]).unwrap().code, 0, "HEAD is detached during the rebase");
+
+    let result = ops::pull_all_branches(&f.work, |_| {}).unwrap();
+
+    assert_eq!(tip(&f.work, "linked"), linked, "the rebased branch is not moved under the rebase");
+    let reason = &result.skipped.iter().find(|s| s.branch == "linked").expect("linked is reported").reason;
+    assert!(reason.contains("rebase"), "{reason}");
+    assert_eq!(tip(&f.work, "feature"), tip(&f.other, "feature"), "other branches still move");
+    git(&f.linked, &["rebase", "--abort"]);
+    assert_eq!(git(&f.linked, &["symbolic-ref", "--short", "HEAD"]), "linked");
+}

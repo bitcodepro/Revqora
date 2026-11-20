@@ -9,9 +9,9 @@ describe("folder import rescan", () => {
   });
 
   it("says what changed", () => {
-    expect(rescanSummary(["a", "b", "c", "d", "e"], before)).toBe("Rescanned: found 2 repositories more.");
-    expect(rescanSummary(["a", "b"], before)).toBe("Rescanned: 1 repository no longer found.");
-    expect(rescanSummary(["a", "b", "d"], before)).toBe("Rescanned: found 1 repository more · 1 repository no longer found.");
-    expect(rescanSummary(["c", "b", "a"], before)).toBe("Rescanned: no changes.");
+    expect(rescanSummary(["a", "b", "c", "d", "e"], before.known)).toBe("Rescanned: found 2 repositories more.");
+    expect(rescanSummary(["a", "b"], before.known)).toBe("Rescanned: 1 repository no longer found.");
+    expect(rescanSummary(["a", "b", "d"], before.known)).toBe("Rescanned: found 1 repository more · 1 repository no longer found.");
+    expect(rescanSummary(["c", "b", "a"], before.known)).toBe("Rescanned: no changes.");
   });
 });
