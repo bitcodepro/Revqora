@@ -601,6 +601,12 @@ pub fn begin(root: &Path, command: &str) {
     outcome::enter(command);
 }
 
+/// True while `operations::run` runs `command` on this thread (checkpoints belong to operations;
+/// a direct call of the Git function takes none).
+pub fn in_operation(command: &str) -> bool {
+    outcome::current_command().as_deref() == Some(command)
+}
+
 /// End of the running operation's work: records its result beside each checkpoint saved for it.
 pub(crate) fn record_outcome(status: &str, error: Option<&str>) {
     outcome::record(status, error);
@@ -1521,7 +1527,12 @@ fn restore_workspace_locked(root: &Path, id: &str, destination: &Path, name: &st
 }
 
 pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<()> {
-    if writes_worktree(command) && !ignored_net_after_fetch(command) && watch_ignored(root, command, expected, None)? {
+    // Pulls take their one checkpoint after the fetch, once they know what they write (with
+    // the ignored files in its way). `operations::run` has checked `expected` already.
+    if ignored_net_after_fetch(command) {
+        return Ok(());
+    }
+    if writes_worktree(command) && watch_ignored(root, command, expected, None)? {
         return Ok(());
     }
     let workspace = matches!(

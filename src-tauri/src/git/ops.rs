@@ -1095,9 +1095,16 @@ pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, on_line: imp
         (name.join().unwrap_or_else(|_| Err(GitError::new("Reading the current branch failed."))), dirty)
     });
     let (name, dirty) = (name?, dirty?);
-    let saved = stash_staged_as(repo, &name)?;
-    let top = stash_top(repo)?;
-    match pull_unsaved(repo, mode, prune_remote, on_line) {
+    // Staged work is set aside only right before the pull integrates, after its recovery
+    // checkpoint: that checkpoint must hold the staging as the user left it.
+    let mut saved = None;
+    let mut top = stash_top(repo)?;
+    let set_aside = || -> GitResult<()> {
+        saved = stash_staged_as(repo, &name)?;
+        top = stash_top(repo)?;
+        Ok(())
+    };
+    match pull_unsaved(repo, mode, prune_remote, set_aside, on_line) {
         Ok(mut outcome) => {
             let set_aside = dirty && matches!(outcome.operation.status.as_str(), "done" | "fastForward");
             name_autostash(repo, top.as_deref(), &name)?;
@@ -1160,16 +1167,29 @@ fn ahead_behind(repo: &Path, oid: &str, target: &str) -> GitResult<(usize, usize
     Ok((parts.next().unwrap_or(0), parts.next().unwrap_or(0)))
 }
 
-/// Branches an unfinished rebase or bisect in any worktree of the repository works on. Their
-/// worktree's HEAD is detached meanwhile, so `%(worktreepath)` does not name them.
-fn branches_in_operations(repo: &Path) -> GitResult<std::collections::HashSet<String>> {
+/// Branches that must not move under a worktree, read now from the Git directories (no Git
+/// start, so it is read again right before each move):
+/// - `operations`: the branches an unfinished rebase or bisect in any worktree works on,
+///   including the other branches `rebase --update-refs` will rewrite when it finishes. Their
+///   worktree's HEAD is detached meanwhile, so `%(worktreepath)` does not name them.
+/// - `checked_out`: the branch of each worktree's HEAD.
+struct BusyBranches {
+    operations: HashSet<String>,
+    checked_out: HashSet<String>,
+}
+
+fn busy_branches(repo: &Path) -> GitResult<BusyBranches> {
     let git_dir = repo::git_dir(repo)?;
     let common = super::graph::common_dir(repo).unwrap_or_else(|| git_dir.clone());
     let mut dirs = vec![common.clone()];
     if let Ok(entries) = std::fs::read_dir(common.join("worktrees")) {
         dirs.extend(entries.flatten().map(|entry| entry.path()));
     }
-    let mut busy = std::collections::HashSet::new();
+    let full = |name: &str| if name.starts_with("refs/") { name.to_owned() } else { format!("refs/heads/{name}") };
+    let mut busy = BusyBranches { operations: HashSet::new(), checked_out: HashSet::new() };
+    // A bare repository's own HEAD names a branch that no worktree has checked out.
+    let bare = super::config_cache::exec(repo, &["config", "--bool", "--get", "core.bare"])?;
+    let bare = bare.ok() && bare.text().trim() == "true";
     for dir in dirs {
         for file in ["rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"] {
             let Ok(text) = std::fs::read_to_string(dir.join(file)) else { continue };
@@ -1177,10 +1197,30 @@ fn branches_in_operations(repo: &Path) -> GitResult<std::collections::HashSet<St
             if name.is_empty() || name == "detached HEAD" {
                 continue;
             }
-            busy.insert(if name.starts_with("refs/") { name.to_owned() } else { format!("refs/heads/{name}") });
+            busy.operations.insert(full(name));
+        }
+        // "<ref>\n<old>\n<new>\n" for each branch the rebase moves when it finishes.
+        if let Ok(text) = std::fs::read_to_string(dir.join("rebase-merge/update-refs")) {
+            busy.operations.extend(text.lines().map(str::trim).filter(|line| line.starts_with("refs/")).map(str::to_owned));
+        }
+        let head = if bare && dir == common { None } else { std::fs::read_to_string(dir.join("HEAD")).ok() };
+        if let Some(name) = head.as_deref().and_then(|text| text.trim().strip_prefix("ref:")) {
+            busy.checked_out.insert(name.trim().to_owned());
         }
     }
     Ok(busy)
+}
+
+/// Why `name` must not move now, if it must not.
+fn busy_now(repo: &Path, name: &str) -> GitResult<Option<String>> {
+    let busy = busy_branches(repo)?;
+    Ok(if busy.operations.contains(name) {
+        Some("A rebase or bisect in progress works on this branch. Finish or abort it first.".into())
+    } else if busy.checked_out.contains(name) {
+        Some("The branch was checked out meanwhile. Pull it there.".into())
+    } else {
+        None
+    })
 }
 
 /// One local branch with its upstream, as Fetch, Pull and Push of several branches read it.
@@ -1383,13 +1423,18 @@ pub fn pull_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
                 let branch = name.strip_prefix("refs/remotes/").unwrap_or(&name).to_owned();
                 result.skipped.push(BranchSkip { branch, reason: "A remote branch: pull the local branch that tracks it.".into() });
             }
-            fetch_chosen(repo, &local, &[], &mut result, &mut on_line)?;
-            Some(local)
+            let fetched = fetch_chosen(repo, &local, &[], &mut result, &mut on_line)?;
+            // A branch whose upstream was not fetched (deleted on the remote) keeps its old
+            // remote-tracking branch: it is reported above and never moved there. Branches that
+            // track another local branch need no fetch.
+            let listed = local_branches(repo)?;
+            let local_upstream = |name: &String| listed.iter().any(|b| &b.name == name && b.remote == ".");
+            Some(local.into_iter().filter(|name| fetched.contains(name) || local_upstream(name)).collect::<HashSet<_>>())
         }
     };
     let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
     let head = head.ok().then(|| head.text().trim().to_owned());
-    let busy = branches_in_operations(repo)?;
+    let busy = busy_branches(repo)?.operations;
     let mut current = None;
     for local in local_branches(repo)? {
         let LocalBranch { name, oid, upstream, track, worktree, .. } = &local;
@@ -1417,17 +1462,21 @@ pub fn pull_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
         } else if busy.contains(name) {
             result.skipped.push(BranchSkip { branch, reason: "A rebase or bisect in progress works on this branch. Finish or abort it first.".into() });
         } else if head.as_deref() == Some(name.as_str()) {
-            current = Some((branch, oid.clone(), behind, target));
+            current = Some((name.clone(), branch, oid.clone(), behind, target));
         } else if !worktree.is_empty() {
             result.skipped.push(BranchSkip { branch, reason: format!("Checked out in the worktree {worktree}.") });
+        } else if let Some(reason) = busy_now(repo, name)? {
+            // Checked out or taken by a rebase since the listing: moving the ref would leave
+            // that worktree's files behind.
+            result.skipped.push(BranchSkip { branch, reason });
         } else if runner::exec(repo, ["update-ref", "-m", "pull: fast-forward (Pull all)", name, &target, oid])?.ok() {
             result.updated.push(BranchUpdate { branch, commits: behind, current: false });
         } else {
             result.skipped.push(BranchSkip { branch, reason: "The branch changed meanwhile.".into() });
         }
     }
-    if let Some((branch, oid, behind, target)) = current {
-        match current_branch_blocked(repo, &oid, &target)? {
+    if let Some((name, branch, oid, behind, target)) = current {
+        match current_branch_blocked(repo, &name, &oid, &target)? {
             Some(reason) => result.skipped.push(BranchSkip { branch, reason }),
             None => match fast_forward_current(repo, &oid, &target, &mut on_line) {
                 Ok(()) => result.updated.push(BranchUpdate { branch, commits: behind, current: true }),
@@ -1506,7 +1555,9 @@ pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl
         for spec in &specs {
             super::recovery::protect_transport(repo, true, Some(&remote), Some(spec), false)?;
         }
-        let mut args = vec!["push".to_string(), "--progress".into(), remote.clone()];
+        // Only the listed branches: `push.followTags` would also publish annotated tags that
+        // the report never shows.
+        let mut args = vec!["push".to_string(), "--progress".into(), "--no-follow-tags".into(), remote.clone()];
         args.extend(specs);
         let error = match runner::run_streaming(repo, &args, &[], &mut on_line) {
             Ok(_) => None,
@@ -1602,9 +1653,14 @@ fn protect_ignored_files(repo: &Path, command: &str, head: Option<&str>, target:
 }
 
 /// Why Pull all leaves the checked-out branch alone, if it does.
-fn current_branch_blocked(repo: &Path, oid: &str, target: &str) -> GitResult<Option<String>> {
+fn current_branch_blocked(repo: &Path, name: &str, oid: &str, target: &str) -> GitResult<Option<String>> {
     if repo::op_state(repo, &repo::git_dir(repo)?).kind != "none" {
         return Ok(Some("An operation is in progress. Finish or abort it first.".into()));
+    }
+    // The same branch must still be checked out: a fast-forward moves whatever HEAD names.
+    let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
+    if !head.ok() || head.text().trim() != name {
+        return Ok(Some("Another branch was checked out meanwhile.".into()));
     }
     // HEAD must still be the commit the counts were made for.
     if runner::run(repo, ["rev-parse", "HEAD"])?.trim() != oid {
@@ -1664,7 +1720,15 @@ fn name_autostash(repo: &Path, before: Option<&str>, name: &str) -> GitResult<()
     Ok(())
 }
 
-fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
+/// `set_aside` saves the staged work; it runs once, right before Git integrates the upstream
+/// (never when the pull stops earlier).
+fn pull_unsaved(
+    repo: &Path,
+    mode: &str,
+    prune_remote: bool,
+    set_aside: impl FnOnce() -> GitResult<()>,
+    mut on_line: impl FnMut(&str),
+) -> GitResult<PullOutcome> {
     // The status read already lists the index; compare that listing after the fetch.
     let (before, index_before) = status::status_with_index(repo)?;
     let branch = before.branch.as_deref().ok_or_else(|| GitError::new("Choose a branch with an upstream before pulling."))?;
@@ -1768,8 +1832,13 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
             );
         }
     }
-    // Now that the target is known: save the ignored files in the way of what this pull writes.
-    protect_ignored_files(repo, "pull", before.oid.as_deref(), targets[0])?;
+    // Now that the target is known, the pull's one recovery checkpoint: with the ignored files
+    // in the way of what this pull writes, or the ordinary one when there are none.
+    if !protect_ignored_files(repo, "pull", before.oid.as_deref(), targets[0])? && super::recovery::in_operation("pull") {
+        super::recovery::automatic(repo, "pull", true, false)?;
+    }
+    let mut set_aside = Some(set_aside);
+    let mut set_aside = move || set_aside.take().map_or(Ok(()), |f| f());
     let mut outcome = if mode == "rebase" {
         let can_ff = match before.oid.as_deref() {
             Some(head) => {
@@ -1782,6 +1851,7 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
             None => true,
         };
         if can_ff {
+            set_aside()?;
             let mut result = merge_start_with_autostash(repo, targets[0], "ff-only", true)?;
             // Preserve the rebase-Pull API's success status, including when
             // native Git can integrate it without replaying any commits.
@@ -1809,6 +1879,7 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
                     GitError::new("Pull stopped because the repository changed during rebase inspection. Review it before retrying.").kind("stale-operation")
                 );
             }
+            set_aside()?;
             let args = ["rebase", "--autostash", "--onto", targets[0], upstream].map(String::from);
             match runner::run_streaming(repo, &args, &[], &mut on_line) {
                 Ok(output) if autostash_conflict(repo, &output) => autostash_outcome(repo),
@@ -1823,6 +1894,7 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
             }
         }
     } else {
+        set_aside()?;
         merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, true).map_err(|mut error| {
             if error.kind == "diverged" {
                 // Git's own text is a hint list about pull.rebase configuration.

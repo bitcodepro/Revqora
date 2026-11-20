@@ -82,3 +82,28 @@ fn a_pull_saves_the_ignored_files_in_the_way_of_the_incoming_commits() {
     assert!(saved.iter().any(|paths| paths.contains(&"notes.dat".to_owned())), "{saved:?}");
     assert!(!saved.iter().flatten().any(|p| p == "cache.dat"), "{saved:?}");
 }
+
+#[test]
+fn a_pull_keeps_one_checkpoint_with_the_staging_as_the_user_left_it() {
+    // Staged work and an ignored file in the way of the incoming commit: the pull has one
+    // "Before pull" checkpoint, taken before the staged work is set aside.
+    let (tmp, _other, work) = behind("notes.dat", "from the server\n");
+    fs::write(work.join("base.txt"), "staged\n").unwrap();
+    git(&work, &["add", "base.txt"]);
+    fs::write(work.join("notes.dat"), "my notes\n").unwrap();
+
+    let error = pull(&work).unwrap_err();
+    assert_eq!(error.kind, "ignored-collision", "{}", error.message);
+    assert_eq!(git(&work, &["diff", "--cached", "--name-only"]), "base.txt", "the staging is back");
+
+    let points: Vec<_> = recovery::list(&work).unwrap().checkpoints.into_iter().filter(|c| c.command == "pull").collect();
+    assert_eq!(points.len(), 1, "one Before pull point: {:?}", points.iter().map(|c| &c.label).collect::<Vec<_>>());
+    let saved: Vec<String> = recovery::detail(&work, &points[0].id).unwrap().paths.into_iter().map(|p| p.path).collect();
+    assert!(saved.contains(&"notes.dat".to_owned()) && saved.contains(&"base.txt".to_owned()), "{saved:?}");
+
+    // Restoring it brings the staged change back staged.
+    let restored = tmp.path().join("restored");
+    recovery::restore_workspace(&work, &points[0].id, &restored, "restored-pull").unwrap();
+    assert_eq!(git(&restored, &["diff", "--cached", "--name-only"]), "base.txt");
+    assert_eq!(fs::read_to_string(restored.join("base.txt")).unwrap(), "staged\n");
+}

@@ -221,3 +221,57 @@ fn push_of_chosen_branches_sends_what_the_remote_accepts_and_reports_the_rest() 
     assert!(idle.updated.is_empty());
     assert_eq!(recovery::list(&f.work).unwrap().checkpoints.len(), checkpoints, "no checkpoint when nothing is sent");
 }
+
+#[test]
+fn pull_of_chosen_branches_never_moves_a_branch_whose_upstream_was_deleted() {
+    let f = fixture();
+    // origin/feature already holds the incoming commit, then the server deletes the branch:
+    // the remote-tracking branch is stale and must not be pulled.
+    git(&f.work, &["fetch", "-q", "origin"]);
+    let feature = tip(&f.work, "feature");
+    assert_ne!(tip(&f.work, "origin/feature"), feature);
+    git(&f.other, &["push", "-q", "origin", "--delete", "feature"]);
+
+    let result = ops::pull_branches(&f.work, Some(&["refs/heads/feature".to_owned()]), |_| {}).unwrap();
+
+    assert_eq!(tip(&f.work, "feature"), feature, "not moved to the stale origin/feature");
+    assert!(result.updated.is_empty(), "{:?}", result.updated.iter().map(|u| &u.branch).collect::<Vec<_>>());
+    let skipped: Vec<_> = result.skipped.iter().map(|s| (s.branch.as_str(), s.reason.as_str())).collect();
+    assert_eq!(skipped, [("feature", "The branch no longer exists on origin.")]);
+}
+
+#[test]
+fn pull_all_leaves_the_branches_a_rebase_with_update_refs_will_rewrite() {
+    // feature points at a commit the rebase in the linked worktree replays: `--update-refs`
+    // moves it when the rebase finishes, so Pull all must not move it meanwhile.
+    let f = fixture();
+    let feature = tip(&f.work, "feature");
+    let identity = ["-c", "user.name=T", "-c", "user.email=t@example.invalid", "-c", "core.editor=true"];
+    let stopped = runner::exec(&f.linked, [&identity[..], &["rebase", "--update-refs", "--exec", "exit 1", "--root"]].concat()).unwrap();
+    assert!(!stopped.ok(), "the rebase stops at the failing exec");
+    let git_dir = git(&f.linked, &["rev-parse", "--absolute-git-dir"]);
+    let listed = fs::read_to_string(Path::new(&git_dir).join("rebase-merge/update-refs")).unwrap_or_default();
+    assert!(listed.contains("refs/heads/feature"), "the rebase will rewrite feature: {listed:?}");
+
+    let result = ops::pull_all_branches(&f.work, |_| {}).unwrap();
+
+    assert_eq!(tip(&f.work, "feature"), feature, "not moved under the rebase");
+    let reason = &result.skipped.iter().find(|s| s.branch == "feature").expect("feature is reported").reason;
+    assert!(reason.contains("rebase"), "{reason}");
+    assert_eq!(tip(&f.work, "main"), tip(&f.other, "main"), "other branches still move");
+    git(&f.linked, &["rebase", "--abort"]);
+}
+
+#[test]
+fn push_of_chosen_branches_sends_no_tags_even_with_push_follow_tags() {
+    let f = fixture();
+    git(&f.work, &["tag", "-a", "-m", "release", "v-ahead", "ahead"]);
+    git(&f.work, &["config", "push.followTags", "true"]);
+    let remote = f.work.parent().unwrap().join("remote.git");
+
+    let result = ops::push_branches(&f.work, Some(&["refs/heads/ahead".to_owned()]), |_| {}).unwrap();
+
+    assert_eq!(result.updated.iter().map(|u| u.branch.as_str()).collect::<Vec<_>>(), ["ahead"]);
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/ahead"]), tip(&f.work, "ahead"));
+    assert_eq!(git(&remote, &["tag", "--list"]), "", "only the listed branches are sent");
+}
