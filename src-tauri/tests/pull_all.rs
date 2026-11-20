@@ -119,7 +119,9 @@ fn pull_all_leaves_a_branch_that_another_worktree_is_rebasing() {
     // During a rebase the worktree's HEAD is detached, so only the rebase state names the branch.
     let f = fixture();
     let linked = tip(&f.work, "linked");
-    let stopped = runner::exec(&f.linked, ["-c", "core.editor=true", "rebase", "--exec", "exit 1", "--root"]).unwrap();
+    // An explicit identity: CI machines have none, and the rebase would stop before it starts.
+    let identity = ["-c", "user.name=T", "-c", "user.email=t@example.invalid", "-c", "core.editor=true"];
+    let stopped = runner::exec(&f.linked, [&identity[..], &["rebase", "--exec", "exit 1", "--root"]].concat()).unwrap();
     assert!(!stopped.ok(), "the rebase stops at the failing exec");
     assert_ne!(runner::exec(&f.linked, ["symbolic-ref", "-q", "HEAD"]).unwrap().code, 0, "HEAD is detached during the rebase");
 
