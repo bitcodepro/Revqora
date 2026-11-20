@@ -321,7 +321,8 @@ export async function branchManagerProtectionSmoke({ page, check, shot, work }) 
     await shot(`82-protected-combined-${alias ? "alias" : "standard"}`);
     await submit.click();await page.waitForSelector(".modal",{state:"detached",timeout:180000});
     if(JSON.stringify((await invoke("recovery_list",{repo:root})).checkpoints.map(x=>x.id).sort())!==JSON.stringify(checkpointsBefore))throw new Error("Local deletion ignored disabled checkpoint option");
-    const deletedNotice=page.locator(".toast").filter({hasText:"Deleted local branch topic"});
+    // The standard-upstream run before this one leaves the same notice for its own topic: check the newest.
+    const deletedNotice=page.locator(".toast").filter({hasText:"Deleted local branch topic"}).last();
     await deletedNotice.getByText("Deleted without a recovery checkpoint",{exact:true}).waitFor();
     if(await deletedNotice.getByRole("button",{name:"Open recovery checkpoint",exact:true}).count())throw new Error("Deletion offered a checkpoint that was never created");
     if(git(root,"for-each-ref","--format=%(objectname)","refs/heads/topic") || git(server,"rev-parse","main")!==oid || git(server,"rev-parse","topic")!==oid || !fs.readFileSync(path.join(root,".git/index")).equals(index))throw new Error("Local-only deletion changed protected remote or index");
