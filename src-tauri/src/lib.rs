@@ -383,7 +383,9 @@ where
             let _ = app.emit("ignored-files-changed", IgnoredFilesChanged { repo: repo.clone(), report });
         }
         emit(if result.is_ok() { "finished" } else { "failed" }, 0);
-        if result.is_ok() && matches!(command, "fetch" | "fetch_background" | "fetch_more_history" | "pull" | "pull_all_branches" | "pull_request_checkout") {
+        if result.is_ok()
+            && matches!(command, "fetch" | "fetch_background" | "fetch_more_history" | "pull" | "pull_branches" | "fetch_branches" | "pull_request_checkout")
+        {
             // New commits arrived: extend Git's commit-graph in the background.
             git::optimize::schedule(&p(&repo), true);
         }
@@ -1742,15 +1744,46 @@ async fn pull(
 /// Pull all, for one repository: fetch every remote and fast-forward every branch that only
 /// lacks incoming commits. Journaled and protected as a pull.
 #[tauri::command]
-async fn pull_all_branches(
+async fn pull_branches(
     recovery_consent: Option<String>,
     expected_state: Option<String>,
     app: AppHandle,
     repo: String,
+    branches: Option<Vec<String>>,
     op_id: String,
-) -> GitResult<ops::BranchesPull> {
-    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "pull_all_branches", Some(op_id.clone()), move || {
-        git::runner::transfers::for_operation(&op_id, || ops::pull_all_branches(&p(&repo), progress(&app, &op_id)))
+) -> GitResult<ops::BranchesSync> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "pull_branches", Some(op_id.clone()), move || {
+        git::runner::transfers::for_operation(&op_id, || ops::pull_branches(&p(&repo), branches.as_deref(), progress(&app, &op_id)))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn fetch_branches(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    branches: Vec<String>,
+    op_id: String,
+) -> GitResult<ops::BranchesSync> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_branches", Some(op_id.clone()), move || {
+        git::runner::transfers::for_operation(&op_id, || ops::fetch_branches(&p(&repo), &branches, progress(&app, &op_id)))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn push_branches(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    branches: Option<Vec<String>>,
+    op_id: String,
+) -> GitResult<ops::BranchesSync> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "push_branches", Some(op_id.clone()), move || {
+        git::runner::transfers::for_operation(&op_id, || ops::push_branches(&p(&repo), branches.as_deref(), progress(&app, &op_id)))
     })
     .await
 }
@@ -3617,7 +3650,9 @@ pub fn run() {
             undo_commit,
             fetch,
             pull,
-            pull_all_branches,
+            pull_branches,
+            fetch_branches,
+            push_branches,
             push,
             push_ref,
             remote_add,

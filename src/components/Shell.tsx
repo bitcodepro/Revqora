@@ -3,7 +3,7 @@ import { OverflowToolbar } from "./ToolbarOverflow";
 import { aboutDialog } from "./AboutDialog";
 import { branchCommitCompare } from "./BranchCommitCompare";
 import { RepositoryLibraryButton, groupEditorDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
-import { fetchRepositories, pullRepositories } from "./Repositories";
+import { fetchRepositories, pullRepositories, pushRepositories, syncCurrentBranches } from "../lib/remoteSync";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { repositoryKey, uniqueRoots, useLibrary } from "../lib/repositoryLibrary";
 import { treeAncestors } from "../lib/libraryTree";
@@ -638,8 +638,12 @@ function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
     { id: "group-create", label: "Create group…", group: "Repository", icon: <FolderTree size={15} />, run: () => groupEditorDialog() },
     { id: "check-updates", label: "Check for updates", group: "App", icon: <Download size={15} />, run: checkUpdates },
     { id: "workspace-search", label: "Search all repositories", group: "History", icon: <FolderSearch size={15} />, run: () => workspaceCommitSearch("", "quick") },
-    { id: "fetch-all", label: "Fetch all repositories", group: "Remote", icon: <Download size={15} />, run: () => fetchRepositories() },
+    { id: "fetch-all", label: "Fetch all repositories", group: "Remote", icon: <Download size={15} />, run: () => void fetchRepositories() },
     { id: "pull-all", label: "Pull all repositories", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => void pullRepositories() },
+    { id: "push-all", label: "Push all repositories", group: "Remote", icon: <ArrowUpFromLine size={15} />, run: () => void pushRepositories() },
+    { id: "fetch-current", label: "Fetch all current branches", group: "Remote", icon: <Download size={15} />, run: () => void syncCurrentBranches("fetch") },
+    { id: "pull-current", label: "Pull all current branches", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => void syncCurrentBranches("pull") },
+    { id: "push-current", label: "Push all current branches", group: "Remote", icon: <ArrowUpFromLine size={15} />, run: () => void syncCurrentBranches("push") },
     ...(tab ? [{ id: "recovery-center", label: "Undo Center…", group: "Repository", icon: <ShieldCheck size={15} />, run: () => recoveryDialog(tab.root) }] : []),
     {
       id: "theme",

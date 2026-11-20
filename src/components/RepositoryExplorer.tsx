@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Loader2, Pencil, Search, Star, Trash2, Unlink, UserRound, X } from "lucide-react";
-import { defaultGroupRoots, explorerRepositoryKey, orderExplorerSiblings, repositoryKey, uniqueRoots, useLibrary, type RepositoryGroup, type RepositoryPlacement } from "../lib/repositoryLibrary";
+import { defaultGroupRoots, explorerRepositoryKey, groupRepositoryRoots, orderExplorerSiblings, repositoryKey, uniqueRoots, useLibrary, type RepositoryGroup, type RepositoryPlacement } from "../lib/repositoryLibrary";
 import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
 import { findExplorerDrop, useLibraryPointerDrag } from "../lib/libraryDrag";
 import { recordExplorerMove, useRepositoryDrag } from "../lib/explorerMoves";
@@ -18,6 +18,7 @@ import { useNavigationSelection } from "../lib/navigationSelection";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { usePanelTitleMenu, usePanelWindows } from "./PanelWindows";
 import { ExplorerBranchRow } from "./ExplorerBranchRow";
+import { branchSyncMenu, folderSyncMenu } from "./RemoteSyncMenus";
 import { deleteGroupsDialog, groupCreationMenu, groupEditorDialog, renameGroupDialog } from "./RepositoryLibrary";
 import { activateRepository, RepositoryNavigationRow } from "./RepositoryNavigationRow";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
@@ -266,6 +267,12 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     (selection.includes(entry.id)
       ? selectedRows.filter(row => row.kind === "repository") : [entry])
       .map(row => ({ root: row.root, groupId: row.parentId }));
+  /** Fetch, Pull and Push for the selected branches, when this branch is one of several. */
+  const branchSelectionMenu = (entry: ExplorerEntry): MenuItem[] => {
+    const chosen = selection.includes(entry.id) ? selectedRows.flatMap(row => row.kind === "branch" ? [row] : []) : [];
+    if (chosen.length < 2) return [];
+    return [...branchSyncMenu(chosen.map(row => ({ root: row.root, branches: [row.branch.fullName] }))), { separator: true }];
+  };
   const remove = async (ids: string[]) => { if (await deleteGroupsDialog(ids)) clearSelection(); };
   const rootMenu: MenuItem[] = [
     ...groupCreationMenu(),
@@ -274,6 +281,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const groupMenu = (group: RepositoryGroup): MenuItem[] => {
     const ids = groupIds(group.id);
     return [
+      ...folderSyncMenu(uniqueRoots(ids.flatMap(id => groupRepositoryRoots(groups, id))), ids.length),
+      { separator: true },
       ...groupCreationMenu(group),
       ...(ids.length > 1 ? [{ label: "Group selected groups", shortcut: "group-selected", icon: <FolderPlus size={14}/>,
         onClick: () => void groupEditorDialog({ children: ids, parentId: group.parentId, onCreated: clearSelection }) }] : []),
@@ -349,7 +358,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
             focused={focusedId === entry.id} selected={selection.includes(entry.id)}
             viewed={entry.root === active && !overview && (shownHistoryBranch(tabs[entry.root]) ? shownHistoryBranch(tabs[entry.root]) === reference : entry.branch.isHead)}
             historyDetached={!!panels.history} withRepository={run => branchNavigation(entry.root, run)}
-            onSelect={(event, activate) => select(event, entry, activate)}/>;
+            selectionMenu={() => branchSelectionMenu(entry)} onSelect={(event, activate) => select(event, entry, activate)}/>;
         }
         if (entry.kind === "repository") {
           const items = placements(entry);

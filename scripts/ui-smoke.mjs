@@ -98,6 +98,13 @@ async function check(name, fn) {
   }
 }
 const shot = (n) => smokeTimings.measure("activity", "screenshots", () => page.screenshot({ path: path.join(out, `${n}.png`) }));
+const runPaletteCommand = async (label) => {
+  await page.keyboard.press("Control+n");
+  await page.fill(".palette input", label);
+  await page.locator(".palette", { hasText: label }).waitFor();
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".palette", { state: "detached" });
+};
 // Poll the actual result; guarded Git transactions include checkpointing and refresh.
 const until = async (fn, msg, ms = 30000) => {
   const t = Date.now();
@@ -1333,12 +1340,14 @@ try {
     console.log(`Verified ${roster.openCount} exact loaded repositories; ${roster.closed.length} closed library bookmarks retained`);
     await page.click(".topbar button[aria-label='All repositories']");
     await page.waitForSelector(".repository-table tbody tr");
-    await page.locator(".repository-overview .repository-sync button:has-text('Fetch all')").click();
+    // Fetch all and Pull all are commands (palette, assignable shortcuts, Explorer menus), not buttons.
+    if (await page.locator(".repository-sync").count()) throw new Error("the Fetch all and Pull all buttons should be gone");
+    await runPaletteCommand("Fetch all repositories");
     // Twenty sequential fetches also refresh refs/status; allow six seconds per repo on Windows.
     await until(async () => !(await page.locator(".statusbar .busy-item").count()), "bulk fetch did not finish", 300000);
     await until(async () => (await page.locator(".repository-table tbody tr", { hasText: "batch-clean" }).innerText()).includes("1"), "incoming commits were not refreshed", 20000);
     await shot("20-repositories");
-    await page.locator(".repository-overview .repository-sync button:has-text('Pull all')").click();
+    await runPaletteCommand("Pull all repositories");
     // No dialogs: every repository is pulled and one message sums it up.
     await page.waitForSelector(".toast:has-text('Pulled ')", { timeout: 120000 });
     await until(async () => !(await page.locator(".statusbar .busy-item").count()), "bulk pull did not finish", 60000);

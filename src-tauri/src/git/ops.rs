@@ -1,6 +1,7 @@
 //! Mutating operations: staging, committing, branches, merge/rebase/cherry-pick,
 //! history rewriting, stash and remotes.
 
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -1115,13 +1116,14 @@ pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, on_line: imp
     }
 }
 
-/// What Pull all did in one repository.
+/// What Fetch, Pull or Push of several branches did in one repository.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BranchesPull {
-    /// Branches moved forward to their upstream.
+pub struct BranchesSync {
+    /// Pull: branches moved forward to their upstream. Push: branches the remote accepted.
+    /// Fetch: fetched branches that now have incoming commits.
     pub updated: Vec<BranchUpdate>,
-    /// Branches with incoming commits that were left as they are, and why.
+    /// Branches that were left as they are, and why.
     pub skipped: Vec<BranchSkip>,
 }
 
@@ -1129,7 +1131,7 @@ pub struct BranchesPull {
 #[serde(rename_all = "camelCase")]
 pub struct BranchUpdate {
     pub branch: String,
-    /// Commits the branch received.
+    /// Commits the branch received (Pull), sent (Push) or can receive (Fetch).
     pub commits: usize,
     /// The checked-out branch (its files were updated too).
     pub current: bool,
@@ -1181,8 +1183,183 @@ fn branches_in_operations(repo: &Path) -> GitResult<std::collections::HashSet<St
     Ok(busy)
 }
 
+/// One local branch with its upstream, as Fetch, Pull and Push of several branches read it.
+struct LocalBranch {
+    /// `refs/heads/…`
+    name: String,
+    oid: String,
+    /// The remote-tracking branch (`refs/remotes/…`), or empty without an upstream.
+    upstream: String,
+    /// `%(upstream:track,nobracket)`: "ahead 1, behind 2", "gone" or "".
+    track: String,
+    worktree: String,
+    /// The upstream's remote ("." for a branch that tracks another local branch).
+    remote: String,
+    /// The branch on the remote (`refs/heads/…`).
+    remote_ref: String,
+}
+
+impl LocalBranch {
+    fn short(&self) -> String {
+        self.name.strip_prefix("refs/heads/").unwrap_or(&self.name).to_owned()
+    }
+}
+
+fn local_branches(repo: &Path) -> GitResult<Vec<LocalBranch>> {
+    let format =
+        "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(worktreepath)%00%(upstream:remotename)%00%(upstream:remoteref)";
+    let listing = runner::run(repo, ["for-each-ref", format, "refs/heads"])?;
+    Ok(listing
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split('\0').collect();
+            let [name, oid, upstream, track, worktree, remote, remote_ref] = fields[..] else { return None };
+            Some(LocalBranch {
+                name: name.into(),
+                oid: oid.into(),
+                upstream: upstream.into(),
+                track: track.into(),
+                worktree: worktree.into(),
+                remote: remote.into(),
+                remote_ref: remote_ref.into(),
+            })
+        })
+        .collect())
+}
+
+/// The branches named for Fetch, Pull or Push: local ones (`refs/heads/…`, or `HEAD` for the
+/// checked-out branch) and remote-tracking ones (`refs/remotes/…`). A detached HEAD is reported.
+fn chosen_branches(repo: &Path, branches: &[String], result: &mut BranchesSync) -> GitResult<(HashSet<String>, Vec<String>)> {
+    let (mut local, mut remote) = (HashSet::new(), Vec::new());
+    for name in branches {
+        if name == "HEAD" {
+            let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
+            if head.ok() {
+                local.insert(head.text().trim().to_owned());
+            } else {
+                result.skipped.push(BranchSkip { branch: "HEAD".into(), reason: "No branch is checked out (detached HEAD).".into() });
+            }
+        } else if name.starts_with("refs/heads/") {
+            local.insert(name.clone());
+        } else if name.starts_with("refs/remotes/") {
+            remote.push(name.clone());
+        } else {
+            return Err(GitError::new(format!("Choose a branch instead of {name}.")));
+        }
+    }
+    Ok((local, remote))
+}
+
+/// Fetches only the upstreams of the chosen local branches and the chosen remote-tracking
+/// branches: one `git fetch <remote> <branches>` per remote, which also moves their
+/// remote-tracking branches. Returns the local branches whose upstream was fetched.
+fn fetch_chosen(
+    repo: &Path,
+    local: &HashSet<String>,
+    remote: &[String],
+    result: &mut BranchesSync,
+    on_line: &mut impl FnMut(&str),
+) -> GitResult<HashSet<String>> {
+    // Remote → (shown name, branch on the remote, local branch it is the upstream of).
+    let mut by_remote: BTreeMap<String, Vec<(String, String, Option<String>)>> = BTreeMap::new();
+    let branches = local_branches(repo)?;
+    for name in local {
+        let Some(branch) = branches.iter().find(|b| &b.name == name) else {
+            let shown = name.strip_prefix("refs/heads/").unwrap_or(name).to_owned();
+            result.skipped.push(BranchSkip { branch: shown, reason: "The branch no longer exists.".into() });
+            continue;
+        };
+        if branch.upstream.is_empty() || branch.remote.is_empty() || branch.remote_ref.is_empty() {
+            result.skipped.push(BranchSkip { branch: branch.short(), reason: "No upstream branch.".into() });
+        } else if branch.remote != "." {
+            by_remote.entry(branch.remote.clone()).or_default().push((branch.short(), branch.remote_ref.clone(), Some(branch.name.clone())));
+        }
+    }
+    if !remote.is_empty() {
+        let remotes = runner::run(repo, ["remote"])?;
+        for name in remote {
+            let rest = name.strip_prefix("refs/remotes/").unwrap_or(name);
+            // The longest remote name wins: "origin/team" before "origin" for "origin/team/main".
+            let owner = remotes.lines().map(str::trim).filter(|r| !r.is_empty() && rest.starts_with(&format!("{r}/"))).max_by_key(|r| r.len());
+            match owner {
+                Some(owner) if &rest[owner.len() + 1..] != "HEAD" => {
+                    let on_remote = format!("refs/heads/{}", &rest[owner.len() + 1..]);
+                    by_remote.entry(owner.to_owned()).or_default().push((rest.to_owned(), on_remote, None));
+                }
+                Some(_) => {}
+                None => result.skipped.push(BranchSkip { branch: rest.to_owned(), reason: "No remote of this repository has this branch.".into() }),
+            }
+        }
+    }
+    let mut fetched = HashSet::new();
+    for (remote, items) in by_remote {
+        super::recovery::protect_transport(repo, false, Some(&remote), None, false)?;
+        let mut refs: Vec<String> = items.iter().map(|(_, on_remote, _)| on_remote.clone()).collect();
+        refs.sort();
+        refs.dedup();
+        let missing: Vec<String> = match fetch_refs(repo, &remote, &refs, on_line) {
+            Ok(()) => Vec::new(),
+            // One deleted branch fails the whole fetch: fetch the others one by one.
+            Err(error) if missing_remote_ref(&error) => {
+                let mut missing = Vec::new();
+                for reference in &refs {
+                    match fetch_refs(repo, &remote, std::slice::from_ref(reference), on_line) {
+                        Ok(()) => {}
+                        Err(error) if missing_remote_ref(&error) => missing.push(reference.clone()),
+                        Err(error) => return Err(error),
+                    }
+                }
+                missing
+            }
+            Err(error) => return Err(error),
+        };
+        for (shown, on_remote, local) in items {
+            if missing.contains(&on_remote) {
+                result.skipped.push(BranchSkip { branch: shown, reason: format!("The branch no longer exists on {remote}.") });
+            } else if let Some(local) = local {
+                fetched.insert(local);
+            }
+        }
+    }
+    Ok(fetched)
+}
+
+fn fetch_refs(repo: &Path, remote: &str, refs: &[String], on_line: &mut impl FnMut(&str)) -> GitResult<()> {
+    let mut args = vec!["fetch".to_string(), "--progress".into(), remote.into()];
+    args.extend(refs.iter().cloned());
+    settle_fetch(repo, Some(remote), runner::run_streaming(repo, &args, &LOG_TRACKING, on_line)).map(|_| ())
+}
+
+fn missing_remote_ref(error: &GitError) -> bool {
+    error.stderr.contains("couldn't find remote ref") || error.message.contains("couldn't find remote ref")
+}
+
+/// Fetch for chosen branches (see [`chosen_branches`]): only their upstreams are fetched.
+/// `updated` lists the local branches that now have incoming commits.
+pub fn fetch_branches(repo: &Path, branches: &[String], mut on_line: impl FnMut(&str)) -> GitResult<BranchesSync> {
+    let mut result = BranchesSync::default();
+    let (local, remote) = chosen_branches(repo, branches, &mut result)?;
+    let fetched = fetch_chosen(repo, &local, &remote, &mut result, &mut on_line)?;
+    let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
+    let head = head.ok().then(|| head.text().trim().to_owned());
+    for branch in local_branches(repo)?.into_iter().filter(|b| fetched.contains(&b.name)) {
+        if let Some((_, behind)) = track_counts(&branch.track).filter(|(_, behind)| *behind > 0) {
+            let current = head.as_deref() == Some(branch.name.as_str());
+            result.updated.push(BranchUpdate { branch: branch.short(), commits: behind, current });
+        }
+    }
+    Ok(result)
+}
+
 /// Pull all for one repository: fetches every remote once, then fast-forwards every local
 /// branch that only lacks commits of its upstream. Never merges, rebases or creates a commit.
+pub fn pull_all_branches(repo: &Path, on_line: impl FnMut(&str)) -> GitResult<BranchesSync> {
+    pull_branches(repo, None, on_line)
+}
+
+/// Pull for chosen branches, or for every local branch with `None`. Fetches first (only the
+/// chosen branches' upstreams), then fast-forwards each branch that only lacks commits of its
+/// upstream. Never merges, rebases or creates a commit.
 ///
 /// Each branch moves exactly to the upstream commit that was checked: its ancestry is verified
 /// for that commit, and nothing is fetched again before the update.
@@ -1193,21 +1370,36 @@ fn branches_in_operations(repo: &Path) -> GitResult<std::collections::HashSet<St
 ///   changed meanwhile is not overwritten). A branch checked out in another worktree, or being
 ///   rebased or bisected in any worktree, is left as it is.
 /// - Diverged branches are reported, never changed.
-pub fn pull_all_branches(repo: &Path, mut on_line: impl FnMut(&str)) -> GitResult<BranchesPull> {
-    fetch(repo, None, true, &mut on_line)?;
-    let mut result = BranchesPull::default();
+pub fn pull_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl FnMut(&str)) -> GitResult<BranchesSync> {
+    let mut result = BranchesSync::default();
+    let only = match branches {
+        None => {
+            fetch(repo, None, true, &mut on_line)?;
+            None
+        }
+        Some(branches) => {
+            let (local, remote) = chosen_branches(repo, branches, &mut result)?;
+            for name in remote {
+                let branch = name.strip_prefix("refs/remotes/").unwrap_or(&name).to_owned();
+                result.skipped.push(BranchSkip { branch, reason: "A remote branch: pull the local branch that tracks it.".into() });
+            }
+            fetch_chosen(repo, &local, &[], &mut result, &mut on_line)?;
+            Some(local)
+        }
+    };
     let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
     let head = head.ok().then(|| head.text().trim().to_owned());
     let busy = branches_in_operations(repo)?;
-    let branches =
-        runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(worktreepath)", "refs/heads"])?;
     let mut current = None;
-    for line in branches.lines() {
-        let fields: Vec<&str> = line.split('\0').collect();
-        let [name, oid, upstream, track, worktree] = fields[..] else { continue };
-        let branch = name.strip_prefix("refs/heads/").unwrap_or(name).to_owned();
+    for local in local_branches(repo)? {
+        let LocalBranch { name, oid, upstream, track, worktree, .. } = &local;
+        // Branches without an upstream were reported by the fetch of chosen branches.
+        if only.as_ref().is_some_and(|only| !only.contains(name)) || upstream.is_empty() {
+            continue;
+        }
+        let branch = local.short();
         // The listing only picks candidates; every decision below uses the exact commit.
-        if upstream.is_empty() || !track_counts(track).is_some_and(|(_, behind)| behind > 0) {
+        if !track_counts(track).is_some_and(|(_, behind)| behind > 0) {
             continue;
         }
         let target = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{upstream}^{{commit}}")])?;
@@ -1224,8 +1416,8 @@ pub fn pull_all_branches(repo: &Path, mut on_line: impl FnMut(&str)) -> GitResul
             result.skipped.push(BranchSkip { branch, reason });
         } else if busy.contains(name) {
             result.skipped.push(BranchSkip { branch, reason: "A rebase or bisect in progress works on this branch. Finish or abort it first.".into() });
-        } else if head.as_deref() == Some(name) {
-            current = Some((branch, oid.to_owned(), behind, target));
+        } else if head.as_deref() == Some(name.as_str()) {
+            current = Some((branch, oid.clone(), behind, target));
         } else if !worktree.is_empty() {
             result.skipped.push(BranchSkip { branch, reason: format!("Checked out in the worktree {worktree}.") });
         } else if runner::exec(repo, ["update-ref", "-m", "pull: fast-forward (Pull all)", name, &target, oid])?.ok() {
@@ -1246,6 +1438,100 @@ pub fn pull_all_branches(repo: &Path, mut on_line: impl FnMut(&str)) -> GitResul
     Ok(result)
 }
 
+/// Push for chosen branches, or for every local branch with `None`: each branch with commits
+/// its upstream lacks goes to that upstream (one `git push` per remote, never forced). A branch
+/// whose upstream has commits it lacks is reported instead; so is a branch the remote refused.
+/// Branches without an upstream are only reported when they were chosen.
+pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl FnMut(&str)) -> GitResult<BranchesSync> {
+    let mut result = BranchesSync::default();
+    let only = match branches {
+        None => None,
+        Some(branches) => {
+            let (local, remote) = chosen_branches(repo, branches, &mut result)?;
+            for name in remote {
+                let branch = name.strip_prefix("refs/remotes/").unwrap_or(&name).to_owned();
+                result.skipped.push(BranchSkip { branch, reason: "A remote branch: push the local branch that tracks it.".into() });
+            }
+            Some(local)
+        }
+    };
+    let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
+    let head = head.ok().then(|| head.text().trim().to_owned());
+    let mut by_remote: BTreeMap<String, Vec<(LocalBranch, usize)>> = BTreeMap::new();
+    let listed = local_branches(repo)?;
+    if let Some(only) = &only {
+        for name in only.iter().filter(|name| !listed.iter().any(|b| &b.name == *name)) {
+            let branch = name.strip_prefix("refs/heads/").unwrap_or(name).to_owned();
+            result.skipped.push(BranchSkip { branch, reason: "The branch no longer exists.".into() });
+        }
+    }
+    for local in listed {
+        let chosen = match &only {
+            Some(only) if !only.contains(&local.name) => continue,
+            Some(_) => true,
+            None => false,
+        };
+        let mut skip = |reason: String| result.skipped.push(BranchSkip { branch: local.short(), reason });
+        if local.upstream.is_empty() || local.remote.is_empty() || local.remote_ref.is_empty() {
+            if chosen {
+                skip("No upstream branch. Push it on its own once to publish it.".into());
+            }
+            continue;
+        }
+        if local.remote == "." {
+            continue;
+        }
+        let Some((ahead, behind)) = track_counts(&local.track) else {
+            if chosen {
+                skip("The upstream branch was deleted on the remote.".into());
+            }
+            continue;
+        };
+        if ahead == 0 {
+            continue;
+        }
+        if behind > 0 {
+            skip(format!("Diverged: {ahead} local and {behind} incoming commits. Pull it first."));
+            continue;
+        }
+        by_remote.entry(local.remote.clone()).or_default().push((local, ahead));
+    }
+    // The checkpoint a single Push takes first, only when something will be sent: most
+    // repositories have nothing to push, and a checkpoint each would bury the list.
+    if !by_remote.is_empty() {
+        super::recovery::automatic(repo, "push_branches", false, false)?;
+    }
+    for (remote, list) in by_remote {
+        let specs: Vec<String> = list.iter().map(|(b, _)| format!("{}:{}", b.name, b.remote_ref)).collect();
+        for spec in &specs {
+            super::recovery::protect_transport(repo, true, Some(&remote), Some(spec), false)?;
+        }
+        let mut args = vec!["push".to_string(), "--progress".into(), remote.clone()];
+        args.extend(specs);
+        let error = match runner::run_streaming(repo, &args, &[], &mut on_line) {
+            Ok(_) => None,
+            Err(error) if error.kind == "cancelled" => return Err(error),
+            Err(error) => Some(error),
+        };
+        // Git moves the remote-tracking branch of every branch the remote accepted.
+        for (local, ahead) in list {
+            let tip = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &local.upstream])?;
+            if tip.ok() && tip.text().trim() == local.oid {
+                let current = head.as_deref() == Some(local.name.as_str());
+                result.updated.push(BranchUpdate { branch: local.short(), commits: ahead, current });
+                continue;
+            }
+            let reason = match &error {
+                Some(error) if error.kind == "rejected" => "The remote branch has commits this branch lacks. Pull it first.".to_owned(),
+                Some(error) => error.message.lines().find(|l| !l.trim().is_empty()).unwrap_or("The push failed.").trim().to_owned(),
+                None => "The remote branch did not move.".to_owned(),
+            };
+            result.skipped.push(BranchSkip { branch: local.short(), reason });
+        }
+    }
+    Ok(result)
+}
+
 /// Moves the checked-out branch exactly to `target`, a verified descendant of HEAD. Local
 /// changes stay where they are (they touch none of the incoming files), so nothing is stashed.
 fn fast_forward_current(repo: &Path, target: &str, on_line: &mut impl FnMut(&str)) -> GitResult<()> {
@@ -1259,7 +1545,7 @@ fn fast_forward_current(repo: &Path, target: &str, on_line: &mut impl FnMut(&str
     }
     // The recovery checkpoint a single Pull takes first, only when files will change: most
     // repositories have nothing to pull, and a checkpoint each would bury the list.
-    super::recovery::automatic(repo, "pull_all_branches", true, false)?;
+    super::recovery::automatic(repo, "pull_branches", true, false)?;
     let outcome = merge_start_with_autostash(repo, target, "ff-only", false)?;
     if !matches!(outcome.status.as_str(), "done" | "fastForward") {
         return Err(GitError::new(outcome.message));

@@ -9,6 +9,7 @@ import { repositoryMembershipMenu } from "./LibraryMenus";
 import { namePathMenu } from "./NamePathMenu";
 import { runMenuShortcut } from "./menus";
 import { AheadBehind } from "./bits";
+import { repositorySyncMenu } from "./RemoteSyncMenus";
 
 export function activateRepository(root: string) {
   if (useRepos.getState().tabs[root]) useRepos.getState().activate(root);
@@ -16,6 +17,8 @@ export function activateRepository(root: string) {
 }
 
 export const repositoryMenu = (root: string, name: string, roots: string[], groupId: string | undefined, createGroup: () => void) => [
+  ...repositorySyncMenu(roots),
+  { separator: true },
   { label: "Create group", shortcut: "group-create", icon: <FolderPlus size={14}/>, onClick: createGroup },
   ...repositoryMembershipMenu(roots, groupId),
   { label: "Rename repository…", icon: <Pencil size={14}/>, hint: prettyCombo(bindingFor("renameItem")), onClick: () => void renameRepositoryDialog(root) },

@@ -319,7 +319,10 @@ export const api = {
   pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string, pruneRemote?: boolean) =>
     call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState, pruneRemote }),
   /** Pull all for one repository: fetch every remote, fast-forward every branch behind its upstream. */
-  pullAllBranches: (repo: string, opId: string) => call<import("./types").BranchesPull>("pull_all_branches", { repo, opId }),
+  /** Branches: full ref names or "HEAD"; null for every local branch. Pull fetches their upstreams first. */
+  pullBranches: (repo: string, branches: string[] | null, opId: string) => call<import("./types").BranchesSync>("pull_branches", { repo, branches, opId }),
+  fetchBranches: (repo: string, branches: string[], opId: string) => call<import("./types").BranchesSync>("fetch_branches", { repo, branches, opId }),
+  pushBranches: (repo: string, branches: string[] | null, opId: string) => call<import("./types").BranchesSync>("push_branches", { repo, branches, opId }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
   pushRef: (repo: string, remote: string, refspec: string, opId: string, expectedState?: string | null) => call<string>("push_ref", { repo, remote, refspec, opId, expectedState }),
   remoteAdd: (repo: string, name: string, url: string) => call<void>("remote_add", { repo, name, url }),

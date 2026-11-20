@@ -1029,8 +1029,9 @@ export interface StackOutcome {phase:string;message:string;checkpoint:string}
 
 export interface SymbolHistoryPage extends CodeHistoryPage {anchor:string;scanned:number;unavailable:number;notices:string[]}
 
-/** What Pull all did in one repository. */
-export interface BranchesPull {
+/** What Fetch, Pull or Push of several branches did in one repository (`updated`: pulled, pushed,
+ *  or fetched with incoming commits). */
+export interface BranchesSync {
   updated: { branch: string; commits: number; current: boolean }[];
   skipped: { branch: string; reason: string }[];
 }

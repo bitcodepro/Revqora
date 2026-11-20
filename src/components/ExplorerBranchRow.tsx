@@ -6,7 +6,7 @@ import { repositoryKey } from "../lib/repositoryLibrary";
 import { useSettings } from "../lib/settings";
 import { matchesShortcut } from "../lib/shortcuts";
 import type { BranchInfo, RefsSnapshot } from "../lib/types";
-import { contextMenu } from "../lib/ui";
+import { contextMenu, type MenuItem } from "../lib/ui";
 import { branchKind, branchRowMenu, showBranch } from "./BranchNavigation";
 import { runMenuShortcut } from "./menus";
 import { renameRemoteBranch } from "./RemoteRename";
@@ -27,10 +27,12 @@ interface Props {
   historyDetached: boolean;
   withRepository: (run: (root: string) => void) => void;
   onSelect: (event: MouseEvent, activate: () => void) => void;
+  /** Items for the whole selection, shown first when this branch is one of several selected. */
+  selectionMenu?: () => MenuItem[];
 }
 
 export function ExplorerBranchRow({ id, root, branch, upstream, refs, depth, primary, favorite, focused, selected, viewed,
-  historyDetached, withRepository, onSelect }: Props) {
+  historyDetached, withRepository, onSelect, selectionMenu }: Props) {
   const { name, fullName, isHead } = branch;
   const kind = branchKind(branch);
   const menu = () => branchRowMenu(root, branch, upstream, historyDetached, refs, withRepository);
@@ -47,7 +49,7 @@ export function ExplorerBranchRow({ id, root, branch, upstream, refs, depth, pri
     data-explorer-entry={id} data-explorer-branch={fullName} data-branch-ref={fullName}
     style={{ "--tree-depth": Math.min(depth, 12) } as CSSProperties}
     className={["repository-item", "explorer-branch", focused && "explorer-focused", selected && "batch-selected", viewed && "active", isHead && "head"].filter(Boolean).join(" ")}
-    onContextMenu={event => contextMenu(event, menu())}>
+    onContextMenu={event => contextMenu(event, [...selectionMenu?.() ?? [], ...menu()])}>
     <span className="library-tree-spacer" aria-hidden="true"/>
     <button type="button" className="repository-select" aria-current={viewed} title={title}
       onClick={event => onSelect(event, () => withRepository(repo => showBranch(repo, branch, false, historyDetached)))}

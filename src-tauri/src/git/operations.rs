@@ -327,7 +327,7 @@ pub fn run<T: serde::Serialize>(
             "checkout"
                 | "merge_start"
                 | "pull"
-                | "pull_all_branches"
+                | "pull_branches"
                 | "rebase_onto"
                 | "interactive_rebase"
                 | "rewrite"
