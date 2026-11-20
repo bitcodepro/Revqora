@@ -4,6 +4,7 @@ import { ExternalLink, PanelTop } from "lucide-react";
 import { contextMenu, openOverlay, toast, useUi, type MenuItem } from "../lib/ui";
 import { registerUiSurface, surfaceDocument } from "../lib/uiSurfaces";
 import { installIconHints } from "../lib/iconHints";
+import { installKeyboardFocus } from "../lib/focusRing";
 import { useSettings } from "../lib/settings";
 import { useRepos } from "../lib/store";
 import { workspaceMode } from "../lib/workspaceLayouts";
@@ -144,7 +145,8 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
         doc.head.append(copy);
       }
       doc.addEventListener("contextmenu", onContext);
-      removeHints = installIconHints(doc);
+      const removeIconHints = installIconHints(doc), removeFocus = installKeyboardFocus(doc);
+      removeHints = () => { removeIconHints(); removeFocus(); };
       view.addEventListener("resize", onResize);
       setPanels(current => ({ ...current, [id]: view }));
       if (id === "explorer") useSettings.getState().set({ explorerOpen: true });

@@ -8,9 +8,11 @@ import App from "./App";
 import { restoreRepositorySession } from "./lib/restoreRepositorySession";
 import { installErrorReporting } from "./lib/errorLog";
 import { installThemeSync } from "./lib/themeApply";
+import { installKeyboardFocus } from "./lib/focusRing";
 
 installErrorReporting();
 installThemeSync();
+installKeyboardFocus();
 void restoreRepositorySession();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
