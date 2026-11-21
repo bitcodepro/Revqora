@@ -3,7 +3,7 @@ import { applyResolution, findLines, parseConflicts, resolveAll } from "./confli
 import { wordDiff } from "./worddiff";
 import { initials, relativeTime } from "./format";
 import { visibleUpdate } from "./update";
-import { autoFetchRound, createAutoFetch, failedServer, fetchRound, transientFetchFailure, urlHost } from "./autofetch";
+import { autoFetchRound, createAutoFetch, failedServer, fetchRound, REFS_CHANGED, transientFetchFailure, urlHost } from "./autofetch";
 import type { UpdateInfo } from "./types";
 
 const SAMPLE = `top
@@ -230,6 +230,43 @@ describe("background fetch", () => {
     expect(attempts).toEqual(roots);
     expect(quietFetch.failedAt("/mirror-1")).toBe("mirror.example.invalid");
     expect(quietFetch.failedAt("/repo-1")).toBe("git.example.invalid");
+  });
+
+  it("blames no server for a failure without a host when the repository fetches from several", async () => {
+    const attempts: string[] = [];
+    const timeout = { message: "Git exceeded its 90 second time limit.", kind: "git-timeout", stderr: "", code: null, details: [] };
+    const quietFetch = createAutoFetch({
+      fetch: async root => { attempts.push(root); if (root.startsWith("/two-servers")) throw timeout; return { refsChanged: false }; },
+      refresh: async () => {},
+      busy: () => false,
+      log: () => {},
+      serverOf: () => "git.example.invalid",
+      serversOf: root => root.startsWith("/two-servers") ? ["git.example.invalid", "mirror.example.invalid"] : ["git.example.invalid"],
+    });
+    const roots = ["/two-servers-1", "/two-servers-2", "/two-servers-3", "/repo-1", "/repo-2"];
+    await autoFetchRound(roots, quietFetch, () => true, () => true, 1);
+    expect(attempts).toEqual(roots);
+    expect(quietFetch.failedAt("/two-servers-1")).toBe(false);
+  });
+
+  it("shows what a fetch brought although one remote failed", async () => {
+    const refreshed: boolean[] = [];
+    const failed: string[] = [];
+    const partly = { message: "error: could not fetch mirror", kind: "error", stderr: "", code: 1, details: [REFS_CHANGED] };
+    const quietFetch = createAutoFetch({
+      fetch: async () => { throw partly; },
+      refresh: async (_root, changed) => { refreshed.push(changed); },
+      failed: (_root, e) => failed.push((e as { message: string }).message),
+      busy: () => false,
+      log: () => {},
+    });
+    expect(await quietFetch("/repo")).toBe("failed");
+    expect(refreshed).toEqual([true]);
+    expect(failed).toEqual([partly.message]);
+    // Without moved refs nothing is read again.
+    const quiet = createAutoFetch({ fetch: async () => { throw { ...partly, details: [] }; }, refresh: async (_root, changed) => { refreshed.push(changed); }, busy: () => false, log: () => {} });
+    expect(await quiet("/other")).toBe("failed");
+    expect(refreshed).toEqual([true]);
   });
 
   it("does not take a refused sign-in or permission for the network", async () => {

@@ -289,6 +289,7 @@ const quietFetch = createAutoFetch({
     const remote = remotes.find(r => r.name === "origin") ?? remotes[0];
     return remote ? urlHost(remote.fetchUrl) : null;
   },
+  serversOf: root => [...new Set((useRepos.getState().tabs[root]?.refs?.remotes ?? []).map(r => urlHost(r.fetchUrl)).filter((host): host is string => !!host))],
   // Other background fetches of the same round do not count as the user's work.
   busy: () => useUi.getState().busy.length > 0 || useUi.getState().repositoryOperations.some(op => op.command !== "fetch_background")
     || Object.values(useRepos.getState().tabs).some((t) => t.pendingMutations > 0),

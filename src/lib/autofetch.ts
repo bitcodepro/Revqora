@@ -9,12 +9,17 @@ export interface AutoFetchDeps {
   failed?: (root: string, error: unknown) => void;
   /** The server a repository fetches from, when known (an open repository's remotes). */
   serverOf?: (root: string) => string | null;
+  /** Every server a repository's fetch asks (one per remote host), when known. */
+  serversOf?: (root: string) => string[];
   /** Writes a failure to the error log (tests replace it). */
   log?: (root: string, error: unknown) => void;
 }
 
 /** What one automatic fetch of a repository did. */
 export type AutoFetchResult = "fetched" | "skipped" | "transient" | "failed";
+
+/** Detail of a failed fetch that still moved refs (`REFS_CHANGED_DETAIL` in ops.rs). */
+export const REFS_CHANGED = "refs-changed=true";
 
 /** Failures in a row before a network problem of one repository goes to the error log. */
 export const LOG_AFTER_FAILURES = 3;
@@ -85,7 +90,11 @@ export function createAutoFetch(deps: AutoFetchDeps) {
     } catch (e) {
       // The repository was busy with another operation: not a failure, try at the next interval.
       if (isGitError(e) && e.kind === "repository-busy") return "skipped";
+      // One remote failed after others were fetched: what came in is shown. Started before
+      // `failed`, which then shows the error.
+      const partly = isGitError(e) && e.details.includes(REFS_CHANGED) ? deps.refresh(root, true).catch(() => {}) : null;
       deps.failed?.(root, e);
+      await partly;
       const server = failedServer(e);
       if (server) {
         servers.set(root, server);
@@ -115,8 +124,14 @@ export function createAutoFetch(deps: AutoFetchDeps) {
   /** The server `root` fetches from, if known. */
   const server = (root: string) => deps.serverOf?.(root) ?? servers.get(root) ?? null;
   /** The server the last failed fetch of `root` could not reach: the one Git named, else the one
-   *  `root` fetches from. A failure on a mirror counts for the mirror's server, not for origin's. */
-  const failedAt = (root: string) => named.get(root) ?? server(root);
+   *  `root` fetches from. A failure on a mirror counts for the mirror's server, not for origin's.
+   *  False: Git named none and the fetch asked several servers, so none can be blamed. */
+  const failedAt = (root: string): string | null | false => {
+    const name = named.get(root);
+    if (name) return name;
+    if ((deps.serversOf?.(root).length ?? 0) > 1) return false;
+    return server(root);
+  };
   return Object.assign(quietFetch, { server, failedAt });
 }
 
@@ -131,7 +146,7 @@ export const SERVER_FAILURES_PER_ROUND = 2;
  */
 export async function autoFetchRound(
   roots: string[],
-  quietFetch: ((root: string) => Promise<AutoFetchResult>) & { server: (root: string) => string | null; failedAt?: (root: string) => string | null },
+  quietFetch: ((root: string) => Promise<AutoFetchResult>) & { server: (root: string) => string | null; failedAt?: (root: string) => string | null | false },
   eligible: (root: string) => boolean,
   current: () => boolean,
   parallel: number,
@@ -143,6 +158,9 @@ export async function autoFetchRound(
     if (!eligible(root) || down(quietFetch.server(root))) return;
     if (await quietFetch(root) !== "transient") return;
     const server = (quietFetch.failedAt ?? quietFetch.server)(root);
+    // Several servers and Git named none: it counts for no server, and is no sign that the
+    // connection is down either.
+    if (server === false) return;
     if (server) failedServers.set(server, (failedServers.get(server) ?? 0) + 1);
     else unknown++;
   }, () => current() && unknown < SERVER_FAILURES_PER_ROUND, parallel);

@@ -277,7 +277,7 @@ fn error_reason(code: &str) -> (&'static str, bool) {
 /// One message from the client, or a message too large to read, already skipped.
 enum Incoming {
     Line(Vec<u8>),
-    /// The id when the message starts with it (see [`leading_id`]), otherwise null.
+    /// The message's own id (see [`IdScan`]), otherwise null.
     Oversized(Value),
     End,
 }
@@ -290,7 +290,8 @@ fn next_message(reader: &mut impl BufRead, limit: usize) -> io::Result<Incoming>
         return Ok(Incoming::End);
     }
     if line.len() > limit {
-        let id = leading_id(&line);
+        let mut scan = IdScan::default();
+        scan.feed(&line);
         if line.last() != Some(&b'\n') {
             loop {
                 let buffer = reader.fill_buf()?;
@@ -299,17 +300,19 @@ fn next_message(reader: &mut impl BufRead, limit: usize) -> io::Result<Incoming>
                 }
                 match buffer.iter().position(|byte| *byte == b'\n') {
                     Some(end) => {
+                        scan.feed(&buffer[..end]);
                         reader.consume(end + 1);
                         break;
                     }
                     None => {
                         let read = buffer.len();
+                        scan.feed(buffer);
                         reader.consume(read);
                     }
                 }
             }
         }
-        return Ok(Incoming::Oversized(id));
+        return Ok(Incoming::Oversized(scan.id()));
     }
     if line.last() != Some(&b'\n') {
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Incomplete MCP message."));
@@ -317,59 +320,131 @@ fn next_message(reader: &mut impl BufRead, limit: usize) -> io::Result<Incoming>
     Ok(Incoming::Line(line))
 }
 
-/// The request id of a message cut short, when it is certain: one of the first members of the
-/// top-level object, after members whose values are plain strings, numbers, booleans or null.
-/// Clients write `{"jsonrpc":"2.0","id":…`; anything else gets a null id.
-fn leading_id(prefix: &[u8]) -> Value {
-    let mut at = 0;
-    let skip = |at: &mut usize| {
-        while prefix.get(*at).is_some_and(u8::is_ascii_whitespace) {
-            *at += 1;
-        }
-    };
-    // A string without escapes, or a number or literal: its bytes and whether it was a string.
-    let scalar = |at: &mut usize| -> Option<(&[u8], bool)> {
-        if prefix.get(*at) == Some(&b'"') {
-            let start = *at + 1;
-            let end = start + prefix.get(start..)?.iter().take(256).position(|b| *b == b'"' || *b == b'\\')?;
-            if prefix[end] != b'"' {
-                return None;
+/// Finds the `id` of a JSON-RPC message read in pieces, without keeping the message: the member
+/// `id` of the top-level object, wherever it is (clients may write it after `params`), when its
+/// value is a string without escapes or an integer. An `id` inside `params` is not it.
+#[derive(Default)]
+struct IdScan {
+    depth: usize,
+    started: bool,
+    done: bool,
+    in_string: bool,
+    escaped: bool,
+    /// The string being read at the top level, up to 256 bytes (None: longer, or escaped).
+    text: Option<Vec<u8>>,
+    /// The last string read at the top level, until a `:` makes it a key.
+    key: Option<Vec<u8>>,
+    /// After `"id":`, until its value.
+    want_id: bool,
+    /// The digits of an unquoted id being read.
+    number: Option<Vec<u8>>,
+    id: Option<Value>,
+}
+
+impl IdScan {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if self.done {
+                return;
             }
-            *at = end + 1;
-            return Some((&prefix[start..end], true));
+            self.step(byte);
         }
-        let start = *at;
-        while prefix.get(*at).is_some_and(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'+' | b'.')) && *at - start < 32 {
-            *at += 1;
-        }
-        (*at > start).then(|| (&prefix[start..*at], false))
-    };
-    skip(&mut at);
-    if prefix.get(at) != Some(&b'{') {
-        return Value::Null;
     }
-    at += 1;
-    for _ in 0..4 {
-        skip(&mut at);
-        let Some((key, true)) = scalar(&mut at) else { return Value::Null };
-        skip(&mut at);
-        if prefix.get(at) != Some(&b':') {
-            return Value::Null;
+
+    fn step(&mut self, byte: u8) {
+        if self.in_string {
+            if self.escaped {
+                self.escaped = false;
+            } else if byte == b'\\' {
+                self.escaped = true;
+                self.text = None;
+            } else if byte == b'"' {
+                self.in_string = false;
+                let text = self.text.take();
+                if self.depth == 1 {
+                    if self.want_id {
+                        self.want_id = false;
+                        self.found(text.map(|text| Value::String(String::from_utf8_lossy(&text).into_owned())));
+                    } else {
+                        self.key = text;
+                    }
+                }
+            } else if let Some(text) = &mut self.text {
+                if text.len() < 256 {
+                    text.push(byte);
+                } else {
+                    self.text = None;
+                }
+            }
+            return;
         }
-        at += 1;
-        skip(&mut at);
-        let Some((value, quoted)) = scalar(&mut at) else { return Value::Null };
-        if key == b"id" {
-            let text = String::from_utf8_lossy(value).into_owned();
-            return if quoted { Value::String(text) } else { text.parse::<i64>().map(Value::from).unwrap_or(Value::Null) };
+        if let Some(number) = &mut self.number {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'+' | b'.') {
+                if number.len() < 32 {
+                    number.push(byte);
+                }
+                return;
+            }
+            let number = self.number.take().unwrap_or_default();
+            self.found(String::from_utf8_lossy(&number).parse::<i64>().ok().map(Value::from));
+            if self.done {
+                return;
+            }
         }
-        skip(&mut at);
-        if prefix.get(at) != Some(&b',') {
-            return Value::Null;
+        match byte {
+            b' ' | b'\t' | b'\r' | b'\n' => {}
+            _ if !self.started => {
+                self.started = true;
+                if byte == b'{' {
+                    self.depth = 1;
+                } else {
+                    self.done = true;
+                }
+            }
+            b'"' => {
+                self.in_string = true;
+                self.text = (self.depth == 1).then(Vec::new);
+            }
+            b'{' | b'[' => {
+                // An object or a list is no id.
+                if self.depth == 1 && self.want_id {
+                    self.want_id = false;
+                }
+                self.depth += 1;
+            }
+            b'}' | b']' => {
+                self.depth = self.depth.saturating_sub(1);
+                if self.depth == 0 {
+                    self.done = true;
+                }
+            }
+            b':' if self.depth == 1 => self.want_id = self.key.take().is_some_and(|key| key == b"id"),
+            b',' if self.depth == 1 => {
+                self.key = None;
+                self.want_id = false;
+            }
+            _ if self.depth == 1 && self.want_id => {
+                self.want_id = false;
+                self.number = Some(vec![byte]);
+            }
+            _ => {}
         }
-        at += 1;
     }
-    Value::Null
+
+    /// The first top-level `id` counts; a value that is no string or integer gives none.
+    fn found(&mut self, id: Option<Value>) {
+        if self.id.is_none() {
+            self.id = Some(id.unwrap_or(Value::Null));
+        }
+        self.done = true;
+    }
+
+    fn id(mut self) -> Value {
+        if let Some(number) = self.number.take() {
+            self.found(String::from_utf8_lossy(&number).parse::<i64>().ok().map(Value::from));
+        }
+        self.id.unwrap_or(Value::Null)
+    }
 }
 
 fn run(reader: &mut impl BufRead, writer: &mut impl Write, app_version: &str, dispatch: impl Fn(&ToolCall) -> super::Reply) -> io::Result<()> {
@@ -464,6 +539,8 @@ mod tests {
             ),
             format!(r#"{{"jsonrpc":"2.0", "id" : "seven","method":"tools/call","params":{{"q":"{big}"}}}}"#),
             format!(r#"{{"method":"tools/call","params":{{"id":3,"q":"{big}"}},"id":8}}"#),
+            format!(r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"id":4,"list":[{{"id":5}}],"q":"{big}"}}}}"#),
+            format!(r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"q":"say \"id\": 6 {big}"}},"id" : "late"}}"#),
             json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"list_repositories"}}).to_string(),
         ]
         .join("\n")
@@ -472,14 +549,18 @@ mod tests {
         run(&mut input.as_bytes(), &mut output, "9.8.7", |_| Ok(json!({"active":"fixture"}))).unwrap();
         let responses: Vec<Value> =
             output.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()).map(|line| serde_json::from_slice(line).unwrap()).collect();
-        assert_eq!(responses.len(), 5);
+        assert_eq!(responses.len(), 7);
         assert_eq!(responses[1]["id"], 7);
         assert_eq!(responses[1]["error"]["code"], -32600);
         assert_eq!(responses[2]["id"], "seven");
-        // `id` only inside params, before the real one: not trusted.
-        assert_eq!(responses[3]["id"], Value::Null);
-        assert_eq!(responses[4]["id"], 9);
-        assert_eq!(responses[4]["result"]["isError"], false);
+        // The message's own id, after params, not the one inside them.
+        assert_eq!(responses[3]["id"], 8);
+        // Ids only inside params: the message has none.
+        assert_eq!(responses[4]["id"], Value::Null);
+        // After params that hold "id" in their text.
+        assert_eq!(responses[5]["id"], "late");
+        assert_eq!(responses[6]["id"], 9);
+        assert_eq!(responses[6]["result"]["isError"], false);
     }
 
     #[test]

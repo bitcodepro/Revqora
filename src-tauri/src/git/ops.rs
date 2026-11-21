@@ -862,10 +862,24 @@ pub fn fetch_background(repo: &Path) -> GitResult<BackgroundFetch> {
     let before = super::operations::state_cache::current_refs(repo).ok();
     // A stalled transfer ends sooner (GIT_HTTP_LOW_SPEED_*, ssh ConnectTimeout); the limit only
     // stops a fetch that keeps going too long, so a large one over a slow link can finish.
-    let output = fetch_background_with_deadline(repo, std::time::Duration::from_secs(90))?;
+    let fetched = fetch_background_with_deadline(repo, std::time::Duration::from_secs(90));
     let after = super::operations::state_cache::current_refs(repo).ok();
-    Ok(BackgroundFetch { output, refs_changed: before.is_none() || before != after })
+    let refs_changed = before.is_none() || before != after;
+    match fetched {
+        Ok(output) => Ok(BackgroundFetch { output, refs_changed }),
+        // `fetch --all` fails when one remote fails, after it fetched the others: what came in
+        // is still shown (incoming counts, branches).
+        Err(mut error) => {
+            if refs_changed {
+                error.details.push(REFS_CHANGED_DETAIL.into());
+            }
+            Err(error)
+        }
+    }
 }
+
+/// Detail of a failed background fetch that still moved refs (the UI reads them again).
+pub const REFS_CHANGED_DETAIL: &str = "refs-changed=true";
 
 /// [`fetch_background`] with its time limit (tests use a short one).
 pub fn fetch_background_with_deadline(repo: &Path, timeout: std::time::Duration) -> GitResult<String> {
@@ -1220,9 +1234,8 @@ impl RawLineEndings {
 
     /// Opens `file` so that, until the handle is closed, no other program can open it to read or
     /// write (Windows); it may only be deleted or renamed, so an editor that saves by replacing
-    /// the file keeps its own copy. Elsewhere the file is read and written through this one
-    /// handle, right after another. `wait`: another program that has the file open is waited
-    /// for, up to 2 seconds.
+    /// the file keeps its own copy. Elsewhere a plain open. `wait`: another program that has the
+    /// file open is waited for, up to 2 seconds.
     fn held(file: &Path, options: &std::fs::OpenOptions, wait: bool) -> std::io::Result<std::fs::File> {
         #[cfg_attr(not(windows), allow(unused_mut))]
         let mut options = options.clone();
@@ -1245,43 +1258,151 @@ impl RawLineEndings {
         }
     }
 
-    /// Takes the marked block out of the file as it is now: lines other tools or the user wrote
-    /// while the pull ran are kept. Bytes, so a file in any encoding survives. Read, changed and
-    /// written while held, so nothing written meanwhile is lost.
-    fn remove_block(file: &Path, created: bool) -> std::io::Result<()> {
+    /// Puts what `change` makes of `file`'s content in its place, so that nothing another
+    /// program writes meanwhile is lost. False: the file was left as it is.
+    ///
+    /// Windows: the file is read and written while [held](Self::held).
+    #[cfg(windows)]
+    fn rewrite(file: &Path, wait: bool, change: impl FnOnce(&[u8]) -> Rewrite) -> std::io::Result<bool> {
         use std::io::{Read, Seek, Write};
-        let mut handle = match Self::held(file, std::fs::OpenOptions::new().read(true).write(true), true) {
-            Ok(handle) => handle,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        let mut text = Vec::new();
-        handle.read_to_end(&mut text)?;
-        let (begin, end) = (RAW_BEGIN.as_bytes(), RAW_END.as_bytes());
-        let bare = |line: &[u8]| line.trim_ascii_end().to_vec();
-        if !text.split(|b| *b == b'\n').any(|line| bare(line) == begin) {
-            return Ok(());
-        }
-        let mut kept = Vec::with_capacity(text.len());
-        let mut inside = false;
-        for line in text.split_inclusive(|b| *b == b'\n') {
-            let line_bare = bare(line);
-            if line_bare == begin {
-                inside = true;
-            } else if inside && line_bare == end {
-                inside = false;
-            } else if !inside {
-                kept.extend_from_slice(line);
+        let mut handle = Self::held(file, std::fs::OpenOptions::new().read(true).write(true), wait)?;
+        let mut now = Vec::new();
+        handle.read_to_end(&mut now)?;
+        match change(&now) {
+            Rewrite::Keep => Ok(false),
+            Rewrite::With(bytes) => {
+                handle.seek(std::io::SeekFrom::Start(0))?;
+                handle.write_all(&bytes)?;
+                handle.set_len(bytes.len() as u64)?;
+                Ok(true)
+            }
+            Rewrite::Remove => {
+                handle.set_len(0)?;
+                // Still held, so nothing else was written; an empty file left behind changes nothing.
+                let _ = std::fs::remove_file(file);
+                Ok(true)
             }
         }
-        handle.set_len(0)?;
-        handle.seek(std::io::SeekFrom::Start(0))?;
-        handle.write_all(&kept)?;
-        if created && kept.iter().all(u8::is_ascii_whitespace) {
-            // Still held, so nothing else was written; an empty file left behind changes nothing.
-            let _ = std::fs::remove_file(file);
+    }
+
+    /// Linux and macOS cannot keep other programs out of a file, so it is moved aside first, in
+    /// one rename: a program that writes the file by name from then on creates a new one there,
+    /// and that file is never replaced. The new content is put only where no file is (a hard
+    /// link). The moved file is dropped only when nothing wrote to it while it was read; else it
+    /// stays beside the file, named in the error. Git's own checkout also replaces files, so a
+    /// program that keeps the old file open loses no more than it would to Git.
+    #[cfg(not(windows))]
+    fn rewrite(file: &Path, _wait: bool, change: impl FnOnce(&[u8]) -> Rewrite) -> std::io::Result<bool> {
+        use std::os::unix::fs::MetadataExt;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let sibling = |what: &str| file.with_file_name(format!(".{name}.revqora-{what}-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        // Where no file is now; a file someone wrote meanwhile stays, and ours is kept beside it.
+        let put_back = |from: &Path| -> std::io::Result<()> {
+            match place(from, file) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let kept = file.with_file_name(format!("{name}.revqora-kept-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+                    std::fs::rename(from, &kept)?;
+                    Err(std::io::Error::other(format!("another program wrote {name} meanwhile; the other version is kept as {}", kept.display())))
+                }
+                Err(e) => Err(e),
+            }
+        };
+        let aside = sibling("pull");
+        std::fs::rename(file, &aside)?;
+        let read = std::fs::metadata(&aside).and_then(|before| std::fs::read(&aside).map(|now| (before, now)));
+        let (before, now) = match read {
+            Ok(read) => read,
+            Err(e) => {
+                put_back(&aside)?;
+                return Err(e);
+            }
+        };
+        let untouched = || {
+            std::fs::metadata(&aside)
+                .is_ok_and(|m| m.ino() == before.ino() && m.len() == before.len() && m.mtime() == before.mtime() && m.mtime_nsec() == before.mtime_nsec())
+        };
+        match change(&now) {
+            Rewrite::Keep => put_back(&aside).map(|()| false),
+            Rewrite::Remove if untouched() => std::fs::remove_file(&aside).map(|()| true),
+            Rewrite::Remove => put_back(&aside).map(|()| false),
+            Rewrite::With(bytes) => {
+                let new = sibling("new");
+                if let Err(e) = std::fs::write(&new, &bytes).and_then(|()| std::fs::set_permissions(&new, before.permissions())) {
+                    let _ = std::fs::remove_file(&new);
+                    put_back(&aside)?;
+                    return Err(e);
+                }
+                if !untouched() {
+                    let _ = std::fs::remove_file(&new);
+                    return put_back(&aside).map(|()| false);
+                }
+                let placed = match place(&new, file) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&new);
+                        if e.kind() != std::io::ErrorKind::AlreadyExists {
+                            put_back(&aside)?;
+                            return Err(e);
+                        }
+                        // Written by name meanwhile: that file stays.
+                        false
+                    }
+                };
+                if untouched() {
+                    std::fs::remove_file(&aside)?;
+                    Ok(placed)
+                } else {
+                    let kept = file.with_file_name(format!("{name}.revqora-kept-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+                    std::fs::rename(&aside, &kept)?;
+                    Err(std::io::Error::other(format!("another program wrote {name} meanwhile; that version is kept as {}", kept.display())))
+                }
+            }
         }
-        Ok(())
+    }
+
+    /// Takes the marked block out of the file as it is now: lines other tools or the user wrote
+    /// while the pull ran are kept. Bytes, so a file in any encoding survives. Changed with
+    /// [`rewrite`](Self::rewrite), so nothing written meanwhile is lost.
+    fn remove_block(file: &Path, created: bool) -> std::io::Result<()> {
+        let (begin, end) = (RAW_BEGIN.as_bytes(), RAW_END.as_bytes());
+        let bare = |line: &[u8]| line.trim_ascii_end().to_vec();
+        let marked = |text: &[u8]| text.split(|b| *b == b'\n').any(|line| bare(line) == begin);
+        // Most pulls find no block: the file is only read.
+        match std::fs::read(file) {
+            Ok(text) if !marked(&text) => return Ok(()),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        }
+        let removed = Self::rewrite(file, true, |text| {
+            if !marked(text) {
+                return Rewrite::Keep;
+            }
+            let mut kept = Vec::with_capacity(text.len());
+            let mut inside = false;
+            for line in text.split_inclusive(|b| *b == b'\n') {
+                let line_bare = bare(line);
+                if line_bare == begin {
+                    inside = true;
+                } else if inside && line_bare == end {
+                    inside = false;
+                } else if !inside {
+                    kept.extend_from_slice(line);
+                }
+            }
+            if created && kept.iter().all(u8::is_ascii_whitespace) {
+                Rewrite::Remove
+            } else {
+                Rewrite::With(kept)
+            }
+        });
+        match removed {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other.map(|_| ()),
+        }
     }
 
     fn apply(repo: &Path, paths: Vec<(String, String)>) -> GitResult<Option<RawLineEndings>> {
@@ -1325,24 +1446,19 @@ impl RawLineEndings {
             ));
         }
         match Self::reconvert(repo, &self.paths) {
-            Ok(busy) if busy.is_empty() => None,
-            Ok(busy) => Some(format!(
-                "Another program had {} open, so the pull left {} with the line endings stored in Git. Git may show {} as modified; Discard writes {} with your line-ending rules.",
-                busy.join(", "),
-                if busy.len() == 1 { "it" } else { "them" },
-                if busy.len() == 1 { "it" } else { "them" },
-                if busy.len() == 1 { "it" } else { "them" }
-            )),
+            Ok(left) if left.is_empty() => None,
+            Ok(left) => Some(left.join("\n")),
             Err(e) => Some(format!(
-                "The line endings of files the pull wrote could not be restored: {}. Git may show them as modified; Discard writes them with your line-ending rules.",
+                "The line endings of files the pull wrote could not be restored: {}. Their content is the incoming version; only their line endings may differ from your rules.",
                 e.message
             )),
         }
     }
 
     /// Writes, with the line-ending rules, each changed file that is still byte for byte what the
-    /// pull wrote. Each file is checked and written while held, so an edit saved meanwhile is
-    /// never overwritten. Returns the files another program had open (left as they are).
+    /// pull wrote, a few at a time. Each file is checked and written with
+    /// [`rewrite`](Self::rewrite), so an edit saved meanwhile is never overwritten. Returns what
+    /// was left as it is, to report.
     fn reconvert(repo: &Path, paths: &[(String, String)]) -> GitResult<Vec<String>> {
         let before: std::collections::HashMap<&str, &str> = paths.iter().map(|(path, blob)| (path.as_str(), blob.as_str())).collect();
         let mut args = vec!["ls-files", "--stage", "-z", "--"];
@@ -1370,84 +1486,285 @@ impl RawLineEndings {
         if changed.is_empty() {
             return Ok(Vec::new());
         }
-        // Each new blob as stored (what the pull wrote) and as the rules check it out. The
-        // converted ones one by one: in batch mode Git prints the size before conversion.
-        let stored: String = changed.iter().map(|(_, blob)| format!("{blob}\n")).collect();
-        let (stored, converted) = super::operations::both(
-            repo,
-            || runner::exec_full(repo, ["cat-file", "--batch"], &[], Some(stored.as_bytes())),
-            || {
-                super::operations::each(repo, changed.iter().collect(), |(path, blob)| {
-                    let out = runner::exec(repo, ["cat-file", "--filters", &format!("--path={path}"), blob.as_str()]).ok()?;
-                    out.ok().then_some(out.stdout)
-                })
-            },
-        );
-        let stored = stored?;
-        if !stored.ok() {
+        // Large files keep the line endings Git wrote: two versions of each are held in memory.
+        let sizes: String = changed.iter().map(|(_, blob)| format!("{blob}\n")).collect();
+        let sizes = runner::exec_full(repo, ["cat-file", "--batch-check=%(objectsize)"], &[], Some(sizes.as_bytes()))?;
+        if !sizes.ok() {
             return Ok(Vec::new());
         }
-        let stored = batch_contents(&stored.stdout);
+        let sizes: Vec<Option<u64>> = sizes.text().lines().map(|line| line.trim().parse().ok()).collect();
+        let mut large = Vec::new();
+        // A few files and a few megabytes at a time.
+        let mut batches: Vec<Vec<(String, String)>> = Vec::new();
+        let mut bytes = 0;
+        for (entry, size) in changed.into_iter().zip(sizes) {
+            match size {
+                Some(size) if size > RECONVERT_MAX_BYTES => large.push(entry.0),
+                Some(size) => {
+                    let full = batches.last().is_none_or(|batch| batch.len() >= RECONVERT_BATCH || bytes + size > RECONVERT_MAX_BYTES);
+                    if full {
+                        batches.push(Vec::new());
+                        bytes = 0;
+                    }
+                    bytes += size;
+                    batches.last_mut().expect("just pushed").push(entry);
+                }
+                None => {}
+            }
+        }
         let mut busy = Vec::new();
         let mut written: Vec<(&str, &str)> = Vec::new();
-        for (((path, blob), stored), converted) in changed.iter().zip(stored).zip(converted) {
-            let (Some(stored), Some(converted)) = (stored, converted) else { continue };
-            if stored == converted {
+        for batch in &batches {
+            // Each new blob as stored (what the pull wrote) and as the rules check it out. The
+            // converted ones one by one: in batch mode Git prints the size before conversion.
+            let stored: String = batch.iter().map(|(_, blob)| format!("{blob}\n")).collect();
+            let (stored, converted) = super::operations::both(
+                repo,
+                || runner::exec_full(repo, ["cat-file", "--batch"], &[], Some(stored.as_bytes())),
+                || {
+                    super::operations::each(repo, batch.iter().collect(), |(path, blob)| {
+                        let out = runner::exec(repo, ["cat-file", "--filters", &format!("--path={path}"), blob.as_str()]).ok()?;
+                        out.ok().then_some(out.stdout)
+                    })
+                },
+            );
+            let stored = stored?;
+            if !stored.ok() {
                 continue;
             }
-            match Self::rewrite_if_unchanged(&repo.join(path), &stored, &converted) {
-                Ok(true) => written.push((path.as_str(), blob.as_str())),
-                Ok(false) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => busy.push(path.clone()),
-            }
-        }
-        if !written.is_empty() {
-            Self::record_written(repo, &written)?;
-        }
-        Ok(busy)
-    }
-
-    /// The index learns the files' new size and time: Git takes a file whose size changed for
-    /// modified without reading it (a refresh does not help). Git adds them again, which gives
-    /// the same blob; a file edited since then gets its entry back, so the edit is not staged.
-    fn record_written(repo: &Path, written: &[(&str, &str)]) -> GitResult<()> {
-        let input: String = written.iter().map(|(path, _)| format!("{path}\0")).collect();
-        runner::exec_full(repo, ["update-index", "-z", "--stdin"], &[], Some(input.as_bytes()))?;
-        let mut args = vec!["ls-files", "--stage", "-z", "--"];
-        args.extend(written.iter().map(|(path, _)| *path));
-        let listed = runner::exec(repo, &args)?;
-        let expected: HashMap<&str, &str> = written.iter().copied().collect();
-        let mut back = String::new();
-        for entry in runner::split_nul(&listed.text()) {
-            let Some((meta, path)) = entry.split_once('\t') else { continue };
-            let meta: Vec<&str> = meta.split(' ').collect();
-            if let (Some(mode), Some(blob), Some(want)) = (meta.first(), meta.get(1), expected.get(path)) {
-                if blob != want {
-                    back.push_str(&format!("{mode} {want}\t{path}\0"));
+            for (((path, blob), stored), converted) in batch.iter().zip(batch_contents(&stored.stdout)).zip(converted) {
+                let (Some(stored), Some(converted)) = (stored, converted) else { continue };
+                if stored == converted {
+                    continue;
+                }
+                let file = repo.join(path);
+                // A file of another size was edited since: not even opened.
+                if std::fs::metadata(&file).map(|m| m.len()).ok() != Some(stored.len() as u64) {
+                    continue;
+                }
+                let rewritten = Self::rewrite(&file, false, |now| if now == stored.as_slice() { Rewrite::With(converted) } else { Rewrite::Keep });
+                match rewritten {
+                    Ok(true) => written.push((path.as_str(), blob.as_str())),
+                    Ok(false) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => busy.push(format!("{path} ({e})")),
                 }
             }
         }
-        if !back.is_empty() {
-            runner::exec_full(repo, ["update-index", "-z", "--index-info"], &[], Some(back.as_bytes()))?;
+        let mut left = Vec::new();
+        if !written.is_empty() {
+            if let Err(e) = Self::record_written(repo, &written) {
+                left.push(format!(
+                    "The files the pull wrote got your line endings, but the index could not be updated ({}). Git may show them as modified until the next status refresh; their content is the incoming version.",
+                    e.message
+                ));
+            }
         }
-        Ok(())
+        if !busy.is_empty() {
+            left.push(format!(
+                "These files keep the line endings stored in Git, because another program had them open or wrote them meanwhile; their content is the incoming version: {}.",
+                busy.join(", ")
+            ));
+        }
+        if !large.is_empty() {
+            left.push(format!(
+                "These files are larger than {} MB and keep the line endings stored in Git; their content is the incoming version: {}.",
+                RECONVERT_MAX_BYTES >> 20,
+                large.join(", ")
+            ));
+        }
+        Ok(left)
     }
 
-    /// While held: when the file is still `stored`, writes `converted` in its place. False when
-    /// it was edited since.
-    fn rewrite_if_unchanged(file: &Path, stored: &[u8], converted: &[u8]) -> std::io::Result<bool> {
-        use std::io::{Read, Seek, Write};
-        let mut handle = Self::held(file, std::fs::OpenOptions::new().read(true).write(true), false)?;
-        let mut now = Vec::with_capacity(stored.len());
-        handle.read_to_end(&mut now)?;
-        if now != stored {
-            return Ok(false);
+    /// The index learns the new size and time of the files it rewrote: Git takes a file whose
+    /// size changed for modified without reading it, and a refresh does not help. Done under
+    /// Git's own index lock, on a private copy of the index that replaces it only when every
+    /// step worked: no other Git command writes the index meanwhile, so the user's staging stays
+    /// as it is. An entry is only changed when it still holds the blob the pull wrote, and only
+    /// its recorded size and time: set to nothing, then refreshed, which reads the file. A file
+    /// edited since stays modified, and its edit is never staged.
+    fn record_written(repo: &Path, written: &[(&str, &str)]) -> GitResult<()> {
+        let git_dir = repo::git_dir(repo)?;
+        let index = git_dir.join("index");
+        let lock = IndexLock::take(&git_dir)?;
+        let private = lock.private.to_string_lossy().into_owned();
+        let env = [("GIT_INDEX_FILE", private.as_str())];
+        let failed = |what: &str, out: &runner::Output| GitError::new(format!("{what} failed: {}", out.stderr.trim()));
+        let mut args = vec!["ls-files", "--stage", "-z", "--"];
+        args.extend(written.iter().map(|(path, _)| *path));
+        let listed = runner::exec_full(repo, &args, &env, None)?;
+        if !listed.ok() {
+            return Err(failed("Reading the index", &listed));
         }
-        handle.seek(std::io::SeekFrom::Start(0))?;
-        handle.write_all(converted)?;
-        handle.set_len(converted.len() as u64)?;
-        Ok(true)
+        let expected: HashMap<&str, &str> = written.iter().copied().collect();
+        let mut info = String::new();
+        for entry in runner::split_nul(&listed.text()) {
+            let Some((meta, path)) = entry.split_once('\t') else { continue };
+            let meta: Vec<&str> = meta.split(' ').collect();
+            if let ([mode, blob, "0"], Some(want)) = (meta.as_slice(), expected.get(path)) {
+                if blob == want {
+                    info.push_str(&format!("{mode} {blob}\t{path}\0"));
+                }
+            }
+        }
+        if info.is_empty() {
+            return Ok(());
+        }
+        let set = runner::exec_full(repo, ["update-index", "-z", "--index-info"], &env, Some(info.as_bytes()))?;
+        if !set.ok() {
+            return Err(failed("Updating the index", &set));
+        }
+        // Exit 1: some file differs from its entry (edited since), which then stays modified.
+        let refreshed = runner::exec_full(repo, ["update-index", "-q", "--refresh"], &env, None)?;
+        if refreshed.code > 1 {
+            return Err(failed("Refreshing the index", &refreshed));
+        }
+        lock.commit(&index).map_err(|e| GitError::new(format!("Could not replace {}: {e}", index.display())))
+    }
+}
+
+#[cfg(test)]
+mod rewrite_tests {
+    use super::{RawLineEndings, Rewrite};
+    use std::fs;
+
+    fn leftovers(dir: &std::path::Path) -> Vec<String> {
+        fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).filter(|name| name != "file.txt").collect()
+    }
+
+    #[test]
+    fn a_rewrite_replaces_only_what_it_read_and_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "one\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o750)).unwrap();
+        }
+        assert!(RawLineEndings::rewrite(&file, false, |now| if now == b"one\n" { Rewrite::With(b"one\r\n".to_vec()) } else { Rewrite::Keep }).unwrap());
+        assert_eq!(fs::read(&file).unwrap(), b"one\r\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o750, "the mode stays");
+        }
+        assert!(!RawLineEndings::rewrite(&file, false, |_| Rewrite::Keep).unwrap());
+        assert_eq!(fs::read(&file).unwrap(), b"one\r\n");
+        assert!(RawLineEndings::rewrite(&file, false, |_| Rewrite::Remove).unwrap());
+        assert!(!file.exists());
+        assert!(leftovers(dir.path()).is_empty(), "{:?}", leftovers(dir.path()));
+    }
+
+    /// Linux and macOS: a program that saves the file by name while it is rewritten keeps its
+    /// save; the content Revqora meant to write is dropped.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_by_name_during_a_rewrite_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "one\n").unwrap();
+        let written = RawLineEndings::rewrite(&file, false, |_| {
+            fs::write(&file, "saved by an editor\n").unwrap();
+            Rewrite::With(b"one\r\n".to_vec())
+        })
+        .unwrap();
+        assert!(!written);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "saved by an editor\n");
+        assert!(leftovers(dir.path()).is_empty(), "{:?}", leftovers(dir.path()));
+        // Left as it was, while a save by name happened: both versions stay.
+        let error = RawLineEndings::rewrite(&file, false, |_| {
+            fs::write(&file, "saved again\n").unwrap();
+            Rewrite::Keep
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("kept as"), "{error}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "saved again\n");
+        let kept = leftovers(dir.path());
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(fs::read_to_string(dir.path().join(&kept[0])).unwrap(), "saved by an editor\n");
+    }
+}
+
+/// How [`RawLineEndings::rewrite`] changes a file.
+enum Rewrite {
+    Keep,
+    With(Vec<u8>),
+    Remove,
+}
+
+/// Files restored with the line-ending rules at once: each costs a Git process and two copies in
+/// memory.
+const RECONVERT_BATCH: usize = 8;
+/// The most bytes (as stored) restored at once; a larger file keeps the line endings Git wrote.
+const RECONVERT_MAX_BYTES: u64 = 32 << 20;
+
+/// Moves `from` to `to` only where no file is: a hard link, then `from` is removed. Without hard
+/// links (some file systems), a rename after checking that nothing is there.
+#[cfg(not(windows))]
+fn place(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(from, to) {
+        Ok(()) => std::fs::remove_file(from),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) if std::fs::symlink_metadata(to).is_ok() => Err(std::io::ErrorKind::AlreadyExists.into()),
+        Err(_) => std::fs::rename(from, to),
+    }
+}
+
+/// `index.lock`, taken as Git takes it, with a private copy of the index to change. Dropped
+/// without [`commit`](Self::commit), both are removed and the index stays as it was.
+struct IndexLock {
+    lock: PathBuf,
+    private: PathBuf,
+    committed: bool,
+}
+
+impl IndexLock {
+    fn take(git_dir: &Path) -> GitResult<IndexLock> {
+        let lock = git_dir.join("index.lock");
+        let mut waited = 0;
+        loop {
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+                Ok(_) => break,
+                // Another Git command is writing the index: it takes moments.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && waited < 40 => {
+                    waited += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(GitError::new(format!("Could not lock the index ({}): {e}", lock.display()))),
+            }
+        }
+        let taken = IndexLock { lock, private: git_dir.join(format!("index.revqora-{}", std::process::id())), committed: false };
+        std::fs::copy(git_dir.join("index"), &taken.private).map_err(|e| GitError::new(format!("Could not copy the index: {e}")))?;
+        Ok(taken)
+    }
+
+    /// The private copy becomes the index, as Git publishes one: written to the lock, then renamed.
+    fn commit(mut self, index: &Path) -> std::io::Result<()> {
+        std::fs::write(&self.lock, std::fs::read(&self.private)?)?;
+        let mut tries = 0;
+        loop {
+            match std::fs::rename(&self.lock, index) {
+                Ok(()) => break,
+                // A reader that opened the index without delete sharing (Windows).
+                Err(_) if tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for IndexLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.private);
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.lock);
+        }
     }
 }
 

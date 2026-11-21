@@ -286,6 +286,58 @@ fn pull_keeps_line_ending_rules_for_the_files_it_writes_and_others_edits_of_the_
     }
 }
 
+/// Many files restored a few at a time, and staging done while the pull ran (another Git
+/// client, a hook) is kept: only entries that still hold what the pull wrote are touched.
+#[test]
+fn pull_restores_line_endings_of_many_files_and_keeps_staging_done_meanwhile() {
+    let (_keep, _server, me, colleague) = shared_remote();
+    let names: Vec<String> = (0..12).map(|n| format!("crlf-{n:02}.txt")).collect();
+    for name in &names {
+        fs::write(colleague.p().join(name), "one\r\ntwo\r\n").unwrap();
+    }
+    colleague.commit_all("crlf stored as is");
+    colleague.git(&["push", "-q", "origin", "main"]);
+    me.git(&["pull", "-q", "--ff-only"]);
+    fs::write(me.p().join(".git/info/attributes"), "*.txt text eol=crlf\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    for name in &names {
+        fs::write(me.p().join(name), "one\r\ntwo\r\n").unwrap();
+    }
+    for name in &names {
+        fs::write(colleague.p().join(name), "one\ntwo\nthree\n").unwrap();
+    }
+    let theirs = colleague.commit_all("normalized");
+    colleague.git(&["push", "-q", "origin", "main"]);
+    // While the pull runs, something stages other content for one file, without touching it.
+    let hooks = me.p().join(".git/hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    fs::write(
+        hooks.join("post-merge"),
+        "#!/bin/sh\nblob=$(printf 'staged meanwhile\\n' | git hash-object -w --stdin)\ngit update-index --cacheinfo 100644,$blob,crlf-00.txt\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(hooks.join("post-merge"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let out = ops::pull(me.p(), "ff-only", |_| {}).unwrap();
+
+    assert_eq!(me.git(&["rev-parse", "HEAD"]).trim(), theirs, "{out:?}");
+    for name in &names[1..] {
+        assert_eq!(fs::read(me.p().join(name)).unwrap(), b"one\r\ntwo\r\nthree\r\n", "{name}: checked out as the rule says");
+    }
+    // Its entry no longer holds what the pull wrote: the file is left as the pull wrote it.
+    assert_eq!(fs::read(me.p().join(&names[0])).unwrap(), b"one\ntwo\nthree\n");
+    let entry = me.git(&["ls-files", "--stage", "--", "crlf-00.txt"]);
+    let meanwhile = me.git(&["cat-file", "-p", entry.split_whitespace().nth(1).unwrap()]);
+    assert_eq!(meanwhile, "staged meanwhile\n", "the staging done meanwhile stays");
+    let status = me.git(&["status", "--porcelain"]);
+    assert_eq!(status.lines().collect::<Vec<_>>(), ["MM crlf-00.txt"], "the others are clean: {status}");
+    assert!(!out.message.contains("line endings"), "{out:?}");
+}
+
 /// A file the pull wrote as stored, then edited before the line endings are restored: the edit
 /// stays. And a rules file the pull cannot clean up afterwards is reported, not passed over.
 #[test]
