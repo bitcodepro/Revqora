@@ -93,13 +93,21 @@ function OperationLog({ root, close, initialId = null }: { root: string | null; 
     filtered.current = true;
     setSelected(keep.current); setEntries([]); setTotal(0); setNext(null); void reload();
   }, [reload]);
+  // A running entry shows its elapsed time: redraw it every second (nothing is read).
   const running = entries.some(active);
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
   useEffect(() => {
     const changed = () => { if (!alive.current) return; if (readingOlder.current) setChanged(true); else void reload(); };
-    const subscription = listen("operation-log-changed", changed);
-    const timer = running && !older ? setInterval(changed, 1500) : null;
-    return () => { if (timer) clearInterval(timer); void subscription.then((unlisten) => unlisten()); };
-  }, [reload, older, running]);
+    // Operations that start or finish, and a running operation that moves (the backend sends
+    // at most a few of these a second): no polling while something runs.
+    const subscriptions = [listen("operation-log-changed", changed), listen("operation-log-progress", changed)];
+    return () => { for (const subscription of subscriptions) void subscription.then((unlisten) => unlisten()); };
+  }, [reload]);
   useEffect(() => {
     let cancelled = false;
     setDetail((previous) => previous?.entry.id === selected ? previous : null); setDetailError(null);

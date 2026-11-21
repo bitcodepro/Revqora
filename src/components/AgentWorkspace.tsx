@@ -59,7 +59,11 @@ export function AgentWorkspace({root}:{root:string}) {
   const busy=useRef(false),generation=useRef(0),mounted=useRef(true);
   const running=tasks.some(t=>agentActive(t.phase));
   const refresh=useCallback(async()=>{if(busy.current)return;busy.current=true;const g=generation.current;try{const list=await api.agentTasks(root);if(mounted.current&&g===generation.current){setTasks(list);setSelected(s=>list.some(t=>t.id===s)?s:list[0]?.id??null);setError("");}}catch(e){if(mounted.current&&g===generation.current)setError(errorMessage(e));}finally{busy.current=false;if(mounted.current)setLoading(false);}},[root]);
-  useEffect(()=>{mounted.current=true;void refresh();let timer:ReturnType<typeof setTimeout>;let closed=false;const tick=()=>{timer=setTimeout(()=>{if(!closed){void refresh().finally(()=>{if(!closed)tick();});}},running?1000:10000);};tick();return()=>{closed=true;mounted.current=false;generation.current++;clearTimeout(timer);};},[refresh,running]);
+  // Live output of a running task every second, otherwise every 10 s; nothing while the window
+  // is hidden, and at once when it is shown again.
+  useEffect(()=>{mounted.current=true;void refresh();let timer:ReturnType<typeof setTimeout>;let closed=false;const tick=()=>{timer=setTimeout(()=>{if(closed)return;if(document.visibilityState!=="visible"){tick();return;}void refresh().finally(()=>{if(!closed)tick();});},running?1000:10000);};tick();
+    const shown=()=>{if(document.visibilityState==="visible")void refresh();};document.addEventListener("visibilitychange",shown);
+    return()=>{closed=true;mounted.current=false;generation.current++;clearTimeout(timer);document.removeEventListener("visibilitychange",shown);};},[refresh,running]);
   const task=tasks.find(t=>t.id===selected);
   const action=async(run:()=>Promise<void>)=>{if(acting)return;generation.current++;setActing(true);try{await run();}catch(e){toast.error(e);}finally{generation.current++;if(mounted.current)setActing(false);await refresh();}};
   const forget=async(t:AgentTask)=>{const ok=await showDialog<boolean>(close=><Modal title="Forget task history?" onClose={()=>close(false)} onSubmit={()=>close(true)} footer={<><button type="button" className="btn" onClick={()=>close(false)}>Cancel</button><button type="submit" className="btn danger">Forget history</button></>}><p>Removes this task's local record and log. Its branch, worktree and all files are kept. Use Worktree Manager for reviewed removal.</p></Modal>);if(ok)await api.agentForget(root,t.id);};

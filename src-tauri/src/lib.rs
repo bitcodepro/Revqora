@@ -3543,6 +3543,10 @@ pub fn run() {
                 portable::data_dir().map(|p| p.join("operation-log"))
             };
             journal::initialize(log_dir.as_deref());
+            let progress_app = app.handle().clone();
+            journal::on_progress(move || {
+                let _ = progress_app.emit("operation-log-progress", ());
+            });
             if let Some(mut cfg) = app.config().app.windows.iter().find(|w| w.label == "main").cloned() {
                 portable::automation_startup("webview-builder-start");
                 if remember_window {
