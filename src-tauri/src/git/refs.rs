@@ -118,6 +118,24 @@ fn parse_track(t: &str) -> (u32, u32, bool) {
     (ahead, behind, gone)
 }
 
+/// [`branch_names`] of several repositories, read a few at a time; none for a repository
+/// that cannot be read (a moved folder or an unavailable drive).
+pub fn branch_names_many(repos: &[std::path::PathBuf]) -> Vec<Option<Vec<String>>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let answers: Vec<parking_lot::Mutex<Option<Vec<String>>>> = repos.iter().map(|_| parking_lot::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..repos.len().min(4) {
+            scope.spawn(|| loop {
+                let at = next.fetch_add(1, Ordering::Relaxed);
+                let Some(repo) = repos.get(at) else { break };
+                *answers[at].lock() = branch_names(repo).ok();
+            });
+        }
+    });
+    answers.into_iter().map(parking_lot::Mutex::into_inner).collect()
+}
+
 pub fn branch_names(repo: &Path) -> GitResult<Vec<String>> {
     super::repo::require_directory(repo)?;
     let raw = runner::run(repo, ["for-each-ref", "--format=%(refname)%00%(symref)", "refs/heads", "refs/remotes"])?;
@@ -869,6 +887,24 @@ mod enumerate_tests {
         let remote = snapshot(root).unwrap();
         assert_ne!(remote.remote_fingerprint, local.remote_fingerprint);
         assert_ne!(remote.fingerprint, local.fingerprint);
+    }
+
+    #[test]
+    fn branch_names_of_several_repositories_keep_their_order_and_skip_unreadable_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let repos: Vec<std::path::PathBuf> = (0..6).map(|i| dir.path().join(format!("r{i}"))).collect();
+        for (i, root) in repos.iter().enumerate().filter(|(i, _)| *i != 3) {
+            std::fs::create_dir(root).unwrap();
+            git(root, &["init", "-q", "-b", "main"]);
+            git(root, &["-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "one"]);
+            git(root, &["branch", &format!("topic-{i}")]);
+        }
+        let names = branch_names_many(&repos);
+        assert_eq!(names.len(), 6);
+        assert!(names[3].is_none(), "a missing folder has no names");
+        for (i, found) in names.iter().enumerate().filter(|(i, _)| *i != 3) {
+            assert_eq!(found.as_deref().unwrap(), ["refs/heads/main".to_string(), format!("refs/heads/topic-{i}")]);
+        }
     }
 
     #[test]

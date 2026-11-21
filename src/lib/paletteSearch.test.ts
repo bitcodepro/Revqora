@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nextFilter, PALETTE_FILTERS, rankPalette, type PaletteEntry } from "./paletteSearch";
+import { foldEntry, nextFilter, PALETTE_FILTERS, rankPalette, type PaletteEntry } from "./paletteSearch";
 import { SHORTCUTS } from "./shortcuts";
 
 const entries: PaletteEntry[] = [
@@ -43,6 +43,15 @@ describe("command palette search", () => {
   it("finds Report an issue", () => {
     expect(labels("issue", "all")).toEqual(["command:Report an issue"]);
     expect(SHORTCUTS.find(shortcut => shortcut.id === "report-issue")).toMatchObject({ label: "Report an issue", default: "" });
+  });
+
+  it("ranks entries folded once the same as entries folded on every search", () => {
+    const folded = entries.map(entry => ({ ...entry, folded: foldEntry(entry.label, entry.context, entry.search) }));
+    for (const query of ["pull", "PULL serv", "pse", "e:/work", "issue", ""]) {
+      for (const filter of PALETTE_FILTERS.map(item => item.id)) {
+        expect(rankPalette(query, folded, filter).map(entry => entry.label)).toEqual(rankPalette(query, entries, filter).map(entry => entry.label));
+      }
+    }
   });
 
   it("cycles the filters with Tab and Shift+Tab", () => {

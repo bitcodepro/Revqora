@@ -5,19 +5,24 @@ import type { SparseResult, SparseState } from "../lib/types";
 import { useRepos } from "../lib/store";
 import { endBusy, startBusy, toast } from "../lib/ui";
 import { confirmDialog } from "./dialogs";
-import { changedAmong, conePreview, coneToPatterns, directoriesOf, normalizeFolder, patternsToFolders } from "../lib/sparse";
+import { coneToPatterns, normalizeFolder, patternsToFolders } from "../lib/sparse";
 
 const MAX_SHOWN = 12;
 const MAX_PICK = 60;
 
-const listOf = (paths: readonly string[]) => (paths.length > MAX_SHOWN ? [...paths.slice(0, MAX_SHOWN), `… and ${paths.length - MAX_SHOWN} more`] : [...paths]);
+/** The first paths of a list of `total`, and how many more there are. */
+const listOf = (paths: readonly string[], total = paths.length) => {
+  const shown = paths.slice(0, MAX_SHOWN);
+  return total > shown.length ? [...shown, `… and ${total - shown.length} more`] : shown;
+};
 
 /** Repository tools tab: sparse checkout (cone / non-cone) and partial clone status. */
 export function SparseTab({ root }: { root: string }) {
   const status = useRepos((s) => s.tabs[root]?.status ?? null);
   const [state, setState] = useState<SparseState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [tree, setTree] = useState<string[] | null>(null);
+  // Folders at HEAD for the Add folder list; the files stay in the backend.
+  const [directories, setDirectories] = useState<string[] | null>(null);
   const [folders, setFolders] = useState<string[]>([]);
   const [patterns, setPatterns] = useState("");
   const [pick, setPick] = useState("");
@@ -31,15 +36,18 @@ export function SparseTab({ root }: { root: string }) {
   };
   const reload = () => {
     api.sparseCheckoutState(root).then(adopt, (e) => setLoadError(errorMessage(e)));
-    api.listTree(root, "HEAD").then(setTree, () => setTree([]));
+    api.sparseCheckoutFolders(root).then(setDirectories, () => setDirectories([]));
   };
   useEffect(reload, [root]);
 
-  const directories = useMemo(() => directoriesOf(tree ?? []), [tree]);
   const changed = useMemo(() => (status?.files ?? []).filter((f) => !f.untracked).map((f) => f.path), [status]);
   const matches = useMemo(() => {
-    const q = pick.trim().toLowerCase();
-    return directories.filter((d) => !folders.includes(d) && (!q || d.toLowerCase().includes(q))).slice(0, MAX_PICK);
+    const q = pick.trim().toLowerCase(), chosen = new Set(folders), found: string[] = [];
+    for (const d of directories ?? []) {
+      if (found.length === MAX_PICK) break;
+      if (!chosen.has(d) && (!q || d.toLowerCase().includes(q))) found.push(d);
+    }
+    return found;
   }, [directories, folders, pick]);
 
   if (loadError) return <div className="error-text" role="alert">{loadError}</div>;
@@ -103,24 +111,23 @@ export function SparseTab({ root }: { root: string }) {
 
   /** Explains what leaves the working tree before a cone-mode change; true to proceed. */
   const confirmCone = async (title: string, next: string[], confirm: string) => {
-    const preview = tree ? conePreview(tree, { enabled: state.enabled, cone: state.cone, folders: state.patterns }, next) : null;
+    const preview = await api.sparseConePreview(root, next, changed).catch(() => null);
     if (!preview) {
       return confirmDialog({ title, confirm, message: "Git removes tracked files outside the new selection from the working tree. Modified files are kept in place and listed afterwards." });
     }
-    const dirty = changedAmong(preview.leaving, changed);
-    if (!preview.leaving.length) return true;
+    if (!preview.leaving) return true;
     return confirmDialog({
       title,
       confirm,
-      danger: dirty.length > 0,
+      danger: preview.changedLeaving > 0,
       message: (
         <>
-          {preview.leaving.length.toLocaleString()} tracked file{preview.leaving.length === 1 ? "" : "s"} will leave the working tree
+          {preview.leaving.toLocaleString()} tracked file{preview.leaving === 1 ? "" : "s"} will leave the working tree
           {preview.arriving ? ` and ${preview.arriving.toLocaleString()} will come back` : ""}. They stay in the repository and return when you add their folder again.
-          {dirty.length > 0 && <> {dirty.length} of them have local changes: Git keeps those files in place, or refuses on older Git; nothing is discarded.</>}
+          {preview.changedLeaving > 0 && <> {preview.changedLeaving} of them have local changes: Git keeps those files in place, or refuses on older Git; nothing is discarded.</>}
         </>
       ),
-      details: listOf(dirty.length ? dirty : preview.leaving),
+      details: preview.changedLeaving ? listOf(preview.changedSample, preview.changedLeaving) : listOf(preview.leavingSample, preview.leaving),
     });
   };
 
@@ -228,7 +235,7 @@ export function SparseTab({ root }: { root: string }) {
                 if (pick.trim()) addFolder(pick);
               }}
             >
-              <input className="input mono" aria-label="Folder path to add" placeholder={tree === null ? "Loading folders…" : "Type a folder path or filter the list"} value={pick} onChange={(e) => setPick(e.target.value)} />
+              <input className="input mono" aria-label="Folder path to add" placeholder={directories === null ? "Loading folders…" : "Type a folder path or filter the list"} value={pick} onChange={(e) => setPick(e.target.value)} />
               <button type="submit" className="btn sm" disabled={!pick.trim() || !!busy}>
                 <FolderPlus size={12} /> Add
               </button>

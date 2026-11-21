@@ -1401,6 +1401,13 @@ async fn repository_branch_names(repo: String) -> GitResult<Vec<String>> {
     blocking(move || refs::branch_names(&p(&repo))).await
 }
 
+/// Branch names of several repositories in one call (the command palette), in the order given;
+/// null for a repository that cannot be read.
+#[tauri::command]
+async fn repository_branch_names_many(repos: Vec<String>) -> GitResult<Vec<Option<Vec<String>>>> {
+    blocking(move || Ok(refs::branch_names_many(&repos.iter().map(|repo| p(repo)).collect::<Vec<_>>()))).await
+}
+
 /// Branches already squash- or rebase-merged into HEAD.
 #[tauri::command]
 async fn squash_merged(repo: String) -> GitResult<Vec<String>> {
@@ -1675,6 +1682,16 @@ async fn fetch_more_history(
 #[tauri::command]
 async fn sparse_checkout_state(repo: String) -> GitResult<git::sparse::SparseState> {
     blocking(move || git::sparse::state(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn sparse_checkout_folders(repo: String) -> GitResult<Vec<String>> {
+    blocking(move || git::sparse::folders(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn sparse_cone_preview(repo: String, next: Vec<String>, changed: Vec<String>) -> GitResult<Option<git::sparse::ConePreview>> {
+    blocking(move || git::sparse::cone_preview(&p(&repo), &next, &changed)).await
 }
 
 #[tauri::command]
@@ -3661,6 +3678,8 @@ pub fn run() {
             repo_is_shallow,
             fetch_more_history,
             sparse_checkout_state,
+            sparse_checkout_folders,
+            sparse_cone_preview,
             sparse_checkout_set,
             sparse_checkout_add,
             sparse_checkout_disable,
@@ -3719,6 +3738,7 @@ pub fn run() {
             refs_snapshot,
             refs_snapshot_if_changed,
             repository_branch_names,
+            repository_branch_names_many,
             fetch_background,
             cancel_transfer,
             credential_manager,

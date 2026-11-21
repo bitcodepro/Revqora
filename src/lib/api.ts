@@ -291,6 +291,7 @@ export const api = {
   blob: (repo: string, spec: BlobSpec) => call<BlobData | null>("blob", { repo, spec }),
   textBlob: (repo: string, spec: BlobSpec, encoding: string | null = null) => call<import("./types").DecodedText | null>("text_blob", { repo, spec, encoding }),
 
+  repositoryBranchNamesMany: (repos: string[]) => call<(string[] | null)[]>("repository_branch_names_many", { repos }),
   repositoryBranchNames: (repo: string) => call<string[]>("repository_branch_names", { repo }),
   refs: (repo: string) => call<RefsSnapshot>("refs_snapshot", { repo }),
   /** The refs, or null when they still have the fingerprint `known`: nothing unchanged is sent. */
@@ -331,6 +332,11 @@ export const api = {
   /** `deepen: null` fetches the complete history (`--unshallow`). */
   fetchMoreHistory: (repo: string, deepen: number | null, opId: string) => call<string>("fetch_more_history", { repo, deepen, opId }),
   sparseCheckoutState: (repo: string) => call<import("./types").SparseState>("sparse_checkout_state", { repo }),
+  /** Folders with tracked files at HEAD, sorted. */
+  sparseCheckoutFolders: (repo: string) => call<string[]>("sparse_checkout_folders", { repo }),
+  /** What switching the cone to `next` moves; null for a non-cone selection. */
+  sparseConePreview: (repo: string, next: string[], changed: string[]) =>
+    call<{ leaving: number; arriving: number; changedLeaving: number; leavingSample: string[]; changedSample: string[] } | null>("sparse_cone_preview", { repo, next, changed }),
   /** Enables sparse checkout or replaces its folders (cone) / patterns (non-cone). */
   /** `reviewedIgnored`: the ignored files (from a "sparse-ignored-files" error) the user agreed Git may delete; any other file refuses again. */
   sparseCheckoutSet: (repo: string, cone: boolean, entries: string[], reviewedIgnored: string[] | null = null) =>

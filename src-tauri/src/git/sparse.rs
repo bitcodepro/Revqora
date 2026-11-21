@@ -227,6 +227,72 @@ fn in_cone(dir: &str, folders: &[String]) -> bool {
     folders.iter().any(|f| f == dir || inside(dir, f) || inside(f, dir))
 }
 
+/// Folders that hold tracked files at HEAD, sorted for the Add folder list (case aside, then
+/// as written). Git lists the trees itself, so the files are never sent to the window.
+pub fn folders(repo: &Path) -> GitResult<Vec<String>> {
+    let raw = runner::run(repo, ["ls-tree", "-r", "-d", "-z", "--name-only", "HEAD"])?;
+    let mut dirs: Vec<String> = runner::split_nul(&raw).map(str::to_owned).collect();
+    dirs.sort_by_cached_key(|dir| (dir.to_lowercase(), dir.clone()));
+    Ok(dirs)
+}
+
+/// Paths a cone preview names; the dialog shows this many and counts the rest.
+const PREVIEW_SAMPLE: usize = 12;
+
+/// What a cone change moves: tracked files that leave the working tree, those that come back,
+/// and how many of the leaving ones have local changes (Git keeps those in place), with the
+/// first few paths of each list.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConePreview {
+    pub leaving: usize,
+    pub arriving: usize,
+    pub changed_leaving: usize,
+    pub leaving_sample: Vec<String>,
+    pub changed_sample: Vec<String>,
+}
+
+/// Whether the cone `folders` check out the file `path`: top-level files, everything under a
+/// folder, and the files directly inside each parent of a folder.
+fn file_in_cone(path: &str, folders: &[String]) -> bool {
+    path.rfind('/').is_none_or(|slash| in_cone(&path[..slash], folders))
+}
+
+fn cone_counts<'a>(paths: impl Iterator<Item = &'a str>, current: Option<&[String]>, next: &[String], changed: &[String]) -> ConePreview {
+    let changed: std::collections::HashSet<&str> = changed.iter().map(String::as_str).collect();
+    let mut preview = ConePreview::default();
+    for path in paths {
+        let before = current.is_none_or(|folders| file_in_cone(path, folders));
+        let after = file_in_cone(path, next);
+        if before && !after {
+            preview.leaving += 1;
+            if preview.leaving_sample.len() < PREVIEW_SAMPLE {
+                preview.leaving_sample.push(path.to_owned());
+            }
+            if changed.contains(path) {
+                preview.changed_leaving += 1;
+                if preview.changed_sample.len() < PREVIEW_SAMPLE {
+                    preview.changed_sample.push(path.to_owned());
+                }
+            }
+        } else if !before && after {
+            preview.arriving += 1;
+        }
+    }
+    preview
+}
+
+/// The preview of switching cone mode to `next`; none when the current selection is not a cone
+/// (only Git can evaluate its patterns). `changed` are the tracked files with local changes.
+pub fn cone_preview(repo: &Path, next: &[String], changed: &[String]) -> GitResult<Option<ConePreview>> {
+    let current = state(repo)?;
+    if current.enabled && !current.cone {
+        return Ok(None);
+    }
+    let raw = runner::run(repo, ["ls-tree", "-r", "-z", "--name-only", "HEAD"])?;
+    Ok(Some(cone_counts(runner::split_nul(&raw), current.enabled.then_some(&current.patterns[..]), next, changed)))
+}
+
 /// The top-most folder of the folder path `dir` that the cone `folders` exclude, if any.
 fn excluded_root<'a>(dir: &'a str, folders: &[String]) -> Option<&'a str> {
     let mut ends: Vec<usize> = dir.match_indices('/').map(|(i, _)| i).collect();
@@ -412,6 +478,25 @@ mod tests {
         // Similar names are not parents or children.
         assert_eq!(excluded_root("keeper", &cone), Some("keeper"));
         assert_eq!(excluded_root("a/bc", &cone), Some("a/bc"));
+    }
+
+    #[test]
+    fn a_cone_preview_counts_what_leaves_and_what_comes_back() {
+        let files = ["a.txt", "lib/x.ts", "docs/r.md", "src/y.ts", "src/app/z.ts", "src/lib/w.ts"];
+        let folders = |list: &[&str]| list.iter().map(|f| f.to_string()).collect::<Vec<_>>();
+        // From a full checkout: everything outside lib leaves except top-level files.
+        let all = cone_counts(files.into_iter(), None, &folders(&["lib"]), &folders(&["docs/r.md", "a.txt"]));
+        assert_eq!((all.leaving, all.arriving, all.changed_leaving), (4, 0, 1));
+        assert_eq!(all.leaving_sample, ["docs/r.md", "src/y.ts", "src/app/z.ts", "src/lib/w.ts"]);
+        assert_eq!(all.changed_sample, ["docs/r.md"]);
+        // A parent keeps its own files, not its other folders.
+        let moved = cone_counts(files.into_iter(), Some(&folders(&["lib"])), &folders(&["src/app"]), &[]);
+        assert_eq!((moved.leaving, moved.arriving, moved.changed_leaving), (1, 2, 0));
+        let many: Vec<String> = (0..40).map(|i| format!("lib/f{i}.ts")).collect();
+        let sampled = cone_counts(many.iter().map(String::as_str), None, &folders(&["docs"]), &many);
+        assert_eq!((sampled.leaving, sampled.leaving_sample.len(), sampled.changed_leaving, sampled.changed_sample.len()), (40, 12, 40, 12));
+        assert!(file_in_cone("README.md", &[]));
+        assert!(!file_in_cone("srcx/a.ts", &folders(&["src"])));
     }
 
     #[test]

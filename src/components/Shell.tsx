@@ -1,7 +1,7 @@
 import {forgeAccountsDialog} from "./ForgeAccounts";
 import { OverflowToolbar } from "./ToolbarOverflow";
 import { aboutDialog, reportIssue } from "./AboutDialog";
-import { PALETTE_FILTERS, nextFilter, rankPalette, type PaletteFilter, type PaletteKind } from "../lib/paletteSearch";
+import { PALETTE_FILTERS, foldEntry, nextFilter, rankPalette, type PaletteEntry, type PaletteFilter, type PaletteKind } from "../lib/paletteSearch";
 import { branchCommitCompare } from "./BranchCommitCompare";
 import { RepositoryLibraryButton, groupEditorDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
 import { fetchRepositories, pullRepositories, pushRepositories, syncCurrentBranches } from "../lib/remoteSync";
@@ -760,15 +760,25 @@ export function CommandPalette() {
     let next = 0;
     const candidates = roots.filter(root => !useRepos.getState().tabs[root]?.refs);
     setLoadingBranches(!!candidates.length);
+    // A few repositories per call, read in parallel by the backend: one update per batch, and a
+    // slow drive delays only its own batch.
+    const BATCH = 8;
     const timer = window.setTimeout(async () => {
-      await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, async () => {
+      await Promise.all(Array.from({ length: Math.min(2, Math.ceil(candidates.length / BATCH)) }, async () => {
         while (!cancelled && next < candidates.length) {
-          const root = candidates[next++];
-          if (useRepos.getState().tabs[root]?.refs) continue;
+          const start = next;
+          next += BATCH;
+          const batch = candidates.slice(start, next).filter(root => !useRepos.getState().tabs[root]?.refs);
+          if (!batch.length) continue;
           try {
-            const refs = await api.repositoryBranchNames(root);
-            if (!cancelled) setBranches(current => ({ ...current, [root]: refs }));
-          } catch { /* A saved repository can be unavailable. Keep the other results. */ }
+            const answers = await api.repositoryBranchNamesMany(batch);
+            // A saved repository can be unavailable (null). Keep the other results.
+            if (!cancelled) setBranches(current => {
+              const merged = { ...current };
+              batch.forEach((root, i) => { const refs = answers[i]; if (refs) merged[root] = refs; });
+              return merged;
+            });
+          } catch { /* Keep the other results. */ }
         }
       }));
       if (!cancelled) setLoadingBranches(false);
@@ -833,16 +843,16 @@ export function CommandPalette() {
 
   const locations = useMemo(() => {
     if (!listLocations) return [];
-    const out: { id: string; label: string; group: string; context: string; search?: string; root: string; reference: string | null }[] = [];
+    const out: { id: string; label: string; group: string; context: string; search?: string; root: string; reference: string | null; folded: PaletteEntry["folded"] }[] = [];
     roots.forEach((root, i) => {
       const name = names[repositoryKey(root)] ?? rootNames[i] ?? basename(root);
-      out.push({ id: "repository:" + root, label: name, group: "Repository", context: root, root, reference: null });
+      out.push({ id: "repository:" + root, label: name, group: "Repository", context: root, root, reference: null, folded: foldEntry(name, root) });
       const refs = rootRefs[i];
       const references = refs ? [...refs.local, ...refs.remote].map(branch => branch.fullName) : branches[root] ?? [];
       for (const reference of references) {
         const local = reference.startsWith("refs/heads/");
         const branch = reference.slice(local ? "refs/heads/".length : "refs/remotes/".length);
-        out.push({ id: JSON.stringify([root, reference]), label: branch, group: local ? "Branch" : "Remote branch", context: name, search: root, root, reference });
+        out.push({ id: JSON.stringify([root, reference]), label: branch, group: local ? "Branch" : "Remote branch", context: name, search: root, root, reference, folded: foldEntry(branch, name, root) });
       }
     });
     return out;
@@ -881,10 +891,10 @@ export function CommandPalette() {
       }
     }
     // Repositories and branches are ranked as plain data; commands are built for the shown ones only.
-    type Entry = { kind: PaletteKind; label: string; context?: string; search?: string; make: () => Cmd };
+    type Entry = PaletteEntry & { make: () => Cmd };
     const entries: Entry[] = list.map(item => ({ kind: item.kind ?? "command", label: item.label, context: item.context, search: item.search, make: () => item }));
     for (const entry of locations) {
-      entries.push({ kind: entry.reference === null ? "repository" : "branch", label: entry.label, context: entry.context, search: entry.search, make: () => entry.reference === null
+      entries.push({ kind: entry.reference === null ? "repository" : "branch", label: entry.label, context: entry.context, search: entry.search, folded: entry.folded, make: () => entry.reference === null
         ? { id: entry.id, label: entry.label, group: entry.group, context: entry.context, icon: <FolderGit2 size={15} />, run: () => void revealRepository(entry.root) }
         : { id: entry.id, label: entry.label, group: entry.group, context: entry.context, search: entry.search, icon: <GitBranch size={15} />, run: () => void revealBranch(entry.root, entry.reference!) } });
     }

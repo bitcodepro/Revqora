@@ -31,10 +31,11 @@ export function nextFilter(filter: PaletteFilter, back = false): PaletteFilter {
   return PALETTE_FILTERS[(at + (back ? n - 1 : 1)) % n]!.id;
 }
 
-/** How well `q` (lower case) matches `s`: exact 200, substring 100-20, letters in order 10, else 0. */
-export function paletteScore(q: string, s: string): number {
+/** How well `q` (lower case) matches `s`: exact 200, substring 100-20, letters in order 10, else 0.
+ *  `lower` is `s` in lower case when the caller already has it. */
+export function paletteScore(q: string, s: string, lower?: string): number {
   if (!q) return 1;
-  const l = s.toLowerCase();
+  const l = lower ?? s.toLowerCase();
   const i = l.indexOf(q);
   if (l === q || l.replace(/…$/, "") === q) return 200;
   if (i >= 0) return 100 - Math.min(i, 80);
@@ -46,7 +47,16 @@ export function paletteScore(q: string, s: string): number {
 /** A command matched only by scattered letters, not by a word the user typed. */
 const LOOSE = 10;
 
-export interface PaletteEntry { kind: PaletteKind; label: string; context?: string; search?: string }
+export interface PaletteEntry {
+  kind: PaletteKind; label: string; context?: string; search?: string;
+  /** The label and all searched text in lower case, made once for a long list (see `foldEntry`). */
+  folded?: { label: string; text: string };
+}
+
+/** Lower-case forms `rankPalette` compares, so typing does not fold every entry again. */
+export function foldEntry(label: string, ...rest: (string | undefined)[]): { label: string; text: string } {
+  return { label: label.toLowerCase(), text: [label, ...rest].filter(Boolean).join(" ").toLowerCase() };
+}
 
 /**
  * Entries to show for `query` under `filter`, best first. Under "All", commands and menu
@@ -59,8 +69,10 @@ export function rankPalette<T extends PaletteEntry>(query: string, entries: T[],
   const kinds = filterKinds(filter);
   const tokens = q.split(/\s+/).filter(Boolean);
   const rank = (entry: T) => {
-    const text = [entry.label, entry.context, entry.search].filter(Boolean).join(" ").toLowerCase();
-    return paletteScore(q, entry.label) || (tokens.length && tokens.every(token => text.includes(token)) ? 12 : 0);
+    const label = paletteScore(q, entry.label, entry.folded?.label);
+    if (label || !tokens.length) return label;
+    const text = entry.folded?.text ?? [entry.label, entry.context, entry.search].filter(Boolean).join(" ").toLowerCase();
+    return tokens.every(token => text.includes(token)) ? 12 : 0;
   };
   const tier = (entry: T, score: number) => entry.kind !== "command" && entry.kind !== "shortcut" ? 1 : score > LOOSE ? 0 : 2;
   const scored: { entry: T; score: number; tier: number; at: number }[] = [];

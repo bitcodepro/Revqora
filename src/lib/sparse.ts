@@ -25,58 +25,6 @@ export function parseFolderList(text: string): { folders: string[]; error: strin
   return { folders, error: "" };
 }
 
-/** Every directory that contains a tracked file, sorted, from a recursive tree listing. */
-export function directoriesOf(paths: readonly string[]): string[] {
-  const dirs = new Set<string>();
-  for (const path of paths) {
-    let i = path.lastIndexOf("/");
-    while (i > 0) {
-      const dir = path.slice(0, i);
-      if (dirs.has(dir)) break;
-      dirs.add(dir);
-      i = dir.lastIndexOf("/");
-    }
-  }
-  return [...dirs].sort((a, b) => a.localeCompare(b));
-}
-
-/**
- * Whether cone mode with `folders` checks out `path`: top-level files, everything under a
- * listed folder, and the files directly inside each ancestor of a listed folder.
- */
-export function inCone(path: string, folders: readonly string[]): boolean {
-  const slash = path.lastIndexOf("/");
-  if (slash < 0) return true;
-  const parent = path.slice(0, slash);
-  return folders.some((f) => path.startsWith(`${f}/`) || f === parent || f.startsWith(`${parent}/`));
-}
-
-export interface ConeCurrent { enabled: boolean; cone: boolean; folders: readonly string[] }
-
-/**
- * Tracked files that would leave the working tree when cone mode switches to `next`, and how
- * many come back. Returns null when the current selection is non-cone (only Git can evaluate it).
- */
-export function conePreview(paths: readonly string[], current: ConeCurrent, next: readonly string[]): { leaving: string[]; arriving: number } | null {
-  if (current.enabled && !current.cone) return null;
-  const now = (p: string) => !current.enabled || inCone(p, current.folders);
-  const leaving: string[] = [];
-  let arriving = 0;
-  for (const p of paths) {
-    const before = now(p);
-    const after = inCone(p, next);
-    if (before && !after) leaving.push(p);
-    else if (!before && after) arriving++;
-  }
-  return { leaving, arriving };
-}
-
-/** Changed files (from status) inside `leaving`; Git keeps these in place. */
-export function changedAmong(leaving: readonly string[], changed: readonly string[]): string[] {
-  const set = new Set(leaving);
-  return changed.filter((p) => set.has(p));
-}
-
 /** Escapes a literal path for a gitignore-style pattern, as Git writes cone patterns. */
 function escapePattern(path: string): string {
   return path.replace(/[\\*?[]/g, (c) => `\\${c}`).replace(/ $/, "\\ ");
