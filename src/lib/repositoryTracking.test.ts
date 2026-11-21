@@ -44,6 +44,17 @@ describe("repository tracking", () => {
     expect(roots.filter(root => (trackingOf(byKey, root)?.ahead ?? 0) > 0)).toEqual(["C:/work/repo-7", "C:/work/repo-17", "C:/work/repo-27", "C:/work/repo-37"]);
   });
 
+  it("applies answers that arrive together in one state change", async () => {
+    mocks.repositoryBranchTracking.mockImplementation(async () => tracking({ ahead: 1 }));
+    let changes = 0;
+    const unsubscribe = useRepositoryTracking.subscribe(() => { changes++; });
+    const roots = Array.from({ length: 6 }, (_, i) => `C:/work/batch-${i}`);
+    await scanRepositoryTracking(roots);
+    unsubscribe();
+    expect(Object.keys(useRepositoryTracking.getState().byKey)).toHaveLength(6);
+    expect(changes).toBe(1);
+  });
+
   it("reads one repository at a time, shares a waiting read and keeps the newest answer", async () => {
     const answers: ((value: BranchTracking) => void)[] = [];
     mocks.repositoryBranchTracking.mockImplementation(() => new Promise(resolve => answers.push(resolve)));
