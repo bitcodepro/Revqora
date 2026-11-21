@@ -330,7 +330,8 @@ struct IdScan {
     done: bool,
     in_string: bool,
     escaped: bool,
-    /// The string being read at the top level, up to 256 bytes (None: longer, or escaped).
+    /// The string being read at the top level, as written (escapes too), up to 256 bytes
+    /// (None: longer).
     text: Option<Vec<u8>>,
     /// The last string read at the top level, until a `:` makes it a key.
     key: Option<Vec<u8>>,
@@ -357,19 +358,24 @@ impl IdScan {
                 self.escaped = false;
             } else if byte == b'\\' {
                 self.escaped = true;
-                self.text = None;
             } else if byte == b'"' {
                 self.in_string = false;
-                let text = self.text.take();
+                // JSON escapes (`\"`, `\u0069`) decoded as any JSON reader would.
+                let text = self.text.take().and_then(|raw| {
+                    let quoted = [&b"\""[..], &raw, b"\""].concat();
+                    serde_json::from_slice::<String>(&quoted).ok()
+                });
                 if self.depth == 1 {
                     if self.want_id {
                         self.want_id = false;
-                        self.found(text.map(|text| Value::String(String::from_utf8_lossy(&text).into_owned())));
+                        self.found(text.map(Value::String));
                     } else {
-                        self.key = text;
+                        self.key = text.map(String::into_bytes);
                     }
                 }
-            } else if let Some(text) = &mut self.text {
+                return;
+            }
+            if let Some(text) = &mut self.text {
                 if text.len() < 256 {
                     text.push(byte);
                 } else {
@@ -541,6 +547,9 @@ mod tests {
             format!(r#"{{"method":"tools/call","params":{{"id":3,"q":"{big}"}},"id":8}}"#),
             format!(r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"id":4,"list":[{{"id":5}}],"q":"{big}"}}}}"#),
             format!(r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"q":"say \"id\": 6 {big}"}},"id" : "late"}}"#),
+            // An id with escapes, and a key written with one.
+            format!(r#"{{"jsonrpc":"2.0","id":"a\"b\\c\u00e9","method":"tools/call","params":{{"q":"{big}"}}}}"#),
+            format!(r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"q":"{big}"}},"\u0069d":10}}"#),
             json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"list_repositories"}}).to_string(),
         ]
         .join("\n")
@@ -549,7 +558,7 @@ mod tests {
         run(&mut input.as_bytes(), &mut output, "9.8.7", |_| Ok(json!({"active":"fixture"}))).unwrap();
         let responses: Vec<Value> =
             output.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()).map(|line| serde_json::from_slice(line).unwrap()).collect();
-        assert_eq!(responses.len(), 7);
+        assert_eq!(responses.len(), 9);
         assert_eq!(responses[1]["id"], 7);
         assert_eq!(responses[1]["error"]["code"], -32600);
         assert_eq!(responses[2]["id"], "seven");
@@ -559,8 +568,10 @@ mod tests {
         assert_eq!(responses[4]["id"], Value::Null);
         // After params that hold "id" in their text.
         assert_eq!(responses[5]["id"], "late");
-        assert_eq!(responses[6]["id"], 9);
-        assert_eq!(responses[6]["result"]["isError"], false);
+        assert_eq!(responses[6]["id"], "a\"b\\c\u{e9}");
+        assert_eq!(responses[7]["id"], 10);
+        assert_eq!(responses[8]["id"], 9);
+        assert_eq!(responses[8]["result"]["isError"], false);
     }
 
     #[test]

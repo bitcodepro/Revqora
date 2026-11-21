@@ -338,6 +338,38 @@ fn pull_restores_line_endings_of_many_files_and_keeps_staging_done_meanwhile() {
     assert!(!out.message.contains("line endings"), "{out:?}");
 }
 
+/// A file whose incoming version Git cannot read back after the pull keeps what the pull wrote,
+/// and the pull's message names it: the pull itself still succeeds.
+#[test]
+fn pull_reports_a_file_whose_line_endings_it_could_not_restore() {
+    let (_keep, _server, me, colleague) = shared_remote();
+    fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+    colleague.commit_all("crlf stored as is");
+    colleague.git(&["push", "-q", "origin", "main"]);
+    me.git(&["pull", "-q", "--ff-only"]);
+    fs::write(me.p().join(".git/info/attributes"), "*.txt text eol=crlf\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(me.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+    fs::write(colleague.p().join("crlf.txt"), "one\ntwo\nunread\n").unwrap();
+    let theirs = colleague.commit_all("normalized");
+    colleague.git(&["push", "-q", "origin", "main"]);
+    // After the merge, the incoming blob disappears (as if a broken object store lost it).
+    let hooks = me.p().join(".git/hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    fs::write(hooks.join("post-merge"), "#!/bin/sh\nb=$(git rev-parse :crlf.txt)\nrm -f .git/objects/$(echo $b | cut -c1-2)/$(echo $b | cut -c3-)\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(hooks.join("post-merge"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let out = ops::pull(me.p(), "ff-only", |_| {}).unwrap();
+
+    assert_eq!(me.git(&["rev-parse", "HEAD"]).trim(), theirs, "{out:?}");
+    assert_eq!(fs::read(me.p().join("crlf.txt")).unwrap(), b"one\ntwo\nunread\n", "what the pull wrote stays");
+    assert!(out.message.contains("could not read their incoming version") && out.message.contains("crlf.txt"), "{out:?}");
+}
+
 /// A file the pull wrote as stored, then edited before the line endings are restored: the edit
 /// stays. And a rules file the pull cannot clean up afterwards is reported, not passed over.
 #[test]

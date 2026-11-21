@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {spawn,execFileSync} from "node:child_process";
 import {once} from "node:events";
-import {shutdownAndCleanup} from "./ui-cleanup.mjs";
+import {removeFixtureFolder,shutdownAndCleanup} from "./ui-cleanup.mjs";
 
 test("fixture deletion waits for confirmed shutdown, including async cleanup",async()=>{
  const calls=[];let release;const stopped=new Promise(resolve=>release=resolve);
@@ -47,4 +47,13 @@ test("real Git worktree removal follows release of a process holding its directo
   if(holder&&holder.exitCode===null&&holder.signalCode===null){const exited=once(holder,"exit");holder.kill();await exited;}
   assert.equal(path.dirname(fs.realpathSync.native(work)),fs.realpathSync.native(base));fs.rmSync(work,{recursive:true,force:true});
  }
+});
+
+test("a refused fixture removal names the processes still running and still fails",async()=>{
+ const refused=Object.assign(new Error("EPERM, Permission denied"),{code:"EPERM"});let tries=0;const logged=[];
+ await assert.rejects(removeFixtureFolder("fixture",{remove:()=>{if(++tries<3)throw refused;},list:()=>`git.exe pid=${tries}`,watchMs:1000,pollMs:1,log:line=>logged.push(line)}),e=>e===refused);
+ assert.equal(tries,3);
+ assert.match(logged[0],/Removing fixture failed \(EPERM\)[\s\S]*git\.exe pid=1/);
+ assert.match(logged[1],/could be removed \d+ s later[\s\S]*git\.exe pid=3/);
+ let removed=false;await removeFixtureFolder("fixture",{remove:()=>{removed=true;},list:()=>assert.fail("listed without a failure")});assert(removed);
 });

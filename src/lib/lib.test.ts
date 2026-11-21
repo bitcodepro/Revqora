@@ -249,6 +249,21 @@ describe("background fetch", () => {
     expect(quietFetch.failedAt("/two-servers-1")).toBe(false);
   });
 
+  it("still fetches a repository with a remote on a server that answers when origin's server is down", async () => {
+    const attempts: string[] = [];
+    const timeout = { message: "Git exceeded its 90 second time limit.", kind: "git-timeout", stderr: "", code: null, details: [] };
+    const quietFetch = createAutoFetch({
+      fetch: async root => { attempts.push(root); if (root.startsWith("/down")) throw timeout; return { refsChanged: false }; },
+      refresh: async () => {},
+      busy: () => false,
+      log: () => {},
+      serverOf: () => "down.example.invalid",
+      serversOf: root => root === "/mirrored" ? ["down.example.invalid", "up.example.invalid"] : ["down.example.invalid"],
+    });
+    await autoFetchRound(["/down-1", "/down-2", "/down-3", "/mirrored"], quietFetch, () => true, () => true, 1);
+    expect(attempts).toEqual(["/down-1", "/down-2", "/mirrored"]);
+  });
+
   it("shows what a fetch brought although one remote failed", async () => {
     const refreshed: boolean[] = [];
     const failed: string[] = [];

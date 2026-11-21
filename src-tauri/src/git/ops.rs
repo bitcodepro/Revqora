@@ -1293,18 +1293,25 @@ impl RawLineEndings {
     /// program that keeps the old file open loses no more than it would to Git.
     #[cfg(not(windows))]
     fn rewrite(file: &Path, _wait: bool, change: impl FnOnce(&[u8]) -> Rewrite) -> std::io::Result<bool> {
-        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-        let sibling = |what: &str| file.with_file_name(format!(".{name}.revqora-{what}-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        // A name no file has, also none left by an earlier run that stopped halfway: only
+        // Revqora writes these names, so nothing takes one between the check and its use.
+        let sibling = |what: &str| loop {
+            let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_nanos()).unwrap_or(0);
+            let path = file.with_file_name(format!(".{name}.revqora-{what}-{}-{time}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            if std::fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+                break path;
+            }
+        };
         // Where no file is now; a file someone wrote meanwhile stays, and ours is kept beside it.
         let put_back = |from: &Path| -> std::io::Result<()> {
             match place(from, file) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let kept = file.with_file_name(format!("{name}.revqora-kept-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
-                    std::fs::rename(from, &kept)?;
+                    let kept = keep_beside(from, file)?;
                     Err(std::io::Error::other(format!("another program wrote {name} meanwhile; the other version is kept as {}", kept.display())))
                 }
                 Err(e) => Err(e),
@@ -1330,8 +1337,13 @@ impl RawLineEndings {
             Rewrite::Remove => put_back(&aside).map(|()| false),
             Rewrite::With(bytes) => {
                 let new = sibling("new");
-                if let Err(e) = std::fs::write(&new, &bytes).and_then(|()| std::fs::set_permissions(&new, before.permissions())) {
-                    let _ = std::fs::remove_file(&new);
+                let written = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&new).and_then(|mut out| {
+                    // Created here: ours to remove if writing it fails.
+                    std::io::Write::write_all(&mut out, &bytes).and_then(|()| std::fs::set_permissions(&new, before.permissions())).inspect_err(|_| {
+                        let _ = std::fs::remove_file(&new);
+                    })
+                });
+                if let Err(e) = written {
                     put_back(&aside)?;
                     return Err(e);
                 }
@@ -1355,8 +1367,7 @@ impl RawLineEndings {
                     std::fs::remove_file(&aside)?;
                     Ok(placed)
                 } else {
-                    let kept = file.with_file_name(format!("{name}.revqora-kept-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
-                    std::fs::rename(&aside, &kept)?;
+                    let kept = keep_beside(&aside, file)?;
                     Err(std::io::Error::other(format!("another program wrote {name} meanwhile; that version is kept as {}", kept.display())))
                 }
             }
@@ -1465,7 +1476,7 @@ impl RawLineEndings {
         args.extend(before.keys().copied());
         let listed = runner::exec(repo, &args)?;
         if !listed.ok() {
-            return Ok(Vec::new());
+            return Err(GitError::new(format!("Git could not list the files the pull wrote ({})", listed.stderr.trim())));
         }
         // Stage 0 only (a conflict is the user's to resolve), a regular file, with a new blob.
         let mut changed: Vec<(String, String)> = Vec::new();
@@ -1490,10 +1501,13 @@ impl RawLineEndings {
         let sizes: String = changed.iter().map(|(_, blob)| format!("{blob}\n")).collect();
         let sizes = runner::exec_full(repo, ["cat-file", "--batch-check=%(objectsize)"], &[], Some(sizes.as_bytes()))?;
         if !sizes.ok() {
-            return Ok(Vec::new());
+            return Err(GitError::new(format!("Git could not read the incoming versions ({})", sizes.stderr.trim())));
         }
-        let sizes: Vec<Option<u64>> = sizes.text().lines().map(|line| line.trim().parse().ok()).collect();
+        let mut sizes: Vec<Option<u64>> = sizes.text().lines().map(|line| line.trim().parse().ok()).collect();
+        sizes.resize(changed.len(), None);
         let mut large = Vec::new();
+        // Files whose incoming version Git could not give: they keep what the pull wrote.
+        let mut unread = Vec::new();
         // A few files and a few megabytes at a time.
         let mut batches: Vec<Vec<(String, String)>> = Vec::new();
         let mut bytes = 0;
@@ -1509,7 +1523,7 @@ impl RawLineEndings {
                     bytes += size;
                     batches.last_mut().expect("just pushed").push(entry);
                 }
-                None => {}
+                None => unread.push(entry.0),
             }
         }
         let mut busy = Vec::new();
@@ -1528,12 +1542,18 @@ impl RawLineEndings {
                     })
                 },
             );
-            let stored = stored?;
-            if !stored.ok() {
-                continue;
-            }
-            for (((path, blob), stored), converted) in batch.iter().zip(batch_contents(&stored.stdout)).zip(converted) {
-                let (Some(stored), Some(converted)) = (stored, converted) else { continue };
+            let mut stored = match stored {
+                Ok(out) if out.ok() => batch_contents(&out.stdout),
+                _ => Vec::new(),
+            };
+            stored.resize(batch.len(), None);
+            let mut converted = converted;
+            converted.resize(batch.len(), None);
+            for (((path, blob), stored), converted) in batch.iter().zip(stored).zip(converted) {
+                let (Some(stored), Some(converted)) = (stored, converted) else {
+                    unread.push(path.clone());
+                    continue;
+                };
                 if stored == converted {
                     continue;
                 }
@@ -1571,6 +1591,12 @@ impl RawLineEndings {
                 "These files are larger than {} MB and keep the line endings stored in Git; their content is the incoming version: {}.",
                 RECONVERT_MAX_BYTES >> 20,
                 large.join(", ")
+            ));
+        }
+        if !unread.is_empty() {
+            left.push(format!(
+                "These files keep the line endings stored in Git, because Git could not read their incoming version to restore them; their content is the incoming version: {}.",
+                unread.join(", ")
             ));
         }
         Ok(left)
@@ -1683,6 +1709,34 @@ mod rewrite_tests {
         let kept = leftovers(dir.path());
         assert_eq!(kept.len(), 1, "{kept:?}");
         assert_eq!(fs::read_to_string(dir.path().join(&kept[0])).unwrap(), "saved by an editor\n");
+        // Again: the first kept copy stays, the second gets a name of its own.
+        RawLineEndings::rewrite(&file, false, |_| {
+            fs::write(&file, "saved a third time\n").unwrap();
+            Rewrite::Keep
+        })
+        .unwrap_err();
+        let mut kept = leftovers(dir.path());
+        kept.sort();
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        let contents: Vec<String> = kept.iter().map(|name| fs::read_to_string(dir.path().join(name)).unwrap()).collect();
+        assert!(contents.contains(&"saved by an editor\n".to_owned()) && contents.contains(&"saved again\n".to_owned()), "{contents:?}");
+    }
+
+    /// A file is only put where none is, and the one there stays.
+    #[cfg(unix)]
+    #[test]
+    fn placing_a_file_never_replaces_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("from"), dir.path().join("to"));
+        fs::write(&from, "ours\n").unwrap();
+        fs::write(&to, "theirs\n").unwrap();
+        assert_eq!(super::place(&from, &to).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&to).unwrap(), "theirs\n");
+        assert_eq!(fs::read_to_string(&from).unwrap(), "ours\n");
+        fs::remove_file(&to).unwrap();
+        super::place(&from, &to).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "ours\n");
+        assert!(!from.exists());
     }
 }
 
@@ -1699,16 +1753,48 @@ const RECONVERT_BATCH: usize = 8;
 /// The most bytes (as stored) restored at once; a larger file keeps the line endings Git wrote.
 const RECONVERT_MAX_BYTES: u64 = 32 << 20;
 
-/// Moves `from` to `to` only where no file is: a hard link, then `from` is removed. Without hard
-/// links (some file systems), a rename after checking that nothing is there.
+/// Moves `from` to `to` only where no file is, never replacing one (AlreadyExists otherwise): a
+/// hard link, then `from` is removed. Without hard links (some file systems), `to` is created
+/// exclusively, which fails as well when a file appears there first, and `from` is copied into
+/// it with its mode.
 #[cfg(not(windows))]
 fn place(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     match std::fs::hard_link(from, to) {
-        Ok(()) => std::fs::remove_file(from),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
-        Err(_) if std::fs::symlink_metadata(to).is_ok() => Err(std::io::ErrorKind::AlreadyExists.into()),
-        Err(_) => std::fs::rename(from, to),
+        Ok(()) => return std::fs::remove_file(from),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(e),
+        Err(_) => {}
     }
+    let mode = std::fs::metadata(from)?.permissions().mode() & 0o7777;
+    let mut target = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(to)?;
+    let copied = std::fs::File::open(from)
+        .and_then(|mut source| std::io::copy(&mut source, &mut target))
+        .and_then(|_| target.set_permissions(std::fs::Permissions::from_mode(mode)))
+        .and_then(|()| target.sync_all());
+    if let Err(e) = copied {
+        drop(target);
+        // Created here a moment ago: ours to remove.
+        let _ = std::fs::remove_file(to);
+        return Err(e);
+    }
+    std::fs::remove_file(from)
+}
+
+/// Keeps `from` beside `file` under a name no file has: `<name>.revqora-kept-<time>-<process>-<n>`,
+/// taken with [`place`], so an earlier kept copy (also from before a restart) is never replaced.
+#[cfg(not(windows))]
+fn keep_beside(from: &Path, file: &Path) -> std::io::Result<PathBuf> {
+    let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_secs()).unwrap_or(0);
+    for n in 0..1000 {
+        let kept = file.with_file_name(format!("{name}.revqora-kept-{time}-{}-{n}", std::process::id()));
+        match place(from, &kept) {
+            Ok(()) => return Ok(kept),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other(format!("no free name to keep a copy of {name} beside it")))
 }
 
 /// `index.lock`, taken as Git takes it, with a private copy of the index to change. Dropped

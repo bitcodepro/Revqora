@@ -123,6 +123,13 @@ export function createAutoFetch(deps: AutoFetchDeps) {
   };
   /** The server `root` fetches from, if known. */
   const server = (root: string) => deps.serverOf?.(root) ?? servers.get(root) ?? null;
+  /** Every server `root` fetches from, if known: all its remotes' hosts, else the one above. */
+  const serversOf = (root: string): string[] => {
+    const all = deps.serversOf?.(root) ?? [];
+    if (all.length) return all;
+    const one = server(root);
+    return one ? [one] : [];
+  };
   /** The server the last failed fetch of `root` could not reach: the one Git named, else the one
    *  `root` fetches from. A failure on a mirror counts for the mirror's server, not for origin's.
    *  False: Git named none and the fetch asked several servers, so none can be blamed. */
@@ -132,7 +139,7 @@ export function createAutoFetch(deps: AutoFetchDeps) {
     if ((deps.serversOf?.(root).length ?? 0) > 1) return false;
     return server(root);
   };
-  return Object.assign(quietFetch, { server, failedAt });
+  return Object.assign(quietFetch, { server, servers: serversOf, failedAt });
 }
 
 /** Failures in one round before the rest of a server's repositories wait for the next round. */
@@ -141,12 +148,17 @@ export const SERVER_FAILURES_PER_ROUND = 2;
 /**
  * One automatic fetch round. A server that failed twice (down, answering 502, unreachable)
  * is not asked again this round, and its other repositories wait; repositories on other
- * servers are still fetched. Two failures that name no server (time limits) mean the
+ * servers are still fetched. A repository with remotes on several servers waits only when all
+ * of them are down: the others still answer its fetch. Two failures that name no server (time limits) mean the
  * connection itself is down: the round ends.
  */
 export async function autoFetchRound(
   roots: string[],
-  quietFetch: ((root: string) => Promise<AutoFetchResult>) & { server: (root: string) => string | null; failedAt?: (root: string) => string | null | false },
+  quietFetch: ((root: string) => Promise<AutoFetchResult>) & {
+    server: (root: string) => string | null;
+    servers?: (root: string) => string[];
+    failedAt?: (root: string) => string | null | false;
+  },
   eligible: (root: string) => boolean,
   current: () => boolean,
   parallel: number,
@@ -154,8 +166,12 @@ export async function autoFetchRound(
   const failedServers = new Map<string, number>();
   let unknown = 0;
   const down = (server: string | null) => !!server && (failedServers.get(server) ?? 0) >= SERVER_FAILURES_PER_ROUND;
+  const allDown = (root: string) => {
+    const servers = quietFetch.servers?.(root) ?? [quietFetch.server(root)].filter((s): s is string => !!s);
+    return servers.length > 0 && servers.every(down);
+  };
   await fetchRound(roots, async root => {
-    if (!eligible(root) || down(quietFetch.server(root))) return;
+    if (!eligible(root) || allDown(root)) return;
     if (await quietFetch(root) !== "transient") return;
     const server = (quietFetch.failedAt ?? quietFetch.server)(root);
     // Several servers and Git named none: it counts for no server, and is no sign that the
