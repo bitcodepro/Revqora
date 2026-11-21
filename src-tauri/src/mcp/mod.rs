@@ -1,5 +1,6 @@
 //! A stdio MCP process talks to the running desktop through a private local bridge.
 pub(crate) mod cherry_pick;
+pub(crate) mod pages;
 mod protocol;
 mod transport;
 

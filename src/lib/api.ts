@@ -8,6 +8,9 @@ import { repositoryCall } from "./operationClient";
 import { recordError } from "./errorLog";
 import { cachedPrRead, forgetPrReads, PR_READ_TTL } from "./prCache";
 
+/** Paging arguments of an MCP diff read. */
+export interface McpDiffPageOptions { offset?: number; limit?: number; diffVersion?: string; lineOffset?: number; conflictSide?: "base" | "ours" | "theirs" }
+
 /** A PR write changes what remembered reads would show: forget them before and after. */
 function prWrite<T>(write: Promise<T>): Promise<T> {
   forgetPrReads();
@@ -229,6 +232,11 @@ export const api = {
   workingDiff: (repo: string, path: string, side: "unstaged" | "staged", untracked: boolean, opts?: DiffOptions, fullIndex?: boolean, preview?: boolean) =>
     call<FileDiff>("working_diff", { repo, path, side, untracked, opts, fullIndex, preview }),
   revDiff: (repo: string, from: string | null, to: string, path: string, opts?: DiffOptions, preview?: boolean) => call<FileDiff>("rev_diff", { repo, from, to, path, opts, preview }),
+  /** MCP pages built in the backend, so only the page reaches the window. */
+  mcpRevDiffPage: (repo: string, from: string | null, to: string, path: string, opts: DiffOptions, page: McpDiffPageOptions) => call<unknown>("mcp_rev_diff_page", { repo, from, to, path, opts, page }),
+  mcpWorkingDiffPage: (repo: string, path: string, side: "unstaged" | "staged", untracked: boolean, opts: DiffOptions, page: McpDiffPageOptions) => call<unknown>("mcp_working_diff_page", { repo, path, side, untracked, opts, page }),
+  mcpStatusPage: (repo: string, statusVersion: string | undefined, offset: number | undefined) => call<unknown>("mcp_status_page", { repo, statusVersion, offset }),
+  mcpBranchPage: (repo: string, scope: string | undefined, query: string | undefined, offset: number | undefined) => call<unknown>("mcp_branch_page", { repo, scope, query, offset }),
   applySelection: (
     repo: string,
     path: string,

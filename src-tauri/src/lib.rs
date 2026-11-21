@@ -885,6 +885,44 @@ async fn working_diff(
     .await
 }
 
+/// One MCP page of a commit diff (see [`mcp::pages::diff_page`]).
+#[tauri::command]
+async fn mcp_rev_diff_page(
+    repo: String,
+    from: Option<String>,
+    to: String,
+    path: String,
+    opts: Option<DiffOptions>,
+    page: mcp::pages::DiffPageOptions,
+) -> GitResult<serde_json::Value> {
+    blocking(move || mcp::pages::diff_page(diff::rev_diff_view(&p(&repo), from.as_deref(), &to, &path, &opts.unwrap_or_default(), false)?, &page)).await
+}
+
+/// One MCP page of a working-tree or staged diff against the full index.
+#[tauri::command]
+async fn mcp_working_diff_page(
+    repo: String,
+    path: String,
+    side: WorkSide,
+    untracked: bool,
+    opts: Option<DiffOptions>,
+    page: mcp::pages::DiffPageOptions,
+) -> GitResult<serde_json::Value> {
+    blocking(move || mcp::pages::diff_page(diff::working_diff_view(&p(&repo), &path, side, None, untracked, &opts.unwrap_or_default(), false)?, &page)).await
+}
+
+/// One MCP page of the repository status.
+#[tauri::command]
+async fn mcp_status_page(repo: String, status_version: Option<String>, offset: Option<usize>) -> GitResult<serde_json::Value> {
+    blocking(move || mcp::pages::status_page(&status::status_with_operation(&p(&repo))?, status_version.as_deref(), offset.unwrap_or(0))).await
+}
+
+/// One MCP page of branches matching a name filter.
+#[tauri::command]
+async fn mcp_branch_page(repo: String, scope: Option<String>, query: Option<String>, offset: Option<usize>) -> GitResult<serde_json::Value> {
+    blocking(move || Ok(mcp::pages::branch_page(&refs::snapshot(&p(&repo))?, scope.as_deref(), query.as_deref(), offset.unwrap_or(0)))).await
+}
+
 #[tauri::command]
 async fn rev_diff(repo: String, from: Option<String>, to: String, path: String, opts: Option<DiffOptions>, preview: Option<bool>) -> GitResult<FileDiff> {
     blocking(move || diff::rev_diff_view(&p(&repo), from.as_deref(), &to, &path, &opts.unwrap_or_default(), preview.unwrap_or(false))).await
@@ -3639,6 +3677,10 @@ pub fn run() {
             identity_set,
             working_diff,
             rev_diff,
+            mcp_rev_diff_page,
+            mcp_working_diff_page,
+            mcp_status_page,
+            mcp_branch_page,
             apply_selection,
             stage,
             unstage,
