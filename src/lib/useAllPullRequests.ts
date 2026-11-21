@@ -134,18 +134,34 @@ export function useAllPullRequests(state: PrState, mine: boolean, attention = fa
     const seeded = previous && previous.scan.state === scan.state ? seedGroups(previous.groups, scan.roots) : EMPTY;
     const earlier: EarlierRows = new Map(Object.entries(seeded).map(([root, group]) => [root, { scope: group.scope, items: group.items }]));
     setResult({ scan, groups: seeded, finished: false });
+    // Pages of several repositories arrive together: the list renders once per batch of
+    // them, not once per page.
+    const pending: [string, (old: RepositoryRequests) => RepositoryRequests][] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    function flush() {
+      clearTimeout(timer);
+      timer = undefined;
+      const batch = pending.splice(0);
+      if (!current || !batch.length) return;
+      setResult(previous => {
+        if (previous?.scan !== scan) return previous;
+        const groups = { ...previous.groups };
+        for (const [root, change] of batch) groups[root] = change(groups[root] ?? { forge: null, scope: "", author: null, items: [] });
+        return { ...previous, groups };
+      });
+    }
     function update(root: string, change: (old: RepositoryRequests) => RepositoryRequests) {
       if (!current) return;
-      setResult(previous => previous?.scan === scan
-        ? { ...previous, groups: { ...previous.groups, [root]: change(previous.groups[root] ?? { forge: null, scope: "", author: null, items: [] }) } }
-        : previous);
+      pending.push([root, change]);
+      timer ??= setTimeout(flush, 16);
     }
     scans.current = scans.current.then(async () => {
       if (!current) return;
       await scanPullRequests(scan.roots, scan.state, earlier, () => current, update, PR_SCAN_PARALLEL, () => wantAttention.current && scan.state !== "closed" && scan.state !== "merged");
+      flush();
       if (current) setResult(previous => previous?.scan === scan ? { ...previous, finished: true } : previous);
     });
-    return () => { current = false; };
+    return () => { current = false; clearTimeout(timer); };
   }, [scan]);
 
   const update = useCallback((root: string, connection: string | null, pull: PullRequest) => {
