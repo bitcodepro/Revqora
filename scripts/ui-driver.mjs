@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import { waitForApplicationPage } from "./ui-readiness.mjs";
+import { stopAppTree } from "./ui-cleanup.mjs";
 import { retainStartupFailure, startupLoggingArguments } from "./ui-startup-diagnostics.mjs";
 
 /** CDP-attached native pages have no Playwright viewport until first emulation.
@@ -111,6 +112,7 @@ async function launchApp({ exe, args = [], port = 9333, profile, transportOnly =
   if (profile) env.WEBVIEW2_USER_DATA_FOLDER = profile;
   const captureBrowserLog=transportOnly||initialStartupDiagnostics;
   if(captureBrowserLog)env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=startupLoggingArguments(profile,true,env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS??"");
+  const launchedAt = new Date(Date.now() - 1000);
   const child = spawn(exe, args, { env, stdio: ["ignore", "ignore", "pipe"] });
   let startupError;
   let stderr = "";
@@ -183,10 +185,16 @@ async function launchApp({ exe, args = [], port = 9333, profile, transportOnly =
             timeout.unref();
             child.once("exit", () => { clearTimeout(timeout); resolve(); });
             if (process.platform === "win32") {
-              // This PID belongs to the app spawned above. Its WebView2 children
-              // must exit too before a disposable profile can be removed.
-              try { execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
-              catch { child.kill(); }
+              // This PID belongs to the app spawned above. Its WebView2 children, and Git
+              // processes whose parent already exited, must stop too before a disposable
+              // profile or fixture can be removed.
+              try {
+                const left = stopAppTree(child.pid, launchedAt);
+                if (left.length) console.log(`Stopped what the app left running:\n${left.join("\n")}`);
+              } catch {
+                try { execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
+                catch { child.kill(); }
+              }
             } else child.kill();
           });
         }

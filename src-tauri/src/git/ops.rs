@@ -1288,36 +1288,37 @@ impl RawLineEndings {
     /// Linux and macOS cannot keep other programs out of a file, so it is moved aside first, in
     /// one rename: a program that writes the file by name from then on creates a new one there,
     /// and that file is never replaced. The new content is put only where no file is (a hard
-    /// link). The moved file is dropped only when nothing wrote to it while it was read; else it
-    /// stays beside the file, named in the error. Git's own checkout also replaces files, so a
-    /// program that keeps the old file open loses no more than it would to Git.
+    /// link, or a rename that never replaces). The moved file is dropped only when nothing wrote
+    /// to it while it was read; else it stays beside the file, named in the error. Git's own
+    /// checkout also replaces files, so a program that keeps the old file open loses no more
+    /// than it would to Git. On a file system that can do neither, the file is not touched
+    /// (an `Unsupported` error).
     #[cfg(not(windows))]
     fn rewrite(file: &Path, _wait: bool, change: impl FnOnce(&[u8]) -> Rewrite) -> std::io::Result<bool> {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-        // A name no file has, also none left by an earlier run that stopped halfway: only
-        // Revqora writes these names, so nothing takes one between the check and its use.
-        let sibling = |what: &str| loop {
-            let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_nanos()).unwrap_or(0);
-            let path = file.with_file_name(format!(".{name}.revqora-{what}-{}-{time}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-            if std::fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
-                break path;
-            }
-        };
+        let dir = file.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        if !places_without_replacing(dir)? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "this file system cannot put a file in place without possibly replacing a save made meanwhile",
+            ));
+        }
         // Where no file is now; a file someone wrote meanwhile stays, and ours is kept beside it.
+        // When even that fails, the error names where that version stays.
         let put_back = |from: &Path| -> std::io::Result<()> {
             match place(from, file) {
                 Ok(()) => Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let kept = keep_beside(from, file)?;
-                    Err(std::io::Error::other(format!("another program wrote {name} meanwhile; the other version is kept as {}", kept.display())))
-                }
-                Err(e) => Err(e),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match keep_beside(from, file) {
+                    Ok(kept) => Err(std::io::Error::other(format!("another program wrote {name} meanwhile; the other version is kept as {}", kept.display()))),
+                    Err(e) => {
+                        Err(std::io::Error::other(format!("another program wrote {name} meanwhile; the other version stays as {} ({e})", from.display())))
+                    }
+                },
+                Err(e) => Err(std::io::Error::other(format!("{name} could not be put back ({e}); it stays as {}", from.display()))),
             }
         };
-        let aside = sibling("pull");
+        let aside = fresh_name(dir, "pull")?;
         std::fs::rename(file, &aside)?;
         let read = std::fs::metadata(&aside).and_then(|before| std::fs::read(&aside).map(|now| (before, now)));
         let (before, now) = match read {
@@ -1336,7 +1337,13 @@ impl RawLineEndings {
             Rewrite::Remove if untouched() => std::fs::remove_file(&aside).map(|()| true),
             Rewrite::Remove => put_back(&aside).map(|()| false),
             Rewrite::With(bytes) => {
-                let new = sibling("new");
+                let new = match fresh_name(dir, "new") {
+                    Ok(new) => new,
+                    Err(e) => {
+                        put_back(&aside)?;
+                        return Err(e);
+                    }
+                };
                 let written = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&new).and_then(|mut out| {
                     // Created here: ours to remove if writing it fails.
                     std::io::Write::write_all(&mut out, &bytes).and_then(|()| std::fs::set_permissions(&new, before.permissions())).inspect_err(|_| {
@@ -1367,8 +1374,12 @@ impl RawLineEndings {
                     std::fs::remove_file(&aside)?;
                     Ok(placed)
                 } else {
-                    let kept = keep_beside(&aside, file)?;
-                    Err(std::io::Error::other(format!("another program wrote {name} meanwhile; that version is kept as {}", kept.display())))
+                    match keep_beside(&aside, file) {
+                        Ok(kept) => Err(std::io::Error::other(format!("another program wrote {name} meanwhile; that version is kept as {}", kept.display()))),
+                        Err(e) => {
+                            Err(std::io::Error::other(format!("another program wrote {name} meanwhile; that version stays as {} ({e})", aside.display())))
+                        }
+                    }
                 }
             }
         }
@@ -1425,6 +1436,12 @@ impl RawLineEndings {
         let error = |e: std::io::Error| GitError::new(format!("Could not update {}: {e}", file.display()));
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir).map_err(error)?;
+            // Linux and macOS: rules that could not be taken out again without risk are not
+            // written; the pull then runs as Git runs it.
+            #[cfg(not(windows))]
+            if !places_without_replacing(dir).map_err(error)? {
+                return Ok(None);
+            }
         }
         let created = !file.exists();
         // Appended in one write while held: what the file holds stays as it is.
@@ -1527,6 +1544,8 @@ impl RawLineEndings {
             }
         }
         let mut busy = Vec::new();
+        // On a file system that cannot put a file in place without replacing one (Linux, macOS).
+        let mut cannot_place: Vec<String> = Vec::new();
         let mut written: Vec<(&str, &str)> = Vec::new();
         for batch in &batches {
             // Each new blob as stored (what the pull wrote) and as the rules check it out. The
@@ -1567,6 +1586,7 @@ impl RawLineEndings {
                     Ok(true) => written.push((path.as_str(), blob.as_str())),
                     Ok(false) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::Unsupported => cannot_place.push(path.clone()),
                     Err(e) => busy.push(format!("{path} ({e})")),
                 }
             }
@@ -1591,6 +1611,12 @@ impl RawLineEndings {
                 "These files are larger than {} MB and keep the line endings stored in Git; their content is the incoming version: {}.",
                 RECONVERT_MAX_BYTES >> 20,
                 large.join(", ")
+            ));
+        }
+        if !cannot_place.is_empty() {
+            left.push(format!(
+                "These files keep the line endings stored in Git, because their file system cannot replace a file without risking an edit saved meanwhile; their content is the incoming version: {}.",
+                cannot_place.join(", ")
             ));
         }
         if !unread.is_empty() {
@@ -1737,6 +1763,36 @@ mod rewrite_tests {
         super::place(&from, &to).unwrap();
         assert_eq!(fs::read_to_string(&to).unwrap(), "ours\n");
         assert!(!from.exists());
+        // The way without hard links: one rename that fails where a file is.
+        fs::write(&from, "ours again\n").unwrap();
+        assert_eq!(super::rename_without_replacing(&from, &to).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&to).unwrap(), "ours\n");
+        fs::remove_file(&to).unwrap();
+        super::rename_without_replacing(&from, &to).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "ours again\n");
+        assert!(!from.exists());
+    }
+
+    /// A file name as long as file systems allow: the temporary names stay short, and a kept
+    /// copy gets a shortened name.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_with_the_longest_name_is_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(format!("{}.txt", "n".repeat(251)));
+        fs::write(&file, "one\n").unwrap();
+        assert!(RawLineEndings::rewrite(&file, false, |_| Rewrite::With(b"one\r\n".to_vec())).unwrap());
+        assert_eq!(fs::read(&file).unwrap(), b"one\r\n");
+        let error = RawLineEndings::rewrite(&file, false, |_| {
+            fs::write(&file, "saved meanwhile\n").unwrap();
+            Rewrite::Keep
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("kept as"), "{error}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "saved meanwhile\n");
+        let names: Vec<String> = fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names.iter().any(|name| name.contains(".revqora-kept-") && name.len() <= 255), "{names:?}");
     }
 }
 
@@ -1753,38 +1809,107 @@ const RECONVERT_BATCH: usize = 8;
 /// The most bytes (as stored) restored at once; a larger file keeps the line endings Git wrote.
 const RECONVERT_MAX_BYTES: u64 = 32 << 20;
 
-/// Moves `from` to `to` only where no file is, never replacing one (AlreadyExists otherwise): a
-/// hard link, then `from` is removed. Without hard links (some file systems), `to` is created
-/// exclusively, which fails as well when a file appears there first, and `from` is copied into
-/// it with its mode.
+/// Moves `from` to `to` only where no file is, never replacing one (AlreadyExists otherwise), in
+/// one step: a hard link, then `from` is removed; without hard links (some file systems), a
+/// rename that fails when `to` exists. `Unsupported` when the file system can do neither: then
+/// nothing changed, and nothing is ever copied or removed by the name `to`.
 #[cfg(not(windows))]
 fn place(from: &Path, to: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     match std::fs::hard_link(from, to) {
-        Ok(()) => return std::fs::remove_file(from),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(e),
-        Err(_) => {}
+        Ok(()) => std::fs::remove_file(from),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) => rename_without_replacing(from, to),
     }
-    let mode = std::fs::metadata(from)?.permissions().mode() & 0o7777;
-    let mut target = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(to)?;
-    let copied = std::fs::File::open(from)
-        .and_then(|mut source| std::io::copy(&mut source, &mut target))
-        .and_then(|_| target.set_permissions(std::fs::Permissions::from_mode(mode)))
-        .and_then(|()| target.sync_all());
-    if let Err(e) = copied {
-        drop(target);
-        // Created here a moment ago: ours to remove.
-        let _ = std::fs::remove_file(to);
-        return Err(e);
+}
+
+/// `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS.
+#[cfg(not(windows))]
+fn rename_without_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+        let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+        // SAFETY: both paths are NUL-terminated and live for the call.
+        #[cfg(target_os = "linux")]
+        let result = unsafe { libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE) };
+        // SAFETY: as above.
+        #[cfg(target_vendor = "apple")]
+        let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+        if result == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        let unsupported = e.raw_os_error().is_some_and(|code| [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP].contains(&code));
+        Err(if unsupported { std::io::Error::new(std::io::ErrorKind::Unsupported, e) } else { e })
     }
-    std::fs::remove_file(from)
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+    {
+        let _ = (from, to);
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
+/// Whether [`place`] works in `dir`, tried once per file system with two files of its own.
+#[cfg(not(windows))]
+fn places_without_replacing(dir: &Path) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    static KNOWN: std::sync::Mutex<std::collections::BTreeMap<u64, bool>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let device = std::fs::metadata(dir)?.dev();
+    if let Some(known) = KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&device) {
+        return Ok(*known);
+    }
+    let probe = fresh_name(dir, "probe")?;
+    std::fs::OpenOptions::new().write(true).create_new(true).open(&probe)?;
+    let works = match fresh_name(dir, "probe").and_then(|to| place(&probe, &to).map(|()| to)) {
+        Ok(to) => {
+            let _ = std::fs::remove_file(to);
+            true
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&probe);
+            if e.kind() != std::io::ErrorKind::Unsupported {
+                return Err(e);
+            }
+            false
+        }
+    };
+    KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(device, works);
+    Ok(works)
+}
+
+/// A short name in `dir` no file has, also none left by an earlier run that stopped halfway:
+/// `.revqora-<what>-<process>-<time>-<n>`, the same length for any file name. Only Revqora
+/// writes these names, so nothing takes one between the check and its use.
+#[cfg(not(windows))]
+fn fresh_name(dir: &Path, what: &str) -> std::io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..1000 {
+        let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_nanos()).unwrap_or(0);
+        let path = dir.join(format!(".revqora-{what}-{}-{time:x}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        match std::fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(path),
+            Err(e) => return Err(e),
+            Ok(_) => {}
+        }
+    }
+    Err(std::io::Error::other(format!("no free name for a temporary file in {}", dir.display())))
 }
 
 /// Keeps `from` beside `file` under a name no file has: `<name>.revqora-kept-<time>-<process>-<n>`,
 /// taken with [`place`], so an earlier kept copy (also from before a restart) is never replaced.
+/// A long name is shortened so the kept name stays within the 255 bytes file systems allow.
 #[cfg(not(windows))]
 fn keep_beside(from: &Path, file: &Path) -> std::io::Result<PathBuf> {
-    let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    if name.len() > 180 {
+        let mut end = 180;
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        name.truncate(end);
+    }
     let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_secs()).unwrap_or(0);
     for n in 0..1000 {
         let kept = file.with_file_name(format!("{name}.revqora-kept-{time}-{}-{n}", std::process::id()));
