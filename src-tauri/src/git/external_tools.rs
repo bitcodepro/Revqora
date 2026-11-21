@@ -61,17 +61,175 @@ fn config(repo: &Path, key: &str) -> Option<String> {
     runner::run(repo, ["config", "--get", key]).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
-pub fn tools(repo: &Path) -> GitResult<ExternalTools> {
+/// The installed tools as `--tool-help` lists them, for one set of tool settings.
+#[derive(Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
+struct Lists {
+    key: String,
+    /// When they were read (seconds since 1970).
+    at: u64,
+    diff: Vec<String>,
+    merge: Vec<String>,
+}
+
+/// Lists older than this are still shown, and read again in the background.
+const REFRESH_AFTER_SECS: u64 = 24 * 60 * 60;
+/// Tool settings kept on disk at most (one per set of settings, the newest).
+const KEPT_LISTS: usize = 16;
+
+static MEMO: std::sync::Mutex<Vec<Lists>> = std::sync::Mutex::new(Vec::new());
+/// One reading at a time: a second caller waits for it and takes its lists.
+static READING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_secs()).unwrap_or(0)
+}
+
+fn lists_file() -> Option<PathBuf> {
+    crate::portable::data_dir().map(|dir| dir.join("external-tools.json"))
+}
+
+/// The lists read for `key`: from memory, else from `file` (portable data).
+fn lookup(key: &str, file: Option<&Path>) -> Option<Lists> {
+    let mut memo = MEMO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(lists) = memo.iter().find(|lists| lists.key == key) {
+        return Some(lists.clone());
+    }
+    let stored: Vec<Lists> = file.and_then(|file| std::fs::read(file).ok()).and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    let lists = stored.into_iter().find(|lists| lists.key == key)?;
+    memo.push(lists.clone());
+    Some(lists)
+}
+
+/// Keeps `lists` in memory and in `file`, replacing older lists for the same settings.
+fn remember(lists: &Lists, file: Option<&Path>) {
+    let mut memo = MEMO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    memo.retain(|known| known.key != lists.key);
+    memo.push(lists.clone());
+    let Some(file) = file else { return };
+    let mut stored: Vec<Lists> = std::fs::read(file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    stored.retain(|known| known.key != lists.key);
+    stored.push(lists.clone());
+    stored.sort_by_key(|known| std::cmp::Reverse(known.at));
+    stored.truncate(KEPT_LISTS);
+    if let Ok(bytes) = serde_json::to_vec(&stored) {
+        let _ = std::fs::write(file, bytes);
+    }
+}
+
+/// What the lists depend on besides the installed programs: the difftool and mergetool
+/// settings and `PATH`. Settings only the user or the system gives are the same for every
+/// repository, so those lists are shared; a repository with tool settings of its own gets
+/// lists of its own (`own`). Read with the configured defaults, in one Git command.
+struct ToolSettings {
+    key: String,
+    own: bool,
+    diff_default: Option<String>,
+    merge_default: Option<String>,
+}
+
+fn tool_settings(repo: &Path) -> ToolSettings {
+    use std::hash::{Hash, Hasher};
+    let lines = runner::run(repo, ["config", "--show-scope", "--get-regexp", r"^((diff|merge)tool\.|(diff|merge)\.tool$)"]).unwrap_or_default();
+    // "<scope>\t<name> <value>"
+    let entries: Vec<(&str, &str, &str)> = lines
+        .lines()
+        .filter_map(|line| {
+            let (scope, rest) = line.split_once('\t')?;
+            let (name, value) = rest.split_once(' ').unwrap_or((rest, ""));
+            Some((scope, name, value.trim()))
+        })
+        .collect();
+    // Like `git config --get`: the last value counts.
+    let value = |wanted: &str| entries.iter().rev().find(|(_, name, value)| *name == wanted && !value.is_empty()).map(|(_, _, value)| (*value).to_owned());
+    let tools: Vec<&(&str, &str, &str)> = entries.iter().filter(|(_, name, _)| name.starts_with("difftool.") || name.starts_with("mergetool.")).collect();
+    let own = tools.iter().any(|(scope, _, _)| matches!(*scope, "local" | "worktree"));
+    let mut path = std::collections::hash_map::DefaultHasher::new();
+    std::env::var_os("PATH").hash(&mut path);
+    let mut key = format!("path={:x}", path.finish());
+    for (scope, name, value) in &tools {
+        key.push_str(&format!("\n{scope} {name} {value}"));
+    }
+    if own {
+        key = format!("repository={}\n{key}", std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_owned()).display());
+    }
+    ToolSettings { key, own, diff_default: value("diff.tool").or_else(|| value("merge.tool")), merge_default: value("merge.tool") }
+}
+
+/// Runs `git difftool --tool-help` and `git mergetool --tool-help` at once. Git's script
+/// checks every tool it knows, about half a minute on Windows. Lists that hold for every
+/// repository are read in Git's own folder, not in `repo`: the script's shell would otherwise
+/// keep `repo` in use that long, also after Revqora exits. On Windows the script gets a hidden
+/// console (other Git commands run without one): its shell starts dozens of processes, and
+/// without a console that took half as long again. In the background, at below-normal priority.
+fn read_lists(repo: &Path, key: String, own: bool, background: bool) -> Lists {
+    static NEUTRAL: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let neutral = NEUTRAL
+        .get_or_init(|| runner::run(repo, ["--exec-path"]).ok().map(|dir| PathBuf::from(dir.trim())).filter(|dir| dir.is_dir()))
+        .as_deref()
+        .filter(|_| !own);
     let help = |cmd: &str| -> String {
-        let out = runner::command(repo).args([cmd, "--tool-help"]).stdin(Stdio::null()).output();
+        let mut command = runner::command(repo);
+        if let Some(dir) = neutral {
+            command.current_dir(dir).env("GIT_CEILING_DIRECTORIES", dir);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+            command.creation_flags(CREATE_NO_WINDOW | if background { BELOW_NORMAL_PRIORITY_CLASS } else { 0 });
+        }
+        #[cfg(not(windows))]
+        let _ = background;
+        let out = command.args([cmd, "--tool-help"]).stdin(Stdio::null()).output();
         out.map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))).unwrap_or_default()
     };
-    Ok(ExternalTools {
-        diff_tools: installed(&help("difftool")),
-        merge_tools: installed(&help("mergetool")),
-        diff_default: config(repo, "diff.tool").or_else(|| config(repo, "merge.tool")),
-        merge_default: config(repo, "merge.tool"),
-    })
+    let (diff, merge) = std::thread::scope(|scope| {
+        let diff = scope.spawn(|| installed(&help("difftool")));
+        let merge = installed(&help("mergetool"));
+        (diff.join().unwrap_or_default(), merge)
+    });
+    Lists { key, at: now_secs(), diff, merge }
+}
+
+/// The lists for `key`: known ones at once (read again in the background when old), else
+/// read now with `read`.
+fn lists_for(key: &str, file: Option<&Path>, now: u64, read: impl FnOnce() -> Lists, refresh: impl FnOnce()) -> Lists {
+    if let Some(lists) = lookup(key, file) {
+        if now.saturating_sub(lists.at) > REFRESH_AFTER_SECS {
+            refresh();
+        }
+        return lists;
+    }
+    let _reading = READING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(lists) = lookup(key, file) {
+        return lists;
+    }
+    let lists = read();
+    remember(&lists, file);
+    lists
+}
+
+/// Graphical diff and merge tools found on this machine, and the configured defaults. The
+/// lists are kept (in memory and in portable data) for the tool settings they were read with,
+/// so only the first reading waits for Git; a day later they are read again in the background.
+pub fn tools(repo: &Path) -> GitResult<ExternalTools> {
+    let ToolSettings { key, own, diff_default, merge_default } = tool_settings(repo);
+    let file = lists_file();
+    let refresh = || {
+        if REFRESHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let (repo, key, file) = (repo.to_owned(), key.clone(), file.clone());
+        std::thread::spawn(move || {
+            let lists = read_lists(&repo, key, own, true);
+            remember(&lists, file.as_deref());
+            REFRESHING.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    };
+    let lists = lists_for(&key, file.as_deref(), now_secs(), || read_lists(repo, key.clone(), own, false), refresh);
+    Ok(ExternalTools { diff_tools: lists.diff, merge_tools: lists.merge, diff_default, merge_default })
 }
 
 /// The tool to run: the chosen one, else Git's configured default. Without either Git would
@@ -259,6 +417,55 @@ pub fn open_in_editor(repo: &Path, path: &str, line: u32, column: u32, template:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_settings_give_the_defaults_and_tell_a_repository_with_tools_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(dir.path()).args(args).status().unwrap().success());
+        git(&["init", "-q"]);
+        let plain = tool_settings(dir.path());
+        assert!(!plain.own);
+        git(&["config", "merge.tool", "first"]);
+        git(&["config", "--add", "merge.tool", "meld"]);
+        let defaults = tool_settings(dir.path());
+        assert_eq!(defaults.merge_default.as_deref(), Some("meld"), "the last value counts");
+        git(&["config", "diff.tool", "kdiff3"]);
+        let defaults = tool_settings(dir.path());
+        assert_eq!(defaults.diff_default.as_deref(), Some("kdiff3"));
+        assert!(!defaults.own);
+        assert_eq!(defaults.key, plain.key, "a default is no reason to read the lists again");
+        git(&["config", "difftool.mine.cmd", "mine \"$LOCAL\" \"$REMOTE\""]);
+        let own = tool_settings(dir.path());
+        assert!(own.own);
+        assert_ne!(own.key, plain.key);
+        assert!(own.key.contains("difftool.mine.cmd"), "{}", own.key);
+    }
+
+    #[test]
+    fn tool_lists_are_read_once_per_settings_and_refreshed_in_the_background_when_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("external-tools.json");
+        let key = format!("test-{}-{:?}", std::process::id(), std::thread::current().id());
+        let read = |diff: &str| Lists { key: key.clone(), at: 1_000, diff: vec![diff.to_owned()], merge: vec!["meld".to_owned()] };
+        let first = lists_for(&key, Some(&file), 1_000, || read("meld"), || panic!("nothing to refresh"));
+        assert_eq!(first.diff, ["meld"]);
+        // Known now: not read again, also after a restart (only the file left).
+        let again = lists_for(&key, Some(&file), 2_000, || panic!("read twice"), || panic!("not old"));
+        assert_eq!(again, first);
+        MEMO.lock().unwrap().retain(|lists| lists.key != key);
+        let stored = lists_for(&key, Some(&file), 2_000, || panic!("read after a restart"), || panic!("not old"));
+        assert_eq!(stored, first);
+        // Old: shown at once, and read again in the background.
+        let mut refreshed = false;
+        let old = lists_for(&key, Some(&file), 1_000 + REFRESH_AFTER_SECS + 1, || panic!("waited for a reading"), || refreshed = true);
+        assert!(refreshed);
+        assert_eq!(old, first);
+        // Other settings: read for themselves.
+        let other = format!("{key}-other");
+        let lists = lists_for(&other, Some(&file), 3_000, || Lists { key: other.clone(), at: 3_000, diff: vec![], merge: vec![] }, || {});
+        assert!(lists.diff.is_empty());
+        assert_eq!(serde_json::from_slice::<Vec<Lists>>(&std::fs::read(&file).unwrap()).unwrap().len(), 2);
+    }
 
     #[test]
     fn editor_templates_split_like_a_command_line_without_a_shell() {
