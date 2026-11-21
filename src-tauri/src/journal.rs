@@ -28,6 +28,32 @@ static DIRECTORY: OnceLock<Option<PathBuf>> = OnceLock::new();
 static WARNING: Mutex<Option<String>> = Mutex::new(None);
 thread_local! { static CURRENT: RefCell<Vec<Arc<Context>>> = const { RefCell::new(Vec::new()) }; }
 
+/// Told when a running operation moves (it starts, or one of its Git commands finishes), so an
+/// open Operation log refreshes without polling. Moves within [`PROGRESS_MS`] are one notice.
+static PROGRESS: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+static PROGRESS_PENDING: AtomicBool = AtomicBool::new(false);
+const PROGRESS_MS: u64 = 250;
+
+pub fn on_progress(notify: impl Fn() + Send + Sync + 'static) {
+    let _ = PROGRESS.set(Box::new(notify));
+}
+
+fn progressed() {
+    if PROGRESS.get().is_none() || PROGRESS_PENDING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("revqora-log-progress".into()).spawn(|| {
+        std::thread::sleep(Duration::from_millis(PROGRESS_MS));
+        PROGRESS_PENDING.store(false, Ordering::Release);
+        if let Some(notify) = PROGRESS.get() {
+            notify();
+        }
+    });
+    if spawned.is_err() {
+        PROGRESS_PENDING.store(false, Ordering::Release);
+    }
+}
+
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis().min(i64::MAX as u128) as i64
 }
@@ -508,6 +534,7 @@ impl Operation {
         if let Err(e) = result {
             warn(e);
         }
+        progressed();
     }
     pub fn after(&self, root: &Path) {
         let head = head(root);
@@ -660,9 +687,11 @@ impl Command {
                     params![size as i64, a || b, self.context.id],
                 )
             });
+        drop(db);
         if let Err(e) = result {
             warn(e);
         }
+        progressed();
     }
 }
 impl Drop for Command {

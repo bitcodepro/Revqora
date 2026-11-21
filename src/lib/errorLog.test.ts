@@ -12,6 +12,17 @@ it("keeps unavailable saved folders out of the application error log", () => {
   expect(invoke).not.toHaveBeenCalled();
 });
 
+it("keeps replaced requests, the user's Cancel and refusals that changed nothing out of the error log", () => {
+  vi.stubGlobal("window", {});
+  vi.mocked(invoke).mockClear();
+  recordError("graph_load", { kind: "superseded", message: "A newer history request replaced this one." }, "repo");
+  recordError("fetch", { kind: "cancelled", message: "Transfer cancelled." }, "repo");
+  recordError("repo_scan_folder", { kind: "scan-cancelled", message: "Folder scan stopped." });
+  recordError("repository_commit_search_page", { kind: "stale-operation", message: "The search or repository history changed. Start the search again." }, "repo");
+  recordError("pr_page", { kind: "pr-connection-required", message: "Configure an API connection first." }, "repo");
+  expect(invoke).not.toHaveBeenCalled();
+});
+
 it("records a status failure once and waits for it before opening the log", async () => {
   vi.stubGlobal("window", {});
   let finish!: () => void;

@@ -10,16 +10,28 @@ export function autosquash(commits: PlanCommit[]): AutosquashResult {
   const children = new Map<string, AutosquashRow[]>();
   const moved = new Set<string>();
   const warnings: string[] = [];
+  // Earlier rows by subject, so an exact target is found without scanning them again.
+  const bySubject = new Map<string, AutosquashRow[]>();
+  const earlierWhere = (end: number, test: (r: AutosquashRow) => boolean) => {
+    const found: AutosquashRow[] = [];
+    for (let k = 0; k < end; k++) if (test(rows[k])) found.push(rows[k]);
+    return found;
+  };
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const prefix = /^(fixup|squash)! (.+)$/.exec(row.subject);
-    if (!prefix) continue;
+    const remember = () => { const same = bySubject.get(row.subject); if (same) same.push(row); else bySubject.set(row.subject, [row]); };
+    if (!prefix) {
+      remember();
+      continue;
+    }
     const target = prefix[2];
-    const earlier = rows.slice(0, i);
     // Full/abbreviated object IDs, then exact subject, then subject prefix.
-    const byId = /^[0-9a-f]{4,64}$/i.test(target) ? earlier.filter((r) => r.oid.startsWith(target.toLowerCase())) : [];
-    const exact = earlier.filter((r) => r.subject === target);
-    const candidates = byId.length ? byId : exact.length ? exact : earlier.filter((r) => r.subject.startsWith(target));
+    const id = target.toLowerCase();
+    const byId = /^[0-9a-f]{4,64}$/i.test(target) ? earlierWhere(i, (r) => r.oid.startsWith(id)) : [];
+    const exact = byId.length ? [] : bySubject.get(target) ?? [];
+    const candidates = byId.length ? byId : exact.length ? exact : earlierWhere(i, (r) => r.subject.startsWith(target));
+    remember();
     if (candidates.length !== 1) { warnings.push(`${row.subject}: ${candidates.length ? "ambiguous target" : "target is outside this range or missing"}; kept as Pick.`); continue; }
     row.action = prefix[1] === "fixup" ? "fixup" : "squash";
     const owner = candidates[0].oid;

@@ -162,6 +162,8 @@ export interface FileDiff {
   hash: string;
   stageSnapshot?: number;
   empty: boolean;
+  /** Only the line endings differ between the index and the working copy. */
+  lineEndings?: { stored: string; working: string };
 }
 
 export interface DiffOptions {
@@ -191,6 +193,19 @@ export interface RefLabel {
   name: string;
   kind: "head" | "local" | "remote" | "tag" | "detached" | "bisect";
   syncedRemote: string | null;
+}
+
+/** One History search match: the commit and its row in the graph, if the graph has it. */
+export interface HistoryMatchRef {
+  oid: string;
+  graphIndex: number | null;
+}
+
+/** A History search: every match, the rows of the first ones (by match position). */
+export interface HistorySearchPage {
+  id: number;
+  matches: HistoryMatchRef[];
+  rows: GraphRow[];
 }
 
 export interface GraphRow {
@@ -276,6 +291,8 @@ export interface FileHistoryEntry {
   time: number;
   subject: string;
   path: string;
+  /** The first parent, which the commit's diff is shown against (null for a root commit). */
+  parent: string | null;
 }
 
 export interface BranchInfo {
@@ -352,6 +369,10 @@ export interface RefsSnapshot {
   tags: TagInfo[];
   stashes: StashInfo[];
   remotes: RemoteInfo[];
+  /** Changes whenever anything above changes (from the backend). */
+  fingerprint?: string;
+  /** Changes whenever a remote branch is added, removed or moves. */
+  remoteFingerprint?: string;
 }
 
 export interface OpOutcome {
@@ -915,7 +936,7 @@ export interface DeletionResult { checkpoint: RecoverySummary | null; warning: s
 
 export interface IgnoredFiles { paths: string[]; truncated: boolean; }
 export interface LineHistoryEntry { oid: string; author: string; time: number; subject: string; path: string; diff: FileDiff; }
-export interface FolderHistoryEntry { oid: string; author: string; time: number; subject: string; files: string[]; }
+export interface FolderHistoryEntry { oid: string; author: string; time: number; subject: string; files: string[]; /** First parent (null for a root commit). */ parent: string | null; }
 export interface ExternalTools { diffTools: string[]; mergeTools: string[]; diffDefault: string | null; mergeDefault: string | null; }
 export type IgnoreKind = "file" | "extension" | "folder";
 export type IgnoreScope = "shared" | "local";
@@ -1029,6 +1050,13 @@ export interface StackOutcome {phase:string;message:string;checkpoint:string}
 
 export interface SymbolHistoryPage extends CodeHistoryPage {anchor:string;scanned:number;unavailable:number;notices:string[]}
 
+/** What Fetch, Pull or Push of several branches did in one repository (`updated`: pulled, pushed,
+ *  or fetched with incoming commits). */
+export interface BranchesSync {
+  updated: { branch: string; commits: number; current: boolean }[];
+  skipped: { branch: string; reason: string }[];
+}
+
 export interface PullOutcome extends OpOutcome { upstreamGone?: { branch: string; remote: string; reference: string; defaultBranch: string | null }; }
 export interface FoundRepository {
   root: string;
@@ -1040,6 +1068,13 @@ export interface RepositoryFolderScan {
   repositories: FoundRepository[];
   skipped: number;
   excluded: number;
+}
+
+/** A running folder scan: folders read so far, working copies found, the folder read last. */
+export interface RepositoryFolderScanProgress {
+  folders: number;
+  repositories: number;
+  current: string;
 }
 export type CloneFilter = "none" | "blob:none" | "tree:0";
 /** Optional clone arguments; see `ops::CloneOptions`. */

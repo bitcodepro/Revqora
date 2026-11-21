@@ -113,12 +113,25 @@ pub fn command(repo: &Path) -> Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
-        let priority = if BACKGROUND.with(std::cell::Cell::get) { BELOW_NORMAL_PRIORITY_CLASS } else { 0 };
-        c.creation_flags(CREATE_NO_WINDOW | priority);
+        c.creation_flags(git_creation_flags());
     }
     c
+}
+
+/// How Git processes start on Windows: without a console, at below-normal priority inside
+/// [`in_background`].
+///
+/// `CREATE_NO_WINDOW` gives every process a hidden console of its own, and starting its console
+/// host made each Git command about 25 ms slower (a Pull runs about 60). Without a console, Git
+/// starts its own helpers (remote helpers, ssh, credential helpers, hooks) with
+/// `DETACHED_PROCESS` as well, which is how Git for Windows runs them from any program without
+/// a console, so no window opens. Every output stream is a pipe or null.
+#[cfg(windows)]
+pub(crate) fn git_creation_flags() -> u32 {
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+    let priority = if BACKGROUND.with(std::cell::Cell::get) { BELOW_NORMAL_PRIORITY_CLASS } else { 0 };
+    DETACHED_PROCESS | priority
 }
 
 thread_local! {
@@ -346,6 +359,38 @@ pub(super) fn run_with_deadline(repo: &Path, args: &[&str], env: &[(&str, &str)]
     }
 }
 
+/// A read-only command outside any open repository (a folder scan) that ends, with its
+/// descendants, as soon as `stop` is set: it then fails with kind `cancelled`.
+pub(crate) fn exec_until(dir: &Path, args: &[&str], stop: &std::sync::atomic::AtomicBool) -> GitResult<Output> {
+    use super::validation::{poll_process, process_tree, ProcessState};
+    use std::sync::atomic::Ordering;
+
+    debug_assert!(is_read_only(args));
+    let mut c = command(dir);
+    c.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let (mut child, tree) = process_tree::spawn_git(&mut c)?;
+    let stdout_pipe = child.stdout.take().expect("stdout piped");
+    let stderr_pipe = child.stderr.take().expect("stderr piped");
+    let out_thread = std::thread::spawn(move || capture_bytes(stdout_pipe, None));
+    let err_thread = std::thread::spawn(move || capture_bytes(stderr_pipe, Some(128 * 1024)));
+    let stopped = loop {
+        match poll_process(&mut child, stop.load(Ordering::Relaxed), false)? {
+            ProcessState::Exited => break false,
+            ProcessState::Cancelled => break true,
+            _ => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    // Descendants can still hold the output pipes when the Git leader exits.
+    tree.terminate();
+    let status = child.wait()?;
+    let stdout = out_thread.join().unwrap_or_else(|_| Err(std::io::Error::other("Git stdout reader failed")))?;
+    let stderr = err_thread.join().unwrap_or_else(|_| Err(std::io::Error::other("Git stderr reader failed")))?;
+    if stopped {
+        return Err(GitError::new("Stopped.").kind("cancelled"));
+    }
+    Ok(Output { stdout, stderr: String::from_utf8_lossy(&stderr).into_owned(), code: status.code().unwrap_or(-1) })
+}
+
 fn wait_for_deadline(child: &mut std::process::Child, timeout: Duration) -> GitResult<()> {
     use super::validation::{poll_process, ProcessState};
 
@@ -430,7 +475,7 @@ where
                 };
                 let (mut child, tree) = if timeout.is_some() {
                     c.stdin(Stdio::null());
-                    let (child, tree) = super::validation::process_tree::spawn(&mut c)?;
+                    let (child, tree) = super::validation::process_tree::spawn_git(&mut c)?;
                     (child, Some(tree))
                 } else {
                     (c.spawn().map_err(spawn_error)?, None)
@@ -515,6 +560,8 @@ fn fail(args_desc: String, out: &Output) -> GitError {
     let kind = classify(&format!("{stderr}\n{stdout}"));
     if kind == "network-stalled" {
         msg = "The server stopped sending data, so Git gave up. Check your network, VPN or proxy and try again.".into();
+    } else if kind == "server-unavailable" {
+        msg.push_str("\nThe server answered with an error of its own (HTTP 5xx): it is down, restarting or overloaded. Try again later.");
     }
     GitError { message: msg, stderr: format!("{stderr}\n{stdout}").trim().to_string(), code: Some(out.code), kind, details: Vec::new() }
 }
@@ -729,6 +776,9 @@ fn classify(s: &str) -> String {
     let l = s.to_lowercase();
     if l.contains("operation too slow") {
         "network-stalled".into()
+    } else if l.contains("the requested url returned error: 5") {
+        // curl's report of an HTTP 5xx answer: the server (or a proxy in front of it) failed.
+        "server-unavailable".into()
     } else if l.contains("not possible to fast-forward") {
         "diverged".into()
     } else if l.contains("would be overwritten") || l.contains("your local changes") {
@@ -833,7 +883,7 @@ where
                 // A transfer runs in its own process tree so Cancel can stop it (and the
                 // git-remote-https, ssh or credential helper it started).
                 let (mut child, registration) = if is_network(args) {
-                    let (child, tree) = super::validation::process_tree::spawn(&mut c)?;
+                    let (child, tree) = super::validation::process_tree::spawn_git(&mut c)?;
                     (child, Some(transfers::register(repo, tree)))
                 } else {
                     let child = c.spawn().map_err(|e| {
@@ -979,6 +1029,11 @@ mod tests {
         assert_eq!(err.kind, "network-stalled");
         assert!(err.message.starts_with("The server stopped sending data"), "{}", err.message);
         assert_eq!(super::classify("hint: Diverging branches can't be fast-forwarded\nfatal: Not possible to fast-forward, aborting."), "diverged");
+        let down = "fatal: unable to access 'https://git.example.invalid/team/api.git/': The requested URL returned error: 502";
+        let err = super::to_error("git fetch", &super::Output { stdout: Vec::new(), stderr: down.into(), code: 128 });
+        assert_eq!(err.kind, "server-unavailable");
+        assert!(err.message.starts_with("unable to access 'https://git.example.invalid/team/api.git/'") && err.message.contains("HTTP 5xx"), "{}", err.message);
+        assert_eq!(super::classify("fatal: unable to access 'https://x/r.git/': The requested URL returned error: 403"), "error");
     }
     #[test]
     fn terminal_codes_are_removed_from_git_text() {

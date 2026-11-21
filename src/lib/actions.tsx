@@ -10,7 +10,9 @@ import { endBusy, showDialog, startBusy, toast, useUi } from "./ui";
 import { GitMerge } from "lucide-react";
 import { Modal } from "../components/Modal";
 import { DeleteBranchDialog, type DeleteBranchOutcome } from "../components/DeleteBranchDialog";
+import { repositoryFolderImportDialog } from "../components/RepositoryFolderImport";
 import { useSettings } from "./settings";
+import { repositoryKey } from "./repositoryLibrary";
 import type { OpOutcome, PullOutcome, SwitchChoice, SwitchOutcome } from "./types";
 import { shortOid } from "./format";
 import {
@@ -249,18 +251,40 @@ export async function openRepoPath(path: string) {
     if (isGitError(e) && e.kind === "repository-folder-unavailable") {
       toast.warning("Repository folder unavailable", e.message);
     } else if (isGitError(e) && e.kind === "not-a-repo") {
-      const ok = await confirmDialog({ title: "Not a Git repository", message: `${path} is not a Git repository. Create a new repository here?`, confirm: "Initialize" });
-      if (ok) {
-        try {
-          await api.repoInit(path);
-          await useRepos.getState().open(path);
-          toast.success("Repository initialized");
-        } catch (e2) {
-          toast.error(e2);
-        }
-      }
+      await offerNotRepository(path);
     } else {
       toast.error(e, "Cannot open repository");
+    }
+  }
+}
+
+/** `path` turned out not to be a repository: it gets no tab (that would only show the error),
+ *  and finding the repositories inside it or creating one there is offered. It is not opened
+ *  again, so a folder named on the command line leaves the selected repository as it is. */
+export async function offerNotRepository(path: string) {
+  const failed = useRepos.getState().order.find(root => repositoryKey(root) === repositoryKey(path));
+  if (failed && !useRepos.getState().tabs[failed]?.info) useRepos.getState().close(failed);
+  // Usually a folder that holds repositories: finding them comes first, a new repository
+  // around them would be a surprise.
+  const choice = await showDialog<"find" | "init" | null>((close) => (
+    <Modal title="Not a Git repository" onClose={() => close(null)}
+      footer={<>
+        <button type="button" className="btn" onClick={() => close(null)}>Cancel</button>
+        <button type="button" className="btn" onClick={() => close("init")}>Initialize here</button>
+        <button type="button" className="btn primary" autoFocus onClick={() => close("find")}>Find repositories</button>
+      </>}>
+      <p>{path} is not a Git repository. Find the repositories inside it, or create a new repository in this folder.</p>
+    </Modal>
+  ));
+  if (choice === "find") {
+    await repositoryFolderImportDialog(path);
+  } else if (choice === "init") {
+    try {
+      await api.repoInit(path);
+      await useRepos.getState().open(path);
+      toast.success("Repository initialized");
+    } catch (e) {
+      toast.error(e);
     }
   }
 }
@@ -636,7 +660,7 @@ export async function resetTo(root: string, oid: string, subject: string) {
 export async function reword(root: string, oid: string) {
   const expectedState = await prepareOperation(root);
   if (!expectedState) return;
-  const details = await api.commitDetails(root, oid).catch(() => null);
+  const details = await api.commitDetails(root, oid, undefined, true).catch(() => null);
   const current = details ? (details.body ? `${details.subject}\n\n${details.body}` : details.subject) : "";
   const msg = await promptDialog({ title: "Edit commit message", initial: current, multiline: true, confirm: "Save message", help: "Ctrl+Enter to save. Commits after this one are re-created." });
   if (!msg || msg === current) return;

@@ -13,17 +13,18 @@ import { Columns3, FilePlus2, GitCommitHorizontal, GitGraph, GitPullRequest, Max
 import { noteOperationEnd, rememberOperationRefresh, retryRepositoryWatch, useRepos, type RepoTab } from "./lib/store";
 import { resolvedTheme, toggledThemePref, useSettings } from "./lib/settings";
 import { applyTheme } from "./lib/themeApply";
-import { closeOverlay, openOverlay, toast, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
+import { closeOverlay, openOverlay, toast, toggleCommitMaximized, toggleRepositoryOverview, updateBusy, updateRepositoryOperation, useUi, type RepositoryOperation } from "./lib/ui";
 import { actionFor, matchesShortcut, PANEL_NAMES, shortcutTitle } from "./lib/shortcuts";
 import { settingsDialog } from "./components/dialogs";
 import { repoToolsDialog } from "./components/RepoTools";
 import { Onboarding } from "./components/Onboarding";
 import { GitMissing } from "./components/GitMissing";
 import * as A from "./lib/actions";
-import { api, errorMessage } from "./lib/api";
+import { api, errorMessage, isGitError } from "./lib/api";
 import { WORKTREE } from "./lib/types";
 import { CommandPalette, OpBanner, paletteShortcut, StatusBar, TopBar, Welcome } from "./components/Shell";
 import { ContextMenuHost, DialogHost, Splitter, ToastHost } from "./components/Overlays";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { bindingFor, prettyCombo } from "./lib/shortcuts";
 import { Sidebar } from "./components/Sidebar";
 import { GraphView } from "./components/GraphView";
@@ -32,7 +33,7 @@ import { ChangesView } from "./components/ChangesView";
 import { AskpassHost } from "./components/Askpass";
 import { branchCommitCompare } from "./components/BranchCommitCompare";
 import { startUpdateChecks } from "./lib/update";
-import { createAutoFetch, defaultFetch, fetchRound } from "./lib/autofetch";
+import { autoFetchRound, createAutoFetch, defaultFetch, urlHost } from "./lib/autofetch";
 import { useBackgroundPoll } from "./lib/backgroundPolling";
 import { checkPullRequestActivity, resetPullRequestActivity } from "./lib/prTracking";
 import { refreshRepositoryView } from "./lib/prRefresh";
@@ -139,7 +140,13 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
   useEffect(() => setCw(layout.historyListWidth), [mode, layout.historyListWidth]);
   const branchesOpen = layout.branchesOpen;
   const focusMode = layout.focusMode;
-  const showBranches = branchesOpen && !focusMode && !panels.branches;
+  // The open commit expanded to the whole workspace (see toggleCommitMaximized).
+  const commitMaximized = useUi(s => s.commitMaximized);
+  const maximized = commitMaximized && tab.view === "history" && !panels.commit && !!tab.selected && tab.selected !== WORKTREE;
+  // Closing the commit or leaving History restores the layout, so the next commit opens normally.
+  useEffect(() => { if (commitMaximized && !maximized) toggleCommitMaximized(false); }, [commitMaximized, maximized]);
+  const maximize = { on: maximized, toggle: () => toggleCommitMaximized() };
+  const showBranches = branchesOpen && !focusMode && !maximized && !panels.branches;
   const changesCount = tab.status?.files.length ?? 0;
   const [forgeKind, setForgeKind] = useState<string | null>(null);
   const remotesKey = repositoryRemotesKey(tab);
@@ -173,7 +180,7 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
       <div className="branches-slot" hidden={!showBranches}>{!panels.branches && tab.info && <Sidebar key={root} tab={tab} />}</div>
       {showBranches && <Splitter dir="v" style={{ left: sw }} onDrag={(d) => setSw((w) => Math.max(180, Math.min(420, w + d)))} onEnd={() => setLayout({ sidebarWidth: sw })} />}
       <div className="main">
-        <div className="main-head">
+        <div className="main-head" hidden={maximized}>
           <div className="view-tabs">
             <button className={`view-tab ${tab.view === "history" ? "on" : ""}`} onContextMenu={historyMenu} onClick={() => patch(root, { view: "history" })} title={shortcutTitle("History", "history")}>
               <GitCommitHorizontal size={15} /> History
@@ -208,21 +215,21 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
             onClick={() => void A.stashApply(root, latestSwitchStash.index, true, latestSwitchStash.oid)}>Restore stash</button>
         </div>}
         {tab.view === "history" && historyMode === "review" ? (
-          <div className={`review ${focusMode && commitSelected ? "review-focused" : ""}`} style={{ gridTemplateRows: focusMode || !commitSelected ? "minmax(0, 1fr)" : `minmax(100px, min(${rh}px, 45%)) minmax(0, 1fr)` }}>
-            <div className="review-list" hidden={focusMode && !!commitSelected}>
+          <div className={`review ${(focusMode || maximized) && commitSelected ? "review-focused" : ""}`} style={{ gridTemplateRows: focusMode || maximized || !commitSelected ? "minmax(0, 1fr)" : `minmax(100px, min(${rh}px, 45%)) minmax(0, 1fr)` }}>
+            <div className="review-list" hidden={(focusMode || maximized) && !!commitSelected}>
               {historyList(true)}
             </div>
-            {!focusMode && commitSelected && <div className="review-resizer"><Splitter dir="h" onDrag={(d) => setRh((h) => Math.max(100, Math.min(400, h + d)))} onEnd={() => setLayout({ reviewListHeight: rh })} /></div>}
+            {!focusMode && !maximized && commitSelected && <div className="review-resizer"><Splitter dir="h" onDrag={(d) => setRh((h) => Math.max(100, Math.min(400, h + d)))} onEnd={() => setLayout({ reviewListHeight: rh })} /></div>}
             {commitSelected && <div key="commit-preview" className="details review-details">
-              <CommitDetails root={root} oid={commitSelected} onClose={closePreview} />
+              <CommitDetails root={root} oid={commitSelected} onClose={closePreview} maximize={maximize} />
             </div>}
           </div>
         ) : tab.view === "history" && historyMode === "columns" ? (
-          <div className="columns-history" style={{ ["--history-list-w" as string]: `${cw}px` }}>
-            <div className="columns-commits">{historyList(true)}</div>
-            <Splitter dir="v" style={{ left: "var(--history-list-size)" }} onDrag={(d) => setCw((w) => Math.max(180, Math.min(600, w + d)))} onEnd={() => setLayout({ historyListWidth: cw })} />
+          <div className={`columns-history ${maximized ? "columns-maximized" : ""}`} style={{ ["--history-list-w" as string]: `${cw}px` }}>
+            <div className="columns-commits" hidden={maximized}>{historyList(true)}</div>
+            {!maximized && <Splitter dir="v" style={{ left: "var(--history-list-size)" }} onDrag={(d) => setCw((w) => Math.max(180, Math.min(600, w + d)))} onEnd={() => setLayout({ historyListWidth: cw })} />}
             {commitSelected ? (
-              <div key="commit-preview" className="details columns-details"><CommitDetails root={root} oid={commitSelected} compactMeta onClose={closePreview} /></div>
+              <div key="commit-preview" className="details columns-details"><CommitDetails root={root} oid={commitSelected} compactMeta onClose={closePreview} maximize={maximize} /></div>
             ) : (
               <div className="empty columns-placeholder">
                 <span className="big"><GitCommitHorizontal size={24} /></span>
@@ -231,13 +238,13 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
             )}
           </div>
         ) : tab.view === "history" ? (
-          <div className="history">
+          <div className={`history ${maximized ? "history-maximized" : ""}`}>
             {historyList(false)}
             {commitSelected && (
               <>
-                <Splitter dir="h" onDrag={(d) => setDh((h) => Math.max(160, Math.min(window.innerHeight - 260, h - d)))} onEnd={() => setLayout({ detailsHeight: dh })} />
-                <div className="details" style={{ height: dh }}>
-                  <CommitDetails root={root} oid={commitSelected} onClose={() => patch(root, { selected: null, multi: [] })} />
+                {!maximized && <Splitter dir="h" onDrag={(d) => setDh((h) => Math.max(160, Math.min(window.innerHeight - 260, h - d)))} onEnd={() => setLayout({ detailsHeight: dh })} />}
+                <div className="details" style={maximized ? undefined : { height: dh }}>
+                  <CommitDetails root={root} oid={commitSelected} onClose={() => patch(root, { selected: null, multi: [] })} maximize={maximize} />
                 </div>
               </>
             )}
@@ -268,13 +275,21 @@ function RepoWorkspace({ tab, combinedPulls }: { tab: RepoTab; combinedPulls: bo
 
 const quietFetch = createAutoFetch({
   fetch: defaultFetch,
-  refresh: (root) => {
+  refresh: async (root, changed) => {
     // A repository that is not open only needs its incoming and outgoing counts.
-    if (!useRepos.getState().tabs[root]) return scanRepositoryTracking([root]);
+    if (!useRepos.getState().tabs[root]) return changed ? scanRepositoryTracking([root]) : undefined;
     useRepos.getState().patch(root, { lastFetchedAt: Date.now(), fetchError: null });
+    // Most automatic fetches bring nothing: then branches, counts and history are as shown.
+    if (!changed) return;
     return useRepos.getState().refresh(root, { background: true, revalidate: true, info: true, status: true, refs: true });
   },
   failed: (root, e) => { if (useRepos.getState().tabs[root]) useRepos.getState().patch(root, { fetchError: errorMessage(e) }); },
+  serverOf: root => {
+    const remotes = useRepos.getState().tabs[root]?.refs?.remotes ?? [];
+    const remote = remotes.find(r => r.name === "origin") ?? remotes[0];
+    return remote ? urlHost(remote.fetchUrl) : null;
+  },
+  serversOf: root => [...new Set((useRepos.getState().tabs[root]?.refs?.remotes ?? []).map(r => urlHost(r.fetchUrl)).filter((host): host is string => !!host))],
   // Other background fetches of the same round do not count as the user's work.
   busy: () => useUi.getState().busy.length > 0 || useUi.getState().repositoryOperations.some(op => op.command !== "fetch_background")
     || Object.values(useRepos.getState().tabs).some((t) => t.pendingMutations > 0),
@@ -296,10 +311,10 @@ function useAutoFetch() {
     const { active, order } = useRepos.getState();
     const library = useSettings.getState().autoFetchLibrary ? useLibrary.getState().knownRoots : [];
     const roots = uniqueRoots([...(active ? [active] : []), ...order, ...library]);
-    await fetchRound(roots, async root => {
+    await autoFetchRound(roots, quietFetch, root => {
       const tab = useRepos.getState().tabs[root];
       // An open repository is fetched once it has loaded.
-      if (!tab || tab.info) await quietFetch(root);
+      return !tab || !!tab.info;
     }, current, AUTO_FETCH_PARALLEL);
   }, false, undefined, FIRST_AUTO_FETCH_MS);
 }
@@ -340,6 +355,8 @@ function MainApp() {
   const { layout } = useWorkspaceLayout(layoutMode);
   const { focusMode, repositoriesOpen } = layout;
   const explorerOpen = useSettings(s => s.explorerOpen);
+  // RepoWorkspace clears the flag when no commit is open in History; the overview never shows one.
+  const commitMaximized = useUi(s => s.commitMaximized) && !overview;
 
   // Restore the tabs from the previous session.
   useLayoutEffect(() => {
@@ -350,7 +367,16 @@ function MainApp() {
       void restoreRepositorySession();
       const initial = useRepos.getState().selectionVersion;
       const paths = await api.startupPaths().catch(() => [] as string[]);
-      if (paths.length) void useRepos.getState().openMany(paths, useRepos.getState().selectionVersion === initial ? paths.at(-1) : undefined);
+      if (paths.length) {
+        void useRepos.getState().openMany(paths, useRepos.getState().selectionVersion === initial ? paths.at(-1) : undefined).then(results => {
+          // A folder named on the command line that is not a repository: offer to find the
+          // repositories inside it, as opening it from the window does.
+          const named = uniqueRoots(paths);
+          results.forEach((result, index) => {
+            if (result.status === "rejected" && isGitError(result.reason) && result.reason.kind === "not-a-repo") void A.offerNotRepository(named[index]);
+          });
+        });
+      }
     })().then(() => startup.current!.restored(), error => toast.error(error, "Could not restore repository session"));
   }, []);
 
@@ -482,6 +508,11 @@ function MainApp() {
         repositoriesPanel: () => toggleSidebar("repositories"),
         branchesPanel: () => toggleSidebar("branches"),
         focusMode: () => useSettings.getState().setLayout(mode, { focusMode: !layout.focusMode }),
+        commitMaximize: () => {
+          // Restoring always works; expanding needs a commit open in History of the main window.
+          const open = !useUi.getState().repositoryOverview && t?.view === "history" && !!t.selected && t.selected !== WORKTREE && !panels.commit;
+          if (useUi.getState().commitMaximized || open) toggleCommitMaximized();
+        },
         history: () => a && st.patch(a, { view: "history" }),
         changes: () => a && st.patch(a, { view: "changes" }),
         pulls: () => a && st.patch(a, { view: "pulls" }),
@@ -588,24 +619,24 @@ function MainApp() {
 
   return (
     <WorkspaceLayoutContext.Provider value={layoutMode}><div className="app" data-app-startup={startupPhase} aria-busy={startupPhase !== "ready"}>
-      <TopBar />
+      <ErrorBoundary area="Toolbar" quiet><TopBar /></ErrorBoundary>
       <ActivityIndicator active={busy} />
       <div className="app-body">
-        {explorerOpen && !focusMode && !panels.explorer && <RepositoryExplorer onClose={closeExplorer}/>}
-        <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode}>{!panels.repositories && <RepositorySidebar />}</div>
-        <div className="workspace-host">{overview ? <RepositoryOverview /> : <ActiveRepositoryContent combinedPulls={combinedPulls} />}</div>
+        {explorerOpen && !focusMode && !panels.explorer && <ErrorBoundary area="Explorer"><RepositoryExplorer onClose={closeExplorer} hidden={commitMaximized}/></ErrorBoundary>}
+        <div className="repository-slot" hidden={!!panels.repositories || !repositoriesOpen || focusMode || commitMaximized}>{!panels.repositories && <ErrorBoundary area="Repositories"><RepositorySidebar /></ErrorBoundary>}</div>
+        <div className="workspace-host">{overview ? <ErrorBoundary area="Repository overview"><RepositoryOverview /></ErrorBoundary> : <ActiveRepositoryContent combinedPulls={combinedPulls} />}</div>
       </div>
-      <StatusBar />
-      <ContextMenuHost />
-      <DialogHost />
-      <CommandPalette />
-      <ToastHost />
-      <AskpassHost />
+      <ErrorBoundary area="Status bar" quiet><StatusBar /></ErrorBoundary>
+      <ErrorBoundary area="Menu" quiet><ContextMenuHost /></ErrorBoundary>
+      <ErrorBoundary area="Dialog" quiet><DialogHost /></ErrorBoundary>
+      <ErrorBoundary area="Command palette" quiet><CommandPalette /></ErrorBoundary>
+      <ErrorBoundary area="Notifications" quiet><ToastHost /></ErrorBoundary>
+      <ErrorBoundary area="Sign-in prompt" quiet><AskpassHost /></ErrorBoundary>
       <GitMissing />
-      <Onboarding />
+      <ErrorBoundary area="Welcome" quiet><Onboarding /></ErrorBoundary>
       {dropping && <div className="drop-hint">Drop a folder to open it</div>}
-      <DetachedPanel id="explorer"><RepositoryExplorer onClose={() => attach("explorer")}/></DetachedPanel>
-      <DetachedPanel id="repositories"><RepositorySidebar/></DetachedPanel>
+      <DetachedPanel id="explorer"><ErrorBoundary area="Explorer"><RepositoryExplorer onClose={() => attach("explorer")}/></ErrorBoundary></DetachedPanel>
+      <DetachedPanel id="repositories"><ErrorBoundary area="Repositories"><RepositorySidebar/></ErrorBoundary></DetachedPanel>
       <ActiveRepositoryPanels attach={attach} prAllRepositories={prAllRepositories} />
     </div></WorkspaceLayoutContext.Provider>
   );
@@ -623,18 +654,20 @@ function showMainChanges(root: string, path?: string) {
  *  change of the active tab. */
 function ActiveRepositoryContent({ combinedPulls }: { combinedPulls: boolean }) {
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
-  return tab ? <RepositoryContent key={combinedPulls ? "all-pull-requests" : tab.root} tab={tab} combinedPulls={combinedPulls} /> : <Welcome />;
+  return <ErrorBoundary area="This view" resetKey={tab?.root}>
+    {tab ? <RepositoryContent key={combinedPulls ? "all-pull-requests" : tab.root} tab={tab} combinedPulls={combinedPulls} /> : <Welcome />}
+  </ErrorBoundary>;
 }
 
 /** Panels of the shown repository that were moved to their own windows. */
 function ActiveRepositoryPanels({ attach, prAllRepositories }: { attach: (id: PanelId) => void; prAllRepositories: boolean }) {
   const tab = useRepos((s) => (s.active ? s.tabs[s.active] : null));
   return <>
-    <DetachedPanel id="branches">{tab?.info && <Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/>}</DetachedPanel>
-    <DetachedPanel id="history">{tab?.info && <GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/>}</DetachedPanel>
-    <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <CommitDetails key={tab.root} root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/> : null}</DetachedPanel>
-    <DetachedPanel id="pulls">{tab && (tab.info || prAllRepositories) && <Suspense fallback={null}><PullRequestsView key={prAllRepositories ? "all-pull-requests" : tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/></Suspense>}</DetachedPanel>
-    <DetachedPanel id="changes">{tab?.info && <ChangesView key={tab.root} tab={tab} onOpenConflict={path => showMainChanges(tab.root, path)}/>}</DetachedPanel>
-    <DetachedPanel id="worktrees">{tab?.info && <Suspense fallback={null}><WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/></Suspense>}</DetachedPanel>
+    <DetachedPanel id="branches">{tab?.info && <ErrorBoundary area="Branches" resetKey={tab.root}><Sidebar key={tab.root} tab={tab} onHide={() => attach("branches")}/></ErrorBoundary>}</DetachedPanel>
+    <DetachedPanel id="history">{tab?.info && <ErrorBoundary area="History" resetKey={tab.root}><GraphView key={tab.root} tab={tab} onEnterChanges={() => showMainChanges(tab.root)}/></ErrorBoundary>}</DetachedPanel>
+    <DetachedPanel id="commit">{tab?.selected && tab.selected !== WORKTREE ? <ErrorBoundary area="Commit details" resetKey={tab.selected}><CommitDetails key={tab.root} root={tab.root} oid={tab.selected} onClose={() => useRepos.getState().patch(tab.root, { selected: null, multi: [] })}/></ErrorBoundary> : null}</DetachedPanel>
+    <DetachedPanel id="pulls">{tab && (tab.info || prAllRepositories) && <ErrorBoundary area="Pull requests" resetKey={tab.root}><Suspense fallback={null}><PullRequestsView key={prAllRepositories ? "all-pull-requests" : tab.root} tab={tab} remotesKey={repositoryRemotesKey(tab)}/></Suspense></ErrorBoundary>}</DetachedPanel>
+    <DetachedPanel id="changes">{tab?.info && <ErrorBoundary area="Changes" resetKey={tab.root}><ChangesView key={tab.root} tab={tab} onOpenConflict={path => showMainChanges(tab.root, path)}/></ErrorBoundary>}</DetachedPanel>
+    <DetachedPanel id="worktrees">{tab?.info && <ErrorBoundary area="Worktrees" resetKey={tab.root}><Suspense fallback={null}><WorktreeManager key={tab.root} root={tab.root} floating onClose={() => attach("worktrees")}/></Suspense></ErrorBoundary>}</DetachedPanel>
   </>;
 }

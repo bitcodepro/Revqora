@@ -46,10 +46,16 @@ button {
   background-color: var(--word-selection-bg);
   color: var(--word-selection-text);
 }
-:focus-visible {
+/* Only while the user moves with Tab (see lib/focusRing.ts): the browser otherwise rings
+   a button when the window is activated or a dialog returns focus to it. :where keeps the
+   specificity of a plain :focus-visible, so the rules below still turn it off. */
+:focus-visible { outline: none; }
+:where(html[data-keyboard-nav]) :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
+/* The toolbar clips anything outside its buttons: keep the ring inside. */
+:where(html[data-keyboard-nav]) .tb-btn:focus-visible { outline-offset: -2px; }
 /* A file list shows its position with the selected file row; a frame around the whole list
    while Up/Down move through files is only noise. */
 [data-file-list]:focus-visible { outline: none; }

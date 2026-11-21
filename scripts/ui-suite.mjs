@@ -8,7 +8,7 @@ import { worktreeManagerSmoke } from "./worktree-manager-smoke.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createProfile, launch, preferRepositoryList } from "./ui-driver.mjs";
-import { shutdownAndCleanup } from "./ui-cleanup.mjs";
+import { removeFixtureFolder, shutdownAndCleanup } from "./ui-cleanup.mjs";
 import { smokeTimings, SMOKE_SUITES, assertSmokeCoverage } from "./ci-timing.mjs";
 import { repositoryWorkspaceSmoke } from "./repository-workspace-smoke.mjs";
 import { branchManagerSmoke, branchManagerProtectionSmoke } from "./branch-manager-smoke.mjs";
@@ -69,7 +69,7 @@ try{
 finally{
   try{
     await shutdownAndCleanup(()=>app?.close(),cleanups);
-    if(!process.argv.includes("--keep"))fs.rmSync(work,{recursive:true,force:true,maxRetries:10,retryDelay:300});
+    if(!process.argv.includes("--keep"))await removeFixtureFolder(work);
   }catch(e){console.error(e);process.exitCode=1;}
   finally{smokeTimings.finish();}
 }

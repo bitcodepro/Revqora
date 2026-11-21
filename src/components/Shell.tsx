@@ -1,9 +1,10 @@
 import {forgeAccountsDialog} from "./ForgeAccounts";
 import { OverflowToolbar } from "./ToolbarOverflow";
-import { aboutDialog } from "./AboutDialog";
+import { aboutDialog, reportIssue } from "./AboutDialog";
+import { PALETTE_FILTERS, foldEntry, nextFilter, rankPalette, type PaletteEntry, type PaletteFilter, type PaletteKind } from "../lib/paletteSearch";
 import { branchCommitCompare } from "./BranchCommitCompare";
 import { RepositoryLibraryButton, groupEditorDialog, repositoryLibraryDialog } from "./RepositoryLibrary";
-import { fetchRepositories, pullRepositories } from "./Repositories";
+import { fetchRepositories, pullRepositories, pushRepositories, syncCurrentBranches } from "../lib/remoteSync";
 import { workspaceCommitSearch } from "./WorkspaceCommitSearch";
 import { repositoryKey, uniqueRoots, useLibrary } from "../lib/repositoryLibrary";
 import { treeAncestors } from "../lib/libraryTree";
@@ -60,6 +61,8 @@ import {
   Workflow,
   ListTree,
   Layers3,
+  Keyboard,
+  MessageSquare,
 } from "lucide-react";
 import { useRepos, type RepoTab } from "../lib/store";
 import { resolvedTheme, toggledThemePref, useSettings } from "../lib/settings";
@@ -69,7 +72,7 @@ import { contextMenu, endBusy, openOverlay, startBusy, toast, toggleRepositoryOv
 import { namePathMenu } from "./NamePathMenu";
 import * as A from "../lib/actions";
 import * as XA from "../lib/extraActions";
-import { bindingFor, prettyCombo, shortcutTitle } from "../lib/shortcuts";
+import { bindingFor, prettyCombo, SHORTCUTS, shortcutTitle } from "../lib/shortcuts";
 import { jumpToCommit } from "./GraphView";
 import { api, newOpId } from "../lib/api";
 import { useAppVersion } from "../lib/appVersion";
@@ -609,18 +612,11 @@ interface Cmd {
   context?: string;
   search?: string;
   icon?: React.ReactNode;
+  /** What the palette filters list it under; commands and menu actions when omitted. */
+  kind?: PaletteKind;
+  /** The key shown for a Shortcuts result ("" when unassigned). */
+  binding?: string;
   run: () => void;
-}
-
-function score(q: string, s: string): number {
-  if (!q) return 1;
-  const l = s.toLowerCase();
-  const i = l.indexOf(q);
-  if (l === q || l.replace(/…$/, "") === q) return 200;
-  if (i >= 0) return 100 - Math.min(i, 80);
-  let qi = 0;
-  for (let k = 0; k < l.length && qi < q.length; k++) if (l[k] === q[qi]) qi++;
-  return qi === q.length ? 10 : 0;
 }
 
 function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
@@ -632,14 +628,19 @@ function paletteActions(tab: RepoTab | null | undefined): Cmd[] {
     {id:"forge-accounts",label:"Accounts and API connections",group:"App",icon:<UserRound size={15}/>,run:()=>forgeAccountsDialog(tab?.root??null)},
     { id: "settings", label: "Settings", group: "App", icon: <Settings2 size={15} />, run: () => settingsDialog(tab?.root ?? null) },
     { id: "about", label: "About Revqora", group: "App", icon: <Info size={15} />, run: () => aboutDialog() },
+    { id: "report-issue", label: "Report an issue", group: "App", icon: <MessageSquare size={15} />, run: reportIssue },
     { id: "operation-log", label: "Operation log…", group: "App", icon: <History size={15} />, run: () => operationLogDialog(tab?.root ?? null) },
     { id: "error-log", label: "Error log…", group: "App", icon: <Bug size={15} />, run: () => errorLogDialog() },
     { id: "repository-library", label: "Repository library…", group: "Repository", icon: <FolderGit2 size={15} />, run: () => repositoryLibraryDialog() },
     { id: "group-create", label: "Create group…", group: "Repository", icon: <FolderTree size={15} />, run: () => groupEditorDialog() },
     { id: "check-updates", label: "Check for updates", group: "App", icon: <Download size={15} />, run: checkUpdates },
     { id: "workspace-search", label: "Search all repositories", group: "History", icon: <FolderSearch size={15} />, run: () => workspaceCommitSearch("", "quick") },
-    { id: "fetch-all", label: "Fetch all repositories", group: "Remote", icon: <Download size={15} />, run: () => fetchRepositories() },
-    { id: "pull-all", label: "Pull all repositories…", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => { const roots = useRepos.getState().order; if (roots.length) void pullRepositories(roots); } },
+    { id: "fetch-all", label: "Fetch all repositories", group: "Remote", icon: <Download size={15} />, run: () => void fetchRepositories() },
+    { id: "pull-all", label: "Pull all repositories", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => void pullRepositories() },
+    { id: "push-all", label: "Push all repositories", group: "Remote", icon: <ArrowUpFromLine size={15} />, run: () => void pushRepositories() },
+    { id: "fetch-current", label: "Fetch all current branches", group: "Remote", icon: <Download size={15} />, run: () => void syncCurrentBranches("fetch") },
+    { id: "pull-current", label: "Pull all current branches", group: "Remote", icon: <ArrowDownToLine size={15} />, run: () => void syncCurrentBranches("pull") },
+    { id: "push-current", label: "Push all current branches", group: "Remote", icon: <ArrowUpFromLine size={15} />, run: () => void syncCurrentBranches("push") },
     ...(tab ? [{ id: "recovery-center", label: "Undo Center…", group: "Repository", icon: <ShieldCheck size={15} />, run: () => recoveryDialog(tab.root) }] : []),
     {
       id: "theme",
@@ -724,6 +725,8 @@ export function CommandPalette() {
   const recent = useSettings(s => s.recent);
   const [q, setQ] = useState("");
   const [highlight, setHighlight] = useState<string | null>(null);
+  // Kept while the app runs: a user who searches only branches keeps that filter.
+  const [filter, setFilter] = useState<PaletteFilter>("all");
   const [branches, setBranches] = useState<Record<string, string[]>>({});
   const [loadingBranches, setLoadingBranches] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -737,7 +740,9 @@ export function CommandPalette() {
   const rootRefs = useRepos(useShallow(s => roots.map(root => s.tabs[root]?.refs)));
   const rootNames = useRepos(useShallow(s => roots.map(root => s.tabs[root]?.info?.name)));
   const ql = q.trim().toLowerCase();
-  const shouldLoad = open && !!ql;
+  // Repositories and branches are listed for a query, or in full under their own filter.
+  const listLocations = open && (!!ql || filter === "repositories" || filter === "branches");
+  const shouldLoad = open && (!!ql || filter === "branches");
 
   useEffect(() => {
     if (!open) {
@@ -755,15 +760,25 @@ export function CommandPalette() {
     let next = 0;
     const candidates = roots.filter(root => !useRepos.getState().tabs[root]?.refs);
     setLoadingBranches(!!candidates.length);
+    // A few repositories per call, read in parallel by the backend: one update per batch, and a
+    // slow drive delays only its own batch.
+    const BATCH = 8;
     const timer = window.setTimeout(async () => {
-      await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, async () => {
+      await Promise.all(Array.from({ length: Math.min(2, Math.ceil(candidates.length / BATCH)) }, async () => {
         while (!cancelled && next < candidates.length) {
-          const root = candidates[next++];
-          if (useRepos.getState().tabs[root]?.refs) continue;
+          const start = next;
+          next += BATCH;
+          const batch = candidates.slice(start, next).filter(root => !useRepos.getState().tabs[root]?.refs);
+          if (!batch.length) continue;
           try {
-            const refs = await api.repositoryBranchNames(root);
-            if (!cancelled) setBranches(current => ({ ...current, [root]: refs }));
-          } catch { /* A saved repository can be unavailable. Keep the other results. */ }
+            const answers = await api.repositoryBranchNamesMany(batch);
+            // A saved repository can be unavailable (null). Keep the other results.
+            if (!cancelled) setBranches(current => {
+              const merged = { ...current };
+              batch.forEach((root, i) => { const refs = answers[i]; if (refs) merged[root] = refs; });
+              return merged;
+            });
+          } catch { /* Keep the other results. */ }
         }
       }));
       if (!cancelled) setLoadingBranches(false);
@@ -827,23 +842,21 @@ export function CommandPalette() {
   };
 
   const locations = useMemo(() => {
-    if (!open || !ql) return [];
-    const out: { id: string; label: string; group: string; context: string; search?: string; root: string; reference: string | null }[] = [];
+    if (!listLocations) return [];
+    const out: { id: string; label: string; group: string; context: string; search?: string; root: string; reference: string | null; folded: PaletteEntry["folded"] }[] = [];
     roots.forEach((root, i) => {
       const name = names[repositoryKey(root)] ?? rootNames[i] ?? basename(root);
-      out.push({ id: "repository:" + root, label: name, group: "Repository", context: root, root, reference: null });
+      out.push({ id: "repository:" + root, label: name, group: "Repository", context: root, root, reference: null, folded: foldEntry(name, root) });
       const refs = rootRefs[i];
       const references = refs ? [...refs.local, ...refs.remote].map(branch => branch.fullName) : branches[root] ?? [];
       for (const reference of references) {
         const local = reference.startsWith("refs/heads/");
         const branch = reference.slice(local ? "refs/heads/".length : "refs/remotes/".length);
-        out.push({ id: JSON.stringify([root, reference]), label: branch, group: local ? "Branch" : "Remote branch", context: name, search: root, root, reference });
+        out.push({ id: JSON.stringify([root, reference]), label: branch, group: local ? "Branch" : "Remote branch", context: name, search: root, root, reference, folded: foldEntry(branch, name, root) });
       }
     });
     return out;
-    // `ql` only switches the index on; its value does not change the entries.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, !!ql, roots, rootRefs, rootNames, names, branches]);
+  }, [listLocations, roots, rootRefs, rootNames, names, branches]);
   const filtered: Cmd[] = [];
   if (open) {
     const list = paletteActions(tab);
@@ -859,29 +872,33 @@ export function CommandPalette() {
           }
         }
       }
+    }
+    if (ql || filter === "folders") {
       const byGroup = new Map(groups.map(group => [group.id, group]));
       for (const group of groups) {
         const parents = treeAncestors(groups, group.id).reverse().map(id => byGroup.get(id)!.name).join(" / ");
         list.push({
-          id: "group:" + group.id, label: group.name, group: "Folder", context: parents,
+          id: "group:" + group.id, label: group.name, group: "Folder", context: parents, kind: "folder",
           icon: <Folder size={15} />, run: () => revealExplorer(group.id),
         });
       }
     }
-    const tokens = ql.split(/\s+/);
-    const rank = (item: { label: string; context?: string; search?: string }) => {
-      const context = [item.label, item.context, item.search].filter(Boolean).join(" ").toLowerCase();
-      return score(ql, item.label) || (tokens.every(token => context.includes(token)) ? 12 : 0);
-    };
-    const matches: { rank: number; make: () => Cmd }[] = list.map(item => ({ rank: rank(item), make: () => item }));
+    if (filter === "shortcuts") {
+      const root = tab?.root ?? null;
+      for (const shortcut of SHORTCUTS) {
+        list.push({ id: "shortcut:" + shortcut.id, label: shortcut.label, group: "Shortcut", context: shortcut.description, kind: "shortcut",
+          binding: bindingFor(shortcut.id), icon: <Keyboard size={15} />, run: () => void settingsDialog(root, { shortcut: shortcut.label }) });
+      }
+    }
     // Repositories and branches are ranked as plain data; commands are built for the shown ones only.
-    if (ql) for (const entry of locations) {
-      const r = rank(entry);
-      if (r > 0) matches.push({ rank: r, make: () => entry.reference === null
+    type Entry = PaletteEntry & { make: () => Cmd };
+    const entries: Entry[] = list.map(item => ({ kind: item.kind ?? "command", label: item.label, context: item.context, search: item.search, make: () => item }));
+    for (const entry of locations) {
+      entries.push({ kind: entry.reference === null ? "repository" : "branch", label: entry.label, context: entry.context, search: entry.search, folded: entry.folded, make: () => entry.reference === null
         ? { id: entry.id, label: entry.label, group: entry.group, context: entry.context, icon: <FolderGit2 size={15} />, run: () => void revealRepository(entry.root) }
         : { id: entry.id, label: entry.label, group: entry.group, context: entry.context, search: entry.search, icon: <GitBranch size={15} />, run: () => void revealBranch(entry.root, entry.reference!) } });
     }
-    filtered.push(...matches.filter(m => m.rank > 0).sort((a, b) => b.rank - a.rank).slice(0, 60).map(m => m.make()));
+    filtered.push(...rankPalette(ql, entries, filter, filter === "shortcuts" ? SHORTCUTS.length : 60).map(entry => entry.make()));
   }
 
   const idx = Math.max(0, filtered.findIndex(item => item.id === highlight));
@@ -898,18 +915,27 @@ export function CommandPalette() {
   };
   return (
     <div className="modal-backdrop" style={{ background: "transparent", backdropFilter: "none" }} onMouseDown={e => e.target === e.currentTarget && setOpen(false)}>
-      <div className="palette" ref={paletteRef} role="dialog" aria-modal="true" aria-label="Command palette">
+      <div className="palette" ref={paletteRef} role="dialog" aria-modal="true" aria-label="Command palette" onKeyDownCapture={e => {
+        // Tab and Shift+Tab switch the filter and keep focus in the search field. Capture runs
+        // before the focus trap, which would otherwise move focus onto a filter button.
+        if (e.key !== "Tab" || e.ctrlKey || e.altKey || e.metaKey || e.nativeEvent.isComposing) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setFilter(nextFilter(filter, e.shiftKey));
+        setHighlight(null);
+        inputRef.current?.focus();
+      }}>
         <Search size={18} className="pi" />
         <input
           ref={inputRef}
           value={q}
           role="combobox"
-          aria-label="Search commands, repositories, branches and folders"
+          aria-label={filter === "all" ? "Search commands, repositories, branches and folders" : `Search ${PALETTE_FILTERS.find(item => item.id === filter)!.label.toLowerCase()}`}
           aria-expanded="true"
           aria-autocomplete="list"
           aria-controls="palette-results"
           aria-activedescendant={selected ? "palette-result-" + idx : undefined}
-          placeholder="Search commands, repositories, branches, folders…"
+          placeholder={PALETTE_FILTERS.find(item => item.id === filter)!.placeholder}
           onChange={e => { setQ(e.target.value); setHighlight(null); }}
           onKeyDown={e => {
             if (e.nativeEvent.isComposing) return;
@@ -921,6 +947,13 @@ export function CommandPalette() {
             } else if (e.key === "Enter") { e.preventDefault(); run(selected); }
           }}
         />
+        <div className="palette-filters" role="group" aria-label="Show only">
+          {PALETTE_FILTERS.map(item => (
+            <button key={item.id} type="button" tabIndex={-1} className={`palette-filter ${filter === item.id ? "on" : ""}`} aria-pressed={filter === item.id}
+              onMouseDown={e => e.preventDefault()} onClick={() => { setFilter(item.id); setHighlight(null); inputRef.current?.focus(); }}>{item.label}</button>
+          ))}
+          <span className="palette-filter-hint faint">Tab to switch</span>
+        </div>
         <div className="palette-list" ref={listRef} id="palette-results" role="listbox" aria-label="Search results" aria-busy={loadingBranches}>
           {filtered.map((command, i) => (
             <div key={command.id} id={"palette-result-" + i} role="option" aria-selected={i === idx}
@@ -931,7 +964,9 @@ export function CommandPalette() {
                 <span className="ellipsis">{command.label}</span>
                 {command.context && <small className="ellipsis" title={command.context}>{command.context}</small>}
               </div>
-              {bindingFor(command.id) && <span className="kbd">{prettyCombo(bindingFor(command.id))}</span>}
+              {command.kind === "shortcut"
+                ? <span className={command.binding ? "kbd" : "kbd unset"}>{command.binding ? prettyCombo(command.binding) : "Not set"}</span>
+                : bindingFor(command.id) && <span className="kbd">{prettyCombo(bindingFor(command.id))}</span>}
               <span className="group">{command.group}</span>
             </div>
           ))}

@@ -722,8 +722,9 @@ function ReflogBody({ root, close, onReset }: { root: string; close: () => void;
 
 // ───────────── settings ─────────────
 
-export function settingsDialog(root: string | null): Promise<void> {
-  return showDialog<void>((close) => <SettingsBody root={root} close={close} />);
+/** `shortcut` opens the Shortcuts section filtered to that command (from the command palette). */
+export function settingsDialog(root: string | null, options: { shortcut?: string } = {}): Promise<void> {
+  return showDialog<void>((close) => <SettingsBody root={root} close={close} shortcut={options.shortcut} />);
 }
 
 function UpdateSettings() {
@@ -763,9 +764,9 @@ function UpdateSettings() {
   );
 }
 
-function SettingsBody({ root, close }: { root: string | null; close: () => void }) {
+function SettingsBody({ root, close, shortcut }: { root: string | null; close: () => void; shortcut?: string }) {
   const s = useSettings();
-  const [section, setSection] = useState<"general" | "shortcuts">("general");
+  const [section, setSection] = useState<"general" | "shortcuts">(shortcut ? "shortcuts" : "general");
   const [sel, setSel] = useState<GitSelection | null>(null);
   const [gitErr, setGitErr] = useState("");
   useEffect(() => {
@@ -798,7 +799,7 @@ function SettingsBody({ root, close }: { root: string | null; close: () => void 
         <button type="button" className={section === "general" ? "on" : ""} aria-pressed={section === "general"} onClick={() => setSection("general")}>General</button>
         <button type="button" className={section === "shortcuts" ? "on" : ""} aria-pressed={section === "shortcuts"} onClick={() => setSection("shortcuts")}>Shortcuts</button>
       </div>
-      {section === "shortcuts" ? <ShortcutSettings /> : <>
+      {section === "shortcuts" ? <ShortcutSettings initialQuery={shortcut} /> : <>
       <div className="section-title">Appearance</div>
       <div className="settings-grid">
         <label>Theme</label>
@@ -1092,11 +1093,11 @@ function LargeFileSettings() {
   </div>;
 }
 
-function ShortcutSettings() {
+function ShortcutSettings({ initialQuery = "" }: { initialQuery?: string }) {
   const overrides = useSettings((s) => s.shortcuts);
   const set = useSettings((s) => s.set);
   const [capturing, setCapturing] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const [error, setError] = useState("");
   const search = query.trim().toLowerCase();
   const filtered = SHORTCUTS.filter((sc) => `${sc.label} ${sc.description} ${prettyCombo(bindingFor(sc.id, overrides))}`.toLowerCase().includes(search));

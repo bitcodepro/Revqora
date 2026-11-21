@@ -1,5 +1,5 @@
 import type { BranchCleanupRequest, BranchCleanupSelection, BranchCleanupReview, BranchCleanupReport } from "./types";
-import type { RepositoryFolderScan } from "./types";
+import type { RepositoryFolderScan, RepositoryFolderScanProgress } from "./types";
 import type { BlameOptions, HistoryFilters } from "./types";
 import type { RebaseItem, StudioReview, StudioReport, StudioComparison, ValidationReport } from "./types";
 import type { ExternalTools, FolderHistoryEntry, LineHistoryEntry, IgnoredFiles, IgnoreKind, IgnorePreview, IgnoreResult, IgnoreScope, NestedRepositories, PartialStashResult, RemoteRenamePlan, RemoteRenameResult } from "./types";
@@ -7,6 +7,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { repositoryCall } from "./operationClient";
 import { recordError } from "./errorLog";
 import { cachedPrRead, forgetPrReads, PR_READ_TTL } from "./prCache";
+
+/** Paging arguments of an MCP diff read. */
+export interface McpDiffPageOptions { offset?: number; limit?: number; diffVersion?: string; lineOffset?: number; conflictSide?: "base" | "ours" | "theirs" }
 
 /** A PR write changes what remembered reads would show: forget them before and after. */
 function prWrite<T>(write: Promise<T>): Promise<T> {
@@ -80,11 +83,20 @@ export function errorMessage(e: unknown): string {
   return String(e);
 }
 
+/** A folder that is not a repository where the window already deals with it: opening one
+ *  offers to find the repositories inside it or to create one, and Explorer's background counts
+ *  show none for it (opening it reports the problem). */
+const NOT_A_REPOSITORY_HANDLED = new Set(["repo_open", "repository_branch_tracking", "repository_change_count"]);
+function answeredInWindow(command: string, error: unknown) {
+  return NOT_A_REPOSITORY_HANDLED.has(command) && typeof error === "object" && error !== null && (error as { kind?: unknown }).kind === "not-a-repo";
+}
+
 const invokeWithErrorLog = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
   try {
     return await invoke<T>(command, args);
   } catch (error) {
-    recordError(command, error, typeof args?.repo === "string" ? args.repo : undefined);
+    // Automatic fetches log for themselves: once per lasting problem, not once per round.
+    if (command !== "fetch_background" && !answeredInWindow(command, error)) recordError(command, error, typeof args?.repo === "string" ? args.repo : undefined);
     throw error;
   }
 };
@@ -181,6 +193,7 @@ export const api = {
   repoOpen: (path: string) => call<RepoInfo>("repo_open", { path }),
   repoPrepareFolderScan: () => call<number>("repo_prepare_folder_scan"),
   repoScanFolder: (scanId: number, path: string, includeGenerated: boolean) => call<RepositoryFolderScan>("repo_scan_folder", { scanId, path, includeGenerated }),
+  repoFolderScanProgress: (scanId: number) => call<RepositoryFolderScanProgress | null>("repo_folder_scan_progress", { scanId }),
   repoCancelFolderScan: (scanId: number) => call<void>("repo_cancel_folder_scan", { scanId }),
   repositorySidebarStatus: (repo: string) => call<StatusSummary>("repository_sidebar_status", { repo }),
   repositoryBranchTracking: (repo: string) => call<BranchTracking>("repository_branch_tracking", { repo }),
@@ -219,6 +232,11 @@ export const api = {
   workingDiff: (repo: string, path: string, side: "unstaged" | "staged", untracked: boolean, opts?: DiffOptions, fullIndex?: boolean, preview?: boolean) =>
     call<FileDiff>("working_diff", { repo, path, side, untracked, opts, fullIndex, preview }),
   revDiff: (repo: string, from: string | null, to: string, path: string, opts?: DiffOptions, preview?: boolean) => call<FileDiff>("rev_diff", { repo, from, to, path, opts, preview }),
+  /** MCP pages built in the backend, so only the page reaches the window. */
+  mcpRevDiffPage: (repo: string, from: string | null, to: string, path: string, opts: DiffOptions, page: McpDiffPageOptions) => call<unknown>("mcp_rev_diff_page", { repo, from, to, path, opts, page }),
+  mcpWorkingDiffPage: (repo: string, path: string, side: "unstaged" | "staged", untracked: boolean, opts: DiffOptions, page: McpDiffPageOptions) => call<unknown>("mcp_working_diff_page", { repo, path, side, untracked, opts, page }),
+  mcpStatusPage: (repo: string, statusVersion: string | undefined, offset: number | undefined) => call<unknown>("mcp_status_page", { repo, statusVersion, offset }),
+  mcpBranchPage: (repo: string, scope: string | undefined, query: string | undefined, offset: number | undefined) => call<unknown>("mcp_branch_page", { repo, scope, query, offset }),
   applySelection: (
     repo: string,
     path: string,
@@ -250,8 +268,11 @@ export const api = {
   graphBranchMembers: (repo: string, key: string, reference: string) => call<number[]>("graph_branch_members", { repo, key, reference }),
   graphLaneAnchor: (repo: string, key: string, id: number) => call<import("./types").GraphLaneAnchor | null>("graph_lane_anchor", { repo, key, id }),
   graphResolveLane: (repo: string, key: string, anchor: import("./types").GraphLaneAnchor) => call<number | null>("graph_resolve_lane", { repo, key, anchor }),
+  /** Every match by commit, with the rows of the first ones; more rows by page with `historySearchRows`. */
   historySearch: (repo: string, key: string, query: string, mode: SearchMode, filters: HistoryFilters | null = null) =>
-    call<{ row: GraphRow; graphIndex: number | null }[]>("history_search", { repo, key, query, mode, filters }),
+    call<import("./types").HistorySearchPage>("history_search", { repo, key, query, mode, filters }),
+  /** Rows of a History search by match position (each row's `index` is its position). */
+  historySearchRows: (id: number, start: number, count: number) => call<GraphRow[]>("history_search_rows", { id, start, count }),
   repositoryCommitSearch: (repo: string, query: string, mode: SearchMode, cursor: string | null = null, limit = 30) => call<import("./types").CommitSearchPage>("repository_commit_search", { repo, query, mode, cursor, limit }),
   repositoryCommitSearchPage: (repo: string, query: string, mode: SearchMode, cursor: string | null, limit: number) => call<import("./types").CommitSearchPage>("repository_commit_search_page", { repo, query, mode, cursor, limit }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),
@@ -270,9 +291,13 @@ export const api = {
   blob: (repo: string, spec: BlobSpec) => call<BlobData | null>("blob", { repo, spec }),
   textBlob: (repo: string, spec: BlobSpec, encoding: string | null = null) => call<import("./types").DecodedText | null>("text_blob", { repo, spec, encoding }),
 
+  repositoryBranchNamesMany: (repos: string[]) => call<(string[] | null)[]>("repository_branch_names_many", { repos }),
   repositoryBranchNames: (repo: string) => call<string[]>("repository_branch_names", { repo }),
   refs: (repo: string) => call<RefsSnapshot>("refs_snapshot", { repo }),
-  fetchBackground: (repo: string) => call<string>("fetch_background", { repo }),
+  /** The refs, or null when they still have the fingerprint `known`: nothing unchanged is sent. */
+  refsIfChanged: (repo: string, known: string | null) => call<RefsSnapshot | null>("refs_snapshot_if_changed", { repo, known }),
+  /** `refsChanged` false: no ref moved, appeared or disappeared, so nothing new needs reading. */
+  fetchBackground: (repo: string) => call<{ output: string; refsChanged: boolean }>("fetch_background", { repo }),
   /** Cancels one Fetch, Pull or Push by its operation id, running or still queued; true when a running transfer was stopped. */
   cancelTransfer: (opId: string) => call<boolean>("cancel_transfer", { opId }),
   /** Tags that moved on the server; the last fetch kept the local versions. */
@@ -307,6 +332,11 @@ export const api = {
   /** `deepen: null` fetches the complete history (`--unshallow`). */
   fetchMoreHistory: (repo: string, deepen: number | null, opId: string) => call<string>("fetch_more_history", { repo, deepen, opId }),
   sparseCheckoutState: (repo: string) => call<import("./types").SparseState>("sparse_checkout_state", { repo }),
+  /** Folders with tracked files at HEAD, sorted. */
+  sparseCheckoutFolders: (repo: string) => call<string[]>("sparse_checkout_folders", { repo }),
+  /** What switching the cone to `next` moves; null for a non-cone selection. */
+  sparseConePreview: (repo: string, next: string[], changed: string[]) =>
+    call<{ leaving: number; arriving: number; changedLeaving: number; leavingSample: string[]; changedSample: string[] } | null>("sparse_cone_preview", { repo, next, changed }),
   /** Enables sparse checkout or replaces its folders (cone) / patterns (non-cone). */
   /** `reviewedIgnored`: the ignored files (from a "sparse-ignored-files" error) the user agreed Git may delete; any other file refuses again. */
   sparseCheckoutSet: (repo: string, cone: boolean, entries: string[], reviewedIgnored: string[] | null = null) =>
@@ -317,6 +347,11 @@ export const api = {
   sparseCheckoutReapply: (repo: string, reviewedIgnored: string[] | null = null) => call<import("./types").SparseResult>("sparse_checkout_reapply", { repo, reviewedIgnored }),
   pull: (repo: string, mode: "ff-only" | "merge" | "rebase", opId: string, expectedState?: string, pruneRemote?: boolean) =>
     call<import("./types").PullOutcome>("pull", { repo, mode, opId, expectedState, pruneRemote }),
+  /** Pull all for one repository: fetch every remote, fast-forward every branch behind its upstream. */
+  /** Branches: full ref names or "HEAD"; null for every local branch. Pull fetches their upstreams first. */
+  pullBranches: (repo: string, branches: string[] | null, opId: string) => call<import("./types").BranchesSync>("pull_branches", { repo, branches, opId }),
+  fetchBranches: (repo: string, branches: string[], opId: string) => call<import("./types").BranchesSync>("fetch_branches", { repo, branches, opId }),
+  pushBranches: (repo: string, branches: string[] | null, opId: string) => call<import("./types").BranchesSync>("push_branches", { repo, branches, opId }),
   push: (repo: string, opts: PushOptions, opId: string, expectedState?: string | null) => call<string>("push", { repo, opts, opId, expectedState }),
   pushRef: (repo: string, remote: string, refspec: string, opId: string, expectedState?: string | null) => call<string>("push_ref", { repo, remote, refspec, opId, expectedState }),
   remoteAdd: (repo: string, name: string, url: string) => call<void>("remote_add", { repo, name, url }),

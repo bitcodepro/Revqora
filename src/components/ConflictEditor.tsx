@@ -81,10 +81,23 @@ function applyAt(view: EditorView, index: number, how: Resolution) {
   view.focus();
 }
 
+/** The result text and its conflict blocks, read once per edit and shared by the decorations
+ *  and the listener (moving the cursor reads nothing). */
+const parsedResult = StateField.define<{ text: string; blocks: ConflictBlock[] }>({
+  create: (state) => {
+    const text = state.doc.toString();
+    return { text, blocks: parseConflicts(text) };
+  },
+  update: (parsed, tr) => {
+    if (!tr.docChanged) return parsed;
+    const text = tr.state.doc.toString();
+    return { text, blocks: parseConflicts(text) };
+  },
+});
+
 function conflictField(labels: Labels): Extension {
   const build = (state: EditorState): DecorationSet => {
-    const text = state.doc.toString();
-    const blocks = parseConflicts(text);
+    const { blocks } = state.field(parsedResult);
     const builder = new RangeSetBuilder<Decoration>();
     for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i];
@@ -108,11 +121,11 @@ function conflictField(labels: Labels): Extension {
     }
     return builder.finish();
   };
-  return StateField.define<DecorationSet>({
+  return [parsedResult, StateField.define<DecorationSet>({
     create: build,
     update: (deco, tr) => (tr.docChanged ? build(tr.state) : deco),
     provide: (f) => EditorView.decorations.from(f),
-  });
+  })];
 }
 
 function sideHighlights(text: string, ranges: [number, number][], cls: string): Extension {
@@ -440,14 +453,14 @@ export function MergeEditor({ path, info, error: err, position, saveLabel = "Sav
       ...(lang ? [lang] : []),
       conflictField(labels),
       EditorView.updateListener.of((u) => {
-        const text = u.state.doc.toString();
+        if (!u.docChanged && !u.selectionSet) return;
+        const { text, blocks } = u.state.field(parsedResult);
         if (u.docChanged) {
-          setRemaining(parseConflicts(text).length);
+          setRemaining(blocks.length);
           const changed = text !== baseline.current;
           setDirty(changed); dirtyRef.current?.(changed); draftRef.current?.(text);
         }
-        if (u.docChanged || u.selectionSet) {
-          const blocks = parseConflicts(text);
+        {
           const at = blocks.findIndex((b) => b.to > u.state.selection.main.head);
           setCurrent(at < 0 ? Math.max(0, blocks.length - 1) : at);
         }

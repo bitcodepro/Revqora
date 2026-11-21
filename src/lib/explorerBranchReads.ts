@@ -11,6 +11,8 @@ const inFlight = new Map<string, Promise<BranchRead>>();
 // typing again reuses them for a short while instead of reading every repository again.
 const recent = new Map<string, { at: number; read: BranchRead }>();
 const RECENT_MS = 20_000;
+// Bumped when a repository changed: a read that started before is not kept for reuse.
+const generations = new Map<string, number>();
 
 function recentRead(root: string): BranchRead | undefined {
   const entry = recent.get(root);
@@ -19,20 +21,35 @@ function recentRead(root: string): BranchRead | undefined {
   return undefined;
 }
 
-function readClosedBranches(root: string) {
+/** Branches of a closed repository, reused for a short while (exported for tests). */
+export function readClosedBranches(root: string) {
   const known = recentRead(root);
   if (known) return Promise.resolve(known);
   const pending = inFlight.get(root);
   if (pending) return pending;
+  const generation = generations.get(root) ?? 0;
   const result = reads.run(root, () => api.refs(root))
     .then((refs): BranchRead => ({ refs }), (error): BranchRead => ({ error: errorMessage(error) }))
     .then(read => {
-      if ("refs" in read) recent.set(root, { at: Date.now(), read });
+      // A repository that never changed has no generation yet: 0, as when the read started.
+      if ("refs" in read && (generations.get(root) ?? 0) === generation) recent.set(root, { at: Date.now(), read });
       return read;
     })
     .finally(() => inFlight.delete(root));
   inFlight.set(root, result);
   return result;
+}
+
+const invalidated = new Set<(roots: string[]) => void>();
+
+/** Drops the branches read for closed repositories after Fetch, Pull or Push changed them, and
+ *  reads them again where Explorer shows them, so branch rows and their menus are current. */
+export function invalidateExplorerBranches(roots: string[]) {
+  for (const root of roots) {
+    recent.delete(root);
+    generations.set(root, (generations.get(root) ?? 0) + 1);
+  }
+  for (const listener of invalidated) listener(roots);
 }
 
 export function useExplorerBranchReads(roots: string[]) {
@@ -75,6 +92,20 @@ export function useExplorerBranchReads(roots: string[]) {
       }
     }));
     return () => { cancelled = true; };
+  }, [closedKey]);
+  useEffect(() => {
+    let active = true;
+    const listener = (changed: string[]) => {
+      const shown = new Set(JSON.parse(closedKey) as string[]);
+      for (const root of changed.filter(root => shown.has(root))) {
+        // A read started before the change may still be in flight: read again after it.
+        void (inFlight.get(root) ?? Promise.resolve()).then(() => readClosedBranches(root)).then(read => {
+          if (active) setClosed(current => ({ ...current, [root]: read }));
+        });
+      }
+    };
+    invalidated.add(listener);
+    return () => { active = false; invalidated.delete(listener); };
   }, [closedKey]);
   return closed;
 }

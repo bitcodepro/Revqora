@@ -28,6 +28,8 @@ pub struct FolderHistoryEntry {
     pub subject: String,
     /// Files under the folder this commit changed.
     pub files: Vec<String>,
+    /// The first parent, which the commit's diff is shown against (none for a root commit).
+    pub parent: Option<String>,
 }
 
 const FORMAT: &str = "--format=%x1e%H%x1f%an%x1f%at%x1f%s";
@@ -86,7 +88,12 @@ pub fn folder_history(repo: &Path, folder: &str, limit: usize) -> GitResult<Vec<
     }
     let max = format!("--max-count={}", limit.clamp(1, 1_000_000));
     let spec = if folder.is_empty() { ".".to_string() } else { format!("{folder}/") };
-    let raw = runner::exec_full(repo, ["log", FORMAT, "--name-only", "--no-renames", &max, "--", &spec], &[("GIT_LITERAL_PATHSPECS", "1")], None)?;
+    let raw = runner::exec_full(
+        repo,
+        ["log", "--format=%x1e%H%x1f%P%x1f%an%x1f%at%x1f%s", "--name-only", "--no-renames", &max, "--", &spec],
+        &[("GIT_LITERAL_PATHSPECS", "1")],
+        None,
+    )?;
     if raw.code != 0 {
         return Err(GitError::new(raw.stderr.trim().to_string()));
     }
@@ -94,9 +101,13 @@ pub fn folder_history(repo: &Path, folder: &str, limit: usize) -> GitResult<Vec<
     let mut out = Vec::new();
     for record in text.split('\x1e').filter(|r| !r.trim().is_empty()) {
         let mut lines = record.lines();
-        let Some((oid, author, time, subject)) = header(lines.next().unwrap_or("")) else { continue };
+        // "<oid>\x1f<parents>\x1f<author>...": the parents taken out, the rest as for other logs.
+        let Some((oid, rest)) = lines.next().unwrap_or("").split_once('\x1f') else { continue };
+        let Some((parents, rest)) = rest.split_once('\x1f') else { continue };
+        let Some((oid, author, time, subject)) = header(&format!("{oid}\x1f{rest}")) else { continue };
+        let parent = parents.split_whitespace().next().map(str::to_owned);
         let files = lines.map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
-        out.push(FolderHistoryEntry { oid, author, time, subject, files });
+        out.push(FolderHistoryEntry { oid, author, time, subject, files, parent });
     }
     Ok(out)
 }

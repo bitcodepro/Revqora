@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useDeferredValue, useEffect, useState } from "react";
 import { openRepoFile } from "../lib/openFile";
 import { ExternalLink, FileText, FolderOpen, RefreshCw, Search } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
@@ -25,7 +25,8 @@ function RepositoryFiles({ root, kind, close }: { root: string; kind: "ignored" 
     void request.then((value) => { if (alive) setData(value); }, (e) => { if (alive) setError(errorMessage(e)); });
     return () => { alive = false; };
   }, [root, kind, version]);
-  const filter = query.toLocaleLowerCase();
+  // A long ignored list filters behind the typing, not on every key press before it shows.
+  const filter = useDeferredValue(query).toLocaleLowerCase();
   return <Modal title={kind === "ignored" ? "Ignored files & folders" : "Nested repositories"} wide onClose={close} footer={<button className="btn" onClick={close}>Close</button>}>
     <div className="hstack">
       <Search size={15} /><input className="input" aria-label="Filter repository files" placeholder="Filter paths…" value={query} onChange={(e) => setQuery(e.target.value)} />

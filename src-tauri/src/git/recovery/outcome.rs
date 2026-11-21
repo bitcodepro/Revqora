@@ -154,6 +154,11 @@ pub(super) fn enter(command: &str) {
     FRAMES.with(|f| f.borrow_mut().push(Frame { journal, command: command.to_owned(), created: Vec::new() }));
 }
 
+/// The command of the innermost operation running on this thread.
+pub(super) fn current_command() -> Option<String> {
+    FRAMES.with(|f| f.borrow().last().map(|frame| frame.command.clone()))
+}
+
 /// End of the operation started by `enter`, on every exit path. Checkpoints whose result was not
 /// recorded (the operation unwound) are marked failed.
 pub(super) fn leave() {

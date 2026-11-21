@@ -291,6 +291,7 @@ struct AppState {
     graph_order: graph::BuildOrder,
     watchers: Mutex<HashMap<String, RepoWatcher>>,
     folder_scans: git::repository_import::FolderScans,
+    history_searches: graph::HistorySearches,
 }
 
 async fn blocking<T, F>(f: F) -> GitResult<T>
@@ -383,7 +384,9 @@ where
             let _ = app.emit("ignored-files-changed", IgnoredFilesChanged { repo: repo.clone(), report });
         }
         emit(if result.is_ok() { "finished" } else { "failed" }, 0);
-        if result.is_ok() && matches!(command, "fetch" | "fetch_background" | "fetch_more_history" | "pull" | "pull_request_checkout") {
+        if result.is_ok()
+            && matches!(command, "fetch" | "fetch_background" | "fetch_more_history" | "pull" | "pull_branches" | "fetch_branches" | "pull_request_checkout")
+        {
             // New commits arrived: extend Git's commit-graph in the background.
             git::optimize::schedule(&p(&repo), true);
         }
@@ -654,10 +657,15 @@ fn repo_prepare_folder_scan(state: State<'_, AppState>) -> u32 {
 
 #[tauri::command]
 async fn repo_scan_folder(state: State<'_, AppState>, scan_id: u32, path: String, include_generated: bool) -> GitResult<git::repository_import::FolderScan> {
-    let cancelled = state.folder_scans.start(scan_id)?;
-    let result = blocking(move || git::repository_import::scan(&p(&path), include_generated, &cancelled)).await;
+    let (cancelled, progress) = state.folder_scans.start(scan_id)?;
+    let result = blocking(move || git::repository_import::scan(&p(&path), include_generated, &cancelled, &progress)).await;
     state.folder_scans.finish(scan_id);
     result
+}
+
+#[tauri::command]
+fn repo_folder_scan_progress(state: State<'_, AppState>, scan_id: u32) -> Option<git::repository_import::FolderScanProgress> {
+    state.folder_scans.progress(scan_id)
 }
 
 #[tauri::command]
@@ -875,6 +883,44 @@ async fn working_diff(
         diff::working_diff_view(&r, &path, side, base.as_deref(), untracked, &opts.unwrap_or_default(), preview.unwrap_or(false))
     })
     .await
+}
+
+/// One MCP page of a commit diff (see [`mcp::pages::diff_page`]).
+#[tauri::command]
+async fn mcp_rev_diff_page(
+    repo: String,
+    from: Option<String>,
+    to: String,
+    path: String,
+    opts: Option<DiffOptions>,
+    page: mcp::pages::DiffPageOptions,
+) -> GitResult<serde_json::Value> {
+    blocking(move || mcp::pages::diff_page(diff::rev_diff_view(&p(&repo), from.as_deref(), &to, &path, &opts.unwrap_or_default(), false)?, &page)).await
+}
+
+/// One MCP page of a working-tree or staged diff against the full index.
+#[tauri::command]
+async fn mcp_working_diff_page(
+    repo: String,
+    path: String,
+    side: WorkSide,
+    untracked: bool,
+    opts: Option<DiffOptions>,
+    page: mcp::pages::DiffPageOptions,
+) -> GitResult<serde_json::Value> {
+    blocking(move || mcp::pages::diff_page(diff::working_diff_view(&p(&repo), &path, side, None, untracked, &opts.unwrap_or_default(), false)?, &page)).await
+}
+
+/// One MCP page of the repository status.
+#[tauri::command]
+async fn mcp_status_page(repo: String, status_version: Option<String>, offset: Option<usize>) -> GitResult<serde_json::Value> {
+    blocking(move || mcp::pages::status_page(&status::status_with_operation(&p(&repo))?, status_version.as_deref(), offset.unwrap_or(0))).await
+}
+
+/// One MCP page of branches matching a name filter.
+#[tauri::command]
+async fn mcp_branch_page(repo: String, scope: Option<String>, query: Option<String>, offset: Option<usize>) -> GitResult<serde_json::Value> {
+    blocking(move || Ok(mcp::pages::branch_page(&refs::snapshot(&p(&repo))?, scope.as_deref(), query.as_deref(), offset.unwrap_or(0)))).await
 }
 
 #[tauri::command]
@@ -1194,10 +1240,17 @@ async fn history_search(
     query: String,
     mode: SearchMode,
     filters: Option<graph::HistoryFilters>,
-) -> GitResult<Vec<graph::HistoryMatch>> {
+) -> GitResult<graph::HistorySearchPage> {
     let cache = state.graphs.lock().get(&repo).cloned().ok_or_else(|| GitError::new("History is not loaded."))?;
     cache.check_key(Some(&key))?;
-    blocking(move || graph::search_history_filtered(&p(&repo), &cache, &query, mode, &filters.unwrap_or_default())).await
+    let matches = blocking(move || graph::search_history_filtered(&p(&repo), &cache, &query, mode, &filters.unwrap_or_default())).await?;
+    Ok(state.history_searches.keep(matches))
+}
+
+/// More rows of a History search, by match position.
+#[tauri::command]
+fn history_search_rows(state: State<'_, AppState>, id: u64, start: usize, count: usize) -> GitResult<Vec<GraphRow>> {
+    state.history_searches.rows(id, start, count)
 }
 
 /// "Search all repositories": one page per call, following `nextCursor` for more.
@@ -1337,9 +1390,22 @@ async fn refs_snapshot(repo: String) -> GitResult<RefsSnapshot> {
     blocking(move || refs::snapshot(&p(&repo))).await
 }
 
+/// The refs snapshot, or nothing when it still has the fingerprint `known`.
+#[tauri::command]
+async fn refs_snapshot_if_changed(repo: String, known: Option<String>) -> GitResult<Option<RefsSnapshot>> {
+    blocking(move || refs::snapshot_if_changed(&p(&repo), known.as_deref())).await
+}
+
 #[tauri::command]
 async fn repository_branch_names(repo: String) -> GitResult<Vec<String>> {
     blocking(move || refs::branch_names(&p(&repo))).await
+}
+
+/// Branch names of several repositories in one call (the command palette), in the order given;
+/// null for a repository that cannot be read.
+#[tauri::command]
+async fn repository_branch_names_many(repos: Vec<String>) -> GitResult<Vec<Option<Vec<String>>>> {
+    blocking(move || Ok(refs::branch_names_many(&repos.iter().map(|repo| p(repo)).collect::<Vec<_>>()))).await
 }
 
 /// Branches already squash- or rebase-merged into HEAD.
@@ -1619,6 +1685,16 @@ async fn sparse_checkout_state(repo: String) -> GitResult<git::sparse::SparseSta
 }
 
 #[tauri::command]
+async fn sparse_checkout_folders(repo: String) -> GitResult<Vec<String>> {
+    blocking(move || git::sparse::folders(&p(&repo))).await
+}
+
+#[tauri::command]
+async fn sparse_cone_preview(repo: String, next: Vec<String>, changed: Vec<String>) -> GitResult<Option<git::sparse::ConePreview>> {
+    blocking(move || git::sparse::cone_preview(&p(&repo), &next, &changed)).await
+}
+
+#[tauri::command]
 async fn sparse_checkout_set(
     recovery_consent: Option<String>,
     app: AppHandle,
@@ -1679,7 +1755,7 @@ async fn sparse_checkout_reapply(
 
 /// Periodic fetch in the background: never asks for credentials.
 #[tauri::command]
-async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<String> {
+async fn fetch_background(recovery_consent: Option<String>, app: AppHandle, expected_state: Option<String>, repo: String) -> GitResult<ops::BackgroundFetch> {
     // Optional work never queues in front of (or behind) the user's own operation: it would
     // delay that operation by a whole network round trip. The next interval tries again.
     if git::operations::writer_active(&p(&repo)) {
@@ -1735,6 +1811,53 @@ async fn pull(
 ) -> GitResult<ops::PullOutcome> {
     mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "pull", Some(op_id.clone()), move || {
         git::runner::transfers::for_operation(&op_id, || ops::pull_with_prune(&p(&repo), &mode, prune_remote.unwrap_or(true), progress(&app, &op_id)))
+    })
+    .await
+}
+
+/// Pull all, for one repository: fetch every remote and fast-forward every branch that only
+/// lacks incoming commits. Journaled and protected as a pull.
+#[tauri::command]
+async fn pull_branches(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    branches: Option<Vec<String>>,
+    op_id: String,
+) -> GitResult<ops::BranchesSync> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "pull_branches", Some(op_id.clone()), move || {
+        git::runner::transfers::for_operation(&op_id, || ops::pull_branches(&p(&repo), branches.as_deref(), progress(&app, &op_id)))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn fetch_branches(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    branches: Vec<String>,
+    op_id: String,
+) -> GitResult<ops::BranchesSync> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "fetch_branches", Some(op_id.clone()), move || {
+        git::runner::transfers::for_operation(&op_id, || ops::fetch_branches(&p(&repo), &branches, progress(&app, &op_id)))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn push_branches(
+    recovery_consent: Option<String>,
+    expected_state: Option<String>,
+    app: AppHandle,
+    repo: String,
+    branches: Option<Vec<String>>,
+    op_id: String,
+) -> GitResult<ops::BranchesSync> {
+    mutating(recovery_consent.clone(), repo.clone(), expected_state, app.clone(), "push_branches", Some(op_id.clone()), move || {
+        git::runner::transfers::for_operation(&op_id, || ops::push_branches(&p(&repo), branches.as_deref(), progress(&app, &op_id)))
     })
     .await
 }
@@ -3296,7 +3419,37 @@ fn update_restart(app: AppHandle) -> GitResult<()> {
 /// Folders passed on the command line (`revqora <path>`), opened at startup.
 #[tauri::command]
 fn startup_paths() -> Vec<String> {
-    std::env::args().skip(1).filter(|a| !a.starts_with('-') && std::path::Path::new(a).is_dir()).collect()
+    launch_paths(std::env::args().skip(1), &std::env::current_dir().unwrap_or_default())
+}
+
+/// Folders named on a command line (`revqora .`, `revqora ..\api`): relative ones are resolved
+/// against the folder the command ran in, so a repository is never opened as ".".
+fn launch_paths(args: impl IntoIterator<Item = String>, cwd: &std::path::Path) -> Vec<String> {
+    args.into_iter()
+        .filter(|arg| !arg.starts_with('-'))
+        .filter_map(|arg| {
+            let path = std::path::Path::new(&arg);
+            let path = if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) };
+            let path = std::path::absolute(&path).ok()?;
+            path.is_dir().then(|| path.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[test]
+fn command_line_folders_are_resolved_against_the_folder_the_command_ran_in() {
+    let fixture = tempfile::tempdir().unwrap();
+    let cwd = std::path::absolute(fixture.path()).unwrap();
+    std::fs::create_dir(cwd.join("api")).unwrap();
+    let paths = launch_paths([".", "api", "--flag", "missing", "./api/../api"].map(String::from), &cwd);
+    let api = cwd.join("api").to_string_lossy().into_owned();
+    if cfg!(windows) {
+        assert_eq!(paths, [cwd.to_string_lossy().into_owned(), api.clone(), api]);
+    } else {
+        assert_eq!(paths.len(), 3);
+        assert!(paths.iter().all(|path| std::path::Path::new(path).is_absolute()), "{paths:?}");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3344,8 +3497,9 @@ pub fn run() {
     // A second launch (e.g. "Open in Revqora" from Explorer) opens its folders as tabs in the
     // running window. Tests set REVQORA_MULTI_INSTANCE to run isolated copies side by side.
     if std::env::var_os("REVQORA_MULTI_INSTANCE").is_none() {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            let paths: Vec<String> = argv.into_iter().skip(1).filter(|a| !a.starts_with('-') && std::path::Path::new(a).is_dir()).collect();
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            // The second launch's own folder, not this process's.
+            let paths = launch_paths(argv.into_iter().skip(1), std::path::Path::new(&cwd));
             let _ = app.emit("open-paths", paths);
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
@@ -3389,6 +3543,10 @@ pub fn run() {
                 portable::data_dir().map(|p| p.join("operation-log"))
             };
             journal::initialize(log_dir.as_deref());
+            let progress_app = app.handle().clone();
+            journal::on_progress(move || {
+                let _ = progress_app.emit("operation-log-progress", ());
+            });
             if let Some(mut cfg) = app.config().app.windows.iter().find(|w| w.label == "main").cloned() {
                 portable::automation_startup("webview-builder-start");
                 if remember_window {
@@ -3517,12 +3675,15 @@ pub fn run() {
             repo_open,
             repo_prepare_folder_scan,
             repo_scan_folder,
+            repo_folder_scan_progress,
             repo_cancel_folder_scan,
             repo_init,
             repo_clone,
             repo_is_shallow,
             fetch_more_history,
             sparse_checkout_state,
+            sparse_checkout_folders,
+            sparse_cone_preview,
             sparse_checkout_set,
             sparse_checkout_add,
             sparse_checkout_disable,
@@ -3539,6 +3700,10 @@ pub fn run() {
             identity_set,
             working_diff,
             rev_diff,
+            mcp_rev_diff_page,
+            mcp_working_diff_page,
+            mcp_status_page,
+            mcp_branch_page,
             apply_selection,
             stage,
             unstage,
@@ -3557,6 +3722,7 @@ pub fn run() {
             graph_resolve_lane,
             graph_search,
             history_search,
+            history_search_rows,
             repository_commit_search,
             repository_commit_search_page,
             commit_details,
@@ -3574,7 +3740,9 @@ pub fn run() {
             blob,
             text_blob,
             refs_snapshot,
+            refs_snapshot_if_changed,
             repository_branch_names,
+            repository_branch_names_many,
             fetch_background,
             cancel_transfer,
             credential_manager,
@@ -3601,6 +3769,9 @@ pub fn run() {
             undo_commit,
             fetch,
             pull,
+            pull_branches,
+            fetch_branches,
+            push_branches,
             push,
             push_ref,
             remote_add,

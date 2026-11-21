@@ -601,6 +601,12 @@ pub fn begin(root: &Path, command: &str) {
     outcome::enter(command);
 }
 
+/// True while `operations::run` runs `command` on this thread (checkpoints belong to operations;
+/// a direct call of the Git function takes none).
+pub fn in_operation(command: &str) -> bool {
+    outcome::current_command().as_deref() == Some(command)
+}
+
 /// End of the running operation's work: records its result beside each checkpoint saved for it.
 pub(crate) fn record_outcome(status: &str, error: Option<&str>) {
     outcome::record(status, error);
@@ -686,6 +692,7 @@ fn writes_worktree(command: &str) -> bool {
             | "revert"
             | "merge_start"
             | "pull"
+            | "pull_branches"
             | "checkout"
             | "pull_request_checkout"
             | "stash_apply"
@@ -731,7 +738,7 @@ fn same(before: &Watched, now: &Watched) -> bool {
 
 /// Records the individual ignored files and copies them into the operation's checkpoint, before
 /// `command`. Returns true when that checkpoint was created (it replaces the ordinary one).
-fn watch_ignored(root: &Path, command: &str, expected: Option<&str>) -> GitResult<bool> {
+fn watch_ignored(root: &Path, command: &str, expected: Option<&str>, keep: Option<&dyn Fn(&str) -> bool>) -> GitResult<bool> {
     WATCH.with(|w| w.borrow_mut().take());
     REPORT.with(|r| r.borrow_mut().take());
     let (copy, approved) = ACTIVE.with(|a| {
@@ -740,6 +747,9 @@ fn watch_ignored(root: &Path, command: &str, expected: Option<&str>) -> GitResul
         (copy, a.as_mut().and_then(|c| c.unprotected.take()))
     });
     let mut files = individual_ignored(root)?;
+    if let Some(keep) = keep {
+        files.retain(|path| keep(path));
+    }
     // Paths the user asked to save before continuing past a collision (files in wholly ignored
     // folders included). If they cannot be listed completely, none of them counts as saved.
     let mut unprotected: Vec<String> = Vec::new();
@@ -787,6 +797,63 @@ fn watch_ignored(root: &Path, command: &str, expected: Option<&str>) -> GitResul
     let created = checkpoint.is_some();
     WATCH.with(|w| *w.borrow_mut() = Some(Watch { command: command.to_owned(), checkpoint, files: watched }));
     Ok(created)
+}
+
+/// Pulls know what they change only after their fetch. They protect ignored files then (see
+/// [`watch_ignored_for`]), instead of saving every ignored file before the fetch.
+fn ignored_net_after_fetch(command: &str) -> bool {
+    matches!(command, "pull" | "pull_branches")
+}
+
+/// The ignored-file net for an operation whose changes are known: only the individual ignored
+/// files in the way of `changed` (the paths Git will write) are recorded and saved. Returns true
+/// when that created the operation's checkpoint.
+///
+/// Saving every ignored file before each pull made pulls slow (every file was hashed and
+/// copied) and impossible past the checkpoint's 100 MiB, although Git writes only these paths.
+pub fn watch_ignored_for(root: &Path, command: &str, changed: &[String]) -> GitResult<bool> {
+    let fold = cfg!(windows) || config_bool(root, "core.ignorecase")?;
+    let touched = TouchedPaths::new(changed, fold);
+    watch_ignored(root, command, None, Some(&|path: &str| touched.contains(path)))
+}
+
+/// The paths an integration writes, and which ignored files are in their way.
+struct TouchedPaths {
+    files: BTreeSet<String>,
+    folders: BTreeSet<String>,
+    fold: bool,
+}
+
+impl TouchedPaths {
+    fn new(changed: &[String], fold: bool) -> Self {
+        let files: BTreeSet<String> = changed.iter().map(|path| Self::key(path, fold)).collect();
+        let folders = files.iter().flat_map(|path| folders_of(path)).map(str::to_owned).collect();
+        TouchedPaths { files, folders, fold }
+    }
+
+    fn key(path: &str, fold: bool) -> String {
+        let path = path.trim_end_matches('/');
+        if fold {
+            path.to_lowercase()
+        } else {
+            path.to_owned()
+        }
+    }
+
+    /// The same path; a file where a folder must be created; a file in a folder that becomes a
+    /// file; or one of Git's conflict copies ("path~branch").
+    fn contains(&self, path: &str) -> bool {
+        let path = Self::key(path, self.fold);
+        self.files.contains(&path)
+            || self.folders.contains(&path)
+            || folders_of(&path).any(|folder| self.files.contains(folder))
+            || path.rsplit_once('~').is_some_and(|(base, _)| self.files.contains(base))
+    }
+}
+
+/// "a/b/c" → "a", "a/b".
+fn folders_of(path: &str) -> impl Iterator<Item = &str> {
+    path.match_indices('/').map(move |(at, _)| &path[..at])
 }
 
 /// After the operation (finished, failed or unwinding): records which watched ignored files changed.
@@ -868,21 +935,29 @@ pub fn complete_workspace(root: &Path, command: &str, label: &str, expected: &st
 fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignored: bool, expected: Option<&str>, capture: Capture<'_>) -> GitResult<Summary> {
     // Capture is a mutation: pinning objects must never occur in a read path.
     let _lock = lock(root)?;
-    let root = fs::canonicalize(repo::discover(root)?)?;
-    // The file name check, the status and the reference list are independent reads: run them
-    // side by side (each Git start costs 60–150 ms on Windows). The helpers join the caller's
-    // repository transaction.
+    let top = fs::canonicalize(repo::discover(root)?)?;
+    // Git runs in the folder as the caller names it when that is the top folder: what is
+    // remembered per folder (Git directory, configuration answers, state reads) then applies,
+    // instead of being read again for the `\\?\` spelling of the same folder.
+    let root = if fs::canonicalize(root).is_ok_and(|named| named == top) { root.to_path_buf() } else { top.clone() };
+    // The file name check, the status, the reference list and the sparse checkout settings are
+    // independent reads: run them side by side (each Git start costs 60–150 ms on Windows). The
+    // helpers join the caller's repository transaction.
     let parent = operations::Inherited::of(&root);
-    let (names, before, saved_refs) = std::thread::scope(|scope| {
+    let (names, before, saved_refs, sparse) = std::thread::scope(|scope| {
         let names =
             workspace.then(|| scope.spawn(|| parent.run(|| runner::run_bytes(&root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]))));
         let saved_refs = scope.spawn(|| parent.run(|| refs(&root)));
+        let sparse = workspace.then(|| {
+            scope.spawn(|| parent.run(|| operations::each(&root, vec!["core.sparseCheckout", "core.sparseCheckoutCone"], |key| config_bool(&root, key))))
+        });
         let before = status::status(&root);
         let joined = |name: &str| fail(format!("Reading {name} for the checkpoint failed."));
         (
             names.map(|handle| handle.join().unwrap_or_else(|_| Err(joined("the file names")))),
             before,
             saved_refs.join().unwrap_or_else(|_| Err(joined("the references"))),
+            sparse.map(|handle| handle.join().unwrap_or_else(|_| vec![Err(joined("the sparse checkout settings"))])),
         )
     });
     if let Some(filenames) = names {
@@ -920,7 +995,7 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
             created_at: crate::journal::now(),
             command: command.into(),
             label: label.chars().take(128).collect(),
-            source_root: display_path(&root),
+            source_root: display_path(&top),
             branch: before.branch.clone(),
             head: before.oid.clone(),
             workspace,
@@ -974,13 +1049,20 @@ fn create_locked(root: &Path, command: &str, label: &str, workspace: bool, ignor
             let sha256 = copy_file(&source, &folder.path().join("meta").join(&name), &mut budget)?;
             cp.index_files.push(IndexFile { name, sha256 });
         }
-        cp.sparse = config_bool(&root, "core.sparseCheckout")?;
-        cp.sparse_cone = config_bool(&root, "core.sparseCheckoutCone")?;
+        let mut sparse = sparse.unwrap_or_default().into_iter();
+        cp.sparse = sparse.next().unwrap_or(Ok(false))?;
+        cp.sparse_cone = sparse.next().unwrap_or(Ok(false))?;
         if cp.sparse && gd.join("info/sparse-checkout").is_file() {
             cp.sparse_patterns = Some(fs::read_to_string(gd.join("info/sparse-checkout"))?);
         }
         let mut paths: BTreeSet<String> = capture.paths.iter().cloned().collect();
         for file in &before.files {
+            // Git never overwrites or deletes untracked files in a pull (it refuses instead), so
+            // the checkpoint before one keeps tracked changes. Copying large untracked data made
+            // every pull slow, and impossible past 100 MiB.
+            if file.untracked && ignored_net_after_fetch(command) {
+                continue;
+            }
             paths.insert(file.path.clone());
             if let Some(old) = &file.orig_path {
                 paths.insert(old.clone());
@@ -1454,7 +1536,12 @@ fn restore_workspace_locked(root: &Path, id: &str, destination: &Path, name: &st
 }
 
 pub fn before(root: &Path, command: &str, expected: Option<&str>) -> GitResult<()> {
-    if writes_worktree(command) && watch_ignored(root, command, expected)? {
+    // Pulls take their one checkpoint after the fetch, once they know what they write (with
+    // the ignored files in its way). `operations::run` has checked `expected` already.
+    if ignored_net_after_fetch(command) {
+        return Ok(());
+    }
+    if writes_worktree(command) && watch_ignored(root, command, expected, None)? {
         return Ok(());
     }
     let workspace = matches!(

@@ -57,18 +57,24 @@ async function checkFolderScanProgress(page, dialog) {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await icon.waitFor({ state: "hidden" });
     await progress.getByText(/^[1-9]\d*s elapsed$/).waitFor();
-    const elapsed = await progress.locator(".batch-note").textContent();
+    // The folder counts and the timer are both notes: read the timer only.
+    const elapsed = await progress.locator(".repository-import-elapsed").textContent();
     await page.waitForFunction(previous => {
-      const value = document.querySelector(".repository-import-progress .batch-note")?.textContent;
+      const value = document.querySelector(".repository-import-progress .repository-import-elapsed")?.textContent;
       return value && value !== previous;
     }, elapsed);
     await dialog.getByRole("button", { name: "Stop scan", exact: true }).click();
     await page.waitForFunction(() => window.__folderScanProbe.counts.cancel > 0);
     assert.deepEqual(await page.evaluate(() => window.__folderScanProbe.counts),
       { prepare: 1, scan: 1, cancel: 1, submit: 1 }, "Stop must not submit the form or start a second scan");
-    const stopped = dialog.getByText("Scan stopped.", { exact: true });
-    await stopped.waitFor();
+    // The scan ends in the backend first: until then the dialog says so and starts nothing else.
+    const stopping = dialog.getByRole("button", { name: "Stopping…", exact: true });
+    await stopping.waitFor();
+    assert(await stopping.isDisabled(), "A stopping scan cannot be stopped or restarted twice");
+    await dialog.getByText("Stopping the scan…", { exact: true }).waitFor();
+    assert.equal(await dialog.getByText("Scan stopped.", { exact: true }).count(), 0);
     await page.evaluate(() => window.__folderScanProbe.release());
+    const stopped = dialog.getByText("Scan stopped.", { exact: true });
     await stopped.waitFor();
     assert.equal(await dialog.getByRole("button", { name: /^Import \d+ repositor/ }).count(), 0);
   } finally {
@@ -132,6 +138,42 @@ export async function repositoryFolderImportSmoke({ page, work, shot }) {
     await dialog.getByText(`Group · ${name}`, { exact: true }).waitFor();
   }
   await dialog.getByRole("checkbox", { name: /^service-worker\b/ }).uncheck();
+  // Rescan finds a repository added meanwhile (checked) and keeps the unchecked one unchecked.
+  init("import-frontend/web-admin");
+  await dialog.getByRole("button", { name: "Rescan", exact: true }).click();
+  await dialog.getByText("5 of 6 selected", { exact: true }).waitFor();
+  await dialog.getByText("Rescanned: found 1 repository more.", { exact: true }).waitFor();
+  assert.equal(await dialog.getByRole("checkbox", { name: /^service-worker\b/ }).isChecked(), false);
+  assert.equal(await dialog.getByRole("checkbox", { name: /^web-admin\b/ }).isChecked(), true);
+  fs.rmSync(path.join(parent, "import-frontend", "web-admin"), { recursive: true, force: true });
+  await dialog.getByRole("button", { name: "Rescan", exact: true }).click();
+  await dialog.getByText("4 of 5 selected", { exact: true }).waitFor();
+  await dialog.getByText("Rescanned: 1 repository no longer found.", { exact: true }).waitFor();
+  // A stopped rescan keeps the list and the selection it replaced.
+  await dialog.evaluate(() => {
+    const scanUrl = window.__TAURI_INTERNALS__.convertFileSrc("repo_scan_folder", "ipc");
+    const original = window.fetch;
+    const held = [];
+    window.fetch = (input, init) => {
+      const response = original(input, init);
+      if ((input?.url ?? input) !== scanUrl) return response;
+      return new Promise(resolve => held.push(() => resolve(response)));
+    };
+    window.__rescanHold = { held: () => held.length, finish() { window.fetch = original; held.splice(0).forEach(release => release()); } };
+  });
+  try {
+    await dialog.getByRole("button", { name: "Rescan", exact: true }).click();
+    await page.waitForFunction(() => window.__rescanHold.held() === 1);
+    await dialog.getByRole("button", { name: "Stop scan", exact: true }).click();
+    await dialog.getByRole("button", { name: "Stopping…", exact: true }).waitFor();
+    assert(await dialog.getByRole("button", { name: "Rescan", exact: true }).isDisabled(), "No new Rescan while the stopped one still runs");
+    await page.evaluate(() => window.__rescanHold.finish());
+    await dialog.getByText("Rescan stopped. The previous list is kept.", { exact: true }).waitFor();
+    await dialog.getByText("4 of 5 selected", { exact: true }).waitFor();
+    assert.equal(await dialog.getByRole("checkbox", { name: /^service-worker\b/ }).isChecked(), false);
+  } finally {
+    await page.evaluate(() => window.__rescanHold?.finish());
+  }
   await shot?.("repository-folder-import-preview");
   await confirm(dialog, 4);
   for (const name of ["import-direct", "nested-repo", "service-api", "web-ui"]) await repoInOverview(name).waitFor();

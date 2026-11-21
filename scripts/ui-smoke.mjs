@@ -98,6 +98,13 @@ async function check(name, fn) {
   }
 }
 const shot = (n) => smokeTimings.measure("activity", "screenshots", () => page.screenshot({ path: path.join(out, `${n}.png`) }));
+const runPaletteCommand = async (label) => {
+  await page.keyboard.press("Control+n");
+  await page.fill(".palette input", label);
+  await page.locator(".palette", { hasText: label }).waitFor();
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".palette", { state: "detached" });
+};
 // Poll the actual result; guarded Git transactions include checkpointing and refresh.
 const until = async (fn, msg, ms = 30000) => {
   const t = Date.now();
@@ -1303,7 +1310,10 @@ try {
     const names = ["batch-clean", "batch-dirty", "batch-diverged", "batch-ready"];
     const repos = [];
     for (const name of names) { const dir = path.join(multi, name); at(seed, "clone", "-q", origin, dir); repos.push(dir); }
-    fs.writeFileSync(path.join(repos[1], "draft.txt"), "local work\n");
+    // batch-dirty edits a file the incoming commit changes (stays as it is); batch-clean only has
+    // an unrelated new file (still fast-forwarded, the file kept).
+    fs.writeFileSync(path.join(repos[1], "tabs.txt"), "local work\n");
+    fs.writeFileSync(path.join(repos[0], "draft.txt"), "local work\n");
     at(repos[2], "config", "user.name", "Fixture");
     at(repos[2], "config", "user.email", "fixture@example.com");
     fs.writeFileSync(path.join(repos[2], "local.txt"), "local commit\n");
@@ -1330,22 +1340,21 @@ try {
     console.log(`Verified ${roster.openCount} exact loaded repositories; ${roster.closed.length} closed library bookmarks retained`);
     await page.click(".topbar button[aria-label='All repositories']");
     await page.waitForSelector(".repository-table tbody tr");
-    await page.locator(".repository-overview .repository-sync button:has-text('Fetch all')").click();
+    // Fetch all and Pull all are commands (palette, assignable shortcuts, Explorer menus), not buttons.
+    if (await page.locator(".repository-sync").count()) throw new Error("the Fetch all and Pull all buttons should be gone");
+    await runPaletteCommand("Fetch all repositories");
     // Twenty sequential fetches also refresh refs/status; allow six seconds per repo on Windows.
     await until(async () => !(await page.locator(".statusbar .busy-item").count()), "bulk fetch did not finish", 300000);
     await until(async () => (await page.locator(".repository-table tbody tr", { hasText: "batch-clean" }).innerText()).includes("1"), "incoming commits were not refreshed", 20000);
     await shot("20-repositories");
-    await page.locator(".repository-overview .repository-sync button:has-text('Pull all')").click();
-    await page.waitForSelector(".modal:has-text('Pull repositories')");
-    if (await page.locator(".modal input:checked").count() !== 2) throw new Error("only two clean incoming repositories should be selected");
-    if (!(await page.locator(".modal .batch-row", { hasText: "batch-dirty" }).locator("input").isDisabled())) throw new Error("dirty repository should be skipped");
-    if (!(await page.locator(".modal .batch-row", { hasText: "batch-diverged" }).locator("input").isDisabled())) throw new Error("diverged repository should be skipped");
-    await page.click(".modal button:has-text('Pull (2)')");
-    await page.waitForSelector(".modal:has-text('Pull results')", { timeout: 60000 });
+    await runPaletteCommand("Pull all repositories");
+    // No dialogs: every repository is pulled and one message sums it up.
+    await page.waitForSelector(".toast:has-text('Pulled ')", { timeout: 120000 });
+    await until(async () => !(await page.locator(".statusbar .busy-item").count()), "bulk pull did not finish", 60000);
+    if (await page.locator(".modal").count()) throw new Error("Pull all should not open a dialog");
     if (at(repos[0], "rev-parse", "HEAD") !== expected || at(repos[3], "rev-parse", "HEAD") !== expected) throw new Error("clean repositories were not fast-forwarded");
     if (at(repos[1], "rev-parse", "HEAD") !== dirtyHead || at(repos[2], "rev-parse", "HEAD") !== divergedHead) throw new Error("skipped repository HEAD changed");
-    if (!fs.existsSync(path.join(repos[1], "draft.txt"))) throw new Error("local work disappeared");
-    await page.click(".modal button:has-text('Done')");
+    if (fs.readFileSync(path.join(repos[1], "tabs.txt"), "utf8") !== "local work\n" || !fs.existsSync(path.join(repos[0], "draft.txt"))) throw new Error("local work disappeared");
     await page.locator(".repository-table .repository-name", { hasText: "batch-ready" }).click();
     await page.waitForSelector(".grow .text:has-text('Incoming fixture update')");
     await page.locator(".grow", { hasText: "Incoming fixture update" }).click();

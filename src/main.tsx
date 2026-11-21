@@ -5,16 +5,21 @@ import "@fontsource-variable/jetbrains-mono";
 import "./styles/theme.css";
 import "./styles/app.css";
 import App from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { restoreRepositorySession } from "./lib/restoreRepositorySession";
 import { installErrorReporting } from "./lib/errorLog";
 import { installThemeSync } from "./lib/themeApply";
+import { installKeyboardFocus } from "./lib/focusRing";
 
 installErrorReporting();
 installThemeSync();
+installKeyboardFocus();
 void restoreRepositorySession();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary area="Revqora">
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>,
 );

@@ -32,6 +32,7 @@ import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import type { BranchInfo } from "../lib/types";
 import { loadGraph, useRepos, type RepoTab } from "../lib/store";
 import { contextMenu, copyText, openOverlay, useUi } from "../lib/ui";
+import { branchFolderSyncMenu, selectionSyncMenu } from "./RemoteSyncMenus";
 import * as A from "../lib/actions";
 import { api } from "../lib/api";
 import { basename, joinPath, relativeTime } from "../lib/format";
@@ -45,7 +46,7 @@ import { highlightBranch, jumpToCommit } from "./GraphView";
 import { useGraphDrag } from "./GraphDrop";
 import { confirmDialog, promptDialog } from "./dialogs";
 import { branchConnection, branchPairs } from "../lib/branchPresentation";
-import {sidebarBranchesKey,sidebarBranchPreferences,selectSidebarBranches} from "../lib/sidebarBranches";
+import {branchesInFolder,sidebarBranchesKey,sidebarBranchPreferences,selectSidebarBranches} from "../lib/sidebarBranches";
 import {loadBranchPreferences,preferencesKey} from "../lib/branchManager";
 import { matchesShortcut } from "../lib/shortcuts";
 import { renameRemoteBranch } from "./RemoteRename";
@@ -155,6 +156,7 @@ function SidebarView({ tab, onHide }: SidebarProps) {
   });
 
   const pairs = useMemo(() => branchPairs(refs?.local ?? [], refs?.remote ?? []), [refs]);
+  const squashMerged = useMemo(() => new Set(tab.squashMerged), [tab.squashMerged]);
   const pinned = [...(refs?.local ?? []), ...(refs?.remote ?? [])].find(branch => branch.fullName === primaryBranch);
   const revealedBranch = useMemo(() => revealed && [...(refs?.local ?? []), ...(refs?.remote ?? [])]
     .find(branch => branch.fullName === revealed.reference), [refs, revealed]);
@@ -295,6 +297,8 @@ function SidebarView({ tab, onHide }: SidebarProps) {
             }}
             onContextMenu={(e) =>
               contextMenu(e, selected.length > 1 && selectedSet.has(b.fullName) ? [
+                ...selectionSyncMenu({ folders: [], repositories: [], branches: selected.map(branch => ({ root, branches: [branch.fullName] })) }),
+                { separator: true },
                 { label: `Delete ${selected.length} branches…`, icon: <Trash2 size={14} />, danger: true, disabled: selected.length > 50,
                   hint: selected.length > 50 ? "Select up to 50" : undefined, onClick: () => void deleteSelected() },
                 { label: "Clear selection", onClick: clearSelection },
@@ -306,7 +310,7 @@ function SidebarView({ tab, onHide }: SidebarProps) {
             <span className="meta">
               {primaryBranch === b.fullName && <Flag size={12} className="branch-primary-mark" role="img" aria-label="Primary branch"/>}
               {kind === "local" && <span className={`branch-connection ${connection.kind}`} role="img" aria-label={connection.title} title={connection.title}>{connection.kind === "gone" ? <CloudOff size={13} /> : connection.kind === "paired" ? <Cloud size={13} /> : <HardDrive size={13} />}</span>}
-              {kind === "local" && tab.squashMerged.includes(b.name) && (
+              {kind === "local" && squashMerged.has(b.name) && (
                 <span className="pill amber" title={`Merged into ${current ?? "the current branch"}
 All changes of this branch are already in ${current ?? "the current branch"} (squash or rebase merge), so it is usually safe to delete. Its own commits were copied, not merged, so they still look unmerged in History.`}>
                   merged
@@ -326,7 +330,8 @@ All changes of this branch are already in ${current ?? "the current branch"} (sq
       const key = `${kind}:${prefix}${n.path}`;
       const open = isOpen(key);
       return [
-        <div key={key} className="sb-item" style={{ paddingLeft: pad }} onClick={() => setOpenDirs((o) => ({ ...o, [key]: !open }))}>
+        <div key={key} className="sb-item" style={{ paddingLeft: pad }} onClick={() => setOpenDirs((o) => ({ ...o, [key]: !open }))}
+          onContextMenu={(e) => contextMenu(e, branchFolderSyncMenu(root, branchesInFolder((kind === "remote" ? refs?.remote : refs?.local) ?? [], `${prefix}${n.path}`), kind === "remote"))}>
           {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           <Folder size={13} style={{ flex: "none", color: "var(--text-faint)" }} />
           <span className="label">{n.name}</span>

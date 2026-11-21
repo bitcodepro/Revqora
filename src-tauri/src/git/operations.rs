@@ -47,6 +47,12 @@ thread_local! {
     static SCOPES: RefCell<Vec<(PathBuf, bool)>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Whether the calling thread is inside any repository transaction (it may hold a gate, so it
+/// must never wait for another thread's Git command).
+pub fn in_any_transaction() -> bool {
+    SCOPES.with(|s| !s.borrow().is_empty())
+}
+
 fn enter_scope(key: PathBuf, write: bool) -> impl Drop {
     SCOPES.with(|s| s.borrow_mut().push((key, write)));
     DropGuard::new((), |()| {
@@ -76,6 +82,34 @@ impl Inherited {
         let _scope = self.scope.clone().map(|(key, write)| enter_scope(key, write));
         self.journal.enter(f)
     }
+}
+
+/// Runs `f` for every item side by side and returns the results in order: the first item on
+/// this thread, the others on helper threads inside this thread's repository transaction (see
+/// [`Inherited`]). For Git reads that wait for nothing else: each Git start costs tens of
+/// milliseconds on Windows, and an operation that reads one thing after another adds them up.
+pub fn each<I: Send, T: Send>(repo: &Path, items: Vec<I>, f: impl Fn(I) -> T + Sync) -> Vec<T> {
+    let parent = Inherited::of(repo);
+    let mut items = items.into_iter();
+    let Some(first) = items.next() else { return Vec::new() };
+    std::thread::scope(|scope| {
+        let (parent, f) = (&parent, &f);
+        let helpers: Vec<_> = items.map(|item| scope.spawn(move || parent.run(|| f(item)))).collect();
+        let mut results = vec![f(first)];
+        results.extend(helpers.into_iter().map(|helper| helper.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))));
+        results
+    })
+}
+
+/// Two independent reads side by side (see [`each`]): `helper` on a helper thread inside this
+/// thread's repository transaction, `here` on this thread.
+pub fn both<A: Send, B>(repo: &Path, helper: impl FnOnce() -> A + Send, here: impl FnOnce() -> B) -> (A, B) {
+    let parent = Inherited::of(repo);
+    std::thread::scope(|scope| {
+        let helper = scope.spawn(|| parent.run(helper));
+        let here = here();
+        (helper.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)), here)
+    })
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -321,6 +355,7 @@ pub fn run<T: serde::Serialize>(
             "checkout"
                 | "merge_start"
                 | "pull"
+                | "pull_branches"
                 | "rebase_onto"
                 | "interactive_rebase"
                 | "rewrite"
@@ -445,9 +480,9 @@ pub(super) fn external_attribute_files(repo: &Path) -> GitResult<Vec<PathBuf>> {
     let mut paths = Vec::new();
     if runner::version_at_least(2, 42) {
         // Git resolves configured paths, ~/ and its platform-specific defaults.
-        // Query only these variables: `var -l` also exposes arbitrary config.
-        for name in ["GIT_ATTR_GLOBAL", "GIT_ATTR_SYSTEM"] {
-            let out = super::config_cache::exec(repo, &["var", name])?;
+        // Query only these variables: `var -l` also exposes arbitrary config. Both side by side.
+        for out in each(repo, vec!["GIT_ATTR_GLOBAL", "GIT_ATTR_SYSTEM"], |name| super::config_cache::exec(repo, &["var", name])) {
+            let out = out?;
             if out.ok() {
                 let value = out.text();
                 let value = value.strip_suffix('\n').unwrap_or(&value).trim_end_matches('\r');
@@ -603,9 +638,8 @@ pub fn state_reads(repo: &Path, display_path: Option<&str>) -> StateReads {
         let references = display_path.is_none().then(|| {
             sc.spawn(|| {
                 parent.run(|| {
-                    let args = ["for-each-ref", "--format=%(refname)%00%(objectname)"];
                     let stamp = dirs.as_ref().and_then(|(gd, common)| state_cache::refs_stamp(gd, common));
-                    state_cache::remembered(repo, "refs", &args, stamp, || runner::run_bytes(repo, args)).map(|out| String::from_utf8_lossy(&out).into_owned())
+                    state_cache::refs_listing(repo, stamp)
                 })
             })
         });
@@ -709,6 +743,44 @@ pub mod state_cache {
         Some(std::hash::Hasher::finish(&hasher))
     }
 
+    /// Everything `worktree list` reads: the ref files (each worktree's commit), the repository
+    /// configuration (bare, core.worktree), and per linked worktree its HEAD, lock, recorded
+    /// location and whether that location still exists (prunable). None as [`refs_stamp`].
+    pub fn worktrees_stamp(gd: &Path, common: &Path) -> Option<Stamp> {
+        use std::hash::Hash;
+        let refs = refs_stamp(gd, common)?;
+        let now = SystemTime::now();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        refs.hash(&mut hasher);
+        hash_meta(&mut hasher, &common.join("config"), now)?;
+        // With extensions.worktreeConfig, core.bare and core.worktree can live per worktree.
+        hash_meta(&mut hasher, &common.join("config.worktree"), now)?;
+        hash_meta(&mut hasher, &gd.join("config.worktree"), now)?;
+        let folder = common.join("worktrees");
+        let mut linked: Vec<PathBuf> = match fs::read_dir(&folder) {
+            Ok(entries) => {
+                // A worktree added or removed just now changes the folder.
+                if !settled(fs::metadata(&folder).ok()?.modified().ok()?, now) {
+                    return None;
+                }
+                entries.flatten().map(|e| e.path()).collect()
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(_) => return None,
+        };
+        linked.sort();
+        for dir in linked {
+            for name in ["HEAD", "locked", "gitdir", "commondir", "config.worktree"] {
+                hash_meta(&mut hasher, &dir.join(name), now)?;
+            }
+            // The worktree's own `.git` file: a folder deleted outside Git becomes prunable.
+            if let Ok(target) = fs::read_to_string(dir.join("gitdir")) {
+                hash_meta(&mut hasher, Path::new(target.trim()), now)?;
+            }
+        }
+        Some(std::hash::Hasher::finish(&hasher))
+    }
+
     type Key = (PathBuf, &'static str, Vec<String>);
     type Entry = (Key, Stamp, Vec<u8>);
 
@@ -738,6 +810,21 @@ pub mod state_cache {
         }
         list.push((key, stamp, out.clone()));
         Ok(out)
+    }
+
+    /// Every ref with its object (`for-each-ref`), reused while `stamp` is unchanged.
+    pub fn refs_listing(repo: &Path, stamp: Option<Stamp>) -> GitResult<String> {
+        let args = ["for-each-ref", "--format=%(refname)%00%(objectname)"];
+        remembered(repo, "refs", &args, stamp, || runner::run_bytes(repo, args)).map(|out| String::from_utf8_lossy(&out).into_owned())
+    }
+
+    /// [`refs_listing`] with the stamp of `repo`'s ref files.
+    pub fn current_refs(repo: &Path) -> GitResult<String> {
+        let stamp = super::super::repo::git_dir(repo).ok().and_then(|gd| {
+            let common = super::super::graph::common_dir(repo).unwrap_or_else(|| gd.clone());
+            refs_stamp(&gd, &common)
+        });
+        refs_listing(repo, stamp)
     }
 
     /// Forgets every remembered output (tests that count Git processes).

@@ -1,3 +1,4 @@
+import { relativeTime } from "./format";
 import type { CommitSearchHit, CommitSearchPage } from "./types";
 
 /** Matches loaded per repository before the dialog shows "Show more matches". */
@@ -114,4 +115,15 @@ export async function searchRepositories(
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, roots.length)) }, worker));
+}
+
+/** One search match as copied text: subject, then full hash, author, age and refs. */
+export function searchHitText(hit: CommitSearchHit, now?: number): string {
+  const details = [hit.oid, hit.author, relativeTime(hit.authorTime, now), hit.refs].filter(Boolean).join(" · ");
+  return `${hit.subject || "(no commit message)"}\n${details}`;
+}
+
+/** Matches of several repositories as copied text: each repository name followed by its matches. */
+export function searchResultsText(groups: readonly { name: string; hits: readonly CommitSearchHit[]; error?: string | null }[], now?: number): string {
+  return groups.map(({ name, hits, error }) => [name, ...(error ? [error] : []), ...hits.map((hit) => searchHitText(hit, now))].join("\n\n")).join("\n\n\n");
 }

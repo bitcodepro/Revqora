@@ -108,7 +108,9 @@ function WorkingCode({path,initial,diff,displayDiff,disabled,changed}: {
   const [size,setSize]=useState(4),[all,setAll]=useState(false);
   const whitespace=useSettings(s=>s.showWhitespace);
   const compartments=useRef({options:new Compartment(),editable:new Compartment(),language:new Compartment()});
-  const original=useRef(editorDocument(initial));
+  // Read once: the text is scanned for its line endings, which every render would repeat.
+  const [firstDocument]=useState(()=>editorDocument(initial));
+  const original=useRef(firstDocument);
   const jumped=useRef(false);
   const edited=useRef(false);
   const publishText=useEffectEvent(changed);

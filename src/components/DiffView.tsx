@@ -1,5 +1,5 @@
 import { useShallow } from "zustand/react/shallow";
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
   AlignJustify,
@@ -38,6 +38,7 @@ import { movedLines } from "../lib/movedLines";
 import { changeBlocks, lineRange } from "../lib/lineSelection";
 import { submodulePointers } from "../lib/submodulePointer";
 import { SubmoduleSummary } from "./SubmoduleSummary";
+import { lineEndingsNote } from "../lib/lineEndings";
 
 export type DiffMode = "unstaged" | "staged" | "readonly" | "pick";
 export type LineAction = "stage" | "unstage" | "discard" | "apply" | "stash";
@@ -166,6 +167,14 @@ function renderCode(text: string, toks: Tok[] | undefined, spans: Span[] | undef
   return text ? display(text) : " ";
 }
 
+/**
+ * The text of one diff line. Its inputs (tokens, word changes) are remembered per diff, so a
+ * selection, search or scroll change redraws only the lines whose text styling changed.
+ */
+const Code = memo(function Code({ text, toks, spans, kind, whitespace }: { text: string; toks: Tok[] | undefined; spans: Span[] | undefined; kind: string; whitespace: boolean }) {
+  return <span className="code">{kind === "\\" ? text : renderCode(text, toks, spans, kind, whitespace)}</span>;
+});
+
 type FlatRow = { kind: "hunk"; h: number } | { kind: "line"; h: number; l: number };
 type VirtualRow = FlatRow | { kind: "pair"; h: number; a: number | null; b: number | null };
 
@@ -279,6 +288,10 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
 
   const interactive = mode !== "readonly" && !!onApply;
   const rowH = Math.ceil(s.codeFontSize * 1.6);
+  // A diff that becomes virtual (wrapping turned off, longer diff) starts from where it is scrolled.
+  useEffect(() => {
+    if (virtual && bodyRef.current) setScroll(Math.floor(bodyRef.current.scrollTop / rowH) * rowH);
+  }, [virtual, rowH]);
 
   // Flattened rows (used for virtualization, search and change navigation).
   const flat = useMemo<FlatRow[]>(() => {
@@ -344,8 +357,11 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   const jumpChange = (dir: 1 | -1) => {
     const el = bodyRef.current;
     if (!el || !diff) return;
+    // One pass over the rows finds every hunk header (not one search per hunk).
+    const headers = new Map<number, number>();
+    if (virtual) vrows.forEach((row, at) => { if (row.kind === "hunk" && !headers.has(row.h)) headers.set(row.h, at); });
     const tops: number[] = virtual
-      ? diff.hunks.map((_, hi) => vrowIndex(hi, null) * rowH)
+      ? diff.hunks.map((_, hi) => (headers.get(hi) ?? -1) * rowH)
       : diff.hunks.map((_, hi) => el.querySelector<HTMLElement>(`[data-hunk="${hi}"]`)?.offsetTop ?? 0);
     const cur = el.scrollTop + 4;
     const idx = dir > 0 ? tops.findIndex((t) => t > cur + 8) : tops.map((t, i) => [t, i] as const).filter(([t]) => t < cur - 8).pop()?.[1] ?? -1;
@@ -507,7 +523,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
         {onComment && l.oldNo !== null ? <button className="ln review-line" title={`Comment on old line ${l.oldNo}`} aria-label={`Comment on old line ${l.oldNo}`} onClick={()=>onComment("LEFT",l.oldNo!)}>{l.oldNo}</button> : <span className="ln" onMouseDown={e=>toggle(hi,li,e.shiftKey)}>{l.oldNo??""}</span>}
         {onComment && l.newNo !== null ? <button className="ln review-line" title={`Comment on new line ${l.newNo}`} aria-label={`Comment on new line ${l.newNo}`} onClick={()=>onComment("RIGHT",l.newNo!)}>{l.newNo}</button> : <span className="ln" onMouseDown={e=>toggle(hi,li,e.shiftKey)}>{l.newNo??""}</span>}
         <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
-        <span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, hl?.[hi]?.[li], words?.[hi]?.get(li), l.kind,s.showWhitespace)}</span>
+        <Code text={l.text} toks={hl?.[hi]?.[li]} spans={words?.[hi]?.get(li)} kind={l.kind} whitespace={s.showWhitespace} />
         {interactive && blocks.has(k) && (mode === "unstaged" || mode === "staged") && (
           <span className="block-actions">
             <button type="button" className="btn sm" disabled={busy} title="Only this block of changes" onClick={() => apply(blocks.get(k)!.map((i) => [hi, i] as [number, number]), mode === "unstaged" ? "stage" : "unstage")}>
@@ -677,7 +693,7 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
     body = root && images ? <TextDiffPreview key={JSON.stringify([root, path])} root={root}
       revision={diff.hash} before={diff.isNew ? null : images.old} after={diff.isDeleted ? null : images.new} fallback={fallback} /> : fallback;
   } else if (diff.hunks.length === 0) {
-    body = <div className="empty">{diff.previewLimited ? "No complete changed line fits in the preview." : diff.oldMode !== diff.newMode ? "Only the file mode changed." : sourceOptions && s.ignoreWhitespace ? "Only whitespace changed." : "No textual changes."}</div>;
+    body = <div className="empty">{diff.previewLimited ? "No complete changed line fits in the preview." : diff.oldMode !== diff.newMode ? "Only the file mode changed." : diff.lineEndings ? lineEndingsNote(diff.lineEndings) : sourceOptions && s.ignoreWhitespace ? "Only whitespace changed." : "No textual changes."}</div>;
   } else if (virtual) {
     // Very long diffs: fixed-height rows, only the visible window is rendered.
     const first = Math.max(0, Math.floor(scroll / rowH) - 30);
@@ -733,7 +749,9 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
       )}
       <div ref={bodyRef} className={`diff-body ${!diff && loading && !error ? "diff-loading" : ""} ${s.wrapDiff ? "wrap" : ""}`} onScroll={(e) => {
         const el = e.currentTarget;
-        setScroll(el.scrollTop);
+        // Only a virtual diff draws by scroll position, and only whole rows matter: scrolling a
+        // normal diff, or within one row, redraws nothing.
+        if (virtual) setScroll(Math.floor(el.scrollTop / rowH) * rowH);
         if (!splitPan) setHorizontal((h) => h.position === el.scrollLeft ? h : { ...h, position: el.scrollLeft });
       }}>
         <div ref={contentRef} className={`diff-content ${virtual ? "virtual-content" : ""} ${s.diffMode === "split" ? "split-content" : ""}`}
@@ -840,7 +858,7 @@ function SplitHalf({ idx, side, hunk: { lines }, hi, toks, words, sel, onToggle,
     >
       {onComment && no !== null ? <button className="ln review-line" title={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} aria-label={`Comment on ${side === "l" ? "old" : "new"} line ${no}`} onClick={()=>onComment(side === "l" ? "LEFT" : "RIGHT",no)}>{no}</button> : <span className="ln" style={{ cursor: interactive && cls ? "pointer" : undefined }} onMouseDown={e=>onToggle(hi,idx,e.shiftKey)}>{no??""}</span>}
       <span className="mk">{l.kind === " " || l.kind === "\\" ? "" : l.kind}</span>
-      <span className="code-viewport"><span className="code">{l.kind === "\\" ? l.text : renderCode(l.text, toks?.[idx], words?.get(idx), l.kind,whitespace)}</span></span>
+      <span className="code-viewport"><Code text={l.text} toks={toks?.[idx]} spans={words?.get(idx)} kind={l.kind} whitespace={whitespace} /></span>
     </div>
   );
 }

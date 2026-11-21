@@ -26,6 +26,37 @@ const sameTracking = (a: BranchTracking | undefined, b: BranchTracking) => !!a &
   a.upstream === b.upstream && a.ahead === b.ahead && a.behind === b.behind && a.unpublished === b.unpublished;
 
 type Field = "byKey" | "changes";
+type Update = { field: Field; key: string; value?: unknown; same: (a: unknown, b: unknown) => boolean };
+
+/**
+ * Answers that arrive close together (a library sweep answers several repositories at a time)
+ * are applied in one state change, so the Explorer and the rows render once for all of them
+ * instead of once per repository. A scan finishes once its answer is applied.
+ */
+const updates: Update[] = [];
+let flushing: Promise<void> | null = null;
+const FLUSH_MS = 16;
+
+function apply(update: Update): Promise<void> {
+  updates.push(update);
+  flushing ??= new Promise<void>(resolve => setTimeout(() => {
+    flushing = null;
+    const batch = updates.splice(0);
+    useRepositoryTracking.setState(state => {
+      const next: Partial<Record<Field, Record<string, unknown>>> = {};
+      for (const { field, key, value, same } of batch) {
+        const values = next[field] ?? state[field] as Record<string, unknown>;
+        if (value === undefined ? !(key in values) : same(values[key], value)) continue;
+        const copy = next[field] ??= { ...values };
+        if (value === undefined) delete copy[key];
+        else copy[key] = value;
+      }
+      return Object.keys(next).length ? next as Partial<typeof state> : state;
+    });
+    resolve();
+  }, FLUSH_MS));
+  return flushing;
+}
 
 /**
  * Reads the tracking of `roots` again. Reads of one repository run one after another, so the
@@ -49,16 +80,10 @@ function scanOne<T>(field: Field, root: string, load: (root: string) => Promise<
     running.set(jobKey, job);
     try {
       const value = await load(root);
-      useRepositoryTracking.setState(state => same(state[field][key] as T | undefined, value) ? state : { [field]: { ...state[field], [key]: value } });
+      await apply({ field, key, value, same: same as (a: unknown, b: unknown) => boolean });
     } catch {
       // A moved or deleted folder shows no counts; opening it reports the problem.
-      if (key in useRepositoryTracking.getState()[field]) {
-        useRepositoryTracking.setState(state => {
-          const values = { ...state[field] };
-          delete values[key];
-          return { [field]: values };
-        });
-      }
+      await apply({ field, key, same: () => false });
     } finally {
       if (running.get(jobKey) === job) running.delete(jobKey);
     }

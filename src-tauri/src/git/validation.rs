@@ -360,6 +360,10 @@ pub(super) mod process_tree {
         /// Dropping a Unix tree never kills it.
         pub fn keep_descendants(&self) {}
     }
+    /// [`spawn`] for a Git process.
+    pub fn spawn_git(cmd: &mut Command) -> GitResult<(Child, Tree)> {
+        spawn(cmd)
+    }
     pub fn spawn(cmd: &mut Command) -> GitResult<(Child, Tree)> {
         cmd.process_group(0);
         let child = cmd.spawn().map_err(|e| process_error("Command::spawn", cmd, e))?;
@@ -442,7 +446,37 @@ pub(super) mod process_tree {
     pub fn exited(child: &mut Child) -> std::io::Result<bool> {
         Ok(child.try_wait()?.is_some())
     }
+    #[link(name = "ntdll", kind = "raw-dylib")]
+    unsafe extern "system" {
+        /// Opens the next thread of a process (the first with `thread` null). In ntdll since
+        /// Windows Vista.
+        fn NtGetNextThread(process: HANDLE, thread: HANDLE, access: u32, attributes: u32, flags: u32, next: *mut HANDLE) -> i32;
+    }
+    /// Resumes the only thread of a process created suspended, without a snapshot of every
+    /// thread in the system: that snapshot takes tens of milliseconds on a busy machine and
+    /// snapshots run one at a time, so parallel Git commands (a folder scan, automatic fetch of
+    /// several repositories) waited on each other. `None`: use the snapshot instead.
+    unsafe fn resume_first_thread(process: HANDLE) -> Option<(u32, u32)> {
+        let mut thread: HANDLE = std::ptr::null_mut();
+        if NtGetNextThread(process, std::ptr::null_mut(), THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION, 0, 0, &mut thread) < 0 || thread.is_null() {
+            return None;
+        }
+        let thread = OwnedHandle(thread);
+        let id = GetThreadId(thread.0);
+        let previous_count = ResumeThread(thread.0);
+        (id != 0 && previous_count != u32::MAX).then_some((id, previous_count))
+    }
+    /// A command of the user's (validation, agents) starts with a hidden console, which the
+    /// programs it starts share.
     pub fn spawn(cmd: &mut Command) -> GitResult<(Child, Tree)> {
+        spawn_with(cmd, CREATE_NO_WINDOW)
+    }
+    /// A Git process starts as every Git process does (see `runner::git_creation_flags`),
+    /// also at below-normal priority in the background.
+    pub fn spawn_git(cmd: &mut Command) -> GitResult<(Child, Tree)> {
+        spawn_with(cmd, crate::git::runner::git_creation_flags())
+    }
+    fn spawn_with(cmd: &mut Command, flags: u32) -> GitResult<(Child, Tree)> {
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if job.is_null() {
@@ -461,11 +495,14 @@ pub(super) mod process_tree {
                 return Err(process_error("SetInformationJobObject", cmd, error));
             }
             // Assign before any user code can create descendants.
-            let mut child = cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED).spawn().map_err(|e| process_error("Command::spawn", cmd, e))?;
+            let mut child = cmd.creation_flags(flags | CREATE_SUSPENDED).spawn().map_err(|e| process_error("Command::spawn", cmd, e))?;
             let resumed = (|| {
                 if AssignProcessToJobObject(job, child.as_raw_handle()) == 0 {
                     let error = std::io::Error::last_os_error();
                     return Err(process_error("AssignProcessToJobObject", cmd, error));
+                }
+                if let Some(resumed) = resume_first_thread(child.as_raw_handle()) {
+                    return Ok(resumed);
                 }
                 let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
                 if snap == INVALID_HANDLE_VALUE {

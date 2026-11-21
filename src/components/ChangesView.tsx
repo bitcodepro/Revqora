@@ -3,7 +3,7 @@ import { openRepoFile } from "../lib/openFile";
 import { fileCopyMenu } from "./NamePathMenu";
 import { useFileListNavigation } from "../lib/useFileListNavigation";
 import {workingDiffSnapshot,rememberWorkingDiff} from "../lib/workingDiffSnapshot";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, lazy, Suspense } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, lazy, Suspense } from "react";
 import {
   Archive,
   ArrowDown,
@@ -260,19 +260,30 @@ export function ChangesView({ tab, onOpenConflict }: { tab: RepoTab; onOpenConfl
   const [dropOn, setDropOn] = useState<string | null>(null);
   const treeView = useSettings((s) => s.fileView) === "tree";
 
-  const files = tab.status?.files ?? [];
-  const conflicts = files.filter((f) => f.conflict);
-  const unstaged = files.filter((f) => !f.conflict && f.worktree !== ".");
-  const staged = files.filter((f) => !f.conflict && f.index !== ".");
+  // Split and filtered once per status and query, not on every render of the view.
+  const statusFiles = tab.status?.files;
+  const { files, conflicts, unstaged, staged } = useMemo(() => {
+    const files = statusFiles ?? [];
+    return {
+      files,
+      conflicts: files.filter((f) => f.conflict),
+      unstaged: files.filter((f) => !f.conflict && f.worktree !== "."),
+      staged: files.filter((f) => !f.conflict && f.index !== "."),
+    };
+  }, [statusFiles]);
   const layers = tab.layers?.active ? tab.layers : null;
   const query = fileQuery.trim().toLowerCase().replaceAll("\\", "/");
-  const matchesFile = (f: { path: string; origPath?: string | null }) =>
-    f.path.toLowerCase().includes(query) || !!f.origPath?.toLowerCase().includes(query);
-  const visibleConflicts = query ? conflicts.filter(matchesFile) : conflicts;
-  const visibleUnstaged = query ? unstaged.filter(matchesFile) : unstaged;
-  const visibleStaged = query ? staged.filter(matchesFile) : staged;
-  const visibleOpenFiles = query ? layers?.openFiles.filter(matchesFile) : layers?.openFiles;
-  const visibleLayers = layers?.layers.map(layer => ({ layer, files: query ? layer.files.filter(matchesFile) : layer.files }));
+  const { visibleConflicts, visibleUnstaged, visibleStaged, visibleOpenFiles, visibleLayers } = useMemo(() => {
+    const matchesFile = (f: { path: string; origPath?: string | null }) =>
+      f.path.toLowerCase().includes(query) || !!f.origPath?.toLowerCase().includes(query);
+    return {
+      visibleConflicts: query ? conflicts.filter(matchesFile) : conflicts,
+      visibleUnstaged: query ? unstaged.filter(matchesFile) : unstaged,
+      visibleStaged: query ? staged.filter(matchesFile) : staged,
+      visibleOpenFiles: query ? layers?.openFiles.filter(matchesFile) : layers?.openFiles,
+      visibleLayers: layers?.layers.map(layer => ({ layer, files: query ? layer.files.filter(matchesFile) : layer.files })),
+    };
+  }, [conflicts, unstaged, staged, layers, query]);
   const allStagedCount = layers ? layers.layers.reduce((sum, layer) => sum + layer.files.length, layers.openFiles.length) : staged.length;
   const visibleStagedCount = visibleLayers ? visibleLayers.reduce((sum, entry) => sum + entry.files.length, visibleOpenFiles?.length ?? 0) : visibleStaged.length;
   const noMatches = !!tab.status && !!query && !visibleConflicts.length && !visibleUnstaged.length && !visibleStagedCount;

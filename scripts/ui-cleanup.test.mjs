@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {spawn,execFileSync} from "node:child_process";
 import {once} from "node:events";
-import {shutdownAndCleanup} from "./ui-cleanup.mjs";
+import {removeFixtureFolder,shutdownAndCleanup,stopAppTree} from "./ui-cleanup.mjs";
 
 test("fixture deletion waits for confirmed shutdown, including async cleanup",async()=>{
  const calls=[];let release;const stopped=new Promise(resolve=>release=resolve);
@@ -47,4 +47,30 @@ test("real Git worktree removal follows release of a process holding its directo
   if(holder&&holder.exitCode===null&&holder.signalCode===null){const exited=once(holder,"exit");holder.kill();await exited;}
   assert.equal(path.dirname(fs.realpathSync.native(work)),fs.realpathSync.native(base));fs.rmSync(work,{recursive:true,force:true});
  }
+});
+
+test("a refused fixture removal names the processes still running, and fails only while the folder stays",async()=>{
+ const refused=Object.assign(new Error("EPERM, Permission denied"),{code:"EPERM"});let tries=0;const logged=[];
+ await removeFixtureFolder("fixture",{remove:()=>{if(++tries<3)throw refused;},list:()=>`git.exe pid=${tries}`,watchMs:1000,pollMs:1,log:line=>logged.push(line)});
+ assert.equal(tries,3);
+ assert.match(logged[0],/Removing fixture failed \(EPERM\)[\s\S]*git\.exe pid=1/);
+ assert.match(logged[1],/Warning: fixture could be removed \d+ s later[\s\S]*git\.exe pid=3/);
+ await assert.rejects(removeFixtureFolder("fixture",{remove:()=>{throw refused;},list:()=>"",watchMs:20,pollMs:1,log:()=>{}}),e=>e===refused);
+ let removed=false;await removeFixtureFolder("fixture",{remove:()=>{removed=true;},list:()=>assert.fail("listed without a failure")});assert(removed);
+});
+
+test("stopping the app also stops what its exited children left running",{skip:process.platform!=="win32"},async()=>{
+ // The app starts a child that starts a long-running grandchild, as Git starts its shell.
+ const since=new Date(Date.now()-1000);
+ const grandchild="setInterval(()=>{},1000)";
+ const child=`const {spawn}=require('child_process');const g=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore'});console.log(g.pid);setInterval(()=>{},1000)`;
+ const app=spawn(process.execPath,["-e",`const {spawn}=require('child_process');const c=spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:['ignore','pipe','ignore']});c.stdout.on('data',d=>{process.stdout.write(c.pid+' '+d)});setInterval(()=>{},1000)`],{stdio:["ignore","pipe","ignore"],windowsHide:true});
+ const [childPid,grandPid]=await new Promise(resolve=>app.stdout.once("data",d=>resolve(String(d).trim().split(/\s+/).map(Number))));
+ const alive=pid=>{try{process.kill(pid,0);return true;}catch{return false;}};
+ assert(alive(childPid)&&alive(grandPid));
+ const exited=once(app,"exit");
+ const left=stopAppTree(app.pid,since);
+ await exited;
+ assert(!alive(childPid)&&!alive(grandPid),`still running: ${[childPid,grandPid].filter(alive)}`);
+ assert(Array.isArray(left));
 });

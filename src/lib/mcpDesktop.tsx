@@ -70,6 +70,11 @@ function exactCommit(oid?: string) {
   return oid.toLowerCase();
 }
 
+/** The paging arguments of a diff read, as the backend takes them. */
+function pageOptions(a: DiffPageOptions): DiffPageOptions {
+  return { offset: a.offset, limit: a.limit, diffVersion: a.diffVersion, lineOffset: a.lineOffset, conflictSide: a.conflictSide };
+}
+
 function page<T>(items: T[], offset = 0, size = 100) {
   return { items: items.slice(offset, offset + size), total: items.length, nextOffset: offset + size < items.length ? offset + size : null };
 }
@@ -703,20 +708,10 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
   }
   const root = requireRepo(a.repository);
   switch (name) {
-    case "repository_status": {
-      const { stateToken: statusVersion, diffContextToken: _diffContextToken, files, ...summary } = await api.statusWithOperation(root);
-      if (!statusVersion || a.statusVersion !== undefined && a.statusVersion !== statusVersion) {
-        throw new McpToolError("stale_state", "The repository status changed. Restart at offset 0.");
-      }
-      const { items, ...paging } = page(files, a.offset, 200);
-      return { ...summary, statusVersion, files: { ...paging, items: items.map(({ diffToken: _diffToken, ...file }) => file) } };
-    }
-    case "list_branches": {
-      const refs = await api.refs(root);
-      const branches = a.scope === "local" ? refs.local : a.scope === "remote" ? refs.remote : [...refs.local, ...refs.remote];
-      const query = a.query?.toLocaleLowerCase();
-      return page(branches.filter(branch => !query || branch.name.toLocaleLowerCase().includes(query)), a.offset);
-    }
+    case "repository_status":
+      return api.mcpStatusPage(root, a.statusVersion, a.offset);
+    case "list_branches":
+      return api.mcpBranchPage(root, a.scope, a.query, a.offset);
     case "compare_branches":
       return api.compareBranchCommits(root, a.from!, a.to!);
     case "search_commits":
@@ -732,7 +727,7 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
         const { files, diffBase } = await api.commitDetails(root, oid, true);
         const file = files.find(file => file.path === path);
         if (!file) throw new McpToolError(a.diffVersion ? "diff_changed" : "file_not_found", "Choose a changed path from commit_details and start at offset 0.");
-        return diffPage(await api.revDiff(root, diffBase, oid, path, { disableTextconv: true, renameFrom: file.oldPath ?? undefined }), a);
+        return api.mcpRevDiffPage(root, diffBase, oid, path, { disableTextconv: true, renameFrom: file.oldPath ?? undefined }, pageOptions(a));
       }
       // Path eligibility needs porcelain status. The diff or index stages
       // below supply their own version for continuation from a previous read.
@@ -754,7 +749,7 @@ async function dispatch(event: DesktopRequest): Promise<unknown> {
       }
       const staged = a.side === "staged";
       const renameFrom = staged && file.index === "R" ? file.origPath ?? undefined : undefined;
-      return diffPage(await api.workingDiff(root, path, staged ? "staged" : "unstaged", file.untracked, { disableTextconv: true, renameFrom }, true), a);
+      return api.mcpWorkingDiffPage(root, path, staged ? "staged" : "unstaged", file.untracked, { disableTextconv: true, renameFrom }, pageOptions(a));
     }
     case "list_worktrees": {
       const { worktrees } = await api.worktreeManagerSnapshot(root);

@@ -79,6 +79,26 @@ pub struct RefsSnapshot {
     pub tags: Vec<TagInfo>,
     pub stashes: Vec<StashInfo>,
     pub remotes: Vec<RemoteInfo>,
+    /// Changes whenever anything above changes: the UI compares two snapshots by it, and asks
+    /// [`snapshot_if_changed`] with it instead of receiving an unchanged snapshot again.
+    pub fingerprint: String,
+    /// Changes whenever a remote branch is added, removed or moves: what cached answers about
+    /// remote branches (such as "on a remote") depend on.
+    pub remote_fingerprint: String,
+}
+
+/// A short hash of `value` as JSON, the form the UI receives it in.
+fn fingerprint_of(value: &impl Serialize) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(value).unwrap_or_default().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// The snapshot, or `None` when its fingerprint is still `known`.
+pub fn snapshot_if_changed(repo: &Path, known: Option<&str>) -> GitResult<Option<RefsSnapshot>> {
+    let snapshot = snapshot(repo)?;
+    Ok((known != Some(snapshot.fingerprint.as_str())).then_some(snapshot))
 }
 
 const FMT: &str = "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(HEAD)%00%(creatordate:unix)%00%(contents:subject)%00%(authorname)%00%(symref)%00%(objecttype)%00%(upstream)%00%(authoremail:trim)%00";
@@ -96,6 +116,24 @@ fn parse_track(t: &str) -> (u32, u32, bool) {
         }
     }
     (ahead, behind, gone)
+}
+
+/// [`branch_names`] of several repositories, read a few at a time; none for a repository
+/// that cannot be read (a moved folder or an unavailable drive).
+pub fn branch_names_many(repos: &[std::path::PathBuf]) -> Vec<Option<Vec<String>>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let answers: Vec<parking_lot::Mutex<Option<Vec<String>>>> = repos.iter().map(|_| parking_lot::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..repos.len().min(4) {
+            scope.spawn(|| loop {
+                let at = next.fetch_add(1, Ordering::Relaxed);
+                let Some(repo) = repos.get(at) else { break };
+                *answers[at].lock() = branch_names(repo).ok();
+            });
+        }
+    });
+    answers.into_iter().map(parking_lot::Mutex::into_inner).collect()
 }
 
 pub fn branch_names(repo: &Path) -> GitResult<Vec<String>> {
@@ -368,7 +406,9 @@ pub fn snapshot(repo: &Path) -> GitResult<RefsSnapshot> {
         let detail = format!("local={} remote={} tags={}", local.len(), remote.len(), tags.len());
         super::stage_timings::record("refs_snapshot", repo, &stages, &detail);
     }
-    Ok(RefsSnapshot { identity_email, local, remote, tags, stashes, remotes })
+    let fingerprint = fingerprint_of(&(&identity_email, &local, &remote, &tags, &stashes, &remotes));
+    let remote_fingerprint = fingerprint_of(&remote.iter().map(|branch| (&branch.full_name, &branch.oid)).collect::<Vec<_>>());
+    Ok(RefsSnapshot { identity_email, local, remote, tags, stashes, remotes, fingerprint, remote_fingerprint })
 }
 
 fn count_unpublished(repo: &Path, local: &mut [BranchInfo], remote: &[BranchInfo]) -> GitResult<()> {
@@ -825,6 +865,46 @@ mod enumerate_tests {
 
     fn full(root: &Path) -> String {
         runner::run(root, ["for-each-ref", FMT, "refs/heads", "refs/remotes", "refs/tags"]).unwrap()
+    }
+
+    #[test]
+    fn an_unchanged_snapshot_is_not_sent_again_and_remote_changes_have_their_own_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "user.name", "T"]);
+        git(root, &["config", "user.email", "t@example.com"]);
+        git(root, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(root, &["remote", "add", "origin", "https://example.invalid/r.git"]);
+        let first = snapshot(root).unwrap();
+        assert_eq!(snapshot(root).unwrap().fingerprint, first.fingerprint);
+        assert!(snapshot_if_changed(root, Some(&first.fingerprint)).unwrap().is_none());
+        git(root, &["branch", "topic"]);
+        let local = snapshot_if_changed(root, Some(&first.fingerprint)).unwrap().expect("a new branch is a change");
+        assert_ne!(local.fingerprint, first.fingerprint);
+        assert_eq!(local.remote_fingerprint, first.remote_fingerprint, "no remote branch changed");
+        git(root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let remote = snapshot(root).unwrap();
+        assert_ne!(remote.remote_fingerprint, local.remote_fingerprint);
+        assert_ne!(remote.fingerprint, local.fingerprint);
+    }
+
+    #[test]
+    fn branch_names_of_several_repositories_keep_their_order_and_skip_unreadable_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let repos: Vec<std::path::PathBuf> = (0..6).map(|i| dir.path().join(format!("r{i}"))).collect();
+        for (i, root) in repos.iter().enumerate().filter(|(i, _)| *i != 3) {
+            std::fs::create_dir(root).unwrap();
+            git(root, &["init", "-q", "-b", "main"]);
+            git(root, &["-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "one"]);
+            git(root, &["branch", &format!("topic-{i}")]);
+        }
+        let names = branch_names_many(&repos);
+        assert_eq!(names.len(), 6);
+        assert!(names[3].is_none(), "a missing folder has no names");
+        for (i, found) in names.iter().enumerate().filter(|(i, _)| *i != 3) {
+            assert_eq!(found.as_deref().unwrap(), ["refs/heads/main".to_string(), format!("refs/heads/topic-{i}")]);
+        }
     }
 
     #[test]

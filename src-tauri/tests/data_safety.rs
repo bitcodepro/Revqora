@@ -98,6 +98,53 @@ fn force_push_of_my_own_rewrite_still_works() {
     assert_eq!(runner::run(&server, ["rev-parse", "main"]).unwrap().trim(), mine);
 }
 
+/// Local `main` pushed to the remote branch `team/main` (another name).
+fn renamed_force_push() -> PushOptions {
+    PushOptions {
+        remote: Some("origin".into()),
+        branch: Some("main".into()),
+        remote_branch: Some("team/main".into()),
+        force_with_lease: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn force_push_to_a_branch_with_another_name_works_after_my_own_rewrite() {
+    // Git's --force-if-includes looks for a local branch named like the remote one and refused
+    // every such push ("remote ref updated since checkout").
+    let (_keep, server, me, _colleague) = shared_remote();
+    me.write("c.txt", "first try\n");
+    me.commit_all("feature");
+    me.git(&["push", "-q", "origin", "main:refs/heads/team/main"]);
+    me.git(&["fetch", "-q", "origin"]);
+    me.write("c.txt", "second try\n");
+    me.git(&["commit", "-q", "-a", "--amend", "-m", "feature (amended)"]);
+    let mine = me.git(&["rev-parse", "HEAD"]).trim().to_string();
+    ops::push(me.p(), &renamed_force_push(), |_| {}).unwrap();
+    assert_eq!(runner::run(&server, ["rev-parse", "team/main"]).unwrap().trim(), mine);
+}
+
+#[test]
+fn force_push_to_a_branch_with_another_name_never_overwrites_a_fetched_colleague_commit() {
+    let (_keep, server, me, colleague) = shared_remote();
+    me.git(&["push", "-q", "origin", "main:refs/heads/team/main"]);
+    me.git(&["fetch", "-q", "origin"]);
+    me.write("a.txt", "base, reworded by me\n");
+    me.git(&["commit", "-q", "-a", "--amend", "-m", "base (amended)"]);
+    colleague.git(&["fetch", "-q", "origin"]);
+    colleague.git(&["checkout", "-q", "-b", "team", "origin/team/main"]);
+    colleague.write("b.txt", "colleague work\n");
+    let theirs = colleague.commit_all("colleague");
+    colleague.git(&["push", "-q", "origin", "team:refs/heads/team/main"]);
+    // The background fetch moves origin/team/main to their commit, which I never saw.
+    ops::fetch_background(me.p()).unwrap();
+    assert_eq!(me.git(&["rev-parse", "origin/team/main"]).trim(), theirs);
+    let err = ops::push(me.p(), &renamed_force_push(), |_| {}).unwrap_err();
+    assert_eq!(err.kind, "lease-unverifiable", "{}", err.message);
+    assert_eq!(runner::run(&server, ["rev-parse", "team/main"]).unwrap().trim(), theirs, "their commit stays on the server");
+}
+
 #[test]
 fn amend_and_force_push_after_my_own_push_works() {
     let (_keep, server, me, _colleague) = shared_remote();
@@ -163,6 +210,229 @@ fn staged_work_saved_before_a_paused_rebase_comes_back_after_abort() {
     ops::abort_op(repo.p(), "rebase").unwrap();
     assert!(repo.git(&["status", "--porcelain"]).contains("M  s.txt"), "{}", repo.git(&["status", "--porcelain"]));
     assert!(repo.git(&["stash", "list"]).is_empty());
+}
+
+#[test]
+fn pull_updates_files_only_line_ending_rules_call_modified() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (_keep, _server, me, colleague) = shared_remote();
+        // Committed with CRLF, then a rule that stores text with LF: Git calls the untouched
+        // files modified, and no checkout or stash changes that.
+        fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        colleague.commit_all("crlf");
+        colleague.git(&["push", "-q", "origin", "main"]);
+        me.git(&["pull", "-q", "--ff-only"]);
+        fs::write(me.p().join(".git/info/attributes"), "* text\n").unwrap();
+        me.git(&["config", "core.eol", "lf"]);
+        me.write("a.txt", "my real edit\n");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(me.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        assert!(me.git(&["status", "--porcelain"]).contains(" M crlf.txt"), "{mode}: line endings alone make it modified");
+        fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\nthree\r\n").unwrap();
+        let theirs = colleague.commit_all("three");
+        colleague.git(&["push", "-q", "origin", "main"]);
+
+        let out = ops::pull(me.p(), mode, |_| {}).unwrap();
+        assert!(matches!(out.status.as_str(), "done" | "fastForward"), "{mode}: {out:?}");
+        assert_eq!(me.git(&["rev-parse", "HEAD"]).trim(), theirs, "{mode}");
+        assert_eq!(fs::read(me.p().join("crlf.txt")).unwrap(), b"one\r\ntwo\r\nthree\r\n", "{mode}: the incoming version");
+        assert_eq!(fs::read_to_string(me.p().join("a.txt")).unwrap(), "my real edit\n", "{mode}: a real edit is kept");
+        assert!(me.git(&["stash", "list"]).is_empty(), "{mode}: nothing left behind");
+        assert_eq!(fs::read_to_string(me.p().join(".git/info/attributes")).unwrap(), "* text\n", "{mode}: the rules are as before");
+    }
+}
+
+#[test]
+fn pull_keeps_line_ending_rules_for_the_files_it_writes_and_others_edits_of_the_rules() {
+    for mode in ["ff-only", "merge", "rebase"] {
+        let (_keep, _server, me, colleague) = shared_remote();
+        fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        colleague.commit_all("crlf stored as is");
+        colleague.git(&["push", "-q", "origin", "main"]);
+        me.git(&["pull", "-q", "--ff-only"]);
+        // This clone checks text out with CRLF and stores it with LF: the file committed with
+        // CRLF is "modified" by the rule alone.
+        fs::write(me.p().join(".git/info/attributes"), "*.txt text eol=crlf\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(me.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        assert!(me.git(&["status", "--porcelain"]).contains(" M crlf.txt"), "{mode}");
+        // The colleague fixes the file: stored with LF from now on.
+        fs::write(colleague.p().join("crlf.txt"), "one\ntwo\nthree\n").unwrap();
+        let theirs = colleague.commit_all("normalized");
+        colleague.git(&["push", "-q", "origin", "main"]);
+        // Another tool adds a rule while the pull runs (a hook stands in for it).
+        let hooks = me.p().join(".git/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        let hook = if mode == "rebase" { "post-rewrite" } else { "post-merge" };
+        fs::write(hooks.join(hook), "#!/bin/sh\nprintf '*.bin binary\\n' >> .git/info/attributes\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(hooks.join(hook), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let out = ops::pull(me.p(), mode, |_| {}).unwrap();
+        assert!(matches!(out.status.as_str(), "done" | "fastForward"), "{mode}: {out:?}");
+        assert_eq!(me.git(&["rev-parse", "HEAD"]).trim(), theirs, "{mode}");
+        assert_eq!(fs::read(me.p().join("crlf.txt")).unwrap(), b"one\r\ntwo\r\nthree\r\n", "{mode}: checked out as the rule says");
+        let status = me.git(&["status", "--porcelain"]);
+        assert!(status.trim().is_empty(), "{mode}: clean, not {status}");
+        let rules = fs::read_to_string(me.p().join(".git/info/attributes")).unwrap();
+        if mode != "rebase" || rules.contains("*.bin") {
+            assert_eq!(rules, "*.txt text eol=crlf\n*.bin binary\n", "{mode}: the other tool's rule stays, the pull's block is gone");
+        } else {
+            assert_eq!(rules, "*.txt text eol=crlf\n", "{mode}");
+        }
+    }
+}
+
+/// Many files restored a few at a time, and staging done while the pull ran (another Git
+/// client, a hook) is kept: only entries that still hold what the pull wrote are touched.
+#[test]
+fn pull_restores_line_endings_of_many_files_and_keeps_staging_done_meanwhile() {
+    let (_keep, _server, me, colleague) = shared_remote();
+    let names: Vec<String> = (0..12).map(|n| format!("crlf-{n:02}.txt")).collect();
+    for name in &names {
+        fs::write(colleague.p().join(name), "one\r\ntwo\r\n").unwrap();
+    }
+    colleague.commit_all("crlf stored as is");
+    colleague.git(&["push", "-q", "origin", "main"]);
+    me.git(&["pull", "-q", "--ff-only"]);
+    fs::write(me.p().join(".git/info/attributes"), "*.txt text eol=crlf\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    for name in &names {
+        fs::write(me.p().join(name), "one\r\ntwo\r\n").unwrap();
+    }
+    for name in &names {
+        fs::write(colleague.p().join(name), "one\ntwo\nthree\n").unwrap();
+    }
+    let theirs = colleague.commit_all("normalized");
+    colleague.git(&["push", "-q", "origin", "main"]);
+    // While the pull runs, something stages other content for one file, without touching it.
+    let hooks = me.p().join(".git/hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    fs::write(
+        hooks.join("post-merge"),
+        "#!/bin/sh\nblob=$(printf 'staged meanwhile\\n' | git hash-object -w --stdin)\ngit update-index --cacheinfo 100644,$blob,crlf-00.txt\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(hooks.join("post-merge"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let out = ops::pull(me.p(), "ff-only", |_| {}).unwrap();
+
+    assert_eq!(me.git(&["rev-parse", "HEAD"]).trim(), theirs, "{out:?}");
+    for name in &names[1..] {
+        assert_eq!(fs::read(me.p().join(name)).unwrap(), b"one\r\ntwo\r\nthree\r\n", "{name}: checked out as the rule says");
+    }
+    // Its entry no longer holds what the pull wrote: the file is left as the pull wrote it.
+    assert_eq!(fs::read(me.p().join(&names[0])).unwrap(), b"one\ntwo\nthree\n");
+    let entry = me.git(&["ls-files", "--stage", "--", "crlf-00.txt"]);
+    let meanwhile = me.git(&["cat-file", "-p", entry.split_whitespace().nth(1).unwrap()]);
+    assert_eq!(meanwhile, "staged meanwhile\n", "the staging done meanwhile stays");
+    let status = me.git(&["status", "--porcelain"]);
+    assert_eq!(status.lines().collect::<Vec<_>>(), ["MM crlf-00.txt"], "the others are clean: {status}");
+    assert!(!out.message.contains("line endings"), "{out:?}");
+}
+
+/// A file whose incoming version Git cannot read back after the pull keeps what the pull wrote,
+/// and the pull's message names it: the pull itself still succeeds.
+#[test]
+fn pull_reports_a_file_whose_line_endings_it_could_not_restore() {
+    let (_keep, _server, me, colleague) = shared_remote();
+    fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+    colleague.commit_all("crlf stored as is");
+    colleague.git(&["push", "-q", "origin", "main"]);
+    me.git(&["pull", "-q", "--ff-only"]);
+    fs::write(me.p().join(".git/info/attributes"), "*.txt text eol=crlf\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(me.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+    fs::write(colleague.p().join("crlf.txt"), "one\ntwo\nunread\n").unwrap();
+    let theirs = colleague.commit_all("normalized");
+    colleague.git(&["push", "-q", "origin", "main"]);
+    // After the merge, the incoming blob disappears (as if a broken object store lost it).
+    let hooks = me.p().join(".git/hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    fs::write(hooks.join("post-merge"), "#!/bin/sh\nb=$(git rev-parse :crlf.txt)\nrm -f .git/objects/$(echo $b | cut -c1-2)/$(echo $b | cut -c3-)\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(hooks.join("post-merge"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let out = ops::pull(me.p(), "ff-only", |_| {}).unwrap();
+
+    assert_eq!(me.git(&["rev-parse", "HEAD"]).trim(), theirs, "{out:?}");
+    assert_eq!(fs::read(me.p().join("crlf.txt")).unwrap(), b"one\ntwo\nunread\n", "what the pull wrote stays");
+    assert!(out.message.contains("could not read their incoming version") && out.message.contains("crlf.txt"), "{out:?}");
+}
+
+/// A file the pull wrote as stored, then edited before the line endings are restored: the edit
+/// stays. And a rules file the pull cannot clean up afterwards is reported, not passed over.
+#[test]
+fn pull_keeps_an_edit_saved_after_it_wrote_a_file_and_reports_rules_it_could_not_remove() {
+    for broken in [false, true] {
+        let (_keep, _server, me, colleague) = shared_remote();
+        fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        colleague.commit_all("crlf stored as is");
+        colleague.git(&["push", "-q", "origin", "main"]);
+        me.git(&["pull", "-q", "--ff-only"]);
+        fs::write(me.p().join(".git/info/attributes"), "*.txt text eol=crlf\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(me.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        fs::write(colleague.p().join("crlf.txt"), "one\ntwo\nthree\n").unwrap();
+        colleague.commit_all("normalized");
+        colleague.git(&["push", "-q", "origin", "main"]);
+        // Runs after Git wrote the file, before the pull restores line endings: an editor saves,
+        // or the rules file cannot be written any more.
+        let hooks = me.p().join(".git/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        let script = if broken {
+            "#!/bin/sh\nrm -f .git/info/attributes && mkdir .git/info/attributes\n"
+        } else {
+            "#!/bin/sh\nprintf 'saved by an editor\\n' > crlf.txt\n"
+        };
+        fs::write(hooks.join("post-merge"), script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(hooks.join("post-merge"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let out = ops::pull(me.p(), "ff-only", |_| {}).unwrap();
+
+        if broken {
+            assert!(out.message.contains("could not remove its temporary line-ending rules"), "{out:?}");
+            fs::remove_dir_all(me.p().join(".git/info/attributes")).unwrap();
+        } else {
+            assert_eq!(fs::read_to_string(me.p().join("crlf.txt")).unwrap(), "saved by an editor\n", "the edit stays");
+            assert!(!out.message.contains("line endings"), "{out:?}");
+        }
+    }
+}
+
+#[test]
+fn a_failed_pull_takes_out_only_its_own_line_ending_block() {
+    let (_keep, _server, me, colleague) = shared_remote();
+    fs::write(colleague.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+    colleague.commit_all("crlf");
+    colleague.git(&["push", "-q", "origin", "main"]);
+    me.git(&["pull", "-q", "--ff-only"]);
+    fs::write(me.p().join(".git/info/attributes"), "* text\n").unwrap();
+    me.git(&["config", "core.eol", "lf"]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(me.p().join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+    me.git(&["remote", "set-url", "origin", me.p().join("no-such-server.git").to_str().unwrap()]);
+    assert!(ops::pull(me.p(), "ff-only", |_| {}).is_err());
+    assert_eq!(fs::read_to_string(me.p().join(".git/info/attributes")).unwrap(), "* text\n");
+    // Without a rules file before, none is left behind either.
+    fs::remove_file(me.p().join(".git/info/attributes")).unwrap();
+    fs::write(me.p().join(".gitattributes"), "* text\n").unwrap();
+    let _ = ops::pull(me.p(), "ff-only", |_| {});
+    assert!(!me.p().join(".git/info/attributes").exists());
 }
 
 #[test]

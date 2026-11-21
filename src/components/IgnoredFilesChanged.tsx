@@ -108,7 +108,11 @@ export async function ignoredFilesChangedDialog(root: string, report: IgnoredRep
   if (choice === "recovery") return recoveryDialog(root, report.checkpoint);
   if (choice !== "restore") return;
   try {
-    const r = await api.recoveryRestoreFiles(root, report.checkpoint, report.changes.map((c) => c.path));
+    // This dialog opens while the operation is still finishing. The restore is checked
+    // against the displayed branch and commit, so show the state after the operation first;
+    // otherwise a quick click is refused as a stale view.
+    await useRepos.getState().refresh(root, { status: true, info: true });
+    const r =await api.recoveryRestoreFiles(root, report.checkpoint, report.changes.map((c) => c.path));
     const summary = restoreReport(r, report.changes.length);
     if (summary.warning) toast.warning(summary.title, summary.lines.join("\n"));
     else toast.success(summary.title);

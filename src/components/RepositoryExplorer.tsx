@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Loader2, Pencil, Search, Star, Trash2, Unlink, UserRound, X } from "lucide-react";
-import { defaultGroupRoots, explorerRepositoryKey, orderExplorerSiblings, repositoryKey, uniqueRoots, useLibrary, type RepositoryGroup, type RepositoryPlacement } from "../lib/repositoryLibrary";
+import { defaultGroupRoots, explorerRepositoryKey, groupRepositoryRoots, orderExplorerSiblings, repositoryKey, uniqueRoots, useLibrary, type RepositoryGroup, type RepositoryPlacement } from "../lib/repositoryLibrary";
 import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
 import { findExplorerDrop, useLibraryPointerDrag } from "../lib/libraryDrag";
 import { recordExplorerMove, useRepositoryDrag } from "../lib/explorerMoves";
@@ -18,6 +18,7 @@ import { useNavigationSelection } from "../lib/navigationSelection";
 import { useWorkspaceLayout } from "../lib/workspaceLayoutContext";
 import { usePanelTitleMenu, usePanelWindows } from "./PanelWindows";
 import { ExplorerBranchRow } from "./ExplorerBranchRow";
+import { selectionSyncMenu, type SyncSelection } from "./RemoteSyncMenus";
 import { deleteGroupsDialog, groupCreationMenu, groupEditorDialog, renameGroupDialog } from "./RepositoryLibrary";
 import { activateRepository, RepositoryNavigationRow } from "./RepositoryNavigationRow";
 import { repositoryFolderImportDialog } from "./RepositoryFolderImport";
@@ -63,7 +64,9 @@ function storedAuthorQuery(root: string): string {
   return query;
 }
 
-export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
+/** `hidden` keeps Explorer mounted while out of view (a maximized commit), so its search, filters,
+ *  expanded rows, selection and scroll position are all still there when it comes back. */
+export function RepositoryExplorer({ onClose, hidden = false }: { onClose: () => void; hidden?: boolean }) {
   const groups = useLibrary(s => s.groups), known = useLibrary(s => s.knownRoots);
   const activeGroup = useLibrary(s => s.activeGroupId), names = useLibrary(s => s.repositoryNames);
   const favorites = useLibrary(s => s.favorites), explorerOrder = useLibrary(s => s.explorerOrder);
@@ -105,6 +108,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const [focusedEntry, setFocusedEntry] = useState<string | null>();
   const focusedId = focusedEntry === undefined ? activeGroup : focusedEntry;
   const { selection, clear: clearSelection } = navigation;
+  // Every row asks whether it is selected: a set answers without scanning the selection.
+  const selectedIds = useMemo(() => new Set(selection), [selection]);
   const folderDrag = useLibraryPointerDrag(), repositoryDrag = useRepositoryDrag();
   const library = useLibrary.getState;
   const paths = uniqueRoots([...order, ...known]);
@@ -206,7 +211,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
 
   const visibleEntries = rows.map(row => row.entry);
   const visibleIds = visibleEntries.map(entry => entry.id);
-  const selectedRows = visibleEntries.filter(entry => selection.includes(entry.id));
+  const selectedRows = visibleEntries.filter(entry => selectedIds.has(entry.id));
   const siblingIds = (entry: ExplorerEntry) => visibleEntries
     .filter(row => (row.parentId ?? null) === (entry.parentId ?? null)).map(row => row.id);
   const select = (event: React.MouseEvent, entry: ExplorerEntry, activate: () => void) => {
@@ -260,12 +265,27 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
     }
     navigation.keyDown(event, visibleIds, entry.id, null);
   };
-  const groupIds = (id: string) => selection.includes(id)
+  const groupIds = (id: string) => selectedIds.has(id)
     ? selectedRows.filter(entry => entry.kind === "group").map(entry => entry.id) : [id];
   const placements = (entry: Extract<ExplorerEntry, { kind: "repository" }>): RepositoryPlacement[] =>
-    (selection.includes(entry.id)
+    (selectedIds.has(entry.id)
       ? selectedRows.filter(row => row.kind === "repository") : [entry])
       .map(row => ({ root: row.root, groupId: row.parentId }));
+  /** What Fetch, Pull and Push act on from this row: the whole selection when the row is part of
+   *  it (folders, repositories and branches together), otherwise the row. */
+  const syncSelection = (entry: ExplorerEntry): SyncSelection => {
+    const rows = selectedIds.has(entry.id) ? selectedRows : [entry];
+    return {
+      // The same spelling as the repository rows (the open tab's path), so an open repository is
+      // refreshed after the sync, not treated as closed.
+      folders: rows.flatMap(row => row.kind === "group" ? [groupRepositoryRoots(groups, row.id).map(root => canonical.get(repositoryKey(root)) ?? root)] : []),
+      repositories: rows.flatMap(row => row.kind === "repository" ? [row.root] : []),
+      branches: rows.flatMap(row => row.kind === "branch" ? [{ root: row.root, branches: [row.branch.fullName] }] : []),
+    };
+  };
+  /** A branch's own menu has Fetch, Pull and Push; a selection of several adds them for all of it. */
+  const branchSelectionMenu = (entry: ExplorerEntry): MenuItem[] =>
+    selectedIds.has(entry.id) && selectedRows.length > 1 ? [...selectionSyncMenu(syncSelection(entry)), { separator: true }] : [];
   const remove = async (ids: string[]) => { if (await deleteGroupsDialog(ids)) clearSelection(); };
   const rootMenu: MenuItem[] = [
     ...groupCreationMenu(),
@@ -274,6 +294,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   const groupMenu = (group: RepositoryGroup): MenuItem[] => {
     const ids = groupIds(group.id);
     return [
+      ...selectionSyncMenu(syncSelection({ kind: "group", id: group.id, parentId: group.parentId, name: group.name, group })),
+      { separator: true },
       ...groupCreationMenu(group),
       ...(ids.length > 1 ? [{ label: "Group selected groups", shortcut: "group-selected", icon: <FolderPlus size={14}/>,
         onClick: () => void groupEditorDialog({ children: ids, parentId: group.parentId, onCreated: clearSelection }) }] : []),
@@ -297,7 +319,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
   };
   const panelMenu = usePanelTitleMenu("explorer", rootMenu);
 
-  return <aside ref={navigation.panel} className="repository-sidebar explorer-sidebar" aria-label="Explorer" style={{
+  return <aside ref={navigation.panel} hidden={hidden} className="repository-sidebar explorer-sidebar" aria-label="Explorer" style={{
     width, "--explorer-folder-hover-dark": hoverColor("dark"), "--explorer-folder-hover-light": hoverColor("light"),
   } as CSSProperties} onKeyDown={event => {
     if (event.defaultPrevented || (event.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
@@ -346,10 +368,10 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
           const key = repositoryKey(entry.root), reference = entry.branch.fullName;
           return <ExplorerBranchRow key={entry.id} id={entry.id} root={entry.root} branch={entry.branch} refs={entry.refs} upstream={entry.upstream}
             depth={depth} primary={primaryBranches[key] === reference} favorite={branchFavorites[key]?.includes(reference) ?? false}
-            focused={focusedId === entry.id} selected={selection.includes(entry.id)}
+            focused={focusedId === entry.id} selected={selectedIds.has(entry.id)}
             viewed={entry.root === active && !overview && (shownHistoryBranch(tabs[entry.root]) ? shownHistoryBranch(tabs[entry.root]) === reference : entry.branch.isHead)}
             historyDetached={!!panels.history} withRepository={run => branchNavigation(entry.root, run)}
-            onSelect={(event, activate) => select(event, entry, activate)}/>;
+            selectionMenu={() => branchSelectionMenu(entry)} onSelect={(event, activate) => select(event, entry, activate)}/>;
         }
         if (entry.kind === "repository") {
           const items = placements(entry);
@@ -368,8 +390,8 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
               settings.set({ recent: settings.recent.filter(root => !keys.has(repositoryKey(root))) });
               clearSelection();
               setFocusedEntry(null);
-            } }} current={entry.root === active && !overview} selected={selection.includes(entry.id)} groupId={entry.parentId ?? undefined}
-            selection={uniqueRoots(items.map(item => item.root))}
+            } }} current={entry.root === active && !overview} selected={selectedIds.has(entry.id)} groupId={entry.parentId ?? undefined}
+            selection={uniqueRoots(items.map(item => item.root))} syncMenu={() => selectionSyncMenu(syncSelection(entry))}
             createGroup={() => void groupEditorDialog({ roots: uniqueRoots(items.map(item => item.root)), parentId: entry.parentId, onCreated: clearSelection })}
             onPointerDown={event => repositoryDrag.start(event, items)}
             onClick={event => {
@@ -387,7 +409,7 @@ export function RepositoryExplorer({ onClose }: { onClose: () => void }) {
           </Fragment>;
         }
         const { group } = entry;
-        const chosen = group.id === activeGroup, selected = selection.includes(group.id);
+        const chosen = group.id === activeGroup, selected = selectedIds.has(group.id);
         const toggle = () => {
           if (!favoritesOnly) { library().collapse(group.id); return; }
           setCollapsedFavorites(current => {

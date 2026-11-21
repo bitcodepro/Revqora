@@ -36,6 +36,13 @@ function buildTree(paths: string[]): Node {
     }
     n.files.push(p);
   }
+  // Sorted once here, so opening a folder or selecting a file does not sort the tree again.
+  const sort = (n: Node) => {
+    n.dirs = new Map([...n.dirs].sort(([a], [b]) => a.localeCompare(b)));
+    n.files.sort();
+    for (const d of n.dirs.values()) sort(d);
+  };
+  sort(root);
   return root;
 }
 
@@ -115,7 +122,7 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
 
   const renderNode = (n: Node, depth: number): React.ReactNode[] => {
     const out: React.ReactNode[] = [];
-    for (const d of [...n.dirs.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const d of n.dirs.values()) {
       const isOpen = f ? true : (open[d.path] ?? depth < 1);
       out.push(
         <div key={"d:" + d.path} className="sb-item" style={{ paddingLeft: 8 + depth * 14 }} onClick={() => setOpen((o) => ({ ...o, [d.path]: !isOpen }))}
@@ -131,7 +138,7 @@ export function TreeBrowser({ root, rev }: { root: string; rev: string }) {
       );
       if (isOpen) out.push(...renderNode(d, depth + 1));
     }
-    for (const p of [...n.files].sort()) {
+    for (const p of n.files) {
       out.push(
         <div
           key={p}

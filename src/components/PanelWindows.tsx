@@ -4,6 +4,7 @@ import { ExternalLink, PanelTop } from "lucide-react";
 import { contextMenu, openOverlay, toast, useUi, type MenuItem } from "../lib/ui";
 import { registerUiSurface, surfaceDocument } from "../lib/uiSurfaces";
 import { installIconHints } from "../lib/iconHints";
+import { installKeyboardFocus } from "../lib/focusRing";
 import { useSettings } from "../lib/settings";
 import { useRepos } from "../lib/store";
 import { workspaceMode } from "../lib/workspaceLayouts";
@@ -38,13 +39,16 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
     const settings = useSettings.getState();
     const mode = workspaceMode(overview && id !== "branches" ? "overview" : tab?.view, settings.historyMode);
     const layout = settings.layouts[mode];
+    // Showing a panel ends the maximized commit; the panel then appears in its usual place.
+    const maximized = useUi.getState().commitMaximized;
+    if (maximized) useUi.setState({ commitMaximized: false });
     if (id === "explorer") {
-      settings.set({ explorerOpen: show || layout.focusMode || !settings.explorerOpen });
+      settings.set({ explorerOpen: show || maximized || layout.focusMode || !settings.explorerOpen });
       if (layout.focusMode) settings.setLayout(mode, { focusMode: false });
     } else if (id === "repositories") {
-      settings.setLayout(mode, { repositoriesOpen: show || layout.focusMode || !layout.repositoriesOpen, focusMode: false });
+      settings.setLayout(mode, { repositoriesOpen: show || maximized || layout.focusMode || !layout.repositoriesOpen, focusMode: false });
     } else {
-      settings.setLayout(mode, { branchesOpen: show || overview || layout.focusMode || !layout.branchesOpen, focusMode: false });
+      settings.setLayout(mode, { branchesOpen: show || overview || maximized || layout.focusMode || !layout.branchesOpen, focusMode: false });
       if (overview) useUi.setState({ repositoryOverview: false });
     }
   }, []);
@@ -144,7 +148,8 @@ export function PanelWindowsProvider({ children }: { children: ReactNode }) {
         doc.head.append(copy);
       }
       doc.addEventListener("contextmenu", onContext);
-      removeHints = installIconHints(doc);
+      const removeIconHints = installIconHints(doc), removeFocus = installKeyboardFocus(doc);
+      removeHints = () => { removeIconHints(); removeFocus(); };
       view.addEventListener("resize", onResize);
       setPanels(current => ({ ...current, [id]: view }));
       if (id === "explorer") useSettings.getState().set({ explorerOpen: true });

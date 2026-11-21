@@ -8,10 +8,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 
 use super::runner::{self, GitResult, Output};
 
@@ -97,13 +97,88 @@ fn config_files(repo: &Path) -> Option<Vec<PathBuf>> {
     Some(files)
 }
 
+/// One read that is running; callers asking the same question meanwhile wait for its answer.
+struct Flight {
+    /// [`CLEARS`] when it started: a caller after Revqora changed configuration reads again.
+    clears: u64,
+    answer: Mutex<Option<GitResult<Output>>>,
+    done: Condvar,
+}
+
+type FlightKey = (PathBuf, Vec<String>);
+
+fn flights() -> &'static Mutex<HashMap<FlightKey, Arc<Flight>>> {
+    static FLIGHTS: OnceLock<Mutex<HashMap<FlightKey, Arc<Flight>>>> = OnceLock::new();
+    FLIGHTS.get_or_init(Default::default)
+}
+
 /// Runs a configuration-only read, reusing the previous answer while no configuration
 /// file changed. Only successful and "not found" (exit 1) answers are remembered.
+///
+/// A refresh reads status, branches and repository details side by side, and each asks some
+/// of the same questions: while one read runs, the same question waits for its answer instead
+/// of starting another Git process. A thread inside a repository transaction never waits (it
+/// may hold the gate the running read waits for); it reads by itself.
 pub fn exec(repo: &Path, args: &[&str]) -> GitResult<Output> {
     let key: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     if let Some(out) = fresh(repo, &key) {
         return Ok(out);
     }
+    in_flight((repo.to_path_buf(), key.clone()), || read(repo, args, key))
+}
+
+/// Runs `read` unless the same read already runs; then waits for and returns its answer.
+fn in_flight(flight_key: FlightKey, read: impl FnOnce() -> GitResult<Output>) -> GitResult<Output> {
+    let clears = CLEARS.load(std::sync::atomic::Ordering::SeqCst);
+    let lead = {
+        let mut running = flights().lock();
+        match running.get(&flight_key) {
+            Some(flight) if flight.clears == clears && !super::operations::in_any_transaction() => Err(flight.clone()),
+            Some(_) => Ok(None),
+            None => {
+                let flight = Arc::new(Flight { clears, answer: Mutex::new(None), done: Condvar::new() });
+                running.insert(flight_key.clone(), flight.clone());
+                Ok(Some(flight))
+            }
+        }
+    };
+    let flight = match lead {
+        Err(flight) => {
+            let mut answer = flight.answer.lock();
+            while answer.is_none() {
+                flight.done.wait(&mut answer);
+            }
+            return answer.clone().unwrap_or_else(|| Err(super::runner::GitError::new("Configuration read failed.")));
+        }
+        Ok(flight) => flight,
+    };
+    // Publishes the answer (also when the read panics) and ends the flight.
+    struct Finish<'a> {
+        flight: Option<Arc<Flight>>,
+        key: &'a FlightKey,
+        answer: Option<GitResult<Output>>,
+    }
+    impl Drop for Finish<'_> {
+        fn drop(&mut self) {
+            let Some(flight) = self.flight.take() else { return };
+            {
+                let mut running = flights().lock();
+                if running.get(self.key).is_some_and(|current| Arc::ptr_eq(current, &flight)) {
+                    running.remove(self.key);
+                }
+            }
+            *flight.answer.lock() = Some(self.answer.take().unwrap_or_else(|| Err(super::runner::GitError::new("Configuration read failed."))));
+            flight.done.notify_all();
+        }
+    }
+    let mut finish = Finish { flight, key: &flight_key, answer: None };
+    let result = read();
+    finish.answer = Some(result.clone());
+    drop(finish);
+    result
+}
+
+fn read(repo: &Path, args: &[&str], key: Vec<String>) -> GitResult<Output> {
     let Some((files, before)) = learn(repo) else { return runner::exec(repo, args) };
     let out = runner::exec(repo, args)?;
     // Remember only answers read while no configuration file changed.
@@ -138,6 +213,24 @@ fn fresh(repo: &Path, key: &[String]) -> Option<Output> {
     let entry = map.get(repo)?;
     let out = entry.results.get(key)?;
     valid(repo, entry).then(|| out.clone())
+}
+
+/// Reads several configuration answers side by side, so that the reads an operation makes one
+/// after another find them remembered. Answers already remembered are not read again; a
+/// failure is left for the later read, which reports it.
+pub fn warm(repo: &Path, queries: Vec<Vec<String>>) {
+    let missing: Vec<Vec<String>> = queries.into_iter().filter(|query| fresh(repo, query).is_none()).collect();
+    if missing.len() < 2 {
+        return;
+    }
+    // Learn the configuration files once instead of in every helper.
+    if learn(repo).is_none() {
+        return;
+    }
+    super::operations::each(repo, missing, |query| {
+        let args: Vec<&str> = query.iter().map(String::as_str).collect();
+        let _ = exec(repo, &args);
+    });
 }
 
 /// `run` over [`exec`]: fails on a non-zero exit.
@@ -195,6 +288,51 @@ mod tests {
         assert_eq!(run(root, &["config", "--get", "revqora.included"]).unwrap().trim(), "one");
         std::fs::write(root.join("extra.cfg"), "[revqora]\n\tincluded = two, longer\n").unwrap();
         assert_eq!(run(root, &["config", "--get", "revqora.included"]).unwrap().trim(), "two, longer");
+    }
+
+    #[test]
+    fn the_same_read_asked_meanwhile_waits_for_the_running_one() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let clears = || CLEARS.load(Ordering::SeqCst);
+        // Writes in parallel tests clear the cache, and a caller after a clear reads again by
+        // design: judge only an attempt that no clear overlapped.
+        for attempt in 0..50 {
+            let reads = AtomicUsize::new(0);
+            let key: FlightKey = (PathBuf::from(format!("/flight-test-{attempt}")), vec!["config".into(), "--get".into(), "revqora.flight".into()]);
+            let read = || {
+                reads.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Ok(Output {
+                    code: 0,
+                    stdout: b"answer
+"
+                    .to_vec(),
+                    stderr: String::new(),
+                })
+            };
+            let before = clears();
+            let answers: Vec<String> = std::thread::scope(|scope| {
+                let first = scope.spawn(|| in_flight(key.clone(), read));
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let others: Vec<_> = (0..3).map(|_| scope.spawn(|| in_flight(key.clone(), read))).collect();
+                std::iter::once(first).chain(others).map(|task| task.join().unwrap().unwrap().text()).collect()
+            });
+            assert!(
+                answers.iter().all(|answer| answer
+                    == "answer
+"),
+                "{answers:?}"
+            );
+            if clears() != before {
+                continue;
+            }
+            assert_eq!(reads.load(Ordering::SeqCst), 1, "the same question started more than one read");
+            // Finished: the next question reads again (the cache, not the flight, keeps answers).
+            in_flight(key, read).unwrap();
+            assert_eq!(reads.load(Ordering::SeqCst), 2);
+            return;
+        }
+        panic!("every attempt overlapped a configuration change of another test");
     }
 
     #[test]

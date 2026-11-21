@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { createFixupCommit, fixupBlocker } from "./CommitAuthoring";
 import type { MenuItem } from "../lib/ui";
+import { syncRepositories, type SyncKind } from "../lib/remoteSync";
 import { copyText, openOverlay } from "../lib/ui";
 import * as A from "../lib/actions";
 import * as X from "../lib/extraActions";
@@ -48,7 +49,7 @@ import { api } from "../lib/api";
 import { branchCard } from "./BranchCard";
 import { branchReflogDialog, savePatch } from "./RepoTools";
 import { WORKTREE } from "../lib/types";
-import type { BranchInfo, GraphRow, RefsSnapshot } from "../lib/types";
+import type { GraphRow, RefsSnapshot } from "../lib/types";
 import { shortOid } from "../lib/format";
 import { matchesShortcut } from "../lib/shortcuts";
 
@@ -114,8 +115,7 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote",
     items.push({ label: `Rebase ${current} onto ${name}`, shortcut: "branch-rebase", icon: <GitPullRequestArrow size={I} />, onClick: run(repo => A.rebaseOnto(repo, reference, name)) });
   }
   items.push({ separator: true });
-  if (isCurrent) items.push({ label: "Push…", icon: <CloudUpload size={I} />, onClick: run(repo => A.push(repo)) });
-  items.push(...branchRemoteItems(reference, kind, current, refs, run));
+  items.push(...branchRemoteItems(root, reference, kind, current, refs, run));
   if (kind === "local") {
     items.push({ label: "Set upstream…", shortcut: "branch-upstream", icon: <Link2 size={I} />, onClick: run(repo => A.setUpstream(repo, name)) });
     items.push({ label: "Rename…", icon: <Pencil size={I} />, onClick: run(repo => A.renameBranch(repo, name)) });
@@ -127,40 +127,66 @@ export function branchMenu(root: string, name: string, kind: "local" | "remote",
   return items;
 }
 
-function branchRemoteItems(reference: string, kind: "local" | "remote", current: string | null | undefined, refs: RefsSnapshot | null | undefined, run: (action: (repo: string) => void) => () => void): MenuItem[] {
+/** Fetch, Pull and Push for one branch, checked out or not. Only the checked-out branch goes
+ *  through the regular Pull (with the chosen mode) and the Push dialog; any other branch is
+ *  fetched, fast-forwarded or pushed where it is, without a checkout. */
+function branchRemoteItems(root: string, reference: string, kind: "local" | "remote", current: string | null | undefined, refs: RefsSnapshot | null | undefined, run: (action: (repo: string) => void) => () => void): MenuItem[] {
   const local = refs?.local ?? [];
   const branch = local.find(candidate => candidate.fullName === reference);
   const remoteRef = kind === "remote" ? reference : branch?.upstreamFullName;
   const remotes = refs?.remotes ?? [];
   const upstreamRemote = remotes.reduce<string | undefined>((matched, remote) =>
     remoteRef?.startsWith(`refs/remotes/${remote.name}/`) && remote.name.length > (matched?.length ?? 0) ? remote.name : matched, undefined);
-  const fetchRemotes = upstreamRemote ? [upstreamRemote] : kind === "local" ? remotes.map(remote => remote.name) : [];
+  const sync = (action: SyncKind, branches: string[]) => () => void syncRepositories(action, [{ root, branches }]);
   let fetchItem: MenuItem = { label: "Fetch", icon: <RefreshCw size={I} /> };
-  if (fetchRemotes.length === 1) {
-    const remote = fetchRemotes[0]!;
-    fetchItem = { ...fetchItem, shortcut: "branch-fetch", onClick: run(repo => A.fetchRemote(repo, remote)) };
-  } else if (fetchRemotes.length > 1) {
-    fetchItem.children = fetchRemotes.map(remote => ({ label: remote, onClick: run(repo => A.fetchRemote(repo, remote)) }));
+  if (upstreamRemote) {
+    // Only this branch (its upstream, or the remote branch itself).
+    fetchItem = { ...fetchItem, shortcut: "branch-fetch", onClick: sync("fetch", [reference]) };
   } else {
-    fetchItem = { ...fetchItem, disabled: true, hint: "No remote configured" };
+    const fetchRemotes = kind === "local" ? remotes.map(remote => remote.name) : [];
+    if (fetchRemotes.length === 1) {
+      const remote = fetchRemotes[0]!;
+      fetchItem = { ...fetchItem, shortcut: "branch-fetch", onClick: run(repo => A.fetchRemote(repo, remote)) };
+    } else if (fetchRemotes.length > 1) {
+      fetchItem.children = fetchRemotes.map(remote => ({ label: remote, onClick: run(repo => A.fetchRemote(repo, remote)) }));
+    } else {
+      fetchItem = { ...fetchItem, disabled: true, hint: "No remote configured" };
+    }
   }
 
+  // The local branches this row pulls into and pushes from: itself, or those tracking a remote branch.
   const targets = kind === "local"
     ? branch?.upstream ? [branch] : []
     : local.filter(candidate => candidate.upstreamFullName === reference && candidate.upstream);
-  const pull = (target: BranchInfo) => run(repo => {
-    if (target.upstream) return A.pullBranch(repo, { branch: target.name, upstream: target.upstream });
-  });
-  const preferred = targets.find(target => target.name === current) ?? (targets.length === 1 ? targets[0] : undefined);
-  let pullItem: MenuItem = { label: "Pull", icon: <ArrowDown size={I} /> };
-  if (preferred) {
-    pullItem = { ...pullItem, label: preferred.name === current ? "Pull" : "Pull…", shortcut: "branch-pull", onClick: pull(preferred) };
-  } else if (targets.length > 1) {
-    pullItem.children = targets.map(target => ({ label: target.name, onClick: pull(target) }));
+  const checkedOut = targets.find(target => target.name === current);
+  const others = targets.filter(target => target !== checkedOut);
+  const missing = kind === "local" ? "Set an upstream first" : "No local branch tracks it";
+  // Several local branches tracking one remote branch: the user picks one. Only Pull offers all
+  // of them, under an explicit name; pushing them all would send several branches to one ref.
+  const each = (action: SyncKind): MenuItem[] => others.map(target => ({ label: target.name, onClick: sync(action, [target.fullName]) }));
+  let pullItem: MenuItem = { label: "Pull", icon: <ArrowDown size={I} />, shortcut: "branch-pull" };
+  if (checkedOut) {
+    const upstream = checkedOut.upstream!;
+    pullItem = { ...pullItem, onClick: run(repo => void A.pullBranch(repo, { branch: checkedOut.name, upstream })) };
+  } else if (others.length === 1) {
+    pullItem = { ...pullItem, onClick: sync("pull", [others[0]!.fullName]) };
+  } else if (others.length > 1) {
+    pullItem = { label: "Pull into", icon: pullItem.icon, children: [...each("pull"), { separator: true },
+      { label: `Pull all ${others.length} tracking branches`, onClick: sync("pull", others.map(target => target.fullName)) }] };
   } else {
-    pullItem = { ...pullItem, disabled: true, hint: kind === "local" ? "Set an upstream first" : "Check out a tracking branch first" };
+    pullItem = { ...pullItem, disabled: true, hint: missing };
   }
-  return [pullItem, fetchItem];
+  let pushItem: MenuItem = { label: "Push", icon: <CloudUpload size={I} /> };
+  if (checkedOut || (kind === "local" && reference === `refs/heads/${current}`)) {
+    pushItem = { ...pushItem, label: "Push…", onClick: run(repo => A.push(repo)) };
+  } else if (others.length === 1) {
+    pushItem = { ...pushItem, onClick: sync("push", [others[0]!.fullName]) };
+  } else if (others.length > 1) {
+    pushItem = { ...pushItem, label: "Push from", children: each("push") };
+  } else {
+    pushItem = { ...pushItem, disabled: true, hint: missing };
+  }
+  return [pullItem, pushItem, fetchItem];
 }
 
 export function tagMenu(root: string, name: string, oid: string): MenuItem[] {
@@ -257,7 +283,7 @@ export function commitMenu(root: string, row: GraphRow, selection: GraphRow[], o
         icon: <Combine size={I} />,
         disabled: row.parents.length !== 1,
         onClick: async () => {
-          const parent = await api.commitDetails(root, row.parents[0]).catch(() => null);
+          const parent = await api.commitDetails(root, row.parents[0], undefined, true).catch(() => null);
           A.squashCommits(root, [row.parents[0], row.oid], [parent?.subject ?? "", row.subject]);
         },
       },

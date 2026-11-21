@@ -2,7 +2,8 @@ import { menuFocusTarget } from "../lib/keyboardFocus";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertCircle, CheckCircle2, ChevronRight, Info, TriangleAlert, X } from "lucide-react";
-import { copyText, useUi, type MenuItem } from "../lib/ui";
+import { copyText, toast, useUi, type MenuItem } from "../lib/ui";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { detailsNeedExpanding } from "../lib/toastDetails";
 import { surfaceDocument } from "../lib/uiSurfaces";
 import { bindingFor, prettyCombo } from "../lib/shortcuts";
@@ -176,14 +177,30 @@ ${t.detail}`, "Details copied")}>Copy</button>
   );
 }
 
+type ShownDialog = ReturnType<typeof useUi.getState>["dialogs"][number];
+
+function DialogBody({ dialog }: { dialog: ShownDialog }) {
+  return <>{dialog.render(dialog.resolve)}</>;
+}
+
+/** A dialog that fails to draw is closed with no answer (what Cancel gives), on its own: the
+ *  dialogs behind it stay, and it does not fail again and again. */
+function GuardedDialog({ dialog }: { dialog: ShownDialog }) {
+  const failed = () => {
+    dialog.resolve(null);
+    toast.warning("A dialog could not be shown", "It was closed without an answer. The error is in the error log.");
+  };
+  return <ErrorBoundary area="Dialog" quiet onError={failed}><DialogBody dialog={dialog} /></ErrorBoundary>;
+}
+
 export function DialogHost() {
   const dialogs = useUi((s) => s.dialogs);
   return (
     <>
       {dialogs.map(d => {
-        if (d.surface === window) return <div key={d.id}>{d.render(d.resolve)}</div>;
+        if (d.surface === window) return <div key={d.id}><GuardedDialog dialog={d} /></div>;
         const body = surfaceDocument(d.surface)?.body;
-        return body ? createPortal(<div>{d.render(d.resolve)}</div>, body, d.id) : null;
+        return body ? createPortal(<div><GuardedDialog dialog={d} /></div>, body, d.id) : null;
       })}
     </>
   );

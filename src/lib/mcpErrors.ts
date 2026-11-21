@@ -14,6 +14,8 @@ export class McpToolError extends Error {
 
 const gitErrorCodes = new Map([
   ["invalid-arguments", "invalid_arguments"],
+  ["diff-changed", "diff_changed"],
+  ["diff-version-required", "diff_version_required"],
   ["invalid-commit", "invalid_commit"],
   ["commit-not-found", "commit_not_found"],
   ["invalid-cursor", "invalid_cursor"],

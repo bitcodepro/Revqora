@@ -352,6 +352,13 @@ function hydrate(root: string): Promise<string | null> {
   return job;
 }
 
+/** Two snapshots hold the same refs: by their fingerprints, else (older answers) by value. */
+function sameRefs(a: RefsSnapshot, b: RefsSnapshot | null | undefined) {
+  if (!b) return false;
+  if (a.fingerprint && b.fingerprint) return a.fingerprint === b.fingerprint;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /** Coalesce background branch analysis; rapid refreshes must not create a Git backlog. */
 function updateSquashMerged(root: string) {
   const tab = useRepos.getState().tabs[root];
@@ -632,10 +639,13 @@ async function refreshOnce(root: string, parts: Parts) {
     ? sidebarOnly ? api.repositorySidebarStatus(root) : changesDisplay ? api.repositoryChangesStatus(root, before.changeSel?.path ?? null)
       : api.status(root, undefined, !parts.guard)
     : Promise.resolve(null);
-  const refsP = parts.refs && (!parts.summary || trackedBranchRefs.has(repositoryKey(root))) ? api.refs(root).then(refs => {
+  // A quiet check asks with the fingerprint it has: unchanged refs are not sent again.
+  const known = (parts.revalidate || !canLoadGraph()) ? before.refs?.fingerprint ?? null : null;
+  const refsP = parts.refs && (!parts.summary || trackedBranchRefs.has(repositoryKey(root))) ? (known ? api.refsIfChanged(root, known) : api.refs(root)).then(refs => {
     if (before.refsError && current()) useRepos.getState().patch(root, { refsError: undefined });
+    if (!refs) return null;
     // Keep the existing rows during a quiet check if their data is identical.
-    if ((parts.revalidate || !canLoadGraph()) && JSON.stringify(refs) === JSON.stringify(before.refs)) return null;
+    if ((parts.revalidate || !canLoadGraph()) && sameRefs(refs, before.refs)) return null;
     return refs;
   }).catch(error => {
     if (current()) useRepos.getState().patch(root, { refsError: errorMessage(error) });

@@ -44,3 +44,41 @@ fn follows_core_hooks_path() {
     assert_eq!(h.custom_path.as_deref(), Some("tools/hooks"));
     assert_eq!(h.hooks.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["commit-msg"]);
 }
+
+/// Git runs without a console of its own (it starts faster). The programs a hook starts must
+/// still get no visible console window: PowerShell started by a pre-commit hook reports whether
+/// it has one, and cmd.exe runs as well.
+#[cfg(windows)]
+#[test]
+fn programs_a_hook_starts_get_no_visible_console_window() {
+    use revqora_lib::git::ops;
+    let dir = repo();
+    let root = dir.path();
+    for (key, value) in [("user.name", "T"), ("user.email", "t@example.invalid"), ("commit.gpgsign", "false")] {
+        runner::run(root, ["config", key, value]).unwrap();
+    }
+    let probe = root.join(".git").join("probe.ps1");
+    fs::write(
+        &probe,
+        r#"$w = Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);' -Name Window -Namespace Probe -PassThru
+$h = $w::GetConsoleWindow()
+"visible=$($h -ne [System.IntPtr]::Zero -and $w::IsWindowVisible($h))"
+"#,
+    )
+    .unwrap();
+    let report = root.join(".git").join("report.txt");
+    let unix = |path: &std::path::Path| path.to_string_lossy().replace('\\', "/");
+    let hook = format!(
+        "#!/bin/sh\npowershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '{}' > '{}' 2>&1\ncmd.exe //c \"echo cmd-ran\" >> '{}'\n",
+        unix(&probe),
+        unix(&report),
+        unix(&report)
+    );
+    fs::write(root.join(".git/hooks/pre-commit"), hook).unwrap();
+    fs::write(root.join("a.txt"), "a\n").unwrap();
+    ops::stage_paths(root, &["a.txt".to_owned()]).unwrap();
+    ops::commit(root, "with a hook", &ops::CommitOptions::default()).unwrap();
+    let report = fs::read_to_string(&report).unwrap();
+    assert!(report.contains("visible=False"), "{report}");
+    assert!(report.contains("cmd-ran"), "{report}");
+}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { openRepoFile } from "../lib/openFile";
-import { Columns2, SquarePen, Ellipsis, List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, RotateCcw, ScanSearch, X } from "lucide-react";
+import { Columns2, SquarePen, Ellipsis, List, FolderTree, Copy, CornerDownLeft, ExternalLink, FileText, FolderOpen, GitCommitHorizontal, History, Loader2, Maximize2, Minimize2, RotateCcw, ScanSearch, X } from "lucide-react";
 import * as A from "../lib/actions";
 import { api, errorMessage } from "../lib/api";
 import type { Check, CommitDetails as Details, FileDiff, GraphRow, RefLabel, Signature } from "../lib/types";
@@ -25,19 +25,24 @@ import { commitMenu } from "./menus";
 import { openInDiffTool, openInEditor } from "../lib/externalTools";
 import { folderHistoryDialog } from "./HistoryDialogs";
 import { CommitNote, prefetchNote } from "./CommitNote";
+import { shortcutTitle } from "../lib/shortcuts";
 
 // Selections closer together than this are a key repeat or rapid clicks: wait briefly.
 const RAPID_SELECTION_MS = 150;
 let lastDetailSelection = Number.NEGATIVE_INFINITY;
 
-export function CommitDetails({ root, oid, onClose, compactMeta = false }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean }) {
+export function CommitDetails({ root, oid, onClose, compactMeta = false, maximize }: { root: string; oid: string; onClose?: () => void; compactMeta?: boolean;
+  /** Expand the commit to the whole workspace and back (main window only). */
+  maximize?: { on: boolean; toggle: () => void } }) {
   const fileNavigation = useFileListNavigation();
   const generation = useSyncExternalStore(
     useCallback((listener) => subscribePreview(root, listener), [root]),
     useCallback(() => previewGeneration(root), [root]),
   );
-  const remoteRefs = useRepos((s) => s.tabs[root]?.refs?.remote);
-  const remoteVersion = useMemo(() => JSON.stringify((remoteRefs ?? []).map((r) => [r.fullName, r.oid]).sort((a, b) => a[0].localeCompare(b[0]))), [remoteRefs]);
+  // What answers about remote branches depend on: a short fingerprint from the backend.
+  const remoteFingerprint = useRepos((s) => s.tabs[root]?.refs?.remoteFingerprint);
+  const remoteRefs = useRepos((s) => remoteFingerprint ? undefined : s.tabs[root]?.refs?.remote);
+  const remoteVersion = useMemo(() => remoteFingerprint ?? JSON.stringify((remoteRefs ?? []).map((r) => [r.fullName, r.oid]).sort((a, b) => a[0].localeCompare(b[0]))), [remoteFingerprint, remoteRefs]);
   const detailKey = detailsKey(root, oid, remoteVersion);
   const [detailResult, setDetailResult] = useState<{ key: string; generation: number; value: Details } | null>(null);
   const d = peekDetails(detailKey, oid) ?? (detailResult?.key === detailKey && detailResult.generation === generation ? detailResult.value : null);
@@ -195,6 +200,10 @@ ${oid}`;
           // Unknown is not "local only": keep the rewrite warning, worded for an unknown answer.
           contextMenu({ clientX: box.left, clientY: box.bottom + 4, currentTarget: trigger, preventDefault: () => {} }, commitMenu(root, row, [row], { publicationUnknown: pushed !== true && pushed !== false }));
         }}>{actionsBusy ? <Loader2 size={14} className="spin" /> : <Ellipsis size={14} />} Actions</button>
+        {maximize && <button type="button" className={`btn sm commit-maximize ${maximize.on ? "active" : ""}`} aria-pressed={maximize.on}
+          aria-label={maximize.on ? "Restore commit details" : "Maximize commit details"}
+          title={shortcutTitle(maximize.on ? "Restore the layout" : "Maximize commit details", "commitMaximize")}
+          onClick={maximize.toggle}>{maximize.on ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button>}
         {onClose && <button type="button" className="btn sm details-hide" title="Close commit preview" onClick={onClose}><X size={14} /> Close</button>}
       </div>
     </header>

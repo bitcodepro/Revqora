@@ -1,6 +1,7 @@
 //! Mutating operations: staging, committing, branches, merge/rebase/cherry-pick,
 //! history rewriting, stash and remotes.
 
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -845,9 +846,40 @@ pub fn background_env(ssh_configured: bool) -> Vec<(&'static str, &'static str)>
 }
 
 /// Quiet periodic fetch of all remotes; never shows a credential prompt.
-pub fn fetch_background(repo: &Path) -> GitResult<String> {
-    fetch_background_with_deadline(repo, std::time::Duration::from_secs(30))
+/// What an automatic fetch did.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundFetch {
+    pub output: String,
+    /// Whether any ref (branch, remote branch, tag) moved, appeared or disappeared. Without a
+    /// change there is nothing new to read: most automatic fetches bring nothing.
+    pub refs_changed: bool,
 }
+
+pub fn fetch_background(repo: &Path) -> GitResult<BackgroundFetch> {
+    // Usually remembered from the last status read: no Git process while the ref files keep
+    // their size and time, and none afterwards when the fetch changed nothing.
+    let before = super::operations::state_cache::current_refs(repo).ok();
+    // A stalled transfer ends sooner (GIT_HTTP_LOW_SPEED_*, ssh ConnectTimeout); the limit only
+    // stops a fetch that keeps going too long, so a large one over a slow link can finish.
+    let fetched = fetch_background_with_deadline(repo, std::time::Duration::from_secs(90));
+    let after = super::operations::state_cache::current_refs(repo).ok();
+    let refs_changed = before.is_none() || before != after;
+    match fetched {
+        Ok(output) => Ok(BackgroundFetch { output, refs_changed }),
+        // `fetch --all` fails when one remote fails, after it fetched the others: what came in
+        // is still shown (incoming counts, branches).
+        Err(mut error) => {
+            if refs_changed {
+                error.details.push(REFS_CHANGED_DETAIL.into());
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Detail of a failed background fetch that still moved refs (the UI reads them again).
+pub const REFS_CHANGED_DETAIL: &str = "refs-changed=true";
 
 /// [`fetch_background`] with its time limit (tests use a short one).
 pub fn fetch_background_with_deadline(repo: &Path, timeout: std::time::Duration) -> GitResult<String> {
@@ -1070,18 +1102,50 @@ pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, on_line: imp
     // Local edits never block a pull. Staged work is saved here, with its staging, in a stash
     // named after the branch; every other edit is set aside by Git's autostash only when the
     // pull integrates something. Both come back afterwards, and a conflict shows the files.
-    // Both reads are independent; run them side by side. Without a commit, `diff HEAD` fails
-    // (not exit 1), so an unborn branch counts as having nothing to set aside.
+    // These reads are independent; run them side by side, and read the settings the pull asks
+    // for one after another meanwhile. Without a commit, `diff HEAD` fails (not exit 1), so an
+    // unborn branch counts as having nothing to set aside.
     let parent = super::operations::Inherited::of(repo);
-    let (name, dirty) = std::thread::scope(|scope| {
-        let name = scope.spawn(|| parent.run(|| pull_stash_name(repo)));
+    let (branch, dirty, top_read) = std::thread::scope(|scope| {
+        let branch = scope.spawn(|| {
+            parent.run(|| {
+                let branch = short_branch(repo)?;
+                warm_pull_settings(repo, branch.as_deref());
+                Ok(branch)
+            })
+        });
+        let top = scope.spawn(|| parent.run(|| stash_top(repo)));
         let dirty = runner::exec(repo, ["diff", "HEAD", "--quiet", "--ignore-submodules=dirty"]).map(|out| out.code == 1);
-        (name.join().unwrap_or_else(|_| Err(GitError::new("Reading the current branch failed."))), dirty)
+        let failed = |what: &str| GitError::new(format!("Reading {what} failed."));
+        (branch.join().unwrap_or_else(|_| Err(failed("the current branch"))), dirty, top.join().unwrap_or_else(|_| Err(failed("the stash list"))))
     });
-    let (name, dirty) = (name?, dirty?);
-    let saved = stash_staged_as(repo, &name)?;
-    let top = stash_top(repo)?;
-    match pull_unsaved(repo, mode, prune_remote, on_line) {
+    let (name, mut dirty) = (pull_stash_name(branch?.as_deref()), dirty?);
+    // Files Git calls modified although they are byte for byte the staged version: line-ending
+    // rules (`text`, `eol`) the committed file does not follow. No checkout or stash makes them
+    // clean, so Git would stop the pull on "local changes would be overwritten" and leave an
+    // autostash behind. They hold nothing to keep: while the pull runs, Git reads them as
+    // stored, and the incoming version replaces them.
+    RawLineEndings::clear_stale(repo)?;
+    let mut raw = if dirty { RawLineEndings::apply(repo, line_endings_only(repo)?)? } else { None };
+    if raw.is_some() {
+        dirty = runner::exec(repo, ["diff", "HEAD", "--quiet", "--ignore-submodules=dirty"])?.code == 1;
+    }
+    // Staged work is set aside only right before the pull integrates, after its recovery
+    // checkpoint: that checkpoint must hold the staging as the user left it.
+    let mut saved = None;
+    let mut top = top_read?;
+    let set_aside = || -> GitResult<()> {
+        // The stash list is read again alongside; when something was stashed, after that.
+        let (now, stashed) = super::operations::both(repo, || stash_top(repo), || stash_staged_as(repo, &name));
+        saved = stashed?;
+        top = if saved.is_some() { stash_top(repo)? } else { now? };
+        Ok(())
+    };
+    let pulled = pull_unsaved(repo, mode, prune_remote, set_aside, on_line);
+    // The rules apply again, also to the files the pull wrote meanwhile, before anything else
+    // touches the working tree. What could not be done is reported with the pull's result.
+    let unfinished = raw.take().and_then(|raw| raw.finish(repo));
+    match pulled {
         Ok(mut outcome) => {
             let set_aside = dirty && matches!(outcome.operation.status.as_str(), "done" | "fastForward");
             name_autostash(repo, top.as_deref(), &name)?;
@@ -1089,22 +1153,1785 @@ pub fn pull_with_prune(repo: &Path, mode: &str, prune_remote: bool, on_line: imp
             if set_aside && outcome.operation.status != "conflicts" && !outcome.operation.message.contains("Your local changes") {
                 outcome.operation.message.push_str("\nYour local changes were set aside during the pull and restored.");
             }
+            if let Some(unfinished) = unfinished {
+                outcome.operation.message.push('\n');
+                outcome.operation.message.push_str(&unfinished);
+            }
             Ok(outcome)
         }
-        Err(error) => {
+        Err(mut error) => {
             if let Some(oid) = saved {
                 apply_saved(repo, &oid)?;
+            }
+            if let Some(unfinished) = unfinished {
+                error.message.push('\n');
+                error.message.push_str(&unfinished);
             }
             Err(error)
         }
     }
 }
 
+const RAW_BEGIN: &str = "# revqora: a pull is running; these files are read as stored (removed afterwards)";
+const RAW_END: &str = "# revqora: end";
+
+/// Tracked files whose only difference is the line-ending rules: unstaged, same mode, and the
+/// working file is byte for byte the staged blob. Each with that blob.
+fn line_endings_only(repo: &Path) -> GitResult<Vec<(String, String)>> {
+    let out = runner::exec(repo, ["diff", "--raw", "-z", "--no-abbrev", "--diff-filter=M", "--ignore-submodules=all", "--no-renames"])?;
+    if !out.ok() {
+        return Ok(Vec::new());
+    }
+    let text = out.text();
+    let mut fields = runner::split_nul(&text);
+    let mut candidates = Vec::new();
+    while let (Some(meta), Some(path)) = (fields.next(), fields.next()) {
+        let meta: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
+        // An attributes pattern cannot hold these safely; such files stay as Git sees them.
+        let plain = !path.is_empty() && !path.contains(['"', '\\', '*', '?', '[', '\n', '\r']);
+        if meta.len() >= 3 && meta[0] == meta[1] && matches!(meta[0], "100644" | "100755") && plain {
+            candidates.push((path.to_owned(), meta[2].to_owned()));
+        }
+    }
+    if candidates.is_empty() || candidates.len() > 5000 {
+        return Ok(Vec::new());
+    }
+    let input: String = candidates.iter().map(|(path, _)| format!("{path}\n")).collect();
+    let hashed = runner::exec_full(repo, ["hash-object", "--no-filters", "--stdin-paths"], &[], Some(input.as_bytes()))?;
+    if !hashed.ok() {
+        return Ok(Vec::new());
+    }
+    let hashed = hashed.text();
+    Ok(candidates.into_iter().zip(hashed.lines()).filter(|((_, staged), worktree)| staged == worktree.trim()).map(|(entry, _)| entry).collect())
+}
+
+/// While alive, `<git dir>/info/attributes` (which overrides `.gitattributes`) reads the given
+/// files without line-ending rules. Ending it removes only its own marked block, so whatever
+/// else wrote to the file meanwhile stays; a block a crash left behind is removed by the next
+/// pull.
+struct RawLineEndings {
+    file: PathBuf,
+    /// The file did not exist before: once the block is gone and nothing else was written, it
+    /// is removed again.
+    created: bool,
+    /// Each file and its staged blob before the pull.
+    paths: Vec<(String, String)>,
+    ended: bool,
+}
+
+impl RawLineEndings {
+    /// `info/attributes` of the Git directory all worktrees share, the file
+    /// `git rev-parse --git-path info/attributes` names, found without starting Git.
+    fn attributes_file(repo: &Path) -> GitResult<PathBuf> {
+        let common = super::graph::common_dir(repo).ok_or_else(|| GitError::new("The Git directory of this repository was not found."))?;
+        Ok(common.join("info").join("attributes"))
+    }
+
+    fn clear_stale(repo: &Path) -> GitResult<()> {
+        let file = Self::attributes_file(repo)?;
+        Self::remove_block(&file, false).map_err(|e| GitError::new(format!("Could not update {}: {e}", file.display())))
+    }
+
+    /// Opens `file` so that, until the handle is closed, no other program can open it to read or
+    /// write (Windows); it may only be deleted or renamed, so an editor that saves by replacing
+    /// the file keeps its own copy. Elsewhere a plain open. `wait`: another program that has the
+    /// file open is waited for, up to 2 seconds.
+    fn held(file: &Path, options: &std::fs::OpenOptions, wait: bool) -> std::io::Result<std::fs::File> {
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut options = options.clone();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_SHARE_DELETE: u32 = 0x4;
+            options.share_mode(FILE_SHARE_DELETE);
+        }
+        let mut waited = 0;
+        loop {
+            match options.open(file) {
+                // ERROR_SHARING_VIOLATION
+                Err(e) if cfg!(windows) && wait && e.raw_os_error() == Some(32) && waited < 40 => {
+                    waited += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                opened => return opened,
+            }
+        }
+    }
+
+    /// Puts what `change` makes of `file`'s content in its place, so that nothing another
+    /// program writes meanwhile is lost. False: the file was left as it is.
+    ///
+    /// Windows: the file is read and written while [held](Self::held).
+    #[cfg(windows)]
+    fn rewrite(file: &Path, wait: bool, change: impl FnOnce(&[u8]) -> Rewrite) -> std::io::Result<bool> {
+        use std::io::{Read, Seek, Write};
+        let mut handle = Self::held(file, std::fs::OpenOptions::new().read(true).write(true), wait)?;
+        let mut now = Vec::new();
+        handle.read_to_end(&mut now)?;
+        match change(&now) {
+            Rewrite::Keep => Ok(false),
+            Rewrite::With(bytes) => {
+                handle.seek(std::io::SeekFrom::Start(0))?;
+                handle.write_all(&bytes)?;
+                handle.set_len(bytes.len() as u64)?;
+                Ok(true)
+            }
+            Rewrite::Remove => {
+                handle.set_len(0)?;
+                // Still held, so nothing else was written; an empty file left behind changes nothing.
+                let _ = std::fs::remove_file(file);
+                Ok(true)
+            }
+        }
+    }
+
+    /// Linux and macOS cannot keep other programs out of a file, so it is moved aside first, in
+    /// one rename: a program that writes the file by name from then on creates a new one there,
+    /// and that file is never replaced. The new content is put only where no file is (a hard
+    /// link, or a rename that never replaces). The moved file is dropped only when nothing wrote
+    /// to it while it was read; else it stays beside the file, named in the error. Git's own
+    /// checkout also replaces files, so a program that keeps the old file open loses no more
+    /// than it would to Git. On a file system that can do neither, the file is not touched
+    /// (an `Unsupported` error).
+    #[cfg(not(windows))]
+    fn rewrite(file: &Path, _wait: bool, change: impl FnOnce(&[u8]) -> Rewrite) -> std::io::Result<bool> {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let dir = file.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        if !places_without_replacing(dir)? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "this file system cannot put a file in place without possibly replacing a save made meanwhile",
+            ));
+        }
+        // Where no file is now; a file someone wrote meanwhile stays, and ours is kept beside it.
+        // When even that fails, the error names where that version stays.
+        let put_back = |from: &Path| -> std::io::Result<()> {
+            match place(from, file) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match keep_beside(from, file) {
+                    Ok(kept) => Err(std::io::Error::other(format!("another program wrote {name} meanwhile; the other version is kept as {}", kept.display()))),
+                    Err(e) => {
+                        Err(std::io::Error::other(format!("another program wrote {name} meanwhile; the other version stays as {} ({e})", from.display())))
+                    }
+                },
+                Err(e) => Err(std::io::Error::other(format!("{name} could not be put back ({e}); it stays as {}", from.display()))),
+            }
+        };
+        let aside = fresh_name(dir, "pull")?;
+        std::fs::rename(file, &aside)?;
+        let read = std::fs::metadata(&aside).and_then(|before| std::fs::read(&aside).map(|now| (before, now)));
+        let (before, now) = match read {
+            Ok(read) => read,
+            Err(e) => {
+                put_back(&aside)?;
+                return Err(e);
+            }
+        };
+        let untouched = || {
+            std::fs::metadata(&aside)
+                .is_ok_and(|m| m.ino() == before.ino() && m.len() == before.len() && m.mtime() == before.mtime() && m.mtime_nsec() == before.mtime_nsec())
+        };
+        match change(&now) {
+            Rewrite::Keep => put_back(&aside).map(|()| false),
+            Rewrite::Remove if untouched() => std::fs::remove_file(&aside).map(|()| true),
+            Rewrite::Remove => put_back(&aside).map(|()| false),
+            Rewrite::With(bytes) => {
+                let new = match fresh_name(dir, "new") {
+                    Ok(new) => new,
+                    Err(e) => {
+                        put_back(&aside)?;
+                        return Err(e);
+                    }
+                };
+                let written = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&new).and_then(|mut out| {
+                    // Created here: ours to remove if writing it fails.
+                    std::io::Write::write_all(&mut out, &bytes).and_then(|()| std::fs::set_permissions(&new, before.permissions())).inspect_err(|_| {
+                        let _ = std::fs::remove_file(&new);
+                    })
+                });
+                if let Err(e) = written {
+                    put_back(&aside)?;
+                    return Err(e);
+                }
+                if !untouched() {
+                    let _ = std::fs::remove_file(&new);
+                    return put_back(&aside).map(|()| false);
+                }
+                let placed = match place(&new, file) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&new);
+                        if e.kind() != std::io::ErrorKind::AlreadyExists {
+                            put_back(&aside)?;
+                            return Err(e);
+                        }
+                        // Written by name meanwhile: that file stays.
+                        false
+                    }
+                };
+                if untouched() {
+                    std::fs::remove_file(&aside)?;
+                    Ok(placed)
+                } else {
+                    match keep_beside(&aside, file) {
+                        Ok(kept) => Err(std::io::Error::other(format!("another program wrote {name} meanwhile; that version is kept as {}", kept.display()))),
+                        Err(e) => {
+                            Err(std::io::Error::other(format!("another program wrote {name} meanwhile; that version stays as {} ({e})", aside.display())))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Takes the marked block out of the file as it is now: lines other tools or the user wrote
+    /// while the pull ran are kept. Bytes, so a file in any encoding survives. Changed with
+    /// [`rewrite`](Self::rewrite), so nothing written meanwhile is lost.
+    fn remove_block(file: &Path, created: bool) -> std::io::Result<()> {
+        let (begin, end) = (RAW_BEGIN.as_bytes(), RAW_END.as_bytes());
+        let bare = |line: &[u8]| line.trim_ascii_end().to_vec();
+        let marked = |text: &[u8]| text.split(|b| *b == b'\n').any(|line| bare(line) == begin);
+        // Most pulls find no block: the file is only read.
+        match std::fs::read(file) {
+            Ok(text) if !marked(&text) => return Ok(()),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        }
+        let removed = Self::rewrite(file, true, |text| {
+            if !marked(text) {
+                return Rewrite::Keep;
+            }
+            let mut kept = Vec::with_capacity(text.len());
+            let mut inside = false;
+            for line in text.split_inclusive(|b| *b == b'\n') {
+                let line_bare = bare(line);
+                if line_bare == begin {
+                    inside = true;
+                } else if inside && line_bare == end {
+                    inside = false;
+                } else if !inside {
+                    kept.extend_from_slice(line);
+                }
+            }
+            if created && kept.iter().all(u8::is_ascii_whitespace) {
+                Rewrite::Remove
+            } else {
+                Rewrite::With(kept)
+            }
+        });
+        match removed {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other.map(|_| ()),
+        }
+    }
+
+    fn apply(repo: &Path, paths: Vec<(String, String)>) -> GitResult<Option<RawLineEndings>> {
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        use std::io::{Read, Write};
+        let file = Self::attributes_file(repo)?;
+        let error = |e: std::io::Error| GitError::new(format!("Could not update {}: {e}", file.display()));
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(error)?;
+            // Linux and macOS: rules that could not be taken out again without risk are not
+            // written; the pull then runs as Git runs it.
+            #[cfg(not(windows))]
+            if !places_without_replacing(dir).map_err(error)? {
+                return Ok(None);
+            }
+        }
+        let created = !file.exists();
+        // Appended in one write while held: what the file holds stays as it is.
+        let mut handle = Self::held(&file, std::fs::OpenOptions::new().read(true).append(true).create(true), true).map_err(error)?;
+        let mut before = Vec::new();
+        handle.read_to_end(&mut before).map_err(error)?;
+        let mut block = Vec::new();
+        if !before.is_empty() && !before.ends_with(b"\n") {
+            block.push(b'\n');
+        }
+        block.extend_from_slice(format!("{RAW_BEGIN}\n").as_bytes());
+        for (path, _) in &paths {
+            block.extend_from_slice(format!("\"/{path}\" -text -eol -crlf\n").as_bytes());
+        }
+        block.extend_from_slice(format!("{RAW_END}\n").as_bytes());
+        handle.write_all(&block).map_err(error)?;
+        Ok(Some(RawLineEndings { file, created, paths, ended: false }))
+    }
+
+    /// Removes the block, then writes again, with the real rules, the files the pull replaced
+    /// while they were read as stored: Git wrote those without line-ending conversion, so a rule
+    /// such as `eol=crlf` would otherwise not hold for them. Files the pull did not change, or
+    /// that are in conflict or edited since, stay as they are. Returns what could not be done.
+    fn finish(mut self, repo: &Path) -> Option<String> {
+        self.ended = true;
+        if let Err(e) = Self::remove_block(&self.file, self.created) {
+            return Some(format!(
+                "Revqora could not remove its temporary line-ending rules from {} ({e}). Until they are removed, Git reads the files they name as stored. Delete the lines from \"{RAW_BEGIN}\" to \"{RAW_END}\" there, or pull again.",
+                self.file.display()
+            ));
+        }
+        match Self::reconvert(repo, &self.paths) {
+            Ok(left) if left.is_empty() => None,
+            Ok(left) => Some(left.join("\n")),
+            Err(e) => Some(format!(
+                "The line endings of files the pull wrote could not be restored: {}. Their content is the incoming version; only their line endings may differ from your rules.",
+                e.message
+            )),
+        }
+    }
+
+    /// Writes, with the line-ending rules, each changed file that is still byte for byte what the
+    /// pull wrote, a few at a time. Each file is checked and written with
+    /// [`rewrite`](Self::rewrite), so an edit saved meanwhile is never overwritten. Returns what
+    /// was left as it is, to report.
+    fn reconvert(repo: &Path, paths: &[(String, String)]) -> GitResult<Vec<String>> {
+        let before: std::collections::HashMap<&str, &str> = paths.iter().map(|(path, blob)| (path.as_str(), blob.as_str())).collect();
+        let mut args = vec!["ls-files", "--stage", "-z", "--"];
+        args.extend(before.keys().copied());
+        let listed = runner::exec(repo, &args)?;
+        if !listed.ok() {
+            return Err(GitError::new(format!("Git could not list the files the pull wrote ({})", listed.stderr.trim())));
+        }
+        // Stage 0 only (a conflict is the user's to resolve), a regular file, with a new blob.
+        let mut changed: Vec<(String, String)> = Vec::new();
+        let mut conflicted = std::collections::HashSet::new();
+        for entry in runner::split_nul(&listed.text()) {
+            let Some((meta, path)) = entry.split_once('\t') else { continue };
+            let meta: Vec<&str> = meta.split(' ').collect();
+            if meta.len() < 3 {
+                continue;
+            }
+            if meta[2] != "0" {
+                conflicted.insert(path.to_owned());
+            } else if matches!(meta[0], "100644" | "100755") && before.get(path).is_some_and(|old| *old != meta[1]) {
+                changed.push((path.to_owned(), meta[1].to_owned()));
+            }
+        }
+        changed.retain(|(path, _)| !conflicted.contains(path) && repo.join(path).is_file());
+        if changed.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Large files keep the line endings Git wrote: two versions of each are held in memory.
+        let sizes: String = changed.iter().map(|(_, blob)| format!("{blob}\n")).collect();
+        let sizes = runner::exec_full(repo, ["cat-file", "--batch-check=%(objectsize)"], &[], Some(sizes.as_bytes()))?;
+        if !sizes.ok() {
+            return Err(GitError::new(format!("Git could not read the incoming versions ({})", sizes.stderr.trim())));
+        }
+        let mut sizes: Vec<Option<u64>> = sizes.text().lines().map(|line| line.trim().parse().ok()).collect();
+        sizes.resize(changed.len(), None);
+        let mut large = Vec::new();
+        // Files whose incoming version Git could not give: they keep what the pull wrote.
+        let mut unread = Vec::new();
+        // A few files and a few megabytes at a time.
+        let mut batches: Vec<Vec<(String, String)>> = Vec::new();
+        let mut bytes = 0;
+        for (entry, size) in changed.into_iter().zip(sizes) {
+            match size {
+                Some(size) if size > RECONVERT_MAX_BYTES => large.push(entry.0),
+                Some(size) => {
+                    let full = batches.last().is_none_or(|batch| batch.len() >= RECONVERT_BATCH || bytes + size > RECONVERT_MAX_BYTES);
+                    if full {
+                        batches.push(Vec::new());
+                        bytes = 0;
+                    }
+                    bytes += size;
+                    batches.last_mut().expect("just pushed").push(entry);
+                }
+                None => unread.push(entry.0),
+            }
+        }
+        let mut busy = Vec::new();
+        // On a file system that cannot put a file in place without replacing one (Linux, macOS).
+        let mut cannot_place: Vec<String> = Vec::new();
+        let mut written: Vec<(&str, &str)> = Vec::new();
+        for batch in &batches {
+            // Each new blob as stored (what the pull wrote) and as the rules check it out. The
+            // converted ones one by one: in batch mode Git prints the size before conversion.
+            let stored: String = batch.iter().map(|(_, blob)| format!("{blob}\n")).collect();
+            let (stored, converted) = super::operations::both(
+                repo,
+                || runner::exec_full(repo, ["cat-file", "--batch"], &[], Some(stored.as_bytes())),
+                || {
+                    super::operations::each(repo, batch.iter().collect(), |(path, blob)| {
+                        let out = runner::exec(repo, ["cat-file", "--filters", &format!("--path={path}"), blob.as_str()]).ok()?;
+                        out.ok().then_some(out.stdout)
+                    })
+                },
+            );
+            let mut stored = match stored {
+                Ok(out) if out.ok() => batch_contents(&out.stdout),
+                _ => Vec::new(),
+            };
+            stored.resize(batch.len(), None);
+            let mut converted = converted;
+            converted.resize(batch.len(), None);
+            for (((path, blob), stored), converted) in batch.iter().zip(stored).zip(converted) {
+                let (Some(stored), Some(converted)) = (stored, converted) else {
+                    unread.push(path.clone());
+                    continue;
+                };
+                if stored == converted {
+                    continue;
+                }
+                let file = repo.join(path);
+                // A file of another size was edited since: not even opened.
+                if std::fs::metadata(&file).map(|m| m.len()).ok() != Some(stored.len() as u64) {
+                    continue;
+                }
+                let rewritten = Self::rewrite(&file, false, |now| if now == stored.as_slice() { Rewrite::With(converted) } else { Rewrite::Keep });
+                match rewritten {
+                    Ok(true) => written.push((path.as_str(), blob.as_str())),
+                    Ok(false) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::Unsupported => cannot_place.push(path.clone()),
+                    Err(e) => busy.push(format!("{path} ({e})")),
+                }
+            }
+        }
+        let mut left = Vec::new();
+        if !written.is_empty() {
+            if let Err(e) = Self::record_written(repo, &written) {
+                left.push(format!(
+                    "The files the pull wrote got your line endings, but the index could not be updated ({}). Git may show them as modified until the next status refresh; their content is the incoming version.",
+                    e.message
+                ));
+            }
+        }
+        if !busy.is_empty() {
+            left.push(format!(
+                "These files keep the line endings stored in Git, because another program had them open or wrote them meanwhile; their content is the incoming version: {}.",
+                busy.join(", ")
+            ));
+        }
+        if !large.is_empty() {
+            left.push(format!(
+                "These files are larger than {} MB and keep the line endings stored in Git; their content is the incoming version: {}.",
+                RECONVERT_MAX_BYTES >> 20,
+                large.join(", ")
+            ));
+        }
+        if !cannot_place.is_empty() {
+            left.push(format!(
+                "These files keep the line endings stored in Git, because their file system cannot replace a file without risking an edit saved meanwhile; their content is the incoming version: {}.",
+                cannot_place.join(", ")
+            ));
+        }
+        if !unread.is_empty() {
+            left.push(format!(
+                "These files keep the line endings stored in Git, because Git could not read their incoming version to restore them; their content is the incoming version: {}.",
+                unread.join(", ")
+            ));
+        }
+        Ok(left)
+    }
+
+    /// The index learns the new size and time of the files it rewrote: Git takes a file whose
+    /// size changed for modified without reading it, and a refresh does not help. Done under
+    /// Git's own index lock, on a private copy of the index that replaces it only when every
+    /// step worked: no other Git command writes the index meanwhile, so the user's staging stays
+    /// as it is. An entry is only changed when it still holds the blob the pull wrote, and only
+    /// its recorded size and time: set to nothing, then refreshed, which reads the file. A file
+    /// edited since stays modified, and its edit is never staged.
+    fn record_written(repo: &Path, written: &[(&str, &str)]) -> GitResult<()> {
+        let git_dir = repo::git_dir(repo)?;
+        let index = git_dir.join("index");
+        let lock = IndexLock::take(&git_dir)?;
+        let private = lock.private.to_string_lossy().into_owned();
+        let env = [("GIT_INDEX_FILE", private.as_str())];
+        let failed = |what: &str, out: &runner::Output| GitError::new(format!("{what} failed: {}", out.stderr.trim()));
+        let mut args = vec!["ls-files", "--stage", "-z", "--"];
+        args.extend(written.iter().map(|(path, _)| *path));
+        let listed = runner::exec_full(repo, &args, &env, None)?;
+        if !listed.ok() {
+            return Err(failed("Reading the index", &listed));
+        }
+        let expected: HashMap<&str, &str> = written.iter().copied().collect();
+        let mut info = String::new();
+        for entry in runner::split_nul(&listed.text()) {
+            let Some((meta, path)) = entry.split_once('\t') else { continue };
+            let meta: Vec<&str> = meta.split(' ').collect();
+            if let ([mode, blob, "0"], Some(want)) = (meta.as_slice(), expected.get(path)) {
+                if blob == want {
+                    info.push_str(&format!("{mode} {blob}\t{path}\0"));
+                }
+            }
+        }
+        if info.is_empty() {
+            return Ok(());
+        }
+        let set = runner::exec_full(repo, ["update-index", "-z", "--index-info"], &env, Some(info.as_bytes()))?;
+        if !set.ok() {
+            return Err(failed("Updating the index", &set));
+        }
+        // Exit 1: some file differs from its entry (edited since), which then stays modified.
+        let refreshed = runner::exec_full(repo, ["update-index", "-q", "--refresh"], &env, None)?;
+        if refreshed.code > 1 {
+            return Err(failed("Refreshing the index", &refreshed));
+        }
+        lock.commit(&index).map_err(|e| GitError::new(format!("Could not replace {}: {e}", index.display())))
+    }
+}
+
+#[cfg(test)]
+mod rewrite_tests {
+    use super::{RawLineEndings, Rewrite};
+    use std::fs;
+
+    fn leftovers(dir: &std::path::Path) -> Vec<String> {
+        fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).filter(|name| name != "file.txt").collect()
+    }
+
+    #[test]
+    fn a_rewrite_replaces_only_what_it_read_and_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "one\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o750)).unwrap();
+        }
+        assert!(RawLineEndings::rewrite(&file, false, |now| if now == b"one\n" { Rewrite::With(b"one\r\n".to_vec()) } else { Rewrite::Keep }).unwrap());
+        assert_eq!(fs::read(&file).unwrap(), b"one\r\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o750, "the mode stays");
+        }
+        assert!(!RawLineEndings::rewrite(&file, false, |_| Rewrite::Keep).unwrap());
+        assert_eq!(fs::read(&file).unwrap(), b"one\r\n");
+        assert!(RawLineEndings::rewrite(&file, false, |_| Rewrite::Remove).unwrap());
+        assert!(!file.exists());
+        assert!(leftovers(dir.path()).is_empty(), "{:?}", leftovers(dir.path()));
+    }
+
+    /// Linux and macOS: a program that saves the file by name while it is rewritten keeps its
+    /// save; the content Revqora meant to write is dropped.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_by_name_during_a_rewrite_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "one\n").unwrap();
+        let written = RawLineEndings::rewrite(&file, false, |_| {
+            fs::write(&file, "saved by an editor\n").unwrap();
+            Rewrite::With(b"one\r\n".to_vec())
+        })
+        .unwrap();
+        assert!(!written);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "saved by an editor\n");
+        assert!(leftovers(dir.path()).is_empty(), "{:?}", leftovers(dir.path()));
+        // Left as it was, while a save by name happened: both versions stay.
+        let error = RawLineEndings::rewrite(&file, false, |_| {
+            fs::write(&file, "saved again\n").unwrap();
+            Rewrite::Keep
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("kept as"), "{error}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "saved again\n");
+        let kept = leftovers(dir.path());
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(fs::read_to_string(dir.path().join(&kept[0])).unwrap(), "saved by an editor\n");
+        // Again: the first kept copy stays, the second gets a name of its own.
+        RawLineEndings::rewrite(&file, false, |_| {
+            fs::write(&file, "saved a third time\n").unwrap();
+            Rewrite::Keep
+        })
+        .unwrap_err();
+        let mut kept = leftovers(dir.path());
+        kept.sort();
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        let contents: Vec<String> = kept.iter().map(|name| fs::read_to_string(dir.path().join(name)).unwrap()).collect();
+        assert!(contents.contains(&"saved by an editor\n".to_owned()) && contents.contains(&"saved again\n".to_owned()), "{contents:?}");
+    }
+
+    /// A file is only put where none is, and the one there stays.
+    #[cfg(unix)]
+    #[test]
+    fn placing_a_file_never_replaces_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("from"), dir.path().join("to"));
+        fs::write(&from, "ours\n").unwrap();
+        fs::write(&to, "theirs\n").unwrap();
+        assert_eq!(super::place(&from, &to).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&to).unwrap(), "theirs\n");
+        assert_eq!(fs::read_to_string(&from).unwrap(), "ours\n");
+        fs::remove_file(&to).unwrap();
+        super::place(&from, &to).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "ours\n");
+        assert!(!from.exists());
+        // The way without hard links: one rename that fails where a file is.
+        fs::write(&from, "ours again\n").unwrap();
+        assert_eq!(super::rename_without_replacing(&from, &to).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&to).unwrap(), "ours\n");
+        fs::remove_file(&to).unwrap();
+        super::rename_without_replacing(&from, &to).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "ours again\n");
+        assert!(!from.exists());
+    }
+
+    /// A file name as long as file systems allow: the temporary names stay short, and a kept
+    /// copy gets a shortened name.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_with_the_longest_name_is_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(format!("{}.txt", "n".repeat(251)));
+        fs::write(&file, "one\n").unwrap();
+        assert!(RawLineEndings::rewrite(&file, false, |_| Rewrite::With(b"one\r\n".to_vec())).unwrap());
+        assert_eq!(fs::read(&file).unwrap(), b"one\r\n");
+        let error = RawLineEndings::rewrite(&file, false, |_| {
+            fs::write(&file, "saved meanwhile\n").unwrap();
+            Rewrite::Keep
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("kept as"), "{error}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "saved meanwhile\n");
+        let names: Vec<String> = fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names.iter().any(|name| name.contains(".revqora-kept-") && name.len() <= 255), "{names:?}");
+    }
+}
+
+/// How [`RawLineEndings::rewrite`] changes a file.
+enum Rewrite {
+    Keep,
+    With(Vec<u8>),
+    Remove,
+}
+
+/// Files restored with the line-ending rules at once: each costs a Git process and two copies in
+/// memory.
+const RECONVERT_BATCH: usize = 8;
+/// The most bytes (as stored) restored at once; a larger file keeps the line endings Git wrote.
+const RECONVERT_MAX_BYTES: u64 = 32 << 20;
+
+/// Moves `from` to `to` only where no file is, never replacing one (AlreadyExists otherwise), in
+/// one step: a hard link, then `from` is removed; without hard links (some file systems), a
+/// rename that fails when `to` exists. `Unsupported` when the file system can do neither: then
+/// nothing changed, and nothing is ever copied or removed by the name `to`.
+#[cfg(not(windows))]
+fn place(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(from, to) {
+        Ok(()) => std::fs::remove_file(from),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) => rename_without_replacing(from, to),
+    }
+}
+
+/// `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS.
+#[cfg(not(windows))]
+fn rename_without_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+        let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+        // SAFETY: both paths are NUL-terminated and live for the call.
+        #[cfg(target_os = "linux")]
+        let result = unsafe { libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE) };
+        // SAFETY: as above.
+        #[cfg(target_vendor = "apple")]
+        let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+        if result == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        let unsupported = e.raw_os_error().is_some_and(|code| [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP].contains(&code));
+        Err(if unsupported { std::io::Error::new(std::io::ErrorKind::Unsupported, e) } else { e })
+    }
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+    {
+        let _ = (from, to);
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
+/// Whether [`place`] works in `dir`, tried once per file system with two files of its own.
+#[cfg(not(windows))]
+fn places_without_replacing(dir: &Path) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    static KNOWN: std::sync::Mutex<std::collections::BTreeMap<u64, bool>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let device = std::fs::metadata(dir)?.dev();
+    if let Some(known) = KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&device) {
+        return Ok(*known);
+    }
+    let probe = fresh_name(dir, "probe")?;
+    std::fs::OpenOptions::new().write(true).create_new(true).open(&probe)?;
+    let works = match fresh_name(dir, "probe").and_then(|to| place(&probe, &to).map(|()| to)) {
+        Ok(to) => {
+            let _ = std::fs::remove_file(to);
+            true
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&probe);
+            if e.kind() != std::io::ErrorKind::Unsupported {
+                return Err(e);
+            }
+            false
+        }
+    };
+    KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(device, works);
+    Ok(works)
+}
+
+/// A short name in `dir` no file has, also none left by an earlier run that stopped halfway:
+/// `.revqora-<what>-<process>-<time>-<n>`, the same length for any file name. Only Revqora
+/// writes these names, so nothing takes one between the check and its use.
+#[cfg(not(windows))]
+fn fresh_name(dir: &Path, what: &str) -> std::io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..1000 {
+        let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_nanos()).unwrap_or(0);
+        let path = dir.join(format!(".revqora-{what}-{}-{time:x}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        match std::fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(path),
+            Err(e) => return Err(e),
+            Ok(_) => {}
+        }
+    }
+    Err(std::io::Error::other(format!("no free name for a temporary file in {}", dir.display())))
+}
+
+/// Keeps `from` beside `file` under a name no file has: `<name>.revqora-kept-<time>-<process>-<n>`,
+/// taken with [`place`], so an earlier kept copy (also from before a restart) is never replaced.
+/// A long name is shortened so the kept name stays within the 255 bytes file systems allow.
+#[cfg(not(windows))]
+fn keep_beside(from: &Path, file: &Path) -> std::io::Result<PathBuf> {
+    let mut name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    if name.len() > 180 {
+        let mut end = 180;
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        name.truncate(end);
+    }
+    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_secs()).unwrap_or(0);
+    for n in 0..1000 {
+        let kept = file.with_file_name(format!("{name}.revqora-kept-{time}-{}-{n}", std::process::id()));
+        match place(from, &kept) {
+            Ok(()) => return Ok(kept),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other(format!("no free name to keep a copy of {name} beside it")))
+}
+
+/// `index.lock`, taken as Git takes it, with a private copy of the index to change. Dropped
+/// without [`commit`](Self::commit), both are removed and the index stays as it was.
+struct IndexLock {
+    lock: PathBuf,
+    private: PathBuf,
+    committed: bool,
+}
+
+impl IndexLock {
+    fn take(git_dir: &Path) -> GitResult<IndexLock> {
+        let lock = git_dir.join("index.lock");
+        let mut waited = 0;
+        loop {
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+                Ok(_) => break,
+                // Another Git command is writing the index: it takes moments.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && waited < 40 => {
+                    waited += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(GitError::new(format!("Could not lock the index ({}): {e}", lock.display()))),
+            }
+        }
+        let taken = IndexLock { lock, private: git_dir.join(format!("index.revqora-{}", std::process::id())), committed: false };
+        std::fs::copy(git_dir.join("index"), &taken.private).map_err(|e| GitError::new(format!("Could not copy the index: {e}")))?;
+        Ok(taken)
+    }
+
+    /// The private copy becomes the index, as Git publishes one: written to the lock, then renamed.
+    fn commit(mut self, index: &Path) -> std::io::Result<()> {
+        std::fs::write(&self.lock, std::fs::read(&self.private)?)?;
+        let mut tries = 0;
+        loop {
+            match std::fs::rename(&self.lock, index) {
+                Ok(()) => break,
+                // A reader that opened the index without delete sharing (Windows).
+                Err(_) if tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for IndexLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.private);
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.lock);
+        }
+    }
+}
+
+/// The contents `git cat-file --batch` printed, in input order; None for an object it did not
+/// find.
+fn batch_contents(out: &[u8]) -> Vec<Option<Vec<u8>>> {
+    let mut rest = out;
+    let mut all = Vec::new();
+    while let Some(end) = rest.iter().position(|b| *b == b'\n') {
+        let header = String::from_utf8_lossy(&rest[..end]).into_owned();
+        rest = &rest[end + 1..];
+        match header.rsplit(' ').next().and_then(|size| size.parse::<usize>().ok()) {
+            Some(size) if rest.len() >= size => {
+                all.push(Some(rest[..size].to_vec()));
+                rest = &rest[(size + 1).min(rest.len())..];
+            }
+            _ => all.push(None),
+        }
+    }
+    all
+}
+
+impl Drop for RawLineEndings {
+    /// Only when `finish` never ran (a panic): the block must not outlive the pull.
+    fn drop(&mut self) {
+        if !self.ended {
+            let _ = Self::remove_block(&self.file, self.created);
+        }
+    }
+}
+
+/// What Fetch, Pull or Push of several branches did in one repository.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchesSync {
+    /// Pull: branches moved forward to their upstream. Push: branches the remote accepted.
+    /// Fetch: fetched branches that now have incoming commits.
+    pub updated: Vec<BranchUpdate>,
+    /// Branches that were left as they are, and why.
+    pub skipped: Vec<BranchSkip>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchUpdate {
+    pub branch: String,
+    /// Commits the branch received (Pull), sent (Push) or can receive (Fetch).
+    pub commits: usize,
+    /// The checked-out branch (its files were updated too).
+    pub current: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchSkip {
+    pub branch: String,
+    pub reason: String,
+}
+
+/// Ahead and behind counts from `%(upstream:track,nobracket)` ("ahead 1, behind 2", "gone", "").
+fn track_counts(track: &str) -> Option<(usize, usize)> {
+    if track == "gone" {
+        return None;
+    }
+    let count = |word: &str| track.split(", ").find_map(|part| part.strip_prefix(word).and_then(|n| n.trim().parse().ok())).unwrap_or(0);
+    Some((count("ahead "), count("behind ")))
+}
+
+/// Local and incoming commits between `oid` and exactly `target` (`rev-list --left-right`).
+fn ahead_behind(repo: &Path, oid: &str, target: &str) -> GitResult<(usize, usize)> {
+    let counts = runner::run(repo, ["rev-list", "--left-right", "--count", &format!("{oid}...{target}")])?;
+    let mut parts = counts.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(0));
+    Ok((parts.next().unwrap_or(0), parts.next().unwrap_or(0)))
+}
+
+/// Branches that must not move under a worktree, read now from the Git directories (no Git
+/// start, so it is read again right before each move):
+/// - `operations`: the branches an unfinished rebase or bisect in any worktree works on,
+///   including the other branches `rebase --update-refs` will rewrite when it finishes. Their
+///   worktree's HEAD is detached meanwhile, so `%(worktreepath)` does not name them.
+/// - `checked_out`: the branch of each worktree's HEAD.
+struct BusyBranches {
+    operations: HashSet<String>,
+    checked_out: HashSet<String>,
+}
+
+fn busy_branches(repo: &Path) -> GitResult<BusyBranches> {
+    let git_dir = repo::git_dir(repo)?;
+    let common = super::graph::common_dir(repo).unwrap_or_else(|| git_dir.clone());
+    let mut dirs = vec![common.clone()];
+    if let Ok(entries) = std::fs::read_dir(common.join("worktrees")) {
+        dirs.extend(entries.flatten().map(|entry| entry.path()));
+    }
+    let full = |name: &str| if name.starts_with("refs/") { name.to_owned() } else { format!("refs/heads/{name}") };
+    let mut busy = BusyBranches { operations: HashSet::new(), checked_out: HashSet::new() };
+    // A bare repository's own HEAD names a branch that no worktree has checked out.
+    let bare = super::config_cache::exec(repo, &["config", "--bool", "--get", "core.bare"])?;
+    let bare = bare.ok() && bare.text().trim() == "true";
+    for dir in dirs {
+        for file in ["rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"] {
+            let Ok(text) = std::fs::read_to_string(dir.join(file)) else { continue };
+            let name = text.trim();
+            if name.is_empty() || name == "detached HEAD" {
+                continue;
+            }
+            busy.operations.insert(full(name));
+        }
+        // "<ref>\n<old>\n<new>\n" for each branch the rebase moves when it finishes.
+        if let Ok(text) = std::fs::read_to_string(dir.join("rebase-merge/update-refs")) {
+            busy.operations.extend(text.lines().map(str::trim).filter(|line| line.starts_with("refs/")).map(str::to_owned));
+        }
+        let head = if bare && dir == common { None } else { std::fs::read_to_string(dir.join("HEAD")).ok() };
+        if let Some(name) = head.as_deref().and_then(|text| text.trim().strip_prefix("ref:")) {
+            busy.checked_out.insert(name.trim().to_owned());
+        }
+    }
+    Ok(busy)
+}
+
+/// Why `name` must not move now, if it must not.
+fn busy_now(repo: &Path, name: &str) -> GitResult<Option<String>> {
+    let busy = busy_branches(repo)?;
+    Ok(if busy.operations.contains(name) {
+        Some("A rebase or bisect in progress works on this branch. Finish or abort it first.".into())
+    } else if busy.checked_out.contains(name) {
+        Some("The branch was checked out meanwhile. Pull it there.".into())
+    } else {
+        None
+    })
+}
+
+/// One local branch with its upstream, as Fetch, Pull and Push of several branches read it.
+struct LocalBranch {
+    /// `refs/heads/…`
+    name: String,
+    oid: String,
+    /// The remote-tracking branch (`refs/remotes/…`), or empty without an upstream.
+    upstream: String,
+    /// `%(upstream:track,nobracket)`: "ahead 1, behind 2", "gone" or "".
+    track: String,
+    worktree: String,
+    /// The upstream's remote ("." for a branch that tracks another local branch).
+    remote: String,
+    /// The branch on the remote (`refs/heads/…`).
+    remote_ref: String,
+}
+
+impl LocalBranch {
+    fn short(&self) -> String {
+        self.name.strip_prefix("refs/heads/").unwrap_or(&self.name).to_owned()
+    }
+}
+
+fn local_branches(repo: &Path) -> GitResult<Vec<LocalBranch>> {
+    let format =
+        "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(worktreepath)%00%(upstream:remotename)%00%(upstream:remoteref)";
+    let listing = runner::run(repo, ["for-each-ref", format, "refs/heads"])?;
+    Ok(listing
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split('\0').collect();
+            let [name, oid, upstream, track, worktree, remote, remote_ref] = fields[..] else { return None };
+            Some(LocalBranch {
+                name: name.into(),
+                oid: oid.into(),
+                upstream: upstream.into(),
+                track: track.into(),
+                worktree: worktree.into(),
+                remote: remote.into(),
+                remote_ref: remote_ref.into(),
+            })
+        })
+        .collect())
+}
+
+/// The branches named for Fetch, Pull or Push: local ones (`refs/heads/…`, or `HEAD` for the
+/// checked-out branch) and remote-tracking ones (`refs/remotes/…`). A detached HEAD is reported.
+fn chosen_branches(repo: &Path, branches: &[String], result: &mut BranchesSync) -> GitResult<(HashSet<String>, Vec<String>)> {
+    let (mut local, mut remote) = (HashSet::new(), Vec::new());
+    for name in branches {
+        if name == "HEAD" {
+            let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
+            if head.ok() {
+                local.insert(head.text().trim().to_owned());
+            } else {
+                result.skipped.push(BranchSkip { branch: "HEAD".into(), reason: "No branch is checked out (detached HEAD).".into() });
+            }
+        } else if name.starts_with("refs/heads/") {
+            local.insert(name.clone());
+        } else if name.starts_with("refs/remotes/") {
+            remote.push(name.clone());
+        } else {
+            return Err(GitError::new(format!("Choose a branch instead of {name}.")));
+        }
+    }
+    Ok((local, remote))
+}
+
+/// Fetches only the upstreams of the chosen local branches and the chosen remote-tracking
+/// branches: one `git fetch <remote> <branches>` per remote, which also moves their
+/// remote-tracking branches. Returns the local branches whose upstream was fetched.
+fn fetch_chosen(
+    repo: &Path,
+    local: &HashSet<String>,
+    remote: &[String],
+    result: &mut BranchesSync,
+    on_line: &mut impl FnMut(&str),
+) -> GitResult<HashSet<String>> {
+    // Remote → (shown name, branch on the remote, local branch it is the upstream of).
+    let mut by_remote: BTreeMap<String, Vec<(String, String, Option<String>)>> = BTreeMap::new();
+    let branches = local_branches(repo)?;
+    for name in local {
+        let Some(branch) = branches.iter().find(|b| &b.name == name) else {
+            let shown = name.strip_prefix("refs/heads/").unwrap_or(name).to_owned();
+            result.skipped.push(BranchSkip { branch: shown, reason: "The branch no longer exists.".into() });
+            continue;
+        };
+        if branch.upstream.is_empty() || branch.remote.is_empty() || branch.remote_ref.is_empty() {
+            result.skipped.push(BranchSkip { branch: branch.short(), reason: "No upstream branch.".into() });
+        } else if branch.remote != "." {
+            by_remote.entry(branch.remote.clone()).or_default().push((branch.short(), branch.remote_ref.clone(), Some(branch.name.clone())));
+        }
+    }
+    if !remote.is_empty() {
+        let remotes = runner::run(repo, ["remote"])?;
+        for name in remote {
+            let rest = name.strip_prefix("refs/remotes/").unwrap_or(name);
+            // The longest remote name wins: "origin/team" before "origin" for "origin/team/main".
+            let owner = remotes.lines().map(str::trim).filter(|r| !r.is_empty() && rest.starts_with(&format!("{r}/"))).max_by_key(|r| r.len());
+            match owner {
+                Some(owner) if &rest[owner.len() + 1..] != "HEAD" => {
+                    let on_remote = format!("refs/heads/{}", &rest[owner.len() + 1..]);
+                    by_remote.entry(owner.to_owned()).or_default().push((rest.to_owned(), on_remote, None));
+                }
+                Some(_) => {}
+                None => result.skipped.push(BranchSkip { branch: rest.to_owned(), reason: "No remote of this repository has this branch.".into() }),
+            }
+        }
+    }
+    let mut fetched = HashSet::new();
+    for (remote, items) in by_remote {
+        // A remote that cannot be reached (sign-in, network, a removed fork) only stops its own
+        // branches: they are reported and the other remotes are still fetched.
+        let missing = match fetch_remote_refs(repo, &remote, &items, on_line) {
+            Ok(missing) => missing,
+            Err(error) if error.kind == "cancelled" => return Err(error),
+            Err(error) => {
+                let reason = format!("Could not fetch {remote}: {}", first_line(&error.message, "the fetch failed."));
+                result.skipped.extend(items.into_iter().map(|(branch, _, _)| BranchSkip { branch, reason: reason.clone() }));
+                continue;
+            }
+        };
+        for (shown, on_remote, local) in items {
+            if missing.contains(&on_remote) {
+                result.skipped.push(BranchSkip { branch: shown, reason: format!("The branch no longer exists on {remote}.") });
+            } else if let Some(local) = local {
+                fetched.insert(local);
+            }
+        }
+    }
+    Ok(fetched)
+}
+
+/// Fetches the remote branches of `items` from `remote`; returns those the remote no longer has.
+fn fetch_remote_refs(repo: &Path, remote: &str, items: &[(String, String, Option<String>)], on_line: &mut impl FnMut(&str)) -> GitResult<Vec<String>> {
+    super::recovery::protect_transport(repo, false, Some(remote), None, false)?;
+    let mut refs: Vec<String> = items.iter().map(|(_, on_remote, _)| on_remote.clone()).collect();
+    refs.sort();
+    refs.dedup();
+    // One deleted branch fails the whole fetch, and Git names only the first one it misses:
+    // leave that one out and fetch the rest again (one more round trip per deleted branch).
+    // Should Git not name it, fetch the rest one by one.
+    let mut missing: Vec<String> = Vec::new();
+    let mut rest = refs;
+    while !rest.is_empty() {
+        let error = match fetch_refs(repo, remote, &rest, on_line) {
+            Ok(()) => break,
+            Err(error) if missing_remote_ref(&error) => error,
+            Err(error) => return Err(error),
+        };
+        match missing_remote_name(&error).and_then(|name| rest.iter().position(|r| *r == name)) {
+            Some(at) => missing.push(rest.remove(at)),
+            None => {
+                for reference in std::mem::take(&mut rest) {
+                    match fetch_refs(repo, remote, std::slice::from_ref(&reference), on_line) {
+                        Ok(()) => {}
+                        Err(error) if missing_remote_ref(&error) => missing.push(reference),
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        }
+    }
+    Ok(missing)
+}
+
+fn fetch_refs(repo: &Path, remote: &str, refs: &[String], on_line: &mut impl FnMut(&str)) -> GitResult<()> {
+    let mut args = vec!["fetch".to_string(), "--progress".into(), remote.into()];
+    args.extend(refs.iter().cloned());
+    settle_fetch(repo, Some(remote), runner::run_streaming(repo, &args, &LOG_TRACKING, on_line)).map(|_| ())
+}
+
+fn missing_remote_ref(error: &GitError) -> bool {
+    error.stderr.contains("couldn't find remote ref") || error.message.contains("couldn't find remote ref")
+}
+
+/// The ref named in "couldn't find remote ref <name>".
+fn missing_remote_name(error: &GitError) -> Option<String> {
+    [&error.stderr, &error.message].into_iter().find_map(|text| {
+        let (_, after) = text.split_once("couldn't find remote ref ")?;
+        after.lines().next().map(|name| name.trim().to_owned()).filter(|name| !name.is_empty())
+    })
+}
+
+/// Fetch for chosen branches (see [`chosen_branches`]): only their upstreams are fetched.
+/// `updated` lists the local branches that now have incoming commits.
+pub fn fetch_branches(repo: &Path, branches: &[String], mut on_line: impl FnMut(&str)) -> GitResult<BranchesSync> {
+    let mut result = BranchesSync::default();
+    let (local, remote) = chosen_branches(repo, branches, &mut result)?;
+    let fetched = fetch_chosen(repo, &local, &remote, &mut result, &mut on_line)?;
+    let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
+    let head = head.ok().then(|| head.text().trim().to_owned());
+    for branch in local_branches(repo)?.into_iter().filter(|b| fetched.contains(&b.name)) {
+        if let Some((_, behind)) = track_counts(&branch.track).filter(|(_, behind)| *behind > 0) {
+            let current = head.as_deref() == Some(branch.name.as_str());
+            result.updated.push(BranchUpdate { branch: branch.short(), commits: behind, current });
+        }
+    }
+    Ok(result)
+}
+
+/// Pull all for one repository: fetches every remote once, then fast-forwards every local
+/// branch that only lacks commits of its upstream. Never merges, rebases or creates a commit.
+pub fn pull_all_branches(repo: &Path, on_line: impl FnMut(&str)) -> GitResult<BranchesSync> {
+    pull_branches(repo, None, on_line)
+}
+
+/// Pull for chosen branches, or for every local branch with `None`. Fetches first (only the
+/// chosen branches' upstreams), then fast-forwards each branch that only lacks commits of its
+/// upstream. Never merges, rebases or creates a commit.
+///
+/// Each branch moves exactly to the upstream commit that was checked: its ancestry is verified
+/// for that commit, and nothing is fetched again before the update.
+/// - The checked-out branch is fast-forwarded (`merge --ff-only`, with the regular protection of
+///   ignored files) when no local change touches a file the incoming commits change. It is left
+///   alone while an operation or a conflict is in progress.
+/// - Other branches only move their ref (`update-ref` with the old commit, so a branch that
+///   changed meanwhile is not overwritten). A branch checked out in another worktree, or being
+///   rebased or bisected in any worktree, is left as it is.
+/// - Diverged branches are reported, never changed.
+pub fn pull_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl FnMut(&str)) -> GitResult<BranchesSync> {
+    let mut result = BranchesSync::default();
+    // Remotes a Pull all could not fetch: their branches keep stale remote-tracking branches,
+    // are reported and never moved; the other remotes' branches are still pulled.
+    let mut unfetched: Vec<(String, String)> = Vec::new();
+    let only = match branches {
+        None => {
+            match fetch(repo, None, true, &mut on_line) {
+                Ok(_) => {}
+                Err(error) if error.kind == "partial-fetch" => {
+                    let problems: HashMap<&str, &str> = error
+                        .message
+                        .split("Could not fetch ")
+                        .skip(1)
+                        .filter_map(|part| part.split_once(": "))
+                        .map(|(name, problem)| (name, problem.trim()))
+                        .collect();
+                    for remote in &error.details {
+                        let problem = problems.get(remote.as_str()).copied().unwrap_or("the fetch failed.");
+                        let reason = format!("Could not fetch {remote}: {problem}");
+                        // Named even when none of its branches had incoming commits.
+                        result.skipped.push(BranchSkip { branch: format!("{remote} (remote)"), reason: reason.clone() });
+                        unfetched.push((remote.clone(), reason));
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+            None
+        }
+        Some(branches) => {
+            let (local, remote) = chosen_branches(repo, branches, &mut result)?;
+            for name in remote {
+                let branch = name.strip_prefix("refs/remotes/").unwrap_or(&name).to_owned();
+                result.skipped.push(BranchSkip { branch, reason: "A remote branch: pull the local branch that tracks it.".into() });
+            }
+            let fetched = fetch_chosen(repo, &local, &[], &mut result, &mut on_line)?;
+            // A branch whose upstream was not fetched (deleted on the remote) keeps its old
+            // remote-tracking branch: it is reported above and never moved there. Branches that
+            // track another local branch need no fetch.
+            let listed = local_branches(repo)?;
+            let local_upstream = |name: &String| listed.iter().any(|b| &b.name == name && b.remote == ".");
+            Some(local.into_iter().filter(|name| fetched.contains(name) || local_upstream(name)).collect::<HashSet<_>>())
+        }
+    };
+    // Independent reads, side by side: the checked-out branch, branches in use, the branch list,
+    // remotes `git fetch --all` skips, and `submodule.recurse` (read again where it is used).
+    enum Read {
+        Head(GitResult<runner::Output>),
+        Busy(GitResult<BusyBranches>),
+        Branches(GitResult<Vec<LocalBranch>>),
+        Skipped(GitResult<Vec<String>>),
+        Warmed,
+    }
+    let mut reads = vec![0, 1, 2, 4];
+    if branches.is_none() {
+        reads.push(3);
+    }
+    let (mut head, mut busy, mut listed, mut skipped) = (None, None, None, None);
+    for read in super::operations::each(repo, reads, |read| match read {
+        0 => Read::Head(runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])),
+        1 => Read::Busy(busy_branches(repo)),
+        2 => Read::Branches(local_branches(repo)),
+        3 => Read::Skipped(skipped_by_fetch_all(repo)),
+        _ => {
+            let _ = super::config_cache::exec(repo, &["config", "--bool", "--get", "submodule.recurse"]);
+            Read::Warmed
+        }
+    }) {
+        match read {
+            Read::Head(read) => head = Some(read),
+            Read::Busy(read) => busy = Some(read),
+            Read::Branches(read) => listed = Some(read),
+            Read::Skipped(read) => skipped = Some(read),
+            Read::Warmed => {}
+        }
+    }
+    let missing = || GitError::new("Reading the branches failed.");
+    // `git fetch --all` leaves these out: their remote-tracking branches are as old as their
+    // last fetch, so their branches are never moved there.
+    for remote in skipped.transpose()?.unwrap_or_default() {
+        let reason = format!("Fetch all skips {remote} (remote.{remote}.skipFetchAll). Pull this branch on its own to fetch it first.");
+        unfetched.push((remote, reason));
+    }
+    let head = head.ok_or_else(missing)??;
+    let head = head.ok().then(|| head.text().trim().to_owned());
+    let busy = busy.ok_or_else(missing)??.operations;
+    let mut candidates = Vec::new();
+    for local in listed.ok_or_else(missing)?? {
+        let LocalBranch { name, upstream, track, .. } = &local;
+        // Branches without an upstream were reported by the fetch of chosen branches.
+        if only.as_ref().is_some_and(|only| !only.contains(name)) || upstream.is_empty() {
+            continue;
+        }
+        // The listing only picks candidates; every decision below uses the exact commit.
+        if !track_counts(track).is_some_and(|(_, behind)| behind > 0) {
+            continue;
+        }
+        if let Some((_, reason)) = unfetched.iter().find(|(remote, _)| *remote == local.remote) {
+            result.skipped.push(BranchSkip { branch: local.short(), reason: reason.clone() });
+            continue;
+        }
+        candidates.push(local);
+    }
+    // The exact upstream commit of every candidate and its counts, side by side; each branch is
+    // then decided and moved one after another. A branch that tracks a local branch is read in
+    // turn, after that branch may have moved.
+    let remote_tracking = |local: &LocalBranch| local.upstream.starts_with("refs/remotes/");
+    let mut inspected =
+        super::operations::each(repo, candidates.iter().filter(|local| remote_tracking(local)).collect(), |local| upstream_commit(repo, local)).into_iter();
+    let mut current = None;
+    for local in &candidates {
+        let upstream = if remote_tracking(local) {
+            inspected.next().unwrap_or_else(|| Err(GitError::new("Reading the upstream branch failed.")))
+        } else {
+            upstream_commit(repo, local)
+        };
+        // A failure on one branch is reported for it; branches already moved stay in the report.
+        match upstream.and_then(|upstream| pull_one(repo, local, upstream, head.as_deref(), &busy)) {
+            Ok(PullOne::Nothing) => {}
+            Ok(PullOne::Moved(behind)) => result.updated.push(BranchUpdate { branch: local.short(), commits: behind, current: false }),
+            Ok(PullOne::Skipped(reason)) => result.skipped.push(BranchSkip { branch: local.short(), reason }),
+            Ok(PullOne::Current(behind, target)) => current = Some((local.name.clone(), local.short(), local.oid.clone(), behind, target)),
+            Err(error) if error.kind == "cancelled" => return Err(error),
+            Err(error) => result.skipped.push(BranchSkip { branch: local.short(), reason: first_line(&error.message, "The pull failed.") }),
+        }
+    }
+    if let Some((name, branch, oid, behind, target)) = current {
+        let blocked = match current_branch_blocked(repo, &name, &oid, &target) {
+            Ok(blocked) => blocked,
+            Err(error) if error.kind == "cancelled" => return Err(error),
+            Err(error) => Some(first_line(&error.message, "The pull failed.")),
+        };
+        match blocked {
+            Some(reason) => result.skipped.push(BranchSkip { branch, reason }),
+            None => match fast_forward_current(repo, &name, &oid, &target, &mut on_line) {
+                Ok(()) => result.updated.push(BranchUpdate { branch, commits: behind, current: true }),
+                Err(error) if error.kind == "cancelled" => return Err(error),
+                Err(error) => result.skipped.push(BranchSkip { branch, reason: error.message }),
+            },
+        }
+    }
+    Ok(result)
+}
+
+/// Remotes `git fetch --all` skips: `remote.<name>.skipFetchAll`, or its older synonym
+/// `skipDefaultUpdate`; the last value set wins.
+fn skipped_by_fetch_all(repo: &Path) -> GitResult<Vec<String>> {
+    let out = super::config_cache::exec(repo, &["config", "--bool", "--get-regexp", r"^remote\..*\.(skipfetchall|skipdefaultupdate)$"])?;
+    if !out.ok() && out.code != 1 {
+        return Err(runner::to_error("git config --get-regexp", &out));
+    }
+    let mut skip: BTreeMap<String, bool> = BTreeMap::new();
+    for line in out.text().lines() {
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        let remote = key.strip_prefix("remote.").and_then(|k| k.strip_suffix(".skipfetchall").or_else(|| k.strip_suffix(".skipdefaultupdate")));
+        if let Some(remote) = remote {
+            skip.insert(remote.to_owned(), value.trim() == "true");
+        }
+    }
+    Ok(skip.into_iter().filter(|(_, skipped)| *skipped).map(|(remote, _)| remote).collect())
+}
+
+enum PullOne {
+    Nothing,
+    Moved(usize),
+    Skipped(String),
+    /// The checked-out branch: fast-forwarded last, to this commit.
+    Current(usize, String),
+}
+
+/// The commit a branch's upstream names now, with the branch's local and incoming commits
+/// against exactly that commit. None when the upstream names no commit.
+fn upstream_commit(repo: &Path, local: &LocalBranch) -> GitResult<Option<(String, usize, usize)>> {
+    let target = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{}^{{commit}}", local.upstream)])?;
+    if !target.ok() {
+        return Ok(None);
+    }
+    let target = target.text().trim().to_owned();
+    let (ahead, behind) = ahead_behind(repo, &local.oid, &target)?;
+    Ok(Some((target, ahead, behind)))
+}
+
+/// Decides and, for a branch that is not checked out, performs the fast-forward of one branch
+/// of a Pull of several branches, to the upstream commit [`upstream_commit`] found.
+fn pull_one(repo: &Path, local: &LocalBranch, upstream: Option<(String, usize, usize)>, head: Option<&str>, busy: &HashSet<String>) -> GitResult<PullOne> {
+    let LocalBranch { name, oid, worktree, .. } = local;
+    let Some((target, ahead, behind)) = upstream else { return Ok(PullOne::Nothing) };
+    Ok(if behind == 0 {
+        PullOne::Nothing
+    } else if ahead > 0 {
+        PullOne::Skipped(format!("Diverged: {ahead} local and {behind} incoming commits. Pull it on its own to merge or rebase."))
+    } else if busy.contains(name) {
+        PullOne::Skipped("A rebase or bisect in progress works on this branch. Finish or abort it first.".into())
+    } else if head == Some(name.as_str()) {
+        PullOne::Current(behind, target)
+    } else if !worktree.is_empty() {
+        PullOne::Skipped(format!("Checked out in the worktree {worktree}."))
+    } else if let Some(reason) = busy_now(repo, name)? {
+        // Checked out or taken by a rebase since the listing: moving the ref would leave
+        // that worktree's files behind.
+        PullOne::Skipped(reason)
+    } else if runner::exec(repo, ["update-ref", "-m", "pull: fast-forward (Pull all)", name, &target, oid])?.ok() {
+        PullOne::Moved(behind)
+    } else {
+        PullOne::Skipped("The branch changed meanwhile.".into())
+    })
+}
+
+/// The settings that decide where a plain `git push` sends a branch.
+#[derive(Default)]
+struct PushRules {
+    /// `push.default` ("simple" when unset).
+    default: String,
+    /// `remote.pushDefault`.
+    push_default: Option<String>,
+    /// `branch.<name>.pushRemote`, by branch name.
+    push_remote: HashMap<String, String>,
+    /// Remotes with `remote.<name>.push` refspecs.
+    mapped: HashSet<String>,
+}
+
+impl PushRules {
+    fn read(repo: &Path) -> GitResult<Self> {
+        let out =
+            super::config_cache::exec(repo, &["config", "--get-regexp", r"^(push\.default|remote\.pushdefault|branch\..*\.pushremote|remote\..*\.push)$"])?;
+        if !out.ok() && out.code != 1 {
+            return Err(runner::to_error("git config --get-regexp", &out));
+        }
+        let mut rules = PushRules { default: "simple".into(), ..PushRules::default() };
+        for line in out.text().lines() {
+            let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+            let value = value.trim().to_owned();
+            if key == "push.default" {
+                rules.default = value.to_ascii_lowercase();
+            } else if key == "remote.pushdefault" {
+                rules.push_default = Some(value);
+            } else if let Some(branch) = key.strip_prefix("branch.").and_then(|k| k.strip_suffix(".pushremote")) {
+                rules.push_remote.insert(branch.to_owned(), value);
+            } else if let Some(remote) = key.strip_prefix("remote.").and_then(|k| k.strip_suffix(".push")) {
+                rules.mapped.insert(remote.to_owned());
+            }
+        }
+        Ok(rules)
+    }
+
+    /// Why a plain `git push` of `branch` would not go to its upstream, if it would not. Push
+    /// of several branches only sends a branch where Git itself would send it.
+    fn elsewhere(&self, branch: &LocalBranch) -> Option<String> {
+        let short = branch.short();
+        let target = self.push_remote.get(&short).or(self.push_default.as_ref()).unwrap_or(&branch.remote);
+        if *target != branch.remote {
+            return Some(format!("Pushes of this branch go to {target}, not to its upstream on {}. Push it on its own with Push….", branch.remote));
+        }
+        if self.mapped.contains(&branch.remote) {
+            return Some(format!("{} has its own push rules (remote.{}.push). Push it on its own with Push….", branch.remote, branch.remote));
+        }
+        let same_name = branch.remote_ref == format!("refs/heads/{short}");
+        match self.default.as_str() {
+            "upstream" | "tracking" => None,
+            "nothing" => Some("push.default is \"nothing\": Git pushes no branch without a destination. Push it on its own with Push….".into()),
+            _ if same_name => None,
+            _ => {
+                let upstream = branch.upstream.strip_prefix("refs/remotes/").unwrap_or(&branch.upstream);
+                Some(format!("Its upstream {upstream} has another name, so Git would not push it there. Push it on its own with Push… to choose."))
+            }
+        }
+    }
+}
+
+/// Push for chosen branches, or for every local branch with `None`: each branch with commits
+/// its upstream lacks goes to that upstream (one `git push` per remote, never forced). A branch
+/// whose upstream has commits it lacks is reported instead; so is a branch the remote refused.
+/// Branches without an upstream are only reported when they were chosen.
+///
+/// A branch is only sent where a plain `git push` would send it (same name, or
+/// `push.default=upstream`; no other push remote; no push refspecs), and exactly at the commit
+/// that was checked. Several branches with one destination are reported, not pushed: Git would
+/// refuse the whole push. A remote that fails leaves the other remotes' branches to be pushed.
+pub fn push_branches(repo: &Path, branches: Option<&[String]>, mut on_line: impl FnMut(&str)) -> GitResult<BranchesSync> {
+    let mut result = BranchesSync::default();
+    let only = match branches {
+        None => None,
+        Some(branches) => {
+            let (local, remote) = chosen_branches(repo, branches, &mut result)?;
+            for name in remote {
+                let branch = name.strip_prefix("refs/remotes/").unwrap_or(&name).to_owned();
+                result.skipped.push(BranchSkip { branch, reason: "A remote branch: push the local branch that tracks it.".into() });
+            }
+            Some(local)
+        }
+    };
+    let head = runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"])?;
+    let head = head.ok().then(|| head.text().trim().to_owned());
+    let mut by_remote: BTreeMap<String, Vec<(LocalBranch, usize)>> = BTreeMap::new();
+    // `--force-with-lease` values by branch, for `push.default=matching`.
+    let mut leases: HashMap<String, String> = HashMap::new();
+    // History as it really is: no replace refs, no grafts (a graft file in a folder made empty
+    // for this push, so it surely does not exist).
+    let empty = tempfile::Builder::new()
+        .prefix("no-grafts-")
+        .tempdir_in(crate::portable::temp_dir()?)
+        .map_err(|e| GitError::new(format!("Could not create a temporary folder: {e}")))?;
+    let no_grafts = empty.path().join("grafts").to_string_lossy().into_owned();
+    let real_history = [("GIT_NO_REPLACE_OBJECTS", "1"), ("GIT_GRAFT_FILE", no_grafts.as_str())];
+    let rules = PushRules::read(repo)?;
+    let listed = local_branches(repo)?;
+    if let Some(only) = &only {
+        for name in only.iter().filter(|name| !listed.iter().any(|b| &b.name == *name)) {
+            let branch = name.strip_prefix("refs/heads/").unwrap_or(name).to_owned();
+            result.skipped.push(BranchSkip { branch, reason: "The branch no longer exists.".into() });
+        }
+    }
+    for local in listed {
+        let chosen = match &only {
+            Some(only) if !only.contains(&local.name) => continue,
+            Some(_) => true,
+            None => false,
+        };
+        let mut skip = |reason: String| result.skipped.push(BranchSkip { branch: local.short(), reason });
+        if local.upstream.is_empty() || local.remote.is_empty() || local.remote_ref.is_empty() {
+            if chosen {
+                skip("No upstream branch. Push it on its own once to publish it.".into());
+            }
+            continue;
+        }
+        if local.remote == "." {
+            if chosen {
+                let upstream = local.remote_ref.strip_prefix("refs/heads/").unwrap_or(&local.remote_ref);
+                skip(format!("It tracks the local branch {upstream}: nothing goes to a remote."));
+            }
+            continue;
+        }
+        let Some((ahead, behind)) = track_counts(&local.track) else {
+            if chosen {
+                skip("The upstream branch was deleted on the remote.".into());
+            }
+            continue;
+        };
+        if ahead == 0 {
+            continue;
+        }
+        if behind > 0 {
+            skip(format!("Diverged: {ahead} local and {behind} incoming commits. Pull it first."));
+            continue;
+        }
+        if let Some(reason) = rules.elsewhere(&local) {
+            skip(reason);
+            continue;
+        }
+        // `push.default=matching` only updates branches the remote still has. An explicit
+        // refspec would create one deleted there whose remote-tracking branch is still here, so
+        // each push carries a lease on the remote-tracking commit, a commit this branch contains.
+        // The lease lets a forced update through, so containment is decided on the commits as
+        // they are: replace refs and grafts can make a rewritten history look like a fast-forward.
+        if rules.default == "matching" {
+            let tracking = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{}^{{commit}}", local.upstream)])?;
+            if !tracking.ok() {
+                skip("The upstream branch was deleted on the remote.".into());
+                continue;
+            }
+            let tracking = tracking.text().trim().to_owned();
+            let contained = runner::exec_full(repo, ["merge-base", "--is-ancestor", &tracking, &local.oid], &real_history, None)?;
+            if !contained.ok() && contained.code != 1 {
+                return Err(runner::to_error("git merge-base", &contained));
+            }
+            if !contained.ok() {
+                let upstream = local.upstream.strip_prefix("refs/remotes/").unwrap_or(&local.upstream);
+                skip(format!("It does not contain {upstream} (Git replace refs and grafts are not counted). Pull it first."));
+                continue;
+            }
+            leases.insert(local.name.clone(), tracking);
+        }
+        by_remote.entry(local.remote.clone()).or_default().push((local, ahead));
+    }
+    // Two branches pushed to one remote branch make Git refuse the whole push.
+    for (remote, list) in &mut by_remote {
+        let mut destinations: HashMap<String, usize> = HashMap::new();
+        for (local, _) in list.iter() {
+            *destinations.entry(local.remote_ref.clone()).or_default() += 1;
+        }
+        list.retain(|(local, _)| {
+            let shared = destinations[&local.remote_ref];
+            if shared > 1 {
+                let target = local.remote_ref.strip_prefix("refs/heads/").unwrap_or(&local.remote_ref);
+                let reason = format!("{shared} local branches push to {remote}/{target}. Push one of them on its own.");
+                result.skipped.push(BranchSkip { branch: local.short(), reason });
+            }
+            shared == 1
+        });
+    }
+    by_remote.retain(|_, list| !list.is_empty());
+    // The checkpoint a single Push takes first, only when something will be sent: most
+    // repositories have nothing to push, and a checkpoint each would bury the list.
+    if !by_remote.is_empty() {
+        super::recovery::automatic(repo, "push_branches", false, false)?;
+    }
+    for (remote, list) in by_remote {
+        // The exact commit that was checked: a branch that moves meanwhile sends nothing unseen.
+        let specs: Vec<String> = list.iter().map(|(b, _)| format!("{}:{}", b.oid, b.remote_ref)).collect();
+        let error = match specs.iter().try_for_each(|spec| super::recovery::protect_transport(repo, true, Some(&remote), Some(spec), false)) {
+            Err(error) => Some(error),
+            Ok(()) => {
+                // Only the listed branches: `push.followTags` would also publish annotated tags
+                // that the report never shows.
+                let mut args = vec!["push".to_string(), "--progress".into(), "--no-follow-tags".into()];
+                // The lease only lets the push through while the remote branch is still at the
+                // checked commit, which the pushed commit contains: never a forced update.
+                args.extend(list.iter().filter_map(|(b, _)| leases.get(&b.name).map(|oid| format!("--force-with-lease={}:{oid}", b.remote_ref))));
+                args.push(remote.clone());
+                args.extend(specs);
+                // Git's own fast-forward check before sending sees the same real history.
+                match runner::run_streaming(repo, &args, &real_history, &mut on_line) {
+                    Ok(_) => None,
+                    Err(error) if error.kind == "cancelled" => return Err(error),
+                    Err(error) => Some(error),
+                }
+            }
+        };
+        // Git moves the remote-tracking branch of every branch the remote accepted.
+        for (local, ahead) in list {
+            let tip = runner::exec(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", &local.upstream]);
+            if tip.as_ref().is_ok_and(|tip| tip.ok() && tip.text().trim() == local.oid) {
+                let current = head.as_deref() == Some(local.name.as_str());
+                result.updated.push(BranchUpdate { branch: local.short(), commits: ahead, current });
+                continue;
+            }
+            let reason = match &error {
+                Some(error) if leases.contains_key(&local.name) && (error.message.contains("stale info") || error.stderr.contains("stale info")) => {
+                    format!("{} no longer has this branch at the commit fetched last (push.default is \"matching\": Git only updates branches both sides have). Fetch, then push again.", local.remote)
+                }
+                // "[remote rejected]" is a hook or a protection rule, not missing commits.
+                Some(error) if error.kind == "rejected" && !error.message.contains("remote rejected") && !error.stderr.contains("remote rejected") => {
+                    "The remote branch has commits this branch lacks. Pull it first.".to_owned()
+                }
+                Some(error) => first_line(&error.message, "The push failed."),
+                None => "The remote branch did not move.".to_owned(),
+            };
+            result.skipped.push(BranchSkip { branch: local.short(), reason });
+        }
+    }
+    Ok(result)
+}
+
+fn first_line(text: &str, fallback: &str) -> String {
+    text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or(fallback).to_owned()
+}
+
+/// Moves the checked-out branch exactly to `target`, a verified descendant of HEAD. Local
+/// changes stay where they are (they touch none of the incoming files), so nothing is stashed.
+fn fast_forward_current(repo: &Path, name: &str, oid: &str, target: &str, on_line: &mut impl FnMut(&str)) -> GitResult<()> {
+    let recurse = super::config_cache::exec(repo, &["config", "--bool", "--get", "submodule.recurse"])?;
+    if !recurse.ok() && recurse.code != 1 {
+        return Err(runner::to_error("git config submodule.recurse", &recurse));
+    }
+    let recurse = recurse.ok() && recurse.text().trim() == "true";
+    if recurse {
+        super::pull_guard::submodules(repo, target, "ff-only")?;
+    }
+    // The recovery checkpoint a single Pull takes first, only when files will change: most
+    // repositories have nothing to pull, and a checkpoint each would bury the list. When ignored
+    // files are in the way of the incoming commits, their checkpoint is that one.
+    if !protect_ignored_files(repo, "pull_branches", Some(oid), target)? {
+        super::recovery::automatic(repo, "pull_branches", true, false)?;
+    }
+    // `git merge` moves whatever HEAD names: the checks above took time, so the branch and its
+    // commit are checked again right before Git runs.
+    let outcome = merge_run(repo, target, "ff-only", false, Some((name, oid)))?;
+    if !matches!(outcome.status.as_str(), "done" | "fastForward") {
+        return Err(GitError::new(outcome.message));
+    }
+    if recurse {
+        let args = ["submodule", "update", "--recursive", "--checkout"].map(String::from);
+        runner::run_streaming(repo, &args, &[], on_line)?;
+    }
+    Ok(())
+}
+
+/// Paths integrating `target` into `head` can write: every path that differs between them and,
+/// for a rebase, the paths of the local commits that are replayed (`target...head`).
+fn integration_paths(repo: &Path, head: Option<&str>, target: &str) -> GitResult<Vec<String>> {
+    let names = |args: &[&str]| -> GitResult<Option<Vec<String>>> {
+        let out = runner::exec(repo, args)?;
+        if !out.ok() {
+            return Ok(None);
+        }
+        let text = super::workspace_files::path_list(&out.stdout)?;
+        Ok(Some(text.split('\0').filter(|p| !p.is_empty()).map(str::to_owned).collect()))
+    };
+    let all_of = |rev: &str| names(&["ls-tree", "-r", "-z", "--name-only", "--end-of-options", rev]);
+    let Some(head) = head else {
+        return all_of(target)?.ok_or_else(|| GitError::new("Listing the incoming files failed."));
+    };
+    // Both lists side by side.
+    let local_range = format!("{target}...{head}");
+    let (local, incoming) = super::operations::both(
+        repo,
+        || names(&["diff", "--name-only", "--no-renames", "-z", &local_range, "--"]),
+        || names(&["diff", "--name-only", "--no-renames", "-z", head, target, "--"]),
+    );
+    let mut paths: BTreeSet<String> = incoming?.ok_or_else(|| GitError::new("Listing the incoming changes failed."))?.into_iter().collect();
+    // Unrelated histories have no merge base: then every local file may be written.
+    let local = match local? {
+        Some(local) => local,
+        None => all_of(head)?.unwrap_or_default(),
+    };
+    paths.extend(local);
+    Ok(paths.into_iter().collect())
+}
+
+/// Saves the individual ignored files in the way of integrating `target` (see
+/// [`super::recovery::watch_ignored_for`]). Returns true when that created a checkpoint.
+fn protect_ignored_files(repo: &Path, command: &str, head: Option<&str>, target: &str) -> GitResult<bool> {
+    if head == Some(target) {
+        return Ok(false);
+    }
+    let paths = integration_paths(repo, head, target)?;
+    if paths.is_empty() {
+        return Ok(false);
+    }
+    super::recovery::watch_ignored_for(repo, command, &paths)
+}
+
+/// Why Pull all leaves the checked-out branch alone, if it does.
+fn current_branch_blocked(repo: &Path, name: &str, oid: &str, target: &str) -> GitResult<Option<String>> {
+    if repo::op_state(repo, &repo::git_dir(repo)?).kind != "none" {
+        return Ok(Some("An operation is in progress. Finish or abort it first.".into()));
+    }
+    let names = |args: &[&str]| -> GitResult<std::collections::HashSet<String>> {
+        Ok(runner::run(repo, args)?.split('\0').filter(|s| !s.is_empty()).map(str::to_owned).collect())
+    };
+    // Independent reads side by side; their answers are weighed in the order below.
+    let queries: Vec<Vec<&str>> = vec![
+        vec!["diff", "--name-only", "-z", "--no-renames", "HEAD"],
+        vec!["diff", "--name-only", "-z", "--diff-filter=U"],
+        vec!["ls-files", "--others", "--exclude-standard", "-z"],
+        vec!["diff", "--name-only", "-z", "--no-renames", oid, target],
+    ];
+    let (lists, moved) = super::operations::both(repo, || super::operations::each(repo, queries, |args| names(&args)), || head_moved(repo, name, oid));
+    if let Some(reason) = moved? {
+        return Ok(Some(reason));
+    }
+    let mut lists = lists.into_iter();
+    let mut next = || lists.next().unwrap_or_else(|| Err(GitError::new("Reading the local changes failed.")));
+    let (changed, conflicts, untracked) = (next()?, next()?, next()?);
+    let incoming = next();
+    if !conflicts.is_empty() {
+        return Ok(Some("Conflicts need attention.".into()));
+    }
+    if changed.is_empty() && untracked.is_empty() {
+        return Ok(None);
+    }
+    let incoming = incoming?;
+    let mut touched: Vec<&String> = incoming.iter().filter(|path| changed.contains(*path) || untracked.contains(*path)).collect();
+    if touched.is_empty() {
+        // The incoming commits change other files: the local changes stay as they are.
+        return Ok(None);
+    }
+    touched.sort();
+    let shown: Vec<&str> = touched.iter().take(3).map(|s| s.as_str()).collect();
+    let more = if touched.len() > 3 { format!(" and {} more", touched.len() - 3) } else { String::new() };
+    Ok(Some(format!("Local changes in files the incoming commits change: {}{more}.", shown.join(", "))))
+}
+
+/// Why HEAD is no longer branch `name` (a full ref) at `oid`, if it is not: a fast-forward
+/// moves whatever HEAD names, and another branch may point at the same commit.
+fn head_moved(repo: &Path, name: &str, oid: &str) -> GitResult<Option<String>> {
+    // Both reads side by side.
+    let (commit, head) = super::operations::both(repo, || runner::run(repo, ["rev-parse", "HEAD"]), || runner::exec(repo, ["symbolic-ref", "--quiet", "HEAD"]));
+    let head = head?;
+    if !head.ok() || head.text().trim() != name {
+        return Ok(Some("Another branch was checked out meanwhile.".into()));
+    }
+    if commit?.trim() != oid {
+        return Ok(Some("The branch changed meanwhile.".into()));
+    }
+    Ok(None)
+}
+
 /// "Revqora: changes on <branch> saved before pull", so the stash list says what a kept copy is.
-fn pull_stash_name(repo: &Path) -> GitResult<String> {
+fn pull_stash_name(branch: Option<&str>) -> String {
+    format!("Revqora: changes on {} saved before pull", branch.unwrap_or("detached HEAD"))
+}
+
+/// The checked-out branch's short name; none on a detached HEAD.
+fn short_branch(repo: &Path) -> GitResult<Option<String>> {
     let branch = runner::exec(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"])?;
-    let branch = if branch.ok() { branch.text().trim().to_owned() } else { "detached HEAD".into() };
-    Ok(format!("Revqora: changes on {branch} saved before pull"))
+    Ok(branch.ok().then(|| branch.text().trim().to_owned()))
+}
+
+/// Reads side by side the settings a Pull then reads one after another: the branch's upstream
+/// and remote, `submodule.recurse`, the fetch refspecs of `origin` (the usual remote) and what
+/// the fetch reads for its connection. The pull still reads each itself and decides on that
+/// answer.
+fn warm_pull_settings(repo: &Path, branch: Option<&str>) {
+    let query = |args: &[&str]| args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+    let mut queries = vec![
+        query(&["config", "--bool", "--get", "submodule.recurse"]),
+        query(&["config", "--get-all", "remote.origin.fetch"]),
+        query(&super::connection::STALL_READ),
+        query(&super::connection::HELPERS_READ),
+    ];
+    if let Some(branch) = branch {
+        queries.push(query(&["config", "--get-all", &format!("branch.{branch}.merge")]));
+        queries.push(query(&["config", "--get", &format!("branch.{branch}.remote")]));
+    }
+    super::config_cache::warm(repo, queries);
 }
 
 fn stash_top(repo: &Path) -> GitResult<Option<String>> {
@@ -1131,7 +2958,15 @@ fn name_autostash(repo: &Path, before: Option<&str>, name: &str) -> GitResult<()
     Ok(())
 }
 
-fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl FnMut(&str)) -> GitResult<PullOutcome> {
+/// `set_aside` saves the staged work; it runs once, right before Git integrates the upstream
+/// (never when the pull stops earlier).
+fn pull_unsaved(
+    repo: &Path,
+    mode: &str,
+    prune_remote: bool,
+    set_aside: impl FnOnce() -> GitResult<()>,
+    mut on_line: impl FnMut(&str),
+) -> GitResult<PullOutcome> {
     // The status read already lists the index; compare that listing after the fetch.
     let (before, index_before) = status::status_with_index(repo)?;
     let branch = before.branch.as_deref().ok_or_else(|| GitError::new("Choose a branch with an upstream before pulling."))?;
@@ -1235,6 +3070,13 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
             );
         }
     }
+    // Now that the target is known, the pull's one recovery checkpoint: with the ignored files
+    // in the way of what this pull writes, or the ordinary one when there are none.
+    if !protect_ignored_files(repo, "pull", before.oid.as_deref(), targets[0])? && super::recovery::in_operation("pull") {
+        super::recovery::automatic(repo, "pull", true, false)?;
+    }
+    let mut set_aside = Some(set_aside);
+    let mut set_aside = move || set_aside.take().map_or(Ok(()), |f| f());
     let mut outcome = if mode == "rebase" {
         let can_ff = match before.oid.as_deref() {
             Some(head) => {
@@ -1247,6 +3089,11 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
             None => true,
         };
         if can_ff {
+            if !unchanged()? {
+                return Err(GitError::new("Pull stopped because the current branch or working tree changed meanwhile. Review it before pulling again.")
+                    .kind("stale-operation"));
+            }
+            set_aside()?;
             let mut result = merge_start_with_autostash(repo, targets[0], "ff-only", true)?;
             // Preserve the rebase-Pull API's success status, including when
             // native Git can integrate it without replaying any commits.
@@ -1274,6 +3121,7 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
                     GitError::new("Pull stopped because the repository changed during rebase inspection. Review it before retrying.").kind("stale-operation")
                 );
             }
+            set_aside()?;
             let args = ["rebase", "--autostash", "--onto", targets[0], upstream].map(String::from);
             match runner::run_streaming(repo, &args, &[], &mut on_line) {
                 Ok(output) if autostash_conflict(repo, &output) => autostash_outcome(repo),
@@ -1288,6 +3136,11 @@ fn pull_unsaved(repo: &Path, mode: &str, prune_remote: bool, mut on_line: impl F
             }
         }
     } else {
+        if !unchanged()? {
+            return Err(GitError::new("Pull stopped because the current branch or working tree changed meanwhile. Review it before pulling again.")
+                .kind("stale-operation"));
+        }
+        set_aside()?;
         merge_start_with_autostash(repo, targets[0], if mode == "merge" { "ff" } else { "ff-only" }, true).map_err(|mut error| {
             if error.kind == "diverged" {
                 // Git's own text is a hint list about pull.rebase configuration.
@@ -1404,10 +3257,13 @@ fn lease_args(repo: &Path, o: &PushOptions) -> GitResult<Vec<String>> {
         runner::run(repo, ["rev-parse", "--verify", "--quiet", &format!("{tracking}^{{commit}}")]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     // A fresh clone may leave an empty reflog file; only real entries make the check meaningful.
     let has_reflog = runner::run(repo, ["reflog", "show", "--format=%H", "-n", "1", &tracking]).map(|out| !out.trim().is_empty()).unwrap_or(false);
+    // Git's `--force-if-includes` looks for a local branch named like the remote branch, so it
+    // refuses every push from `main` to `feature/x`. Revqora checks the same proof itself then.
+    let renamed = rb != b.as_str();
     // Without tracking reflog entries (fresh clone, or expired/cleared reflogs) the remote tip
     // may have been fetched by anyone. Only lease on it with independent proof that it was part
     // of the local branch: an ancestor of the branch or of one of its reflog entries.
-    if let (Some(oid), false) = (&tip, has_reflog) {
+    if let (Some(oid), true) = (&tip, !has_reflog || renamed) {
         if !integrated_locally(repo, b, oid)? {
             return Err(GitError::new(format!(
                 "The remote branch has commits that were never part of your local {b}, and Git's history cannot show whether you reviewed them. Pull (or merge {remote}/{rb}) first, then force push."
@@ -1417,7 +3273,7 @@ fn lease_args(repo: &Path, o: &PushOptions) -> GitResult<Vec<String>> {
     }
     Ok(match tip {
         // Refname-only form: an explicit expected value would turn --force-if-includes off.
-        Some(_) if has_reflog => vec![format!("--force-with-lease=refs/heads/{rb}"), "--force-if-includes".into()],
+        Some(_) if has_reflog && !renamed => vec![format!("--force-with-lease=refs/heads/{rb}"), "--force-if-includes".into()],
         Some(oid) => vec![format!("--force-with-lease=refs/heads/{rb}:{oid}")],
         None => vec![format!("--force-with-lease=refs/heads/{rb}:")],
     })
@@ -1636,10 +3492,6 @@ fn ignored_merge_obstruction(repo: &Path, path: &str, ignore_case: bool) -> GitR
     Ok(None)
 }
 
-pub(super) fn guard_ignored_merge(repo: &Path, target: &str, head: Option<&str>) -> GitResult<()> {
-    guard_transition(repo, target, head, false)
-}
-
 pub(super) fn guard_untracked_tree(repo: &Path, target: &str) -> GitResult<()> {
     guard_transition(repo, target, None, true)
 }
@@ -1649,6 +3501,11 @@ fn guard_transition(repo: &Path, target: &str, head: Option<&str>, all_untracked
     // --no-overwrite-ignore (unlike switch / the fast-forward checkout path).
     // Inspect collapsed ignored folders, without scanning their build caches.
     let ignored = if all_untracked { super::workspace_files::untracked(repo)? } else { super::workspace_files::ignored(repo)? };
+    guard_listed(repo, target, head, ignored, all_untracked)
+}
+
+/// [`guard_transition`] with the ignored (or all untracked) files already listed.
+fn guard_listed(repo: &Path, target: &str, head: Option<&str>, ignored: super::workspace_files::IgnoredFiles, all_untracked: bool) -> GitResult<()> {
     if ignored.truncated {
         return Err(GitError::new("Ignored-file inspection was truncated; no merge was started."));
     }
@@ -1725,9 +3582,15 @@ pub fn merge_start(repo: &Path, target: &str, strategy: &str) -> GitResult<OpOut
 }
 
 fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autostash: bool) -> GitResult<OpOutcome> {
+    merge_run(repo, target, strategy, autostash, None)
+}
+
+/// `expect`: the branch (full ref) and commit HEAD must still be right before Git runs.
+fn merge_run(repo: &Path, target: &str, strategy: &str, autostash: bool, expect: Option<(&str, &str)>) -> GitResult<OpOutcome> {
     let gd = repo::git_dir(repo)?;
-    let before = head_oid(repo);
-    guard_ignored_merge(repo, target, before.as_deref())?;
+    // HEAD and the ignored files side by side.
+    let (ignored, before) = super::operations::both(repo, || super::workspace_files::ignored(repo), || head_oid(repo));
+    guard_listed(repo, target, before.as_deref(), ignored?, false)?;
     // Branch mergeOptions are defaults, not the user's reviewed mode. In
     // particular an inherited --squash must not turn a fast-forward into staged
     // edits, and an inherited --commit must never confirm a merge for the user.
@@ -1748,10 +3611,22 @@ fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autosta
         }
     }
     args.push(target);
+    if let Some((name, oid)) = expect {
+        if let Some(reason) = head_moved(repo, name, oid)? {
+            return Err(GitError::new(reason).kind("stale-operation"));
+        }
+    }
     let out = runner::exec(repo, &args)?;
     let text = format!("{}\n{}", out.text(), out.stderr);
-    if out.ok() && !gd.join("MERGE_HEAD").exists() && autostash_conflict(repo, &text) {
-        return Ok(autostash_outcome(repo));
+    // After a merge that did not stop: its conflicts (a conflicting autostash) and HEAD, side by
+    // side.
+    let mut after = None;
+    if out.ok() && !gd.join("MERGE_HEAD").exists() {
+        let (conflicts, head) = super::operations::both(repo, || conflicted(repo), || head_oid(repo));
+        if text.contains("Applying autostash resulted in conflicts") || !conflicts.is_empty() {
+            return Ok(autostash_outcome(repo));
+        }
+        after = Some(head);
     }
     if text.contains("Already up to date") || text.contains("Already up-to-date") {
         return Ok(OpOutcome { status: "upToDate".into(), conflicts: Vec::new(), message: format!("Already up to date with {target}.") });
@@ -1774,7 +3649,7 @@ fn merge_start_with_autostash(repo: &Path, target: &str, strategy: &str, autosta
             message: format!("Merging {target}."),
         });
     }
-    if out.ok() && head_oid(repo) != before {
+    if out.ok() && after.unwrap_or_else(|| head_oid(repo)) != before {
         return Ok(OpOutcome { status: "fastForward".into(), conflicts: Vec::new(), message: format!("Fast-forwarded to {target}.") });
     }
     if out.ok() {
@@ -3214,4 +5089,28 @@ fn saved_changes_never_overwrite_work_staged_meanwhile() {
 "
     );
     assert!(!runner::run(repo, ["stash", "list"]).unwrap().is_empty(), "the saved changes stay in Stashes");
+}
+
+#[cfg(test)]
+#[test]
+fn a_fast_forward_never_moves_another_branch_checked_out_at_the_same_commit() {
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = fixture.path();
+    for args in [&["init", "-qb", "main"][..], &["config", "user.name", "T"], &["config", "user.email", "t@example.com"]] {
+        runner::run(repo, args).unwrap();
+    }
+    runner::run(repo, ["commit", "-q", "--allow-empty", "-m", "base"]).unwrap();
+    let base = runner::run(repo, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+    runner::run(repo, ["commit", "-q", "--allow-empty", "-m", "incoming"]).unwrap();
+    let incoming = runner::run(repo, ["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+    runner::run(repo, ["reset", "-q", "--hard", &base]).unwrap();
+    // Another tool switches to a branch at the same commit after Pull all checked `main`.
+    runner::run(repo, ["switch", "-qc", "other"]).unwrap();
+    let error = merge_run(repo, &incoming, "ff-only", false, Some(("refs/heads/main", &base))).unwrap_err();
+    assert_eq!(error.message, "Another branch was checked out meanwhile.");
+    assert_eq!(runner::run(repo, ["rev-parse", "other"]).unwrap().trim(), base);
+    runner::run(repo, ["switch", "-q", "main"]).unwrap();
+    let outcome = merge_run(repo, &incoming, "ff-only", false, Some(("refs/heads/main", &base))).unwrap();
+    assert_eq!(outcome.status, "fastForward");
+    assert_eq!(runner::run(repo, ["rev-parse", "main"]).unwrap().trim(), incoming);
 }

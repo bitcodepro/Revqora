@@ -531,3 +531,18 @@ fn review_sparse_without_patterns_does_not_invent_exclusions() {
     assert!(!repo::git_dir(&restored).unwrap().join("info/sparse-checkout").exists());
     assert_eq!(fs::read(repo::git_dir(&f.root).unwrap().join("index")).unwrap(), source_index);
 }
+
+#[test]
+fn a_pull_protects_only_the_ignored_files_in_the_way_of_what_it_writes() {
+    let changed = ["src/app.rs", "docs", "build/out.txt"].map(String::from);
+    let touched = TouchedPaths::new(&changed, false);
+    assert!(touched.contains("src/app.rs"), "the same path");
+    assert!(touched.contains("src"), "a file where a folder must be created");
+    assert!(touched.contains("build"), "a file where a folder must be created");
+    assert!(touched.contains("docs/notes.log"), "a file in a folder that becomes a file");
+    assert!(touched.contains("src/app.rs~HEAD"), "a conflict copy");
+    assert!(!touched.contains("src/other.log"), "a neighbour is not in the way");
+    assert!(!touched.contains("cache.dat"));
+    assert!(!touched.contains("Src/App.rs"), "case matters where the file system tells case apart");
+    assert!(TouchedPaths::new(&["Src/App.rs".to_owned()], true).contains("src/app.rs"));
+}

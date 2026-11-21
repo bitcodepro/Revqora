@@ -105,6 +105,50 @@ pub struct FileDiff {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_snapshot: Option<u64>,
     pub empty: bool,
+    /// Set when only the line endings of a modified file changed (see [`line_endings`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_endings: Option<LineEndings>,
+}
+
+/// Line endings as `git ls-files --eol` names them: "lf", "crlf" or "mixed".
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LineEndings {
+    /// In the index (what Git stores).
+    pub stored: String,
+    /// In the working tree.
+    pub working: String,
+}
+
+/// The line endings of `path` in the index and in the working tree when they differ. Git's diff
+/// converts line endings (`core.autocrlf`, `text` attributes) before it compares, so a file
+/// whose line endings alone changed is listed as modified with no changed line.
+fn line_endings(repo: &Path, path: &str) -> Option<LineEndings> {
+    let out = runner::exec(repo, ["ls-files", "--eol", "-z", "--", &format!(":(literal){path}")]).ok()?;
+    if !out.ok() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (info, _) = text.split('\0').next()?.split_once('\t')?;
+    let field = |prefix: &str| info.split_whitespace().find_map(|field| field.strip_prefix(prefix)).map(str::to_owned);
+    let (stored, working) = (field("i/")?, field("w/")?);
+    let text_eol = |eol: &str| matches!(eol, "lf" | "crlf" | "mixed");
+    (text_eol(&stored) && text_eol(&working) && stored != working).then_some(LineEndings { stored, working })
+}
+
+/// [`line_endings`], when the diff shown hides no other change: with whitespace or blank lines
+/// ignored, an indentation change also leaves no changed line, so Git compares the file again
+/// with only the carriage returns at line ends ignored.
+fn shown_line_endings(repo: &Path, path: &str, opts: &DiffOptions) -> Option<LineEndings> {
+    let found = line_endings(repo, path)?;
+    if opts.ignore_whitespace || opts.ignore_blank_lines {
+        let literal = format!(":(literal){path}");
+        let out = runner::exec(repo, ["diff", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-cr-at-eol", "--", &literal]).ok()?;
+        if out.code != 0 {
+            return None;
+        }
+    }
+    Some(found)
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -469,12 +513,24 @@ pub fn working_diff_view(
     // Pick the file entry matching the path (renames can produce one entry).
     let pick = files.iter().find(|f| f.new_path.as_deref() == Some(path)).or_else(|| files.first());
     let Some(file) = pick else {
-        return Ok(FileDiff { path: path.to_string(), hash, empty: !preview_limited, truncated: preview_limited, preview_limited, ..Default::default() });
+        let line_endings = (side == WorkSide::Unstaged && !untracked && !preview_limited).then(|| shown_line_endings(repo, path, opts)).flatten();
+        return Ok(FileDiff {
+            path: path.to_string(),
+            hash,
+            empty: !preview_limited,
+            truncated: preview_limited,
+            preview_limited,
+            line_endings,
+            ..Default::default()
+        });
     };
     let mut display = to_display(file, path, hash);
     display.truncated |= preview_limited;
     display.preview_limited = preview_limited;
     display.empty &= !preview_limited;
+    if side == WorkSide::Unstaged && !untracked && !preview_limited && display.hunks.is_empty() && !display.binary && display.old_mode == display.new_mode {
+        display.line_endings = shown_line_endings(repo, path, opts);
+    }
     if side == WorkSide::Unstaged
         && !preview_limited
         && files.len() == 1
@@ -766,6 +822,39 @@ mod option_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_whose_line_endings_alone_changed_says_so() {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture.path();
+        for args in
+            [&["init", "-qb", "main"][..], &["config", "user.name", "T"], &["config", "user.email", "t@example.com"], &["config", "core.autocrlf", "true"]]
+        {
+            runner::run(repo, args).unwrap();
+        }
+        std::fs::write(repo.join("A.cs"), "class A {\n}\n").unwrap();
+        std::fs::write(repo.join("B.cs"), "class B {\n}\n").unwrap();
+        runner::run(repo, ["add", "."]).unwrap();
+        runner::run(repo, ["commit", "-qm", "base"]).unwrap();
+        // An editor saves A.cs with CRLF: listed as modified, no changed line.
+        std::fs::write(repo.join("A.cs"), "class A {\r\n}\r\n").unwrap();
+        std::fs::write(repo.join("B.cs"), "class B2 {\n}\n").unwrap();
+        let opts = DiffOptions::default();
+        let a = working_diff_view(repo, "A.cs", WorkSide::Unstaged, None, false, &opts, false).unwrap();
+        assert!(a.hunks.is_empty());
+        assert_eq!(a.line_endings, Some(LineEndings { stored: "lf".into(), working: "crlf".into() }));
+        let b = working_diff_view(repo, "B.cs", WorkSide::Unstaged, None, false, &opts, false).unwrap();
+        assert!(!b.hunks.is_empty());
+        assert_eq!(b.line_endings, None, "a real change is shown as one");
+        // Whitespace ignored: line endings alone still say so; with an indentation change they do not.
+        let ignoring = DiffOptions { ignore_whitespace: true, ignore_blank_lines: true, ..DiffOptions::default() };
+        let a = working_diff_view(repo, "A.cs", WorkSide::Unstaged, None, false, &ignoring, false).unwrap();
+        assert_eq!(a.line_endings, Some(LineEndings { stored: "lf".into(), working: "crlf".into() }));
+        std::fs::write(repo.join("A.cs"), "class A {\r\n    \r\n\t}\r\n").unwrap();
+        let a = working_diff_view(repo, "A.cs", WorkSide::Unstaged, None, false, &ignoring, false).unwrap();
+        assert!(a.hunks.is_empty(), "the options hide the change");
+        assert_eq!(a.line_endings, None, "not only the line endings changed");
+    }
 
     const SAMPLE: &str = "diff --git a/f.txt b/f.txt\nindex 111..222 100644\n--- a/f.txt\n+++ b/f.txt\n@@ -1,4 +1,4 @@\n a\n-b\n+B\n c\n-d\n+D\n";
 

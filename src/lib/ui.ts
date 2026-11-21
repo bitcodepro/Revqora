@@ -86,6 +86,8 @@ interface UiState {
   overlay: Overlay | null;
   overlayRevision: number;
   repositoryOverview: boolean;
+  /** The open commit fills the window: Explorer, Repositories, Branches and the commit list are hidden. Not saved. */
+  commitMaximized: boolean;
   toast: (t: Omit<Toast, "id">, ttl?: number) => void;
   dismissToast: (id: number) => void;
   /** Pauses a toast's timer while it is hovered or focused (it is read or acted on). */
@@ -119,6 +121,7 @@ export const useUi = create<UiState>()((set, get) => ({
   overlay: null,
   overlayRevision: 0,
   repositoryOverview: false,
+  commitMaximized: false,
   toast: (t, ttl) => {
     const id = ++toastId;
     set({ toasts: [...get().toasts.slice(-4), { ...t, id }] });
@@ -187,6 +190,10 @@ export function contextMenu(e: { clientX: number; clientY: number; currentTarget
   e.preventDefault();
   e.stopPropagation?.();
   useUi.getState().openMenu(e.clientX, e.clientY, items, (e.currentTarget as HTMLElement | null)?.ownerDocument?.defaultView ?? undefined);
+}
+
+export function toggleCommitMaximized(on?: boolean) {
+  useUi.setState(state => ({ commitMaximized: on ?? !state.commitMaximized }));
 }
 
 export function toggleRepositoryOverview() {

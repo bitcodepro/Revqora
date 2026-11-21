@@ -274,14 +274,200 @@ fn error_reason(code: &str) -> (&'static str, bool) {
     }
 }
 
+/// One message from the client, or a message too large to read, already skipped.
+enum Incoming {
+    Line(Vec<u8>),
+    /// The message's own id (see [`IdScan`]), otherwise null.
+    Oversized(Value),
+    End,
+}
+
+/// Reads one message. A message over `limit` is not kept in memory: the rest of its line is
+/// read and dropped, so the next message is read as usual and the session goes on.
+fn next_message(reader: &mut impl BufRead, limit: usize) -> io::Result<Incoming> {
+    let mut line = Vec::new();
+    if io::Read::take(&mut *reader, (limit + 1) as u64).read_until(b'\n', &mut line)? == 0 {
+        return Ok(Incoming::End);
+    }
+    if line.len() > limit {
+        let mut scan = IdScan::default();
+        scan.feed(&line);
+        if line.last() != Some(&b'\n') {
+            loop {
+                let buffer = reader.fill_buf()?;
+                if buffer.is_empty() {
+                    break;
+                }
+                match buffer.iter().position(|byte| *byte == b'\n') {
+                    Some(end) => {
+                        scan.feed(&buffer[..end]);
+                        reader.consume(end + 1);
+                        break;
+                    }
+                    None => {
+                        let read = buffer.len();
+                        scan.feed(buffer);
+                        reader.consume(read);
+                    }
+                }
+            }
+        }
+        return Ok(Incoming::Oversized(scan.id()));
+    }
+    if line.last() != Some(&b'\n') {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Incomplete MCP message."));
+    }
+    Ok(Incoming::Line(line))
+}
+
+/// Finds the `id` of a JSON-RPC message read in pieces, without keeping the message: the member
+/// `id` of the top-level object, wherever it is (clients may write it after `params`), when its
+/// value is a string without escapes or an integer. An `id` inside `params` is not it.
+#[derive(Default)]
+struct IdScan {
+    depth: usize,
+    started: bool,
+    done: bool,
+    in_string: bool,
+    escaped: bool,
+    /// The string being read at the top level, as written (escapes too), up to 256 bytes
+    /// (None: longer).
+    text: Option<Vec<u8>>,
+    /// The last string read at the top level, until a `:` makes it a key.
+    key: Option<Vec<u8>>,
+    /// After `"id":`, until its value.
+    want_id: bool,
+    /// The digits of an unquoted id being read.
+    number: Option<Vec<u8>>,
+    id: Option<Value>,
+}
+
+impl IdScan {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if self.done {
+                return;
+            }
+            self.step(byte);
+        }
+    }
+
+    fn step(&mut self, byte: u8) {
+        if self.in_string {
+            if self.escaped {
+                self.escaped = false;
+            } else if byte == b'\\' {
+                self.escaped = true;
+            } else if byte == b'"' {
+                self.in_string = false;
+                // JSON escapes (`\"`, `\u0069`) decoded as any JSON reader would.
+                let text = self.text.take().and_then(|raw| {
+                    let quoted = [&b"\""[..], &raw, b"\""].concat();
+                    serde_json::from_slice::<String>(&quoted).ok()
+                });
+                if self.depth == 1 {
+                    if self.want_id {
+                        self.want_id = false;
+                        self.found(text.map(Value::String));
+                    } else {
+                        self.key = text.map(String::into_bytes);
+                    }
+                }
+                return;
+            }
+            if let Some(text) = &mut self.text {
+                if text.len() < 256 {
+                    text.push(byte);
+                } else {
+                    self.text = None;
+                }
+            }
+            return;
+        }
+        if let Some(number) = &mut self.number {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'+' | b'.') {
+                if number.len() < 32 {
+                    number.push(byte);
+                }
+                return;
+            }
+            let number = self.number.take().unwrap_or_default();
+            self.found(String::from_utf8_lossy(&number).parse::<i64>().ok().map(Value::from));
+            if self.done {
+                return;
+            }
+        }
+        match byte {
+            b' ' | b'\t' | b'\r' | b'\n' => {}
+            _ if !self.started => {
+                self.started = true;
+                if byte == b'{' {
+                    self.depth = 1;
+                } else {
+                    self.done = true;
+                }
+            }
+            b'"' => {
+                self.in_string = true;
+                self.text = (self.depth == 1).then(Vec::new);
+            }
+            b'{' | b'[' => {
+                // An object or a list is no id.
+                if self.depth == 1 && self.want_id {
+                    self.want_id = false;
+                }
+                self.depth += 1;
+            }
+            b'}' | b']' => {
+                self.depth = self.depth.saturating_sub(1);
+                if self.depth == 0 {
+                    self.done = true;
+                }
+            }
+            b':' if self.depth == 1 => self.want_id = self.key.take().is_some_and(|key| key == b"id"),
+            b',' if self.depth == 1 => {
+                self.key = None;
+                self.want_id = false;
+            }
+            _ if self.depth == 1 && self.want_id => {
+                self.want_id = false;
+                self.number = Some(vec![byte]);
+            }
+            _ => {}
+        }
+    }
+
+    /// The first top-level `id` counts; a value that is no string or integer gives none.
+    fn found(&mut self, id: Option<Value>) {
+        if self.id.is_none() {
+            self.id = Some(id.unwrap_or(Value::Null));
+        }
+        self.done = true;
+    }
+
+    fn id(mut self) -> Value {
+        if let Some(number) = self.number.take() {
+            self.found(String::from_utf8_lossy(&number).parse::<i64>().ok().map(Value::from));
+        }
+        self.id.unwrap_or(Value::Null)
+    }
+}
+
 fn run(reader: &mut impl BufRead, writer: &mut impl Write, app_version: &str, dispatch: impl Fn(&ToolCall) -> super::Reply) -> io::Result<()> {
     let mut protocol = Protocol { app_version, version: None, ready: false };
     loop {
-        let line = match transport::frame(reader, INPUT_LIMIT) {
-            Ok(Some(line)) => line,
-            Ok(None) => return Ok(()),
+        let line = match next_message(reader, INPUT_LIMIT) {
+            Ok(Incoming::Line(line)) => line,
+            Ok(Incoming::End) => return Ok(()),
+            Ok(Incoming::Oversized(id)) => {
+                // The session goes on: one oversized request must not cut off the client.
+                let message =
+                    format!("The MCP message is larger than {} KB and was not read. Send smaller requests (fewer paths, shorter text).", INPUT_LIMIT / 1024);
+                transport::write(writer, &rpc_error(id, -32600, &message), OUTPUT_LIMIT)?;
+                continue;
+            }
             Err(error) => {
-                transport::write(writer, &rpc_error(Value::Null, -32700, "Invalid or oversized MCP message."), OUTPUT_LIMIT)?;
+                transport::write(writer, &rpc_error(Value::Null, -32700, "Invalid or incomplete MCP message."), OUTPUT_LIMIT)?;
                 return Err(error);
             }
         };
@@ -346,6 +532,54 @@ mod tests {
         assert_eq!(responses[6]["result"]["isError"], false);
         assert_eq!(responses[7]["result"]["isError"], false);
         assert_eq!(responses[8]["result"]["isError"], true);
+    }
+
+    #[test]
+    fn an_oversized_message_is_answered_and_the_session_goes_on() {
+        let big = "x".repeat(INPUT_LIMIT + 10);
+        let input = [
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}).to_string(),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}).to_string(),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"search_commits","arguments":{{"repository":"r","query":"{big}"}}}}}}"#
+            ),
+            format!(r#"{{"jsonrpc":"2.0", "id" : "seven","method":"tools/call","params":{{"q":"{big}"}}}}"#),
+            format!(r#"{{"method":"tools/call","params":{{"id":3,"q":"{big}"}},"id":8}}"#),
+            format!(r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"id":4,"list":[{{"id":5}}],"q":"{big}"}}}}"#),
+            format!(r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"q":"say \"id\": 6 {big}"}},"id" : "late"}}"#),
+            // An id with escapes, and a key written with one.
+            format!(r#"{{"jsonrpc":"2.0","id":"a\"b\\c\u00e9","method":"tools/call","params":{{"q":"{big}"}}}}"#),
+            format!(r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"q":"{big}"}},"\u0069d":10}}"#),
+            json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"list_repositories"}}).to_string(),
+        ]
+        .join("\n")
+            + "\n";
+        let mut output = Vec::new();
+        run(&mut input.as_bytes(), &mut output, "9.8.7", |_| Ok(json!({"active":"fixture"}))).unwrap();
+        let responses: Vec<Value> =
+            output.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()).map(|line| serde_json::from_slice(line).unwrap()).collect();
+        assert_eq!(responses.len(), 9);
+        assert_eq!(responses[1]["id"], 7);
+        assert_eq!(responses[1]["error"]["code"], -32600);
+        assert_eq!(responses[2]["id"], "seven");
+        // The message's own id, after params, not the one inside them.
+        assert_eq!(responses[3]["id"], 8);
+        // Ids only inside params: the message has none.
+        assert_eq!(responses[4]["id"], Value::Null);
+        // After params that hold "id" in their text.
+        assert_eq!(responses[5]["id"], "late");
+        assert_eq!(responses[6]["id"], "a\"b\\c\u{e9}");
+        assert_eq!(responses[7]["id"], 10);
+        assert_eq!(responses[8]["id"], 9);
+        assert_eq!(responses[8]["result"]["isError"], false);
+    }
+
+    #[test]
+    fn a_message_cut_off_at_the_end_still_ends_the_session() {
+        let input =
+            format!("{}\n{{\"jsonrpc\":\"2.0\",\"id\":2", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}));
+        let mut output = Vec::new();
+        assert!(run(&mut input.as_bytes(), &mut output, "9.8.7", |_| Ok(json!({}))).is_err());
     }
 
     #[test]
