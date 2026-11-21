@@ -66,10 +66,10 @@ function FileHistoryBody({ root, path, close }: { root: string; path: string; cl
     setDiff(null);
     setSides(undefined);
     setError(null);
-    api.commitDetails(root, sel.oid).then(async d => {
-      const diff = await api.revDiff(root, d.diffBase, d.oid, sel.path);
+    // The log gave the parent: one Git command per selected commit.
+    api.revDiff(root, sel.parent, sel.oid, sel.path).then(diff => {
       if (!alive) return;
-      setSides({old:d.diffBase ? {rev:`${d.diffBase}:${diff.oldPath ?? sel.path}`} : null, new:{rev:`${d.oid}:${sel.path}`}});
+      setSides({old:sel.parent ? {rev:`${sel.parent}:${diff.oldPath ?? sel.path}`} : null, new:{rev:`${sel.oid}:${sel.path}`}});
       setDiff(diff);
     }).catch(e => alive && setError(String(e?.message ?? e)));
     return () => { alive = false; };

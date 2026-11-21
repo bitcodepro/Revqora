@@ -291,6 +291,7 @@ struct AppState {
     graph_order: graph::BuildOrder,
     watchers: Mutex<HashMap<String, RepoWatcher>>,
     folder_scans: git::repository_import::FolderScans,
+    history_searches: graph::HistorySearches,
 }
 
 async fn blocking<T, F>(f: F) -> GitResult<T>
@@ -1201,10 +1202,17 @@ async fn history_search(
     query: String,
     mode: SearchMode,
     filters: Option<graph::HistoryFilters>,
-) -> GitResult<Vec<graph::HistoryMatch>> {
+) -> GitResult<graph::HistorySearchPage> {
     let cache = state.graphs.lock().get(&repo).cloned().ok_or_else(|| GitError::new("History is not loaded."))?;
     cache.check_key(Some(&key))?;
-    blocking(move || graph::search_history_filtered(&p(&repo), &cache, &query, mode, &filters.unwrap_or_default())).await
+    let matches = blocking(move || graph::search_history_filtered(&p(&repo), &cache, &query, mode, &filters.unwrap_or_default())).await?;
+    Ok(state.history_searches.keep(matches))
+}
+
+/// More rows of a History search, by match position.
+#[tauri::command]
+fn history_search_rows(state: State<'_, AppState>, id: u64, start: usize, count: usize) -> GitResult<Vec<GraphRow>> {
+    state.history_searches.rows(id, start, count)
 }
 
 /// "Search all repositories": one page per call, following `nextCursor` for more.
@@ -1342,6 +1350,12 @@ async fn reflog(repo: String) -> GitResult<Vec<ReflogEntry>> {
 #[tauri::command]
 async fn refs_snapshot(repo: String) -> GitResult<RefsSnapshot> {
     blocking(move || refs::snapshot(&p(&repo))).await
+}
+
+/// The refs snapshot, or nothing when it still has the fingerprint `known`.
+#[tauri::command]
+async fn refs_snapshot_if_changed(repo: String, known: Option<String>) -> GitResult<Option<RefsSnapshot>> {
+    blocking(move || refs::snapshot_if_changed(&p(&repo), known.as_deref())).await
 }
 
 #[tauri::command]
@@ -3643,6 +3657,7 @@ pub fn run() {
             graph_resolve_lane,
             graph_search,
             history_search,
+            history_search_rows,
             repository_commit_search,
             repository_commit_search_page,
             commit_details,
@@ -3660,6 +3675,7 @@ pub fn run() {
             blob,
             text_blob,
             refs_snapshot,
+            refs_snapshot_if_changed,
             repository_branch_names,
             fetch_background,
             cancel_transfer,

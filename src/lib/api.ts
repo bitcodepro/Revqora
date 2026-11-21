@@ -260,8 +260,11 @@ export const api = {
   graphBranchMembers: (repo: string, key: string, reference: string) => call<number[]>("graph_branch_members", { repo, key, reference }),
   graphLaneAnchor: (repo: string, key: string, id: number) => call<import("./types").GraphLaneAnchor | null>("graph_lane_anchor", { repo, key, id }),
   graphResolveLane: (repo: string, key: string, anchor: import("./types").GraphLaneAnchor) => call<number | null>("graph_resolve_lane", { repo, key, anchor }),
+  /** Every match by commit, with the rows of the first ones; more rows by page with `historySearchRows`. */
   historySearch: (repo: string, key: string, query: string, mode: SearchMode, filters: HistoryFilters | null = null) =>
-    call<{ row: GraphRow; graphIndex: number | null }[]>("history_search", { repo, key, query, mode, filters }),
+    call<import("./types").HistorySearchPage>("history_search", { repo, key, query, mode, filters }),
+  /** Rows of a History search by match position (each row's `index` is its position). */
+  historySearchRows: (id: number, start: number, count: number) => call<GraphRow[]>("history_search_rows", { id, start, count }),
   repositoryCommitSearch: (repo: string, query: string, mode: SearchMode, cursor: string | null = null, limit = 30) => call<import("./types").CommitSearchPage>("repository_commit_search", { repo, query, mode, cursor, limit }),
   repositoryCommitSearchPage: (repo: string, query: string, mode: SearchMode, cursor: string | null, limit: number) => call<import("./types").CommitSearchPage>("repository_commit_search_page", { repo, query, mode, cursor, limit }),
   commitGraphStatus: (repo: string) => call<boolean>("commit_graph_status", { repo }),
@@ -282,6 +285,8 @@ export const api = {
 
   repositoryBranchNames: (repo: string) => call<string[]>("repository_branch_names", { repo }),
   refs: (repo: string) => call<RefsSnapshot>("refs_snapshot", { repo }),
+  /** The refs, or null when they still have the fingerprint `known`: nothing unchanged is sent. */
+  refsIfChanged: (repo: string, known: string | null) => call<RefsSnapshot | null>("refs_snapshot_if_changed", { repo, known }),
   /** `refsChanged` false: no ref moved, appeared or disappeared, so nothing new needs reading. */
   fetchBackground: (repo: string) => call<{ output: string; refsChanged: boolean }>("fetch_background", { repo }),
   /** Cancels one Fetch, Pull or Push by its operation id, running or still queued; true when a running transfer was stopped. */

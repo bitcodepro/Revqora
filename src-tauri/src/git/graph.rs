@@ -1491,6 +1491,60 @@ impl HistoryFilters {
     }
 }
 
+/// One match of a History search, without its row: the commit and where it is in the graph.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryMatchRef {
+    pub oid: String,
+    pub graph_index: Option<usize>,
+}
+
+/// A History search as the UI receives it: every match by commit, and the rows of the first
+/// matches. The other rows are read by page with [`HistorySearches::rows`], so a search that
+/// matches most of a large history does not send every row at once.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySearchPage {
+    pub id: u64,
+    pub matches: Vec<HistoryMatchRef>,
+    pub rows: Vec<GraphRow>,
+}
+
+/// Rows sent with the matches of a History search; the rest are read by page.
+pub const SEARCH_FIRST_ROWS: usize = 200;
+/// Searches whose rows can still be read (one per open History, a few behind).
+const KEPT_SEARCHES: usize = 8;
+
+/// The rows of recent History searches, for reading them by page.
+#[derive(Default)]
+pub struct HistorySearches {
+    next: std::sync::atomic::AtomicU64,
+    kept: parking_lot::Mutex<std::collections::VecDeque<(u64, Arc<Vec<GraphRow>>)>>,
+}
+
+impl HistorySearches {
+    /// Keeps the rows of `matches` and returns the matches with the first rows.
+    pub fn keep(&self, matches: Vec<HistoryMatch>) -> HistorySearchPage {
+        let id = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let (refs, rows): (Vec<HistoryMatchRef>, Vec<GraphRow>) =
+            matches.into_iter().map(|m| (HistoryMatchRef { oid: m.row.oid.clone(), graph_index: m.graph_index }, m.row)).unzip();
+        let first = rows.iter().take(SEARCH_FIRST_ROWS).cloned().collect();
+        let mut kept = self.kept.lock();
+        kept.push_back((id, Arc::new(rows)));
+        while kept.len() > KEPT_SEARCHES {
+            kept.pop_front();
+        }
+        HistorySearchPage { id, matches: refs, rows: first }
+    }
+
+    /// Rows `start..start + count` of search `id` (each with its match position as `index`).
+    pub fn rows(&self, id: u64, start: usize, count: usize) -> GitResult<Vec<GraphRow>> {
+        let rows = self.kept.lock().iter().find(|(kept, _)| *kept == id).map(|(_, rows)| rows.clone());
+        let rows = rows.ok_or_else(|| GitError::new("These search results are no longer available. Search again.").kind("stale-search"))?;
+        Ok(rows.iter().skip(start).take(count.min(1000)).cloned().collect())
+    }
+}
+
 pub fn search_history(repo: &Path, cache: &GraphCache, query: &str, mode: SearchMode) -> GitResult<Vec<HistoryMatch>> {
     search_history_filtered(repo, cache, query, mode, &HistoryFilters::default())
 }
@@ -1620,6 +1674,44 @@ pub fn search_history_filtered(repo: &Path, cache: &GraphCache, query: &str, mod
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_large_search_sends_its_matches_and_only_the_first_rows() {
+        let row = |index: usize| GraphRow {
+            index,
+            oid: format!("{index:040x}"),
+            parents: Vec::new(),
+            author: String::new(),
+            email: String::new(),
+            author_time: 0,
+            committer: String::new(),
+            commit_time: 0,
+            subject: format!("commit {index}"),
+            refs: Vec::new(),
+            col: 0,
+            color: 0,
+            lane_id: 0,
+            segs: Vec::new(),
+            is_head: false,
+            is_merge: false,
+            local_only: false,
+            incoming: false,
+        };
+        let searches = HistorySearches::default();
+        let matches: Vec<HistoryMatch> = (0..1000).map(|i| HistoryMatch { row: row(i), graph_index: (i % 2 == 0).then_some(i * 3) }).collect();
+        let page = searches.keep(matches);
+        assert_eq!(page.matches.len(), 1000);
+        assert_eq!(page.matches[2], HistoryMatchRef { oid: format!("{:040x}", 2), graph_index: Some(6) });
+        assert_eq!(page.matches[3].graph_index, None);
+        assert_eq!(page.rows.len(), SEARCH_FIRST_ROWS);
+        let more = searches.rows(page.id, 950, 250).unwrap();
+        assert_eq!(more.iter().map(|r| r.index).collect::<Vec<_>>(), (950..1000).collect::<Vec<_>>());
+        // Older searches are dropped after a few newer ones.
+        for _ in 0..KEPT_SEARCHES {
+            searches.keep(Vec::new());
+        }
+        assert_eq!(searches.rows(page.id, 0, 1).unwrap_err().kind, "stale-search");
+    }
 
     fn c(o: &str, p: &[&str]) -> (String, Vec<String>) {
         (o.to_string(), p.iter().map(|s| s.to_string()).collect())

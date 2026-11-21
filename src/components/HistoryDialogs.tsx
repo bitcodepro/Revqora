@@ -136,8 +136,8 @@ function FolderHistory({ root, folder, close }: { root: string; folder: string; 
     let alive = true;
     setDiff(null);
     setDiffError(null);
-    api.commitDetails(root, entry.oid)
-      .then((d) => api.revDiff(root, d.diffBase, d.oid, file, diffOpts))
+    // The log gave the parent: one Git command per selected file.
+    api.revDiff(root, entry.parent, entry.oid, file, diffOpts)
       .then((r) => { if (alive) setDiff(r); }, (e) => { if (alive) setDiffError(errorMessage(e)); });
     return () => { alive = false; };
   }, [root, entry, file, diffOpts]);

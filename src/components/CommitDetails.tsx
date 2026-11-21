@@ -39,8 +39,10 @@ export function CommitDetails({ root, oid, onClose, compactMeta = false, maximiz
     useCallback((listener) => subscribePreview(root, listener), [root]),
     useCallback(() => previewGeneration(root), [root]),
   );
-  const remoteRefs = useRepos((s) => s.tabs[root]?.refs?.remote);
-  const remoteVersion = useMemo(() => JSON.stringify((remoteRefs ?? []).map((r) => [r.fullName, r.oid]).sort((a, b) => a[0].localeCompare(b[0]))), [remoteRefs]);
+  // What answers about remote branches depend on: a short fingerprint from the backend.
+  const remoteFingerprint = useRepos((s) => s.tabs[root]?.refs?.remoteFingerprint);
+  const remoteRefs = useRepos((s) => remoteFingerprint ? undefined : s.tabs[root]?.refs?.remote);
+  const remoteVersion = useMemo(() => remoteFingerprint ?? JSON.stringify((remoteRefs ?? []).map((r) => [r.fullName, r.oid]).sort((a, b) => a[0].localeCompare(b[0]))), [remoteFingerprint, remoteRefs]);
   const detailKey = detailsKey(root, oid, remoteVersion);
   const [detailResult, setDetailResult] = useState<{ key: string; generation: number; value: Details } | null>(null);
   const d = peekDetails(detailKey, oid) ?? (detailResult?.key === detailKey && detailResult.generation === generation ? detailResult.value : null);

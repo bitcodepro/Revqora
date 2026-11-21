@@ -195,6 +195,19 @@ export interface RefLabel {
   syncedRemote: string | null;
 }
 
+/** One History search match: the commit and its row in the graph, if the graph has it. */
+export interface HistoryMatchRef {
+  oid: string;
+  graphIndex: number | null;
+}
+
+/** A History search: every match, the rows of the first ones (by match position). */
+export interface HistorySearchPage {
+  id: number;
+  matches: HistoryMatchRef[];
+  rows: GraphRow[];
+}
+
 export interface GraphRow {
   index: number;
   oid: string;
@@ -278,6 +291,8 @@ export interface FileHistoryEntry {
   time: number;
   subject: string;
   path: string;
+  /** The first parent, which the commit's diff is shown against (null for a root commit). */
+  parent: string | null;
 }
 
 export interface BranchInfo {
@@ -354,6 +369,10 @@ export interface RefsSnapshot {
   tags: TagInfo[];
   stashes: StashInfo[];
   remotes: RemoteInfo[];
+  /** Changes whenever anything above changes (from the backend). */
+  fingerprint?: string;
+  /** Changes whenever a remote branch is added, removed or moves. */
+  remoteFingerprint?: string;
 }
 
 export interface OpOutcome {
@@ -917,7 +936,7 @@ export interface DeletionResult { checkpoint: RecoverySummary | null; warning: s
 
 export interface IgnoredFiles { paths: string[]; truncated: boolean; }
 export interface LineHistoryEntry { oid: string; author: string; time: number; subject: string; path: string; diff: FileDiff; }
-export interface FolderHistoryEntry { oid: string; author: string; time: number; subject: string; files: string[]; }
+export interface FolderHistoryEntry { oid: string; author: string; time: number; subject: string; files: string[]; /** First parent (null for a root commit). */ parent: string | null; }
 export interface ExternalTools { diffTools: string[]; mergeTools: string[]; diffDefault: string | null; mergeDefault: string | null; }
 export type IgnoreKind = "file" | "extension" | "folder";
 export type IgnoreScope = "shared" | "local";

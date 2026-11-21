@@ -192,10 +192,12 @@ pub struct FileHistoryEntry {
     pub time: i64,
     pub subject: String,
     pub path: String,
+    /// The first parent, which the commit's diff is shown against (none for a root commit).
+    pub parent: Option<String>,
 }
 
 pub fn file_history(repo: &Path, path: &str, limit: usize) -> GitResult<Vec<FileHistoryEntry>> {
-    let raw = runner::run(repo, ["log", "--follow", &format!("--max-count={limit}"), "--name-only", "--format=%x1e%H%x1f%an%x1f%at%x1f%s", "--", path])?;
+    let raw = runner::run(repo, ["log", "--follow", &format!("--max-count={limit}"), "--name-only", "--format=%x1e%H%x1f%P%x1f%an%x1f%at%x1f%s", "--", path])?;
     let mut out = Vec::new();
     for rec in raw.split('\x1e') {
         let rec = rec.trim();
@@ -204,12 +206,19 @@ pub fn file_history(repo: &Path, path: &str, limit: usize) -> GitResult<Vec<File
         }
         let mut lines = rec.lines();
         let head = lines.next().unwrap_or("");
-        let f: Vec<&str> = head.splitn(4, '\x1f').collect();
-        if f.len() < 4 {
+        let f: Vec<&str> = head.splitn(5, '\x1f').collect();
+        if f.len() < 5 {
             continue;
         }
         let p = lines.find(|l| !l.trim().is_empty()).unwrap_or(path).to_string();
-        out.push(FileHistoryEntry { oid: f[0].to_string(), author: f[1].to_string(), time: f[2].parse().unwrap_or(0), subject: f[3].to_string(), path: p });
+        out.push(FileHistoryEntry {
+            oid: f[0].to_string(),
+            parent: f[1].split_whitespace().next().map(str::to_owned),
+            author: f[2].to_string(),
+            time: f[3].parse().unwrap_or(0),
+            subject: f[4].to_string(),
+            path: p,
+        });
     }
     Ok(out)
 }
@@ -308,5 +317,40 @@ mod tests {
             assert_eq!(file.additions, Some(i as u32));
             assert_eq!(file.deletions, Some(1));
         }
+    }
+
+    /// File and Folder History show each commit against its real first parent, as Commit
+    /// details do: not the previous commit that touched the path.
+    #[test]
+    fn file_and_folder_history_give_each_commit_its_real_first_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.name", "Tester"],
+            &["config", "user.email", "tester@example.com"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            git(repo, args);
+        }
+        std::fs::create_dir(repo.join("dir")).unwrap();
+        std::fs::write(repo.join("dir/f.txt"), "one\n").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-qm", "Add f"]);
+        std::fs::write(repo.join("other.txt"), "other\n").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-qm", "Elsewhere"]);
+        std::fs::write(repo.join("dir/f.txt"), "two\n").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-qm", "Edit f"]);
+        let (first, between, last) = (git(repo, &["rev-parse", "HEAD~2"]), git(repo, &["rev-parse", "HEAD~1"]), git(repo, &["rev-parse", "HEAD"]));
+        let files = super::file_history(repo, "dir/f.txt", 10).unwrap();
+        assert_eq!(files.iter().map(|e| (e.oid.clone(), e.parent.clone())).collect::<Vec<_>>(), [(last.clone(), Some(between.clone())), (first.clone(), None)]);
+        let folder = crate::git::line_history::folder_history(repo, "dir", 10).unwrap();
+        assert_eq!(
+            folder.iter().map(|e| (e.oid.clone(), e.parent.clone(), e.files.clone())).collect::<Vec<_>>(),
+            [(last, Some(between), vec!["dir/f.txt".to_owned()]), (first, None, vec!["dir/f.txt".to_owned()])]
+        );
+        assert_eq!(folder[0].subject, "Edit f");
     }
 }

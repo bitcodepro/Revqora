@@ -18,7 +18,7 @@ import { useSettings } from "../lib/settings";
 import { repositoryKey } from "../lib/repositoryLibrary";
 import { actionFor, matchesShortcut, shortcutTitle } from "../lib/shortcuts";
 import { contextMenu, copyText, endBusy, startBusy, toast } from "../lib/ui";
-import type { GraphLaneAnchor, GraphRow, HistoryFilters, SearchMode, Seg } from "../lib/types";
+import type { GraphLaneAnchor, GraphRow, HistoryFilters, HistoryMatchRef, SearchMode, Seg } from "../lib/types";
 import { EMPTY_HISTORY_FILTERS, filterChips, filterError, filterRequest, historyListMode, jumpResets, removeFilter } from "../lib/historyFilters";
 import { WORKTREE } from "../lib/types";
 import { absoluteTime, fullTime, relativeTime, shortOid } from "../lib/format";
@@ -456,7 +456,10 @@ export function GraphView({
   // search
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<SearchMode>("quick");
-  const [found, setFound] = useState<{ scope: string; matches: Awaited<ReturnType<typeof api.historySearch>> } | null>(null);
+  const [found, setFound] = useState<{ scope: string; id: number; matches: HistoryMatchRef[] } | null>(null);
+  /** Rows of the current search by match position, read by page as the list scrolls. */
+  const searchRows = useRef<{ id: number; rows: Map<number, GraphRow> }>({ id: 0, rows: new Map() });
+  const loadingSearchPages = useRef(new Set<string>());
   const [cursor, setCursor] = useState(0);
   const [searching, setSearching] = useState(false);
   const [filterOnly, setFilterOnly] = useState(false);
@@ -481,7 +484,9 @@ export function GraphView({
   cursorRef.current = cursor;
   /** Set when new results only reflect a rebuilt graph: keep the view where it is. */
   const quietResults = useRef(false);
-  const matchSet = useMemo(() => new Set(results.map(({ row }) => row.oid)), [results]);
+  const matchSet = useMemo(() => new Set(results.map(({ oid }) => oid)), [results]);
+  /** Rows of the current search that are loaded, for menus and drags over the filtered list. */
+  const loadedSearchRows = () => found && searchRows.current.id === found.id ? [...searchRows.current.rows.values()] : [];
   // An older hit can be opened directly by SHA. Show it in the same history
   // pane without constructing all the intervening graph lanes.
   // Active filters narrow History to the matching commits even without search text (and show
@@ -632,10 +637,32 @@ export function GraphView({
     need.forEach((p) => loadPage(p, tab.graphVersion, graphKey, expectedScope));
   });
 
+  // The filtered list reads the rows of its matches by page, like the graph.
+  useEffect(() => {
+    if (!filtered || !found || found.scope !== searchScope) return;
+    const { id } = found;
+    const loaded = searchRows.current.id === id ? searchRows.current.rows : null;
+    const need = new Set<number>();
+    for (let i = first; i <= last; i++) if (!loaded?.has(i)) need.add(Math.floor(i / PAGE));
+    for (const page of need) {
+      const key = `${id}:${page}`;
+      if (loadingSearchPages.current.has(key)) continue;
+      loadingSearchPages.current.add(key);
+      void api.historySearchRows(id, page * PAGE, PAGE).then(rows => {
+        if (foundRef.current?.id !== id) return;
+        if (searchRows.current.id !== id) searchRows.current = { id, rows: new Map() };
+        for (const row of rows) searchRows.current.rows.set(row.index, row);
+        force(n => n + 1);
+      }, () => {}).finally(() => loadingSearchPages.current.delete(key));
+    }
+  });
+
   const rowAt = useCallback((i: number) => {
     if (!graphKey) return undefined;
-    return filtered ? results[i]?.row : cacheScope.current === expectedScope ? cache.current.get(i) : undefined;
-  }, [graphKey, expectedScope, filtered, results]);
+    if (filtered) return found && searchRows.current.id === found.id ? searchRows.current.rows.get(i) : undefined;
+    return cacheScope.current === expectedScope ? cache.current.get(i) : undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphKey, expectedScope, filtered, results, found]);
 
   const moreHistory = !!summary && hasMoreHistory(tab);
   const expandedFrom = useRef<string | undefined>(undefined);
@@ -647,7 +674,7 @@ export function GraphView({
   }, [moreHistory, last, count, graphKey, filtered, scrollTop, summary?.commitCount, tab.graphLoading, tab.graphLimit, root]);
   const selectedIndex = useMemo(() => {
     if (!tab.selected) return -1;
-    if (filtered) return results.findIndex(({ row }) => row.oid === tab.selected);
+    if (filtered) return results.findIndex(({ oid }) => oid === tab.selected);
     for (const [i, r] of cache.current) if (r.oid === tab.selected) return i;
     return -1;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -725,7 +752,7 @@ export function GraphView({
       if (filtered) {
         const match = results[idx];
         if (match && current?.graph?.key === graphKey) {
-          patch(root, { selected: match.row.oid, multi: [] });
+          patch(root, { selected: match.oid, multi: [] });
           setCursor(idx);
           anchor.current = idx;
           scrollToIndex(idx);
@@ -814,11 +841,12 @@ export function GraphView({
       const multi = t?.multi.includes(r.oid) ? t.multi : [];
       if (!multi.length && t?.selected !== r.oid)
         patch(root, { selected: r.oid, multi: [] });
-      const visibleRows = filtered ? results.map(({ row }) => row) : [...cache.current.values()];
+      const visibleRows = filtered ? loadedSearchRows() : [...cache.current.values()];
       const sel = visibleRows.filter(row => multi.includes(row.oid));
       contextMenu(e, commitMenu(root, r, sel.length > 1 ? sel : [r]));
     },
-    [root, patch, filtered, results],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [root, patch, filtered, results, found],
   );
 
   // Drag and drop (GraphDrop.tsx). Called on pointerdown. A plain press selects only on click
@@ -832,7 +860,7 @@ export function GraphView({
       const restore = () => patch(root, previous);
       if (previous.multi.length > 1 && previous.multi.includes(oid)) {
         const chosen = new Set(previous.multi);
-        const visibleRows = filtered ? results.map(({ row }) => row) : [...cache.current.values()];
+        const visibleRows = filtered ? loadedSearchRows() : [...cache.current.values()];
         const sel = visibleRows.filter(row => chosen.has(row.oid));
         if (sel.length !== chosen.size) return { oids: [oid] };
         // Oldest first, the order the commit menu cherry-picks in.
@@ -840,7 +868,8 @@ export function GraphView({
       }
       return { oids: [oid], onStart: previous.selected === oid ? restore : undefined };
     },
-    [root, patch, filtered, results],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [root, patch, filtered, results, found],
   );
   const startDrag = useGraphDrag(root, dragCommits);
 
@@ -951,16 +980,17 @@ export function GraphView({
         const res = await api.historySearch(root, graphKey, query, mode, filterReq);
         if (!current || useRepos.getState().tabs[root]?.graph?.key !== graphKey) return;
         const previous = foundRef.current;
+        searchRows.current = { id: res.id, rows: new Map(res.rows.map(row => [row.index, row])) };
         if (previous?.scope === searchScope) {
-          const oid = previous.matches[cursorRef.current]?.row.oid;
-          const kept = oid ? res.findIndex(({ row }) => row.oid === oid) : -1;
+          const oid = previous.matches[cursorRef.current]?.oid;
+          const kept = oid ? res.matches.findIndex(match => match.oid === oid) : -1;
           quietResults.current = kept >= 0;
           setCursor(Math.max(0, kept));
         } else {
           quietResults.current = false;
           setCursor(0);
         }
-        setFound({ scope: searchScope, matches: res });
+        setFound({ scope: searchScope, id: res.id, matches: res.matches });
       } catch (e) {
         if (current) toast.error(e, "Search failed");
       } finally {
@@ -979,11 +1009,11 @@ export function GraphView({
 
   const gotoResult = (dir: number) => {
     if (!results.length) return;
-    const selected = results.findIndex(({ row }) => row.oid === tab.selected);
+    const selected = results.findIndex(({ oid }) => oid === tab.selected);
     const next = selected >= 0 ? (selected + dir + results.length) % results.length
       : dir < 0 ? results.length - 1 : cursor;
     setCursor(next);
-    patch(root, { selected: results[next].row.oid, multi: [] });
+    patch(root, { selected: results[next].oid, multi: [] });
     anchor.current = null;
   };
 
@@ -1052,7 +1082,7 @@ export function GraphView({
     if (e.defaultPrevented || actionFor(e)) return;
     if (navigateHoveredCommit(e.nativeEvent)) return;
     if (tab.selected && tab.selected !== WORKTREE && (e.ctrlKey || e.altKey || e.metaKey || /^F\d+$/.test(e.key))) {
-      const visibleRows = filtered ? results.map(({ row }) => row) : [...cache.current.values()];
+      const visibleRows = filtered ? loadedSearchRows() : [...cache.current.values()];
       const row = visibleRows.find(candidate => candidate.oid === tab.selected);
       if (row) {
         const multi = tab.multi.includes(row.oid) ? tab.multi : [];

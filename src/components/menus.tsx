@@ -283,7 +283,7 @@ export function commitMenu(root: string, row: GraphRow, selection: GraphRow[], o
         icon: <Combine size={I} />,
         disabled: row.parents.length !== 1,
         onClick: async () => {
-          const parent = await api.commitDetails(root, row.parents[0]).catch(() => null);
+          const parent = await api.commitDetails(root, row.parents[0], undefined, true).catch(() => null);
           A.squashCommits(root, [row.parents[0], row.oid], [parent?.subject ?? "", row.subject]);
         },
       },

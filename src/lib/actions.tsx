@@ -660,7 +660,7 @@ export async function resetTo(root: string, oid: string, subject: string) {
 export async function reword(root: string, oid: string) {
   const expectedState = await prepareOperation(root);
   if (!expectedState) return;
-  const details = await api.commitDetails(root, oid).catch(() => null);
+  const details = await api.commitDetails(root, oid, undefined, true).catch(() => null);
   const current = details ? (details.body ? `${details.subject}\n\n${details.body}` : details.subject) : "";
   const msg = await promptDialog({ title: "Edit commit message", initial: current, multiline: true, confirm: "Save message", help: "Ctrl+Enter to save. Commits after this one are re-created." });
   if (!msg || msg === current) return;

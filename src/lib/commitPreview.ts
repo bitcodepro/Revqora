@@ -1,12 +1,14 @@
 import { api } from "./api";
 import type { CommitDetails, DiffOptions, FileDiff } from "./types";
+import { detailsBytes, diffBytes } from "./sizeEstimate";
 
 /** Small in-memory LRU. Huge responses and failures are never retained. */
 export class PreviewCache<T> {
   private entries = new Map<string, { value: T; weight: number }>();
   private pending = new Map<string, Promise<T>>();
   private weight = 0;
-  constructor(private count = 48, private budget = 8 * 1024 * 1024, private entryLimit = 2 * 1024 * 1024) {}
+  /** `weigh` estimates the memory an answer holds without copying it. */
+  constructor(private count = 48, private budget = 8 * 1024 * 1024, private entryLimit = 2 * 1024 * 1024, private weigh: (value: T) => number = (value) => 2 * JSON.stringify(value).length) {}
   peek(key: string): T | undefined {
     const entry = this.entries.get(key);
     if (!entry) return undefined;
@@ -25,7 +27,7 @@ export class PreviewCache<T> {
     const promise: Promise<T> = Promise.resolve().then(loader).then((value) => {
       try {
         if (this.pending.get(key) !== promise) return value;
-        const weight = 2 * (JSON.stringify(value).length + key.length);
+        const weight = this.weigh(value) + 2 * key.length;
         if (weight <= Math.min(this.entryLimit, this.budget)) {
           this.entries.set(key, { value, weight }); this.weight += weight;
           while (this.entries.size > this.count || this.weight > this.budget) {
@@ -55,8 +57,8 @@ export function subscribePreview(root: string, listener: () => void) {
   return () => { listeners.delete(listener); if (!listeners.size) subscribers.delete(root); };
 }
 
-const details = new PreviewCache<CommitDetails>();
-const diffs = new PreviewCache<FileDiff>(64, 16 * 1024 * 1024);
+const details = new PreviewCache<CommitDetails>(48, 8 * 1024 * 1024, 2 * 1024 * 1024, detailsBytes);
+const diffs = new PreviewCache<FileDiff>(64, 16 * 1024 * 1024, 2 * 1024 * 1024, diffBytes);
 const immutable = (oid: string) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(oid);
 export const detailsKey = (root: string, oid: string, remoteRefs: string) => JSON.stringify([root, oid, remoteRefs]);
 export const diffKey = (root: string, from: string | null, oid: string, path: string, opts: DiffOptions) => JSON.stringify([root, from, oid, path, opts]);
@@ -64,7 +66,7 @@ export const peekDetails = (key: string, oid: string) => immutable(oid) ? detail
 // The preview opens with the header and file list. Remote containment walks history
 // from every remote tip, so it is a separate read with its own unknown state.
 export const loadDetails = (key: string, root: string, oid: string) => immutable(oid) ? details.load(key, () => api.commitDetails(root, oid, undefined, true)) : api.commitDetails(root, oid, undefined, true);
-const containment = new PreviewCache<boolean>(256, 1024 * 1024);
+const containment = new PreviewCache<boolean>(256, 1024 * 1024, 2 * 1024 * 1024, () => 16);
 /** Keyed by the remote-ref snapshot: a fetch or push changes the answer. */
 export const containmentKey = (root: string, oid: string, remoteRefs: string) => JSON.stringify([root, oid, remoteRefs]);
 /** undefined = unknown: not asked yet, or invalidated since. */
@@ -75,7 +77,9 @@ export const loadDiff = (key: string, root: string, from: string | null, oid: st
 
 /** Attributes/config may change the interpretation of immutable trees. */
 export function invalidatePreview(root: string) {
-  const matches = (key: string) => JSON.parse(key)[0] === root;
+  // Every key is a JSON array that starts with the root.
+  const prefix = `${JSON.stringify([root]).slice(0, -1)},`;
+  const matches = (key: string) => key.startsWith(prefix);
   details.invalidate(matches); diffs.invalidate(matches); containment.invalidate(matches);
   generations.set(root, previewGeneration(root) + 1);
   for (const listener of subscribers.get(root) ?? []) listener();
