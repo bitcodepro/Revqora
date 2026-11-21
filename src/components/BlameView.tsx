@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronUp, History, ScanSearch, Search, X } from "lucide-react";
 import type { LanguageSupport } from "@codemirror/language";
 import { api, errorMessage } from "../lib/api";
@@ -58,7 +58,10 @@ export function BlameView({ root, path, rev, line }: { root: string; path: strin
     };
   }, [path]);
 
-  const matches = useMemo(() => (blame ? findLines(blame.lines.map((l) => l.text), query) : []), [blame, query]);
+  // The line texts are listed once per blame; typing searches them without blocking the input.
+  const texts = useMemo(() => blame?.lines.map((l) => l.text) ?? [], [blame]);
+  const searched = useDeferredValue(query);
+  const matches = useMemo(() => (blame ? findLines(texts, searched) : []), [blame, texts, searched]);
   const matchSet = useMemo(() => new Set(matches), [matches]);
   const reveal = (index: number) => {
     const el = ref.current;

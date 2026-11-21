@@ -357,8 +357,11 @@ export function DiffView({ diff, loading, error, mode, path, badge, actions, can
   const jumpChange = (dir: 1 | -1) => {
     const el = bodyRef.current;
     if (!el || !diff) return;
+    // One pass over the rows finds every hunk header (not one search per hunk).
+    const headers = new Map<number, number>();
+    if (virtual) vrows.forEach((row, at) => { if (row.kind === "hunk" && !headers.has(row.h)) headers.set(row.h, at); });
     const tops: number[] = virtual
-      ? diff.hunks.map((_, hi) => vrowIndex(hi, null) * rowH)
+      ? diff.hunks.map((_, hi) => (headers.get(hi) ?? -1) * rowH)
       : diff.hunks.map((_, hi) => el.querySelector<HTMLElement>(`[data-hunk="${hi}"]`)?.offsetTop ?? 0);
     const cur = el.scrollTop + 4;
     const idx = dir > 0 ? tops.findIndex((t) => t > cur + 8) : tops.map((t, i) => [t, i] as const).filter(([t]) => t < cur - 8).pop()?.[1] ?? -1;

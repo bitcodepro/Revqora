@@ -1184,6 +1184,15 @@ export function GraphView({
     }
   }
 
+  // Built once per list of branches: scrolling re-renders this view, and a repository with
+  // thousands of branches would rebuild every option of the scope list each time.
+  const refsNow = tab.refs;
+  const scopeOptions = useMemo(() => <>
+    {fixedBranch && ![...(refsNow?.local ?? []), ...(refsNow?.remote ?? [])].some(branch => branch.fullName === fixedBranch) && <option value={fixedBranch}>{fixedBranch}</option>}
+    {!!refsNow?.local.length && <optgroup label="Local branches">{refsNow.local.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
+    {!!refsNow?.remote.length && <optgroup label="Remote branches">{refsNow.remote.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
+  </>, [refsNow, fixedBranch]);
+
   return (
     <div className="graph-panel">
       <div
@@ -1308,9 +1317,7 @@ export function GraphView({
             value={tab.branchFilter ?? ""} onChange={event => selectHistoryScope(event.target.value || null)}>
             <option value={CURRENT_HISTORY_BRANCH}>{tab.info?.head.branch ? `Current branch — ${tab.info.head.branch}` : "Current commit (HEAD)"}</option>
             <option value="">All branches (local and fetched)</option>
-            {fixedBranch && ![...(tab.refs?.local ?? []), ...(tab.refs?.remote ?? [])].some(branch => branch.fullName === fixedBranch) && <option value={fixedBranch}>{fixedBranch}</option>}
-            {!!tab.refs?.local.length && <optgroup label="Local branches">{tab.refs.local.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
-            {!!tab.refs?.remote.length && <optgroup label="Remote branches">{tab.refs.remote.map(branch => <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>)}</optgroup>}
+            {scopeOptions}
           </select>
           {!!(tab.refs?.local.length || tab.refs?.remote.length) && <button type="button" className="icon-btn sm" aria-label="Find a branch" title="Find a branch to show its history"
             onClick={() => void pickBranchScope(tab.refs?.local ?? [], tab.refs?.remote ?? []).then(reference => { if (reference) selectHistoryScope(reference); })}><Search size={12} /></button>}

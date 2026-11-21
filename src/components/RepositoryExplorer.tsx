@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, FolderSearch, FolderTree, LayoutGrid, Loader2, Pencil, Search, Star, Trash2, Unlink, UserRound, X } from "lucide-react";
 import { defaultGroupRoots, explorerRepositoryKey, groupRepositoryRoots, orderExplorerSiblings, repositoryKey, uniqueRoots, useLibrary, type RepositoryGroup, type RepositoryPlacement } from "../lib/repositoryLibrary";
 import { treeSubtreeIds, visibleTree } from "../lib/libraryTree";
@@ -108,6 +108,8 @@ export function RepositoryExplorer({ onClose, hidden = false }: { onClose: () =>
   const [focusedEntry, setFocusedEntry] = useState<string | null>();
   const focusedId = focusedEntry === undefined ? activeGroup : focusedEntry;
   const { selection, clear: clearSelection } = navigation;
+  // Every row asks whether it is selected: a set answers without scanning the selection.
+  const selectedIds = useMemo(() => new Set(selection), [selection]);
   const folderDrag = useLibraryPointerDrag(), repositoryDrag = useRepositoryDrag();
   const library = useLibrary.getState;
   const paths = uniqueRoots([...order, ...known]);
@@ -209,7 +211,7 @@ export function RepositoryExplorer({ onClose, hidden = false }: { onClose: () =>
 
   const visibleEntries = rows.map(row => row.entry);
   const visibleIds = visibleEntries.map(entry => entry.id);
-  const selectedRows = visibleEntries.filter(entry => selection.includes(entry.id));
+  const selectedRows = visibleEntries.filter(entry => selectedIds.has(entry.id));
   const siblingIds = (entry: ExplorerEntry) => visibleEntries
     .filter(row => (row.parentId ?? null) === (entry.parentId ?? null)).map(row => row.id);
   const select = (event: React.MouseEvent, entry: ExplorerEntry, activate: () => void) => {
@@ -263,16 +265,16 @@ export function RepositoryExplorer({ onClose, hidden = false }: { onClose: () =>
     }
     navigation.keyDown(event, visibleIds, entry.id, null);
   };
-  const groupIds = (id: string) => selection.includes(id)
+  const groupIds = (id: string) => selectedIds.has(id)
     ? selectedRows.filter(entry => entry.kind === "group").map(entry => entry.id) : [id];
   const placements = (entry: Extract<ExplorerEntry, { kind: "repository" }>): RepositoryPlacement[] =>
-    (selection.includes(entry.id)
+    (selectedIds.has(entry.id)
       ? selectedRows.filter(row => row.kind === "repository") : [entry])
       .map(row => ({ root: row.root, groupId: row.parentId }));
   /** What Fetch, Pull and Push act on from this row: the whole selection when the row is part of
    *  it (folders, repositories and branches together), otherwise the row. */
   const syncSelection = (entry: ExplorerEntry): SyncSelection => {
-    const rows = selection.includes(entry.id) ? selectedRows : [entry];
+    const rows = selectedIds.has(entry.id) ? selectedRows : [entry];
     return {
       // The same spelling as the repository rows (the open tab's path), so an open repository is
       // refreshed after the sync, not treated as closed.
@@ -283,7 +285,7 @@ export function RepositoryExplorer({ onClose, hidden = false }: { onClose: () =>
   };
   /** A branch's own menu has Fetch, Pull and Push; a selection of several adds them for all of it. */
   const branchSelectionMenu = (entry: ExplorerEntry): MenuItem[] =>
-    selection.includes(entry.id) && selectedRows.length > 1 ? [...selectionSyncMenu(syncSelection(entry)), { separator: true }] : [];
+    selectedIds.has(entry.id) && selectedRows.length > 1 ? [...selectionSyncMenu(syncSelection(entry)), { separator: true }] : [];
   const remove = async (ids: string[]) => { if (await deleteGroupsDialog(ids)) clearSelection(); };
   const rootMenu: MenuItem[] = [
     ...groupCreationMenu(),
@@ -366,7 +368,7 @@ export function RepositoryExplorer({ onClose, hidden = false }: { onClose: () =>
           const key = repositoryKey(entry.root), reference = entry.branch.fullName;
           return <ExplorerBranchRow key={entry.id} id={entry.id} root={entry.root} branch={entry.branch} refs={entry.refs} upstream={entry.upstream}
             depth={depth} primary={primaryBranches[key] === reference} favorite={branchFavorites[key]?.includes(reference) ?? false}
-            focused={focusedId === entry.id} selected={selection.includes(entry.id)}
+            focused={focusedId === entry.id} selected={selectedIds.has(entry.id)}
             viewed={entry.root === active && !overview && (shownHistoryBranch(tabs[entry.root]) ? shownHistoryBranch(tabs[entry.root]) === reference : entry.branch.isHead)}
             historyDetached={!!panels.history} withRepository={run => branchNavigation(entry.root, run)}
             selectionMenu={() => branchSelectionMenu(entry)} onSelect={(event, activate) => select(event, entry, activate)}/>;
@@ -388,7 +390,7 @@ export function RepositoryExplorer({ onClose, hidden = false }: { onClose: () =>
               settings.set({ recent: settings.recent.filter(root => !keys.has(repositoryKey(root))) });
               clearSelection();
               setFocusedEntry(null);
-            } }} current={entry.root === active && !overview} selected={selection.includes(entry.id)} groupId={entry.parentId ?? undefined}
+            } }} current={entry.root === active && !overview} selected={selectedIds.has(entry.id)} groupId={entry.parentId ?? undefined}
             selection={uniqueRoots(items.map(item => item.root))} syncMenu={() => selectionSyncMenu(syncSelection(entry))}
             createGroup={() => void groupEditorDialog({ roots: uniqueRoots(items.map(item => item.root)), parentId: entry.parentId, onCreated: clearSelection })}
             onPointerDown={event => repositoryDrag.start(event, items)}
@@ -407,7 +409,7 @@ export function RepositoryExplorer({ onClose, hidden = false }: { onClose: () =>
           </Fragment>;
         }
         const { group } = entry;
-        const chosen = group.id === activeGroup, selected = selection.includes(group.id);
+        const chosen = group.id === activeGroup, selected = selectedIds.has(group.id);
         const toggle = () => {
           if (!favoritesOnly) { library().collapse(group.id); return; }
           setCollapsedFavorites(current => {

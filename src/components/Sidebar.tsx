@@ -156,6 +156,7 @@ function SidebarView({ tab, onHide }: SidebarProps) {
   });
 
   const pairs = useMemo(() => branchPairs(refs?.local ?? [], refs?.remote ?? []), [refs]);
+  const squashMerged = useMemo(() => new Set(tab.squashMerged), [tab.squashMerged]);
   const pinned = [...(refs?.local ?? []), ...(refs?.remote ?? [])].find(branch => branch.fullName === primaryBranch);
   const revealedBranch = useMemo(() => revealed && [...(refs?.local ?? []), ...(refs?.remote ?? [])]
     .find(branch => branch.fullName === revealed.reference), [refs, revealed]);
@@ -309,7 +310,7 @@ function SidebarView({ tab, onHide }: SidebarProps) {
             <span className="meta">
               {primaryBranch === b.fullName && <Flag size={12} className="branch-primary-mark" role="img" aria-label="Primary branch"/>}
               {kind === "local" && <span className={`branch-connection ${connection.kind}`} role="img" aria-label={connection.title} title={connection.title}>{connection.kind === "gone" ? <CloudOff size={13} /> : connection.kind === "paired" ? <Cloud size={13} /> : <HardDrive size={13} />}</span>}
-              {kind === "local" && tab.squashMerged.includes(b.name) && (
+              {kind === "local" && squashMerged.has(b.name) && (
                 <span className="pill amber" title={`Merged into ${current ?? "the current branch"}
 All changes of this branch are already in ${current ?? "the current branch"} (squash or rebase merge), so it is usually safe to delete. Its own commits were copied, not merged, so they still look unmerged in History.`}>
                   merged
